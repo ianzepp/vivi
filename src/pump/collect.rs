@@ -952,11 +952,9 @@ fn is_timeout(text: &str) -> bool {
 fn receipt_agent_exit(text: &str) -> Option<i32> {
     attempt_record::agent_exit(text).or_else(|| {
         text.lines().find_map(|line| {
-            line.strip_prefix("agent_rc ")?
-                .split_whitespace()
-                .next()?
-                .parse()
-                .ok()
+            let word = line.strip_prefix("agent_rc ")?.split_whitespace().next()?;
+            let Ok(code) = word.parse() else { return None };
+            Some(code)
         })
     })
 }

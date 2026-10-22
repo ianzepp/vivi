@@ -14,7 +14,10 @@ fn need_depend_adds_and_removes_prerequisites_and_graph_follows() {
     // The release was sent depending on the work: blocked.
     assert!(blocked(root).contains(&release.held), "{}", blocked(root));
     let show = stdout(&vivi(["need", "show", &release.held, "--project", root]));
-    assert!(show.contains(&format!("depends  {}:open", work.held)), "{show}");
+    assert!(
+        show.contains(&format!("depends  {}:open", work.held)),
+        "{show}"
+    );
 
     // Remove the header edge: ready.
     let removed = vivi([
@@ -55,7 +58,10 @@ fn need_depend_adds_and_removes_prerequisites_and_graph_follows() {
     assert!(text.contains("now depends on"), "{text}");
     assert!(blocked(root).contains(&release.held), "{}", blocked(root));
     let show = stdout(&vivi(["need", "show", &release.held, "--project", root]));
-    assert!(show.contains(&work.held) && show.contains(&other.held), "{show}");
+    assert!(
+        show.contains(&work.held) && show.contains(&other.held),
+        "{show}"
+    );
 
     // Again: nothing changes.
     let again = vivi([
@@ -70,7 +76,11 @@ fn need_depend_adds_and_removes_prerequisites_and_graph_follows() {
         root,
     ]);
     assert_success(&again);
-    assert!(stdout(&again).contains("already depends on"), "{}", stdout(&again));
+    assert!(
+        stdout(&again).contains("already depends on"),
+        "{}",
+        stdout(&again)
+    );
 }
 
 #[test]
@@ -94,7 +104,11 @@ fn depend_refuses_unknown_handles_other_roles_and_empty_requests() {
         root,
     ]);
     assert!(!unknown.status.success());
-    assert!(stderr(&unknown).contains("deadbeef"), "{}", stderr(&unknown));
+    assert!(
+        stderr(&unknown).contains("deadbeef"),
+        "{}",
+        stderr(&unknown)
+    );
     assert!(!blocked(root).contains(&release.held), "{}", blocked(root));
 
     let other_role = vivi([
@@ -125,7 +139,11 @@ fn depend_refuses_unknown_handles_other_roles_and_empty_requests() {
         root,
     ]);
     assert!(!empty.status.success());
-    assert!(stderr(&empty).contains("--add or --remove"), "{}", stderr(&empty));
+    assert!(
+        stderr(&empty).contains("--add or --remove"),
+        "{}",
+        stderr(&empty)
+    );
 }
 
 #[test]
@@ -148,7 +166,11 @@ fn task_and_want_depend_are_wired() {
             root,
         ]);
         assert_success(&output);
-        assert!(stdout(&output).contains("now depends on"), "{}", stdout(&output));
+        assert!(
+            stdout(&output).contains("now depends on"),
+            "{}",
+            stdout(&output)
+        );
     }
 }
 

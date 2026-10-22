@@ -76,8 +76,13 @@ fn own_source(pool: &PoolConfig, primary: Option<&JobTarget>) -> Option<String> 
     if !address.is_empty() {
         return Some(address);
     }
-    let path = pool.worktree_source()?.canonicalize().ok()?;
-    Some(path.to_string_lossy().into_owned())
+    match pool.worktree_source()?.canonicalize() {
+        Ok(path) => Some(path.to_string_lossy().into_owned()),
+        Err(error) => {
+            tracing::debug!(%error, "pool worktree source could not be canonicalized");
+            None
+        }
+    }
 }
 
 /// The commit `from` names in the target's repository, and the read-only

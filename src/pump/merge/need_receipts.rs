@@ -269,73 +269,112 @@ fn settle_need_merge(
         ));
         return;
     };
-    if observed != identity.starting_tip {
-        let detail = format!("job {}: {detail}; observed tip {observed}", job.id);
-        if need::record_unverified_tip(
-            st,
-            &identity.target,
-            &identity.need,
-            &job.id,
-            &observed,
-            &detail,
-        )
-        .is_err()
-        {
-            ctx.log(&format!(
-                "need merge unverified tip could not be recorded {}/{}",
-                identity.target, identity.need
-            ));
-            return;
-        }
+    if observed != identity.starting_tip
+        && !record_moved_tip(ctx, st, job, identity, detail, &observed)
+    {
+        return;
     }
     reset_need_units(st, job);
     if !jobs::mark_applied(st, &job.id, ctx.now()) {
         return;
     }
     let streak = invalid_receipt
-        .then(|| {
-            need::record_invalid_receipt(
-                st,
-                &identity.target,
-                &identity.need,
-                identity.revision,
-                &format!("{}: {detail}", job.id),
-            )
-            .ok()
-        })
+        .then(|| record_invalid_streak(ctx, st, job, identity, detail))
         .flatten();
-    if observed == identity.starting_tip {
-        if let Some(entries) = streak.filter(|entries| entries.len() == need::INVALID_RECEIPT_LIMIT)
-        {
-            let ids: Vec<&str> = entries
-                .iter()
-                .map(|entry| entry.split(": ").next().unwrap_or(entry))
-                .collect();
-            ctx.exception(
-                "need-merge-receipt-invalid",
-                &identity.need,
-                &format!(
-                    "{} consecutive invalid merge receipts (jobs {}); unit merges for revision {} are held until the plan is revised. First failure, job {}",
-                    entries.len(),
-                    ids.join(", "),
-                    identity.revision,
-                    entries[0]
-                ),
-            );
-            return;
-        }
-        ctx.exception(
-            "need-merge-unverified",
-            &identity.need,
-            &format!("job {}: {detail}; observed tip {}", job.id, observed),
-        );
-    } else {
+    if observed != identity.starting_tip {
         ctx.exception(
             "need-branch-unverified-tip",
             &identity.need,
             &format!("job {}: {detail}; observed tip {}", job.id, observed),
         );
+        return;
     }
+    if let Some(entries) = streak.filter(|entries| entries.len() == need::INVALID_RECEIPT_LIMIT) {
+        raise_invalid_streak(ctx, identity, &entries);
+        return;
+    }
+    ctx.exception(
+        "need-merge-unverified",
+        &identity.need,
+        &format!("job {}: {detail}; observed tip {}", job.id, observed),
+    );
+}
+
+/// Record a remote tip that moved while the job ran. `false` when it could
+/// not be recorded, leaving the job unsettled.
+fn record_moved_tip(
+    ctx: &Ctx,
+    st: &mut State,
+    job: &PoolJob,
+    identity: &NeedMergeIdentity,
+    detail: &str,
+    observed: &str,
+) -> bool {
+    let detail = format!("job {}: {detail}; observed tip {observed}", job.id);
+    if need::record_unverified_tip(
+        st,
+        &identity.target,
+        &identity.need,
+        &job.id,
+        observed,
+        &detail,
+    )
+    .is_err()
+    {
+        ctx.log(&format!(
+            "need merge unverified tip could not be recorded {}/{}",
+            identity.target, identity.need
+        ));
+        return false;
+    }
+    true
+}
+
+/// Record an invalid receipt against the need's streak, returning the streak
+/// entries; a failed write is logged and counts as no streak.
+fn record_invalid_streak(
+    ctx: &Ctx,
+    st: &mut State,
+    job: &PoolJob,
+    identity: &NeedMergeIdentity,
+    detail: &str,
+) -> Option<Vec<String>> {
+    let recorded = need::record_invalid_receipt(
+        st,
+        &identity.target,
+        &identity.need,
+        identity.revision,
+        &format!("{}: {detail}", job.id),
+    );
+    match recorded {
+        Ok(entries) => Some(entries),
+        Err(error) => {
+            ctx.log(&format!(
+                "need merge invalid receipt could not be recorded {}/{}: {error}",
+                identity.target, identity.need
+            ));
+            None
+        }
+    }
+}
+
+/// Raise the exception for a full streak of invalid merge receipts.
+fn raise_invalid_streak(ctx: &Ctx, identity: &NeedMergeIdentity, entries: &[String]) {
+    let ids: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry.split(": ").next().unwrap_or(entry))
+        .collect();
+    ctx.exception(
+        "need-merge-receipt-invalid",
+        &identity.need,
+        &format!(
+            "{} consecutive invalid merge receipts (jobs {}); unit merges for revision {} are held until the plan is revised. First failure, job {}",
+            entries.len(),
+            ids.join(", "),
+            identity.revision,
+            entries[0]
+        ),
+    );
 }
 
 fn reset_need_units(st: &mut State, job: &PoolJob) {

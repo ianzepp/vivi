@@ -26,10 +26,10 @@ use super::provider::{
 };
 use super::run::ONCE_ENV;
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT, META_STATE, STATE_READY};
-use super::ssh_state;
 use super::ssh::SshProvider;
 use super::ssh_cli::SshCli;
 use super::ssh_script::WORKER_MACOS_SCRIPT;
+use super::ssh_state;
 use crate::error::VivariumError;
 
 /// How long a new slot's seed (fetch and seed commands) may take.

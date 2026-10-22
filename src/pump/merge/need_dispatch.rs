@@ -68,23 +68,7 @@ fn dispatch_need_group(
         return Ok(());
     };
     let mut branch = need::get(st, target, need_id)?;
-    if branch.as_ref().is_some_and(|record| {
-        record.status != NeedBranchStatus::Landed && record.landing_job_id.is_some()
-    }) {
-        ctx.log(&format!(
-            "need branch held by active landing {target}/{need_id}"
-        ));
-        return Ok(());
-    }
-    if let Some(record) = branch.as_ref().filter(|record| {
-        matches!(
-            record.status,
-            NeedBranchStatus::Collision | NeedBranchStatus::Unverified
-        )
-    }) {
-        if need::announce_hold(st, target, need_id)? {
-            ctx.log(&hold_message(record));
-        }
+    if need_branch_held(ctx, st, target, need_id, branch.as_ref())? {
         return Ok(());
     }
     if let Some(record) = branch.as_ref()
@@ -115,6 +99,38 @@ fn dispatch_need_group(
     enqueue_need_batch(
         ctx, st, role, target, need_id, revision, &branch, &mut units, size, started,
     )
+}
+
+/// Whether the need branch is held (an active landing owns it, or it is in
+/// collision or unverified); the first hold of a collision or unverified
+/// branch is logged once.
+fn need_branch_held(
+    ctx: &Ctx,
+    st: &mut State,
+    target: &str,
+    need_id: &str,
+    branch: Option<&NeedBranch>,
+) -> Result<bool, VivariumError> {
+    if branch.is_some_and(|record| {
+        record.status != NeedBranchStatus::Landed && record.landing_job_id.is_some()
+    }) {
+        ctx.log(&format!(
+            "need branch held by active landing {target}/{need_id}"
+        ));
+        return Ok(true);
+    }
+    if let Some(record) = branch.filter(|record| {
+        matches!(
+            record.status,
+            NeedBranchStatus::Collision | NeedBranchStatus::Unverified
+        )
+    }) {
+        if need::announce_hold(st, target, need_id)? {
+            ctx.log(&hold_message(record));
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// The one line logged when a need branch first becomes held: what holds it

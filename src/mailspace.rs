@@ -70,6 +70,7 @@ pub use backlog::BacklogBoundUnit;
 pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_audit};
 pub use body::{read_body_arg, read_body_input};
 pub use config_edit::{IdentityPatch, PoolAdd};
+pub use depend::{BacklogDependency, DependWrite};
 pub use dump::{
     DumpFilters, DumpRecord, MailDumpRequest, TaskDumpRequest, TaskDumpStatus, parse_time_bound,
 };
@@ -95,7 +96,6 @@ pub use lifecycle::{
     AbsorbConfig, CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult,
     WantListOptions, WantListRecord, WantMetadataUpdate,
 };
-pub use depend::{BacklogDependency, DependWrite};
 pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;

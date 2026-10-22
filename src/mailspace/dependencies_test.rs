@@ -500,9 +500,7 @@ fn an_added_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
     arrive_event(&mailspace, &added, "release@x.test", "added");
     assert_eq!(readiness(&mailspace, &release), "blocked");
     assert_eq!(edge_count(&mailspace), 0);
-    let waiting = node_of(&mailspace, &release)
-        .unwrap()
-        .awaiting_dependencies;
+    let waiting = node_of(&mailspace, &release).unwrap().awaiting_dependencies;
     assert_eq!(waiting, ["<work@x.test>".to_string()]);
 
     // The dependency arrives: the edge is made.

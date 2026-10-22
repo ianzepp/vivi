@@ -419,8 +419,28 @@ fn seen_path(ctx: &Ctx, need: &str, revision: u64) -> PathBuf {
 /// The message ids the planner of `revision` was shown, when this pump saved
 /// them (first plans have none).
 pub(super) fn load_seen(ctx: &Ctx, need: &str, revision: u64) -> Option<BTreeSet<String>> {
-    let text = fs::read_to_string(seen_path(ctx, need, revision)).ok()?;
-    serde_json::from_str(&text).ok()
+    let path = seen_path(ctx, need, revision);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            ctx.log(&format!(
+                "revision seen set {} unreadable: {error}",
+                path.display()
+            ));
+            return None;
+        }
+    };
+    match serde_json::from_str(&text) {
+        Ok(seen) => Some(seen),
+        Err(error) => {
+            ctx.log(&format!(
+                "revision seen set {} is invalid: {error}",
+                path.display()
+            ));
+            None
+        }
+    }
 }
 
 /// Remember the message ids the planner of `revision` is shown, so the next

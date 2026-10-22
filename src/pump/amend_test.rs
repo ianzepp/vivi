@@ -514,7 +514,12 @@ fn an_oversized_thread_is_cut_but_the_prior_plan_is_kept_whole() {
             .unwrap()
             .contains("middle of the thread left out")
     );
-    assert!(input["thread_elided"]["text_bytes_left_out"].as_u64().unwrap() > 0);
+    assert!(
+        input["thread_elided"]["text_bytes_left_out"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     // The full input stays on the pump host.
     let saved = fs::read_to_string(ctx.home.join("needs/n1.json")).unwrap();
     assert!(saved.len() > 250_000);
@@ -573,8 +578,10 @@ fn a_revision_input_labels_every_unit_and_keeps_every_brief_whole() {
     // the planner must still see that it is closed.
     st.units
         .insert("n1-6".into(), unit_with("n1", Status::Withdrawn, "dropped"));
-    st.units
-        .insert("other-1".into(), unit_with("other", Status::Pending, "elsewhere"));
+    st.units.insert(
+        "other-1".into(),
+        unit_with("other", Status::Pending, "elsewhere"),
+    );
     host.reply("need show n1", 0, "## thread\n");
 
     request(&ctx, &mut st, "n1", "addendum");
@@ -583,7 +590,10 @@ fn a_revision_input_labels_every_unit_and_keeps_every_brief_whole() {
     let units = input["units"].as_array().unwrap();
     let label = |id: &str| {
         let unit = units.iter().find(|u| u["id"] == id).unwrap();
-        (unit["state"].as_str().unwrap(), unit["amendable"].as_bool().unwrap())
+        (
+            unit["state"].as_str().unwrap(),
+            unit["amendable"].as_bool().unwrap(),
+        )
     };
     assert_eq!(label("n1-1"), ("merged", false));
     assert_eq!(label("n1-2"), ("withdrawn", false));
@@ -632,7 +642,10 @@ fn the_thread_marks_what_changed_since_the_last_plan_reply() {
     assert_eq!(messages[1]["body"], "add the second half");
     assert_eq!(messages[1]["since_last_plan"], true);
     // The lifecycle event and the pump's own reply are named, not silently gone.
-    assert_eq!(input["thread_elided"]["lifecycle_event_letters_left_out"], 1);
+    assert_eq!(
+        input["thread_elided"]["lifecycle_event_letters_left_out"],
+        1
+    );
     assert_eq!(input["thread_elided"]["pump_replies_left_out"], 1);
     assert!(
         input["thread_note"]
@@ -686,12 +699,7 @@ fn the_next_revision_marks_messages_the_last_planner_was_not_shown() {
             ("one more thing".to_owned(), true),
         ]
     );
-    assert!(
-        input["thread_note"]
-            .as_str()
-            .unwrap()
-            .contains("not shown")
-    );
+    assert!(input["thread_note"].as_str().unwrap().contains("not shown"));
 }
 
 fn script_thread_json(host: &FakeHost, thread: &str) {

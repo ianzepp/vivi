@@ -48,11 +48,23 @@ pub fn header_to_add(
     body: &[u8],
 ) -> Option<(HeaderName, HeaderValue)> {
     let configured = provider.session_header.as_deref()?;
-    let name = HeaderName::from_bytes(configured.as_bytes()).ok()?;
+    let name = match HeaderName::from_bytes(configured.as_bytes()) {
+        Ok(name) => name,
+        Err(error) => {
+            tracing::warn!(%error, header = configured, "configured session header is not a valid header name");
+            return None;
+        }
+    };
     if inbound.contains_key(&name) {
         return None;
     }
-    let value = HeaderValue::from_str(&session_id(body)).ok()?;
+    let value = match HeaderValue::from_str(&session_id(body)) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(%error, "generated session id is not a valid header value");
+            return None;
+        }
+    };
     Some((name, value))
 }
 
@@ -70,7 +82,9 @@ pub fn session_id(body: &[u8]) -> String {
 /// every conversation of one client, so it would pin all of them to one
 /// route; the first user turn is what stays constant as a conversation grows.
 fn conversation_key(body: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(body).ok()?;
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return None;
+    };
     let model = value.get("model").and_then(Value::as_str)?;
     let messages = value.get("messages").and_then(Value::as_array)?;
     let first = messages

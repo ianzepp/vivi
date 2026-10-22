@@ -307,7 +307,10 @@ fn next_merge_id(st: &impl JobStore, target: &str) -> String {
     let next = st
         .jobs()
         .keys()
-        .filter_map(|id| id.strip_prefix(&prefix)?.parse::<u32>().ok())
+        .filter_map(|id| match id.strip_prefix(&prefix)?.parse::<u32>() {
+            Ok(n) => Some(n),
+            Err(_) => None,
+        })
         .max()
         .unwrap_or(0)
         .saturating_add(1);

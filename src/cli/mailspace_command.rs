@@ -13,8 +13,8 @@ pub use graph_command::{
 };
 pub use rule_command::{RuleCommand, RuleRetireCommand, RuleSaveCommand, RuleSupersedeCommand};
 pub use work_command::{
-    AbsorbCommand, DependCommand, GoalCommand, MailDumpCommand, MarkCommand, MemoCommand, NeedCommand,
-    TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand, WantStatus,
+    AbsorbCommand, DependCommand, GoalCommand, MailDumpCommand, MarkCommand, MemoCommand,
+    NeedCommand, TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand, WantStatus,
 };
 
 #[derive(Debug, Subcommand)]

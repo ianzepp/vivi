@@ -224,7 +224,7 @@ impl Mailspace {
                     super::super::delegation::parse_assignment_event(&bytes)
                         .map(|event| (event.of, event.at, event.id))
                 });
-            let Some((of, at, id)) = stamp.filter(|(of, _, _)| of == &item.rfc_id) else {
+            let Some((_of, at, id)) = stamp.filter(|(of, _, _)| of == &item.rfc_id) else {
                 continue;
             };
             if let Some(from) = first_bare_address(&view.from_addr)

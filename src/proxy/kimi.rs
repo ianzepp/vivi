@@ -312,7 +312,13 @@ fn dead_candidate(provider: &ProviderConfig) -> Option<PathBuf> {
     if !is_kimi(provider) || provider.key_cmd.is_some() {
         return None;
     }
-    credential_path(provider).ok()
+    match credential_path(provider) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            tracing::debug!(%error, "kimi credential path unavailable; provider treated as live");
+            None
+        }
+    }
 }
 
 fn is_dead(provider: &ProviderConfig) -> bool {

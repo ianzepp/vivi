@@ -189,7 +189,7 @@ fn pump_send_refuses_a_need_not_addressed_to_the_pump() {
         "need",
         "send",
         "--from",
-        "mind",
+        "operator",
         "--to",
         "operator",
         "--subject",

@@ -193,7 +193,9 @@ fn matching_reasoning(
     band: Option<u8>,
     model: &str,
 ) -> Option<String> {
-    let choice = choose(config, pool, band?).ok()?;
+    let Ok(choice) = choose(config, pool, band?) else {
+        return None;
+    };
     (choice.model == model).then_some(choice.reasoning)
 }
 

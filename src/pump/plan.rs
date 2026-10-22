@@ -154,16 +154,7 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     };
     let (minted, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), policy, need);
     if let Some(bad) = bad {
-        if replaces.is_none() {
-            reject_first_plan(ctx, st, need, key, &bad);
-        } else {
-            raise_bad_plan(ctx, key, &bad);
-        }
-        if let Some(uid) = replaces
-            && !crate::pump::collect::resplit_bad_plan(ctx, st, uid, &bad)
-        {
-            consume_bad_split(ctx, st, uid, key, &bad);
-        }
+        reject_bad_units(ctx, st, need, key, replaces, &bad);
         return;
     }
     if replaces.is_none() {
@@ -177,6 +168,28 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     let revision = revision.unwrap_or(1);
     mint(ctx, st, need, &minted, revision);
     record(ctx, st, &plan, need, replaces, &minted, revision);
+}
+
+/// A plan whose units failed validation: a first plan is asked again, a
+/// replacement plan raises `bad-plan` and re-splits (or consumes) the unit.
+fn reject_bad_units(
+    ctx: &Ctx,
+    st: &mut State,
+    need: &str,
+    key: &str,
+    replaces: Option<&str>,
+    bad: &str,
+) {
+    if replaces.is_none() {
+        reject_first_plan(ctx, st, need, key, bad);
+    } else {
+        raise_bad_plan(ctx, key, bad);
+    }
+    if let Some(uid) = replaces
+        && !crate::pump::collect::resplit_bad_plan(ctx, st, uid, bad)
+    {
+        consume_bad_split(ctx, st, uid, key, bad);
+    }
 }
 
 /// Log a rejected plan with its reasons, then raise the `bad-plan`
@@ -277,11 +290,15 @@ fn reject_unreadable(ctx: &Ctx, st: &mut State, key: &str, len: usize, why: &str
 /// pump asked the planner for exactly that file, so it is the revision the
 /// plan answers even when the planner left the field out or wrote another.
 fn key_revision(key: &str, need: &str) -> Option<u64> {
-    key.strip_prefix(need)?
+    let Ok(revision) = key
+        .strip_prefix(need)?
         .strip_prefix(".r")?
         .strip_suffix(".json")?
         .parse()
-        .ok()
+    else {
+        return None;
+    };
+    Some(revision)
 }
 
 /// Consume a current-need revision plan, returning `true` when the file was
@@ -743,33 +760,8 @@ fn record(
     let ids: Vec<String> = minted.iter().map(|(uid, _)| (*uid).to_string()).collect();
     let count = ids.len();
     if let Some(replaces) = replaces
-        && let Some(old) = st.units.get_mut(replaces)
+        && record_replacement(ctx, st, plan, need, replaces, &ids)
     {
-        let was_stuck = old.status == Status::Stuck;
-        let fails = old.split_fails;
-        old.status = Status::Replaced;
-        old.replaced_by.clone_from(&ids);
-        let rec = st
-            .needs
-            .entry(need.to_string())
-            .or_insert_with(|| NeedRecord {
-                verdict: "units".to_string(),
-                reason: String::new(),
-                units: Vec::new(),
-                ..NeedRecord::default()
-            });
-        rec.units.extend(ids.iter().cloned());
-        if ids.is_empty() {
-            ctx.exception(
-                "split-empty",
-                replaces,
-                str_field(plan, "reason").unwrap_or(""),
-            );
-        }
-        ctx.log(&format!("split {replaces} into {count} units"));
-        if was_stuck {
-            resolve_stuck(ctx, replaces, fails);
-        }
         return;
     }
     let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
@@ -791,6 +783,48 @@ fn record(
     st.board.plan_findings.remove(need);
     st.board.planner_fails.remove(&invalid_key(need));
     ctx.log(&format!("plan {need} verdict={verdict} units={count}"));
+}
+
+/// Mark the split unit replaced by the minted units and add them to the
+/// need's record. `false` when the unit is unknown, so the plan is recorded
+/// as a whole-need plan instead.
+fn record_replacement(
+    ctx: &Ctx,
+    st: &mut State,
+    plan: &Value,
+    need: &str,
+    replaces: &str,
+    ids: &[String],
+) -> bool {
+    let Some(old) = st.units.get_mut(replaces) else {
+        return false;
+    };
+    let was_stuck = old.status == Status::Stuck;
+    let fails = old.split_fails;
+    old.status = Status::Replaced;
+    old.replaced_by = ids.to_vec();
+    let rec = st
+        .needs
+        .entry(need.to_string())
+        .or_insert_with(|| NeedRecord {
+            verdict: "units".to_string(),
+            reason: String::new(),
+            units: Vec::new(),
+            ..NeedRecord::default()
+        });
+    rec.units.extend(ids.iter().cloned());
+    if ids.is_empty() {
+        ctx.exception(
+            "split-empty",
+            replaces,
+            str_field(plan, "reason").unwrap_or(""),
+        );
+    }
+    ctx.log(&format!("split {replaces} into {} units", ids.len()));
+    if was_stuck {
+        resolve_stuck(ctx, replaces, fails);
+    }
+    true
 }
 
 /// Resolve the exception a late split plan recovers: a unit parked by the

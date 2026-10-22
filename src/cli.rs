@@ -26,14 +26,14 @@ pub use board_command::BoardCommand;
 pub use config_command::ConfigCommand;
 pub use doctor_command::DoctorCommand;
 pub use mailspace_command::{
-    AbsorbCommand, CycleCommand, GoalCommand, GraphActivateCommand, GraphApplyCommand,
-    GraphAuditCommand, GraphBlockedCommand, GraphCommand, GraphCompleteCommand,
+    AbsorbCommand, CycleCommand, DependCommand, GoalCommand, GraphActivateCommand,
+    GraphApplyCommand, GraphAuditCommand, GraphBlockedCommand, GraphCommand, GraphCompleteCommand,
     GraphConnectCommand, GraphEdgeAddCommand, GraphEdgeCommand, GraphExportCommand,
     GraphImportCommand, GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
     KindWatchCommand, LocalSendCommand, MailAbsorbStatus, MailCommand, MailDumpCommand,
     MailListCommand, MailReplyCommand, MailThreadCommand, MailspaceArchiveCommand,
     MailspaceCommand, MailspaceIdentityCommand, MailspaceImportCommand, MailspaceWatchCommand,
-    DependCommand, MarkCommand, MemoCommand, NeedCommand, NeedSendCommand, RuleCommand, RuleRetireCommand,
+    MarkCommand, MemoCommand, NeedCommand, NeedSendCommand, RuleCommand, RuleRetireCommand,
     RuleSaveCommand, RuleSupersedeCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg,
     TaskFromCommand, TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand,
     WantStatus, WatchCommon,
@@ -55,8 +55,7 @@ pub use pump_command::{
     PumpGateCommand, PumpGateSetCommand, PumpHealthCommand, PumpHistoryCommand, PumpListCommand,
     PumpListStatus, PumpLogCommand, PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand,
     PumpPrioritySetCommand, PumpRecoverCommand, PumpReopenCommand, PumpReplanCommand,
-    PumpRequeueCommand,
-    PumpRunCommand, PumpSendCommand, PumpServiceAddCommand, PumpServiceCommand,
+    PumpRequeueCommand, PumpRunCommand, PumpSendCommand, PumpServiceAddCommand, PumpServiceCommand,
     PumpServiceProjectCommand, PumpShowCommand, PumpStatusCommand, PumpSubcommand,
     PumpWithdrawCommand,
 };

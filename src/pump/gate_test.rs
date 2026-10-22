@@ -196,7 +196,8 @@ fn parse_failing_a_prose_line_among_real_names_is_a_malformed_receipt() {
                 ModuleNotFoundError: No module named 'tomllib'\nFAILING-END\n\
                 vivi pump::gate::fallback\n";
     assert_eq!(parse_failing(text), None);
-    let sentence = "FAILING-BEGIN\nvivi pump::gate::a\nThe failures are listed above:\nFAILING-END\n";
+    let sentence =
+        "FAILING-BEGIN\nvivi pump::gate::a\nThe failures are listed above:\nFAILING-END\n";
     assert_eq!(parse_failing(sentence), None);
     let earlier = "FAILING-BEGIN\nvivi pump::gate::a\nFAILING-END\n\
                    FAILING-BEGIN\nerror: could not compile `vivi`\nFAILING-END\n";

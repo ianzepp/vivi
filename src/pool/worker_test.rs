@@ -440,7 +440,10 @@ fn reconcile_destroys_a_dead_slot_that_no_dispatch_explains() {
     let id = p.ssh.create(&made).unwrap();
     let started = Instant::now();
     while p.machine(&id).unwrap().state != "stopped" {
-        assert!(started.elapsed() < Duration::from_secs(20), "seed did not end");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "seed did not end"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     let pool = PoolId {

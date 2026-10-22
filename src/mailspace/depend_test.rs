@@ -173,7 +173,12 @@ fn only_the_author_a_mind_or_an_operator_may_change_dependencies() {
         .to_string();
     assert!(err.contains("may not change the dependencies"), "{err}");
     assert_eq!(letters(&mailspace), before);
-    assert!(mailspace.backlog_dependencies(&delivered).unwrap().is_empty());
+    assert!(
+        mailspace
+            .backlog_dependencies(&delivered)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

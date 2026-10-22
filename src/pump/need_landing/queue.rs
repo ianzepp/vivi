@@ -361,7 +361,7 @@ fn cleanup_spec(
     branch: &NeedBranch,
     landing: &NeedLandingReceipt,
 ) -> Result<Option<JobSpec>, VivariumError> {
-    let Some((role, target, binding, branch_ref)) = cleanup_metadata(ctx, st, branch, landing)?
+    let Some((role, _target, binding, branch_ref)) = cleanup_metadata(ctx, st, branch, landing)?
     else {
         return Ok(None);
     };

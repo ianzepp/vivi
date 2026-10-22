@@ -36,7 +36,7 @@ pub fn enqueue(
         prepare_receipt(ctx, out_rel)?;
     }
     let body = pool_prompt(prompt, plan_rel);
-    let mut payload = serde_json::json!({
+    let payload = serde_json::json!({
         "planner_output": { "out": out_rel, "plan": plan_rel }
     });
     let mut spec = JobSpec::new(
@@ -264,7 +264,10 @@ fn planner_exit_code(receipt: &str, state: &str) -> i32 {
             let value = line
                 .strip_prefix("agent_rc ")
                 .or_else(|| line.strip_prefix("agent_rc="))?;
-            value.split_whitespace().next()?.parse().ok()
+            let Ok(code) = value.split_whitespace().next()?.parse() else {
+                return None;
+            };
+            Some(code)
         })
         .unwrap_or(match state {
             "timeout" => 124,

@@ -573,12 +573,19 @@ pub fn dead_slots<'a>(
         .filter(|s| matches!(s.provider_state.as_str(), "stopped" | "failed"))
         .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
         .filter(|s| {
-            chrono::NaiveDateTime::parse_from_str(&s.created_at, "%Y-%m-%dT%H:%M:%SZ")
-                .ok()
-                .and_then(|t| u64::try_from(t.and_utc().timestamp()).ok())
-                .is_none_or(|created| now.saturating_sub(created) > grace)
+            created_epoch(&s.created_at).is_none_or(|created| now.saturating_sub(created) > grace)
         })
         .collect()
+}
+
+/// Unix seconds of a provider `created_at` stamp; none when it does not parse
+/// or predates the epoch.
+fn created_epoch(created_at: &str) -> Option<u64> {
+    let Ok(stamp) = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%dT%H:%M:%SZ") else {
+        return None;
+    };
+    let seconds = stamp.and_utc().timestamp();
+    (seconds >= 0).then(|| seconds.unsigned_abs())
 }
 
 /// Remembers which poll errors were already shown, so a long `wait` shows

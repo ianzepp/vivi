@@ -23,9 +23,7 @@ use std::collections::{HashMap, HashSet};
 use mail_parser::MessageParser;
 
 use super::Mailspace;
-use super::backlog::{
-    BacklogDep, backlog_node_by_token, resolve_backlog_dep, resolve_dep_message,
-};
+use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep, resolve_dep_message};
 use super::graph::GraphNodeView;
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
@@ -320,9 +318,11 @@ impl Mailspace {
         let pending = storage.pending_dependencies()?;
         let mut made = 0;
         for (message_id, refs) in pending {
-            let named = refs
-                .iter()
-                .any(|reference| arrived.iter().any(|a| names_arrival(&storage, reference, a)));
+            let named = refs.iter().any(|reference| {
+                arrived
+                    .iter()
+                    .any(|a| names_arrival(&storage, reference, a))
+            });
             if named {
                 made += self.link_dependencies(&message_id, &refs)?;
             }
