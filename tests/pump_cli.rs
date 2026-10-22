@@ -239,6 +239,14 @@ fn pump_closeout_lists_and_closes_a_complete_need() {
     let project = temp_mailspace();
     let handle = send_need(&project);
     write_pump(&project, &handle);
+    assert_success(&vivi([
+        "pump",
+        "send",
+        "--need",
+        &handle,
+        "--project",
+        root(&project),
+    ]));
     let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
     assert_success(&listed);
     println!("listed={}", stdout(&listed));
@@ -252,6 +260,11 @@ fn pump_closeout_lists_and_closes_a_complete_need() {
         root(&project),
     ]);
     assert_success(&closed);
+    assert!(
+        stdout(&closed).contains("done (landed)"),
+        "closeout says the record landed: {}",
+        stdout(&closed)
+    );
     let done = vivi([
         "need",
         "list",
@@ -270,6 +283,40 @@ fn pump_closeout_lists_and_closes_a_complete_need() {
         stdout(&closed),
         stdout(&done)
     );
+    let records = vivi([
+        "pump",
+        "history",
+        &handle,
+        "--json",
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&records);
+    let records: serde_json::Value = serde_json::from_str(&stdout(&records)).unwrap();
+    assert_eq!(records.as_array().map(Vec::len), Some(1), "{records}");
+    assert_eq!(records[0]["status"], "done");
+    assert_eq!(records[0]["outcome"], "landed");
+}
+
+#[test]
+fn a_config_that_still_sets_the_retired_board_mark_does_not_start_the_pump() {
+    let project = temp_mailspace();
+    let config = project.path().join(".vivi").join("mailspace.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        text.replace("[pump.board]\n", "[pump.board]\nmark = \"pump\"\n"),
+    )
+    .unwrap();
+    let out = vivi(["pump", "once", "--project", root(&project)]);
+    assert!(
+        !out.status.success(),
+        "a retired key must be an error, stdout: {}",
+        stdout(&out)
+    );
+    let all = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(all.contains("[pump.board] mark is retired"), "{all}");
+    assert!(all.contains("vivi pump send --need <handle>"), "{all}");
 }
 
 #[test]
@@ -407,7 +454,7 @@ fn temp_mailspace() -> tempfile::TempDir {
     let table = format!(
         "\n[pump]\nbranch = \"next\"\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\
          committer_name = \"Test\"\ncommitter_email = \"test@example.com\"\n\n\
-         [pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n\
+         [pump.board]\nfrom = []\npull = false\n\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
          [pump.merge]\nshared_checks = [\"true\"]\n\n\
          [pump.gate]\ncommand = \"true\"\n\n\

@@ -126,7 +126,26 @@ pub fn close(
             receipt.push_str(&accepted.receipt("done"));
         }
     }
+    if let Some(line) = close_pump_record(mailspace, &row.handle) {
+        receipt.push('\n');
+        receipt.push_str(&line);
+    }
     Ok(receipt)
+}
+
+/// Close the closed need's open pump record `landed`. A failure is reported
+/// in the receipt, never an error: the need is already closed.
+fn close_pump_record(mailspace: &Mailspace, need: &str) -> Option<String> {
+    let Ok(open) = mailspace.pump_list(Some(need), Some(crate::mailspace::PumpState::Open)) else {
+        return None;
+    };
+    let record = open.into_iter().next()?;
+    Some(
+        match mailspace.pump_done(&record.handle, Some(super::record::LANDED)) {
+            Ok(done) => format!("pump record {} done (landed)", done.handle),
+            Err(error) => format!("pump record {} not closed: {error}", record.handle),
+        },
+    )
 }
 
 /// The local part of an address, or the whole value when it has no `@`.

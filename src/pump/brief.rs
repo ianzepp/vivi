@@ -30,10 +30,10 @@ Rules:
 ";
 
 /// The closing lines of every hand brief: what the agent must prove, and the
-/// final report the pump posts on the need thread.
+/// final report the pump posts on the need's pump record.
 const DONE_WHEN: &str = "done_when: every PROOF command exits 0 on your checkout and the checks named in the rules above pass, or the reply ends with `VERDICT: no-defect` and evidence
 
-FINAL REPORT: the pump posts your last reply on the need thread, so end with a short report: the files you changed; what you verified (commands and results); what still fails and why; anything the next attempt should know. If you found no defect, keep the `VERDICT: no-defect` line in that report.";
+FINAL REPORT: the pump posts your last reply on the need's pump record, so end with a short report: the files you changed; what you verified (commands and results); what still fails and why; anything the next attempt should know. If you found no defect, keep the `VERDICT: no-defect` line in that report.";
 
 /// Largest brief the pump aims for; the history and thread sections shrink
 /// to fit, the unit brief, write scope and proof never do.

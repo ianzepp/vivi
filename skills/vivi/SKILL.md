@@ -2350,9 +2350,24 @@ open record; a second send is refused and names it. **pump done --note** closes
 it with an outcome (**landed**, **gave-up**, **withdrawn**, **superseded**, or
 any text); a later dispatch of the same need is a new record, and **pump
 history** lists them oldest first. **pump reopen** is refused while another
-record of the need is open. A record is the pump's own, local to its
-mailspace: it is not backlog work (no graph node, never dispatched by **vivi
-step**) and **vivi sync** does not carry it.
+record of the need is open; check and send are one store transaction, so two
+concurrent sends cannot both open a record. A record is the pump's own, local
+to its mailspace: it is not backlog work (no graph node, never dispatched by
+**vivi step**) and **vivi sync** does not carry it.
+
+**A pump record is the pump's intake.** The pump plans exactly the open needs
+that have an open record: send one with **vivi pump send --need &lt;need&gt;**
+(there is no approval mark, sender list or date cutoff; **[pump.board] mark**
+and **since** are retired and **vivi config validate** rejects them, **vivi
+config migrate** removes them). The pump then posts its progress as replies on
+the record, not on the need thread: the plan, each attempt record, merge
+notices. A plan verdict that needs an operator ruling stays on the need thread.
+It closes the record with the outcome: **landed** (the need closed with every
+unit satisfied), **gave-up** (planner failed, need-audit hold, or stuck units
+with nothing else able to advance), **withdrawn** (**pump withdraw**, or the
+need closed unfinished), **superseded** (**pump replan**, which opens a fresh
+record). A thread amendment of a planned need opens a new record when it has
+none open. **vivi need attempts** reads attempts from the need's records too.
 
 **health** judges the pump without writing anything: **ok**, **degraded**,
 **stalled** or **unknown**, with one reason line per finding. It reads
@@ -2572,9 +2587,7 @@ to = "hand"
 reply_from = "mind"
 
 [pump.board]
-from = ["<sender-address>"]
-since = "<ISO datetime>"
-mark = "pump"
+from = ["<reply-address>"]   # default reply address only; not an intake filter
 every = 300
 plan_timeout = 1800
 reply_to = "<reply-address>"

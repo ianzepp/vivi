@@ -14,13 +14,17 @@ const V15_LOCAL_ROOT: &str = "~/vivi-pool";
 
 const PLANNER_REASON: &str =
     "retired: planning runs as durable planner jobs on the pump-planner role's pool";
+const INTAKE_REASON: &str = "retired: the pump plans exactly the needs with an open pump record \
+     (`vivi pump send --need <handle>`), so no mark or date cutoff applies";
 const GATE_REASON: &str = "ignored: the gate now runs after every merge batch that lands, \
      not on a merge count or a timer";
 
 /// Keys that are always ignored: `(table, key, reason, behaviour_change)`.
-const RETIRED: [(&str, &str, &str, bool); 5] = [
+const RETIRED: [(&str, &str, &str, bool); 7] = [
     ("pump.planner", "run", PLANNER_REASON, false),
     ("pump.planner", "charter", PLANNER_REASON, false),
+    ("pump.board", "mark", INTAKE_REASON, true),
+    ("pump.board", "since", INTAKE_REASON, true),
     ("pump.gate", "every_merges", GATE_REASON, true),
     ("pump.gate", "every_seconds", GATE_REASON, true),
     (

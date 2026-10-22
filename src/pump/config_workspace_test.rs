@@ -39,8 +39,6 @@ fn valid_with(ramdisk: &str) -> PumpConfig {
          committer_email = \"pump@example.com\"\n\
          branch = \"next\"\n\
          promote = false\n\
-         [pump.board]\n\
-         mark = \"\"\n\
          [pump.dispatch]\n\
          lanes = [{{ model = \"m\", cap = 1 }}]\n\
          [pump.gate]\n\

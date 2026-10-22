@@ -243,7 +243,7 @@ fn render_counts(counts: &BTreeMap<String, usize>) -> String {
 
 /// A need is complete when its verdict says delivered, or when it has units
 /// and every one is satisfied. A parked verdict is not complete.
-fn need_complete(state: &State, handle: &str) -> bool {
+pub(crate) fn need_complete(state: &State, handle: &str) -> bool {
     let Some(record) = state.needs.get(handle) else {
         return false;
     };

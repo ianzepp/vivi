@@ -3,7 +3,9 @@
 //! The CLI queues a request in `pump.db`; the pump applies it once per tick.
 //! A replan supersedes the current plan, withdraws units that have not started
 //! live work, and asks the board to run a fresh planner over the whole need
-//! thread. Merged units remain merged.
+//! thread. Merged units remain merged. The need's open pump record is closed
+//! `superseded` and a fresh one is opened, so the board plans the need again
+//! and each record carries exactly one plan.
 
 use std::fs;
 use std::path::Path;
@@ -94,6 +96,7 @@ fn apply_one(ctx: &Ctx, st: &mut State, request: &ReplanRequest) -> Result<bool,
     clear_planner_state(st, need);
     queue_board_replan(st, need);
     ctx.log(&format!("replan: {need} superseded by operator request"));
+    crate::pump::record::supersede(ctx, need);
     Ok(true)
 }
 

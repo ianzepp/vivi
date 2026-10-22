@@ -287,7 +287,7 @@ pub enum NeedCommand {
         project: Option<PathBuf>,
     },
 
-    /// List the pump's attempt records on a need thread
+    /// List the pump's attempt records on a need thread and its pump records
     Attempts {
         /// Need handle or unambiguous prefix
         handle: String,

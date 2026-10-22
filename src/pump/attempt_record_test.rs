@@ -1,5 +1,6 @@
-//! Tests for [`crate::pump::attempt_record`]: the record posted on the need
-//! thread when a hand attempt ends, driven through [`FakeHost`] replies.
+//! Tests for [`crate::pump::attempt_record`]: the record posted on the need's
+//! open pump record thread when a hand attempt ends, driven through
+//! [`FakeHost`] replies.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -51,7 +52,17 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 fn setup_with(cfg: PumpConfig) -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), cfg);
+    open_record(&host, "n1", "pn1");
     (dir, ctx, host)
+}
+
+/// Script the lookup of `need`'s open pump record: replies go to `record`.
+fn open_record(host: &FakeHost, need: &str, record: &str) {
+    host.reply(
+        &format!("pump list --status open --json --need {need}"),
+        0,
+        &format!("[{{\"handle\": \"{record}\", \"need\": \"{need}\", \"status\": \"open\"}}]"),
+    );
 }
 
 /// An inflight unit of need `n1`, attempt 1, with a model, a pool and a task.
@@ -91,17 +102,18 @@ fn branch_on_remote(host: &FakeHost) {
     host.reply("ls-remote", 0, "abc\trefs/heads/unit/u-1-a1\n");
 }
 
-/// The `mail reply` commands sent to need `need`.
-fn mails_to(host: &FakeHost, need: &str) -> Vec<String> {
-    let needle = format!("mail reply {need} ");
+/// The `mail reply` commands sent to `target` (a record or a need handle).
+fn mails_to(host: &FakeHost, target: &str) -> Vec<String> {
+    let needle = format!("mail reply {target} ");
     host.commands()
         .into_iter()
         .filter(|cmd| cmd.contains(&needle))
         .collect()
 }
 
+/// The replies posted on need `n1`'s pump record.
 fn mails(host: &FakeHost) -> Vec<String> {
-    mails_to(host, "n1")
+    mails_to(host, "pn1")
 }
 
 /// The attempt records written for need `need`: file name and text.
@@ -182,6 +194,11 @@ fn a_delivered_attempt_posts_the_full_record_once_and_marks_the_sync() {
     let sent = mails(&host);
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].contains("--from mind") && sent[0].contains("--to operator@x"));
+    assert!(
+        mails_to(&host, "n1").is_empty(),
+        "the need thread gets nothing: {:?}",
+        host.commands()
+    );
     assert!(st.board.sync_pending);
     // The unit left `inflight`: a second pass posts nothing more.
     collect(&ctx, &mut st);
@@ -316,9 +333,10 @@ fn a_fix_unit_with_a_pump_synthesized_need_posts_no_reply() {
 fn a_fix_unit_of_a_real_gatefix_need_posts_its_record_on_that_thread() {
     let (_dir, ctx, host) = setup();
     a_failed_fix_attempt(&host);
+    open_record(&host, "ab12cd34", "pab");
     let mut st = fix_state("ab12cd34");
     collect(&ctx, &mut st);
-    let sent = mails_to(&host, "ab12cd34");
+    let sent = mails_to(&host, "pab");
     assert_eq!(sent.len(), 1, "{sent:?}");
     let found = records_for(&ctx, "ab12cd34");
     assert_eq!(found.len(), 1, "{found:?}");

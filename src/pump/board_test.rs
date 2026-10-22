@@ -1,4 +1,5 @@
-//! Tests for [`crate::pump::board`]: candidate and marked need rows, the
+//! Tests for [`crate::pump::board`]: candidate need rows (needs with an open
+//! pump record), the
 //! skip list, planner expiry and planner launch, driven through
 //! [`FakeHost`] replies.
 
@@ -14,16 +15,15 @@ use crate::pump::board::*;
 use crate::pump::config::{BoardConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobStatus, PoolJob};
+use crate::pump::record::send_reply;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoleRouting;
 
-/// A context with an operator sender and the `since` cutoff set; default
-/// mark `pump`, three planners, 1800 s plan timeout.
+/// A context with an operator sender; three planners, 1800 s plan timeout.
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     setup_with(BoardConfig {
         from: vec![String::from("operator@bd371d96.local")],
-        since: String::from("2026-10-14T00:10"),
         ..BoardConfig::default()
     })
 }
@@ -180,144 +180,194 @@ fn parse_rows_returns_none_for_garbage() {
     assert_eq!(parse_rows("lead {\"not\": \"an array\"}"), None);
 }
 
+/// One JSON record as `vivi pump list --json` prints it.
+fn record(handle: &str, need: &str) -> String {
+    format!(
+        "{{\"handle\": \"{handle}\", \"kind\": \"pump\", \"need\": \"{need}\", \"status\": \"open\"}}"
+    )
+}
+
+/// Script `pump list` to hold open records for `needs`.
+fn open_records(host: &FakeHost, needs: &[&str]) {
+    let records: Vec<String> = needs
+        .iter()
+        .map(|need| record(&format!("p-{need}"), need))
+        .collect();
+    host.reply("pump list --status open --json", 0, &list(&records));
+}
+
+/// Script the lookup of `need`'s open pump record to `record_handle`, so a
+/// progress reply is posted with `mail reply <record_handle>`.
+fn reply_record(host: &FakeHost, need: &str, record_handle: &str) {
+    host.reply(
+        &format!("pump list --status open --json --need {need}"),
+        0,
+        &list(&[record(record_handle, need)]),
+    );
+}
+
+/// The one `mail reply` command the fake host ran.
+fn mail_reply(host: &FakeHost) -> String {
+    host.commands()
+        .into_iter()
+        .find(|cmd| cmd.contains("mail reply"))
+        .expect("a mail reply ran")
+}
+
+fn handles(rows: &[NeedRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.handle.as_str()).collect()
+}
+
 #[test]
-fn marked_rows_keeps_only_rows_with_the_mark_and_deduplicates() {
+fn a_need_with_an_open_pump_record_is_a_candidate() {
     let (_dir, ctx, host) = setup();
+    open_records(&host, &["a", "d"]);
+    host.reply(
+        "--json --to mind",
+        0,
+        &list(&[
+            row("a", "2026-10-15", "A", &[]),
+            row("d", "2026-10-15", "D", &[]),
+        ]),
+    );
+    host.reply("--held", 0, "[]");
+    let rows = candidate_rows(&ctx);
+    assert_eq!(handles(&rows), vec!["a", "d"]);
+    assert_eq!(rows[0].subject, "A");
+}
+
+#[test]
+fn a_marked_need_without_a_pump_record_is_not_a_candidate() {
+    let (_dir, ctx, host) = setup();
+    open_records(&host, &["has-record"]);
+    host.reply(
+        "--json --to mind",
+        0,
+        &list(&[
+            row("marked", "2026-10-15", "Marked, no record", &["pump"]),
+            row("has-record", "2026-10-15", "Has a record", &[]),
+        ]),
+    );
+    host.reply(
+        "--held",
+        0,
+        &list(&[row("held-marked", "2026-10-15", "Held", &["pump"])]),
+    );
+    let rows = candidate_rows(&ctx);
+    assert_eq!(handles(&rows), vec!["has-record"]);
+}
+
+#[test]
+fn a_configured_sender_no_longer_makes_its_needs_candidates() {
+    let (_dir, ctx, host) = setup();
+    open_records(&host, &[]);
+    host.reply(
+        "need list --from operator@bd371d96.local",
+        0,
+        &list(&[row("a", "2026-10-15", "A", &[])]),
+    );
+    host.reply(
+        "--json --to mind",
+        0,
+        &list(&[row("a", "2026-10-15", "A", &[])]),
+    );
+    assert!(candidate_rows(&ctx).is_empty());
+    assert!(
+        host.commands()
+            .iter()
+            .all(|cmd| !cmd.contains("need list --from")),
+        "no sender query is issued: {:?}",
+        host.commands()
+    );
+}
+
+#[test]
+fn candidates_come_from_held_and_addressed_lists_and_are_deduplicated() {
+    let (_dir, ctx, host) = setup();
+    open_records(&host, &["b", "c", "d"]);
     host.reply(
         "--held",
         0,
         &list(&[
-            row("n1", "2026-10-15", "One", &["pump"]),
-            row("n2", "2026-10-15", "Two", &["other"]),
-            row("n1", "2026-10-15", "One again", &["pump"]),
+            row("c", "2026-10-15", "C", &[]),
+            row("b", "2026-10-15", "B", &[]),
         ]),
     );
     host.reply(
         "--json --to mind",
         0,
-        &list(&[row("n3", "2026-10-15", "Three", &["pump"])]),
+        &list(&[
+            row("d", "2026-10-15", "D", &[]),
+            row("b", "2026-10-15", "B again", &[]),
+        ]),
     );
-    let rows = marked_rows(&ctx);
-    let handles: Vec<&str> = rows.iter().map(|row| row.handle.as_str()).collect();
-    assert_eq!(handles, vec!["n1", "n3"]);
-    assert_eq!(rows[0].subject, "One");
-    assert_eq!(rows[1].subject, "Three");
+    let rows = candidate_rows(&ctx);
+    assert_eq!(handles(&rows), vec!["c", "b", "d"]);
+    assert_eq!(rows[1].subject, "B");
 }
 
 #[test]
-fn marked_rows_logs_an_unreadable_list_and_returns_what_it_could_read() {
+fn a_record_whose_need_is_not_addressed_to_the_pump_is_logged_not_planned() {
     let (_dir, ctx, host) = setup();
-    host.reply(
-        "--held",
-        1,
-        "error: the mailspace is locked\nsecond line of noise",
+    open_records(&host, &["elsewhere"]);
+    host.reply("--held", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
+    assert!(candidate_rows(&ctx).is_empty());
+    let logs = host.logs().join("\n");
+    assert!(
+        logs.contains("the pump record for need elsewhere names no open need addressed to mind"),
+        "logs: {logs}"
     );
+}
+
+#[test]
+fn an_unreadable_record_list_plans_nothing() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pump list --status open --json", 1, "error: locked");
     host.reply(
         "--json --to mind",
         0,
-        &list(&[row("n3", "2026-10-15", "Three", &["pump"])]),
+        &list(&[row("a", "2026-10-15", "A", &[])]),
     );
-    let rows = marked_rows(&ctx);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].handle, "n3");
+    assert!(candidate_rows(&ctx).is_empty());
+    let logs = host.logs().join("\n");
+    assert!(logs.contains("pump record list unreadable"), "logs: {logs}");
+}
+
+#[test]
+fn an_unreadable_need_list_keeps_what_the_other_list_gave() {
+    let (_dir, ctx, host) = setup();
+    open_records(&host, &["n3"]);
+    host.reply("--held", 1, "error: the mailspace is locked\nsecond line");
+    host.reply(
+        "--json --to mind",
+        0,
+        &list(&[row("n3", "2026-10-15", "Three", &[])]),
+    );
+    let rows = candidate_rows(&ctx);
+    assert_eq!(handles(&rows), vec!["n3"]);
     let logs = host.logs().join("\n");
     assert!(
         logs.contains(
-            "marked list unreadable (need list --status open --json --held): \
-             error: the mailspace is locked | second line of noise"
+            "board list unreadable (need list --status open --json --held): \
+             error: the mailspace is locked | second line"
         ),
         "logs: {logs}"
     );
 }
 
 #[test]
-fn candidate_rows_unions_senders_and_marked_rows_and_reports_the_approved_set() {
-    let (_dir, ctx, host) = setup();
-    host.reply(
-        "need list --from operator@bd371d96.local",
-        0,
-        &list(&[
-            row("a", "2026-10-15", "A", &[]),
-            row("b", "2026-10-15", "B", &["pump"]),
-        ]),
-    );
-    host.reply(
-        "--held",
-        0,
-        &list(&[
-            row("c", "2026-10-15", "C", &["pump"]),
-            row("b", "2026-10-15", "B", &["pump"]),
-        ]),
-    );
-    host.reply(
-        "--json --to mind",
-        0,
-        &list(&[row("d", "2026-10-15", "D", &["pump"])]),
-    );
-    let (rows, approved) = candidate_rows(&ctx);
-    let handles: Vec<&str> = rows.iter().map(|row| row.handle.as_str()).collect();
-    assert_eq!(handles, vec!["a", "b", "c", "d"]);
-    let want: BTreeSet<String> = ["b", "c", "d"].iter().map(|h| (*h).to_owned()).collect();
-    assert_eq!(approved, want);
-    assert!(
-        host.commands().iter().any(|cmd| cmd
-            .contains("need list --from operator@bd371d96.local --to mind --status open --json")),
-        "commands: {:?}",
-        host.commands()
-    );
-}
-
-#[test]
 fn investigation_marked_needs_are_routed_out_of_normal_planning() {
-    let (_dir, ctx, host) = setup_with(BoardConfig {
-        from: vec![String::from("operator@bd371d96.local")],
-        mark: String::from("investigate"),
-        since: String::from("2026-10-14T00:10"),
-        ..BoardConfig::default()
-    });
+    let (_dir, ctx, host) = setup();
+    open_records(&host, &["i1"]);
     let investigation = row("i1", "2026-10-15", "Investigate want w1", &["investigate"]);
-    host.reply(
-        "need list --from operator@bd371d96.local",
-        0,
-        &list(&[investigation.clone()]),
-    );
-    host.reply("--held", 0, &list(&[investigation]));
-    host.reply("--json --to mind", 0, "[]");
-
-    let (rows, approved) = candidate_rows(&ctx);
+    host.reply("--held", 0, &list(&[investigation.clone()]));
+    host.reply("--json --to mind", 0, &list(&[investigation]));
+    let rows = candidate_rows(&ctx);
     assert!(rows.is_empty(), "investigation needs use the auditor route");
     assert!(
-        approved.is_empty(),
-        "the ordinary approval mark does not own them"
-    );
-}
-
-#[test]
-fn candidate_rows_plans_only_needs_addressed_to_the_reply_identity() {
-    let (_dir, ctx, host) = setup();
-    host.reply(
-        "need list --from operator@bd371d96.local",
-        0,
-        &list(&[row("other", "2026-10-15", "To hand", &[])]),
-    );
-    host.reply(
-        "need list --from operator@bd371d96.local --to mind",
-        0,
-        &list(&[row("mine", "2026-10-15", "To mind", &[])]),
-    );
-    host.reply("--held", 0, "[]");
-    host.reply("--json --to mind", 0, "[]");
-
-    let (rows, _) = candidate_rows(&ctx);
-    let handles: Vec<&str> = rows.iter().map(|row| row.handle.as_str()).collect();
-    assert_eq!(handles, vec!["mine"]);
-    assert!(
-        host.commands()
-            .iter()
-            .filter(|cmd| cmd.contains("need list --from operator@bd371d96.local"))
-            .all(|cmd| cmd.contains("--to mind")),
-        "an unfiltered sender query is never issued: {:?}",
-        host.commands()
+        !host.logs().join("\n").contains("names no open need"),
+        "an investigation need is not reported as missing"
     );
 }
 
@@ -358,34 +408,21 @@ fn expire_planning_drops_entries_with_a_plan_and_raises_plan_no_answer_for_stale
 }
 
 #[test]
-fn a_need_dated_before_since_is_not_planned_unless_marked_or_replanned() {
+fn a_need_with_a_record_is_planned_whatever_its_date_and_leaves_the_replan_set() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();
-    let mut replan: BTreeSet<String> = ["old-queued"].iter().map(|h| (*h).to_owned()).collect();
-    let approved = BTreeSet::new();
+    let mut replan: BTreeSet<String> = ["queued"].iter().map(|h| (*h).to_owned()).collect();
     let rows = vec![
-        need_row("old", "2026-10-13T00:00", "Old"),
-        need_row("old-queued", "2026-10-13T00:00", "Old queued"),
+        need_row("ancient", "2020-01-01T00:00", "Ancient"),
+        need_row("queued", "2020-01-01T00:00", "Queued replan"),
         need_row("newer", "2026-10-15T00:00", "Newer"),
     ];
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
-    assert!(!st.board.planning.contains_key("old"));
-    assert!(st.board.planning.contains_key("old-queued"));
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    assert!(st.board.planning.contains_key("ancient"));
+    assert!(st.board.planning.contains_key("queued"));
     assert!(st.board.planning.contains_key("newer"));
-    assert!(!replan.contains("old-queued"));
+    assert!(!replan.contains("queued"));
     assert!(st.board.replan.is_empty());
-}
-
-#[test]
-fn a_marked_need_is_planned_whatever_its_sender_or_date() {
-    let (_dir, ctx, _host) = setup();
-    let mut st = State::default();
-    let mut replan = BTreeSet::new();
-    let mut approved = BTreeSet::new();
-    approved.insert(String::from("m1"));
-    let rows = vec![need_row("m1", "2026-10-01T00:00", "Ancient but approved")];
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
-    assert!(st.board.planning.contains_key("m1"));
 }
 
 #[test]
@@ -404,9 +441,8 @@ fn a_known_or_skipped_or_already_planning_need_is_not_planned() {
         need_row("inflight", "2026-10-15", "Inflight"),
         need_row("fresh", "2026-10-15", "Fresh"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert_eq!(st.board.planning.len(), 2);
     assert!(st.board.planning.contains_key("inflight"));
     assert!(st.board.planning.contains_key("fresh"));
@@ -425,9 +461,8 @@ fn planners_max_caps_concurrent_planners() {
         need_row("p3", "2026-10-15", "Third"),
         need_row("p4", "2026-10-15", "Fourth"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert_eq!(st.board.planning.len(), 2);
     assert!(!st.board.planning.contains_key("p3"));
     assert!(!st.board.planning.contains_key("p4"));
@@ -440,9 +475,8 @@ fn a_launched_planner_queues_the_need_file_and_prompt_for_the_routed_role() {
     let mut st = State::default();
     let subject = "S".repeat(80);
     let rows = vec![need_row("n1", "2026-10-15", &subject)];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     let file = fs::read_to_string(ctx.home.join("needs/n1.json")).unwrap();
     let parsed: Value = serde_json::from_str(&file).unwrap();
     assert_eq!(parsed["need"], "n1");
@@ -480,7 +514,7 @@ fn a_missing_planner_route_does_not_create_a_phantom_outbox_job() {
     let mut st = State::default();
     let rows = vec![need_row("n1", "2026-10-15", "Needs a planner")];
 
-    launch_planners(&ctx, &mut st, &rows, &BTreeSet::new(), &mut BTreeSet::new());
+    launch_planners(&ctx, &mut st, &rows, &mut BTreeSet::new());
 
     assert!(st.board.planning.is_empty());
     assert!(st.jobs.is_empty());
@@ -587,8 +621,7 @@ fn replan_answered_supersedes_the_plan_and_reopens_the_need_for_planning() {
     assert!(host.logs().contains(
         &"board: operator replied on parked need park1 (was hold); re-planning".to_string()
     ));
-    let approved = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert!(st.board.planning.contains_key("park1"));
     assert!(replan.is_empty() && st.board.replan.is_empty());
 }
@@ -633,7 +666,8 @@ fn a_parked_need_without_a_reply_is_left_alone() {
 #[test]
 fn post_replies_sends_planned_once_and_merged_once() {
     let (_dir, ctx, host) = setup();
-    host.reply("mail reply n1", 0, "accepted\nqueued on the server");
+    reply_record(&host, "n1", "p1");
+    host.reply("mail reply p1", 0, "accepted\nqueued on the server");
     let mut st = State::default();
     st.needs.insert(
         String::from("n1"),
@@ -668,15 +702,22 @@ fn post_replies_sends_planned_once_and_merged_once() {
     let mails = || {
         host.commands()
             .iter()
-            .filter(|cmd| cmd.contains("mail reply n1"))
+            .filter(|cmd| cmd.contains("mail reply p1"))
             .count()
     };
     assert_eq!(mails(), 2);
     assert!(host.commands().iter().any(|cmd| {
-        cmd.contains("--from mind")
+        cmd.contains("mail reply p1 --from mind")
             && cmd.contains("--to operator@bd371d96.local")
             && cmd.contains("reply-n1-planned.txt")
     }));
+    assert!(
+        host.commands()
+            .iter()
+            .all(|cmd| !cmd.contains("mail reply n1")),
+        "nothing is posted on the need thread: {:?}",
+        host.commands()
+    );
     assert!(
         host.logs()
             .contains(&"board reply n1 planned rc=0 queued on the server".to_string())
@@ -692,7 +733,8 @@ fn post_replies_sends_planned_once_and_merged_once() {
 #[test]
 fn managed_need_reports_implementation_before_landing_and_acceptance_after_cleanup() {
     let (_dir, ctx, host) = setup();
-    host.reply("mail reply n-managed", 0, "queued");
+    reply_record(&host, "n-managed", "p-managed");
+    host.reply("mail reply p-managed", 0, "queued");
     let mut st = managed_need_with_settled_units();
     let rows = vec![need_row("n-managed", "2026-10-15", "Managed need")];
 
@@ -788,9 +830,10 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
     };
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), cfg);
-    host.reply("mail reply empty-to", 0, "queued");
+    reply_record(&host, "empty-to", "p-empty");
+    host.reply("mail reply p-empty", 0, "queued");
     assert!(send_reply(&ctx, "empty-to", "planned", "body"));
-    let command = host.commands().into_iter().next().unwrap();
+    let command = mail_reply(&host);
     assert!(command.contains("--from 'mind role'"), "{command}");
     assert!(!command.contains("--to "), "{command}");
 
@@ -805,9 +848,10 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
     };
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), cfg);
-    host.reply("mail reply quoted-to", 0, "queued");
+    reply_record(&host, "quoted-to", "p-quoted");
+    host.reply("mail reply p-quoted", 0, "queued");
     assert!(send_reply(&ctx, "quoted-to", "planned", "body"));
-    let command = host.commands().into_iter().next().unwrap();
+    let command = mail_reply(&host);
     assert!(
         command.contains("--from 'mind role' --to 'operator role'"),
         "{command}"
@@ -817,7 +861,8 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
 #[test]
 fn the_merged_reply_waits_until_every_unit_is_satisfied() {
     let (_dir, ctx, host) = setup();
-    host.reply("mail reply n2", 0, "queued");
+    reply_record(&host, "n2", "p2");
+    host.reply("mail reply p2", 0, "queued");
     let mut st = State::default();
     st.needs.insert(
         String::from("n2"),
@@ -852,7 +897,8 @@ fn the_merged_reply_waits_until_every_unit_is_satisfied() {
 #[test]
 fn the_merged_reply_carries_the_timing_summary() {
     let (_dir, ctx, host) = setup();
-    host.reply("mail reply n2", 0, "queued");
+    reply_record(&host, "n2", "p2");
+    host.reply("mail reply p2", 0, "queued");
     host.reply(
         "need attempts n2",
         0,
@@ -893,7 +939,8 @@ fn the_merged_reply_carries_the_timing_summary() {
 #[test]
 fn a_failed_reply_is_retried_on_the_next_pass() {
     let (_dir, ctx, host) = setup();
-    host.reply("mail reply f1", 1, "relay down\ncome back later");
+    reply_record(&host, "f1", "pf1");
+    host.reply("mail reply pf1", 1, "relay down\ncome back later");
     let mut st = State::default();
     st.needs
         .insert(String::from("f1"), parked("single", "one unit"));
@@ -904,7 +951,7 @@ fn a_failed_reply_is_retried_on_the_next_pass() {
         host.logs()
             .contains(&"board reply f1 planned rc=1 come back later".to_string())
     );
-    host.reply("mail reply f1", 0, "queued");
+    host.reply("mail reply pf1", 0, "queued");
     assert!(post_replies(&ctx, &mut st, &rows));
     assert_eq!(st.board.replied, vec![String::from("f1:planned")]);
 }
@@ -917,13 +964,13 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_then_plans_otherwise() {
     board(&ctx, &mut st);
     assert!(host.commands().is_empty());
     host.reply("sync pull", 0, "pulled 3 messages");
+    open_records(&host, &["n9"]);
+    host.reply("--held", 0, "[]");
     host.reply(
-        "need list --from operator@bd371d96.local",
+        "--json --to mind",
         0,
         &list(&[row("n9", "2026-10-15T00:00", "Plan me", &[])]),
     );
-    host.reply("--held", 0, "[]");
-    host.reply("--json --to mind", 0, "[]");
     host.reply(
         "need show n9",
         0,
@@ -996,6 +1043,7 @@ fn a_stop_request_ends_the_board_pass_between_needs() {
     let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
     store.initialize_control("running").unwrap();
     store.set_control_mode("stopped").unwrap();
+    open_records(&host, &["n1", "n2"]);
     host.reply(
         "need list",
         0,
@@ -1029,7 +1077,8 @@ fn a_stop_request_ends_the_board_pass_between_needs() {
 #[test]
 fn post_replies_sends_one_revised_stage_per_revision() {
     let (_dir, ctx, host) = setup();
-    host.reply("mail reply n3", 0, "queued");
+    reply_record(&host, "n3", "p3");
+    host.reply("mail reply p3", 0, "queued");
     let mut st = State::default();
     st.needs.insert(
         String::from("n3"),
@@ -1050,6 +1099,53 @@ fn post_replies_sends_one_revised_stage_per_revision() {
     let revised = fs::read_to_string(ctx.home.join("board/reply-n3-revised-2.txt")).unwrap();
     assert!(revised.contains("pump: revised to r2."), "{revised}");
     assert!(st.board.replied.contains(&String::from("n3:revised-2")));
+}
+
+#[test]
+fn a_plan_verdict_that_waits_for_a_ruling_is_posted_on_the_need_thread() {
+    let (_dir, ctx, host) = setup();
+    reply_record(&host, "n4", "p4");
+    host.reply("mail reply", 0, "queued");
+    let mut st = State::default();
+    st.needs
+        .insert(String::from("n4"), parked("operator", "which database?"));
+    let rows = vec![need_row("n4", "2026-10-15", "Ask")];
+    assert!(post_replies(&ctx, &mut st, &rows));
+    let commands = host.commands();
+    assert!(
+        commands
+            .iter()
+            .any(|cmd| cmd.contains("mail reply n4 --from mind")),
+        "the question the operator answers stays on the need thread: {commands:?}"
+    );
+    assert!(
+        commands.iter().all(|cmd| !cmd.contains("mail reply p4")),
+        "and is not duplicated on the record: {commands:?}"
+    );
+    assert_eq!(st.board.replied, vec![String::from("n4:planned")]);
+}
+
+#[test]
+fn a_progress_reply_for_a_need_without_an_open_record_is_dropped_and_retried() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pump list --status open --json --need n5", 0, "[]");
+    let mut st = State::default();
+    st.needs
+        .insert(String::from("n5"), parked("single", "one unit"));
+    let rows = vec![need_row("n5", "2026-10-15", "No record")];
+    assert!(!post_replies(&ctx, &mut st, &rows));
+    assert!(st.board.replied.is_empty(), "retried on a later pass");
+    assert!(
+        host.commands()
+            .iter()
+            .all(|cmd| !cmd.contains("mail reply")),
+        "nothing is posted anywhere: {:?}",
+        host.commands()
+    );
+    assert!(
+        host.logs()
+            .contains(&"board reply n5 planned dropped: no open pump record".to_string())
+    );
 }
 
 /// An exited-planner fixture: planner output and its `.rc` receipt, no plan.
@@ -1198,13 +1294,12 @@ fn a_need_in_backoff_waits_before_relaunch() {
         .planner_retry_at
         .insert(String::from("n1"), ctx.now() + 60);
     let rows = vec![need_row("n1", "2026-10-15", "Backing off")];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert_eq!(planner_job_count(&st), 0);
     assert!(!st.board.planning.contains_key("n1"));
     host.advance(61);
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert_eq!(planner_job_count(&st), 1);
     assert!(st.board.planning.contains_key("n1"));
 }
@@ -1215,9 +1310,8 @@ fn a_parked_need_is_never_relaunched() {
     let mut st = State::default();
     st.board.planner_failed.push(String::from("n1"));
     let rows = vec![need_row("n1", "2026-10-15", "Parked")];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert_eq!(planner_job_count(&st), 0);
     assert!(!st.board.planning.contains_key("n1"));
 }
@@ -1230,9 +1324,8 @@ fn launch_records_a_durable_planner_job_and_clears_the_stale_receipt() {
     fs::write(ctx.home.join("board/n1.out.rc"), "127").unwrap();
     let mut st = State::default();
     let rows = vec![need_row("n1", "2026-10-15", "Relaunch")];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     let job = board_planner_job(&st, "n1").expect("planner job is durable");
     assert_eq!(job.role, "pump-planner");
     assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
@@ -1250,18 +1343,16 @@ fn launch_records_a_durable_planner_job_and_clears_the_stale_receipt() {
 fn a_planner_that_exits_127_is_freed_and_retried_once_then_parked() {
     let (_dir, ctx, host) = setup_with(BoardConfig {
         from: vec![String::from("operator@bd371d96.local")],
-        since: String::from("2026-10-14T00:10"),
         every: 60,
         pull: false,
         ..BoardConfig::default()
     });
+    open_records(&host, &["n1"]);
     host.reply(
         "need list",
         0,
         &list(&[row("n1", "2026-10-15", "Crashy", &[])]),
     );
-    host.reply("--held", 0, "[]");
-    host.reply("--json --to mind", 0, "[]");
     let mut st = State::default();
 
     board(&ctx, &mut st);
@@ -1326,9 +1417,8 @@ fn a_dependent_is_not_planned_before_its_prerequisite() {
         need_row("b", "2026-10-15", "Dependent"),
         need_row("a", "2026-10-15", "Root"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert!(st.board.planning.contains_key("a"));
     assert!(!st.board.planning.contains_key("b"));
     assert_eq!(planner_job_count(&st), 1);
@@ -1357,9 +1447,8 @@ fn a_dependent_is_planned_once_its_prerequisite_has_a_plan() {
         need_row("b", "2026-10-15", "Dependent"),
         need_row("a", "2026-10-15", "Root"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert!(st.board.planning.contains_key("b"));
     assert!(!st.board.planning.contains_key("a"));
     assert_eq!(planner_job_count(&st), 1);
@@ -1374,9 +1463,8 @@ fn an_unreadable_dependency_read_does_not_gate_planning() {
         need_row("b", "2026-10-15", "Dependent"),
         need_row("a", "2026-10-15", "Root"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert!(st.board.planning.contains_key("a"));
     assert!(st.board.planning.contains_key("b"));
     assert_eq!(planner_job_count(&st), 2);
@@ -1399,9 +1487,8 @@ fn a_need_depended_on_by_others_is_planned_before_an_independent_same_date_need(
         need_row("indep", "2026-10-15", "Independent"),
         need_row("root", "2026-10-15", "Root"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert!(st.board.planning.contains_key("root"));
     assert!(!st.board.planning.contains_key("indep"));
     assert_eq!(planner_job_count(&st), 1);
@@ -1418,9 +1505,8 @@ fn the_need_list_order_is_kept_among_needs_nobody_depends_on() {
         need_row("x", "2026-10-15", "X"),
         need_row("y", "2026-10-15", "Y"),
     ];
-    let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    launch_planners(&ctx, &mut st, &rows, &mut replan);
     assert!(st.board.planning.contains_key("x"));
     assert!(!st.board.planning.contains_key("y"));
     assert_eq!(planner_job_count(&st), 1);

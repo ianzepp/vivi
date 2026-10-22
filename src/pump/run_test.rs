@@ -1021,7 +1021,6 @@ fn dispatch_config() -> PumpConfig {
         branch: String::from("next"),
         board: BoardConfig {
             from: Vec::new(),
-            mark: String::new(),
             pull: true,
             ..BoardConfig::default()
         },

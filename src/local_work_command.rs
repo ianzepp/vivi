@@ -548,8 +548,15 @@ fn read_close_thread(
     let Ok(messages) = mailspace.thread(handle, false, usize::MAX, usize::MAX) else {
         return None;
     };
+    let pump_replies = if receipts {
+        Vec::new()
+    } else {
+        // The pump posts attempt records on the pump record's thread.
+        mailspace.pump_threads(handle).unwrap_or_default()
+    };
     let attempts = messages
         .iter()
+        .chain(pump_replies.iter())
         .filter_map(|message| {
             if receipts {
                 let mut attempt = vivi::pump::attempt_read::parse_receipt(&message.body)?;
@@ -628,8 +635,8 @@ fn show_need(
     Ok(())
 }
 
-/// `need attempts`: every pump attempt record on a need thread plus the
-/// anchor's open epoch, in one read for a synced second member.
+/// `need attempts`: every pump attempt record on a need thread and on its
+/// pump records' threads, plus the anchor's open epoch, in one read for a synced second member.
 fn print_need_attempts(
     handle: &str,
     json: bool,
@@ -648,8 +655,12 @@ fn print_need_attempts(
             .ok_or_else(|| VivariumError::Message(format!("message not found: {handle}")))?
     };
     let messages = mailspace.thread(handle, false, usize::MAX, usize::MAX)?;
+    // The pump posts attempt records on the pump record's thread, so the
+    // need's attempts are the need thread's plus each record's thread.
+    let pump_replies = mailspace.pump_threads(handle).unwrap_or_default();
     let attempts: Vec<_> = messages
         .iter()
+        .chain(pump_replies.iter())
         .filter_map(|message| vivi::pump::attempt_read::parse_record(&message.body))
         .collect();
     let opened = vivi::pump::attempt_read::opened_epoch(&anchor.date);

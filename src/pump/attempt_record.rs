@@ -1,22 +1,23 @@
 //! Attempt records: the pump's account of one hand attempt, posted on the
-//! unit's need thread when the attempt ends.
+//! need's open pump record when the attempt ends.
 //!
 //! Every end of a hand attempt (delivered, proof-failed, merge-conflict, agent
 //! failed, timeout then split, no-defect, quarantined) leaves two things: the
 //! attempt branch `vivi/unit/<uid>-a<n>`, pushed to the target remote and kept, and
-//! one reply on the need thread naming the unit, attempt, model, pool, how it
-//! ended, the branch, the task, the commits and files on the branch, the
-//! failing command with a short excerpt, and the hand's own final message.
+//! one reply on the pump record's thread naming the unit, attempt, model,
+//! pool, how it ended, the branch, the task, the commits and files on the
+//! branch, the failing command with a short excerpt, and the hand's own final
+//! message.
 //!
 //! The hand's final message comes from the task receipt (`vivi task show
 //! <task> --latest`), so it works for remote pools whose hands cannot reach
 //! the mailspace. Posting never blocks or fails the tick: one try per attempt
 //! end, a failed send is logged and dropped.
 
-use crate::pump::board::send_reply;
 use crate::pump::collect::{local_branch_exists, receipt_full, tail};
 use crate::pump::dispatch::dispatch_base;
 use crate::pump::host::{CmdOutput, Ctx, shell_quote};
+use crate::pump::record::send_reply;
 use crate::pump::state::State;
 
 /// Commits listed in a record.
@@ -296,8 +297,9 @@ struct Facts {
 
 /// Post the record of the attempt that just ended on unit `uid`: make sure
 /// its branch is on the remote, read the branch and the task receipt, and
-/// reply on the need thread. Nothing here fails the caller: every error is
-/// logged and dropped, and a unit whose "need" is no mailspace thread is
+/// reply on the need's open pump record (not the need thread). Nothing here
+/// fails the caller: every error is logged and dropped (a need with no open
+/// record gets no reply), and a unit whose "need" is no mailspace thread is
 /// skipped: a repair unit, and a unit of a pump-synthesized fix need
 /// (`<fix_prefix>-g<tip8>`, as gate fixes and their split children carry).
 /// The pump never replies to a handle that is not a real thread: real

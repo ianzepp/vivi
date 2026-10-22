@@ -119,6 +119,7 @@ impl PumpConfig {
         if self.tick == 0 {
             found.invalid("[pump] tick must be >= 1");
         }
+        self.validate_board(&mut found);
         self.validate_workspace(&mut found);
         self.validate_dispatch(pools, hand_role_pool, &mut found);
         if self.targets.is_empty() {
@@ -139,6 +140,24 @@ impl PumpConfig {
             }
         }
         found
+    }
+
+    /// The retired `[pump.board]` intake keys are errors, not silently
+    /// ignored: a config that still sets them expects an intake that is gone.
+    fn validate_board(&self, found: &mut Findings) {
+        if self.board.retired_mark.is_some() {
+            found.invalid(
+                "[pump.board] mark is retired: a need is planned when it has an open pump \
+                 record; send one with `vivi pump send --need <handle>` and remove `mark`",
+            );
+        }
+        if self.board.retired_since.is_some() {
+            found.invalid(
+                "[pump.board] since is retired: intake is explicit, so no date cutoff \
+                 applies; send a pump record with `vivi pump send --need <handle>` and \
+                 remove `since`",
+            );
+        }
     }
 
     fn validate_dispatch(&self, pools: &[String], hand_role_pool: bool, found: &mut Findings) {

@@ -103,15 +103,16 @@ Replies stay attached because threads link by message id and promotion moves
 the same record from Wants to Needs. Planners see replies; no separate fix is
 needed.
 
-The pump plans a need only when its sender is configured in `[pump.board]`
-`from` or it carries the board approval mark (`pump` by default). A want filed
-by a finder needs that approval mark after promotion:
+The pump plans a need only when it has an open pump record. A promoted need
+is not dispatched until the Mind or operator sends one:
 
 ```sh
-vivi need mark --for mind <handle> pump
+vivi pump send --need <handle>
 ```
 
-Use the project's configured approval mark when it differs from `pump`.
+The record is that dispatch; the pump posts its plan and attempt records on
+it and closes it with the outcome (`landed`, `gave-up`, `withdrawn`,
+`superseded`). `vivi pump history <handle>` lists a need's dispatches.
 
 ## 5. Close out without promotion
 

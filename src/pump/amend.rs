@@ -74,6 +74,7 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str) {
         }
     } else if pending {
         reopen_closed(ctx, st, handle);
+        crate::pump::record::ensure_open(ctx, handle);
         if let Some(record) = st.needs.get_mut(handle) {
             record.amendment_pending = true;
             record.thread_sha256 = Some(hash);

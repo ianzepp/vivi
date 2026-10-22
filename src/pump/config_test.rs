@@ -40,8 +40,6 @@ reply_from  = "mind"
 
 [pump.board]
 from         = ["operator@bd371d96.local"]
-since        = "2026-10-14T00:10"
-mark         = "pump"
 every        = 300
 planners_max = 3
 plan_timeout = 1800
@@ -185,8 +183,8 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.home, None);
     assert_eq!(cfg.repo, None);
     assert!(cfg.board.from.is_empty());
-    assert_eq!(cfg.board.since, "");
-    assert_eq!(cfg.board.mark, "pump");
+    assert_eq!(cfg.board.retired_since, None);
+    assert_eq!(cfg.board.retired_mark, None);
     assert_eq!(cfg.board.every, 300);
     assert_eq!(cfg.board.planners_max, 3);
     assert_eq!(cfg.board.plan_timeout, 1800);
@@ -300,7 +298,7 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.main, "main");
     assert_eq!(cfg.tick, 20);
-    assert_eq!(cfg.board.mark, "pump");
+    assert_eq!(cfg.board.retired_mark, None);
     assert_eq!(cfg.board.planners_max, 3);
     assert_eq!(cfg.dispatch.from, Some("next".to_string()));
     assert_eq!(cfg.dispatch_from(), "next");
@@ -396,7 +394,7 @@ fn an_unknown_key_is_ignored() {
         "nope = true\n",
     ));
     assert_eq!(cfg.branch, "next");
-    assert_eq!(cfg.board.mark, "pump");
+    assert_eq!(cfg.board.retired_mark, None);
 }
 
 #[test]
@@ -450,10 +448,6 @@ fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
         committer_email: "vivi@example.invalid".into(),
         branch: "next".into(),
         promote: false,
-        board: crate::pump::config::BoardConfig {
-            mark: String::new(),
-            ..crate::pump::config::BoardConfig::default()
-        },
         gate: crate::pump::config::GateConfig {
             command: "./gate".into(),
             ..crate::pump::config::GateConfig::default()
@@ -507,10 +501,6 @@ fn validate_checks_default_kind_and_kind_pools() {
         branch: "next".into(),
         committer_name: "Test".into(),
         committer_email: "test@example.com".into(),
-        board: crate::pump::config::BoardConfig {
-            mark: String::new(),
-            ..Default::default()
-        },
         dispatch: DispatchConfig {
             lanes: vec![Lane {
                 model: "m".into(),
@@ -632,7 +622,6 @@ fn validate_rejects_an_unknown_pool_name() {
         .expect_err("unknown pool must fail");
     assert!(err.to_string().contains("[pump.gate] pools"), "{err}");
     cfg.gate.pools = vec!["flygate".into(), "flyfull".into()];
-    cfg.board.mark = String::new(); // not under test here
     cfg.committer_name = "Test".into();
     cfg.committer_email = "test@example.com".into();
     cfg.gate.command = "./gate".into();
@@ -1137,5 +1126,60 @@ fn target_level_gaps_are_missing_items_not_errors() {
         .collect();
     for expected in ["pump.targets.app.branch", "pump.targets.app.gate.command"] {
         assert!(names.contains(&expected), "{expected} not in {names:?}");
+    }
+}
+
+/// A config that validates clean apart from what the caller changes.
+fn valid_pump(extra: &str) -> PumpConfig {
+    let mut cfg = pump(&format!(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\ncommitter_name = \"Test\"\n\
+         committer_email = \"test@example.com\"\npromote = false\n\
+         [pump.dispatch]\nlanes = [{{ model = \"m\", cap = 1 }}]\n\
+         [pump.gate]\ncommand = \"./gate\"\n{extra}"
+    ));
+    cfg.merge.shared_checks = vec!["./check".into()];
+    cfg
+}
+
+#[test]
+fn a_board_table_without_the_retired_keys_validates() {
+    let cfg = valid_pump("[pump.board]\nevery = 60\n");
+    cfg.validate(Path::new("."), &pools(&[]))
+        .expect("no retired key is set");
+}
+
+#[test]
+fn the_retired_board_mark_is_an_error_naming_the_replacement() {
+    for value in ["\"pump\"", "\"\""] {
+        let cfg = valid_pump(&format!("[pump.board]\nmark = {value}\n"));
+        let err = cfg
+            .validate(Path::new("."), &pools(&[]))
+            .expect_err("a present mark must not be silently ignored")
+            .to_string();
+        assert!(err.contains("[pump.board] mark is retired"), "{err}");
+        assert!(err.contains("vivi pump send --need <handle>"), "{err}");
+    }
+}
+
+#[test]
+fn the_retired_board_since_is_an_error_naming_the_replacement() {
+    let cfg = valid_pump("[pump.board]\nsince = \"2026-10-14T00:10\"\n");
+    let err = cfg
+        .validate(Path::new("."), &pools(&[]))
+        .expect_err("a present since must not be silently ignored")
+        .to_string();
+    assert!(err.contains("[pump.board] since is retired"), "{err}");
+    assert!(err.contains("vivi pump send --need <handle>"), "{err}");
+}
+
+#[test]
+fn the_retired_board_keys_are_never_written_back() {
+    let cfg = valid_pump("[pump.board]\nmark = \"pump\"\nsince = \"2026-10-14\"\n");
+    let text = toml::to_string(&cfg).unwrap();
+    for key in ["mark", "since"] {
+        assert!(
+            text.lines().all(|line| !line.trim_start().starts_with(key)),
+            "{key} was written back: {text}"
+        );
     }
 }

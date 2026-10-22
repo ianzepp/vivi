@@ -1,4 +1,5 @@
-//! Need intake: candidate rows, approval marks, planner expiry and launch.
+//! Need intake: candidate rows (needs with an open pump record), planner
+//! expiry and launch, and the pump's replies.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -22,7 +23,7 @@ pub struct NeedRow {
     pub date: String,
     /// Subject line.
     pub subject: String,
-    /// Marks on the need; the board's approval mark makes it plannable.
+    /// Marks on the need; `investigate` routes it to the auditor instead.
     pub marks: Vec<String>,
 }
 
@@ -70,77 +71,47 @@ fn row_from(value: &Value) -> NeedRow {
     }
 }
 
-/// Open needs, from any sender, that carry the approval mark:
-/// held needs first, then needs addressed to the reply identity; duplicate
-/// handles keep the first row. An empty mark means no marked rows at all.
+/// The board's candidate rows: the open needs that have an open pump record
+/// (`vivi pump send --need <handle>`), read from the held list and from the
+/// list addressed to `reply_from`. A need without an open record is never
+/// planned, whatever its sender, date or marks; a record whose need is not
+/// in either list is logged and left for the operator to fix.
 #[must_use]
-pub fn marked_rows(ctx: &Ctx) -> Vec<NeedRow> {
-    let mut found: Vec<NeedRow> = Vec::new();
-    let mark = ctx.cfg.board.mark.as_str();
-    if mark.is_empty() {
-        return found;
+pub fn candidate_rows(ctx: &Ctx) -> Vec<NeedRow> {
+    let Some(wanted) = crate::pump::record::open_need_handles(ctx) else {
+        return Vec::new();
+    };
+    if wanted.is_empty() {
+        return Vec::new();
     }
     let forms = [
         String::from("need list --status open --json --held"),
         format!("need list --status open --json --to {}", ctx.cfg.reply_from),
     ];
+    let mut rows: Vec<NeedRow> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     for args in &forms {
         let out = ctx.vivi(args, 60);
-        let Some(rows) = parse_rows(&out.text) else {
+        let Some(found) = parse_rows(&out.text) else {
             ctx.log(&format!(
-                "marked list unreadable ({args}): {}",
+                "board list unreadable ({args}): {}",
                 tail_note(&out.text, 150)
             ));
             continue;
         };
-        found.extend(
-            rows.into_iter()
-                .filter(|row| row.marks.iter().any(|m| m.as_str() == mark)),
-        );
-    }
-    let mut unique: Vec<NeedRow> = Vec::new();
-    for row in found {
-        if !unique.iter().any(|seen| seen.handle == row.handle) {
-            unique.push(row);
+        for row in found.into_iter().filter(|row| wanted.contains(&row.handle)) {
+            if seen.insert(row.handle.clone()) && !is_investigation_need(&row) {
+                rows.push(row);
+            }
         }
     }
-    unique
-}
-
-/// The board's candidate rows: every configured sender's open needs
-/// addressed to `reply_from`, then marked rows not already present; plus the
-/// set of marked (approved) handles. A need addressed to another recipient is
-/// not the pump's work, and a thread reply never becomes one.
-#[must_use]
-pub fn candidate_rows(ctx: &Ctx) -> (Vec<NeedRow>, BTreeSet<String>) {
-    let mut rows: Vec<NeedRow> = Vec::new();
-    for sender in &ctx.cfg.board.from {
-        let out = ctx.vivi(
-            &format!(
-                "need list --from {sender} --to {} --status open --json",
-                ctx.cfg.reply_from
-            ),
-            60,
-        );
-        match parse_rows(&out.text) {
-            Some(found) => rows.extend(found.into_iter().filter(|row| !is_investigation_need(row))),
-            None => ctx.log(&format!(
-                "board list unreadable: {}",
-                tail_note(&out.text, 150)
-            )),
-        }
+    for handle in wanted.difference(&seen) {
+        ctx.log(&format!(
+            "board: the pump record for need {handle} names no open need addressed to {}; not planned",
+            ctx.cfg.reply_from
+        ));
     }
-    let marked: Vec<NeedRow> = marked_rows(ctx)
-        .into_iter()
-        .filter(|row| !is_investigation_need(row))
-        .collect();
-    let approved: BTreeSet<String> = marked.iter().map(|row| row.handle.clone()).collect();
-    for row in marked {
-        if !rows.iter().any(|seen| seen.handle == row.handle) {
-            rows.push(row);
-        }
-    }
-    (rows, approved)
+    rows
 }
 
 fn is_investigation_need(row: &NeedRow) -> bool {
@@ -181,6 +152,7 @@ pub fn done_need_handles(ctx: &Ctx) -> Option<BTreeSet<String>> {
 /// of those needs are withdrawn so they are never dispatched or merged.
 pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
     let done = done_need_handles(ctx)?;
+    crate::pump::record::settle_closed_needs(ctx, st, &done);
     let withdrawn = withdraw_closed_need_units(st, &done, ctx.now());
     for (need, count) in withdrawn {
         ctx.log(&format!(
@@ -345,11 +317,11 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) -> bool {
     false
 }
 
-/// Plan the new needs among `rows`: skip old, skipped,
-/// known, already-planning or already-planned handles, respect the
+/// Plan the new needs among `rows` (the needs with an open pump record): skip
+/// skipped, known, already-planning or already-planned handles, respect the
 /// concurrent-planner cap, then write the need file, spawn the planner and
-/// record the planning entry. `replan` bypasses the date cutoff; launched
-/// handles leave it and the mirror `st.board.replan` is re-sorted.
+/// record the planning entry. Launched handles leave `replan` and the mirror
+/// `st.board.replan` is re-sorted.
 ///
 /// A dependent whose prerequisite has no plan file yet is held back: the
 /// planner would buy nothing, because the dependent's units would sit held at
@@ -360,26 +332,18 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) -> bool {
 /// Within one pass, needs other open needs depend on are planned before their
 /// dependents and before independent needs, so an arrival batch cannot spend
 /// every planner slot on independent work while a shared prerequisite waits.
-pub fn launch_planners(
-    ctx: &Ctx,
-    st: &mut State,
-    rows: &[NeedRow],
-    approved: &BTreeSet<String>,
-    replan: &mut BTreeSet<String>,
-) {
+pub fn launch_planners(ctx: &Ctx, st: &mut State, rows: &[NeedRow], replan: &mut BTreeSet<String>) {
     let skip = read_skip(ctx);
     let gates = planning_gates(ctx, rows);
     for row in plan_order(rows, &gates) {
         let handle = row.handle.as_str();
-        let old = row.date.as_str() < ctx.cfg.board.since.as_str();
         let parked = st.board.planner_failed.iter().any(|seen| seen == handle);
         let waiting = st
             .board
             .planner_retry_at
             .get(handle)
             .is_some_and(|at| *at > ctx.now());
-        if (old && !replan.contains(handle) && !approved.contains(handle))
-            || skip.contains(handle)
+        if skip.contains(handle)
             || st.needs.contains_key(handle)
             || st.board.planning.contains_key(handle)
             || parked
@@ -657,9 +621,11 @@ fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
     operator_replied_after(ctx, handle, mtime_secs(&meta)).then(|| record.verdict.clone())
 }
 
-/// Reply once on every candidate need's thread that has a verdict: stage
-/// `planned` always, then implementation or landing when units are settled.
-/// Returns whether any reply was sent.
+/// Reply once on every candidate need's open pump record that has a verdict:
+/// stage `planned` always, then implementation or landing when units are
+/// settled. A plan verdict that waits for an operator ruling is posted on the
+/// need's own thread instead, where the operator answers it. Returns whether
+/// any reply was sent.
 pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
     let mut said = false;
     for row in rows {
@@ -732,7 +698,12 @@ fn reply_stages(
             body.push('\n');
             body.push_str(&line);
         }
-        if send_reply(ctx, handle, &stage, &body) {
+        let sent = if crate::pump::record::awaits_ruling(&stage, verdict) {
+            crate::pump::record::send_need_reply(ctx, handle, &stage, &body)
+        } else {
+            crate::pump::record::send_reply(ctx, handle, &stage, &body)
+        };
+        if sent {
             st.board.replied.push(key);
             said = true;
         }
@@ -910,43 +881,9 @@ fn unit_list(st: &State, units: &[String], commits: bool) -> String {
         .join("\n")
 }
 
-/// Write the body to `<home>/board/reply-<h>-<stage>.txt` and run `mail
-/// reply` from the reply identity; true when the reply succeeded.
-pub(crate) fn send_reply(ctx: &Ctx, handle: &str, stage: &str, body: &str) -> bool {
-    let dir = ctx.home.join("board");
-    drop(fs::create_dir_all(&dir));
-    let path = dir.join(format!("reply-{handle}-{stage}.txt"));
-    if fs::write(&path, format!("{body}\n")).is_err() {
-        ctx.log(&format!(
-            "board reply {handle} {stage} rc=1 body file unwritable"
-        ));
-        return false;
-    }
-    let mut args = format!(
-        "mail reply {} --from {}",
-        shell_quote(handle),
-        shell_quote(&ctx.cfg.reply_from)
-    );
-    let reply_to = ctx.cfg.reply_to();
-    if !reply_to.is_empty() {
-        args.push_str(&format!(" --to {}", shell_quote(&reply_to)));
-    }
-    args.push_str(&format!(
-        " --body-file {}",
-        shell_quote(&path.to_string_lossy())
-    ));
-    let out = ctx.vivi(&args, 60);
-    ctx.log(&format!(
-        "board reply {handle} {stage} rc={} {}",
-        out.code,
-        last_line(&out.text, 80)
-    ));
-    out.code == 0
-}
-
 /// The last line of `text` cut to
 /// `max` chars, empty when the output is blank.
-fn last_line(text: &str, max: usize) -> String {
+pub(crate) fn last_line(text: &str, max: usize) -> String {
     text.trim()
         .lines()
         .last()
@@ -970,11 +907,13 @@ pub fn board(ctx: &Ctx, st: &mut State) {
             last_line(&out.text, 150)
         ));
     }
-    let (rows, approved) = candidate_rows(ctx);
+    let rows = candidate_rows(ctx);
     expire_planning(ctx, st);
     let mut replan = replan_answered(ctx, st, &rows);
-    launch_planners(ctx, st, &rows, &approved, &mut replan);
+    launch_planners(ctx, st, &rows, &mut replan);
     let said = post_replies(ctx, st, &rows);
+    let handles: Vec<String> = rows.iter().map(|row| row.handle.clone()).collect();
+    crate::pump::record::settle_gave_up(ctx, st, &handles);
     if std::mem::take(&mut st.board.sync_pending) || said {
         spawn_sync_push(ctx);
     }

@@ -245,7 +245,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `mcp` | Needs a server: a stdio bridge to the project server's MCP endpoint |
 | `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor` |
 | `config` | `show [--resolved]`, `validate`, `migrate [--write]` |
-| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`), `replan <need> [--force]` |
+| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`), `replan <need> [--force]`, `send --need <need>` and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
 | `delivery` | `send` a structured branch handoff to a merge role; `close` after merge |
 | `monitor` | Read-only live pump and pool-slot view; `--project` adds roots, `--once [--json]` prints a snapshot |
 | `report` | Read-only attempt and need summaries: `records`, `throughput`, `durations`, `needs`, `failures` |
@@ -621,9 +621,18 @@ integration tip and runs read-only. New or residual failures go to a durable
 auditor job; its valid report creates fix units. An optional external runner
 can supply a gate result while its configured heartbeat is fresh.
 
+A need is planned when it has an open **pump record**: **vivi pump send
+--need &lt;need&gt;** files one, and sending is the dispatch. The pump replies
+with its plan, attempt records and merge notices on that record rather than on
+the need thread, and closes it with an outcome (**landed**, **gave-up**,
+**withdrawn**, **superseded**). A mark, a configured sender or a date no longer
+makes a need plannable: **[pump.board] mark** and **since** are retired, and
+**vivi config validate** rejects them.
+
 **vivi pump replan &lt;need&gt;** queues a fresh plan for the next tick. It supersedes
 the existing plan file, withdraws pending, held, stuck, and **needs-replan**
-units, keeps merged units, and plans from the current thread. It refuses
+units, keeps merged units, and plans from the current thread. It closes the
+need's pump record as **superseded** and opens a fresh one. It refuses
 while live unit work or a planner is running for that need unless **--force**
 is supplied; forced replanning leaves live work running.
 

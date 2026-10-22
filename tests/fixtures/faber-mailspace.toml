@@ -1819,8 +1819,6 @@ reply_from = "mind"
 
 [pump.board]
 from = ["operator@bd371d96.local"]
-since = "2026-10-15T12:25"
-mark = "pump"
 every = 120
 planners_max = 3
 plan_timeout = 1800

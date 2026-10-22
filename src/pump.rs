@@ -43,6 +43,7 @@ pub mod ramsweep;
 pub mod readiness;
 pub mod ready;
 pub mod reclaim;
+pub mod record;
 pub mod replan;
 pub mod report;
 pub mod requeue;

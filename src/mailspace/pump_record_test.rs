@@ -183,3 +183,90 @@ fn pump_config_names_the_sender_and_the_pump_identity() {
     let record = mailspace.pump_send(None, &need, None).unwrap();
     assert!(record.to.contains("pumper"), "{record:?}");
 }
+
+/// Run `work` on `count` threads at once, each with its own mailspace
+/// connection (as separate processes would have), released together.
+fn race<T: Send + 'static>(
+    root: &std::path::Path,
+    count: usize,
+    work: impl Fn(&Mailspace) -> T + Send + Sync + 'static,
+) -> Vec<T> {
+    let work = std::sync::Arc::new(work);
+    let start = std::sync::Arc::new(std::sync::Barrier::new(count));
+    let handles: Vec<_> = (0..count)
+        .map(|_| {
+            let (work, start) = (work.clone(), start.clone());
+            let root = root.to_path_buf();
+            std::thread::spawn(move || {
+                let mailspace = Mailspace::discover(Some(&root)).unwrap();
+                start.wait();
+                work(&mailspace)
+            })
+        })
+        .collect();
+    handles.into_iter().map(|h| h.join().unwrap()).collect()
+}
+
+#[test]
+fn concurrent_sends_for_one_need_open_exactly_one_record() {
+    let (mailspace, tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let target = need.clone();
+    let results = race(tmp.path(), 6, move |space| {
+        space.pump_send(None, &target, None)
+    });
+    let opened: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+    assert_eq!(opened.len(), 1, "exactly one send wins: {results:?}");
+    for refused in results.iter().filter_map(|r| r.as_ref().err()) {
+        let text = refused.to_string();
+        assert!(text.contains("already has an open pump record"), "{text}");
+        assert!(text.contains(&opened[0].handle), "{text}");
+    }
+    let records = mailspace.pump_history(&need).unwrap();
+    assert_eq!(records.len(), 1, "no loser left a record behind");
+    assert_eq!(records[0].status, PumpState::Open);
+}
+
+#[test]
+fn concurrent_reopens_of_two_done_records_open_exactly_one() {
+    let (mailspace, tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let first = mailspace.pump_send(None, &need, None).unwrap();
+    mailspace.pump_done(&first.handle, None).unwrap();
+    let second = mailspace.pump_send(None, &need, None).unwrap();
+    mailspace.pump_done(&second.handle, None).unwrap();
+    let handles = [first.handle.clone(), second.handle.clone()];
+    let turn = std::sync::atomic::AtomicUsize::new(0);
+    let results = race(tmp.path(), 2, move |space| {
+        let which = turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2;
+        space.pump_reopen(&handles[which])
+    });
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    let open = mailspace
+        .pump_list(Some(&need), Some(PumpState::Open))
+        .unwrap();
+    assert_eq!(open.len(), 1);
+}
+
+#[test]
+fn a_refused_send_leaves_the_mailspace_unchanged() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let first = mailspace.pump_send(None, &need, None).unwrap();
+    assert!(mailspace.pump_send(None, &need, None).is_err());
+    assert!(
+        mailspace
+            .pump_send(Some("nobody"), "deadbeef", None)
+            .is_err()
+    );
+    let all = mailspace.pump_list(None, None).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].handle, first.handle);
+    // The connection is usable again: the failed batches were rolled back.
+    mailspace.pump_done(&first.handle, None).unwrap();
+    mailspace.pump_send(None, &need, None).unwrap();
+}

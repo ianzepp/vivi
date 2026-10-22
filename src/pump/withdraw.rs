@@ -14,7 +14,8 @@
 //! - its need-branch records are dropped. Branch cleanup jobs require a
 //!   verified landing, which a withdrawn need never has, so the remote
 //!   `vivi/need/<id>` branch is left for manual deletion and the log says so;
-//! - an exception of kind `need-withdrawn` records the act.
+//! - an exception of kind `need-withdrawn` records the act;
+//! - the need's open pump record, if it has one, is closed `withdrawn`.
 //!
 //! An unknown need id drops the request with a log line.
 
@@ -93,6 +94,7 @@ fn apply_one(ctx: &Ctx, st: &mut State, request: &WithdrawRequest) {
         "withdraw {need}: the mail need is not closed; close it on the board if it has one"
     ));
     ctx.exception("need-withdrawn", need, &text);
+    crate::pump::record::finish(ctx, need, crate::pump::record::WITHDRAWN, &text);
 }
 
 /// Drop the need's branch records and say which remote branches stay behind.

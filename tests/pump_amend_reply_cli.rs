@@ -78,6 +78,23 @@ fn a_real_reply_moves_board_last_event_and_starts_a_revision() {
         fs::read_to_string(project.path().join(".vivi/pump/log.txt")).unwrap_or_default()
     );
     assert!(state.board.revision_planning.contains_key(&handle));
+    let records = vivi([
+        "pump",
+        "list",
+        "--need",
+        &handle,
+        "--json",
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&records);
+    let records: Value = serde_json::from_str(&stdout(&records)).unwrap();
+    assert_eq!(
+        records.as_array().map(Vec::len),
+        Some(1),
+        "the amendment is a dispatch with a pump record: {records}"
+    );
+    assert_eq!(records[0]["status"], "open");
 }
 
 #[test]

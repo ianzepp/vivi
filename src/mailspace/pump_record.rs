@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use super::backlog::canonical_content_handle;
 use super::event_log::log_move_event;
+use super::thread::MailspaceThreadMessage;
 use super::{Mailspace, SendRequest};
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
@@ -76,24 +77,36 @@ impl Mailspace {
 
     /// File a new open pump record for `need`, addressed to the pump.
     ///
+    /// The one-open-record check and the send run in one store write
+    /// transaction (`BEGIN IMMEDIATE`), so two concurrent sends, from this
+    /// process or another, cannot both pass the check: the second waits for
+    /// the first to commit, then finds its record open and is refused.
+    ///
     /// # Errors
     /// Returns an error if the need is unknown or not a need, if the need
     /// already has an open pump record (the error names it), if an identity
-    /// does not resolve, or if the send fails.
+    /// does not resolve, or if the send fails. A failed send leaves no record.
     pub fn pump_send(
         &self,
         from: Option<&str>,
         need: &str,
         body: Option<&str>,
     ) -> Result<PumpRecord, VivariumError> {
-        let (default_from, to) = self.pump_names();
         let storage = self.storage()?;
-        let (need_handle, need_subject) = self.resolve_need(&storage, need)?;
-        if let Some(open) = self
-            .pump_records(&storage)?
-            .into_iter()
-            .find(|record| record.need == need_handle && record.status == PumpState::Open)
-        {
+        in_write_batch(&storage, || self.send_checked(&storage, from, need, body))
+    }
+
+    /// The body of [`Mailspace::pump_send`], run inside the write batch.
+    fn send_checked(
+        &self,
+        storage: &Storage,
+        from: Option<&str>,
+        need: &str,
+        body: Option<&str>,
+    ) -> Result<PumpRecord, VivariumError> {
+        let (default_from, to) = self.pump_names();
+        let (need_handle, need_subject) = self.resolve_need(storage, need)?;
+        if let Some(open) = self.open_record_of(storage, &need_handle)? {
             return Err(VivariumError::Message(format!(
                 "need {need_handle} already has an open pump record {}; close it with `vivi pump done {}` first",
                 open.handle, open.handle
@@ -126,8 +139,20 @@ impl Mailspace {
             .delivered
             .first()
             .ok_or_else(|| VivariumError::Message("the pump record was not delivered".into()))?;
-        let row = self.record_row(&storage, &delivered.handle)?;
-        self.record_of(&storage, &row)
+        let row = self.record_row(storage, &delivered.handle)?;
+        self.record_of(storage, &row)
+    }
+
+    /// The open pump record of `need`, when it has one.
+    fn open_record_of(
+        &self,
+        storage: &Storage,
+        need: &str,
+    ) -> Result<Option<PumpRecord>, VivariumError> {
+        Ok(self
+            .pump_records(storage, Some(PumpState::Open))?
+            .into_iter()
+            .find(|record| record.need == need))
     }
 
     /// Every pump record, oldest first, optionally for one need and one state.
@@ -144,10 +169,9 @@ impl Mailspace {
             .map(|token| self.resolve_need(&storage, token).map(|(handle, _)| handle))
             .transpose()?;
         Ok(self
-            .pump_records(&storage)?
+            .pump_records(&storage, state)?
             .into_iter()
             .filter(|record| need.as_ref().is_none_or(|need| &record.need == need))
-            .filter(|record| state.is_none_or(|state| record.status == state))
             .collect())
     }
 
@@ -157,6 +181,20 @@ impl Mailspace {
     /// Same as [`Mailspace::pump_list`].
     pub fn pump_history(&self, need: &str) -> Result<Vec<PumpRecord>, VivariumError> {
         self.pump_list(Some(need), None)
+    }
+
+    /// The messages of every thread rooted at one of `need`'s pump records,
+    /// oldest record first: the records and the replies the pump posted on
+    /// them (plan, attempt and merge notices).
+    ///
+    /// # Errors
+    /// Same as [`Mailspace::pump_list`], or a thread cannot be read.
+    pub fn pump_threads(&self, need: &str) -> Result<Vec<MailspaceThreadMessage>, VivariumError> {
+        let mut messages = Vec::new();
+        for record in self.pump_history(need)? {
+            messages.extend(self.thread(&record.handle, false, usize::MAX, usize::MAX)?);
+        }
+        Ok(messages)
     }
 
     /// One pump record and its body.
@@ -199,28 +237,26 @@ impl Mailspace {
     /// if storage fails.
     pub fn pump_reopen(&self, handle: &str) -> Result<PumpRecord, VivariumError> {
         let storage = self.storage()?;
-        let row = self.record_row(&storage, handle)?;
-        if row.local_role != "done" {
-            return Err(VivariumError::Message(format!(
-                "pump record {handle} is not done"
-            )));
-        }
-        let record = self.record_of(&storage, &row)?;
-        if let Some(open) = self
-            .pump_records(&storage)?
-            .into_iter()
-            .find(|other| other.need == record.need && other.status == PumpState::Open)
-        {
-            return Err(VivariumError::Message(format!(
-                "need {} already has an open pump record {}; close it first",
-                record.need, open.handle
-            )));
-        }
-        let actor = self.row_holder(&row);
-        storage.move_message_to_role(&row.account, &row.message_id, "pumps")?;
-        log_move_event(&storage, &actor, "pumps", &row, "pump reopen", None)?;
-        let moved = self.record_row(&storage, handle)?;
-        self.record_of(&storage, &moved)
+        in_write_batch(&storage, || {
+            let row = self.record_row(&storage, handle)?;
+            if row.local_role != "done" {
+                return Err(VivariumError::Message(format!(
+                    "pump record {handle} is not done"
+                )));
+            }
+            let record = self.record_of(&storage, &row)?;
+            if let Some(open) = self.open_record_of(&storage, &record.need)? {
+                return Err(VivariumError::Message(format!(
+                    "need {} already has an open pump record {}; close it first",
+                    record.need, open.handle
+                )));
+            }
+            let actor = self.row_holder(&row);
+            storage.move_message_to_role(&row.account, &row.message_id, "pumps")?;
+            log_move_event(&storage, &actor, "pumps", &row, "pump reopen", None)?;
+            let moved = self.record_row(&storage, handle)?;
+            self.record_of(&storage, &moved)
+        })
     }
 
     /// The identity that holds a row, else its raw account name.
@@ -281,15 +317,26 @@ impl Mailspace {
             .ok_or_else(|| not_record("a copy that is not held as a record"))
     }
 
-    /// Every pump record, oldest first: the holder rows of every `pump send`
-    /// delivery, in `pumps` (open) or `done`.
-    fn pump_records(&self, storage: &Storage) -> Result<Vec<PumpRecord>, VivariumError> {
+    /// Every pump record in `state` (all when `None`), oldest first: the
+    /// holder rows of every `pump send` delivery, in `pumps` (open) or `done`.
+    /// Rows outside `state` are skipped before their letters are read, so
+    /// listing the open records stays cheap as closed history grows.
+    fn pump_records(
+        &self,
+        storage: &Storage,
+        state: Option<PumpState>,
+    ) -> Result<Vec<PumpRecord>, VivariumError> {
         let mut records = Vec::new();
         for event in storage.list_mailspace_events_for_command("pump send", "delivered")? {
             let Some(row) = storage.message_by_id(&event.message_id)? else {
                 continue;
             };
-            if matches!(row.local_role.as_str(), "pumps" | "done") {
+            let held = match row.local_role.as_str() {
+                "pumps" => PumpState::Open,
+                "done" => PumpState::Done,
+                _ => continue,
+            };
+            if state.is_none_or(|state| state == held) {
                 records.push(self.record_of(storage, &row)?);
             }
         }
@@ -321,6 +368,30 @@ impl Mailspace {
                 .then(|| outcome_of(&events))
                 .flatten(),
         })
+    }
+}
+
+/// Run `work` inside one store write transaction: committed when it
+/// succeeds, rolled back when it fails, so a refused or failed step leaves
+/// the mailspace as it was and concurrent writers are serialized.
+fn in_write_batch<T>(
+    storage: &Storage,
+    work: impl FnOnce() -> Result<T, VivariumError>,
+) -> Result<T, VivariumError> {
+    storage.begin_batch()?;
+    match work() {
+        Ok(value) => {
+            storage.commit_batch()?;
+            Ok(value)
+        }
+        Err(error) => {
+            if let Err(rollback) = storage.rollback_batch() {
+                return Err(VivariumError::Message(format!(
+                    "{error}; the rollback also failed: {rollback}"
+                )));
+            }
+            Err(error)
+        }
     }
 }
 

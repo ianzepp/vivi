@@ -13,12 +13,11 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::state::{NeedRecord, State};
 
-/// A context with an operator sender, the `since` cutoff and the `pump` mark.
+/// A context with an operator sender.
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let cfg = PumpConfig {
         board: BoardConfig {
             from: vec![String::from("operator@bd371d96.local")],
-            since: String::from("2026-10-14T00:10"),
             ..BoardConfig::default()
         },
         branch: String::from("next"),
@@ -254,12 +253,16 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
     let (_dir, ctx, host) = setup();
     host.reply("sync pull", 0, "pulled 1 message");
     host.reply(
-        "need list --from operator@bd371d96.local",
+        "pump list --status open --json",
         0,
-        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &["pump"])]),
+        "[{\"handle\": \"p1\", \"need\": \"n1\", \"status\": \"open\"}]",
     );
     host.reply("--held", 0, "[]");
-    host.reply("--json --to mind", 0, "[]");
+    host.reply(
+        "--json --to mind",
+        0,
+        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &[])]),
+    );
     host.reply(
         "need show n1",
         0,
@@ -303,23 +306,27 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
     let (_dir, mut ctx, host) = setup();
     let mut pass = BoardPass::start(&ctx);
     let mut cfg = (*ctx.cfg).clone();
-    cfg.board.from = vec![String::from("reloaded@example.local")];
+    cfg.reply_from = String::from("reloaded");
     ctx.cfg = Arc::new(cfg);
     host.reply("sync pull", 0, "pulled 1 message");
     host.reply(
-        "need list --from reloaded@example.local",
+        "pump list --status open --json",
         0,
-        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &["pump"])]),
+        "[{\"handle\": \"p1\", \"need\": \"n1\", \"status\": \"open\"}]",
     );
     host.reply("--held", 0, "[]");
-    host.reply("--json --to mind", 0, "[]");
+    host.reply(
+        "--json --to reloaded",
+        0,
+        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &[])]),
+    );
     host.reply(
         "need show n1",
         0,
         &thread(
             "2026-10-15T00:00:00Z",
             "f00d01",
-            "reloaded@example.local",
+            "operator@bd371d96.local",
             "the need",
         ),
     );
@@ -334,18 +341,23 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
     }
 
     assert!(
+        st.board.planning.contains_key("n1"),
+        "the reloaded reply_from found the need; commands: {:?}",
+        host.commands()
+    );
+    assert!(
         host.commands()
             .iter()
-            .any(|cmd| cmd.contains("need list --from reloaded@example.local")),
-        "reloaded from unused; commands: {:?}",
+            .any(|cmd| cmd.contains("need list --status open --json --to reloaded")),
+        "reloaded reply_from unused; commands: {:?}",
         host.commands()
     );
     assert!(
         !host
             .commands()
             .iter()
-            .any(|cmd| cmd.contains("need list --from operator@bd371d96.local")),
-        "startup from leaked; commands: {:?}",
+            .any(|cmd| cmd.contains("--json --to mind")),
+        "startup reply_from leaked; commands: {:?}",
         host.commands()
     );
 }

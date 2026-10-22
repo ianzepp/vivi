@@ -123,6 +123,17 @@ that exact tip eligible for the configured release or promotion path.
 
 ## Planning and gate behavior
 
+**Intake.** The board plans exactly the open needs that have an open pump record (**vivi pump send --need &lt;need&gt;**), read from the needs held under any address and the needs addressed to **[pump].reply_from**. A mark, a configured sender, or a date never makes a need plannable. **[pump.board] mark** and **since** are retired: **vivi config validate** rejects them and **vivi config migrate** removes them. **[pump.board] from** only names the default reply address. A record whose need is not addressed to the pump is logged and not planned. **skip.txt** still excludes handles.
+
+**Pump records and replies.** The pump posts its progress as replies on the need's open pump record, not on the need thread: the plan (**planned**, **revised-N**), every attempt record and attempt status event, and the **implemented**, **merged** and **unverified** stages. A plan verdict that waits for an operator ruling (**operator**, **design**, **hold**) stays on the need thread, where the operator answers it. A need with no open record gets no reply. Per-unit dispatch and collection stay events on tasks. **vivi need attempts** and the close timing line read the attempt records from the need thread and from the need's pump records. The pump closes the record with one outcome note:
+
+- **landed**: the need was closed (**vivi pump closeout --close**, or any close on the board) with every unit satisfied.
+- **gave-up**: the planner failed three times, a need-audit hold stands, or a unit is **stuck** and no other unit of the need can advance. The record closes with the reason replied on it.
+- **withdrawn**: **vivi pump withdraw** applied, or the need was closed with units unfinished or before it was planned.
+- **superseded**: **vivi pump replan** applied. The pump opens a fresh record, so the board plans the need again and each record carries one plan.
+
+A thread amendment (a revision of an already planned need) opens a new record when the need has none open, so an amended need that had landed or given up is a second dispatch. **requeue** and a resolved hold are not record actions yet: after **gave-up** the record stays closed and later replies for the need are dropped until a record is open again (**vivi pump reopen**, or **pump send**).
+
 Whole-need planning, thread amendments, and split planning all use durable jobs for the active pump-planner role, whose charter is the planner's system prompt. The worker returns complete plan JSON inside the **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** markers; the pump materializes the plan under **plans/** and passes it through normal validation and ingestion. Planner command execution and detached planner reapers are not used.
 
 A planned need is rehashed from its source thread on every board pass. Board **last_event** is not the trigger: a reply records a **replied** event on the parent need so operators can see the thread moved, and the hash comparison asks the planner for a revision even when that stamp is unchanged or truncated to the same second. A reply on a closed need reopens it and starts the same revision path.

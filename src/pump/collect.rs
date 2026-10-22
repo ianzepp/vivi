@@ -119,7 +119,7 @@ pub fn receipt_full(ctx: &Ctx, task: &str) -> String {
 /// Record a failed attempt: append the history entry, clear the task, and
 /// either return the unit to `pending` or park it as `stuck` with an
 /// exception once `max_attempts` is reached. The attempt record is posted on
-/// the need thread (see [`attempt_record`]), fetching the task receipt.
+/// the need's pump record (see [`attempt_record`]), fetching the task receipt.
 ///
 /// A transient-class failure (see [`transient::classify`]) backs off and
 /// retries instead of counting toward `max_attempts`, up to

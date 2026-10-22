@@ -568,6 +568,32 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
 }
 
 #[test]
+fn the_retired_board_intake_keys_are_removed_naming_the_pump_record() {
+    let raw = V15.replace(
+        "[pump.dispatch]\ndefault_kind",
+        "[pump.board]\nfrom = [\"operator@x\"]\nsince = \"2026-10-14T00:10\"\nmark = \"pump\"\n\n[pump.dispatch]\ndefault_kind",
+    );
+    let (plan, after) = migrate(&raw);
+    for key in ["mark", "since"] {
+        let row = plan
+            .removals
+            .iter()
+            .find(|row| row.table == "pump.board" && row.key == key)
+            .unwrap_or_else(|| panic!("{key} is removed: {:?}", plan.removals));
+        assert!(row.behaviour_change, "{row:?}");
+        assert!(row.reason.contains("vivi pump send --need"), "{row:?}");
+    }
+    assert!(after.contains("from = [\"operator@x\"]"), "{after}");
+    assert!(!after.contains("mark ="), "{after}");
+    assert!(!after.contains("since ="), "{after}");
+    let text = render_plan(&plan);
+    assert!(
+        text.contains("!! BEHAVIOUR CHANGE: remove [pump.board] mark = \"pump\""),
+        "{text}"
+    );
+}
+
+#[test]
 fn migrated_text_still_parses_as_a_pump_config() {
     let (_, after) = migrate(V15);
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();

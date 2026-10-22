@@ -303,12 +303,18 @@ impl Default for PumpTarget {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct BoardConfig {
-    /// Senders whose open needs are plannable.
+    /// Senders of the pump's own replies: the first names the default
+    /// `reply_to`. Not an intake filter; a need is planned exactly when it has
+    /// an open pump record (`vivi pump send --need <handle>`).
     pub from: Vec<String>,
-    /// Needs dated before this are skipped, unless marked or re-planned.
-    pub since: String,
-    /// Approval mark: a marked open need is plannable whatever sender or date.
-    pub mark: String,
+    /// Retired intake cutoff. Accepted only so `validate` can name the
+    /// replacement; setting it is an error.
+    #[serde(rename = "since", skip_serializing)]
+    pub retired_since: Option<String>,
+    /// Retired approval mark. Accepted only so `validate` can name the
+    /// replacement; setting it is an error.
+    #[serde(rename = "mark", skip_serializing)]
+    pub retired_mark: Option<String>,
     /// Seconds between board passes.
     pub every: u64,
     /// Concurrent planners.
@@ -327,8 +333,8 @@ impl Default for BoardConfig {
     fn default() -> Self {
         Self {
             from: Vec::new(),
-            since: String::new(),
-            mark: "pump".into(),
+            retired_since: None,
+            retired_mark: None,
             every: 300,
             planners_max: 3,
             plan_timeout: 1800,

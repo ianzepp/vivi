@@ -560,6 +560,12 @@ impl Host for FakeHost {
                 text: String::new(),
             };
         }
+        if cmd.contains("pump list --status open --json") {
+            return CmdOutput {
+                code: 0,
+                text: String::from("[]"),
+            };
+        }
         if cmd.contains("need list --status done") {
             return CmdOutput {
                 code: 0,
