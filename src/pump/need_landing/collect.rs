@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use crate::error::VivariumError;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::{self, JobStatus, PoolJob};
+use crate::pump::marked_result::{ResultForm, find_marked, note_unprefixed};
 use crate::pump::need::{
     self, NeedAuditBinding, NeedBranch, NeedCleanupReceipt, NeedLandingReceipt,
 };
@@ -206,7 +207,12 @@ fn worker_result(
         return Ok(None);
     }
     let result = match parse_merge_result(&outcome.receipt) {
-        Ok(result) => result,
+        Ok((result, form)) => {
+            if form == ResultForm::Unprefixed {
+                note_unprefixed(ctx, &job.id, MERGE_RESULT);
+            }
+            result
+        }
         Err(error) => {
             hold_landing(
                 ctx,
@@ -415,12 +421,9 @@ fn same_checks(expected: &[RequiredCheck], reported: &[NeedMergeCheck]) -> bool 
     })
 }
 
-fn parse_merge_result(receipt: &str) -> Result<NeedMergeResult, String> {
-    let json = receipt
-        .lines()
-        .find_map(|line| line.trim().strip_prefix(MERGE_RESULT))
-        .ok_or_else(|| String::from("result marker is missing"))?;
-    serde_json::from_str(json).map_err(|error| format!("result JSON is invalid: {error}"))
+fn parse_merge_result(receipt: &str) -> Result<(NeedMergeResult, ResultForm), String> {
+    find_marked(receipt, MERGE_RESULT)
+        .ok_or_else(|| String::from("no parsable merge result line is present"))
 }
 
 fn landing_job_identity(job: &PoolJob) -> Result<(String, String, NeedAuditBinding), String> {

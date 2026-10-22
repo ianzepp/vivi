@@ -47,7 +47,7 @@ pub(super) fn apply_need_merge(ctx: &Ctx, st: &mut State, job: &PoolJob) {
         );
         return;
     };
-    let receipt = match checked_need_receipt(st, job, outcome, &identity) {
+    let receipt = match checked_need_receipt(ctx, st, job, outcome, &identity) {
         Ok(receipt) => receipt,
         Err(reason) => {
             settle_need_merge(
@@ -78,12 +78,13 @@ pub(super) fn apply_need_merge(ctx: &Ctx, st: &mut State, job: &PoolJob) {
 /// naming the first mismatch. A `job` entry naming this very job is not a
 /// requested source and is dropped before checking.
 fn checked_need_receipt(
+    ctx: &Ctx,
     st: &State,
     job: &PoolJob,
     outcome: &jobs::JobOutcome,
     identity: &NeedMergeIdentity,
 ) -> Result<pool_dispatch::MergeReceipt, String> {
-    let mut receipt = pool_dispatch::parse_receipt(&outcome.receipt).ok_or_else(|| {
+    let mut receipt = pool_dispatch::parse_receipt_logged(ctx, job).ok_or_else(|| {
         String::from("no PUMP_MERGE_RESULT line holding a parsable merge receipt")
     })?;
     receipt

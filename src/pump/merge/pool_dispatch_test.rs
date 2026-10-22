@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     MERGE_BRIEF, MERGE_TIMEOUT_RULES, MergeReceipt, SourceResult, apply_source, parse_receipt,
-    published_integration_tip, record_shared_timeout_exception, sources_failure,
-    timeout_status_line, valid_sha,
+    parse_receipt_form, published_integration_tip, record_shared_timeout_exception,
+    sources_failure, timeout_status_line, valid_sha,
 };
 use crate::pump::config::{Generated, PumpConfig};
 use crate::pump::host::test_ctx;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
+use crate::pump::marked_result::ResultForm;
 use crate::pump::merge::{dispatch_pool, target_write_blocked};
 use crate::pump::state::{GateRecord, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
@@ -18,6 +19,51 @@ fn valid_sources(
     jobs: &BTreeSet<String>,
 ) -> bool {
     sources_failure(sources, units, jobs).is_none()
+}
+
+const PRODUCTION_RECEIPT: &str = r#"{"version":1,"target":"default","tip":"67e16baadf29ce69ef73baf9300d611310bce38e","sources":[{"kind":"unit","id":"0c7ce8f9-2","status":"merged","why":"","detail":"Clean merge ...","outside":[],"secs":0}],"shared_check_timeouts":0,"shared_check_timeout_retries":0,"shared_check_recoveries":[]}"#;
+
+#[test]
+fn merge_receipt_without_prefix_is_found_as_a_standalone_line() {
+    let text = format!("Merged cleanly.\n\n{PRODUCTION_RECEIPT}");
+    let (receipt, form) = parse_receipt_form(&text).unwrap();
+    assert_eq!(form, ResultForm::Unprefixed);
+    assert_eq!(receipt.tip, "67e16baadf29ce69ef73baf9300d611310bce38e");
+    assert_eq!(receipt.sources[0].id, "0c7ce8f9-2");
+}
+
+#[test]
+fn merge_receipt_fenced_or_backticked_without_prefix_is_found() {
+    let fenced = format!("done\n```json\n{PRODUCTION_RECEIPT}\n```\n");
+    assert_eq!(parse_receipt(&fenced).unwrap().target, "default");
+    let inline = format!("done\n`{PRODUCTION_RECEIPT}`\n");
+    assert_eq!(parse_receipt(&inline).unwrap().target, "default");
+    let one_line_fence = format!("done\n```{PRODUCTION_RECEIPT}```\n");
+    assert_eq!(parse_receipt(&one_line_fence).unwrap().target, "default");
+}
+
+#[test]
+fn merge_receipt_prefixed_line_is_preferred_over_a_bare_one() {
+    let prefixed = PRODUCTION_RECEIPT.replace("\"default\"", "\"prefixed\"");
+    let text = format!("PUMP_MERGE_RESULT={prefixed}\n{PRODUCTION_RECEIPT}\n");
+    let (receipt, form) = parse_receipt_form(&text).unwrap();
+    assert_eq!(form, ResultForm::Prefixed);
+    assert_eq!(receipt.target, "prefixed");
+}
+
+#[test]
+fn merge_receipt_inside_prose_is_not_parsed() {
+    let text = format!("The receipt is {PRODUCTION_RECEIPT} as requested.\n");
+    assert!(parse_receipt(&text).is_none());
+    let trailing = format!("receipt: {PRODUCTION_RECEIPT}\n");
+    assert!(parse_receipt(&trailing).is_none());
+}
+
+#[test]
+fn merge_receipt_object_without_a_tip_is_not_parsed() {
+    let text = "{\"version\":1,\"target\":\"default\",\"sources\":[]}\n";
+    assert!(parse_receipt(text).is_none());
+    assert!(parse_receipt("{\"status\":\"ok\"}\n").is_none());
 }
 
 #[test]

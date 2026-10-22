@@ -383,6 +383,54 @@ fn merged_need_units_freeze_exactly_without_counting_as_next_merges() {
 }
 
 #[test]
+fn a_need_unit_receipt_missing_its_prefix_is_accepted_and_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    let (base, host) = test_ctx(dir.path(), config);
+    let ctx = base.with_routing(routing());
+    let targets = ctx.cfg.target_configs();
+    let batches = BTreeMap::from([(String::from("default"), 1)]);
+    let mut state = State::default();
+    add_need(&mut state, "n1", &["n1-u1"]);
+    active_branch(&mut state, "n1", BASE, BASE);
+    reply_unit_source(&host, "n1-u1");
+    state.units.insert(
+        String::from("n1-u1"),
+        unit("n1", Status::Delivered, 1, Some("vivi/unit/n1-u1-a1")),
+    );
+    let mut waiting =
+        BTreeMap::from([("default".to_owned(), VecDeque::from(["n1-u1".to_owned()]))]);
+    let started =
+        dispatch_units(&ctx, &mut state, "merge", &targets, &batches, &mut waiting).unwrap();
+    let id = started
+        .iter()
+        .find(|id| state.jobs[*id].kind == "merge")
+        .unwrap()
+        .clone();
+    let branch_ref = "refs/heads/vivi/need/n1";
+    host.reply(
+        &branch_ref_command(branch_ref),
+        0,
+        &format!("{TIP}\t{branch_ref}\n"),
+    );
+    let result = format!(
+        "agent exit 0 in 2s\nrunner source: refs/heads/vivi/unit/n1-u1-a1 {UNIT_SHA} 1\nrunner publish: pushed {branch_ref} {TIP} {TIP}\nrunner contains: {BASE} 1\n{{\"version\":1,\"target\":\"default\",\"tip\":\"{TIP}\",\"sources\":[{{\"kind\":\"unit\",\"id\":\"n1-u1\",\"status\":\"merged\",\"outside\":[],\"secs\":2}}]}}"
+    );
+    finish_job(&mut state, &id, result);
+
+    super::super::pool_dispatch::apply_dispatched(&ctx, &mut state);
+    assert_eq!(state.units["n1-u1"].status, Status::Merged);
+    assert_eq!(state.units["n1-u1"].commit.as_deref(), Some(TIP));
+    let logs = host.logs();
+    assert!(
+        logs.iter()
+            .any(|line| line.contains("accepted without its PUMP_MERGE_RESULT= prefix")),
+        "{logs:?}"
+    );
+}
+
+#[test]
 fn need_unit_merge_without_runner_source_ancestry_is_not_accepted() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = PumpConfig::default();

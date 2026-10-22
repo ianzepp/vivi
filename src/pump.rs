@@ -28,6 +28,7 @@ pub mod hold;
 pub mod host;
 pub mod jobs;
 pub mod logview;
+pub(crate) mod marked_result;
 pub mod merge;
 pub mod need;
 pub mod need_audit;

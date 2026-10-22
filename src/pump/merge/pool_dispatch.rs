@@ -8,6 +8,7 @@ use serde::Deserialize;
 use crate::error::VivariumError;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::{self, BranchSource, JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::marked_result::{ResultForm, find_marked, note_unprefixed};
 use crate::pump::state::{MergeResult, State, Status};
 
 use super::apply::{apply_failure, apply_undecided};
@@ -351,7 +352,7 @@ fn apply_job(ctx: &Ctx, st: &mut State, job: &PoolJob) {
         );
         return;
     };
-    let Some(receipt) = parse_receipt(&outcome.receipt) else {
+    let Some(receipt) = parse_receipt_logged(ctx, job) else {
         reject_job(
             ctx,
             st,
@@ -508,11 +509,25 @@ fn undecided_job(ctx: &Ctx, st: &mut State, job: &PoolJob, why: &str, detail: &s
     ctx.exception("merge-job-undecided", &job.id, detail);
 }
 
+const RESULT_PREFIX: &str = "PUMP_MERGE_RESULT=";
+
 pub(super) fn parse_receipt(receipt: &str) -> Option<MergeReceipt> {
-    let line = receipt
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("PUMP_MERGE_RESULT="))?;
-    serde_json::from_str(line).ok()
+    parse_receipt_form(receipt).map(|(receipt, _)| receipt)
+}
+
+/// Parse the merge receipt and report whether it carried its prefix.
+pub(super) fn parse_receipt_form(receipt: &str) -> Option<(MergeReceipt, ResultForm)> {
+    find_marked(receipt, RESULT_PREFIX)
+}
+
+/// Parse the merge receipt, logging once when it lacked its prefix.
+pub(super) fn parse_receipt_logged(ctx: &Ctx, job: &PoolJob) -> Option<MergeReceipt> {
+    let outcome = job.outcome.as_ref()?;
+    let (receipt, form) = parse_receipt_form(&outcome.receipt)?;
+    if form == ResultForm::Unprefixed {
+        note_unprefixed(ctx, &job.id, RESULT_PREFIX);
+    }
+    Some(receipt)
 }
 
 /// Report an exhausted shared-check retry once for its merge job.
