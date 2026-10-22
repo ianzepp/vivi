@@ -296,6 +296,9 @@ fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
     if merge.lanes == 0 {
         found.invalid("[pump.merge] lanes must be >= 1");
     }
+    if merge.need_parallel == 0 {
+        found.invalid("[pump.merge] need_parallel must be >= 1");
+    }
     if merge
         .repair_budget
         .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
@@ -368,6 +371,9 @@ fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Find
     }
     if merge.is_some_and(|merge| merge.lanes == 0) {
         found.invalid(format!("{prefix}.merge lanes must be >= 1"));
+    }
+    if merge.is_some_and(|merge| merge.need_parallel == 0) {
+        found.invalid(format!("{prefix}.merge need_parallel must be >= 1"));
     }
     if merge.is_some_and(|merge| {
         merge

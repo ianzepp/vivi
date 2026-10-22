@@ -6,6 +6,7 @@
 mod apply;
 mod flaky;
 mod need_branch_init;
+mod need_cap;
 mod need_dispatch;
 mod need_receipts;
 mod pool_dispatch;

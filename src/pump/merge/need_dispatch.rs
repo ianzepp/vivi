@@ -13,6 +13,7 @@ use crate::pump::jobs::{self, JobSpec, PoolJob};
 use crate::pump::need::{self, NeedBranch, NeedBranchStatus};
 use crate::pump::state::{State, Status};
 
+use super::need_cap::{NeedSlots, rank_groups};
 use super::pool_dispatch::{MERGE_BRIEF, MERGE_TIMEOUT_RULES};
 use super::select::take_batch;
 
@@ -35,13 +36,22 @@ pub(super) fn dispatch_units(
     let mut started = Vec::new();
     seed_completed_no_defect_needs(ctx, st, targets, &mut started);
     let grouped = take_managed_waiting(ctx, st, waiting);
+    let grouped = rank_groups(ctx, st, grouped);
+    let mut slots = NeedSlots::new(st, targets);
     for ((target, need_id), units) in grouped {
         if !targets.contains_key(&target) {
             continue;
         }
         let size = batches.get(&target).copied().unwrap_or(1).max(1);
-        let result =
-            dispatch_need_group(ctx, st, role, &target, &need_id, units, size, &mut started);
+        let result = dispatch_need_group(
+            ctx,
+            st,
+            role,
+            (&target, &need_id),
+            units,
+            size,
+            (&mut slots, &mut started),
+        );
         // One need that cannot dispatch (its remote cannot be read, its row
         // is bad) must not stop the others, or the pump.
         crate::pump::tick_steps::soft_step(
@@ -50,6 +60,7 @@ pub(super) fn dispatch_units(
             result,
         );
     }
+    slots.log_deferred(ctx);
     refresh_freezes(ctx, st)?;
     Ok(started)
 }
@@ -58,11 +69,10 @@ fn dispatch_need_group(
     ctx: &Ctx,
     st: &mut State,
     role: &str,
-    target: &str,
-    need_id: &str,
+    (target, need_id): (&str, &str),
     mut units: VecDeque<String>,
     size: usize,
-    started: &mut Vec<String>,
+    (slots, started): (&mut NeedSlots, &mut Vec<String>),
 ) -> Result<(), VivariumError> {
     let Some(revision) = retain_current_need_units(st, need_id, &mut units) else {
         return Ok(());
@@ -97,7 +107,7 @@ fn dispatch_need_group(
         return Ok(());
     }
     enqueue_need_batch(
-        ctx, st, role, target, need_id, revision, &branch, &mut units, size, started,
+        ctx, st, role, target, need_id, revision, &branch, &mut units, size, slots, started,
     )
 }
 
@@ -268,10 +278,11 @@ fn enqueue_need_batch(
     branch: &NeedBranch,
     units: &mut VecDeque<String>,
     size: usize,
+    slots: &mut NeedSlots,
     started: &mut Vec<String>,
 ) -> Result<(), VivariumError> {
     let selected = retain_branchable(ctx, st, need_id, take_batch(st, units, size));
-    if selected.is_empty() {
+    if selected.is_empty() || !slots.has_room(target) {
         return Ok(());
     }
     let Some(target_ctx) = ctx.for_target(target) else {
@@ -292,6 +303,7 @@ fn enqueue_need_batch(
     ctx.log(&format!(
         "need merge job queued {id} target={target} need={need_id} revision={revision}"
     ));
+    slots.started(target);
     started.push(id);
     Ok(())
 }

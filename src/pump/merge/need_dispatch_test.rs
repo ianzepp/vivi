@@ -1057,3 +1057,178 @@ fn an_unchanged_stuck_disposition_is_logged_once() {
     refresh_freezes(&ctx, &mut state).unwrap();
     assert_eq!(recorded(&host), 2);
 }
+
+struct CapFixture {
+    _dir: tempfile::TempDir,
+    host: std::sync::Arc<crate::pump::host::FakeHost>,
+    ctx: crate::pump::host::Ctx,
+    state: State,
+}
+
+/// `count` needs `n1..nN`, each with one delivered unit on an active branch.
+/// `cap` overrides `[pump.merge] need_parallel` when given.
+fn cap_fixture(count: usize, cap: Option<u32>) -> CapFixture {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    if let Some(cap) = cap {
+        config.merge.need_parallel = cap;
+    }
+    let (base, host) = test_ctx(dir.path(), config);
+    let ctx = base.with_routing(routing());
+    let mut state = State::default();
+    for index in 1..=count {
+        let need_id = format!("n{index}");
+        let uid = format!("{need_id}-u1");
+        add_need(&mut state, &need_id, &[uid.as_str()]);
+        active_branch(&mut state, &need_id, BASE, BASE);
+        reply_unit_source(&host, &uid);
+    }
+    CapFixture {
+        _dir: dir,
+        host,
+        ctx,
+        state,
+    }
+}
+
+impl CapFixture {
+    /// One dispatch tick over every unit still `Delivered`, in unit-id order.
+    fn tick(&mut self) -> Vec<String> {
+        let targets = self.ctx.cfg.target_configs();
+        let batches = BTreeMap::from([(String::from("default"), 1)]);
+        let queue: VecDeque<String> = self
+            .state
+            .units
+            .iter()
+            .filter(|(_, unit)| unit.status == Status::Delivered)
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        let mut waiting = BTreeMap::from([(String::from("default"), queue)]);
+        dispatch_units(
+            &self.ctx,
+            &mut self.state,
+            "merge",
+            &targets,
+            &batches,
+            &mut waiting,
+        )
+        .unwrap()
+    }
+
+    /// The needs that own the given started merge jobs, sorted.
+    fn needs_of(&self, started: &[String]) -> Vec<String> {
+        let mut needs: Vec<String> = started
+            .iter()
+            .filter_map(|id| self.state.jobs[id].payload["need"].as_str())
+            .map(str::to_owned)
+            .collect();
+        needs.sort();
+        needs
+    }
+
+    fn cap_lines(&self) -> Vec<String> {
+        self.host
+            .logs()
+            .into_iter()
+            .filter(|line| line.contains("need-merge cap"))
+            .collect()
+    }
+}
+
+#[test]
+fn need_merge_cap_defaults_to_four_per_target() {
+    assert_eq!(crate::pump::config::MergeConfig::default().need_parallel, 4);
+    let mut fx = cap_fixture(6, None);
+
+    let started = fx.tick();
+
+    assert_eq!(started.len(), 4, "{started:?}");
+    assert_eq!(
+        fx.cap_lines(),
+        ["need-merge cap default: 4/4 active, 2 waiting"]
+    );
+}
+
+#[test]
+fn need_merge_cap_holds_across_needs_and_logs_once_per_tick() {
+    let mut fx = cap_fixture(5, Some(2));
+
+    let started = fx.tick();
+
+    assert_eq!(started.len(), 2, "{started:?}");
+    assert_eq!(
+        fx.cap_lines(),
+        ["need-merge cap default: 2/2 active, 3 waiting"]
+    );
+    let merging = fx
+        .state
+        .units
+        .values()
+        .filter(|unit| unit.status == Status::Merging)
+        .count();
+    assert_eq!(merging, 2, "deferred units stay delivered");
+
+    // Still full on the next tick: nothing more starts, one more log line.
+    assert!(fx.tick().is_empty());
+    assert_eq!(fx.cap_lines().len(), 2);
+}
+
+#[test]
+fn need_merge_cap_starts_priority_needs_first() {
+    let mut fx = cap_fixture(4, Some(2));
+    crate::pump::priority::set(&fx.ctx.home, "n4", 5).unwrap();
+    crate::pump::priority::set(&fx.ctx.home, "n3", 1).unwrap();
+
+    let started = fx.tick();
+
+    assert_eq!(fx.needs_of(&started), ["n3", "n4"]);
+}
+
+#[test]
+fn need_merge_cap_starts_fix_units_before_priority_needs() {
+    let mut fx = cap_fixture(3, Some(1));
+    let fix_uid = format!("{}n1", fx.ctx.cfg.fix_prefix);
+    let fix = fx.state.units.remove("n1-u1").unwrap();
+    fx.state.units.insert(fix_uid.clone(), fix);
+    fx.state.units.get_mut(&fix_uid).unwrap().branch = Some(format!("vivi/unit/{fix_uid}-a1"));
+    fx.state.needs.get_mut("n1").unwrap().units = vec![fix_uid.clone()];
+    reply_unit_source(&fx.host, &fix_uid);
+    crate::pump::priority::set(&fx.ctx.home, "n3", 9).unwrap();
+
+    let started = fx.tick();
+
+    assert_eq!(fx.needs_of(&started), ["n1"]);
+}
+
+#[test]
+fn need_merge_cap_frees_a_slot_for_the_next_need_on_a_later_tick() {
+    let mut fx = cap_fixture(3, Some(2));
+    let first = fx.tick();
+    assert_eq!(first.len(), 2);
+    assert!(fx.tick().is_empty());
+
+    // A finished job stops running its checks and frees its slot, even
+    // before its receipt is applied.
+    fx.state.jobs.get_mut(&first[0]).unwrap().status = JobStatus::Finished;
+    let next = fx.tick();
+
+    assert_eq!(next.len(), 1, "{next:?}");
+    let mut all = first.clone();
+    all.extend(next);
+    assert_eq!(fx.needs_of(&all), ["n1", "n2", "n3"]);
+}
+
+#[test]
+fn need_merge_cap_counts_only_need_merge_jobs() {
+    let mut fx = cap_fixture(2, Some(1));
+    for (id, kind) in [("init-x", "need-branch-init"), ("shared-1", "merge")] {
+        let mut spec = crate::pump::jobs::JobSpec::new(id, kind, "merge", "s", "b");
+        spec.target = Some(String::from("default"));
+        crate::pump::jobs::enqueue(&mut fx.state, spec).unwrap();
+    }
+
+    let started = fx.tick();
+
+    assert_eq!(fx.needs_of(&started).len(), 1, "{started:?}");
+}

@@ -1008,6 +1008,8 @@ slots = 4
 Legacy `[pump.dispatch.kinds]` routes unit tasks when the hand role has no pool;
 `[[pump.dispatch.lanes]]` supplies legacy model caps when a pool has no per-model caps.
 `[pump.gate] pools` provides gate fallback candidates after the gate role's pool chain.
+`[pump.merge] need_parallel` (default 4, >= 1, per target under `[pump.targets.<id>.merge]`) caps
+concurrent need-merge jobs per target; waiting needs start in priority order as slots free.
 `[pump.merge] lanes` is not a live merge route. Convert supported legacy
 dispatch and gate routing with
 `vivi config migrate` (dry-run) or `vivi config migrate --write`.

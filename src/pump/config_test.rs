@@ -213,6 +213,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.default_kind, "");
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.merge.lanes, 1);
+    assert_eq!(cfg.merge.need_parallel, 4);
     assert_eq!(cfg.merge.format, "");
     assert!(cfg.merge.shared_checks.is_empty());
     assert_eq!(cfg.merge.proof_timeout, 300);
@@ -508,6 +509,51 @@ fn validate_rejects_zero_merge_lanes() {
         .expect_err("zero merge lanes must fail");
     assert!(
         err.to_string().contains("[pump.merge] lanes must be >= 1"),
+        "{err}"
+    );
+}
+
+#[test]
+fn validate_rejects_zero_need_parallel() {
+    let cfg = PumpConfig {
+        merge: crate::pump::config::MergeConfig {
+            need_parallel: 0,
+            ..crate::pump::config::MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = cfg
+        .validate(Path::new("."), &pools(&["p"]))
+        .expect_err("zero need_parallel must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.merge] need_parallel must be >= 1"),
+        "{err}"
+    );
+    let mut cfg = valid();
+    cfg.targets = BTreeMap::from([(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            promote: false,
+            merge: Some(crate::pump::config::MergeConfig {
+                need_parallel: 0,
+                ..crate::pump::config::MergeConfig::default()
+            }),
+            gate: Some(crate::pump::config::GateConfig {
+                command: String::from("./gate"),
+                ..crate::pump::config::GateConfig::default()
+            }),
+            ..PumpTarget::default()
+        },
+    )]);
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("zero target need_parallel must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.targets.tela].merge need_parallel must be >= 1"),
         "{err}"
     );
 }

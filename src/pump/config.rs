@@ -524,6 +524,10 @@ pub struct MergeConfig {
     /// checkout and build directory. A lane takes the top-ranked delivered
     /// units when it is idle, so a red lane never blocks the others.
     pub lanes: u32,
+    /// Most need-merge jobs (the per-need unit merges that run the shared
+    /// checks) active at once per repository target. Waiting need groups
+    /// start in priority order as slots free.
+    pub need_parallel: u32,
     /// Format command run after merging.
     pub format: String,
     /// Shared checks run after every merge, before the units' own proof.
@@ -555,6 +559,7 @@ impl Default for MergeConfig {
         Self {
             batch: 8,
             lanes: 1,
+            need_parallel: 4,
             format: String::new(),
             shared_checks: Vec::new(),
             checks_for: BTreeMap::new(),
