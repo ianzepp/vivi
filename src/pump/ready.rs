@@ -299,28 +299,49 @@ pub fn note_hold(
 /// merging units no longer occupy worker space, and the merge thread serializes
 /// their integration; a fix unit ignores overlap against non-fix units.
 fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
-    let fix = uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need);
-    for (oid, o) in &st.units {
-        if oid == uid {
-            continue;
-        }
-        if o.target_id() != u.target_id() {
-            continue;
-        }
-        let busy = o.status == Status::Inflight;
-        if busy
-            && overlaps(
-                &generated_free(ctx, u.target_id(), &u.write_scope),
-                &generated_free(ctx, o.target_id(), &o.write_scope),
-            )
-        {
-            if fix && !oid.starts_with(ctx.cfg.fix_prefix.as_str()) {
-                continue;
-            }
-            return true;
-        }
+    let fix = is_fix(ctx, uid, u);
+    st.units.iter().any(|(oid, o)| {
+        oid != uid && o.status == Status::Inflight && scopes_clash(ctx, fix, u, oid, o)
+    })
+}
+
+/// True when `u` overlaps the write scope of a unit that earlier in this
+/// dispatch tick was planned to start. Planned starts are not inflight in the
+/// state yet, so [`is_ready`] cannot see them; without this two overlapping
+/// units that are both ready in one tick would run together.
+#[must_use]
+pub fn overlaps_planned<'a>(
+    ctx: &Ctx,
+    uid: &str,
+    u: &Unit,
+    planned: impl IntoIterator<Item = (&'a str, &'a Unit)>,
+) -> bool {
+    let fix = is_fix(ctx, uid, u);
+    planned
+        .into_iter()
+        .any(|(oid, o)| oid != uid && scopes_clash(ctx, fix, u, oid, o))
+}
+
+/// A fix unit, or a unit of a need with a priority level: it only clashes
+/// with fix units.
+fn is_fix(ctx: &Ctx, uid: &str, u: &Unit) -> bool {
+    uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need)
+}
+
+/// Whether `u` and `o` (unit id `oid`) cannot be edited at the same time: same
+/// target, overlapping hand-written write scopes, and not the case of a fix
+/// unit beside a non-fix unit.
+fn scopes_clash(ctx: &Ctx, fix: bool, u: &Unit, oid: &str, o: &Unit) -> bool {
+    if o.target_id() != u.target_id() {
+        return false;
     }
-    false
+    if fix && !oid.starts_with(ctx.cfg.fix_prefix.as_str()) {
+        return false;
+    }
+    overlaps(
+        &generated_free(ctx, u.target_id(), &u.write_scope),
+        &generated_free(ctx, o.target_id(), &o.write_scope),
+    )
 }
 
 /// Choose a dispatch lane for a unit: the last-resort model on the final

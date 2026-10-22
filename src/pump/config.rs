@@ -78,6 +78,9 @@ pub struct PumpConfig {
     pub planner: PlannerConfig,
     /// Proof-validation settings (the `[pump.proof]` table).
     pub proof: ProofConfig,
+    /// Plan-check settings (the `[pump.plan]` table).
+    #[serde(skip_serializing_if = "PlanConfig::is_empty")]
+    pub plan: PlanConfig,
     /// Dispatch settings (the `[pump.dispatch]` table).
     pub dispatch: DispatchConfig,
     /// Merge settings (the `[pump.merge]` table).
@@ -117,6 +120,7 @@ impl Default for PumpConfig {
             board: BoardConfig::default(),
             planner: PlannerConfig::default(),
             proof: ProofConfig::default(),
+            plan: PlanConfig::default(),
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             workspace: PumpWorkspace::default(),
@@ -351,6 +355,62 @@ impl Default for BoardConfig {
 pub struct ProofConfig {
     /// Extra starting binaries proof commands may use, matched on basename.
     pub allow: Vec<String>,
+}
+
+/// Plan-check settings (the `[pump.plan]` table).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PlanConfig {
+    /// Proof rules a planned unit must satisfy (`[[pump.plan.proof_rules]]`).
+    pub proof_rules: Vec<ProofRule>,
+}
+
+impl PlanConfig {
+    /// True when no key of the table is set, so it is left out of a rewrite.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.proof_rules.is_empty()
+    }
+}
+
+/// One `[[pump.plan.proof_rules]]` entry: a unit whose write scope matches
+/// `scope` must carry a proof command matching `proof`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ProofRule {
+    /// Glob over a unit's write scope (`*`, `?`, `[..]` within a path segment,
+    /// `**` across segments). A unit matches when one of its write-scope
+    /// entries could name a path the glob covers.
+    pub scope: String,
+    /// Regular expression one of the unit's proof commands must match.
+    pub proof: String,
+    /// Why the rule exists; the planner reads it when its plan is rejected.
+    /// Empty falls back to a message naming the scope and the proof.
+    pub reason: String,
+}
+
+impl ProofRule {
+    /// The proof regex, or the compile error text.
+    ///
+    /// # Errors
+    /// The `regex` crate's message when `proof` is not a valid pattern.
+    pub fn pattern(&self) -> Result<regex::Regex, String> {
+        regex::Regex::new(&self.proof).map_err(|error| error.to_string())
+    }
+
+    /// The reason a unit that matches `scope` but has no matching proof is
+    /// rejected.
+    #[must_use]
+    pub fn reason_text(&self) -> String {
+        if self.reason.trim().is_empty() {
+            format!(
+                "write scope `{}` needs a proof command matching `{}`",
+                self.scope, self.proof
+            )
+        } else {
+            self.reason.trim().to_owned()
+        }
+    }
 }
 
 /// One dispatch lane: a model and the slots it may hold.

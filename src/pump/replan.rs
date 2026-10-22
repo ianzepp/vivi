@@ -159,6 +159,10 @@ fn clear_planner_state(st: &mut State, need: &str) {
     st.board
         .planner_retry_at
         .remove(&format!("{need}.revision"));
+    st.board
+        .planner_fails
+        .remove(&crate::pump::plan::invalid_key(need));
+    st.board.plan_findings.remove(need);
 }
 
 /// `vivi pump replan <NEED> [--force]`: post a replan action on the need's

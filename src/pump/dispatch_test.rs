@@ -663,6 +663,41 @@ fn per_tick_caps_the_number_of_started_units() {
     );
 }
 
+#[test]
+fn two_ready_units_with_overlapping_scopes_do_not_start_in_one_tick() {
+    let (_dir, ctx, host) = setup_with(cfg_with(3));
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2", "u3"]);
+    st.units.get_mut("u1").unwrap().write_scope = vec![String::from("src/shared/")];
+    // u2 belongs to another need: overlap is checked across needs.
+    let u2 = st.units.get_mut("u2").unwrap();
+    u2.write_scope = vec![String::from("src/shared/lib.rs")];
+    u2.need = String::from("n2");
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u2"].status, Status::Pending, "overlaps u1");
+    assert_eq!(st.units["u3"].status, Status::Inflight, "disjoint scope");
+    assert_eq!(
+        commands_with(&host, "pool dispatch --pool fly4 1a2b3c4d").len(),
+        2
+    );
+}
+
+#[test]
+fn an_overlapping_ordinary_unit_waits_for_a_fix_unit_planned_in_the_same_tick() {
+    let (_dir, ctx, host) = setup_with(cfg_with(3));
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "pumpfix-1"]);
+    st.units.get_mut("u1").unwrap().write_scope = vec![String::from("src/shared/")];
+    st.units.get_mut("pumpfix-1").unwrap().write_scope = vec![String::from("src/shared/a.rs")];
+    dispatch(&ctx, &mut st);
+    // Fix units rank first, as they do against an inflight overlap.
+    assert_eq!(st.units["pumpfix-1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+}
+
 /// A [`FakeHost`] gate proving concurrency: the first `pool dispatch` parks
 /// until a second one arrives, or a 3-second deadline passes so a serial
 /// regression fails the test instead of hanging the suite. Every other

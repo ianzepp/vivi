@@ -155,21 +155,10 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     let (minted, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), policy, need);
     if let Some(bad) = bad {
         if replaces.is_none() {
-            st.needs.insert(
-                need.to_string(),
-                NeedRecord {
-                    verdict: if is_hold_reason(&bad) {
-                        "hold".to_string()
-                    } else {
-                        "invalid".to_string()
-                    },
-                    reason: bad.clone(),
-                    units: Vec::new(),
-                    ..NeedRecord::default()
-                },
-            );
+            reject_first_plan(ctx, st, need, key, &bad);
+        } else {
+            raise_bad_plan(ctx, key, &bad);
         }
-        ctx.exception("bad-plan", key, &bad);
         if let Some(uid) = replaces
             && !crate::pump::collect::resplit_bad_plan(ctx, st, uid, &bad)
         {
@@ -177,9 +166,100 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
         }
         return;
     }
+    if replaces.is_none() {
+        let waits = crate::pump::plan_check::unlanded_prerequisites(ctx, st, need, &minted);
+        if !waits.is_empty() {
+            hold_on_prerequisites(ctx, st, need, waits);
+            return;
+        }
+    }
+    crate::pump::plan_check::warn_scope_overlaps(ctx, st, need, &minted);
     let revision = revision.unwrap_or(1);
     mint(ctx, st, need, &minted, revision);
     record(ctx, st, &plan, need, replaces, &minted, revision);
+}
+
+/// Log a rejected plan with its reasons, then raise the `bad-plan`
+/// exception. The log line carries the whole reason; the exception text is
+/// cut at 600 characters.
+fn raise_bad_plan(ctx: &Ctx, unit: &str, reason: &str) {
+    let shown: String = reason.chars().take(2000).collect();
+    ctx.log(&format!("bad-plan {unit}: {shown}"));
+    ctx.exception("bad-plan", unit, reason);
+}
+
+/// The findings kept for the planner prompt: long enough for every finding of
+/// a large plan, short enough to leave the prompt room.
+fn capped(findings: &str) -> String {
+    findings.chars().take(4000).collect()
+}
+
+/// How many times a rejected first plan is sent back to its planner before
+/// the need is held with the findings as its reason.
+pub(crate) const PLAN_REASKS: u32 = 2;
+
+/// The `planner_fails` key counting a need's rejected first plans.
+pub(crate) fn invalid_key(need: &str) -> String {
+    format!("{need}.invalid")
+}
+
+/// Record a rejected first plan. A reason that names a parked design choice
+/// (a repository target, a cross-target dependency) holds the need at once.
+/// Any other rejection records the need as `invalid` with the findings as its
+/// reason; the board pass then supersedes the plan and asks the planner again
+/// with those findings ([`crate::pump::board::reask_invalid_plans`]), up to
+/// [`PLAN_REASKS`] times, after which the need is `hold` with the findings as
+/// its reason.
+fn reject_first_plan(ctx: &Ctx, st: &mut State, need: &str, key: &str, bad: &str) {
+    let spent = st
+        .board
+        .planner_fails
+        .get(&invalid_key(need))
+        .copied()
+        .unwrap_or(0);
+    let hold = is_hold_reason(bad) || spent >= PLAN_REASKS;
+    st.needs.insert(
+        need.to_string(),
+        NeedRecord {
+            verdict: if hold { "hold" } else { "invalid" }.to_string(),
+            reason: bad.to_string(),
+            units: Vec::new(),
+            ..NeedRecord::default()
+        },
+    );
+    if hold {
+        st.board.plan_findings.remove(need);
+    } else {
+        st.board.plan_findings.insert(need.to_string(), capped(bad));
+    }
+    raise_bad_plan(ctx, key, bad);
+    if hold && !is_hold_reason(bad) {
+        ctx.exception(
+            "plan-held",
+            need,
+            &format!("{} plans were rejected; the need is held: {bad}", spent + 1),
+        );
+    }
+}
+
+/// Hold a need whose plan is sound but whose prerequisites have not landed:
+/// no units are minted, so nothing sits held on every tick. The board plans
+/// the need again once every prerequisite has landed
+/// ([`crate::pump::board::replan_unblocked`]).
+fn hold_on_prerequisites(ctx: &Ctx, st: &mut State, need: &str, waits: Vec<String>) {
+    let reason = format!("waits on {}", waits.join(", "));
+    ctx.log(&format!("plan {need} held: {reason}"));
+    st.board.plan_findings.remove(need);
+    st.needs.insert(
+        need.to_string(),
+        NeedRecord {
+            verdict: "hold".to_string(),
+            reason,
+            units: Vec::new(),
+            waits_on: waits,
+            ..NeedRecord::default()
+        },
+    );
 }
 
 /// Record, once per content, a plan file that cannot be read as a plan.
@@ -290,9 +370,16 @@ fn apply_revision(ctx: &Ctx, st: &mut State, need: &str, revision: u64, plan: &V
     );
     if let Some(bad) = bad {
         ctx.log(&format!("revision r{revision} of {need} rejected: {bad}"));
-        ctx.exception("bad-plan", need, &bad);
+        raise_bad_plan(ctx, need, &bad);
+        // The need stays `amendment_pending`: ask the planner again, with the
+        // findings, on the revision re-ask schedule.
+        st.board
+            .plan_findings
+            .insert(need.to_string(), capped(&bad));
+        crate::pump::amend::schedule_reask(ctx, st, need);
         return;
     }
+    crate::pump::plan_check::warn_scope_overlaps(ctx, st, need, &planned);
     let counts = apply_planned(ctx, st, need, revision, &planned);
     let withdrawn = apply_withdrawals(ctx, st, plan);
     record_revision(ctx, st, need, revision, plan, text, &counts, &withdrawn);
@@ -386,6 +473,7 @@ fn record_revision(
     record.units.retain(|uid| !removed.contains(uid));
     record.units.extend(counts.new_ids.iter().cloned());
     st.board.revision_planning.remove(need);
+    st.board.plan_findings.remove(need);
     st.board.planner_fails.remove(&format!("{need}.revision"));
     st.board
         .planner_retry_at
@@ -435,6 +523,9 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
             Apply::Amended
         }
         Status::Merged | Status::NoDefect => {
+            ctx.log(&format!(
+                "revision keeps {uid} as merged; it is not dispatched again"
+            ));
             if changed {
                 ctx.exception("revision-conflict", uid, "refused to change a merged unit");
                 Apply::Conflict
@@ -518,6 +609,10 @@ fn validate_units<'a>(
     if let Some(reason) = cross_target_dependency(st, ctx, &minted) {
         return (minted, Some(reason));
     }
+    let found = crate::pump::plan_check::findings(ctx, st, need, &minted);
+    if !found.is_empty() {
+        return (minted, Some(found.join("; ")));
+    }
     (minted, None)
 }
 
@@ -553,7 +648,7 @@ fn cross_target_dependency(st: &State, ctx: &Ctx, units: &[(&str, &Value)]) -> O
 
 /// Resolve one plan unit's target. Legacy pump config has exactly one
 /// implicit target; named target maps require the planner to choose one.
-fn target_for_plan(ctx: &Ctx, plan: &Value) -> Result<String, String> {
+pub(super) fn target_for_plan(ctx: &Ctx, plan: &Value) -> Result<String, String> {
     let targets = ctx.cfg.target_configs();
     let Some(target) = str_field(plan, "target") else {
         return if ctx.cfg.targets.is_empty() {
@@ -603,7 +698,7 @@ fn mint_one(ctx: &Ctx, st: &mut State, need: &str, uid: &str, plan: &Value, revi
 }
 
 /// True when the planned fields match the existing unit exactly.
-fn same_fields(unit: &Unit, plan: &Value) -> bool {
+pub(super) fn same_fields(unit: &Unit, plan: &Value) -> bool {
     unit.target == str_field(plan, "target").unwrap_or("default")
         && unit.title
             == str_field(plan, "title")
@@ -693,6 +788,8 @@ fn record(
             ..NeedRecord::default()
         },
     );
+    st.board.plan_findings.remove(need);
+    st.board.planner_fails.remove(&invalid_key(need));
     ctx.log(&format!("plan {need} verdict={verdict} units={count}"));
 }
 
@@ -708,12 +805,12 @@ fn resolve_stuck(ctx: &Ctx, uid: &str, fails: u32) {
 }
 
 /// A string field of a JSON object.
-fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+pub(super) fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
 /// A JSON array of strings; anything else becomes an empty list.
-fn str_list(v: Option<&Value>) -> Vec<String> {
+pub(super) fn str_list(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array)
         .map(|a| {
             a.iter()

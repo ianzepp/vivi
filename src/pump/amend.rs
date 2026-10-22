@@ -526,7 +526,7 @@ fn reask_key(handle: &str) -> String {
 /// earliest time [`reask_lost_revisions`] may ask again. The need stays
 /// `amendment_pending`, so nothing dispatches against a plan that is known to
 /// be stale until a revision lands or an operator steps in.
-fn schedule_reask(ctx: &Ctx, st: &mut State, handle: &str) {
+pub(super) fn schedule_reask(ctx: &Ctx, st: &mut State, handle: &str) {
     if !st
         .needs
         .get(handle)
@@ -579,14 +579,7 @@ fn reask_lost_revisions(ctx: &Ctx, st: &mut State) {
         if fails == REVISION_TRIES {
             st.board.planner_fails.insert(key.clone(), fails + 1);
             st.board.planner_retry_at.remove(&key);
-            ctx.exception(
-                "revision-failed",
-                &handle,
-                &format!(
-                    "{REVISION_TRIES} revision planners gave no usable plan; the need waits \
-                     for an operator: fix the thread or the plan, then `vivi pump replan {handle}`"
-                ),
-            );
+            ctx.exception("revision-failed", &handle, &given_up_text(st, &handle));
             continue;
         }
         st.board.planner_retry_at.remove(&key);
@@ -596,13 +589,37 @@ fn reask_lost_revisions(ctx: &Ctx, st: &mut State) {
         ctx.log(&format!(
             "amendment: {handle} has a requested revision and no planner; asking again"
         ));
-        launch_revision(
-            ctx,
-            st,
-            &handle,
-            Some("the previous revision planner gave no usable plan"),
-        );
+        let note = reask_note(st, &handle);
+        launch_revision(ctx, st, &handle, Some(&note));
     }
+}
+
+/// Why the planner is asked again: the findings of the plan the pump
+/// rejected, or that the previous planner gave no usable plan.
+fn reask_note(st: &State, handle: &str) -> String {
+    st.board.plan_findings.get(handle).map_or_else(
+        || String::from("the previous revision planner gave no usable plan"),
+        |found| {
+            format!(
+                "the pump rejected your previous revision; fix every finding and return \
+                 the complete plan again. Findings: {found}"
+            )
+        },
+    )
+}
+
+/// The `revision-failed` exception text, with the last findings when the
+/// planner's answers were rejected.
+fn given_up_text(st: &State, handle: &str) -> String {
+    let findings = st
+        .board
+        .plan_findings
+        .get(handle)
+        .map_or_else(String::new, |found| format!(" Last findings: {found}"));
+    format!(
+        "{REVISION_TRIES} revision planners gave no usable plan; the need waits \
+         for an operator: fix the thread or the plan, then `vivi pump replan {handle}`.{findings}"
+    )
 }
 
 /// True when the answer file of the next revision sits in `plans/` and the

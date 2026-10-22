@@ -2666,6 +2666,51 @@ a hand attempt. Every hand brief ends with a **done_when:** line: all listed
 PROOF commands exit 0 and the configured rules pass, or the reply ends with
 **VERDICT: no-defect** and evidence.
 
+**Plan checks.** Beyond proof validation, the pump runs deterministic checks
+on every plan and revision it ingests, and rejects the plan when one fails.
+Every rejection is logged as a **bad-plan** line that carries the concrete
+reasons, and the reasons are what the planner is told next:
+
+- **Proof rules.** Each **[[pump.plan.proof_rules]]** entry (see below) says
+  that a unit whose write scope matches **scope** must have a proof command
+  matching **proof**.
+- **Vacuous proofs.** A unit whose only proof commands are negated searches
+  (**! grep ...**, **! rg ...**, or **grep -c ... | grep -q '^0$'**) proves
+  absence, never the change, and is rejected. A **cargo test** filter that
+  appears neither in the unit's brief nor in any file of its write scope (read
+  from the target checkout, when it has files) would match no test, and is
+  rejected. When a check cannot tell, the plan passes.
+- **Finished work.** A unit the plan marks **merged** (a **status** field)
+  that the pump does not have as merged, and a new unit that repeats a merged
+  unit of the same need (same brief and write scope), are rejected. A revision
+  that carries a merged unit by its id keeps it merged; it is never
+  dispatched again.
+
+A rejected revision is asked again on the revision re-ask schedule (see
+revisions above), and the findings are in the new prompt and in the final
+**revision-failed** exception. A rejected first plan makes the need
+**invalid** with the findings as its reason; the board then moves the plan to
+**plans/rejected/** and asks the planner again with the findings, after 60
+seconds and then 120. A third rejected plan holds the need (verdict **hold**,
+a **plan-held** exception) with the findings as its reason; **vivi pump
+replan <need>** starts over. A split plan keeps its single re-ask, and the
+findings are in its prompt.
+
+A first plan whose need waits on a need that has not landed (a backlog graph
+dependency, or a unit **after** that names another need's unit) is not
+ingested: the need is held with the reason **waits on <need>** and no units,
+and the board plans it again once every need it waits on has landed. The
+ingest also logs an **overlap-warn** line for each new unit whose write scope
+overlaps a live unit of another need. Dispatch never starts two units with
+overlapping write scopes together, within one tick or across ticks.
+
+**Proof rules.** Each **[[pump.plan.proof_rules]]** entry has a **scope**
+glob, a **proof** regular expression and an optional **reason**. A unit whose
+write scope matches **scope** (one of its entries could name a path the glob
+covers) must carry at least one proof command that matches **proof**, or the
+plan is rejected with the reason. **vivi config validate** rejects an empty
+scope or proof and a proof that is not a valid regular expression.
+
 The pump does not close Vivi needs on its own. For a managed need, settled
 units are not enough: a current acceptance receipt must be verified on the
 integration branch before closeout can close it. **vivi pump closeout** lists
@@ -2733,6 +2778,11 @@ parallel = 6   # pool dispatches run at once per tick; 1 = one after another
 
 [pump.proof]
 allow = ["<project-specific executable>"]
+
+[[pump.plan.proof_rules]]    # optional, repeatable
+scope = "<write-scope glob>"   # ** crosses directories; * and ? stay in one
+proof = "<regex>"              # one proof command of the unit must match
+reason = "<why the rule exists>"   # shown to the planner on rejection
 
 [pump.merge]
 batch = 8

@@ -14,6 +14,9 @@ use crate::pump::planner_jobs;
 use crate::pump::ready::{blocked_needs, satisfied};
 use crate::pump::state::{State, Status, Unit};
 
+mod replan;
+pub use replan::{reask_invalid_plans, replan_unblocked};
+
 /// One row of `vivi need list --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedRow {
@@ -461,6 +464,13 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow) {
          unpublished branch from one repository into another; park the need if that handoff is required. \
          Return the plan for this need; do not write to a pump-local path."
     );
+    let prompt = match st.board.plan_findings.get(handle) {
+        Some(findings) => format!(
+            "{prompt}\nYour previous plan for this need was rejected by the pump's checks. Fix \
+             every finding and return the complete plan again. Findings: {findings}\n"
+        ),
+        None => prompt,
+    };
     let queued_at = ctx.now();
     let queued = planner_jobs::enqueue(
         ctx,
@@ -589,17 +599,7 @@ pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
         let Some(verdict) = parked_with_reply(ctx, st, &row.handle) else {
             continue;
         };
-        let superseded = ctx.home.join("plans").join("superseded");
-        drop(fs::create_dir_all(&superseded));
-        drop(fs::rename(
-            plan_path(ctx, &row.handle),
-            superseded.join(format!("{}.{}.json", row.handle, ctx.now())),
-        ));
-        let json = format!("{}.json", row.handle);
-        st.plans_seen.retain(|seen| seen != &json);
-        st.needs.remove(&row.handle);
-        let key = format!("{}:planned", row.handle);
-        st.board.replied.retain(|sent| sent != &key);
+        replan::forget_plan(ctx, st, &row.handle, "superseded");
         ctx.log(&format!(
             "board: operator replied on parked need {} (was {verdict}); re-planning",
             row.handle
@@ -909,6 +909,8 @@ pub fn board(ctx: &Ctx, st: &mut State) {
     let rows = candidate_rows_except(ctx, &crate::pump::gatefix::own_needs(st));
     expire_planning(ctx, st);
     replan_answered(ctx, st, &rows);
+    replan_unblocked(ctx, st, &rows);
+    reask_invalid_plans(ctx, st, &rows);
     launch_planners(ctx, st, &rows);
     let said = post_replies(ctx, st, &rows);
     let handles: Vec<String> = rows.iter().map(|row| row.handle.clone()).collect();
