@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 — 2026-10-22
+
+Operator pump records over MCP, and bounded board and overview.
 
 - **MCP `pump_send`, `pump_list`, `pump_show`.** Pump records through the
   project endpoint, so a need can be handed to the hosted pump without a shell
@@ -11,6 +13,17 @@
   (`open` default, `done`, `all`) and `limit` (default 50, at most 100) and
   answers `{records, total, truncated}`; `pump_show` answers one record with
   its `body`.
+- **Bounded `board`.** `board` returned every open task and need per role
+  with whole pool receipts in `last_event.note` (3.2 MB on a 7,000-letter
+  project). Tasks and needs are now capped per role (`tasks_cap`,
+  `needs_cap`, default 5, newest first, with `*_hidden` counts), notes become
+  an 80-character `note_preview` with `note_chars`, and the graph frontier is
+  capped (`graph_cap`, default 25) with totals and no node table. `notes: true`
+  keeps whole notes; `full: true` lifts every bound.
+- **`overview` ready.** `ready` listed every open backlog node of every role
+  while the totals counted only the caller's work. It now lists the open work
+  the caller holds, capped at 50, with `ready_total`; the project-wide
+  frontier stays on `graph`.
 
 ## 1.8.0 — 2026-10-22
 
