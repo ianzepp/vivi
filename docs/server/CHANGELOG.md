@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.6.0 — 2026-10-21
+
+Pump health: a read-only health verdict over a hosted project's pump, so a
+monitor can check it over the network without shell access to the host.
+Built on vivi 18.2.0, which reads the pump store schema 7 that vivi 18.1.2
+pumps write (vivi 18.1.0 refused it).
+
+- **`GET /v1/projects/{id}/pump/health?since=&stale_after=`.** Any
+  authenticated member (identity token or API key). The body is
+  `vivi::pump::health` as JSON: `verdict` (`ok`, `degraded`, `stalled`,
+  `unknown`) with `reasons`, `as_of`, `control`, `writer` (`state`, `source`,
+  `pid`), `last_tick`, `status_age_secs`, unit counts, recent merges, blocked
+  units and parked needs with reasons, complete-but-open needs, recent
+  exceptions, and `changed_since` when `since` (a previous `as_of`) is given.
+  A server-owned project answers `404 not_hosted`; an unknown query key or a
+  non-integer value is `400`.
+- **MCP `pump`.** The same JSON as a tool, for any caller on a hosted project
+  (`since`, `stale_after`).
+- **Read-only.** The library opens `pump.db` with SQLite's read-only flags in
+  one read transaction, never migrates it, and finds the pump process from
+  `/proc/locks` without touching the pump lock. There is no route that
+  pauses, stops, requeues, withdraws or replans.
+
 ## 1.5.0 — 2026-10-21
 
 Hosted projects: the server serves the host registry's projects from their own mailspaces (the hub's project mailspace and the server that wraps it are one mailspace). Built on vivi 18.1.0. Railway retired; self-hosted binary releases only.
