@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod message;
 pub mod monitor;
 pub mod pool;
+pub mod project_create;
 pub mod proxy;
 pub mod pump;
 pub mod registry;

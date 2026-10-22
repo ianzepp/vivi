@@ -90,6 +90,27 @@ mailspace's own `mind` role and will not show it. Held rows carry their
 holder in a `held_for` JSON field (own rows omit the field; the human listing
 shows a `held_for` column).
 
+### Creating a project
+
+`vivi project create <name> --projects-root P --lanes-root L --git-url-prefix U`
+makes a whole pumped project in one step: a group-shared bare repo at
+`L/<name>.git`, a mailspace at `P/<name>` (with the starter `[pump]`), the
+project's own values, and a host-registry entry (pump and serve on unless
+`--no-pump` / `--no-serve`). Both roots must already exist.
+
+- `--pool <p>` writes `[pools.<p>] remote_url = <U><name>.git` in the
+  project's file; the pool itself must come from a base mailspace above `P`
+  (`base = true`).
+- `--gate <cmd>` sets `[pump.gate] command`; `--branch` sets `[pump] branch`
+  (default `main`).
+- `--initial-commit` makes one empty commit on the branch; without it the repo
+  stays empty until the first push.
+- Any failing step undoes every earlier step this call made. The result
+  reports readiness: a project still missing items is registered and holds
+  until they are filled (`vivi config validate` names them).
+
+The library entry point is `vivi::project_create::create`; it prints nothing.
+
 ## Boot
 
 `vivi boot` prints the whole project frame in one read: seat bindings against
@@ -2807,7 +2828,16 @@ status plus the JSON `status` field (`ok`, `down`, `credential_dead`).
 
 Provider `kind` is `native`, `child`, or `upstream`. Native adapters shipped
 in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
-`kimi-coding` / `openai-passthrough` (header injection and byte passthrough).
+`kimi-coding` / `openai-passthrough` (header injection and byte passthrough),
+and `xai-grok` (the Grok CLI OIDC login file, refreshed under a lock; byte
+passthrough to `https://api.x.ai/v1`). Example `grok` block:
+`kind = "native"`, `adapter = "xai-grok"`, `credentials = "~/.grok/auth.json"`
+(optional `upstream`, `token_url`, `client_id`, `models`; or `key_cmd` for a
+static bearer with no refresh). `openai-passthrough` also serves non-Kimi
+OpenAI-style upstreams with a `key_cmd`, for example an `opencode-go` block:
+`upstream = "https://opencode.ai/zen/go/v1"` and a `key_cmd` that prints the
+key (it forwards every path, including `/messages`, but still sends Kimi
+identity headers).
 Non-loopback `listen` requires `allow_remote = true` and `auth_token_cmd`.
 POST needs `Content-Type: application/json`. Requests with an `Origin`
 header, or a `Host` that is not loopback / the bind address, are refused.

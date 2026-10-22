@@ -101,13 +101,14 @@ pub fn mark_dead(path: &Path) {
     if first {
         tracing::warn!(
             path = %path.display(),
-            "credential refresh was refused; log in again (kimi / codex login)"
+            "credential refresh was refused; log in again (kimi / codex / grok login)"
         );
     }
 }
 
 /// Fixed 502 body used when a provider is dead.
-pub const DEAD_MESSAGE: &str = "credential refresh was refused; log in again (kimi / codex login)";
+pub const DEAD_MESSAGE: &str =
+    "credential refresh was refused; log in again (kimi / codex / grok login)";
 
 #[cfg(test)]
 #[path = "dead_test.rs"]

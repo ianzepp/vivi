@@ -48,7 +48,7 @@ impl PoolConfig {
 }
 
 /// A `remote_url` must be an address Git reaches without a token.
-fn check_address(pool: &str, url: &str) -> Result<(), VivariumError> {
+pub(crate) fn check_address(pool: &str, url: &str) -> Result<(), VivariumError> {
     if url.starts_with("https://") || url.starts_with("http://") {
         return Err(VivariumError::Config(format!(
             "[pools.{pool}] remote_url {url} is an http(s) address; use repo and [pools.{pool}.github] for GitHub, or an SSH or file:// address for a plain Git remote"

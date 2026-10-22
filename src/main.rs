@@ -28,6 +28,7 @@ mod local_pool_config_command;
 mod local_pool_doctor_command;
 mod local_pool_scale_command;
 mod local_pool_work_command;
+mod local_project_command;
 mod local_pump_command;
 mod local_pump_record_command;
 mod local_report_command;

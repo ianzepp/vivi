@@ -6,6 +6,7 @@ use bytes::Bytes;
 
 use super::codex;
 use super::config::ProviderConfig;
+use super::grok;
 use super::kimi;
 use super::route::Action;
 use super::usage::Usage;
@@ -34,6 +35,12 @@ pub async fn handle(
             )
             .await
         }
+        Some("xai-grok") => {
+            grok::handle(
+                client, provider, action, method, query, headers, body, request_id,
+            )
+            .await
+        }
         Some("chatgpt-codex") => {
             codex::handle(client, provider, action, method, headers, body, request_id).await
         }
@@ -48,6 +55,7 @@ pub async fn handle(
 pub fn credential_state(provider: &ProviderConfig) -> String {
     match provider.adapter.as_deref() {
         Some("kimi-coding" | "openai-passthrough") => kimi::credential_state(provider),
+        Some("xai-grok") => grok::credential_state(provider),
         Some("chatgpt-codex") => codex::credential_state(provider),
         _ => "unknown".into(),
     }
@@ -58,6 +66,7 @@ pub fn credential_state(provider: &ProviderConfig) -> String {
 pub fn health_status(provider: &ProviderConfig) -> &'static str {
     match provider.adapter.as_deref() {
         Some("kimi-coding" | "openai-passthrough") => kimi::health_status(provider),
+        Some("xai-grok") => grok::health_status(provider),
         Some("chatgpt-codex") => codex::health_status(provider),
         _ => "missing",
     }
