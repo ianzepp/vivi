@@ -44,8 +44,8 @@ impl Project {
         let path = dir.join("mailspace.toml");
         let raw = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read mailspace config: {error}"))?;
-        let mut config: crate::mailspace::MailspaceConfig =
-            toml::from_str(&raw).map_err(|_| "mailspace config is invalid".to_string())?;
+        let mut config = crate::mailspace::inherit::load_config(&path, &raw)
+            .map_err(|_| "mailspace config is invalid".to_string())?;
         resolve_read_only_identity(&dir, &mut config)?;
         Ok(Self { root, dir, config })
     }

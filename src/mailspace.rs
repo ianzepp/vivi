@@ -14,7 +14,7 @@ use crate::storage::Storage;
 use crate::store::secure_create_dir_all;
 use crate::sync::SyncConfig;
 pub(crate) use config_file::PREFIX_LEN;
-use config_file::{ensure_id, parse_config, write_config};
+use config_file::{ensure_id, write_config};
 
 mod address;
 mod adoption;
@@ -36,6 +36,7 @@ mod graph;
 mod graph_mutate;
 mod holding;
 mod identity;
+pub mod inherit;
 mod item_events;
 mod kind;
 mod lifecycle;
@@ -146,6 +147,11 @@ pub struct MailspaceConfig {
     /// and uncommitted, so the id never travels with the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// `base = true` marks this file as a base config that projects below it
+    /// inherit from (see [`inherit`]). Never inherited itself; a base is not
+    /// a project, and the registry and pump refuse it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub base: bool,
     #[serde(default)]
     pub description: Option<String>,
     /// Path to a dedicated git repo that receives absorbed records.
@@ -188,6 +194,11 @@ pub struct MailspaceConfig {
     /// rewrite does not erase it.
     #[serde(default, rename = "pool", skip_serializing_if = "Option::is_none")]
     pub retired_pool: Option<toml::Value>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -307,6 +318,7 @@ impl Mailspace {
         let config = MailspaceConfig {
             name: default_name(&root),
             id: None,
+            base: false,
             description: None,
             archive: None,
             identities: Vec::new(),
@@ -343,7 +355,8 @@ impl Mailspace {
 
     /// Open a mailspace at an explicit root path.
     ///
-    /// A config without an id gets one minted and persisted here, under the
+    /// The config is the project's file merged over any base configs above
+    /// it (see [`inherit`]). A config without an id gets one minted and persisted here, under the
     /// config lock, so the mailspace's addresses are stable from the first
     /// open.
     ///
@@ -359,7 +372,7 @@ impl Mailspace {
                 path.display()
             ))
         })?;
-        let mut config = parse_config(&path, &raw)?;
+        let mut config = inherit::load_config(&path, &raw)?;
         ensure_id(&path, &mut config)?;
         if gitignore::ensure_ignore_file(&dir) {
             eprintln!(

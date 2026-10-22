@@ -38,6 +38,7 @@ impl FlagChange {
 
 /// Add a validated project to the host registry, or change its flags.
 pub fn add(project: &Path, change: FlagChange) -> Result<(), VivariumError> {
+    crate::mailspace::inherit::refuse_base(project)?;
     let mailspace = crate::mailspace::Mailspace::discover(Some(project))?;
     let root = mailspace.root.canonicalize()?;
     let current = registry::load()?.get(&root);
@@ -450,6 +451,10 @@ async fn start_missing(
                 .get(project)
                 .is_some_and(|until| *until > Instant::now())
         {
+            continue;
+        }
+        if let Err(error) = crate::mailspace::inherit::refuse_base(project) {
+            tracing::warn!(project = %project.display(), %error, "registered root is a base config; not pumped");
             continue;
         }
         let (home, control) = match super::control::initialize_project(project) {

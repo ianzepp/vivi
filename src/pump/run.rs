@@ -303,6 +303,7 @@ pub fn actor_string(mailspace: &Mailspace) -> String {
 }
 
 fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), VivariumError> {
+    crate::mailspace::inherit::refuse_base(project)?;
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();

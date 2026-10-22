@@ -53,8 +53,9 @@ pub fn findings(project: Option<&Path>) -> Vec<Finding> {
 }
 
 fn read_config(root: &Path) -> Result<MailspaceConfig, ()> {
-    let raw = fs::read_to_string(root.join(".vivi/mailspace.toml")).map_err(|_| ())?;
-    toml::from_str(&raw).map_err(|_| ())
+    let path = root.join(".vivi/mailspace.toml");
+    let raw = fs::read_to_string(&path).map_err(|_| ())?;
+    crate::mailspace::inherit::load_config(&path, &raw).map_err(|_| ())
 }
 
 /// Match normal mailspace identity resolution, without restoring or minting it.

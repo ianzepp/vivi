@@ -301,12 +301,10 @@ fn role_view(project: &Project, identity: &LocalIdentity) -> RoleView {
         || format!("{}.local", project.config.name),
         |prefix| format!("{prefix}.local"),
     );
-    let charter = std::fs::read_to_string(
-        project
-            .dir
-            .join("charters")
-            .join(format!("{}.md", identity.name)),
-    )
+    let charter = std::fs::read_to_string(crate::mailspace::inherit::charter_file(
+        &project.dir,
+        &identity.name,
+    ))
     .unwrap_or_default();
     RoleView {
         name: identity.name.clone(),

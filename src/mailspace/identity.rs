@@ -278,7 +278,7 @@ impl Mailspace {
     }
 
     fn ensure_merge_charter(&mut self, role_name: &str) -> Result<(), VivariumError> {
-        if self.charter_path(role_name).exists() {
+        if self.charter_read_path(role_name).exists() {
             return Ok(());
         }
         self.set_charter(role_name, super::shipped::MERGE_CHARTER)
@@ -601,7 +601,7 @@ impl Mailspace {
     /// # Errors
     /// Returns an error if the charter file exists but cannot be read.
     pub fn read_charter(&self, name: &str) -> Result<String, VivariumError> {
-        let path = self.charter_path(name);
+        let path = self.charter_read_path(name);
         if !path.exists() {
             return Ok(String::new());
         }
@@ -611,6 +611,12 @@ impl Mailspace {
                 path.display()
             ))
         })
+    }
+
+    /// Where to read a charter: the project's file, else a base's. Writes
+    /// use [`Self::charter_path`], which is always the project's.
+    fn charter_read_path(&self, name: &str) -> PathBuf {
+        super::inherit::charter_file(&self.dir, name)
     }
 
     fn charter_path(&self, name: &str) -> PathBuf {

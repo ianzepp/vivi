@@ -46,9 +46,9 @@ pub fn snapshot(roots: &[PathBuf], now: u64) -> Snapshot {
 
 fn project_rows(root: &Path, now: u64) -> Result<(Vec<model::MonitorRow>, Vec<String>), String> {
     let dir = root.join(".vivi");
-    let text = fs::read_to_string(dir.join("mailspace.toml")).map_err(|e| e.to_string())?;
-    let config: crate::mailspace::MailspaceConfig =
-        toml::from_str(&text).map_err(|e| e.to_string())?;
+    let path = dir.join("mailspace.toml");
+    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let config = crate::mailspace::inherit::load_config(&path, &text).map_err(|e| e.to_string())?;
     let id = match fs::read_to_string(dir.join("mailspace.id")) {
         Ok(id) => id,
         Err(_) => config.id.clone().unwrap_or_default(),

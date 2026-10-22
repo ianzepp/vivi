@@ -10,6 +10,7 @@ use vivi::VivariumError;
 use vivi::cli::ConfigCommand;
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::config_edit;
+use vivi::mailspace::inherit::{self, ConfigOrigins};
 use vivi::routing::{
     LegacyCharter, MigrateInputs, MigratePlan, apply_plan_to_document, format_report, overview,
     plan_migrate, render_plan, render_text, require_ok, unified_diff, validate,
@@ -37,19 +38,41 @@ fn show(
     let mailspace = Mailspace::discover(project)?;
     let free = resolved.then(|| live_free(&mailspace)).transpose()?;
     let view = overview(&mailspace.config, free.as_ref());
+    let origins = origins_of(&mailspace)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&view).map_err(json_err)?);
+        let mut value = serde_json::to_value(&view).map_err(json_err)?;
+        if let (true, Some(object)) = (origins.inherited(), value.as_object_mut()) {
+            object.insert(
+                "origins".into(),
+                serde_json::to_value(&origins).map_err(json_err)?,
+            );
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(json_err)?
+        );
         return Ok(());
     }
     if porcelain {
-        print_porcelain(&view);
+        print_porcelain(&view, &origins);
         return Ok(());
     }
     println!("{}", render_text(&view));
+    print!("{}", origins.render());
     Ok(())
 }
 
-fn print_porcelain(view: &vivi::routing::ConfigOverview) {
+/// Where the merged config of this mailspace came from.
+fn origins_of(mailspace: &Mailspace) -> Result<ConfigOrigins, VivariumError> {
+    let path = mailspace.config_path();
+    let raw = fs::read_to_string(&path)?;
+    Ok(inherit::load_with_origins(&path, &raw)?.origins)
+}
+
+fn print_porcelain(view: &vivi::routing::ConfigOverview, origins: &ConfigOrigins) {
+    if origins.inherited() {
+        print_origins_porcelain(origins);
+    }
     for row in &view.roles {
         println!(
             "role {} {} {} {} {} {} {}",
@@ -76,9 +99,40 @@ fn print_porcelain(view: &vivi::routing::ConfigOverview) {
     );
 }
 
+/// `file <n> base|project <path>` per merged file, then `origin <section>
+/// <n>:<keys> ...` per section.
+fn print_origins_porcelain(origins: &ConfigOrigins) {
+    for (index, file) in origins.files.iter().enumerate() {
+        let tag = if index + 1 == origins.files.len() {
+            "project"
+        } else {
+            "base"
+        };
+        println!("file {} {tag} {}", index + 1, file.display());
+    }
+    for entry in &origins.entries {
+        let parts: Vec<String> = entry
+            .by_file
+            .iter()
+            .map(|(file, keys)| format!("{}:{}", file + 1, keys.join(",")))
+            .collect();
+        println!("origin {} {}", entry.section, parts.join(" "));
+    }
+}
+
 fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    let issues = validate(&mailspace.config);
+    let origins = origins_of(&mailspace)?;
+    let mut issues = validate(&mailspace.config);
+    issues.extend(
+        origins
+            .warnings()
+            .into_iter()
+            .map(|message| vivi::routing::Issue {
+                severity: vivi::routing::Severity::Warning,
+                message,
+            }),
+    );
     if json {
         println!(
             "{}",
@@ -89,6 +143,7 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
         if !report.is_empty() {
             println!("{report}");
         }
+        print!("{}", origins.render());
     }
     require_ok(&issues)
 }
