@@ -790,6 +790,24 @@ pub(super) fn backlog_node_by_token(
         .cloned())
 }
 
+/// The message id a dependency token names here. Besides the handles,
+/// message ids and content prefixes `resolve_message_token` takes, a token
+/// may be a bracketed RFC `Message-ID` (`<id@domain>`): how a dependency
+/// added by a `dependency-added` letter is named before this mailspace
+/// holds it, and what its letter names it by.
+pub(super) fn resolve_dep_message(storage: &Storage, token: &str) -> Result<String, VivariumError> {
+    if token.starts_with('<') {
+        let found = match crate::message::normalize_message_id(token) {
+            Some(rfc) => storage.live_message_by_rfc_id(&rfc)?,
+            None => None,
+        };
+        return found
+            .map(|view| view.message_id)
+            .ok_or_else(|| VivariumError::Message(format!("message not found: {token}")));
+    }
+    storage.resolve_message_token(token)
+}
+
 /// Resolve one dependency token to a canonical backlog dep. Accepts open
 /// tasks, needs, and wants, the sender's own copy of work sent to another
 /// mailspace (open, as it is tracked here), plus done items of any kind.
@@ -797,8 +815,7 @@ pub(super) fn resolve_backlog_dep(
     storage: &Storage,
     token: &str,
 ) -> Result<BacklogDep, VivariumError> {
-    let message_id = storage
-        .resolve_message_token(token)
+    let message_id = resolve_dep_message(storage, token)
         .map_err(|e| VivariumError::Message(format!("dependency '{token}': {e}")))?;
     let view = storage
         .message_by_id(&message_id)?

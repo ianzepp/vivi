@@ -435,3 +435,97 @@ fn adoption_attaches_held_work_with_its_edges() {
     assert_eq!(readiness(&mailspace, &first), "ready");
     assert_eq!(readiness(&mailspace, &second), "blocked");
 }
+
+/// A `dependency-added` / `dependency-removed` letter on `item_rfc` naming
+/// `dep_rfc`, written by `mind` at `at` (RFC 3339), as another member's
+/// letter arrives.
+fn dependency_letter(
+    mailspace: &Mailspace,
+    kind: &str,
+    item_rfc: &str,
+    dep_rfc: &str,
+    at: &str,
+) -> Vec<u8> {
+    format!(
+        "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: Re: item\r\n\
+         Message-ID: <{kind}-{at}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         In-Reply-To: <{item_rfc}>\r\nReferences: <{item_rfc}>\r\n\
+         X-Vivi-Kind: mail\r\nX-Vivi-Event: {kind}\r\nX-Vivi-Event-Of: <{item_rfc}>\r\n\
+         X-Vivi-Event-At: {at}\r\nX-Vivi-Event-Dep: <{dep_rfc}>\r\n\r\n{kind}\r\n",
+        domain = mailspace.address_domain()
+    )
+    .into_bytes()
+}
+
+fn arrive_event(mailspace: &Mailspace, bytes: &[u8], item_rfc: &str, seed: &str) {
+    let storage = mailspace.storage().unwrap();
+    let parent = storage.live_message_by_rfc_id(item_rfc).unwrap().unwrap();
+    let written = storage
+        .apply_item_event(&crate::storage::ItemEventWrite {
+            reply_requests: &[MessageIngestRequest {
+                account: "hand".into(),
+                local_role: "inbox".into(),
+                read_state: true,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: seed.into(),
+                remote: None,
+            }],
+            reply_data: Some(bytes),
+            parent_content_id: &parent.content_id,
+            moves: &[],
+        })
+        .unwrap();
+    drop(storage);
+    mailspace
+        .apply_arrived_events(&[written[0].content_id.clone()])
+        .unwrap();
+}
+
+#[test]
+fn an_added_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
+    let (_tmp, mailspace) = space();
+    let (_, release) = file(&mailspace, "hand", "need", "release", &[]);
+    assert_eq!(readiness(&mailspace, &release), "ready");
+
+    // The letter names a dependency this mailspace does not hold yet.
+    let added = dependency_letter(
+        &mailspace,
+        "dependency-added",
+        "release@x.test",
+        "work@x.test",
+        "2026-10-11T12:00:01.000000Z",
+    );
+    arrive_event(&mailspace, &added, "release@x.test", "added");
+    assert_eq!(readiness(&mailspace, &release), "blocked");
+    assert_eq!(edge_count(&mailspace), 0);
+    let waiting = node_of(&mailspace, &release)
+        .unwrap()
+        .awaiting_dependencies;
+    assert_eq!(waiting, ["<work@x.test>".to_string()]);
+
+    // The dependency arrives: the edge is made.
+    let (_, work) = file(&mailspace, "hand", "need", "work", &[]);
+    assert_eq!(edge_count(&mailspace), 1);
+    assert_eq!(readiness(&mailspace, &release), "blocked");
+    assert!(
+        node_of(&mailspace, &release)
+            .unwrap()
+            .awaiting_dependencies
+            .is_empty()
+    );
+
+    // A newer removal drops the edge.
+    let removed = dependency_letter(
+        &mailspace,
+        "dependency-removed",
+        "release@x.test",
+        "work@x.test",
+        "2026-10-11T12:00:02.000000Z",
+    );
+    arrive_event(&mailspace, &removed, "release@x.test", "removed");
+    assert_eq!(edge_count(&mailspace), 0);
+    assert_eq!(readiness(&mailspace, &release), "ready");
+    assert_eq!(readiness(&mailspace, &work), "ready");
+}

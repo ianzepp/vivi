@@ -54,11 +54,13 @@ use crate::message::normalize_message_id;
 use crate::storage::{ItemEventWrite, MailspaceEventInput, RoleMove, Storage, StoredMessageView};
 
 mod arrival;
+mod dependency;
 mod emit;
 mod held;
 mod property;
 mod property_emit;
 
+pub(super) use dependency::copy_nodes;
 pub(super) use held::{HeldItem, held_item};
 pub(crate) use property::{PropertyKind, parse_property_event};
 

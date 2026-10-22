@@ -251,6 +251,7 @@ capacity limits. `exceptions` is the list of things that need a human or a body 
 |---|---|
 | `task send --depends-on H ...` | file a unit; mint its node; wire prerequisite edges |
 | `graph connect <dependent> <prereq>` | add a missed prerequisite after the fact. Idempotent. Refuses a self edge, a dependent that is already active or done, and a handle with no node. It does not check for cycles; never connect a prerequisite that already depends on the dependent, or both block forever |
+| `need\|task\|want depend <handle> --add H... --remove H... --for ROLE` | change an item's prerequisites after the send. Written as `dependency-added` / `dependency-removed` letters, so every member applies it; the newest letter per dependency wins, over the send-time `--depends-on` too. Author, mind, or operator only; unknown handles, self edges and cycles fail before anything is written. `graph connect` stays local and has no remove |
 | `graph ready [graph] [--kind K]` | frontier: ready, blocked, active, awaiting, reported, gates, with a counts line. No argument lists every graph |
 | `graph blocked [graph] [--kind K] [--json]` | each blocked node with the prerequisites it still waits on (`blocked_by`); defaults to `backlog` |
 | `graph show <graph> [--include-state]` / `graph export` | topology as Mermaid |

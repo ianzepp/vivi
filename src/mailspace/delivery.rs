@@ -540,7 +540,9 @@ impl Mailspace {
 
     /// Extract the dependency handles recorded on a task message.
     ///
-    /// Dependencies are stored as repeated `X-Vivi-Depends-On` headers.
+    /// Dependencies are stored as repeated `X-Vivi-Depends-On` headers, then
+    /// changed by any `dependency-added` / `dependency-removed` letters on the
+    /// task: the newest letter per dependency wins over the header.
     ///
     /// # Errors
     /// Returns an error if the message cannot be read or parsed.
@@ -550,7 +552,7 @@ impl Mailspace {
         let parsed = mail_parser::MessageParser::default()
             .parse(&data)
             .ok_or_else(|| VivariumError::Parse("failed to parse task message".into()))?;
-        Ok(parsed
+        let header: Vec<String> = parsed
             .headers()
             .iter()
             .filter(|h| h.name().eq_ignore_ascii_case("X-Vivi-Depends-On"))
@@ -561,7 +563,8 @@ impl Mailspace {
                     None
                 }
             })
-            .collect())
+            .collect();
+        self.effective_dependency_refs(&storage, message_id, &header)
     }
 
     /// Return whether the task identified by handle has been moved to Done.

@@ -69,7 +69,8 @@ normalized edges + node state.
 | `vivi graph show` / `export` | Mermaid topology only |
 | `vivi graph ready` | Compact ready/blocked/active/gates frontier (status loops; `counts` line, `--kind` filter) |
 | `vivi graph audit [--repair]` | Backlog citizenship check; repair mints/completes/settles drifted items |
-| `vivi graph connect` | Post-hoc prerequisite edge between two backlog items |
+| `vivi graph connect` | Post-hoc prerequisite edge between two backlog items (local only) |
+| `vivi need\|task\|want depend` | Add/remove prerequisites after the send; travels as `dependency-added` / `dependency-removed` letters; newest per dependency wins |
 | `vivi graph complete` / `activate` | Lifecycle receipts; activate binds a task attempt and refuses operator gates |
 | `vivi board --graph` | Frontier projection without replacing task/need board items |
 | `vivi need bind` | Lowering: bind unit tasks to a need; join completes the need |

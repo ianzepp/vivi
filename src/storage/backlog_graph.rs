@@ -123,6 +123,48 @@ impl Storage {
         Ok(())
     }
 
+    /// Remove the prerequisite edges `(from_node, to_node)` — node handles —
+    /// from the `backlog` graph in one transaction. Pairs with no edge are
+    /// skipped, so the call is idempotent. Returns how many edges went.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if a delete fails.
+    pub fn remove_backlog_edges(
+        &self,
+        graph_handle: &str,
+        pairs: &[(String, String)],
+    ) -> Result<usize, VivariumError> {
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now().to_rfc3339();
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction().map_err(|e| {
+            VivariumError::Other(format!("failed to begin backlog edge removal: {e}"))
+        })?;
+        let mut removed = 0;
+        for (from_node, to_node) in pairs {
+            removed += tx
+                .execute(
+                    "DELETE FROM work_graph_edges
+                     WHERE graph_handle = ?1 AND from_node = ?2 AND to_node = ?3",
+                    params![graph_handle, from_node, to_node],
+                )
+                .map_err(|e| VivariumError::Other(format!("failed to remove graph edge: {e}")))?;
+        }
+        if removed > 0 {
+            tx.execute(
+                "UPDATE work_graphs SET updated_at = ?1 WHERE handle = ?2",
+                params![now, graph_handle],
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to touch backlog graph: {e}")))?;
+        }
+        tx.commit().map_err(|e| {
+            VivariumError::Other(format!("failed to commit backlog edge removal: {e}"))
+        })?;
+        Ok(removed)
+    }
+
     /// Load nodes whose `subgraph` names the given parent source id.
     ///
     /// # Errors

@@ -27,6 +27,7 @@ pub mod config_edit;
 mod config_file;
 mod delegation;
 mod delivery;
+mod depend;
 mod dependencies;
 mod dump;
 mod event_log;
@@ -94,6 +95,7 @@ pub use lifecycle::{
     AbsorbConfig, CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult,
     WantListOptions, WantListRecord, WantMetadataUpdate,
 };
+pub use depend::{BacklogDependency, DependWrite};
 pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;

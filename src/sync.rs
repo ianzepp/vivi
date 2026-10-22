@@ -306,6 +306,10 @@ mod epoch_status_test;
 mod property_marks_converge;
 
 #[cfg(test)]
+#[path = "sync/property_depend_test.rs"]
+mod property_depend;
+
+#[cfg(test)]
 #[path = "sync/absorb_quiet_test.rs"]
 mod absorb_quiet_test;
 

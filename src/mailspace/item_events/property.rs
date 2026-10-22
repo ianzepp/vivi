@@ -1,4 +1,5 @@
-//! Properties as letters: absorb, marks, and binds beside the state.
+//! Properties as letters: absorb, marks, binds, and dependency edges beside
+//! the state.
 //!
 //! A property event is a small reply letter on a need/task/want, shaped
 //! like a state event: the same `X-Vivi-Event-Of` / `In-Reply-To` pairing
@@ -9,11 +10,13 @@
 //! ```text
 //! In-Reply-To: <item Message-ID>
 //! X-Vivi-Event: absorbed | marked | unmarked | bound
+//!                | dependency-added | dependency-removed
 //! X-Vivi-Event-Of: <item Message-ID>
 //! X-Vivi-Event-At: <RFC 3339>                 (optional, all kinds)
 //! X-Vivi-Event-Slug: <slug>                   (marked / unmarked)
 //! X-Vivi-Event-Unit: <unit Message-ID>        (bound; one header per unit)
 //! X-Vivi-Event-State: done | open             (absorbed)
+//! X-Vivi-Event-Dep: <dependency Message-ID>   (dependency-*; one header per dependency)
 //! ```
 //!
 //! `absorbed` says the writer sealed the item into its archive in the
@@ -24,7 +27,11 @@
 //! here: the letters are folded per slug and the newest one per slug moves
 //! the unabsorbed rows' folded marks. `bound` is applied here too: the
 //! units the letter names bind to the item's backlog node, as they bound
-//! where the letter was written.
+//! where the letter was written. `dependency-added` and
+//! `dependency-removed` change the item's prerequisite edges after it was
+//! sent: per dependency the newest letter by `(instant, Message-ID)` says
+//! whether the edge is there, over the `X-Vivi-Depends-On` headers the item
+//! was sent with (see `dependency.rs`).
 //!
 //! As with state events, the From address names a role and the receiver
 //! judges it (`event_may_speak`): a letter from another member's prefix
@@ -52,6 +59,7 @@ use crate::storage::{
 };
 
 const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
+const EVENT_DEP_HEADER: &str = "X-Vivi-Event-Dep";
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 const EVENT_STATE_HEADER: &str = "X-Vivi-Event-State";
 const VERDICT_HEADER: &str = "X-Vivi-Verdict";
@@ -70,6 +78,10 @@ pub enum PropertyKind {
     Unmarked,
     /// Unit items are bound to the item (need lowering).
     Bound,
+    /// The item gained prerequisite edges to the named dependencies.
+    DependencyAdded,
+    /// The item lost its prerequisite edges to the named dependencies.
+    DependencyRemoved,
 }
 
 impl PropertyKind {
@@ -81,6 +93,8 @@ impl PropertyKind {
             Self::Marked => "marked",
             Self::Unmarked => "unmarked",
             Self::Bound => "bound",
+            Self::DependencyAdded => "dependency-added",
+            Self::DependencyRemoved => "dependency-removed",
         }
     }
 
@@ -90,6 +104,8 @@ impl PropertyKind {
             "marked" => Some(Self::Marked),
             "unmarked" => Some(Self::Unmarked),
             "bound" => Some(Self::Bound),
+            "dependency-added" => Some(Self::DependencyAdded),
+            "dependency-removed" => Some(Self::DependencyRemoved),
             _ => None,
         }
     }
@@ -116,6 +132,9 @@ pub(crate) struct PropertyEvent {
     pub(crate) units: Vec<String>,
     /// The `X-Vivi-Event-State` of an `absorbed` event: `done` or `open`.
     pub(crate) state: Option<String>,
+    /// The normalized dependency `Message-ID`s of a `dependency-added` or
+    /// `dependency-removed` event.
+    pub(crate) deps: Vec<String>,
 }
 
 /// Read a property event from a letter's bytes; `None` for a letter that is
@@ -128,6 +147,7 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
     let mut slug = None;
     let mut state = None;
     let mut units: Vec<String> = Vec::new();
+    let mut deps: Vec<String> = Vec::new();
     for header in parsed.headers() {
         let HeaderValue::Text(text) = header.value() else {
             continue;
@@ -148,6 +168,11 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
             && !units.contains(&id)
         {
             units.push(id);
+        } else if name.eq_ignore_ascii_case(EVENT_DEP_HEADER)
+            && let Some(id) = normalize_message_id(text)
+            && !deps.contains(&id)
+        {
+            deps.push(id);
         }
     }
     let of = of?;
@@ -162,6 +187,7 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
     let carries_payload = match kind {
         PropertyKind::Marked | PropertyKind::Unmarked => slug.is_some(),
         PropertyKind::Bound => !units.is_empty(),
+        PropertyKind::DependencyAdded | PropertyKind::DependencyRemoved => !deps.is_empty(),
         PropertyKind::Absorbed => matches!(state.as_deref(), Some("done" | "open")),
     };
     carries_payload.then_some(PropertyEvent {
@@ -173,6 +199,7 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
         slug,
         units,
         state,
+        deps,
     })
 }
 
@@ -320,8 +347,8 @@ pub(super) fn store_letter_verdicts(
 
 /// The property events held for one item, and how many named it from a
 /// domain that speaks for no member.
-struct PropertyChain {
-    events: Vec<PropertyEvent>,
+pub(super) struct PropertyChain {
+    pub(super) events: Vec<PropertyEvent>,
     unauthorized: usize,
     /// The earliest clock reading at which a member's event skipped as
     /// dated past the clock begins to count.
@@ -332,7 +359,7 @@ struct PropertyChain {
 /// counts, plus the count of the others. State events and property events
 /// are read apart: a state event letter never parses as a property event,
 /// and the reverse too.
-fn property_chain(
+pub(super) fn property_chain(
     mailspace: &Mailspace,
     storage: &Storage,
     item: &HeldItem,
@@ -371,7 +398,7 @@ fn property_chain(
 
 /// The earliest counted `absorbed` event among `events` — smallest `at`,
 /// then smallest `Message-ID` — the one whose seal this mailspace follows.
-fn earliest_absorb(events: &[PropertyEvent]) -> Option<&PropertyEvent> {
+pub(super) fn earliest_absorb(events: &[PropertyEvent]) -> Option<&PropertyEvent> {
     events
         .iter()
         .filter(|event| event.kind == PropertyKind::Absorbed)
@@ -419,7 +446,8 @@ impl Mailspace {
         };
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
             Self::apply_mark_letters(storage, item, &chain.events, false, tally)?;
-            return self.apply_bound_events(storage, item, &chain.events, tally);
+            self.apply_bound_events(storage, item, &chain.events, tally)?;
+            return self.apply_dependency_events(storage, item, tally);
         };
         // A mark or a bind dated before the seal is part of the item's
         // history whenever it arrives — with the seal, or after it — and one
@@ -435,6 +463,7 @@ impl Mailspace {
             .collect();
         Self::apply_mark_letters(storage, item, &before, true, tally)?;
         self.apply_bound_events(storage, item, &before, tally)?;
+        self.apply_dependency_events(storage, item, tally)?;
         if item.rows.iter().all(|row| row.absorbed_at.is_some()) {
             tally.ignored += 1;
         }

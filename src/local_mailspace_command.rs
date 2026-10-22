@@ -574,6 +574,7 @@ fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
         } => show_task(handle, *json, *latest, project.as_deref())?,
         TaskCommand::Dump(command) => crate::local_work_command::dump_tasks(command)?,
         TaskCommand::Absorb(command) => absorb_record("task", command)?,
+        TaskCommand::Depend(command) => crate::local_work_command::depend_item(command, "task")?,
         TaskCommand::Done {
             handle,
             for_identity,

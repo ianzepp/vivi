@@ -13,7 +13,7 @@ pub use graph_command::{
 };
 pub use rule_command::{RuleCommand, RuleRetireCommand, RuleSaveCommand, RuleSupersedeCommand};
 pub use work_command::{
-    AbsorbCommand, GoalCommand, MailDumpCommand, MarkCommand, MemoCommand, NeedCommand,
+    AbsorbCommand, DependCommand, GoalCommand, MailDumpCommand, MarkCommand, MemoCommand, NeedCommand,
     TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand, WantStatus,
 };
 
@@ -650,6 +650,11 @@ pub enum TaskCommand {
 
     /// Seal a task. Once absorbed, it can no longer be changed.
     Absorb(work_command::AbsorbCommand),
+
+    /// Add or remove prerequisites of a task after it was sent. The change
+    /// travels to every member; the newest change per dependency wins,
+    /// including over a dependency named at send.
+    Depend(work_command::DependCommand),
 
     /// Move a task from Tasks to Done
     Done {
