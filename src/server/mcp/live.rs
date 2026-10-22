@@ -30,7 +30,7 @@ use crate::safety::RateLimiter;
 
 use super::tools::ToolError;
 
-pub(super) use pump::pump_control;
+pub(super) use pump::{pump_control, pump_gate};
 
 /// The tools a hosted project answers through the library.
 pub(super) fn handles(name: &str) -> bool {

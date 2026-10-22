@@ -356,6 +356,7 @@ async fn initialize_and_tools_list() {
             "unmark",
             "pump",
             "pump_control",
+            "pump_gate",
             "board"
         ]
     );

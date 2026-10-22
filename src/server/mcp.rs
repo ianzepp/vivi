@@ -163,13 +163,18 @@ async fn call_tool(
         if name == "pump" {
             return pump_tool(&store, &project_id, &arguments);
         }
-        if name == "pump_control" {
+        if name == "pump_control" || name == "pump_gate" {
             let Some(root) = live::hosted_root(&store, &project_id) else {
-                return Err(tools::ToolError::new(
-                    "pump_control is only available on a hosted project".to_owned(),
-                ));
+                return Err(tools::ToolError::new(format!(
+                    "{name} is only available on a hosted project"
+                )));
             };
-            return live::pump_control(
+            let run = if name == "pump_control" {
+                live::pump_control
+            } else {
+                live::pump_gate
+            };
+            return run(
                 &limiter,
                 &project_id,
                 &root,
@@ -425,6 +430,15 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["pause", "resume", "stop", "start"] }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            })),
+            tool("pump_gate", "Hosted projects only, operator only. Show or set the pump gate command (`[pump.gate] command` in the project's mailspace config), as `vivi pump gate` reads and sets it. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. `set` needs a non-blank `command` and is rate limited as a write. Pools, roles and other config are not exposed. Returns {command}, null when unset.", json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["show", "set"] },
+                    "command": { "type": "string", "description": "The gate command; required for set, ignored by show" }
                 },
                 "required": ["action"],
                 "additionalProperties": false

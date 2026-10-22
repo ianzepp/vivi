@@ -131,6 +131,15 @@ mailspace).
   (`mode`, `shutdown_requested`). The key must be minted by the host's own
   member (the creator whose mailspace id is the hosted mailspace's) and act as
   a role of kind `operator`; a member token or any other key is refused.
+- **`pump_gate`.** Operator-only, with `pump_control`'s authorization (one
+  shared check): `action` is `show` or `set`; `set` takes a `command` and
+  writes `[pump.gate] command` in the host's `.vivi/mailspace.toml` through
+  `vivi::pump::gate_config::set_command` (format-preserving, under the
+  mailspace config lock); a blank command is refused by the library. Both
+  answer `{command}` (`null` when unset or blank). `set` is rate limited as a
+  write. This is the only config the server edits: pools, roles and free-form
+  config are deliberately not exposed, because a member who could repoint a
+  pool's `remote_url` could send code elsewhere.
 - **Live reads.** `overview`, `list` (kind, status, `to`, `from`, `marks`,
   `for`; default 50, at most 100), `show`, `thread`, `graph` (the backlog
   graph) and `board` (`Mailspace::board` as JSON, host root omitted) query the

@@ -7,6 +7,17 @@
   in the CLI), through `vivi::pump::control::set_project_mode`. The answer is
   the resulting control state. A member token, a key another member minted, and
   a key acting as a role that is not of kind `operator` are refused.
+- **MCP `pump_gate`.** Operator-only show and set of a hosted project's pump
+  gate command (`[pump.gate] command` in the mailspace config), through
+  `vivi::pump::gate_config`: `action` is `show` or `set` (with `command`). The
+  answer is `{command}`, `null` when unset or blank; a blank `set` is refused
+  by the library. Same authorization as `pump_control` (one shared check), and
+  `set` is rate limited as a write. Pools, roles and other config are not
+  exposed: a member who could repoint a pool's `remote_url` could send code
+  elsewhere.
+- **vivi 18.3.0.** The `vivi` dependency moves from v18.2.0 to v18.3.0. No
+  source change was needed. The pump health verdict now includes the library's
+  `not ready: ...` reasons for a project missing required pump settings.
 
 ## 1.6.0 — 2026-10-21
 
