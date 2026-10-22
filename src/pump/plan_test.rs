@@ -631,7 +631,7 @@ fn repo_relative_and_env_prefixed_proofs_ingest() {
             "verdict": "units",
             "units": [{
                 "id": "n1-1",
-                "brief": "first pass",
+                "brief": "first pass: add the test y",
                 "write_scope": ["src/a.rs"],
                 "proof": [
                     "./scripta/check-corpus-suite",

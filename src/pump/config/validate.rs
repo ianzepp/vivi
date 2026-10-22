@@ -120,6 +120,7 @@ impl PumpConfig {
             found.invalid("[pump] tick must be >= 1");
         }
         self.validate_board(&mut found);
+        self.validate_plan(&mut found);
         self.validate_workspace(&mut found);
         self.validate_dispatch(pools, hand_role_pool, &mut found);
         if self.targets.is_empty() {
@@ -140,6 +141,29 @@ impl PumpConfig {
             }
         }
         found
+    }
+
+    /// Every `[[pump.plan.proof_rules]]` entry names a scope and a proof
+    /// pattern that compiles, so a typo fails here and not at the first plan.
+    fn validate_plan(&self, found: &mut Findings) {
+        for (index, rule) in self.plan.proof_rules.iter().enumerate() {
+            let at = index + 1;
+            if rule.scope.trim().is_empty() {
+                found.invalid(format!(
+                    "[[pump.plan.proof_rules]] entry {at}: scope must not be empty"
+                ));
+            }
+            if rule.proof.trim().is_empty() {
+                found.invalid(format!(
+                    "[[pump.plan.proof_rules]] entry {at}: proof must not be empty"
+                ));
+            } else if let Err(error) = rule.pattern() {
+                found.invalid(format!(
+                    "[[pump.plan.proof_rules]] entry {at}: proof `{}` is not a valid regex: {error}",
+                    rule.proof
+                ));
+            }
+        }
     }
 
     /// The retired `[pump.board]` intake keys are errors, not silently

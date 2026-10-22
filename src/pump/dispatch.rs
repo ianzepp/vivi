@@ -13,7 +13,9 @@ use crate::pump::brief::brief_for;
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
-use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
+use crate::pump::ready::{
+    dependency_holds, is_ready, note_hold, overlaps_planned, pick_model, ranked,
+};
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{choose_model, lanes_for};
 
@@ -541,6 +543,14 @@ fn plan_unit(
 ) -> Option<Plan> {
     let unit = st.units.get(uid)?;
     if !is_ready(ctx, st, uid, holds) {
+        return None;
+    }
+    if overlaps_planned(
+        ctx,
+        uid,
+        unit,
+        planned.iter().map(|p| (p.uid.as_str(), &p.unit)),
+    ) {
         return None;
     }
     let kind = ctx.cfg.kind_of(&unit.tools);

@@ -226,6 +226,10 @@ fn clear_parked(st: &mut State, need: &str) {
     st.board.planner_failed.retain(|failed| failed != need);
     st.board.planner_fails.remove(need);
     st.board.planner_retry_at.remove(need);
+    st.board
+        .planner_fails
+        .remove(&crate::pump::plan::invalid_key(need));
+    st.board.plan_findings.remove(need);
 }
 
 /// A fresh-attempt requeue for each of `need`'s stuck units.

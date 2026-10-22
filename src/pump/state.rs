@@ -366,6 +366,10 @@ pub struct NeedRecord {
     /// need is never reopened or revised by the amendment scan.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub withdrawn: bool,
+    /// Needs this need waits on: the plan was held at ingest because they had
+    /// not landed. The board plans the need again once all of them have.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waits_on: Vec<String>,
 }
 
 /// The gate currently or last running (`last_gate`).
@@ -457,6 +461,11 @@ pub struct Board {
     /// Handles parked after exhausting planner retries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planner_failed: Vec<String>,
+    /// Need handle -> the findings of the plan the pump just rejected. They
+    /// go into the next planner prompt (a first plan or a revision) and are
+    /// dropped when a plan is accepted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plan_findings: BTreeMap<String, String>,
     /// An attempt record was posted since the last sync push: the next board
     /// pass ships it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

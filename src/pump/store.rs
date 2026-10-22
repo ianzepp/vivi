@@ -683,7 +683,7 @@ fn write_needs(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
                 need.thread_seen_at.map(|at| i64::try_from(at).unwrap_or(0)),
                 i64::from(need.amendment_pending),
                 i64::from(need.withdrawn),
-                "{}",
+                json(&serde_json::json!({ "waits_on": &need.waits_on }))?,
             ],
         )
         .map_err(db_err("write need"))?;
@@ -858,7 +858,7 @@ fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, Vivariu
     let mut stmt = conn
         .prepare(
             "SELECT handle, verdict, reason, units_json, revision,
-                thread_sha256, thread_seen_at, amendment_pending, withdrawn
+                thread_sha256, thread_seen_at, amendment_pending, withdrawn, extra_json
              FROM needs",
         )
         .map_err(db_err("read needs"))?;
@@ -875,6 +875,7 @@ fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, Vivariu
                     thread_seen_at: row.get::<_, Option<i64>>(6)?.map(from_u64),
                     amendment_pending: row.get::<_, i64>(7)? != 0,
                     withdrawn: row.get::<_, i64>(8)? != 0,
+                    waits_on: waits_on_of(&row.get::<_, String>(9)?),
                 },
             ))
         })
@@ -885,6 +886,18 @@ fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, Vivariu
         needs.insert(handle, need);
     }
     Ok(needs)
+}
+
+/// The `waits_on` list a need's `extra_json` carries; absent or unreadable
+/// text means the need waits on nothing.
+fn waits_on_of(extra: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(extra) else {
+        return Vec::new();
+    };
+    match value.get("waits_on") {
+        Some(list) => serde_json::from_value(list.clone()).unwrap_or_default(),
+        None => Vec::new(),
+    }
 }
 
 fn load_order(conn: &Connection) -> Result<Vec<String>, VivariumError> {

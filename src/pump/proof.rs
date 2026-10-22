@@ -59,12 +59,37 @@ pub fn check(cmd: &str, repo: &Path, allow: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// What precedes a command in a shell list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sep {
+    /// The start of the text.
+    Start,
+    /// `;`
+    Seq,
+    /// `&&`
+    And,
+    /// `||`
+    Or,
+    /// `|`
+    Pipe,
+}
+
 /// Split shell chains without treating separators inside quotes as commands.
 fn split_chain(text: &str) -> Vec<String> {
+    scan_list(text)
+        .into_iter()
+        .map(|(_, command)| command)
+        .collect()
+}
+
+/// The commands of a shell list outside quotes, each with the separator that
+/// precedes it. A single `&` stays inside its command.
+pub(crate) fn scan_list(text: &str) -> Vec<(Sep, String)> {
     let chars: Vec<char> = text.chars().collect();
     let mut commands = Vec::new();
     let mut current = String::new();
     let mut quote = None;
+    let mut sep = Sep::Start;
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
@@ -83,7 +108,13 @@ fn split_chain(text: &str) -> Vec<String> {
             quote = Some(ch);
             current.push(ch);
         } else if ch == ';' || ch == '|' || (ch == '&' && chars.get(i + 1) == Some(&'&')) {
-            push_command(&mut commands, &mut current);
+            push_command(&mut commands, &mut current, sep);
+            sep = match ch {
+                ';' => Sep::Seq,
+                '&' => Sep::And,
+                _ if chars.get(i + 1) == Some(&'|') => Sep::Or,
+                _ => Sep::Pipe,
+            };
             if ch != ';' && chars.get(i + 1) == Some(&ch) {
                 i += 1;
             }
@@ -92,16 +123,32 @@ fn split_chain(text: &str) -> Vec<String> {
         }
         i += 1;
     }
-    push_command(&mut commands, &mut current);
+    push_command(&mut commands, &mut current, sep);
     commands
 }
 
-fn push_command(commands: &mut Vec<String>, current: &mut String) {
+fn push_command(commands: &mut Vec<(Sep, String)>, current: &mut String, sep: Sep) {
     let command = current.trim();
     if !command.is_empty() {
-        commands.push(command.to_owned());
+        commands.push((sep, command.to_owned()));
     }
     current.clear();
+}
+
+/// The pipelines of a `;` / `&&` list, each as its `|`-joined stages. `None`
+/// when the list uses `||`: a command that may not run is not something a
+/// caller can reason about.
+#[must_use]
+pub(crate) fn pipelines(text: &str) -> Option<Vec<Vec<String>>> {
+    let mut lines: Vec<Vec<String>> = Vec::new();
+    for (sep, command) in scan_list(text) {
+        match sep {
+            Sep::Or => return None,
+            Sep::Pipe if !lines.is_empty() => lines.last_mut()?.push(command),
+            _ => lines.push(vec![command]),
+        }
+    }
+    Some(lines)
 }
 
 /// Validate `words` as one command, recursing through wrapper binaries up
@@ -220,20 +267,19 @@ fn wrapped_tail(words: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Count `cargo test` positional TESTNAME filters: cargo accepts one, and
-/// a second dies at the CLI before any test runs.
-fn cargo_positionals(words: &[String], cmd: &str) -> Result<(), String> {
-    let Some(sub) = words[1..]
+/// The positional TESTNAME filters of a `cargo test` command (`words` start
+/// at `cargo`), or `None` when the command is not `cargo test`.
+#[must_use]
+pub(crate) fn cargo_test_filters(words: &[String]) -> Option<Vec<String>> {
+    let sub = words
+        .get(1..)?
         .iter()
-        .position(|w| !w.starts_with('-') && !w.starts_with('+'))
-    else {
-        return Ok(());
-    };
+        .position(|w| !w.starts_with('-') && !w.starts_with('+'))?;
     if words[sub + 1].as_str() != "test" {
-        return Ok(());
+        return None;
     }
     let after = &words[sub + 2..];
-    let mut filters = 0;
+    let mut filters = Vec::new();
     let mut i = 0;
     while i < after.len() {
         let word = after[i].as_str();
@@ -245,10 +291,17 @@ fn cargo_positionals(words: &[String], cmd: &str) -> Result<(), String> {
                 i += 1;
             }
         } else {
-            filters += 1;
+            filters.push(word.to_owned());
         }
         i += 1;
     }
+    Some(filters)
+}
+
+/// Count `cargo test` positional TESTNAME filters: cargo accepts one, and
+/// a second dies at the CLI before any test runs.
+fn cargo_positionals(words: &[String], cmd: &str) -> Result<(), String> {
+    let filters = cargo_test_filters(words).map_or(0, |filters| filters.len());
     if filters > 1 {
         return Err(format!(
             "cargo test takes one TESTNAME filter, found {filters}: {cmd}"

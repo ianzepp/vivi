@@ -38,6 +38,7 @@ pub mod need_verdict;
 pub(crate) mod par;
 pub mod oversight;
 pub mod plan;
+pub(crate) mod plan_check;
 pub mod planner_jobs;
 pub mod priority;
 pub mod progress;
