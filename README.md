@@ -731,7 +731,18 @@ atomically at mode `0600`, filters SSE to an allowlist and rebuilds an empty
 `response.completed.output`, and keeps the existing non-streaming, tool-less,
 usage-0 chat shim. Native Kimi re-reads its credential file on every request,
 injects `X-Msh-*` identity headers, passes bytes through, and retries once
-after a 401 refresh. Native Grok (`xai-grok`) reads the Grok CLI login file
+after a 401 refresh. `openai-passthrough` shares the request path only: it
+sends just the bearer (a `key_cmd` or its own configured credential file),
+never refreshes, is never marked dead, and does not look at Kimi's
+home-directory credentials, so a dead Kimi login cannot refuse another
+route. `/<provider>/health` for it reports `provider` as
+`openai-passthrough`. Some upstreams refuse a request that lacks a session
+id (OpenCode Go: HTTP 400 `MissingSessionID`). Set `session_header =
+"x-opencode-session"` on that provider: a client-sent header of that name
+is forwarded unchanged, otherwise the proxy adds `ses_<32 hex>` to non-GET
+requests, a hash of the model plus the first non-system message (stable for
+one conversation, never derived from a credential), or a random id when the
+body has none. Native Grok (`xai-grok`) reads the Grok CLI login file
 (`~/.grok/auth.json`, entries keyed `<issuer>::<oidc_client_id>`), picks the
 entry for the origin of `token_url` (`client_id` disambiguates several), and
 sends its `key` as the bearer to `https://api.x.ai/v1`. It refreshes 30s
@@ -809,6 +820,7 @@ kind = "native"
 adapter = "openai-passthrough"
 upstream = "https://opencode.ai/zen/go/v1"
 key_cmd = "python3 -c 'import json,os;print(json.load(open(os.path.expanduser(\"~/.local/share/opencode/auth.json\")))[\"opencode-go\"][\"key\"])'"
+session_header = "x-opencode-session"   # OpenCode Go refuses chat requests without it
 
 [providers.llama]
 kind = "upstream"

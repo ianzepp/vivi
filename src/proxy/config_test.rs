@@ -122,3 +122,38 @@ fn documented_opencode_go_block_parses_and_prints_its_key() {
     let command = config.providers["opencode-go"].key_cmd.as_deref().unwrap();
     assert!(command.contains(r#"expanduser("~/.local/share/opencode/auth.json")"#));
 }
+
+#[test]
+fn passthrough_session_header_parses() {
+    let config = parse(
+        r#"
+        [providers.opencode-go]
+        kind = "native"
+        adapter = "openai-passthrough"
+        upstream = "https://opencode.ai/zen/go/v1"
+        key_cmd = "echo k"
+        session_header = "x-opencode-session"
+        "#,
+    );
+    assert_eq!(
+        config.providers["opencode-go"].session_header.as_deref(),
+        Some("x-opencode-session")
+    );
+}
+
+#[test]
+fn session_header_rejects_bad_names_and_other_adapters() {
+    let bad = |adapter: &str, header: &str| {
+        config::parse_at(
+            std::path::PathBuf::from("/tmp/proxy.toml"),
+            &format!(
+                "[providers.p]\nkind = \"native\"\nadapter = \"{adapter}\"\nkey_cmd = \"echo k\"\nsession_header = \"{header}\"\n"
+            ),
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    assert!(bad("openai-passthrough", "authorization").contains("session_header"));
+    assert!(bad("openai-passthrough", "Bad Name").contains("session_header"));
+    assert!(bad("kimi-coding", "x-opencode-session").contains("openai-passthrough"));
+}

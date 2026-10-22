@@ -2904,8 +2904,22 @@ passthrough to `https://api.x.ai/v1`). Example `grok` block:
 static bearer with no refresh). `openai-passthrough` also serves non-Kimi
 OpenAI-style upstreams with a `key_cmd`, for example an `opencode-go` block:
 `upstream = "https://opencode.ai/zen/go/v1"` and a `key_cmd` that prints the
-key (it forwards every path, including `/messages`, but still sends Kimi
-identity headers).
+key (it forwards every path, including `/messages`, and sends only the
+bearer, never Kimi identity headers).
+`openai-passthrough` has no OAuth state: no refresh, no dead mark, no Kimi
+home-directory credential fallbacks, and a 401 goes back to the client
+unchanged. Its `/health` reports `"provider":"openai-passthrough"`. Only a
+`kimi-coding` provider with a credential file can be marked dead, and a
+dead Kimi credential never refuses any other provider.
+Optional `session_header = "<lowercase header name>"` (`openai-passthrough`
+only; not `authorization`, `host`, `content-length` or a hop-by-hop name)
+for upstreams that refuse a request without a session id, for example
+OpenCode Go (`MissingSessionID`, HTTP 400): `session_header =
+"x-opencode-session"`. A client-supplied header of that name is forwarded
+unchanged. Otherwise the proxy adds `ses_<32 hex>` to non-GET requests:
+a hash of the model plus the first non-system message, so one conversation
+keeps one id (cache affinity) and the id never derives from a credential;
+random when the body has no such message.
 Non-loopback `listen` requires `allow_remote = true` and `auth_token_cmd`.
 POST needs `Content-Type: application/json`. Requests with an `Origin`
 header, or a `Host` that is not loopback / the bind address, are refused.

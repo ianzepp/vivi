@@ -26,6 +26,7 @@ pub mod providers;
 pub mod route;
 pub mod runtime;
 pub mod server;
+pub mod session;
 pub mod sse;
 pub mod status;
 pub mod tap;
@@ -108,6 +109,10 @@ mod credentials_test;
 #[cfg(test)]
 #[path = "proxy/kimi_test.rs"]
 mod kimi_test;
+
+#[cfg(test)]
+#[path = "proxy/session_test.rs"]
+mod session_test;
 
 #[cfg(test)]
 #[path = "proxy/usage_test.rs"]

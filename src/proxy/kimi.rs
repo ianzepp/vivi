@@ -1,4 +1,9 @@
 //! Native Kimi Code adapter: OAuth file or `key_cmd`, header injection, passthrough.
+//!
+//! The `openai-passthrough` adapter shares the request path but none of the
+//! Kimi credential machinery: no home-directory credential fallbacks, no
+//! OAuth refresh, no dead mark. Its bearer is a `key_cmd` or its own
+//! configured credential file, and a 401 goes back to the client unchanged.
 
 use std::path::PathBuf;
 
@@ -23,6 +28,14 @@ const DEFAULT_UPSTREAM: &str = "https://api.kimi.com/coding/v1";
 const DEFAULT_TOKEN_URL: &str = "https://auth.kimi.com/api/oauth/token";
 const DEFAULT_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const DEFAULT_CLIENT_VERSION: &str = "1.15.0";
+const KIMI_ADAPTER: &str = "kimi-coding";
+const PASSTHROUGH_ADAPTER: &str = "openai-passthrough";
+
+/// True for the Kimi Code adapter, the only one with an OAuth credential
+/// that can be refreshed, refused, and marked dead.
+fn is_kimi(provider: &ProviderConfig) -> bool {
+    provider.adapter.as_deref() == Some(KIMI_ADAPTER)
+}
 
 /// Handle one inbound Kimi request.
 ///
@@ -86,7 +99,7 @@ async fn retry_after_401(
     let Ok((response, usage)) = first else {
         return first;
     };
-    if response.status() != axum::http::StatusCode::UNAUTHORIZED {
+    if !is_kimi(provider) || response.status() != axum::http::StatusCode::UNAUTHORIZED {
         return Ok((response, usage));
     }
     match refresh(client, provider).await {
@@ -124,7 +137,12 @@ async fn dispatch(
         }
     };
     let url = upstream_url(provider, action, query);
-    let extra = identity_headers(provider, &token);
+    let mut extra = identity_headers(provider, &token);
+    if method != Method::GET
+        && let Some((name, value)) = super::session::header_to_add(provider, headers, &body)
+    {
+        extra.insert(name, value);
+    }
     forward::proxy_request(
         client,
         method.clone(),
@@ -152,6 +170,12 @@ fn bearer(provider: &ProviderConfig) -> Result<String, VivariumError> {
 }
 
 fn credential_path(provider: &ProviderConfig) -> Result<PathBuf, VivariumError> {
+    credentials::first_existing(&credential_candidates(provider))
+}
+
+/// Credential files tried in order. The Kimi home-directory defaults belong
+/// to the Kimi adapter alone; another provider uses only what it configures.
+pub(crate) fn credential_candidates(provider: &ProviderConfig) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = provider.credentials.as_deref() {
         candidates.push(expand_user_str(path));
@@ -159,9 +183,11 @@ fn credential_path(provider: &ProviderConfig) -> Result<PathBuf, VivariumError> 
     if let Some(path) = provider.fallback_credentials.as_deref() {
         candidates.push(expand_user_str(path));
     }
-    candidates.push(expand_user_str("~/.kimi-code/credentials/kimi-code.json"));
-    candidates.push(expand_user_str("~/.kimi/credentials/kimi-code.json"));
-    credentials::first_existing(&candidates)
+    if is_kimi(provider) {
+        candidates.push(expand_user_str("~/.kimi-code/credentials/kimi-code.json"));
+        candidates.push(expand_user_str("~/.kimi/credentials/kimi-code.json"));
+    }
+    candidates
 }
 
 /// Resolve an existing Kimi credential path without reading its contents.
@@ -280,11 +306,21 @@ fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) {
     }
 }
 
-fn refuse_if_dead(provider: &ProviderConfig, request_id: &str) -> Option<Response> {
-    let Ok(path) = credential_path(provider) else {
+/// The credential file whose dead mark governs this provider: only a Kimi
+/// provider without a `key_cmd` has one. Every other provider is never dead.
+fn dead_candidate(provider: &ProviderConfig) -> Option<PathBuf> {
+    if !is_kimi(provider) || provider.key_cmd.is_some() {
         return None;
-    };
-    if !dead::is_dead(&path) {
+    }
+    credential_path(provider).ok()
+}
+
+fn is_dead(provider: &ProviderConfig) -> bool {
+    dead_candidate(provider).is_some_and(|path| dead::is_dead(&path))
+}
+
+pub(crate) fn refuse_if_dead(provider: &ProviderConfig, request_id: &str) -> Option<Response> {
+    if !is_dead(provider) {
         return None;
     }
     tracing::debug!(
@@ -295,7 +331,12 @@ fn refuse_if_dead(provider: &ProviderConfig, request_id: &str) -> Option<Respons
 }
 
 fn health_response(provider: &ProviderConfig) -> Response {
-    forward::provider_health("kimi", health_status(provider))
+    let label = if is_kimi(provider) {
+        "kimi"
+    } else {
+        PASSTHROUGH_ADAPTER
+    };
+    forward::provider_health(label, health_status(provider))
 }
 
 /// Health label for `/health` and `vivi proxy providers`.
@@ -304,8 +345,10 @@ pub fn health_status(provider: &ProviderConfig) -> &'static str {
     if provider.key_cmd.is_some() {
         return "ok";
     }
+    if is_dead(provider) {
+        return "credential_dead";
+    }
     match credential_path(provider) {
-        Ok(path) if dead::is_dead(&path) => "credential_dead",
         Ok(_) => "ok",
         Err(_) => "missing",
     }
@@ -385,8 +428,10 @@ pub fn credential_state(provider: &ProviderConfig) -> String {
     if provider.key_cmd.is_some() {
         return "key_cmd".into();
     }
+    if is_dead(provider) {
+        return "dead".into();
+    }
     match credential_path(provider) {
-        Ok(path) if dead::is_dead(&path) => "dead".into(),
         Ok(path) => match credentials::read_json(&path) {
             Ok(value) => credentials::expiry_label(&value).unwrap_or_else(|| "present".into()),
             Err(_) => "missing".into(),

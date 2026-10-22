@@ -53,6 +53,8 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub client_version: Option<String>,
     #[serde(default)]
+    pub session_header: Option<String>,
+    #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -247,6 +249,28 @@ fn validate_native(name: &str, provider: &ProviderConfig) -> Result<(), Vivarium
     if provider.key_cmd.is_none() && provider.credentials.is_none() {
         return Err(VivariumError::Config(format!(
             "providers.{name} native adapter needs credentials or key_cmd"
+        )));
+    }
+    validate_session_header(name, adapter, provider.session_header.as_deref())
+}
+
+fn validate_session_header(
+    name: &str,
+    adapter: &str,
+    header: Option<&str>,
+) -> Result<(), VivariumError> {
+    let Some(header) = header else {
+        return Ok(());
+    };
+    if adapter != "openai-passthrough" {
+        return Err(VivariumError::Config(format!(
+            "providers.{name} session_header applies only to the openai-passthrough adapter"
+        )));
+    }
+    if !super::session::valid_header_name(header) {
+        return Err(VivariumError::Config(format!(
+            "providers.{name} session_header {header:?} must be a plain HTTP header name \
+             (not authorization, host, content-length, or a hop-by-hop header)"
         )));
     }
     Ok(())

@@ -19,6 +19,7 @@ fn provider() -> ProviderConfig {
         token_url: None,
         client_id: None,
         client_version: None,
+        session_header: None,
         working_directory: None,
         env: std::collections::BTreeMap::default(),
     }
