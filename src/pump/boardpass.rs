@@ -249,17 +249,26 @@ fn merge_needs(st: &mut State, snap: &State, done: &State) {
         st.needs.remove(&handle);
     }
     for (handle, record) in &done.needs {
-        if !snap.needs.contains_key(handle) {
+        let Some(before) = snap.needs.get(handle) else {
             continue;
-        }
+        };
         let Some(live) = st.needs.get_mut(handle) else {
             continue;
         };
-        live.thread_seen_at = record.thread_seen_at;
-        if live.thread_sha256 != record.thread_sha256 {
+        // Only a field the pass changed comes back. A field it left alone
+        // still holds the snapshot's value, and copying that would undo what
+        // the tick thread did meanwhile: a revision plan landing on the tick
+        // thread clears `amendment_pending`, and a stale copy of `true`
+        // would leave the need waiting for a revision that already landed.
+        if before.thread_seen_at != record.thread_seen_at {
+            live.thread_seen_at = record.thread_seen_at;
+        }
+        if before.thread_sha256 != record.thread_sha256 {
             live.thread_sha256.clone_from(&record.thread_sha256);
         }
-        live.amendment_pending = record.amendment_pending;
+        if before.amendment_pending != record.amendment_pending {
+            live.amendment_pending = record.amendment_pending;
+        }
     }
 }
 

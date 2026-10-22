@@ -251,6 +251,33 @@ pub fn settle_action(ctx: &Ctx, mailspace: &Mailspace, mark: &ActionMark) -> boo
 /// a new record; one that still has its record keeps it. A failure is logged:
 /// the revision itself does not depend on the record.
 pub fn ensure_open(ctx: &Ctx, need: &str) {
+    ensure_open_with(
+        ctx,
+        need,
+        &format!("Amendment of need {need}: its thread changed after the plan."),
+        "the amendment of",
+    );
+}
+
+/// File the open pump record of a need the pump created itself (a gate fix
+/// need), unless it has one. The pump owns such a need end to end: it audits,
+/// mints and dispatches the fix units, and its attempt replies go on this
+/// record. Quiet when this pump has no mailspace (no records exist then).
+pub fn open_own(ctx: &Ctx, need: &str) {
+    if ctx.mailspace.is_empty() {
+        return;
+    }
+    ensure_open_with(
+        ctx,
+        need,
+        &format!("Need {need} was created by the pump itself; it plans and dispatches it."),
+        "the pump-created",
+    );
+}
+
+/// Open a record for `need` with `body` unless it has one open; failures are
+/// logged and never fail the caller.
+fn ensure_open_with(ctx: &Ctx, need: &str, body: &str, what: &str) {
     let Some(mailspace) = open_mailspace(ctx) else {
         return;
     };
@@ -262,14 +289,13 @@ pub fn ensure_open(ctx: &Ctx, need: &str) {
             return;
         }
     }
-    let body = format!("Amendment of need {need}: its thread changed after the plan.");
-    match mailspace.pump_send(None, need, Some(&body)) {
+    match mailspace.pump_send(None, need, Some(body)) {
         Ok(record) => ctx.log(&format!(
-            "pump record {} opened for the amendment of need {need}",
+            "pump record {} opened for {what} need {need}",
             record.handle
         )),
         Err(error) => ctx.log(&format!(
-            "no pump record opened for the amendment of need {need}: {error}"
+            "no pump record opened for {what} need {need}: {error}"
         )),
     }
 }

@@ -2625,6 +2625,10 @@ tail; an exhausted audit creates
 **gatefix-no-live-work**, with audit attempts, failures, fix-unit counts,
 reason, and recovery action.
 
+**Gate fix needs are the pump's own needs.** The need a red gate creates (subject **pump: gate fix for g&lt;tip&gt;**) is sent from the pump identity (**[pump] reply_from**) to **[pump.board] reply_to**, and the pump opens its pump record in the same step, so the fix units' attempt records have a record to reply on and **pump replan**, **withdraw**, **requeue** and **recover** have one to act on. The board never plans such a need (the audit does), and its record is not reported as unplannable. **pump send** accepts any need the pump identity itself sent, whoever it is addressed to. A gate fix need an older pump created without a record is repaired by **vivi pump adopt** (or **vivi pump send --need &lt;need&gt;** for one need). The synthetic **pumpfix-** ids (repair units, a gate fix whose need could not be sent) are not mailspace needs: they never have a record and never reply.
+
+A revision the pump asked for is never left without an answer. A plan file that is not valid JSON, names no **need**, is stale, or fails validation is logged and raised as an exception (**bad-plan**, **revision-stale**), never skipped quietly; a revision file **&lt;need&gt;.r&lt;N&gt;.json** answers revision N whatever number is inside it, and a plan wrapped in a code fence between the markers is unwrapped. A need that stays **amendment_pending** with no revision planner in flight (the planner failed, timed out or its answer was rejected) is asked again after 60 seconds, doubling, at most three times; then one **revision-failed** exception names **vivi pump replan &lt;need&gt;** and the need waits. Units of a need with a pending revision do not dispatch.
+
 ### Planning, closeout, and cadence
 
 A plan has **need**, **verdict**, **reason**, and **units**. Each unit needs a

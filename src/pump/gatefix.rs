@@ -92,14 +92,33 @@ pub(crate) fn take_residuals(ctx: &Ctx, st: &mut State, need: &str, residual: &[
     }
 }
 
+/// The needs the pump created itself: the owners of red names, the need of
+/// a live audit run (global or per target), and any need whose plan is an
+/// audit report. They are planned by the audit, never by the board planner.
+pub(crate) fn own_needs(st: &State) -> BTreeSet<String> {
+    let mut own: BTreeSet<String> = st.red.values().cloned().collect();
+    for target in st.target_states.values() {
+        own.extend(target.red.values().cloned());
+    }
+    own.extend(crate::pump::audit::run_needs(st));
+    own.extend(
+        st.needs
+            .iter()
+            .filter(|(_, record)| record.reason == crate::pump::audit::REPORT_REASON)
+            .map(|(need, _)| need.clone()),
+    );
+    own
+}
+
 /// The gate-fix need id for a tip: `<fix_prefix>-g<tip8>`.
 pub(crate) fn fix_need(ctx: &Ctx, tip: &str) -> String {
     let short: String = tip.chars().take(8).collect();
     format!("{}-g{short}", ctx.cfg.fix_prefix)
 }
 
-/// Send the real backing need for an audit and return its handle: the
-/// mailspace thread fix units' attempt records reply on. Returns `None`
+/// Send the real backing need for an audit, open its pump record, and return
+/// its handle: the mailspace thread fix units' attempt records reply on (on
+/// that record). Returns `None`
 /// (with the reason logged) when the send fails or no handle can be parsed.
 pub(crate) fn send_fix_need(
     ctx: &Ctx,
@@ -142,7 +161,10 @@ pub(crate) fn send_fix_need(
         None
     };
     match handle {
-        Some(handle) => Some(handle),
+        Some(handle) => {
+            crate::pump::record::open_own(ctx, &handle);
+            Some(handle)
+        }
         None => {
             ctx.log(&format!("audit need send failed: {}", last_line(&out.text)));
             None

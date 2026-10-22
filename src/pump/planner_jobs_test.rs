@@ -60,6 +60,22 @@ fn a_completed_plan_is_copied_and_its_receipt_is_kept_for_ingestion() {
 }
 
 #[test]
+fn a_plan_wrapped_in_a_code_fence_is_copied_bare() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let receipt = "agent_rc 0 agent_s 1\nhand's final message:\nPUMP-PLAN-BEGIN\n```json\n{\"verdict\":\"none\"}\n```\nPUMP-PLAN-END\n";
+    let mut st = State::default();
+    st.jobs
+        .insert("planner-board-need1-100".into(), job(receipt));
+    apply_completions(&ctx, &mut st);
+
+    assert_eq!(
+        fs::read_to_string(ctx.home.join("plans/need1.json")).unwrap(),
+        "{\"verdict\":\"none\"}"
+    );
+}
+
+#[test]
 fn an_immediate_worker_exit_writes_the_failure_receipt_on_the_same_tick() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());

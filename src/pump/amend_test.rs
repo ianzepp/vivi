@@ -609,3 +609,113 @@ fn a_pump_closed_need_done_in_the_mailspace_still_reopens_for_an_operator_reply(
     assert!(st.needs["n1"].amendment_pending);
     assert!(!st.closed_needs.contains(&String::from("n1")));
 }
+
+/// Mark the revision job of `n1` finished with the given receipt.
+fn finish_revision(st: &mut State, receipt: &str) {
+    let queued_at = st.board.revision_planning["n1"];
+    let id = planner_jobs::job_id("revision", "n1.revision", queued_at);
+    let job = st.jobs.get_mut(&id).expect("revision job");
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: "agent_rc 0".into(),
+        receipt: receipt.into(),
+        at: queued_at + 1,
+    });
+}
+
+#[test]
+fn a_requested_revision_nobody_is_answering_is_asked_again() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().amendment_pending = true;
+    script_thread(&host, "same body");
+
+    detect(&ctx, &mut st);
+
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert!(
+        revision_job(&st)
+            .body
+            .contains("previous revision planner gave no usable plan")
+    );
+    assert_eq!(st.board.planner_fails["n1.revision"], 1);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("n1 has a requested revision and no planner"))
+    );
+}
+
+#[test]
+fn a_failed_revision_is_asked_again_after_a_backoff_and_then_given_up() {
+    let (_dir, ctx, host, mut st) = setup();
+    request(&ctx, &mut st, "n1", "unit n1-1 failed its proof");
+    finish_revision(
+        &mut st,
+        "agent_rc 127 agent_s 0\nhand's final message:\nConnection error.\n",
+    );
+    planner_jobs::apply_completions(&ctx, &mut st);
+    script_thread(&host, "same body");
+
+    // The pass that sees the failure raises it and waits out the backoff.
+    detect(&ctx, &mut st);
+    assert!(!st.board.revision_planning.contains_key("n1"));
+    assert!(st.needs["n1"].amendment_pending);
+    assert_eq!(st.board.planner_fails["n1.revision"], 1);
+    let retry_at = st.board.planner_retry_at["n1.revision"];
+    detect(&ctx, &mut st);
+    assert!(!st.board.revision_planning.contains_key("n1"));
+
+    // Once the backoff is over the planner is asked again.
+    host.set_now(retry_at);
+    detect(&ctx, &mut st);
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert_eq!(st.board.planner_fails["n1.revision"], 2);
+
+    // After the last try the need waits for an operator, with one exception.
+    st.board.revision_planning.clear();
+    st.board
+        .planner_fails
+        .insert(String::from("n1.revision"), 3);
+    st.board.planner_retry_at.clear();
+    detect(&ctx, &mut st);
+    detect(&ctx, &mut st);
+    assert!(st.board.revision_planning.is_empty());
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(
+        exceptions.matches("revision-failed n1").count(),
+        1,
+        "{exceptions}"
+    );
+    assert!(exceptions.contains("vivi pump replan n1"), "{exceptions}");
+}
+
+#[test]
+fn an_answer_waiting_to_be_ingested_is_not_asked_for_again() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().amendment_pending = true;
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/n1.r2.json"), "{}").unwrap();
+    script_thread(&host, "same body");
+
+    detect(&ctx, &mut st);
+
+    assert!(st.board.revision_planning.is_empty());
+    assert!(st.jobs.is_empty());
+}
+
+#[test]
+fn an_answer_consumed_without_effect_is_replaced_by_the_next_ask() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().amendment_pending = true;
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/n1.r2.json"), "{}").unwrap();
+    st.plans_seen.push(String::from("n1.r2.json"));
+    script_thread(&host, "same body");
+
+    detect(&ctx, &mut st);
+
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert!(!ctx.home.join("plans/n1.r2.json").exists());
+    assert!(!st.plans_seen.iter().any(|seen| seen == "n1.r2.json"));
+}

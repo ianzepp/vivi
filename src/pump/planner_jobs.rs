@@ -221,8 +221,18 @@ fn plan_json(receipt: &str) -> Option<&str> {
         .split_once("hand's final message:")
         .map_or(receipt, |(_, body)| body);
     let body = final_message.rsplit_once(PLAN_BEGIN)?.1;
-    let plan = body.split_once(PLAN_END)?.0.trim();
+    let plan = unfenced(body.split_once(PLAN_END)?.0.trim());
     (!plan.is_empty()).then_some(plan)
+}
+
+/// `text` without a Markdown code fence around it: models often wrap JSON in
+/// a fenced block even when told to put it bare between the markers.
+fn unfenced(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("```") else {
+        return text;
+    };
+    let inner = rest.split_once('\n').map_or("", |(_, body)| body);
+    inner.trim_end().strip_suffix("```").unwrap_or(inner).trim()
 }
 
 fn planner_exit_code(receipt: &str, state: &str) -> i32 {

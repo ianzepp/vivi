@@ -498,6 +498,14 @@ fn audit_runs(st: &State) -> Vec<AuditRun> {
     runs
 }
 
+/// The need ids of every stored audit run, global and per target.
+pub(crate) fn run_needs(st: &State) -> Vec<String> {
+    audit_runs(st).into_iter().map(|run| run.need).collect()
+}
+
+/// The `NeedRecord.reason` an audit report gives the need it minted.
+pub(crate) const REPORT_REASON: &str = "audit report";
+
 /// Whether a red owner already has durable audit state reported elsewhere.
 pub(crate) fn has_run_for_need(st: &State, need: &str) -> bool {
     current(st).is_some_and(|run| run.need == need)
@@ -888,7 +896,7 @@ pub(crate) fn apply_report(
         need.to_owned(),
         NeedRecord {
             verdict: String::from("units"),
-            reason: String::from("audit report"),
+            reason: String::from(REPORT_REASON),
             units: uids,
             revision: 1,
             ..NeedRecord::default()

@@ -78,9 +78,18 @@ fn row_from(value: &Value) -> NeedRow {
 /// in either list is logged and left for the operator to fix.
 #[must_use]
 pub fn candidate_rows(ctx: &Ctx) -> Vec<NeedRow> {
-    let Some(wanted) = crate::pump::record::open_need_handles(ctx) else {
+    candidate_rows_except(ctx, &BTreeSet::new())
+}
+
+/// [`candidate_rows`] for a pump that owns some needs itself (gate fix
+/// needs): an open record of an `own` need is the pump's bookkeeping, not an
+/// intake request, so it is neither planned nor reported as unplannable.
+#[must_use]
+pub fn candidate_rows_except(ctx: &Ctx, own: &BTreeSet<String>) -> Vec<NeedRow> {
+    let Some(mut wanted) = crate::pump::record::open_need_handles(ctx) else {
         return Vec::new();
     };
+    wanted.retain(|handle| !own.contains(handle));
     if wanted.is_empty() {
         return Vec::new();
     }
@@ -897,7 +906,7 @@ pub fn board(ctx: &Ctx, st: &mut State) {
             last_line(&out.text, 150)
         ));
     }
-    let rows = candidate_rows(ctx);
+    let rows = candidate_rows_except(ctx, &crate::pump::gatefix::own_needs(st));
     expire_planning(ctx, st);
     replan_answered(ctx, st, &rows);
     launch_planners(ctx, st, &rows);

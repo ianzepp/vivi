@@ -138,8 +138,8 @@ fn ingest_creates_pending_units_and_a_need_record() {
             ]
         }),
     );
-    // A file that is not valid JSON is skipped silently (and never marked
-    // seen, so it is re-read on every tick).
+    // A file that is not valid JSON is never dropped quietly: it raises one
+    // bad-plan exception (see `an_unreadable_plan_file_is_reported_once`).
     fs::write(ctx.home.join("plans").join("zz-broken.json"), "not json").unwrap();
     ingest(&ctx, &mut st);
     assert_eq!(st.units.len(), 2);
@@ -159,7 +159,8 @@ fn ingest_creates_pending_units_and_a_need_record() {
     assert_eq!(rec.verdict, "units");
     assert_eq!(rec.reason, "pump the bridge");
     assert_eq!(rec.units, vec!["56f1d749-1", "56f1d749-2"]);
-    assert_eq!(st.plans_seen, vec!["56f1d749.json".to_string()]);
+    assert_eq!(st.plans_seen[0], "56f1d749.json");
+    assert!(st.plans_seen[1].starts_with("unreadable:zz-broken.json"));
     assert!(
         host.logs()
             .iter()
@@ -1046,5 +1047,80 @@ fn a_late_split_plan_resolves_the_stuck_exception() {
             .any(|line| line == "RESOLVED split-planner-failed u2"),
         "logs were: {:?}",
         host2.logs()
+    );
+}
+
+#[test]
+fn an_unreadable_plan_file_is_reported_once() {
+    let (_dir, ctx, host, mut st) = setup();
+    let plans = ctx.home.join("plans");
+    fs::write(plans.join("a.json"), "{\"need\": ").unwrap();
+    fs::write(plans.join("b.json"), "{\"verdict\": \"units\"}").unwrap();
+
+    ingest(&ctx, &mut st);
+    ingest(&ctx, &mut st);
+
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(exc.matches("bad-plan a.json").count(), 1, "{exc}");
+    assert!(exc.contains("not valid JSON"), "{exc}");
+    assert_eq!(exc.matches("bad-plan b.json").count(), 1, "{exc}");
+    assert!(exc.contains("names no `need`"), "{exc}");
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("plan file a.json rejected: not valid JSON"))
+    );
+    // A corrected file is read again.
+    write_plan(&ctx, "a.json", &first_plan());
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 1);
+}
+
+#[test]
+fn a_revision_file_answers_the_revision_it_is_named_for() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    // The planner left `revision` out: the file name says which revision the
+    // pump asked for.
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({"need": "n1", "units": [plan_unit("n1-1", "first pass"), plan_unit("n1-2", "two")]}),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 2);
+    assert_eq!(st.units["n1-2"].revision, 2);
+    // A wrong number inside the file does not make it stale either.
+    write_plan(
+        &ctx,
+        "n1.r3.json",
+        &json!({"need": "n1", "revision": 1, "units": [plan_unit("n1-3", "three")]}),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 3);
+    assert!(st.units.contains_key("n1-3"));
+}
+
+#[test]
+fn a_stale_answer_to_a_requested_revision_raises_an_exception() {
+    let (_dir, ctx, host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    st.needs.get_mut("n1").unwrap().amendment_pending = true;
+    write_plan(
+        &ctx,
+        "n1.r1b.json",
+        &json!({"need": "n1", "revision": 1, "units": [plan_unit("n1-1", "first pass")]}),
+    );
+
+    ingest(&ctx, &mut st);
+
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("revision-stale n1"), "{exc}");
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("plan file n1.r1b.json is stale"))
     );
 }

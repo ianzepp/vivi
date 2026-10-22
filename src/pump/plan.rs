@@ -111,21 +111,37 @@ pub fn ingest(ctx: &Ctx, st: &mut State) {
 }
 
 /// Ingest a single plan file (`key` is its base name).
+///
+/// A file that cannot be a plan is never dropped without a trace: it raises a
+/// `bad-plan` exception once per distinct content (the marker in `plans_seen`
+/// includes the length, so a corrected file is read again) and the log names
+/// the file and the reason.
 fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     let Ok(text) = fs::read_to_string(path) else {
         return;
     };
-    let Ok(plan) = serde_json::from_str::<Value>(&text) else {
-        return; // not valid JSON: skipped silently, no exception
+    let plan = match serde_json::from_str::<Value>(&text) {
+        Ok(plan) => plan,
+        Err(error) => {
+            reject_unreadable(
+                ctx,
+                st,
+                key,
+                text.len(),
+                &format!("not valid JSON: {error}"),
+            );
+            return;
+        }
     };
     let Some(need) = str_field(&plan, "need").filter(|s| !s.is_empty()) else {
-        return; // a missing need skips the file
+        reject_unreadable(ctx, st, key, text.len(), "it names no `need`");
+        return;
     };
     if st.plans_seen.iter().any(|seen| seen == key) {
         return;
     }
     let replaces = str_field(&plan, "replaces");
-    let revision = plan.get("revision").and_then(Value::as_u64);
+    let revision = key_revision(key, need).or_else(|| plan.get("revision").and_then(Value::as_u64));
     if ingest_existing_revision(ctx, st, key, need, revision, replaces, &plan, &text) {
         return;
     }
@@ -166,6 +182,28 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     record(ctx, st, &plan, need, replaces, &minted, revision);
 }
 
+/// Record, once per content, a plan file that cannot be read as a plan.
+fn reject_unreadable(ctx: &Ctx, st: &mut State, key: &str, len: usize, why: &str) {
+    let marker = format!("unreadable:{key}:{len}");
+    if st.plans_seen.iter().any(|seen| seen == &marker) {
+        return;
+    }
+    st.plans_seen.push(marker);
+    ctx.log(&format!("plan file {key} rejected: {why}"));
+    ctx.exception("bad-plan", key, &format!("plan file {key}: {why}"));
+}
+
+/// The revision a revision plan file is named for (`<need>.r<N>.json`): the
+/// pump asked the planner for exactly that file, so it is the revision the
+/// plan answers even when the planner left the field out or wrote another.
+fn key_revision(key: &str, need: &str) -> Option<u64> {
+    key.strip_prefix(need)?
+        .strip_prefix(".r")?
+        .strip_suffix(".json")?
+        .parse()
+        .ok()
+}
+
 /// Consume a current-need revision plan, returning `true` when the file was
 /// stale or revision application handled it.
 fn ingest_existing_revision(
@@ -184,7 +222,18 @@ fn ingest_existing_revision(
     // A plan without a revision is the old one-shot path; a revision at or
     // below the current one is stale.
     if revision.is_none_or(|revision| revision <= current.revision) {
+        let (have, pending) = (current.revision, current.amendment_pending);
         st.plans_seen.push(key.to_string());
+        let why = format!(
+            "plan file {key} is stale: it carries revision {} and the need is at r{have}",
+            revision.map_or_else(|| String::from("none"), |r| format!("r{r}"))
+        );
+        ctx.log(&why);
+        if pending {
+            // A revision was asked for and this answer cannot be applied:
+            // never drop it quietly.
+            ctx.exception("revision-stale", need, &why);
+        }
         return true;
     }
     st.plans_seen.push(key.to_string());
@@ -240,6 +289,7 @@ fn apply_revision(ctx: &Ctx, st: &mut State, need: &str, revision: u64, plan: &V
         need,
     );
     if let Some(bad) = bad {
+        ctx.log(&format!("revision r{revision} of {need} rejected: {bad}"));
         ctx.exception("bad-plan", need, &bad);
         return;
     }
@@ -336,6 +386,10 @@ fn record_revision(
     record.units.retain(|uid| !removed.contains(uid));
     record.units.extend(counts.new_ids.iter().cloned());
     st.board.revision_planning.remove(need);
+    st.board.planner_fails.remove(&format!("{need}.revision"));
+    st.board
+        .planner_retry_at
+        .remove(&format!("{need}.revision"));
     if let Err(err) = crate::pump::store::record_plan_revision(
         &ctx.home,
         need,

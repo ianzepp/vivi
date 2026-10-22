@@ -148,7 +148,8 @@ impl Mailspace {
     /// and unplannable. The board reads the open needs addressed to the pump's
     /// identity (`to`, as `[pump] reply_from` names it) and the needs this
     /// mailspace holds for another mailspace's address; a need that is neither
-    /// is invisible to it.
+    /// is invisible to it. A need the pump identity itself sent is the pump's
+    /// own, so it needs no addressing.
     fn ensure_reaches_pump(
         &self,
         storage: &Storage,
@@ -175,7 +176,19 @@ impl Mailspace {
             .live_messages_for_content(&view.content_id)?
             .iter()
             .any(|row| super::is_foreign_account(&row.account));
-        if addressed || held {
+        // A need the pump identity sent itself (a gate fix need, a repair
+        // need) is the pump's own work: it never reaches the board through an
+        // inbox, the pump already holds it, and it may be addressed to an
+        // operator so a person can read it.
+        let own = view
+            .from_addr
+            .to_ascii_lowercase()
+            .contains(needles[0].as_str())
+            || view
+                .from_addr
+                .to_ascii_lowercase()
+                .contains(needles[1].as_str());
+        if addressed || held || own {
             return Ok(());
         }
         Err(VivariumError::Message(format!(

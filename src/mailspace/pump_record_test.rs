@@ -348,3 +348,48 @@ fn a_need_copied_to_the_pump_identity_is_plannable() {
 
     mailspace.pump_send(None, &copied, None).unwrap();
 }
+
+#[test]
+fn a_need_the_pump_identity_sent_itself_gets_a_record_whoever_it_is_addressed_to() {
+    let (mut mailspace, _tmp) = roster();
+    mailspace.add_identity("elsewhere").unwrap();
+    let send = |from: &str, to: &str, subject: &str| {
+        mailspace
+            .send(SendRequest {
+                from: from.into(),
+                to: vec![to.into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: subject.into(),
+                body: "done_when: it works".into(),
+                role: "needs".into(),
+                kind: Some("need".into()),
+                reply_to: None,
+                depends_on: Vec::new(),
+            })
+            .unwrap()
+            .delivered
+            .remove(0)
+            .handle
+    };
+    let own = send(
+        "mind",
+        "operator",
+        "pump: gate fix for g01234567 (1 new, 0 residual)",
+    );
+    let stray = send("operator", "elsewhere", "not for the pump");
+
+    let record = mailspace.pump_send(None, &own, None).unwrap();
+
+    assert_eq!(record.need, own);
+    assert_eq!(record.status, PumpState::Open);
+    // A need another identity sent to a third party is still refused.
+    let error = mailspace
+        .pump_send(None, &stray, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("not addressed to the pump identity"),
+        "{error}"
+    );
+}

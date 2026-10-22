@@ -388,3 +388,35 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
         host.commands()
     );
 }
+
+#[test]
+fn merge_back_does_not_undo_a_revision_that_landed_during_the_pass() {
+    let mut pending = record("units");
+    pending.revision = 1;
+    pending.amendment_pending = true;
+    pending.thread_sha256 = Some(String::from("aaaa"));
+
+    // The pass worked on a snapshot taken while the revision was pending.
+    let snap = {
+        let mut st = State::default();
+        st.needs.insert(String::from("n1"), pending.clone());
+        st
+    };
+    // The tick thread ingested the revision plan meanwhile.
+    let mut st = snap.clone();
+    let live = st.needs.get_mut("n1").unwrap();
+    live.revision = 2;
+    live.amendment_pending = false;
+    // The pass left the record as it found it (it skips a pending need).
+    let mut done = State::default();
+    done.needs.insert(String::from("n1"), pending);
+
+    merge_back(&mut st, &snap, &done);
+
+    let merged = st.needs.get("n1").unwrap();
+    assert_eq!(merged.revision, 2);
+    assert!(
+        !merged.amendment_pending,
+        "a stale snapshot must not set the flag again"
+    );
+}

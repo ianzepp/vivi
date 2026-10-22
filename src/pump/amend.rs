@@ -20,6 +20,7 @@ pub fn detect(ctx: &Ctx, st: &mut State) {
         return;
     }
     expire_revisions(ctx, st);
+    reask_lost_revisions(ctx, st);
     let handles: Vec<String> = st.needs.keys().cloned().collect();
     for handle in handles {
         consider(ctx, st, &handle);
@@ -294,6 +295,7 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
     };
     let owner = format!("{handle}.revision");
     let queued_at = ctx.now();
+    discard_stale_answer(ctx, st, handle, revision);
     if let Err(error) = planner_jobs::enqueue(
         ctx,
         st,
@@ -502,6 +504,130 @@ fn expire_revisions(ctx: &Ctx, st: &mut State) {
             }
         }
         st.board.revision_planning.remove(&handle);
+        if !landed {
+            schedule_reask(ctx, st, &handle);
+        }
+    }
+}
+
+/// How many times a revision planner that ended without a usable plan is
+/// asked again before the need waits for an operator.
+const REVISION_TRIES: u32 = 3;
+
+/// Seconds before the first re-ask; it doubles per failure.
+const REVISION_BACKOFF: u64 = 60;
+
+/// The `planner_fails` / `planner_retry_at` key of a need's revision planner.
+fn reask_key(handle: &str) -> String {
+    format!("{handle}.revision")
+}
+
+/// A revision planner ended without landing a plan: count it and set the
+/// earliest time [`reask_lost_revisions`] may ask again. The need stays
+/// `amendment_pending`, so nothing dispatches against a plan that is known to
+/// be stale until a revision lands or an operator steps in.
+fn schedule_reask(ctx: &Ctx, st: &mut State, handle: &str) {
+    if !st
+        .needs
+        .get(handle)
+        .is_some_and(|record| record.amendment_pending)
+    {
+        return;
+    }
+    let key = reask_key(handle);
+    let fails = st.board.planner_fails.entry(key.clone()).or_insert(0);
+    *fails += 1;
+    let fails = *fails;
+    let delay = REVISION_BACKOFF.saturating_mul(1u64 << fails.saturating_sub(1).min(16));
+    st.board
+        .planner_retry_at
+        .insert(key, ctx.now().saturating_add(delay));
+}
+
+/// Ask again for every revision that was requested and is no longer being
+/// answered: the need is `amendment_pending` but no revision planner is in
+/// flight, and no answer file is waiting to be ingested. That is the state a
+/// failed planner leaves, and the one an older pump left when it lost an
+/// answer, so a need can never wait on a revision nobody is producing.
+/// Bounded by [`REVISION_TRIES`]; the last failure raises one
+/// `revision-failed` exception naming the operator command.
+fn reask_lost_revisions(ctx: &Ctx, st: &mut State) {
+    let now = ctx.now();
+    let lost: Vec<String> = st
+        .needs
+        .iter()
+        .filter(|(handle, record)| {
+            record.amendment_pending
+                && !record.withdrawn
+                && !st.board.revision_planning.contains_key(*handle)
+                && !st.board.planning.contains_key(*handle)
+                && !answer_waiting(ctx, st, handle)
+                && st
+                    .board
+                    .planner_retry_at
+                    .get(&reask_key(handle))
+                    .is_none_or(|at| *at <= now)
+        })
+        .map(|(handle, _)| handle.clone())
+        .collect();
+    for handle in lost {
+        let key = reask_key(&handle);
+        let fails = st.board.planner_fails.get(&key).copied().unwrap_or(0);
+        if fails > REVISION_TRIES {
+            continue;
+        }
+        if fails == REVISION_TRIES {
+            st.board.planner_fails.insert(key.clone(), fails + 1);
+            st.board.planner_retry_at.remove(&key);
+            ctx.exception(
+                "revision-failed",
+                &handle,
+                &format!(
+                    "{REVISION_TRIES} revision planners gave no usable plan; the need waits \
+                     for an operator: fix the thread or the plan, then `vivi pump replan {handle}`"
+                ),
+            );
+            continue;
+        }
+        st.board.planner_retry_at.remove(&key);
+        // A launch that fails before a planner starts spends a try too, so a
+        // broken launch cannot repeat on every pass.
+        st.board.planner_fails.insert(key, fails + 1);
+        ctx.log(&format!(
+            "amendment: {handle} has a requested revision and no planner; asking again"
+        ));
+        launch_revision(
+            ctx,
+            st,
+            &handle,
+            Some("the previous revision planner gave no usable plan"),
+        );
+    }
+}
+
+/// True when the answer file of the next revision sits in `plans/` and the
+/// ingest has not consumed it yet.
+fn answer_waiting(ctx: &Ctx, st: &State, handle: &str) -> bool {
+    let Some(revision) = st.needs.get(handle).map(|r| r.revision.saturating_add(1)) else {
+        return false;
+    };
+    let name = format!("{handle}.r{revision}.json");
+    ctx.home.join("plans").join(&name).exists() && !st.plans_seen.iter().any(|seen| seen == &name)
+}
+
+/// Move aside an answer file of `revision` that was consumed without taking
+/// effect, and forget it, so the new planner's file is read as a new plan.
+fn discard_stale_answer(ctx: &Ctx, st: &mut State, handle: &str, revision: u64) {
+    let name = format!("{handle}.r{revision}.json");
+    st.plans_seen.retain(|seen| seen != &name);
+    let path = ctx.home.join("plans").join(&name);
+    if !path.exists() {
+        return;
+    }
+    let dir = ctx.home.join("plans/superseded");
+    drop(fs::create_dir_all(&dir));
+    if fs::rename(&path, dir.join(format!("{name}.{}", ctx.now()))).is_err() {
+        drop(fs::remove_file(&path));
     }
 }
 
