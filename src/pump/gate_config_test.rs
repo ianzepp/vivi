@@ -106,3 +106,12 @@ fn non_table_pump_is_an_error() {
     assert!(set_command(dir.path(), "true").is_err());
     assert_eq!(text(&dir), before);
 }
+
+#[test]
+fn a_blank_command_reads_as_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let vivi = dir.path().join(".vivi");
+    std::fs::create_dir_all(&vivi).unwrap();
+    std::fs::write(vivi.join("mailspace.toml"), "[pump.gate]\ncommand = \"\"\n").unwrap();
+    assert_eq!(super::command(dir.path()).unwrap(), None);
+}

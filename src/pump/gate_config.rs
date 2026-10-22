@@ -44,7 +44,8 @@ pub fn set_command(project_root: &Path, command: &str) -> Result<(), VivariumErr
 }
 
 /// The `[pump.gate] command` text in the project's mailspace config, or
-/// `None` when the key is not set.
+/// `None` when the key is not set or blank (the starter `[pump]` writes
+/// `command = ""`, which readiness also treats as missing).
 pub fn command(project_root: &Path) -> Result<Option<String>, VivariumError> {
     let doc = config_edit::load(&config_path(project_root))?;
     Ok(doc
@@ -52,6 +53,7 @@ pub fn command(project_root: &Path) -> Result<Option<String>, VivariumError> {
         .and_then(|pump| pump.get("gate"))
         .and_then(|gate| gate.get("command"))
         .and_then(Item::as_str)
+        .filter(|text| !text.trim().is_empty())
         .map(str::to_owned))
 }
 
