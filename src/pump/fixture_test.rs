@@ -5,13 +5,15 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use tempfile::{TempDir, tempdir};
 
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::config::PumpConfig;
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 
 /// The fake clock's start.
@@ -117,4 +119,113 @@ pub(crate) fn planned(need: &str, units: &[(&str, Status)]) -> State {
         );
     }
     st
+}
+
+/// A [`FakeHost`] that watches `pool dispatch` calls: how many were in flight
+/// at once, which threads ran them, and the order they finished in. A call
+/// whose command holds `fail` exits 1. While `want` is above 1, calls wait
+/// (3-second deadline, so a serial regression fails rather than hangs) until
+/// `want` of them are in flight together; once that has happened, later calls
+/// pass straight through. A call whose command holds `last` waits until
+/// `last_after` other calls have finished.
+pub(crate) struct ProbeHost {
+    pub inner: Arc<FakeHost>,
+    pub live: AtomicUsize,
+    pub peak: AtomicUsize,
+    pub threads: Mutex<Vec<std::thread::ThreadId>>,
+    pub finished: Mutex<Vec<String>>,
+    pub want: usize,
+    pub met: AtomicBool,
+    pub gate: Mutex<()>,
+    pub signal: Condvar,
+    pub fail: Option<String>,
+    pub last: Option<String>,
+    pub last_after: usize,
+}
+
+impl ProbeHost {
+    pub fn new(inner: &Arc<FakeHost>) -> Self {
+        Self {
+            inner: inner.clone(),
+            live: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            threads: Mutex::new(Vec::new()),
+            finished: Mutex::new(Vec::new()),
+            want: 1,
+            met: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            signal: Condvar::new(),
+            fail: None,
+            last: None,
+            last_after: 0,
+        }
+    }
+
+    fn wait_until(&self, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut held = self.gate.lock().unwrap();
+        while !done() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let (guard, _) = self.signal.wait_timeout(held, remaining).unwrap();
+            held = guard;
+        }
+    }
+}
+
+impl Host for ProbeHost {
+    fn now(&self) -> u64 {
+        self.inner.now()
+    }
+
+    fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
+        if !cmd.contains("pool dispatch") {
+            return self.inner.run(cmd, cwd, timeout_secs);
+        }
+        self.threads
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
+        let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        if self.want > 1 {
+            if now >= self.want {
+                self.met.store(true, Ordering::SeqCst);
+            }
+            drop(self.gate.lock().unwrap());
+            self.signal.notify_all();
+            self.wait_until(|| self.met.load(Ordering::SeqCst));
+        }
+        if self.last.as_deref().is_some_and(|frag| cmd.contains(frag)) {
+            self.wait_until(|| self.finished.lock().unwrap().len() >= self.last_after);
+        }
+        let out = if self.fail.as_deref().is_some_and(|frag| cmd.contains(frag)) {
+            CmdOutput {
+                code: 1,
+                text: String::from("remote refused"),
+            }
+        } else {
+            self.inner.run(cmd, cwd, timeout_secs)
+        };
+        self.finished.lock().unwrap().push(cmd.to_owned());
+        self.live.fetch_sub(1, Ordering::SeqCst);
+        drop(self.gate.lock().unwrap());
+        self.signal.notify_all();
+        out
+    }
+
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
+        self.inner.spawn(cmd, cwd, stdin, out)
+    }
+
+    fn log(&self, line: &str) {
+        self.inner.log(line)
+    }
 }

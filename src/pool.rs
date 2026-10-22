@@ -75,6 +75,7 @@ pub mod porcelain;
 pub mod progress;
 pub mod provider;
 pub mod ramdisk;
+pub mod reconcile_parallel;
 pub mod record;
 pub mod requires;
 pub mod reset;

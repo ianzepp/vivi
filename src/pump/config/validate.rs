@@ -188,6 +188,9 @@ impl PumpConfig {
         if self.dispatch.per_tick == 0 {
             found.invalid("[pump.dispatch] per_tick must be >= 1");
         }
+        if self.dispatch.parallel == 0 {
+            found.invalid("[pump.dispatch] parallel must be >= 1");
+        }
         self.validate_kinds(pools, hand_role_pool, found);
     }
 

@@ -1923,7 +1923,9 @@ Also not built: `vivi step` does not yet offer tasks addressed to `auditor` or
   prints one line per task (`<task>  <pool>  <state>  <slot>  <detail>`; with `--porcelain` the `collected` line above), and exits
   0. On timeout (default 3600) it exits nonzero and says nothing finished.
   Run it in the background to be woken.
-- `vivi pool reconcile [--pool <name>]` handles every open dispatch once: finished ones are
+- `vivi pool reconcile [--pool <name>]` (without `--pool` and with more than one
+  pool, the pools are reconciled concurrently, one thread per pool, and the
+  output is merged in dispatch order) handles every open dispatch once: finished ones are
   collected and their slots freed; one still running past its budget plus a
   15-minute grace is stopped and recorded as a timeout; one whose machine
   stopped without a result, or no longer exists at all, is recorded as lost
@@ -2723,6 +2725,7 @@ max_attempts = 3
 budget = 600
 overdue_grace = 900
 per_tick = 6
+parallel = 6   # pool dispatches run at once per tick; 1 = one after another
 
 [pump.proof]
 allow = ["<project-specific executable>"]
@@ -2783,6 +2786,20 @@ dispatch candidates. **vivi config validate** requires an active pump-planner ro
 with a pool, an active auditor role with a pool, a merge role of kind merge and a hand role of kind hand, and validates role and pool references. Configure a merge role
 with a pool for the live merge pipeline; legacy merge-lane settings do not run
 the live merges.
+
+**[pump.dispatch].parallel** (default 6, the same as `per_tick`, at least 1) bounds how many pool
+dispatches one pump tick runs at once, for both unit starts and durable role
+jobs. Each dispatch (task send, then `vivi pool dispatch`: claim or create a
+slot, deliver the job, seed, start) is slow on a remote host, so a tick that
+starts several no longer pays for them one after another. Selection, caps,
+**per_tick**, state updates and the order outcomes are applied in stay on the
+tick thread; only the remote calls overlap. A group of durable jobs whose pool
+refuses one retries it on the next candidate pool in a later round of the
+same tick. `parallel = 1` restores strictly serial starts. The slot claim of
+every provider is atomic, so concurrent dispatches to one pool never share a
+slot; a **worker** host serialises slot creation under its own lock (30
+seconds of waiting before it reports the lock busy), so very high **parallel**
+against one worker host can fail a dispatch that the next tick retries.
 
 Only current execution settings are shown above. **[pump.dispatch].lanes** is a legacy model-cap route; **[pump.merge].lanes** is not a live merge route;
 **[pump.merge].remote_wait** is unused by the live merge path.

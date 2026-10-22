@@ -5,7 +5,7 @@
 //! pump may stop and later collect the task receipt without restarting work.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::VivariumError;
 use crate::pump::dispatch;
 use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::par::map_bounded;
 
 mod brief;
 mod gate_sources;
@@ -384,29 +385,111 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
         .collect();
     pending.sort_by_key(|job| dispatch_order(job, &ctx.cfg.fix_prefix, &priorities));
     let mut started = Vec::new();
-    for mut snapshot in pending {
-        let id = snapshot.id.clone();
-        let candidates = candidate_pools(
-            ctx,
-            &snapshot.role,
-            &snapshot.pool_candidates,
-            snapshot.local_only,
-            &snapshot.pool_exclude,
-        );
-        for pool in candidates {
-            if free.get(&pool).copied().unwrap_or(0) == 0 {
-                continue;
-            }
-            if dispatch_one(ctx, st, &snapshot, &pool, &mut free)? {
-                started.push(id.clone());
-                break;
-            }
-            if let Some(updated) = st.jobs().get(&id).cloned() {
-                snapshot = updated;
-            }
-        }
+    let width = (ctx.cfg.dispatch.parallel as usize).max(1);
+    for chunk in pending.chunks(width) {
+        started.extend(dispatch_chunk(ctx, st, chunk, &mut free)?);
     }
     Ok(started)
+}
+
+/// One job being offered to its candidate pools in order.
+struct Attempt {
+    snapshot: PoolJob,
+    remaining: VecDeque<String>,
+}
+
+/// Dispatch up to `[pump.dispatch] parallel` jobs at once. Each wave picks a
+/// pool for every active job in order (first candidate with a free slot, the
+/// wave's own picks counted), runs the task sends and `pool dispatch` calls
+/// concurrently, then applies the outcomes in job order exactly as a serial
+/// run would. A job whose pool refused it goes on to its next candidate in the
+/// next wave. A chunk of one job is the serial algorithm.
+///
+/// Every outcome is applied before the first error is returned, so a
+/// dispatch that reached a pool is never left unrecorded.
+fn dispatch_chunk(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    chunk: &[PoolJob],
+    free: &mut BTreeMap<String, u32>,
+) -> Result<Vec<String>, VivariumError> {
+    let mut active: Vec<Attempt> = chunk
+        .iter()
+        .map(|snapshot| Attempt {
+            snapshot: snapshot.clone(),
+            remaining: candidate_pools(
+                ctx,
+                &snapshot.role,
+                &snapshot.pool_candidates,
+                snapshot.local_only,
+                &snapshot.pool_exclude,
+            )
+            .into(),
+        })
+        .collect();
+    let mut started = Vec::new();
+    let mut failure: Option<VivariumError> = None;
+    while failure.is_none() {
+        let wave = plan_wave(&mut active, free);
+        if wave.is_empty() {
+            break;
+        }
+        let limit = ctx.cfg.dispatch.parallel as usize;
+        let results = map_bounded(&wave, limit, |(index, pool)| {
+            send_and_dispatch(ctx, &active[*index].snapshot, pool)
+        });
+        let mut finished = BTreeSet::new();
+        for ((index, pool), sent) in wave.iter().zip(results) {
+            let sent = sent.unwrap_or_else(|| {
+                Sent::Failed(VivariumError::Message(
+                    "job dispatch thread panicked".into(),
+                ))
+            });
+            let snapshot = &active[*index].snapshot;
+            match apply_dispatch(ctx, st, snapshot, pool, sent, free) {
+                Ok(true) => {
+                    started.push(snapshot.id.clone());
+                    finished.insert(*index);
+                }
+                Ok(false) => {
+                    if let Some(updated) = st.jobs().get(&snapshot.id).cloned() {
+                        active[*index].snapshot = updated;
+                    }
+                }
+                Err(error) => {
+                    failure.get_or_insert(error);
+                    finished.insert(*index);
+                }
+            }
+        }
+        let mut position = 0;
+        active.retain(|_| {
+            position += 1;
+            !finished.contains(&(position - 1))
+        });
+    }
+    failure.map_or(Ok(started), Err)
+}
+
+/// Pick the next pool for every active job, in order: its first remaining
+/// candidate with a free slot that this wave's earlier picks have not used
+/// up. Candidates passed over (or about to be tried) leave the job's list; a
+/// job with none left drops out of the tick.
+fn plan_wave(active: &mut [Attempt], free: &BTreeMap<String, u32>) -> Vec<(usize, String)> {
+    let mut picked: BTreeMap<String, u32> = BTreeMap::new();
+    let mut wave = Vec::new();
+    for (index, attempt) in active.iter_mut().enumerate() {
+        while let Some(pool) = attempt.remaining.pop_front() {
+            let used = picked.get(&pool).copied().unwrap_or(0);
+            if free.get(&pool).copied().unwrap_or(0) <= used {
+                continue;
+            }
+            *picked.entry(pool.clone()).or_default() += 1;
+            wave.push((index, pool));
+            break;
+        }
+    }
+    wave
 }
 
 fn dispatch_order(
@@ -648,29 +731,68 @@ impl JobStatus {
     }
 }
 
-fn dispatch_one(
+/// What the concurrent half of one job dispatch learned.
+enum Sent {
+    /// The brief could not be written.
+    Failed(VivariumError),
+    /// The task could not be created.
+    NoTask,
+    /// The task exists (`fresh` when this call created it) and `pool dispatch`
+    /// answered.
+    Dispatched {
+        task: String,
+        fresh: bool,
+        code: i32,
+        text: String,
+    },
+}
+
+/// The remote half of dispatching one job, with no state writes: create its
+/// task when it has none, then run `pool dispatch` for it on `pool`.
+fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
+    let (task, fresh) = match &snapshot.task {
+        Some(task) => (task.clone(), false),
+        None => match send_task(ctx, snapshot) {
+            Ok(Some(task)) => (task, true),
+            Ok(None) => return Sent::NoTask,
+            Err(error) => return Sent::Failed(error),
+        },
+    };
+    let output = ctx.vivi(&pool_command(snapshot, pool, &task), 240);
+    Sent::Dispatched {
+        task,
+        fresh,
+        code: output.code,
+        text: output.text,
+    }
+}
+
+/// Apply one [`Sent`] to the job store: the state writes of a job dispatch.
+/// Returns `true` when the job left `pending` (dispatched, or settled by
+/// recovery), `false` to try the job's next pool.
+fn apply_dispatch(
     ctx: &Ctx,
     st: &mut impl JobStore,
     snapshot: &PoolJob,
     pool: &str,
+    sent: Sent,
     free: &mut BTreeMap<String, u32>,
 ) -> Result<bool, VivariumError> {
-    let task = match &snapshot.task {
-        Some(task) => task.clone(),
-        None => match send_task(ctx, snapshot)? {
-            Some(task) => {
-                if let Some(job) = st.jobs_mut().get_mut(&snapshot.id) {
-                    job.task = Some(task.clone());
-                }
-                task
-            }
-            None => return Ok(false),
-        },
+    let (task, fresh, code, text) = match sent {
+        Sent::Failed(error) => return Err(error),
+        Sent::NoTask => return Ok(false),
+        Sent::Dispatched {
+            task,
+            fresh,
+            code,
+            text,
+        } => (task, fresh, code, text),
     };
-    let command = pool_command(snapshot, pool, &task);
-    let output = ctx.vivi(&command, 240);
-    if output.code != 0 || !output.text.contains("dispatched") {
-        if output.text.contains("no free slot") {
+    if fresh && let Some(job) = st.jobs_mut().get_mut(&snapshot.id) {
+        job.task = Some(task.clone());
+    }
+    if code != 0 || !text.contains("dispatched") {
+        if text.contains("no free slot") {
             free.insert(pool.to_owned(), 0);
         }
         let latest = crate::pump::collect::receipt_full(ctx, &task);
@@ -685,7 +807,7 @@ fn dispatch_one(
         ctx.log(&format!(
             "job dispatch deferred {} on {pool}: {}",
             snapshot.id,
-            tail(&output.text, 240)
+            tail(&text, 240)
         ));
         return Ok(false);
     }

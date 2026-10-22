@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::dispatch::*;
+use crate::pump::fixture::ProbeHost;
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::state::{Attempt, EnvPause, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
@@ -1362,4 +1363,141 @@ fn a_waiting_fix_unit_reserves_the_gate_pool_slot() {
     ordered(&mut plain_only, &["u3"]);
     dispatch(&ctx, &mut plain_only);
     assert_eq!(plain_only.units["u3"].status, Status::Inflight);
+}
+
+/// Four free plain slots, a task send and a successful pool dispatch.
+fn wire_four(host: &Arc<FakeHost>) {
+    wire(host);
+    host.reply(
+        "pool status",
+        0,
+        "slot fly4 bridge slot-1 free\nslot fly4 bridge slot-2 free\n\
+         slot fly4 bridge slot-3 free\nslot fly4 bridge slot-4 free\n",
+    );
+}
+
+/// Run a four-unit dispatch tick with `parallel` through a [`ProbeHost`]
+/// shaped by `configure`; returns the state, the probe and the inner host.
+fn probed_tick(
+    parallel: u32,
+    configure: impl FnOnce(&mut ProbeHost),
+) -> (State, Arc<ProbeHost>, Arc<FakeHost>) {
+    let mut cfg = cfg_with(6);
+    cfg.dispatch.parallel = parallel;
+    let (_dir, ctx, host) = setup_with(cfg);
+    wire_four(&host);
+    let mut probe = ProbeHost::new(&host);
+    configure(&mut probe);
+    let probe = Arc::new(probe);
+    let ctx = Ctx {
+        host: probe.clone(),
+        ..ctx
+    };
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2", "u3", "u4"]);
+    dispatch(&ctx, &mut st);
+    (st, probe, host)
+}
+
+#[test]
+fn parallel_one_starts_units_one_after_another_on_the_tick_thread() {
+    let (st, probe, _host) = probed_tick(1, |_| {});
+    for uid in ["u1", "u2", "u3", "u4"] {
+        assert_eq!(st.units[uid].status, Status::Inflight, "{uid}");
+    }
+    assert_eq!(probe.peak.load(Ordering::SeqCst), 1);
+    let threads = probe.threads.lock().unwrap();
+    assert_eq!(threads.len(), 4);
+    assert!(
+        threads.iter().all(|t| *t == std::thread::current().id()),
+        "serial starts run on the tick thread"
+    );
+    let finished = probe.finished.lock().unwrap();
+    let order: Vec<usize> = ["u1", "u2", "u3", "u4"]
+        .iter()
+        .map(|uid| {
+            finished
+                .iter()
+                .position(|cmd| cmd.contains(&format!("vivi/unit/{uid}-a1")))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(order, [0, 1, 2, 3], "dispatched in ranked order");
+}
+
+#[test]
+fn parallel_bounds_how_many_pool_dispatches_run_at_once() {
+    let (st, probe, _host) = probed_tick(2, |p| p.want = 2);
+    for uid in ["u1", "u2", "u3", "u4"] {
+        assert_eq!(st.units[uid].status, Status::Inflight, "{uid}");
+    }
+    // Two were in flight together (the probe waited for that), never more.
+    assert_eq!(probe.peak.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn parallel_four_runs_all_four_at_once() {
+    let (st, probe, _host) = probed_tick(4, |p| p.want = 4);
+    for uid in ["u1", "u2", "u3", "u4"] {
+        assert_eq!(st.units[uid].status, Status::Inflight, "{uid}");
+    }
+    assert_eq!(probe.peak.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn concurrent_starts_are_applied_in_ranked_order_even_when_the_first_finishes_last() {
+    let (_st, probe, host) = probed_tick(4, |p| {
+        p.last = Some(String::from("vivi/unit/u1-a1"));
+        p.last_after = 3;
+    });
+    let finished = probe.finished.lock().unwrap();
+    assert!(
+        finished.last().unwrap().contains("vivi/unit/u1-a1"),
+        "u1's dispatch finished last: {finished:?}"
+    );
+    let started: Vec<String> = host
+        .logs()
+        .into_iter()
+        .filter(|line| line.starts_with("dispatch "))
+        .collect();
+    let uids: Vec<&str> = started
+        .iter()
+        .map(|line| line.split_whitespace().nth(1).unwrap())
+        .collect();
+    assert_eq!(uids, ["u1", "u2", "u3", "u4"], "{started:?}");
+}
+
+#[test]
+fn a_failed_dispatch_among_several_is_handled_as_a_serial_run_handles_it() {
+    for parallel in [1, 4] {
+        let (st, _probe, host) = probed_tick(parallel, |p| {
+            p.fail = Some(String::from("vivi/unit/u2-a1"));
+        });
+        let status: Vec<Status> = ["u1", "u2", "u3", "u4"]
+            .iter()
+            .map(|uid| st.units[*uid].status.clone())
+            .collect();
+        assert_eq!(
+            status,
+            [
+                Status::Inflight,
+                Status::Pending,
+                Status::Inflight,
+                Status::Inflight
+            ],
+            "parallel {parallel}"
+        );
+        assert_eq!(st.units["u2"].task, None);
+        assert_eq!(
+            commands_with(&host, "task done").len(),
+            1,
+            "parallel {parallel}"
+        );
+        assert!(
+            host.logs()
+                .iter()
+                .any(|line| line == "dispatch failed u2: remote refused"),
+            "parallel {parallel}"
+        );
+    }
 }

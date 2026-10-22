@@ -202,6 +202,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.budget, 600);
     assert_eq!(cfg.dispatch.overdue_grace, 900);
     assert_eq!(cfg.dispatch.per_tick, 6);
+    assert_eq!(cfg.dispatch.parallel, 6, "default parallel dispatches");
     assert_eq!(cfg.dispatch.transient_max, 2, "default transient retry cap");
     assert_eq!(
         cfg.dispatch.transient_backoff, 120,
@@ -474,6 +475,22 @@ fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
     assert!(
         ok.is_ok(),
         "role-pool dispatch does not need kind pools or a default kind: {ok:?}"
+    );
+}
+
+#[test]
+fn parallel_parses_and_must_be_at_least_one() {
+    let cfg: PumpConfig = toml::from_str("[dispatch]\nparallel = 2\n").unwrap();
+    assert_eq!(cfg.dispatch.parallel, 2);
+    let mut zero = PumpConfig::default();
+    zero.dispatch.parallel = 0;
+    let err = zero
+        .validate(Path::new("."), &pools(&["p"]))
+        .expect_err("zero parallel must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.dispatch] parallel must be >= 1"),
+        "{err}"
     );
 }
 

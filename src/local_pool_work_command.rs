@@ -19,8 +19,11 @@ use vivi::pool::plain_git::{self, RepoSource};
 use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
+use vivi::pool::provider::PoolProvider;
 use vivi::pool::provider::SlotLifetime;
+use vivi::pool::reconcile_parallel;
 use vivi::pool::role_dispatch::{self, RoleFacts};
+use vivi::pool::slot::PoolId;
 use vivi::pool::work::{self, WaitOptions, Waited};
 use vivi::pool::{PoolConfig, github, job, run};
 
@@ -749,7 +752,21 @@ pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumEr
     let handles = pools::open_for_collect(&space, command.pool.as_deref())?;
     let set = PoolSet::of(&handles, command.pool.is_none());
     progress.say("polling the open dispatches and freeing stale slots");
-    let report = work::reconcile(&space, &set, &Pacing::default())?;
+    let report = if set.all && set.members.len() > 1 {
+        // Several pools: each one is reconciled on its own thread, so one
+        // slow machine host does not hold up the others.
+        let ids: Vec<_> = set.members.iter().map(|m| m.id).collect();
+        let open =
+            |space: &Mailspace, id: &PoolId| -> Result<Box<dyn PoolProvider>, VivariumError> {
+                let mut one = pools::open_for_collect(space, Some(&id.pool))?;
+                one.pop()
+                    .map(|handle| handle.provider)
+                    .ok_or_else(|| VivariumError::Config(format!("pool {} did not open", id.pool)))
+            };
+        reconcile_parallel::reconcile_pools(&space, &ids, true, &Pacing::default(), &open)?
+    } else {
+        work::reconcile(&space, &set, &Pacing::default())?
+    };
     if command.porcelain {
         report
             .items

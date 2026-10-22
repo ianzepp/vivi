@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{
     JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
@@ -7,7 +9,8 @@ use super::{
     recover_dispatched, send_task,
 };
 use crate::pump::config::PumpConfig;
-use crate::pump::host::{FakeHost, test_ctx};
+use crate::pump::fixture::ProbeHost;
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[derive(Default)]
@@ -552,4 +555,131 @@ fn queued(id: &str, body: &str) -> PoolJob {
     )
     .unwrap();
     store.jobs[id].clone()
+}
+
+/// Three queued merge jobs against a primary pool with two free slots and a
+/// backup with one, dispatched through a [`ProbeHost`] with `parallel`.
+/// Jobs `m1..m3` already hold tasks `t1..t3`, so each `pool dispatch` line
+/// names its job's task.
+fn probed_jobs(
+    parallel: u32,
+    configure: impl FnOnce(&mut ProbeHost),
+) -> (Store, Vec<String>, Arc<ProbeHost>, Arc<FakeHost>) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.parallel = parallel;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let mut probe = ProbeHost::new(&host);
+    configure(&mut probe);
+    let probe = Arc::new(probe);
+    let ctx = Ctx {
+        host: probe.clone(),
+        ..ctx.with_routing(merge_routing(Some("backup")))
+    };
+    host.reply(
+        "pool status",
+        0,
+        "slot primary bridge slot-1 free\nslot primary bridge slot-2 free\nslot backup bridge slot-1 free\n",
+    );
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched t bridge slot-1 model/default unit/task\n",
+    );
+    let mut store = Store::default();
+    for n in 1..=3u64 {
+        let id = format!("m{n}");
+        enqueue(
+            &mut store,
+            JobSpec::new(&id, "merge", "merge", "integrate", "merge branches"),
+        )
+        .unwrap();
+        let job = store.jobs.get_mut(&id).unwrap();
+        job.queued_at = n;
+        job.task = Some(format!("t{n}"));
+    }
+    let started = dispatch_pending(&ctx, &mut store).unwrap();
+    (store, started, probe, host)
+}
+
+fn pool_of(store: &Store, id: &str) -> Option<String> {
+    store.jobs[id].pool.clone()
+}
+
+#[test]
+fn parallel_one_dispatches_jobs_one_after_another_on_the_tick_thread() {
+    let (store, started, probe, _host) = probed_jobs(1, |_| {});
+    assert_eq!(started, ["m1", "m2", "m3"]);
+    assert_eq!(pool_of(&store, "m1").as_deref(), Some("primary"));
+    assert_eq!(pool_of(&store, "m2").as_deref(), Some("primary"));
+    assert_eq!(pool_of(&store, "m3").as_deref(), Some("backup"));
+    assert_eq!(probe.peak.load(Ordering::SeqCst), 1);
+    assert!(
+        probe
+            .threads
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|t| *t == std::thread::current().id())
+    );
+}
+
+#[test]
+fn parallel_jobs_are_inside_pool_dispatch_together_and_land_as_a_serial_run_would() {
+    let (store, started, probe, host) = probed_jobs(3, |p| p.want = 3);
+    assert_eq!(probe.peak.load(Ordering::SeqCst), 3, "all three at once");
+    assert_eq!(started, ["m1", "m2", "m3"], "reported in job order");
+    for id in ["m1", "m2", "m3"] {
+        assert_eq!(store.jobs[id].status, JobStatus::Dispatched, "{id}");
+        assert!(store.jobs[id].dispatched_at.is_some(), "{id}");
+    }
+    assert_eq!(pool_of(&store, "m1").as_deref(), Some("primary"));
+    assert_eq!(pool_of(&store, "m2").as_deref(), Some("primary"));
+    assert_eq!(pool_of(&store, "m3").as_deref(), Some("backup"));
+    let logged: Vec<String> = host
+        .logs()
+        .into_iter()
+        .filter(|line| line.starts_with("job dispatched"))
+        .collect();
+    assert!(logged[0].contains("m1") && logged[1].contains("m2") && logged[2].contains("m3"));
+}
+
+#[test]
+fn jobs_beyond_the_parallel_bound_go_in_a_later_group() {
+    let (store, started, probe, _host) = probed_jobs(2, |p| p.want = 2);
+    assert_eq!(started, ["m1", "m2", "m3"]);
+    assert_eq!(probe.peak.load(Ordering::SeqCst), 2);
+    assert_eq!(pool_of(&store, "m3").as_deref(), Some("backup"));
+}
+
+#[test]
+fn a_job_whose_pool_refuses_it_is_deferred_and_the_others_still_dispatch() {
+    for parallel in [1, 3] {
+        let (store, started, _probe, host) = probed_jobs(parallel, |p| {
+            p.fail = Some(String::from("t2"));
+        });
+        assert_eq!(started, ["m1", "m3"], "parallel {parallel}");
+        assert_eq!(store.jobs["m1"].status, JobStatus::Dispatched);
+        assert_eq!(store.jobs["m3"].status, JobStatus::Dispatched);
+        let refused = &store.jobs["m2"];
+        assert_eq!(refused.status, JobStatus::Pending, "parallel {parallel}");
+        assert_eq!(refused.task.as_deref(), Some("t2"), "the task is kept");
+        assert!(
+            host.logs()
+                .iter()
+                .any(|line| line.starts_with("job dispatch deferred m2 on ")),
+            "parallel {parallel}"
+        );
+    }
+}
+
+#[test]
+fn a_job_refused_by_its_first_pool_tries_the_next_candidate() {
+    let (store, started, _probe, _host) = probed_jobs(1, |p| {
+        // Only the primary pool refuses t1.
+        p.fail = Some(String::from("--pool primary t1"));
+    });
+    assert!(started.contains(&String::from("m1")), "{started:?}");
+    assert_eq!(store.jobs["m1"].status, JobStatus::Dispatched);
+    assert_eq!(pool_of(&store, "m1").as_deref(), Some("backup"));
 }

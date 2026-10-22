@@ -309,6 +309,9 @@ pub struct ReconcileReport {
     pub out: Vec<String>,
     /// What the round did, one entry per task or slot, in order.
     pub items: Vec<RoundLine>,
+    /// How many leading `items` are poll results (the rest are slot
+    /// cleanups), so a merge of several pools' reports can order them.
+    pub round: usize,
     /// True when no dispatch was open.
     pub idle: bool,
     /// Lines for standard error.
@@ -370,6 +373,7 @@ pub fn reconcile(
     let mut report = ReconcileReport {
         out: lines.iter().map(line_text).collect(),
         items: lines.clone(),
+        round: lines.len(),
         failures: lines.iter().filter(|l| l.state == "error").count(),
         first_error: lines
             .iter()

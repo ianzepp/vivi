@@ -387,6 +387,10 @@ pub struct DispatchConfig {
     pub overdue_grace: u64,
     /// Units started per tick at most.
     pub per_tick: u32,
+    /// Pool dispatches (task send plus `pool dispatch`) run at once within a
+    /// tick, for both unit starts and durable role jobs. 1 starts them one
+    /// after another.
+    pub parallel: u32,
     /// `--from` of a unit dispatch; absent means `branch`.
     pub from: Option<String>,
     /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
@@ -426,6 +430,7 @@ impl Default for DispatchConfig {
             transient_backoff: 120,
             overdue_grace: 900,
             per_tick: 6,
+            parallel: 6,
             from: None,
             kinds: BTreeMap::new(),
             default_kind: String::new(),

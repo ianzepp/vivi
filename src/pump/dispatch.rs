@@ -7,12 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::thread;
 
 use crate::pump::attempt_record;
 use crate::pump::brief::brief_for;
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::par::map_bounded;
 use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{choose_model, lanes_for};
@@ -196,7 +196,8 @@ fn tail(s: &str, n: usize) -> String {
 /// per tick. A unit with no free pool slot waits; a full lane set breaks the
 /// loop for this tick. Planning and slot reservation happen first and write no
 /// unit state, so the same-tick overlay of earlier starts comes from the
-/// planned slice; the starts themselves then run serially. On success the unit
+/// planned slice; the starts themselves then run concurrently (at most
+/// `[pump.dispatch] parallel` at once) and are applied in ranked order. On success the unit
 /// goes inflight with its task, branch, model, pool and dispatch timestamp; a
 /// failed pool dispatch closes the task as superseded and leaves the unit
 /// pending. The per-unit I/O runs in [`start_unit`]; its result is applied to
@@ -425,36 +426,23 @@ fn hand_role_has_pool(ctx: &Ctx) -> bool {
 }
 
 /// Phase two of a dispatch tick: run the planned starts concurrently, then
-/// apply each outcome to the state. One thread per planned unit runs the
-/// per-unit I/O in [`start_unit`] (task send plus pool dispatch, roughly 40s
-/// each in production) while the tick thread only joins the handles in ranked
-/// order and applies the outcomes with [`apply_start`] — every state write
-/// stays on the tick thread. A worker that panics joins as
-/// [`UnitStart::SendFailed`], so the failure is log-only, the reserved slot
-/// is given back, and the tick survives.
+/// apply each outcome to the state. Up to `[pump.dispatch] parallel` calls of
+/// [`start_unit`] (task send plus pool dispatch, roughly 40s each in
+/// production) are in flight at once while the tick thread waits; the
+/// outcomes are then applied with [`apply_start`] in ranked order, so every
+/// state write stays on the tick thread and in the order a serial run would
+/// have used. `parallel = 1` runs the starts one after another. A worker that
+/// panics becomes [`UnitStart::SendFailed`], so the failure is log-only, the
+/// reserved slot is given back, and the tick survives.
 fn run_starts(ctx: &Ctx, st: &mut State, planned: &[Planned], free: &mut BTreeMap<String, u32>) {
-    let results: Vec<UnitStart> = thread::scope(|scope| {
-        let handles: Vec<_> = planned
-            .iter()
-            .map(|p| {
-                let ctx = ctx.clone();
-                let uid = p.uid.clone();
-                let unit = p.unit.clone();
-                let model = p.model.clone();
-                let plan = &p.plan;
-                scope.spawn(move || start_unit(&ctx, &uid, &unit, plan, &model))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| {
-                h.join().unwrap_or_else(|_| UnitStart::SendFailed {
-                    text: String::from("dispatch thread panicked"),
-                })
-            })
-            .collect()
+    let limit = ctx.cfg.dispatch.parallel as usize;
+    let results = map_bounded(planned, limit, |p| {
+        start_unit(ctx, &p.uid, &p.unit, &p.plan, &p.model)
     });
     for (p, start) in planned.iter().zip(results) {
+        let start = start.unwrap_or_else(|| UnitStart::SendFailed {
+            text: String::from("dispatch thread panicked"),
+        });
         apply_start(ctx, st, &p.uid, &p.plan, &p.model, start, free);
     }
 }

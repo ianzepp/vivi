@@ -35,6 +35,7 @@ pub mod need_audit;
 pub mod need_landing;
 pub(crate) mod need_pipeline;
 pub mod need_verdict;
+pub(crate) mod par;
 pub mod oversight;
 pub mod plan;
 pub mod planner_jobs;
