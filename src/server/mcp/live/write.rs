@@ -1,0 +1,251 @@
+//! Hosted-project writes: the same library calls the CLI makes, as the
+//! acting identity.
+
+use serde_json::{Value, json};
+use vivi::mailspace::{DeliveryResult, SendRequest, body_has_labeled_clause, folded_marks};
+
+use crate::mcp::tools::{ToolError, opt_str, parse_depends, parse_to, rate_limit, req_str};
+use crate::safety::RateLimiter;
+
+use super::read::{memo_items, string_list};
+use super::{Hosted, is_work, lib_error, locate};
+
+/// A delivery as the tool reports it: the handle of the item as the
+/// recipient holds it (the sender's own copy when nothing was delivered
+/// locally), and every copy.
+fn delivery_json(h: &Hosted, result: &DeliveryResult) -> Result<Value, ToolError> {
+    let handle = result
+        .delivered
+        .first()
+        .map_or(result.sent.as_str(), |d| d.handle.as_str());
+    let storage = h.ms.storage().map_err(lib_error)?;
+    let message_id = storage.resolve_message_token(handle).map_err(lib_error)?;
+    Ok(json!({
+        "handle": handle,
+        "message_id": message_id,
+        "sent": result.sent,
+        "delivered": result
+            .delivered
+            .iter()
+            .map(|d| json!({ "identity": d.identity, "handle": d.handle }))
+            .collect::<Vec<_>>(),
+        "remote": result.remote,
+        "from": h.actor,
+    }))
+}
+
+pub(super) fn send(
+    h: &Hosted,
+    limiter: &RateLimiter,
+    project_id: &str,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
+    rate_limit(limiter, project_id, &h.actor)?;
+    let kind = req_str(arguments, "kind")?;
+    let role = match kind {
+        "need" => "needs",
+        "task" => "tasks",
+        "want" => "wants",
+        "mail" => "inbox",
+        "chat" => {
+            return Err(ToolError::new(
+                "chat is not a kind of a hosted project; send mail instead",
+            ));
+        }
+        _ => return Err(ToolError::new("kind must be need, task, want, or mail")),
+    };
+    let to = parse_to(arguments)?;
+    let subject = req_str(arguments, "subject")?;
+    let body = req_str(arguments, "body")?;
+    let depends_on = parse_depends(arguments)?;
+    if !is_work(kind) && !depends_on.is_empty() {
+        return Err(ToolError::new(
+            "depends_on applies to a need, task, or want",
+        ));
+    }
+    let result =
+        h.ms.send(SendRequest {
+            from: h.actor.clone(),
+            to,
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.to_owned(),
+            body: body.to_owned(),
+            role: role.into(),
+            kind: Some(kind.into()),
+            reply_to: None,
+            depends_on,
+        })
+        .map_err(lib_error)?;
+    let mut out = delivery_json(h, &result)?;
+    out["kind"] = json!(kind);
+    if matches!(kind, "need" | "task") && !body_has_labeled_clause(body, "done_when") {
+        out["note"] = json!(format!(
+            "body declares no 'done_when:' clause; vivi step will report this {kind} as \
+             no_done_when"
+        ));
+    }
+    Ok(out)
+}
+
+pub(super) fn reply(
+    h: &Hosted,
+    limiter: &RateLimiter,
+    project_id: &str,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
+    rate_limit(limiter, project_id, &h.actor)?;
+    let handle = req_str(arguments, "handle")?;
+    let body = req_str(arguments, "body")?;
+    let result =
+        h.ms.reply(
+            handle,
+            &h.actor,
+            Vec::new(),
+            Vec::new(),
+            None,
+            body.to_owned(),
+        )
+        .map_err(lib_error)?;
+    let mut out = delivery_json(h, &result)?;
+    out["in_reply_to"] = json!(handle);
+    Ok(out)
+}
+
+/// `done` moves the item to the done folder; `reopen` moves it back to the
+/// folder of its kind, as `need|task done|reopen` do.
+pub(super) fn settle(
+    h: &Hosted,
+    limiter: &RateLimiter,
+    project_id: &str,
+    arguments: &Value,
+    done: bool,
+) -> Result<Value, ToolError> {
+    rate_limit(limiter, project_id, &h.actor)?;
+    let handle = req_str(arguments, "handle")?;
+    let note = opt_str(arguments, "note")?;
+    let kind = {
+        let storage = h.ms.storage().map_err(lib_error)?;
+        locate(&storage, handle)?.kind
+    };
+    if !is_work(&kind) {
+        return Err(ToolError::new(format!(
+            "{handle} is not a need, task, or want"
+        )));
+    }
+    if !done && kind == "want" {
+        // The CLI has `want done`, `drop` and `promote`, and no reopen.
+        return Err(ToolError::new(format!(
+            "{handle} is a want; a want has no reopen (promote it to a need instead)"
+        )));
+    }
+    let (role, verb) = if done {
+        ("done", "done")
+    } else {
+        (open_role(&kind), "reopen")
+    };
+    let outcome =
+        h.ms.move_item_outcome(
+            &h.actor,
+            handle,
+            role,
+            note,
+            &format!("{kind} {verb}"),
+            None,
+        )
+        .map_err(lib_error)?;
+    let mode = match (&outcome.event, outcome.reported, done) {
+        (Some(_), _, true) => "closed",
+        (Some(_), _, false) => "reopened",
+        (None, true, _) => "reported",
+        (None, false, _) => "moved",
+    };
+    Ok(json!({
+        "handle": outcome.handle,
+        "mode": mode,
+        "event": outcome.event,
+        "reported": outcome.reported,
+        "joined_needs": outcome.joined_needs,
+    }))
+}
+
+fn open_role(kind: &str) -> &'static str {
+    match kind {
+        "need" => "needs",
+        "task" => "tasks",
+        _ => "wants",
+    }
+}
+
+pub(super) fn memo(
+    h: &Hosted,
+    limiter: &RateLimiter,
+    project_id: &str,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
+    match opt_str(arguments, "action")?.unwrap_or("list") {
+        "list" => Ok(json!({ "items": memo_items(h, Some(&h.actor))? })),
+        "show" => {
+            let handle = req_str(arguments, "handle")?;
+            memo_items(h, Some(&h.actor))?
+                .into_iter()
+                .find(|item| {
+                    item["handle"].as_str() == Some(handle)
+                        || item["message_id"].as_str() == Some(handle)
+                })
+                .ok_or_else(|| ToolError::new(format!("memo not found: {handle}")))
+        }
+        "save" => {
+            rate_limit(limiter, project_id, &h.actor)?;
+            let subject = req_str(arguments, "subject")?;
+            let body = req_str(arguments, "body")?;
+            let handle =
+                h.ms.save_memo(&h.actor, subject, body, &[])
+                    .map_err(lib_error)?;
+            let message_id =
+                h.ms.storage()
+                    .map_err(lib_error)?
+                    .resolve_message_token(&handle)
+                    .map_err(lib_error)?;
+            Ok(json!({ "handle": handle, "message_id": message_id, "subject": subject }))
+        }
+        other => Err(ToolError::new(format!(
+            "memo action must be list, show, or save; got '{other}'"
+        ))),
+    }
+}
+
+/// `need|want mark|unmark`: append mark events on an item the acting
+/// identity holds.
+pub(super) fn mark(
+    h: &Hosted,
+    limiter: &RateLimiter,
+    project_id: &str,
+    arguments: &Value,
+    add: bool,
+) -> Result<Value, ToolError> {
+    rate_limit(limiter, project_id, &h.actor)?;
+    let handle = req_str(arguments, "handle")?;
+    let slugs = string_list(arguments, "marks")?;
+    let kind = {
+        let storage = h.ms.storage().map_err(lib_error)?;
+        locate(&storage, handle)?.kind
+    };
+    if !matches!(kind.as_str(), "need" | "want") {
+        return Err(ToolError::new(format!("{handle} is not a need or a want")));
+    }
+    let writes =
+        h.ms.set_marks(&h.actor, handle, &kind, add, &slugs)
+            .map_err(lib_error)?;
+    let storage = h.ms.storage().map_err(lib_error)?;
+    let loc = locate(&storage, handle)?;
+    Ok(json!({
+        "handle": writes.first().map_or(handle, |w| w.handle.as_str()),
+        "action": if add { "marked" } else { "unmarked" },
+        "changes": writes
+            .iter()
+            .map(|w| json!({ "slug": w.slug, "changed": w.changed }))
+            .collect::<Vec<_>>(),
+        "marks": folded_marks(&loc.events),
+    }))
+}

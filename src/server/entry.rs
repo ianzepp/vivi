@@ -22,6 +22,9 @@ struct ServerConfig {
     data_dir: PathBuf,
     store_encryption_key: Option<String>,
     moderation_token: Option<String>,
+    /// `HOSTED_DEFAULT_IDENTITY`: the vivi identity an API key without its
+    /// own identity acts as on a hosted project.
+    hosted_default_identity: Option<String>,
 }
 
 impl ServerConfig {
@@ -43,6 +46,20 @@ impl ServerConfig {
             data_dir,
             store_encryption_key: std::env::var("STORE_ENCRYPTION_KEY").ok(),
             moderation_token: std::env::var("MODERATION_TOKEN").ok(),
+            hosted_default_identity: match std::env::var("HOSTED_DEFAULT_IDENTITY") {
+                Ok(v) if !v.trim().is_empty() => {
+                    let v = v.trim().to_owned();
+                    if v.len() > 64
+                        || !v
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                    {
+                        return Err(format!("invalid HOSTED_DEFAULT_IDENTITY: {v}"));
+                    }
+                    Some(v)
+                }
+                _ => None,
+            },
         })
     }
 }
@@ -91,11 +108,14 @@ async fn main() {
         tracing::warn!("MODERATION_TOKEN not set; /v1/_health disabled (U3)");
     }
 
-    let state = vivi_server::app_state(
+    let mut state = vivi_server::app_state(
         config.data_dir.clone(),
         config.store_encryption_key.clone(),
         config.moderation_token.clone(),
     );
+    if let Some(identity) = &config.hosted_default_identity {
+        state.hosted_default_identity = identity.as_str().into();
+    }
     // Serve the projects the host registry lists, now and whenever it
     // changes. The first pass finishes before the listener binds.
     let _hosted = vivi_server::hosted::start(state.projects.clone(), state.identities.clone());

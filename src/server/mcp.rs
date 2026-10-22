@@ -6,6 +6,7 @@
 //! curated, parameterized subset of the vivi command tree.
 
 pub mod letters;
+mod live;
 mod tools;
 
 use axum::Json;
@@ -150,8 +151,29 @@ async fn call_tool(
     let project_id = project_id.to_owned();
     let identity = caller.identity.clone();
     let acting_as = caller.acting_as.clone();
+    // A key on a hosted project acts on the host's mailspace as a vivi
+    // identity: the key's own, else the server's default.
+    let hosted_as = caller.via_key.then(|| {
+        acting_as
+            .clone()
+            .unwrap_or_else(|| state.hosted_default_identity.to_string())
+    });
     let name = name.to_owned();
     match tokio::task::spawn_blocking(move || {
+        if let Some(requested) = &hosted_as {
+            if let Some(root) = live::hosted_root(&store, &project_id) {
+                if live::handles(&name) {
+                    return live::dispatch(
+                        &limiter,
+                        &project_id,
+                        &root,
+                        requested,
+                        &name,
+                        &arguments,
+                    );
+                }
+            }
+        }
         tools::dispatch(
             &store,
             &limiter,
@@ -200,7 +222,7 @@ fn initialize(params: &Value) -> Value {
             "name": "vivi-server",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked.",
+        "instructions": "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, and board returns the project board.",
     })
 }
 
@@ -217,7 +239,17 @@ fn tools_list() -> Value {
                 "properties": {
                     "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail", "memo"] },
                     "status": { "type": "string", "enum": ["open", "done", "all"], "default": "open" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 },
+                    "to": { "type": "string", "description": "Hosted projects: only letters addressed to this role or address" },
+                    "from": { "type": "string", "description": "Hosted projects: only letters from this role or address" },
+                    "marks": {
+                        "description": "Hosted projects: only items carrying every one of these marks",
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" } }
+                        ]
+                    },
+                    "for": { "type": "string", "description": "Hosted projects: list this role's folders instead of the acting identity's, or `all` for every role" }
                 },
                 "additionalProperties": false
             })),
@@ -270,6 +302,7 @@ fn tools_list() -> Value {
             tool("done", "Close a need, task, or want. Travels as a stamped event letter when you authored it (same mailspace prefix); otherwise files a report reply. The newest event against an item controls its state, whichever member wrote it.", json!({
                 "type": "object",
                 "properties": {
+                    "for": { "type": "string", "description": "Hosted projects: the role the command runs as, which must hold the item (the CLI's --for). Defaults to the acting identity." },
                     "handle": { "type": "string" },
                     "note": { "type": "string" }
                 },
@@ -279,6 +312,7 @@ fn tools_list() -> Value {
             tool("reopen", "Reopen a closed need, task, or want. Same authority rule as done. An absorbed item is final and is refused.", json!({
                 "type": "object",
                 "properties": {
+                    "for": { "type": "string", "description": "Hosted projects: the role the command runs as, which must hold the item (the CLI's --for). Defaults to the acting identity." },
                     "handle": { "type": "string" },
                     "note": { "type": "string" }
                 },
@@ -299,6 +333,46 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": {
                     "view": { "type": "string", "enum": ["ready", "status"], "default": "status" }
+                },
+                "additionalProperties": false
+            })),
+            tool("mark", "Hosted projects only (API key). Add marks (labels such as `bug`) to a need or want held by the acting identity, as `vivi need mark` does. Marks are letters, numbers, dot, dash, or underscore; already-present marks change nothing. `for` names the holder role the command runs as, as `--for` does.", json!({
+                "type": "object",
+                "properties": {
+                    "for": { "type": "string", "description": "Hosted projects: the role the command runs as, which must hold the item (the CLI's --for). Defaults to the acting identity." },
+                    "handle": { "type": "string" },
+                    "marks": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ]
+                    }
+                },
+                "required": ["handle", "marks"],
+                "additionalProperties": false
+            })),
+            tool("unmark", "Hosted projects only (API key). Remove marks from a need or want held by the acting identity, as `vivi need unmark` does. `for` names the holder role the command runs as, as `--for` does.", json!({
+                "type": "object",
+                "properties": {
+                    "for": { "type": "string", "description": "Hosted projects: the role the command runs as, which must hold the item (the CLI's --for). Defaults to the acting identity." },
+                    "handle": { "type": "string" },
+                    "marks": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ]
+                    }
+                },
+                "required": ["handle", "marks"],
+                "additionalProperties": false
+            })),
+            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`: open tasks, needs and wants per role, totals, and registered goals. Optional graph and pump views.", json!({
+                "type": "object",
+                "properties": {
+                    "for": { "type": "string", "description": "Only this role's board" },
+                    "wants_cap": { "type": "integer", "minimum": 0, "default": 5, "description": "Wants shown per role; the rest are counted as hidden" },
+                    "graph": { "type": "boolean", "default": false },
+                    "pump": { "type": "boolean", "default": false }
                 },
                 "additionalProperties": false
             })),
