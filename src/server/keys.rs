@@ -252,6 +252,8 @@ pub fn resolve_project_identity(
 pub struct Caller {
     pub identity: IdentityRecord,
     pub acting_as: Option<String>,
+    /// True when the Bearer was an API key, false for an identity token.
+    pub via_key: bool,
 }
 
 /// As [`resolve_project_identity`], keeping the key's `identity`.
@@ -265,12 +267,14 @@ pub fn resolve_project_caller(
         return Some(Caller {
             identity,
             acting_as: None,
+            via_key: false,
         });
     }
     let verified = keys.verify(project_id, presented)?;
     Some(Caller {
         identity: identities.by_name(project_id, &verified.created_by)?,
         acting_as: verified.identity,
+        via_key: true,
     })
 }
 

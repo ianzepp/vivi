@@ -30,7 +30,7 @@ pub struct ToolError {
 }
 
 impl ToolError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(super) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -42,10 +42,9 @@ pub fn dispatch(
     limiter: &RateLimiter,
     project_id: &str,
     identity: &IdentityRecord,
-    // HOOK: the vivi identity (such as `operator`) the caller's API key was
-    // minted to act as, `None` for an identity token or a key minted without
-    // one. Plumbed only; no tool reads it yet, and every tool still acts as
-    // `identity`.
+    // The vivi identity the caller's API key was minted to act as. The
+    // hosted-project tools (`live`) read it before this dispatcher is
+    // reached; a server-owned project acts as `identity` and ignores it.
     _acting_as: Option<&str>,
     name: &str,
     arguments: &Value,
@@ -61,6 +60,9 @@ pub fn dispatch(
         "reopen" => settle(store, limiter, project_id, identity, arguments, "reopened"),
         "memo" => memo(store, limiter, project_id, identity, arguments),
         "graph" => graph(store, project_id, identity, arguments),
+        "mark" | "unmark" | "board" => Err(ToolError::new(format!(
+            "{name} is available on a hosted project to an API key only"
+        ))),
         other => Err(ToolError::new(format!("unknown tool '{other}'"))),
     }
 }
@@ -783,7 +785,7 @@ fn save_memo(
     }))
 }
 
-fn parse_to(arguments: &Value) -> Result<Vec<String>, ToolError> {
+pub(super) fn parse_to(arguments: &Value) -> Result<Vec<String>, ToolError> {
     match arguments.get("to") {
         Some(Value::String(raw)) => {
             let list: Vec<String> = raw
@@ -818,7 +820,7 @@ fn parse_to(arguments: &Value) -> Result<Vec<String>, ToolError> {
     }
 }
 
-fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError> {
+pub(super) fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError> {
     match arguments.get("depends_on") {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::String(raw)) => {
@@ -849,7 +851,7 @@ fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError> {
     }
 }
 
-fn req_str<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, ToolError> {
+pub(super) fn req_str<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, ToolError> {
     arguments
         .get(name)
         .and_then(Value::as_str)
@@ -858,7 +860,7 @@ fn req_str<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, ToolError> {
         .ok_or_else(|| ToolError::new(format!("{name} is required")))
 }
 
-fn opt_str<'a>(arguments: &'a Value, name: &str) -> Result<Option<&'a str>, ToolError> {
+pub(super) fn opt_str<'a>(arguments: &'a Value, name: &str) -> Result<Option<&'a str>, ToolError> {
     match arguments.get(name) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => {
@@ -869,7 +871,7 @@ fn opt_str<'a>(arguments: &'a Value, name: &str) -> Result<Option<&'a str>, Tool
     }
 }
 
-fn opt_usize(
+pub(super) fn opt_usize(
     arguments: &Value,
     name: &str,
     default: usize,
@@ -890,7 +892,11 @@ fn opt_usize(
     }
 }
 
-fn rate_limit(limiter: &RateLimiter, project_id: &str, name: &str) -> Result<(), ToolError> {
+pub(super) fn rate_limit(
+    limiter: &RateLimiter,
+    project_id: &str,
+    name: &str,
+) -> Result<(), ToolError> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     name.hash(&mut hasher);
     if limiter.allow_send(project_id, hasher.finish() as u32) {
@@ -900,7 +906,7 @@ fn rate_limit(limiter: &RateLimiter, project_id: &str, name: &str) -> Result<(),
     }
 }
 
-fn map_project(err: ProjectError) -> ToolError {
+pub(super) fn map_project(err: ProjectError) -> ToolError {
     match err {
         ProjectError::BadRequest(message) => ToolError::new(message),
         ProjectError::TooLarge => ToolError::new("letter over 64 KiB"),

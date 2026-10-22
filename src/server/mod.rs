@@ -44,7 +44,13 @@ pub struct AppState {
     pub limiter: RateLimiter,
     pub store_cipher: Option<Arc<StoreCipher>>,
     pub moderation_token: Option<Arc<str>>,
+    /// The vivi identity an API key without its own `identity` acts as on a
+    /// hosted project (`HOSTED_DEFAULT_IDENTITY`, default `operator`).
+    pub hosted_default_identity: Arc<str>,
 }
+
+/// The identity an unmapped API key acts as on a hosted project.
+pub const DEFAULT_HOSTED_IDENTITY: &str = "operator";
 
 /// v1 routes over `DATA_DIR/rooms/`. `store_key` is the raw
 /// `STORE_ENCRYPTION_KEY` value; `moderation_token` gates `/v1/_health`
@@ -88,6 +94,7 @@ pub fn app_state(
         moderation_token: moderation_token
             .filter(|t| !t.trim().is_empty())
             .map(Arc::from),
+        hosted_default_identity: Arc::from(DEFAULT_HOSTED_IDENTITY),
     }
 }
 

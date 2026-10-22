@@ -1,0 +1,856 @@
+//! MCP on a hosted project: an API key acts on the host's own mailspace
+//! through the vivi library, as a mapped vivi identity, exactly as the CLI
+//! would. A project the server owns, and a member-token caller, keep the
+//! transport tools.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use axum::Router;
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode};
+use serde_json::{Value, json};
+use tower::util::ServiceExt;
+use vivi::mailspace::board::BoardOptions;
+use vivi::mailspace::{Mailspace, RoleUpdate, SendRequest, folded_marks};
+use vivi_server::{AppState, app_state, hosted, router};
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "vivi-server-mcp-hosted-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+struct Fx {
+    app: Router,
+    state: AppState,
+    root: PathBuf,
+    project: String,
+    /// The registered member the keys authenticate as.
+    member: String,
+}
+
+/// A host project root with `operator`, `mind` and `hand` roles, served.
+fn fixture(name: &str) -> Fx {
+    fixture_with(name, |_| {})
+}
+
+fn fixture_with(name: &str, tune: impl FnOnce(&mut AppState)) -> Fx {
+    let base = scratch(name);
+    let root = base.join("hosts").join("app");
+    let mut ms = Mailspace::init(Some(&root)).unwrap();
+    ms.ensure_operator_role().unwrap();
+    for (role, kind) in [("mind", "mind"), ("hand", "hand")] {
+        ms.add_role(
+            role,
+            RoleUpdate {
+                kind: Some(Some(kind.into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    }
+    let mut state = app_state(base.join("data"), None, None);
+    tune(&mut state);
+    let report = hosted::reconcile(
+        &state.projects,
+        &state.identities,
+        &BTreeSet::from([root.clone()]),
+    );
+    assert!(report.refused.is_empty(), "{report:?}");
+    Fx {
+        app: router(state.clone()),
+        root,
+        project: report.served[0].project_id.clone(),
+        member: report.served[0].member.clone(),
+        state,
+    }
+}
+
+impl Fx {
+    fn ms(&self) -> Mailspace {
+        Mailspace::open_root(self.root.clone()).unwrap()
+    }
+
+    fn key(&self, identity: Option<&str>) -> String {
+        self.state
+            .keys
+            .mint(&self.project, &self.member, "test", identity)
+            .unwrap()
+            .key
+    }
+
+    async fn rpc(&self, token: &str, method: &str, params: Value) -> Value {
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/projects/{}/mcp", self.project))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn call(&self, token: &str, name: &str, arguments: Value) -> Value {
+        let value = self
+            .rpc(
+                token,
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+            )
+            .await;
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        assert_ne!(value["result"]["isError"], true, "{name}: {text}");
+        serde_json::from_str(text).unwrap()
+    }
+
+    async fn call_err(&self, token: &str, name: &str, arguments: Value) -> String {
+        let value = self
+            .rpc(
+                token,
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+            )
+            .await;
+        assert_eq!(value["result"]["isError"], true, "{value}");
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        serde_json::from_str::<Value>(text).unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+}
+
+/// Send a need as `from` straight through the library, as the pump or the
+/// CLI would, and return the recipient's handle.
+fn library_need(ms: &Mailspace, from: &str, to: &str, subject: &str) -> String {
+    let result = ms
+        .send(SendRequest {
+            from: from.into(),
+            to: vec![to.into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            body: "do it\n\ndone_when: it is done".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    result.delivered[0].handle.clone()
+}
+
+fn handles(views: &[vivi::storage::StoredMessageView]) -> Vec<String> {
+    views.iter().map(|v| v.handle.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_key_without_identity_sends_as_the_default_operator() {
+    let fx = fixture("send");
+    let key = fx.key(None);
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({
+                "kind": "need", "to": "mind", "subject": "ship it",
+                "body": "ship\n\ndone_when: shipped",
+            }),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap();
+    assert_eq!(sent["from"], "operator");
+    assert_eq!(sent["delivered"][0]["identity"], "mind");
+    assert!(sent.get("note").is_none(), "{sent}");
+
+    // The need is in mind's needs folder, as `vivi need list --for mind`
+    // would list it.
+    let ms = fx.ms();
+    let listed = ms.list_kind(Some("mind"), "needs", "need").unwrap();
+    assert_eq!(handles(&listed), vec![handle.to_owned()]);
+    assert_eq!(listed[0].subject, "ship it");
+    assert!(listed[0].from_addr.starts_with("operator@"), "{listed:?}");
+
+    // And back through MCP, as mind.
+    let mind = fx.key(Some("mind"));
+    let items = fx.call(&mind, "list", json!({"kind": "need"})).await;
+    assert_eq!(items["items"].as_array().unwrap().len(), 1, "{items}");
+    assert_eq!(items["items"][0]["handle"], handle);
+    assert_eq!(items["items"][0]["status"], "open");
+    assert_eq!(items["items"][0]["role"], "needs");
+}
+
+#[tokio::test]
+async fn a_body_without_done_when_is_noted_like_the_cli() {
+    let fx = fixture("note");
+    let key = fx.key(None);
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "s", "body": "just do it"}),
+        )
+        .await;
+    assert!(
+        sent["note"].as_str().unwrap().contains("done_when"),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_identity_acts_as_that_identity() {
+    let fx = fixture("identity");
+    let hand = fx.key(Some("hand"));
+    let sent = fx
+        .call(
+            &hand,
+            "send",
+            json!({"kind": "mail", "to": "mind", "subject": "hello", "body": "from the hand"}),
+        )
+        .await;
+    assert_eq!(sent["from"], "hand");
+    let inbox = fx.ms().list("mind", "inbox").unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert!(inbox[0].from_addr.starts_with("hand@"), "{inbox:?}");
+
+    let overview = fx.call(&hand, "overview", json!({})).await;
+    assert_eq!(overview["you"]["name"], "hand");
+    let mind = fx.key(Some("mind"));
+    let overview = fx.call(&mind, "overview", json!({})).await;
+    assert_eq!(overview["you"]["name"], "mind");
+    assert_eq!(overview["totals"]["mail_visible"], 1);
+}
+
+#[tokio::test]
+async fn an_identity_the_mailspace_lacks_is_a_clear_error() {
+    let fx = fixture("unknown");
+    let ghost = fx.key(Some("ghost"));
+    let message = fx
+        .call_err(
+            &ghost,
+            "send",
+            json!({"kind": "mail", "to": "mind", "subject": "s", "body": "b"}),
+        )
+        .await;
+    assert!(message.contains("identity 'ghost'"), "{message}");
+    assert!(message.contains("not a role"), "{message}");
+    for tool in ["overview", "list", "board"] {
+        let message = fx.call_err(&ghost, tool, json!({})).await;
+        assert!(message.contains("identity 'ghost'"), "{tool}: {message}");
+    }
+    assert!(fx.ms().list("mind", "inbox").unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_server_default_identity_is_configurable() {
+    let fx = fixture_with("default", |state| {
+        state.hosted_default_identity = "hand".into();
+    });
+    let key = fx.key(None);
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "mail", "to": "mind", "subject": "s", "body": "b"}),
+        )
+        .await;
+    assert_eq!(sent["from"], "hand");
+
+    let fx = fixture_with("default-missing", |state| {
+        state.hosted_default_identity = "nobody".into();
+    });
+    let key = fx.key(None);
+    let message = fx.call_err(&key, "overview", json!({})).await;
+    assert!(message.contains("identity 'nobody'"), "{message}");
+}
+
+#[tokio::test]
+async fn a_reply_threads_with_its_parent() {
+    let fx = fixture("reply");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "question", "body": "why?\n\ndone_when: answered"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+    let replied = fx
+        .call(&mind, "reply", json!({"handle": handle, "body": "because"}))
+        .await;
+    assert_eq!(replied["in_reply_to"], handle);
+    let reply_handle = replied["handle"].as_str().unwrap();
+
+    // The library threads the two messages.
+    let thread = fx.ms().thread(&handle, false, 50, 50).unwrap();
+    assert_eq!(thread.len(), 2, "{thread:?}");
+    assert!(thread.iter().any(|m| m.body.contains("because")));
+
+    // So does the tool, from either end.
+    for from in [&handle, &reply_handle.to_owned()] {
+        let shown = fx.call(&mind, "thread", json!({"handle": from})).await;
+        let messages = shown["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "{shown}");
+        assert!(messages.iter().any(|m| m["body"] == "because"), "{shown}");
+    }
+    // The reply went to the operator's inbox.
+    let inbox = fx.ms().list("operator", "inbox").unwrap();
+    assert_eq!(inbox.len(), 1);
+}
+
+#[tokio::test]
+async fn done_and_reopen_move_the_item_as_the_cli_does() {
+    let fx = fixture("lifecycle");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "close me", "body": "x\n\ndone_when: y"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    let closed = fx
+        .call(&mind, "done", json!({"handle": handle, "note": "finished"}))
+        .await;
+    assert!(
+        matches!(closed["mode"].as_str(), Some("closed" | "reported")),
+        "{closed}"
+    );
+    let ms = fx.ms();
+    assert!(
+        handles(&ms.list_kind(Some("mind"), "done", "need").unwrap()).contains(&handle),
+        "done folder"
+    );
+    assert!(
+        ms.list_kind(Some("mind"), "needs", "need")
+            .unwrap()
+            .is_empty()
+    );
+    let done = fx
+        .call(&mind, "list", json!({"kind": "need", "status": "done"}))
+        .await;
+    assert_eq!(done["items"][0]["handle"], handle, "{done}");
+    assert_eq!(done["items"][0]["status"], "done");
+    let open = fx.call(&mind, "list", json!({"kind": "need"})).await;
+    assert!(open["items"].as_array().unwrap().is_empty(), "{open}");
+
+    let reopened = fx
+        .call(&mind, "reopen", json!({"handle": handle, "note": "again"}))
+        .await;
+    assert!(
+        matches!(reopened["mode"].as_str(), Some("reopened" | "reported")),
+        "{reopened}"
+    );
+    let ms = fx.ms();
+    assert_eq!(
+        handles(&ms.list_kind(Some("mind"), "needs", "need").unwrap()),
+        vec![handle.clone()]
+    );
+    let shown = fx.call(&mind, "thread", json!({"handle": handle})).await;
+    assert_eq!(shown["state"], "open");
+}
+
+#[tokio::test]
+async fn mark_and_unmark_change_the_marks_the_cli_sees() {
+    let fx = fixture("marks");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "mark me", "body": "x\n\ndone_when: y"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+    let events = |fx: &Fx| {
+        let ms = fx.ms();
+        let storage = ms.storage().unwrap();
+        let id = storage.resolve_message_token(&handle).unwrap();
+        folded_marks(&storage.list_mailspace_events(&id).unwrap())
+    };
+
+    let marked = fx
+        .call(
+            &mind,
+            "mark",
+            json!({"handle": handle, "marks": ["bug", "p1"]}),
+        )
+        .await;
+    assert_eq!(marked["action"], "marked");
+    assert_eq!(marked["marks"], json!(["bug", "p1"]));
+    assert_eq!(events(&fx), vec!["bug", "p1"]);
+    // Again: nothing changes.
+    let again = fx
+        .call(&mind, "mark", json!({"handle": handle, "marks": "bug"}))
+        .await;
+    assert_eq!(again["changes"][0]["changed"], false);
+
+    let filtered = fx
+        .call(&mind, "list", json!({"kind": "need", "marks": "p1"}))
+        .await;
+    assert_eq!(filtered["items"][0]["marks"], json!(["bug", "p1"]));
+    let none = fx
+        .call(&mind, "list", json!({"kind": "need", "marks": ["nope"]}))
+        .await;
+    assert!(none["items"].as_array().unwrap().is_empty());
+
+    let unmarked = fx
+        .call(&mind, "unmark", json!({"handle": handle, "marks": "bug"}))
+        .await;
+    assert_eq!(unmarked["marks"], json!(["p1"]));
+    assert_eq!(events(&fx), vec!["p1"]);
+
+    // The operator does not hold mind's copy: the CLI refuses it, so do we.
+    let refused = fx
+        .call_err(&operator, "mark", json!({"handle": handle, "marks": "x"}))
+        .await;
+    assert!(!refused.is_empty());
+    assert_eq!(events(&fx), vec!["p1"]);
+    let bad = fx
+        .call_err(
+            &mind,
+            "mark",
+            json!({"handle": handle, "marks": "no spaces!"}),
+        )
+        .await;
+    assert!(
+        bad.contains("invalid mark") || bad.contains("mark"),
+        "{bad}"
+    );
+}
+
+#[tokio::test]
+async fn reads_reflect_what_the_library_wrote() {
+    let fx = fixture("reads");
+    let ms = fx.ms();
+    // As if by the pump: written straight through the library.
+    let first = library_need(&ms, "operator", "mind", "first need");
+    let second = library_need(&ms, "operator", "hand", "second need");
+    ms.send(SendRequest {
+        from: "operator".into(),
+        to: vec!["mind".into()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "a task".into(),
+        body: "t".into(),
+        role: "tasks".into(),
+        kind: Some("task".into()),
+        reply_to: None,
+        depends_on: vec![first.clone()],
+    })
+    .unwrap();
+    ms.set_marks("mind", &first, "need", true, &["urgent".to_owned()])
+        .unwrap();
+    ms.save_memo("mind", "remember", "the milk", &[]).unwrap();
+    let key = fx.key(Some("mind"));
+
+    // list: by kind, to, marks, status; folders and marks as the CLI shows.
+    let needs = fx.call(&key, "list", json!({"kind": "need"})).await;
+    let items = needs["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "mind holds one need: {needs}");
+    assert_eq!(items[0]["handle"], first);
+    assert_eq!(items[0]["marks"], json!(["urgent"]));
+    assert_eq!(items[0]["subject"], "first need");
+    let work = fx.call(&key, "list", json!({})).await;
+    assert_eq!(work["items"].as_array().unwrap().len(), 2, "need + task");
+    let to_hand = fx
+        .call(
+            &key,
+            "list",
+            json!({"kind": "need", "status": "all", "to": "hand"}),
+        )
+        .await;
+    assert!(to_hand["items"].as_array().unwrap().is_empty(), "{to_hand}");
+    let task = fx.call(&key, "list", json!({"kind": "task"})).await;
+    assert_eq!(task["items"][0]["depends_on"], json!([first.clone()]));
+    let memos = fx.call(&key, "list", json!({"kind": "memo"})).await;
+    assert_eq!(memos["items"][0]["body"], "the milk");
+
+    // show.
+    let shown = fx.call(&key, "show", json!({"handle": first})).await;
+    assert_eq!(shown["item"]["kind"], "need");
+    assert_eq!(shown["item"]["marks"], json!(["urgent"]));
+    assert!(shown["text"].as_str().unwrap().contains("do it"));
+    let memo = fx
+        .call(&key, "show", json!({"handle": memos["items"][0]["handle"]}))
+        .await;
+    assert_eq!(memo["subject"], "remember");
+
+    // thread by handle, with state.
+    let thread = fx.call(&key, "thread", json!({"handle": first})).await;
+    assert_eq!(thread["state"], "open");
+    // The need and the `marked` report the mark left on its thread.
+    let messages = thread["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "{thread}");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["handle"] == first && m["kind"] == "need")
+    );
+    assert!(messages.iter().any(|m| m["body"] == "marked"));
+
+    // overview: counts and ready handles.
+    let overview = fx.call(&key, "overview", json!({})).await;
+    assert_eq!(overview["totals"]["needs_open"], 1);
+    assert_eq!(overview["totals"]["tasks_open"], 1);
+    assert_eq!(overview["totals"]["memos"], 1);
+    assert!(
+        overview["ready"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| *h == first),
+        "{overview}"
+    );
+    assert!(
+        !overview["ready"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h == "task"),
+    );
+
+    // graph: the task waits on the first need.
+    let graph = fx.call(&key, "graph", json!({"view": "status"})).await;
+    assert_eq!(graph["blocked"].as_array().unwrap().len(), 1, "{graph}");
+    assert!(graph["ready"].as_array().unwrap().len() >= 2);
+
+    // board: the library's own, for every role, without the host path.
+    let board = fx.call(&key, "board", json!({})).await;
+    let direct = ms
+        .board(&BoardOptions {
+            wants_cap: 5,
+            ..BoardOptions::default()
+        })
+        .unwrap();
+    assert_eq!(board["totals"]["needs_open"], direct.totals.needs_open);
+    assert_eq!(board["totals"]["needs_open"], 2);
+    assert_eq!(board["name"], direct.name);
+    assert!(board.get("root").is_none(), "{board}");
+    let mine = fx
+        .call(&key, "board", json!({"for": "hand", "graph": true}))
+        .await;
+    assert_eq!(mine["identities"].as_array().unwrap().len(), 1);
+    assert_eq!(mine["identities"][0]["identity"], "hand");
+    assert_eq!(mine["identities"][0]["needs"][0]["handle"], second);
+    assert!(mine["graphs"].is_array());
+
+    // And a change made after: the next read sees it.
+    ms.move_item_outcome("mind", &first, "done", None, "need done", None)
+        .unwrap();
+    let after = fx.call(&key, "list", json!({"kind": "need"})).await;
+    assert!(after["items"].as_array().unwrap().is_empty(), "{after}");
+}
+
+#[tokio::test]
+async fn memo_save_lands_in_the_acting_identitys_memos() {
+    let fx = fixture("memo");
+    let mind = fx.key(Some("mind"));
+    let saved = fx
+        .call(
+            &mind,
+            "memo",
+            json!({"action": "save", "subject": "note", "body": "keep"}),
+        )
+        .await;
+    let memos = fx.ms().list_kind(Some("mind"), "memos", "memo").unwrap();
+    assert_eq!(
+        handles(&memos),
+        vec![saved["handle"].as_str().unwrap().to_owned()]
+    );
+    let listed = fx.call(&mind, "memo", json!({})).await;
+    assert_eq!(listed["items"][0]["subject"], "note");
+    // Another identity does not see it.
+    let hand = fx.key(Some("hand"));
+    let theirs = fx.call(&hand, "memo", json!({})).await;
+    assert!(theirs["items"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
+    let fx = fixture("token");
+    let key = fx.key(None);
+    // Not a key: a registered member's own bearer.
+    let bearer = fx
+        .state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(9),
+            "0b0b0b0b-1111-4222-8333-444444444444",
+        )
+        .unwrap()
+        .token;
+    // `mark` and `board` are hosted-key tools; the transport path says so.
+    let message = fx.call_err(&bearer, "board", json!({})).await;
+    assert!(message.contains("API key"), "{message}");
+    let message = fx
+        .call_err(&bearer, "mark", json!({"handle": "deadbeef", "marks": "x"}))
+        .await;
+    assert!(message.contains("API key"), "{message}");
+    // Transport reads see the (empty) projection, not the mailspace.
+    library_need(&fx.ms(), "operator", "mind", "invisible to the index");
+    let listed = fx.call(&bearer, "list", json!({})).await;
+    assert!(listed["items"].as_array().unwrap().is_empty(), "{listed}");
+    // The key sees the mailspace: mind's need is not the operator's item,
+    // but the operator's sent copy is open outbound work only when remote.
+    let live = fx.call(&key, "overview", json!({})).await;
+    assert_eq!(live["you"]["name"], "operator");
+}
+
+fn spki_pem(seed: u8) -> String {
+    use base64::Engine;
+    const PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut der = PREFIX.to_vec();
+    der.extend_from_slice(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes(),
+    );
+    format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        base64::engine::general_purpose::STANDARD.encode(der)
+    )
+}
+
+#[tokio::test]
+async fn the_operator_closes_a_need_it_sent_and_lists_every_role() {
+    let fx = fixture("operator");
+    let operator = fx.key(None);
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "s", "body": "x\n\ndone_when: y"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+    // The operator role closes any item, so the close travels as an event.
+    let closed = fx.call(&operator, "done", json!({"handle": handle})).await;
+    assert_eq!(closed["mode"], "closed", "{closed}");
+    assert!(closed["event"].is_string());
+    // The library error is passed through when it is closed already.
+    let again = fx
+        .call_err(&operator, "done", json!({"handle": handle}))
+        .await;
+    assert!(again.contains("already closed"), "{again}");
+
+    // Scoped to the operator's own folders the need is mind's, not listed;
+    // `for: all` lists it as `vivi need list` without `--for` does.
+    let own = fx
+        .call(&operator, "list", json!({"kind": "need", "status": "all"}))
+        .await;
+    assert!(own["items"].as_array().unwrap().is_empty(), "{own}");
+    let all = fx
+        .call(
+            &operator,
+            "list",
+            json!({"kind": "need", "status": "all", "for": "all"}),
+        )
+        .await;
+    assert_eq!(all["items"][0]["handle"], handle, "{all}");
+    assert_eq!(all["items"][0]["status"], "done");
+    let mind = fx
+        .call(
+            &operator,
+            "list",
+            json!({"kind": "need", "status": "done", "for": "mind"}),
+        )
+        .await;
+    assert_eq!(mind["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
+    let base = scratch("owned");
+    let state = app_state(base.join("data"), None, None);
+    let meta = state
+        .projects
+        .create_project_with_creator(&spki_pem(7), "alice")
+        .unwrap();
+    let project = meta.project_id;
+    state
+        .identities
+        .register(
+            &project,
+            "alice",
+            &spki_pem(7),
+            "0a0a0a0a-1111-4222-8333-444444444444",
+        )
+        .ok();
+    let key = state
+        .keys
+        .mint(&project, "alice", "bot", Some("operator"))
+        .unwrap()
+        .key;
+    let fx = Fx {
+        app: router(state.clone()),
+        state,
+        root: base,
+        project,
+        member: "alice".into(),
+    };
+    // The key's identity is not consulted: the member sends as itself.
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "alice@0a0a0a0a.local", "subject": "s", "body": "b"}),
+        )
+        .await;
+    assert!(sent["message_id"].is_string(), "{sent}");
+    assert!(sent.get("delivered").is_none(), "{sent}");
+    let listed = fx.call(&key, "list", json!({"kind": "need"})).await;
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1, "{listed}");
+    let message = fx.call_err(&key, "board", json!({})).await;
+    assert!(message.contains("hosted project"), "{message}");
+    let tools = fx.rpc(&key, "tools/list", json!({})).await;
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for tool in ["mark", "unmark", "board", "send", "overview"] {
+        assert!(names.contains(&tool), "{tool} in {names:?}");
+    }
+}
+
+#[tokio::test]
+async fn for_names_the_holder_a_command_runs_as() {
+    let fx = fixture("for");
+    let operator = fx.key(None);
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "approve", "body": "x\n\ndone_when: y"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+    let folded = |fx: &Fx| {
+        let ms = fx.ms();
+        let storage = ms.storage().unwrap();
+        let id = storage.resolve_message_token(&handle).unwrap();
+        folded_marks(&storage.list_mailspace_events(&id).unwrap())
+    };
+    // Without `for` the operator does not hold mind's copy.
+    fx.call_err(
+        &operator,
+        "mark",
+        json!({"handle": handle, "marks": "pump"}),
+    )
+    .await;
+    assert!(folded(&fx).is_empty());
+    // With `for=mind`, as `vivi need mark --for mind`.
+    let marked = fx
+        .call(
+            &operator,
+            "mark",
+            json!({"handle": handle, "marks": "pump", "for": "mind"}),
+        )
+        .await;
+    assert_eq!(marked["marks"], json!(["pump"]));
+    assert_eq!(folded(&fx), vec!["pump"]);
+    fx.call(
+        &operator,
+        "unmark",
+        json!({"handle": handle, "marks": "pump", "for": "mind"}),
+    )
+    .await;
+    assert!(folded(&fx).is_empty());
+
+    let ghost = fx
+        .call_err(
+            &operator,
+            "mark",
+            json!({"handle": handle, "marks": "x", "for": "ghost"}),
+        )
+        .await;
+    assert!(ghost.contains("for: 'ghost'"), "{ghost}");
+
+    // done / reopen with `for`.
+    let closed = fx
+        .call(&operator, "done", json!({"handle": handle, "for": "mind"}))
+        .await;
+    assert_eq!(closed["mode"], "closed", "{closed}");
+    assert_eq!(
+        handles(&fx.ms().list_kind(Some("mind"), "done", "need").unwrap()),
+        vec![handle.clone()]
+    );
+    let reopened = fx
+        .call(
+            &operator,
+            "reopen",
+            json!({"handle": handle, "for": "mind"}),
+        )
+        .await;
+    assert_eq!(reopened["mode"], "reopened", "{reopened}");
+    assert_eq!(
+        handles(&fx.ms().list_kind(Some("mind"), "needs", "need").unwrap()),
+        vec![handle]
+    );
+}
+
+#[tokio::test]
+async fn a_want_has_no_reopen_and_a_read_writes_nothing_to_the_host() {
+    let fx = fixture("want");
+    let ms = fx.ms();
+    let want = ms
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "maybe".into(),
+            body: "w".into(),
+            role: "wants".into(),
+            kind: Some("want".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered[0]
+        .handle
+        .clone();
+    let key = fx.key(Some("mind"));
+    let message = fx.call_err(&key, "reopen", json!({"handle": want})).await;
+    assert!(message.contains("no reopen"), "{message}");
+
+    // Serving already ran the open-time repairs; a read changes no file.
+    let snapshot = |root: &std::path::Path| {
+        let dir = root.join(".vivi");
+        ["mailspace.toml", ".gitignore"]
+            .iter()
+            .map(|f| std::fs::read(dir.join(f)).ok())
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&fx.root);
+    fx.call(&key, "overview", json!({})).await;
+    fx.call(&key, "list", json!({})).await;
+    assert_eq!(snapshot(&fx.root), before);
+}

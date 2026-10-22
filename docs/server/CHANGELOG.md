@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — hosted MCP
+
+On a hosted project the mailspace is the host's own, so MCP acts on it through
+the `vivi` library exactly as the CLI would, as a mapped vivi identity. The
+routing is per call: an **API key** on a hosted project; an identity-token
+caller, and every server-owned project, keep the transport tools unchanged.
+
+- **Acting identity.** The key's `identity`, else `HOSTED_DEFAULT_IDENTITY`
+  (default `operator`). It must be a role of the hosted mailspace, or the call
+  fails naming the identity.
+- **Writes** call the CLI's entry points: `send` (`Mailspace::send`, roles
+  `needs`/`tasks`/`wants`/`inbox`; `chat` is refused), `reply`
+  (`Mailspace::reply`), `done`/`reopen` (`move_item_outcome`; the library's
+  own authority rules and errors), `memo save` (`save_memo`). New tools `mark`
+  and `unmark` (`set_marks`, on a need or want the acting identity holds).
+- **Reads** are live: `overview`, `list` (kind, status, `to`, `from`, `marks`,
+  `for`), `show`, `thread`, `graph` (the backlog graph), and the new `board`
+  (`Mailspace::board` as JSON, host root omitted). `list` reads the acting
+  identity's folders as `vivi need list --for <identity>` does; `for` names
+  another role or `all`.
+- Differences from the transport shapes: items carry `role` (folder), `date`
+  (not `appended_at`), `marks` (always) and `last_event`; `show`/`thread` keep
+  `status` for need/task/want only; `send`/`reply` answer with `handle`
+  (recipient's copy), `sent`, `delivered`, `remote`; `done`/`reopen` answer
+  with the library's `event`/`reported`/`joined_needs`.
+
 ## Unreleased — hosted projects
 
 - **Serve the host registry.** At boot and whenever the registry file

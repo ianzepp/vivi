@@ -343,7 +343,7 @@ async fn initialize_and_tools_list() {
         names,
         vec![
             "overview", "list", "show", "thread", "send", "reply", "done", "reopen", "memo",
-            "graph"
+            "graph", "mark", "unmark", "board"
         ]
     );
 }

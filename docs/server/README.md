@@ -36,6 +36,7 @@ curl http://localhost:8080/healthz   # -> ok
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
+| `HOSTED_DEFAULT_IDENTITY` | The vivi identity an API key without its own `identity` acts as on a hosted project (default `operator`) |
 
 ## Acceptance
 
