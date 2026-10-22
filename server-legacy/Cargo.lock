@@ -2681,8 +2681,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivi"
-version = "18.3.0"
-source = "git+https://github.com/ianzepp/vivi?tag=v18.3.0#441f413bb23d28414a6e0d70e34b67d110d3e915"
+version = "18.4.0"
+source = "git+https://github.com/ianzepp/vivi?tag=v18.4.0#c095524f32e37775c581ce0a1ae534c15261e3e1"
 dependencies = [
  "axum",
  "bytes",
