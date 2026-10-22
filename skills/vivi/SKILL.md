@@ -90,6 +90,32 @@ mailspace's own `mind` role and will not show it. Held rows carry their
 holder in a `held_for` JSON field (own rows omit the field; the human listing
 shows a `held_for` column).
 
+### Inherited config (base mailspaces)
+
+A `.vivi/mailspace.toml` in a directory above a project that says
+`base = true` is a **base**. Whenever a project's config loads, every base on
+the way up to `/` is merged under the project's own file, deeper files
+winning. A host keeps one base (shared pools, roles, pump defaults) and each
+project sets only what is its own.
+
+- **Opt-in.** An ancestor without `base = true` is ignored; an unreadable one
+  ends the walk quietly. A base may be config-only (no `mail.sqlite`), and
+  `vivi pump service add` and `vivi pump run` refuse a base root.
+- **Inherited:** `pump`, `pools`, roles (`[[identities]]`, merged by name),
+  `judgment`, `probes`, `absorb`, `memo`. **Never inherited:** `id`, `name`,
+  `description`, `archive`, `sync`, mail and the store.
+- **Merge.** Tables merge key by key and the deeper file wins; arrays and
+  scalars replace whole. A file removes inherited keys with
+  `unset = ["pools.studio.size_gib", "identities.reviewer"]` (dotted paths;
+  quote a segment that contains a dot: `pools."a.b".x`).
+- **Charters** fall back to the nearest base's `charters/<role>.md`.
+- **Writers** (`vivi pool set`, `vivi role ...`, `vivi pump gate set`) edit
+  only the project's own file, never a base. A role or pool defined only in a
+  base cannot be changed from the project with the CLI yet; override it by
+  editing the project's file.
+- `vivi config show` and `vivi config validate` list the merged files and
+  which file each pool, role and pump key came from.
+
 ### Creating a project
 
 `vivi project create <name> --projects-root P --lanes-root L --git-url-prefix U`
@@ -995,8 +1021,9 @@ vivi pool unset glm image
   a mailspace that still has one gets an error naming `[pools.<name>]` on the
   first `vivi pool` command; nothing is rewritten.
 - Every pool table is complete on its own. There are no defaults shared between
-  pools and no inheritance: write `repo`, `github`, `harness` and `committer`
-  again in each pool that needs them.
+  pools: write `repo`, `github`, `harness` and `committer` again in each pool
+  that needs them. (A whole pool table can still come from a base mailspace
+  above the project; see "Inherited config".)
 - `--pool <name>` is on every pool command. With exactly one pool it may be
   omitted everywhere. With several: `create`, `destroy`, `dispatch`, `scale` and
   `doctor --test` require it (the error lists the pool names); `status`,
@@ -2107,7 +2134,8 @@ Everything provider neutral sits in the pool table; the Fly settings sit in
 `[pools.<name>.fly]`, the Docker settings in `[pools.<name>.docker]`, the SSH
 settings in `[pools.<name>.ssh]`, the local settings in `[pools.<name>.local]` and the RunPod settings in `[pools.<name>.runpod]` (shown under "RunPod provider"). Only the table of the chosen `provider` is
 used and checked beyond its key names. A top-level `[pool]` table is rejected.
-Everything below is per pool and nothing is inherited:
+Everything below is per pool; pools share nothing with each other (a base
+mailspace can still supply whole pool tables):
 
 ```toml
 [pools.lanes]
@@ -2354,6 +2382,8 @@ vivi pump pause
 vivi pump resume
 vivi pump stop
 vivi pump start
+vivi pump gate show
+vivi pump gate set "<command>"
 vivi pump closeout [--close <handle> --for <identity>]
 vivi pump export --json <path>
 vivi pump priority set <need> <level>
@@ -2371,6 +2401,12 @@ vivi pump done <record> [--note TEXT]
 vivi pump reopen <record>
 vivi pump history <need> [--json]
 ```
+
+**pump gate set** writes `[pump.gate] command` in the project's own
+`mailspace.toml` (a format-preserving edit under the config lock; a blank
+command is refused) and **pump gate show** prints it, or `no gate command set`
+(a blank value counts as unset). The library pair is
+`vivi::pump::gate_config::{set_command, command}`.
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
 addressed to the pump's own identity (**[pump] reply_from**, default
