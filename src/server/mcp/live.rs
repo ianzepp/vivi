@@ -10,7 +10,7 @@
 //! Reads (`overview`, `list`, `show`, `thread`, `graph`, `board`) are live
 //! queries of the mailspace store: the folder, status and marks the CLI
 //! shows. Writes (`send`, `reply`, `done`, `reopen`, `memo`, `mark`,
-//! `unmark`) call the same library entry points the CLI calls, so letters
+//! `unmark`, `depend`) call the same library entry points the CLI calls, so letters
 //! land in the mailspace's role folders where the pump sees them next tick.
 //! Each call opens the mailspace afresh (a tool call is short-lived and the
 //! pump is another process on the same files).
@@ -77,6 +77,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "memo"
             | "mark"
             | "unmark"
+            | "depend"
     )
 }
 
@@ -125,10 +126,10 @@ pub(super) fn dispatch(
     arguments: &Value,
 ) -> Result<Value, ToolError> {
     let mut hosted = Hosted::open(root, requested)?;
-    // `done`, `reopen`, `mark` and `unmark` take `--for <holder>` in the CLI:
+    // `done`, `reopen`, `mark`, `unmark` and `depend` take `--for <holder>` in the CLI:
     // the role the command runs as, which must hold the item. The library
     // applies the same authority rules to it as it does for the CLI.
-    if matches!(name, "done" | "reopen" | "mark" | "unmark") {
+    if matches!(name, "done" | "reopen" | "mark" | "unmark" | "depend") {
         if let Some(holder) = super::tools::opt_str(arguments, "for")? {
             hosted.actor = hosted.ms.resolve_identity(holder).map_err(|error| {
                 ToolError::new(format!(
@@ -151,6 +152,7 @@ pub(super) fn dispatch(
         "memo" => write::memo(&hosted, limiter, project_id, arguments),
         "mark" => write::mark(&hosted, limiter, project_id, arguments, true),
         "unmark" => write::mark(&hosted, limiter, project_id, arguments, false),
+        "depend" => write::depend(&hosted, limiter, project_id, arguments),
         other => Err(ToolError::new(format!("unknown tool '{other}'"))),
     }
 }

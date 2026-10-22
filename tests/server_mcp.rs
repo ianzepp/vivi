@@ -354,6 +354,7 @@ async fn initialize_and_tools_list() {
             "graph",
             "mark",
             "unmark",
+            "depend",
             "pump",
             "pump_control",
             "pump_gate",

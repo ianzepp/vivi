@@ -795,7 +795,7 @@ async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    for tool in ["mark", "unmark", "board", "send", "overview"] {
+    for tool in ["mark", "unmark", "depend", "board", "send", "overview"] {
         assert!(names.contains(&tool), "{tool} in {names:?}");
     }
 }
@@ -1055,4 +1055,111 @@ async fn overview_ready_is_the_open_work_the_caller_holds_and_is_capped() {
         assert!(to_mind.iter().any(|h| h == handle), "{handle}");
     }
     assert!(!ready.iter().any(|h| *h == done || *h == to_hand));
+}
+
+#[tokio::test]
+async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
+    let fx = fixture("depend");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let hand = fx.key(Some("hand"));
+    let send = |subject: &'static str, to: &'static str, deps: Value| {
+        json!({"kind": "need", "to": to, "subject": subject, "body": "x\n\ndone_when: y", "depends_on": deps})
+    };
+    let work = fx
+        .call(&operator, "send", send("work", "mind", json!([])))
+        .await["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = fx
+        .call(&operator, "send", send("other", "mind", json!([])))
+        .await["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let release = fx
+        .call(&operator, "send", send("release", "mind", json!([work])))
+        .await["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let blocked = |graph: &Value| {
+        graph["blocked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node.as_str() == Some(release.as_str()) || node["handle"] == release)
+    };
+    let graph = fx.call(&mind, "graph", json!({"view": "status"})).await;
+    assert!(blocked(&graph), "{graph}");
+
+    // Remove the dependency named at send: the release is ready.
+    let removed = fx
+        .call(
+            &mind,
+            "depend",
+            json!({"handle": release, "remove": work}),
+        )
+        .await;
+    assert_eq!(removed["changes"][0]["action"], "removed");
+    assert_eq!(removed["changes"][0]["changed"], true);
+    assert_eq!(removed["dependencies"], json!([]));
+    let graph = fx.call(&mind, "graph", json!({"view": "status"})).await;
+    assert!(!blocked(&graph), "{graph}");
+
+    // The CLI's own view agrees: the library reads the same letters.
+    let ms = fx.ms();
+    assert!(ms.backlog_dependencies(&release).unwrap().is_empty());
+
+    // Add two back in one call; both block.
+    let added = fx
+        .call(
+            &mind,
+            "depend",
+            json!({"handle": release, "add": [work, other]}),
+        )
+        .await;
+    assert_eq!(added["dependencies"].as_array().unwrap().len(), 2, "{added}");
+    let graph = fx.call(&mind, "graph", json!({"view": "status"})).await;
+    assert!(blocked(&graph), "{graph}");
+
+    // Again: nothing changes.
+    let again = fx
+        .call(&mind, "depend", json!({"handle": release, "add": work}))
+        .await;
+    assert_eq!(again["changes"][0]["changed"], false);
+
+    // `for` runs the command as the holder, as on the CLI.
+    let for_mind = fx
+        .call(
+            &operator,
+            "depend",
+            json!({"handle": release, "remove": other, "for": "mind"}),
+        )
+        .await;
+    assert_eq!(for_mind["dependencies"].as_array().unwrap().len(), 1);
+
+    // An unknown handle fails before anything is written.
+    let before = ms.storage().unwrap().list_messages().unwrap().len();
+    let unknown = fx
+        .call_err(
+            &mind,
+            "depend",
+            json!({"handle": release, "add": [other, "deadbeef"]}),
+        )
+        .await;
+    assert!(unknown.contains("deadbeef"), "{unknown}");
+    assert_eq!(
+        fx.ms().storage().unwrap().list_messages().unwrap().len(),
+        before
+    );
+
+    // A hand does not hold the release, and may not change it.
+    let refused = fx
+        .call_err(&hand, "depend", json!({"handle": release, "add": other}))
+        .await;
+    assert!(!refused.is_empty());
+    let empty = fx.call_err(&mind, "depend", json!({"handle": release})).await;
+    assert!(empty.contains("--add or --remove"), "{empty}");
 }

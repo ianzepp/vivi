@@ -120,8 +120,12 @@ mailspace).
   library's: `send` (`Mailspace::send`; roles `needs`, `tasks`, `wants`,
   `inbox`; `chat` is refused), `reply`, `done` and `reopen`
   (`move_item_outcome`), `memo` (`save_memo`), and `mark` / `unmark`
-  (`set_marks`, on a need or want the acting identity holds). Writes are rate
-  limited per acting identity.
+  (`set_marks`, on a need or want the acting identity holds), and `depend`
+  (`set_dependencies`: `add` and `remove` handles on a need, task, or want
+  the acting identity may close; each change is a `dependency-added` /
+  `dependency-removed` letter that reaches every member, and the answer lists
+  the item's prerequisites as they stand). Writes are rate limited per acting
+  identity.
 - **`for`.** `list` reads the acting identity's folders, as
   `vivi need list --for <identity>` does; its `for` argument names another
   role or `all`. `board` takes `for` the same way.

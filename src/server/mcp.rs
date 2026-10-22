@@ -314,7 +314,7 @@ fn initialize(params: &Value, surface: &Surface<'_>) -> Value {
     })
 }
 
-const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, and board returns the project board.";
+const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, depend adds or drops prerequisites after the send, and board returns the project board.";
 
 fn tools_list() -> Value {
     json!({
@@ -454,6 +454,29 @@ fn tools_list() -> Value {
                     }
                 },
                 "required": ["handle", "marks"],
+                "additionalProperties": false
+            })),
+            tool("depend", "Hosted projects only (API key). Add and remove prerequisites of a need, task, or want after it was sent, as `vivi need|task|want depend --add --remove` does. Each changed dependency is a `dependency-added` / `dependency-removed` letter on the item, so the change reaches every member; per dependency the newest letter wins, over a dependency named at send too. Only the item's author, a mind, or an operator may change it; any other role is refused. Every handle resolves before anything is written. Returns the changes and the item's prerequisites as they stand. `for` names the role the command runs as, as `--for` does.", json!({
+                "type": "object",
+                "properties": {
+                    "for": { "type": "string", "description": "Hosted projects: the role the command runs as, which must hold the item (the CLI's --for). Defaults to the acting identity." },
+                    "handle": { "type": "string", "description": "The need, task, or want to change" },
+                    "add": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ],
+                        "description": "Handles of items to add as prerequisites"
+                    },
+                    "remove": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ],
+                        "description": "Handles of prerequisites to remove, including ones named at send"
+                    }
+                },
+                "required": ["handle"],
                 "additionalProperties": false
             })),
             tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, unit counts, recent merges, blocked units, complete-but-open needs, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({

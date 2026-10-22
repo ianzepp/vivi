@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Dependency edges after the send, over MCP.
+
+- **MCP `depend`.** Hosted projects, API key. Adds and removes prerequisites
+  of a need, task, or want after it was sent, as `vivi need|task|want depend
+  --add --remove` does (`Mailspace::set_dependencies`). Arguments: `handle`,
+  `add` and `remove` (a handle or a list), and `for` (the role the command runs
+  as, as the CLI's `--for`). Each changed dependency is a
+  `dependency-added` / `dependency-removed` letter on the item, so the change
+  reaches every member; the newest letter per dependency wins, over a
+  dependency named at send too. The library's rules apply: only the item's
+  author, a mind, or an operator may change it, every handle resolves before
+  anything is written, and a self edge, a cycle, or a done item is refused.
+  Rate limited as a write. The answer is `{handle, changes, dependencies}`,
+  the prerequisites as they stand afterwards. A server-owned project refuses it
+  like `mark`. **Needs vivi with `set_dependencies`**: the `vivi` dependency
+  moves to the release that carries it.
+
 ## 1.10.0 — 2026-10-22
 
 Operator band tables over MCP.

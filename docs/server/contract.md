@@ -404,7 +404,12 @@ under the item's own kind; that still works and is folded the same way.
   counts). Kinds: `done`, `reopened`, `absorbed` (`X-Vivi-Event-State:
   done|open`), `marked`/`unmarked` (`X-Vivi-Event-Slug`), `bound`
   (`X-Vivi-Event-Unit`, repeatable). An unknown kind, or a kind missing its
-  payload, is skipped.
+  payload, is skipped. A client also writes `dependency-added` /
+  `dependency-removed` (`X-Vivi-Event-Dep`, repeatable) to change an item's
+  prerequisites after the send; this server files those letters and serves
+  them to every member as event letters, and does not fold them into its own
+  `graph` projection, which reads `X-Vivi-Depends-On` headers only. A hosted
+  project's `graph` folds them, through the library.
 - **Order.** The key is `(instant, causal depth, Message-ID)`, compared
   lexicographically; the largest is newest. The instant is the event's
   `X-Vivi-Event-At` (RFC 3339, microseconds), else its `Date` in whole

@@ -215,6 +215,50 @@ pub(super) fn memo(
     }
 }
 
+/// `need|task|want depend`: add and remove prerequisites of an item the
+/// acting identity may change, as the CLI does. The library refuses a role
+/// that may not close the item, an unknown handle, a self edge or a cycle,
+/// and writes nothing then.
+pub(super) fn depend(
+    h: &Hosted,
+    limiter: &RateLimiter,
+    project_id: &str,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
+    rate_limit(limiter, project_id, &h.actor)?;
+    let handle = req_str(arguments, "handle")?;
+    let add = string_list(arguments, "add")?;
+    let remove = string_list(arguments, "remove")?;
+    let kind = {
+        let storage = h.ms.storage().map_err(lib_error)?;
+        locate(&storage, handle)?.kind
+    };
+    if !is_work(&kind) {
+        return Err(ToolError::new(format!(
+            "{handle} is not a need, a task, or a want"
+        )));
+    }
+    let writes =
+        h.ms.set_dependencies(&h.actor, handle, &kind, &add, &remove)
+            .map_err(lib_error)?;
+    let dependencies = h.ms.backlog_dependencies(handle).map_err(lib_error)?;
+    Ok(json!({
+        "handle": handle,
+        "changes": writes
+            .iter()
+            .map(|w| json!({
+                "dependency": w.handle,
+                "action": if w.added { "added" } else { "removed" },
+                "changed": w.changed,
+            }))
+            .collect::<Vec<_>>(),
+        "dependencies": dependencies
+            .iter()
+            .map(|d| json!({ "handle": d.handle, "state": d.state }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 /// `need|want mark|unmark`: append mark events on an item the acting
 /// identity holds.
 pub(super) fn mark(

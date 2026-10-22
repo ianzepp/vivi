@@ -60,7 +60,7 @@ pub fn dispatch(
         "reopen" => settle(store, limiter, project_id, identity, arguments, "reopened"),
         "memo" => memo(store, limiter, project_id, identity, arguments),
         "graph" => graph(store, project_id, identity, arguments),
-        "mark" | "unmark" | "board" => Err(ToolError::new(format!(
+        "mark" | "unmark" | "depend" | "board" => Err(ToolError::new(format!(
             "{name} is available on a hosted project to an API key only"
         ))),
         other => Err(ToolError::new(format!("unknown tool '{other}'"))),
