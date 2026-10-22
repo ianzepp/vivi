@@ -30,11 +30,16 @@ pub(crate) const ENV: &str = "ENV";
 /// `<crate> <path>` pairs (crate at least two
 /// `[a-z0-9_-]` characters, path two or more `::`-joined segments), ignoring
 /// surrounding punctuation, deduplicated and sorted. `Some(["BUILD-FAILED"])`
-/// comes from a block holding exactly that line; `None` means unreadable.
+/// comes from any block holding that line, whatever else the block holds. A
+/// block with a line that is no failing-name shape (prose, a quoted error) is
+/// malformed: with no usable block before it the receipt is `None`, never a
+/// fallback scan. `None` means unreadable.
 #[must_use]
 pub fn parse_failing(text: &str) -> Option<Vec<String>> {
-    if let Some(names) = last_usable_block(text) {
-        return Some(names);
+    match block_read(text) {
+        Some(BlockRead::Names(names)) => return Some(names),
+        Some(BlockRead::Malformed) => return None,
+        None => {}
     }
     if text.contains(BUILD_FAILED) {
         return None;
@@ -85,29 +90,74 @@ pub(crate) fn marker_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
+/// How the last readable marker block reads.
+enum BlockRead {
+    /// The failing names; `["BUILD-FAILED"]` alone when the build broke.
+    Names(Vec<String>),
+    /// A line that is no failing-name shape, and no usable block before it.
+    Malformed,
+}
+
 /// The last block with a usable line — non-empty and not a `<template>` — or
-/// an entirely empty block, which yields the empty name list.
+/// an entirely empty block, which yields the empty name list. `None` for no
+/// usable block and for a malformed receipt (see [`block_read`]).
 ///
 /// A `TARGET-DIED <target>` or `ENV ...` line is a usable line that is not a
 /// name: it keeps the block usable while contributing nothing to the list, so
 /// a block naming only dead targets or missing tools yields the empty list
 /// instead of falling through to the `<crate> <path>` scan.
 pub(crate) fn last_usable_block(text: &str) -> Option<Vec<String>> {
+    match block_read(text)? {
+        BlockRead::Names(names) => Some(names),
+        BlockRead::Malformed => None,
+    }
+}
+
+/// Read the marker blocks last to first. A block holding a `BUILD-FAILED`
+/// line is the single build-failed state whatever else it holds; the other
+/// lines are detail the gate keeps in the receipt tail, never names. A block
+/// with a line that is not a failing-name shape is malformed and skipped; the
+/// receipt is [`BlockRead::Malformed`] when no earlier block is usable.
+fn block_read(text: &str) -> Option<BlockRead> {
+    let mut malformed = false;
     for block in marker_blocks(text).iter().rev() {
         let mut marker = false;
         let mut lines = Vec::new();
         for line in block.lines().map(str::trim) {
+            if line == BUILD_FAILED {
+                return Some(BlockRead::Names(vec![BUILD_FAILED.to_owned()]));
+            }
             if is_death_line(line) || is_env_line(line) {
                 marker = true;
             } else if !line.is_empty() && !line.starts_with('<') {
                 lines.push(line.to_owned());
             }
         }
-        if marker || !lines.is_empty() || block.trim().is_empty() {
-            return Some(lines);
+        if !lines.iter().all(|line| is_name_shape(line)) {
+            malformed = true;
+        } else if marker || !lines.is_empty() || block.trim().is_empty() {
+            return Some(BlockRead::Names(lines));
         }
     }
-    None
+    malformed.then_some(BlockRead::Malformed)
+}
+
+/// `true` for a line that can be a failing name: `<crate> <test name>` or one
+/// bare token, or a doc-test name ending `(line N)`. A token ending in `:`
+/// or holding a quote or backtick marks prose or a quoted error, not a name.
+fn is_name_shape(line: &str) -> bool {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let prose = tokens
+        .iter()
+        .any(|t| t.ends_with(':') || t.contains(['\'', '"', '`']));
+    !prose && (tokens.len() <= 2 || is_doc_test_name(line))
+}
+
+/// `true` for a doc-test name: it ends with `(line <digits>)`.
+fn is_doc_test_name(line: &str) -> bool {
+    line.strip_suffix(')')
+        .and_then(|head| head.rsplit_once("(line "))
+        .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The test names the gate worker reported failing only because an executable

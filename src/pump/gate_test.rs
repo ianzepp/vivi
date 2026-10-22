@@ -164,6 +164,59 @@ fn parse_failing_build_failed_marker() {
 }
 
 #[test]
+fn parse_failing_build_failed_with_the_error_inside_the_markers_is_one_state() {
+    let text = "rc=1\nFAILING-BEGIN\nBUILD-FAILED\n\
+                ModuleNotFoundError: No module named 'tomllib'\nFAILING-END\n";
+    assert_eq!(
+        parse_failing(text),
+        Some(vec![String::from("BUILD-FAILED")])
+    );
+    let before = "FAILING-BEGIN\nModuleNotFoundError: No module named 'tomllib'\n\
+                  BUILD-FAILED\nvivi pump::gate::a\nFAILING-END\n";
+    assert_eq!(
+        parse_failing(before),
+        Some(vec![String::from("BUILD-FAILED")])
+    );
+}
+
+#[test]
+fn parse_failing_build_failed_with_the_error_after_the_markers_is_one_state() {
+    let text = "rc=1\nFAILING-BEGIN\nBUILD-FAILED\nFAILING-END\n\
+                ModuleNotFoundError: No module named 'tomllib'\n\
+                vivi pump::gate::ghost\n";
+    assert_eq!(
+        parse_failing(text),
+        Some(vec![String::from("BUILD-FAILED")])
+    );
+}
+
+#[test]
+fn parse_failing_a_prose_line_among_real_names_is_a_malformed_receipt() {
+    let text = "FAILING-BEGIN\nvivi pump::gate::a\n\
+                ModuleNotFoundError: No module named 'tomllib'\nFAILING-END\n\
+                vivi pump::gate::fallback\n";
+    assert_eq!(parse_failing(text), None);
+    let sentence = "FAILING-BEGIN\nvivi pump::gate::a\nThe failures are listed above:\nFAILING-END\n";
+    assert_eq!(parse_failing(sentence), None);
+    let earlier = "FAILING-BEGIN\nvivi pump::gate::a\nFAILING-END\n\
+                   FAILING-BEGIN\nerror: could not compile `vivi`\nFAILING-END\n";
+    assert_eq!(
+        parse_failing(earlier),
+        Some(vec![String::from("vivi pump::gate::a")])
+    );
+}
+
+#[test]
+fn parse_failing_keeps_doc_test_names_and_env_and_death_lines() {
+    let text = "FAILING-BEGIN\nvivi src/lib.rs - gate (line 12)\n\
+                ENV radix-hir-ts a::b :: node not found\nTARGET-DIED radix-cli\nFAILING-END\n";
+    assert_eq!(
+        parse_failing(text),
+        Some(vec![String::from("vivi src/lib.rs - gate (line 12)")])
+    );
+}
+
+#[test]
 fn parse_failing_falls_back_to_crate_and_path_pairs_sorted_and_deduplicated() {
     let text = "failures: (`vivi pump::gate::b`, vivi pump::gate::b)\n\
                 other crate plain main single and x y\n\
@@ -850,6 +903,69 @@ fn a_build_failed_reply_raises_gate_build_failed() {
     );
     assert!(ctx.home.join("HOLD-MERGE").is_file());
     assert!(st.promotions.is_empty());
+    drop(dir);
+}
+
+#[test]
+fn a_build_failed_reply_with_the_error_inside_the_markers_is_not_a_baseline_of_names() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = gate_state(4);
+    st.baseline = None;
+    finish_gate(
+        &ctx,
+        &mut st,
+        "rc=1\nFAILING-BEGIN\nBUILD-FAILED\n\
+         ModuleNotFoundError: No module named 'tomllib'\nFAILING-END\n",
+    );
+    dispatch_pending(&ctx, &mut st).unwrap();
+    assert_eq!(st.baseline, Some(Vec::new()));
+    let rec = st.gates.last().unwrap();
+    assert_eq!(rec.names, Some(vec![String::from("BUILD-FAILED")]));
+    assert!(!st.red.keys().any(|name| name.contains("tomllib")));
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("gate-build-failed 0123456789"));
+    assert!(exceptions.contains("No module named 'tomllib'"));
+    drop(dir);
+}
+
+#[test]
+fn a_repeated_build_failure_owned_by_a_fix_is_not_new_again() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = gate_state(4);
+    st.baseline = None;
+    let text = "rc=1\nFAILING-BEGIN\nBUILD-FAILED\nFAILING-END\nerror: could not compile\n";
+    finish_gate(&ctx, &mut st, text);
+    dispatch_pending(&ctx, &mut st).unwrap();
+    assert_eq!(
+        st.gates.last().unwrap().new,
+        Some(vec![String::from("BUILD-FAILED")])
+    );
+    finish_gate(&ctx, &mut st, text);
+    assert_eq!(st.gates.last().unwrap().new, Some(Vec::new()));
+    drop(dir);
+}
+
+#[test]
+fn a_prose_line_inside_the_markers_raises_gate_unreadable() {
+    let (dir, ctx, _host) = setup();
+    let mut st = gate_state(4);
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::gate::a\nModuleNotFoundError: No module named 'tomllib'\nFAILING-END\n",
+    );
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("gate-unreadable 0123456789"));
+    assert_eq!(st.gates.last().unwrap().names, None);
+    assert!(st.red.is_empty());
+    assert_eq!(
+        st.baseline,
+        Some(vec![String::from("old crate::base")]),
+        "the prose receipt never reaches the baseline"
+    );
+    assert!(ctx.flag("FORCE-GATE"));
     drop(dir);
 }
 
