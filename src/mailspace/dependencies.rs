@@ -23,7 +23,9 @@ use std::collections::{HashMap, HashSet};
 use mail_parser::MessageParser;
 
 use super::Mailspace;
-use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep};
+use super::backlog::{
+    BacklogDep, backlog_node_by_token, resolve_backlog_dep, resolve_dep_message,
+};
 use super::graph::GraphNodeView;
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
@@ -123,15 +125,27 @@ fn item_node(
 }
 
 /// Whether a reference could ever name a held letter: hex digits, with an
-/// optional `msg_` prefix.
+/// optional `msg_` prefix, or a bracketed RFC `Message-ID` a dependency
+/// letter names a dependency by.
 fn looks_like_reference(token: &str) -> bool {
+    if token.starts_with('<') {
+        return true;
+    }
     let hex = token.strip_prefix("msg_").unwrap_or(token);
     (4..=64).contains(&hex.len()) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Whether `reference` names the arrived letter, as a message id prefix, a
 /// handle, or a content id prefix.
-fn names_arrival(reference: &str, arrived: &ArrivedLetter) -> bool {
+fn names_arrival(storage: &Storage, reference: &str, arrived: &ArrivedLetter) -> bool {
+    if reference.starts_with('<') {
+        let named = normalize_message_id(reference);
+        let held = match storage.message_by_id(&arrived.0) {
+            Ok(Some(view)) => view.normalized_message_id,
+            _ => None,
+        };
+        return named.is_some() && held == named;
+    }
     let reference = reference.to_ascii_lowercase();
     let wanted = reference.strip_prefix("msg_").unwrap_or(&reference);
     let message = arrived.0.to_ascii_lowercase();
@@ -140,7 +154,7 @@ fn names_arrival(reference: &str, arrived: &ArrivedLetter) -> bool {
 }
 
 /// Whether following `edges` from node handle `from` reaches `to`.
-fn reaches(edges: &[WorkGraphEdgeRow], from: &str, to: &str) -> bool {
+pub(super) fn reaches(edges: &[WorkGraphEdgeRow], from: &str, to: &str) -> bool {
     let mut next: HashMap<&str, Vec<&str>> = HashMap::new();
     for edge in edges {
         next.entry(edge.from_node.as_str())
@@ -302,17 +316,66 @@ impl Mailspace {
         if arrived.is_empty() {
             return Ok(0);
         }
-        let pending = self.storage()?.pending_dependencies()?;
+        let storage = self.storage()?;
+        let pending = storage.pending_dependencies()?;
         let mut made = 0;
         for (message_id, refs) in pending {
             let named = refs
                 .iter()
-                .any(|reference| arrived.iter().any(|a| names_arrival(reference, a)));
+                .any(|reference| arrived.iter().any(|a| names_arrival(&storage, reference, a)));
             if named {
                 made += self.link_dependencies(&message_id, &refs)?;
             }
         }
         Ok(made)
+    }
+
+    /// The references the item behind `message_id` stands for now: `refs`
+    /// (its header's, or the ones still pending) minus those a newer
+    /// `dependency-removed` letter dropped, plus the dependencies a newer
+    /// `dependency-added` letter names that `refs` does not: by handle when
+    /// held here, else by bracketed `Message-ID`, which waits as pending.
+    /// With no dependency letters held, `refs` as given.
+    pub(super) fn effective_dependency_refs(
+        &self,
+        storage: &Storage,
+        message_id: &str,
+        refs: &[String],
+    ) -> Result<Vec<String>, VivariumError> {
+        let Some(view) = storage.message_by_id(message_id)? else {
+            return Ok(refs.to_vec());
+        };
+        let verdicts = self.dependency_verdicts(storage, &view.content_id)?;
+        if verdicts.is_empty() {
+            return Ok(refs.to_vec());
+        }
+        let mut kept: Vec<String> = Vec::new();
+        let mut named: HashSet<String> = HashSet::new();
+        for token in refs {
+            let rfc = dependency_rfc_id(storage, token);
+            if let Some(rfc) = &rfc {
+                if verdicts.get(rfc) == Some(&false) {
+                    continue;
+                }
+                named.insert(rfc.clone());
+            }
+            if !kept.contains(token) {
+                kept.push(token.clone());
+            }
+        }
+        for (rfc, present) in &verdicts {
+            if !present || named.contains(rfc) {
+                continue;
+            }
+            let token = match storage.live_message_by_rfc_id(rfc)? {
+                Some(held) => held.handle,
+                None => format!("<{rfc}>"),
+            };
+            if !kept.contains(&token) {
+                kept.push(token);
+            }
+        }
+        Ok(kept)
     }
 
     /// Build the edges for `refs` onto the node of `message_id`, record what
@@ -334,7 +397,8 @@ impl Mailspace {
             storage.set_pending_dependencies(message_id, &[])?;
             return Ok(0);
         };
-        let plan = self.plan_links(&storage, &nodes, &edges, &dependent, refs)?;
+        let refs = self.effective_dependency_refs(&storage, message_id, refs)?;
+        let plan = self.plan_links(&storage, &nodes, &edges, &dependent, &refs)?;
         let made = match plan.input {
             Some(input) => storage.mint_backlog(&input)?.minted_edges,
             None => 0,
@@ -373,7 +437,7 @@ impl Mailspace {
         storage: &Storage,
         token: &str,
     ) -> Result<DepLookup, VivariumError> {
-        let Ok(message_id) = storage.resolve_message_token(token) else {
+        let Ok(message_id) = resolve_dep_message(storage, token) else {
             return Ok(if looks_like_reference(token) {
                 DepLookup::Pending
             } else {
@@ -459,7 +523,11 @@ impl Mailspace {
     ) -> Result<Vec<MissingEdge>, VivariumError> {
         let mut missing = Vec::new();
         for message_id in storage.message_ids_by_content(content_id)? {
-            let refs = depends_on_refs(&storage.read_message(&message_id)?);
+            let refs = self.effective_dependency_refs(
+                storage,
+                &message_id,
+                &depends_on_refs(&storage.read_message(&message_id)?),
+            )?;
             if refs.is_empty() {
                 continue;
             }
@@ -495,12 +563,27 @@ impl Mailspace {
     }
 }
 
+/// The normalized RFC `Message-ID` of the letter a dependency token names,
+/// when it is held (or the token is itself a bracketed `Message-ID`).
+pub(super) fn dependency_rfc_id(storage: &Storage, token: &str) -> Option<String> {
+    if token.starts_with('<') {
+        return normalize_message_id(token);
+    }
+    let Ok(message_id) = resolve_dep_message(storage, token) else {
+        return None;
+    };
+    match storage.message_by_id(&message_id) {
+        Ok(Some(view)) => view.normalized_message_id,
+        _ => None,
+    }
+}
+
 /// Whether `token` names a dependency that is present and satisfied: a held
 /// message row (any account: local, foreign, unowned) whose local role is
 /// `done`. A token that resolves to no held row, or to a row still open, is
 /// unmet.
 pub(super) fn dependency_satisfied(storage: &Storage, token: &str) -> bool {
-    let Ok(message_id) = storage.resolve_message_token(token) else {
+    let Ok(message_id) = resolve_dep_message(storage, token) else {
         return false;
     };
     matches!(

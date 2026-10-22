@@ -23,6 +23,29 @@ pub struct MarkCommand {
     pub project: Option<PathBuf>,
 }
 
+/// Add or remove dependencies on a need, task, or want after it was sent.
+#[derive(Debug, Clone, Args)]
+pub struct DependCommand {
+    /// Need, task, or want handle or unambiguous prefix
+    pub handle: String,
+
+    /// Handles of items to add as prerequisites (repeatable)
+    #[arg(long, num_args = 1.., value_name = "HANDLE")]
+    pub add: Vec<String>,
+
+    /// Handles of prerequisites to remove, including ones named at send (repeatable)
+    #[arg(long, num_args = 1.., value_name = "HANDLE")]
+    pub remove: Vec<String>,
+
+    /// Identity changing the dependencies: the item's author, a mind, or an operator
+    #[arg(long = "for")]
+    pub for_identity: String,
+
+    /// Project root to use
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
 /// Seal a mailspace record. Once absorbed, it can no longer be changed.
 #[derive(Debug, Clone, Args)]
 pub struct AbsorbCommand {
@@ -403,6 +426,11 @@ pub enum NeedCommand {
 
     /// Remove marks from a need. Each slug is its own event.
     Unmark(MarkCommand),
+
+    /// Add or remove prerequisites of a need after it was sent. The change
+    /// travels to every member; the newest change per dependency wins,
+    /// including over a dependency named at send.
+    Depend(DependCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -587,6 +615,11 @@ pub enum WantCommand {
 
     /// Remove marks from a want. Each slug is its own event.
     Unmark(MarkCommand),
+
+    /// Add or remove prerequisites of a want after it was sent. The change
+    /// travels to every member; the newest change per dependency wins,
+    /// including over a dependency named at send.
+    Depend(DependCommand),
 }
 
 #[derive(Debug, Clone, ValueEnum)]

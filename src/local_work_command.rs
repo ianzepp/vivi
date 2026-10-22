@@ -149,6 +149,7 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
         }
         NeedCommand::Mark(command) => mark_item(command, "need", true)?,
         NeedCommand::Unmark(command) => mark_item(command, "need", false)?,
+        NeedCommand::Depend(command) => depend_item(command, "need")?,
     }
     Ok(())
 }
@@ -241,6 +242,34 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
         } => close_want_drop(handle, for_identity, note.as_ref(), project.as_deref())?,
         WantCommand::Mark(command) => mark_item(command, "want", true)?,
         WantCommand::Unmark(command) => mark_item(command, "want", false)?,
+        WantCommand::Depend(command) => depend_item(command, "want")?,
+    }
+    Ok(())
+}
+
+/// `need|task|want depend`: add and remove prerequisites after the send,
+/// one line per dependency.
+pub(crate) fn depend_item(
+    command: &vivi::cli::DependCommand,
+    kind: &str,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(command.project.as_deref())?;
+    let writes = mailspace.set_dependencies(
+        &command.for_identity,
+        &command.handle,
+        kind,
+        &command.add,
+        &command.remove,
+    )?;
+    for write in writes {
+        let handle = &command.handle;
+        let dep = &write.handle;
+        match (write.added, write.changed) {
+            (true, true) => println!("{handle} now depends on {dep}"),
+            (true, false) => println!("{handle} already depends on {dep}"),
+            (false, true) => println!("{handle} no longer depends on {dep}"),
+            (false, false) => println!("{handle} does not depend on {dep}"),
+        }
     }
     Ok(())
 }
@@ -621,6 +650,15 @@ fn show_need(
     vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
     if json || latest {
         return Ok(());
+    }
+    let dependencies = mailspace.backlog_dependencies(handle)?;
+    if !dependencies.is_empty() {
+        let rendered = dependencies
+            .iter()
+            .map(|dep| format!("{}:{}", dep.handle, dep.state))
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  depends  {rendered}");
     }
     let units = mailspace.backlog_bound_units(handle)?;
     if !units.is_empty() {

@@ -420,6 +420,29 @@ by an older letter that arrives late). A sealed item takes no further
 marks from a person; a mark letter dated before the seal still lands
 (see `absorb` above).
 
+**Dependencies after the send.** `need depend <handle> --add <h>... --remove
+<h>... --for <role>` (and the same on `task` and `want`) adds or drops
+prerequisites of an item that was already sent. Each changed dependency is
+written as a `dependency-added` or `dependency-removed` letter on the item
+(`X-Vivi-Event`, with one `X-Vivi-Event-Dep: <dependency Message-ID>` header
+per dependency), so the change travels like a mark or a bind and every member
+that holds the item applies it to its own graph. Only the item's author, a
+mind, or an operator may write one; any other role is refused. Handles
+resolve before anything is written, so an unknown handle fails the whole
+command; a dependency already in the asked state changes nothing and writes
+no letter; an item cannot depend on itself, close a cycle, or change after
+it is done. Per dependency the newest counted letter by (instant,
+Message-ID) controls and wins over the `X-Vivi-Depends-On` header the item
+was sent with, so removing an edge named at send works, add and remove
+converge whatever the arrival order, and a later pull or `graph audit
+--repair` never puts a removed edge back. A dependency the member does not
+hold yet waits as an unresolved reference and its edge is made when the letter
+arrives. `need show` lists the current prerequisites (`depends  h:open`),
+`task list --blocked` follows them, and `graph ready` / `graph blocked`
+reflect each edit at once. A release need whose membership is its
+prerequisite set is the use case: add the work that ships, remove what is
+dropped, and the need is ready when every dependency is done.
+
 **Bind.** Lowering is a letter too. A `need bind` writes one `bound` event
 letter on the need — `X-Vivi-Event: bound` beside the usual event headers,
 with one `X-Vivi-Event-Unit: <unit Message-ID>` header per unit — and it

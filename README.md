@@ -146,7 +146,9 @@ are the domain of every address it mints, for example `hand-1@65d72e54.local`.
 | `memo` | Durable per-role memory | save, list, search, show, delete |
 | `rule` | A project rule every seat can read | save, list, supersede, retire |
 
-Tasks, needs and wants accept `--depends-on <handle>` (repeatable). `absorb`
+Tasks, needs and wants accept `--depends-on <handle>` (repeatable), and
+`depend <handle> --add <h>... --remove <h>... --for <role>` changes them after
+the send; the change travels to every member. `absorb`
 seals a record so it can no longer change.
 
 **Who may finish work.** A worker's `done` is a report. For tasks and ordinary
@@ -231,9 +233,9 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `mailspace` | `init`, `status`, `description`, `archive` and `archive export`, `watch`, `import`, `identity add\|list\|rename` |
 | `role` | `list`, `show`, `add`, `set`, `rename`, `pool`, `status`, `charter show\|set` |
 | `mail` | `send`, `reply`, `deliver` (an `.eml` file), `list`, `show`, `thread`, `watch`, `absorb`, `dump` |
-| `task` | `send`, `from` (derive from a handle), `list`, `show`, `done`, `reopen`, `watch`, `absorb`, `dump` |
-| `need` | `send`, `list`, `show`, `done`, `reopen`, `assign`, `withdraw`, `bind`, `mark`, `unmark`, `watch`, `absorb`, `dump` |
-| `want` | `send`, `list`, `show`, `set-priority`, `promote`, `done`, `drop`, `mark`, `unmark`, `watch`, `absorb`, `dump` |
+| `task` | `send`, `from` (derive from a handle), `list`, `show`, `done`, `reopen`, `depend`, `watch`, `absorb`, `dump` |
+| `need` | `send`, `list`, `show`, `done`, `reopen`, `assign`, `withdraw`, `bind`, `mark`, `unmark`, `depend`, `watch`, `absorb`, `dump` |
+| `want` | `send`, `list`, `show`, `set-priority`, `promote`, `done`, `drop`, `mark`, `unmark`, `depend`, `watch`, `absorb`, `dump` |
 | `memo` | `save`, `list`, `search`, `show`, `delete`, `absorb`, `dump` |
 | `rule` | `save`, `list`, `show`, `search`, `supersede`, `retire`, `absorb` |
 | `goal` | `add`, `list`, `show`, `drop` |
