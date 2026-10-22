@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -274,7 +275,7 @@ pub fn update_at<T>(
     file: &Path,
     change: impl FnOnce(&mut Registry) -> Result<T, VivariumError>,
 ) -> Result<T, VivariumError> {
-    let _lock = lock_file(
+    let _lock = lock_file_waiting(
         file.with_extension("config.lock"),
         "another Vivi registry update is running",
     )?;
@@ -319,6 +320,28 @@ pub(crate) fn lock_file(path: PathBuf, message: &str) -> Result<File, VivariumEr
     file.try_lock()
         .map_err(|_| VivariumError::Message(message.to_string()))?;
     Ok(file)
+}
+
+/// How long a registry update waits for the lock before giving up.
+const REGISTRY_LOCK_WAIT: Duration = Duration::from_secs(2);
+/// Pause between lock attempts while waiting.
+const REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(20);
+
+/// [`lock_file`], retried for [`REGISTRY_LOCK_WAIT`]. A registry update is
+/// short, and a lock can stay held for a moment after its owner closes it: a
+/// process forked by another thread holds a copy of every open file until it
+/// execs. Waiting briefly rides that out; a real concurrent writer still gets
+/// `message` once the wait is over.
+fn lock_file_waiting(path: PathBuf, message: &str) -> Result<File, VivariumError> {
+    let deadline = Instant::now() + REGISTRY_LOCK_WAIT;
+    loop {
+        match lock_file(path.clone(), message) {
+            Err(VivariumError::Message(_)) if Instant::now() < deadline => {
+                std::thread::sleep(REGISTRY_LOCK_RETRY);
+            }
+            other => return other,
+        }
+    }
 }
 
 #[cfg(test)]
