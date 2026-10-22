@@ -459,3 +459,48 @@ mailspace has. The caller's prefix must still own the item (above); `send`,
 Every member is served the event by its header. Any other caller files a
 plain report reply and writes no event. `reopen` of an absorbed item is an error; so is
 `done` of an item absorbed open.
+
+## Pump health (1.6.0)
+
+### `GET /v1/projects/{id}/pump/health` — hosted pump verdict (bearer)
+
+Read-only. Any authenticated member of the project: an identity token or an
+API key. Query, both optional, whole seconds: `since` (a previous answer's
+`as_of`) and `stale_after` (override the stale threshold). Any other key, or a
+non-integer value, is `400 invalid_request`. A project the server owns end to
+end has no pump: `404 not_hosted`.
+
+`200` body (`vivi::pump::health::PumpHealth`):
+
+| Field | Meaning |
+| --- | --- |
+| `verdict` | `ok`, `degraded`, `stalled` or `unknown` |
+| `reasons` | One line per finding; empty for `ok` |
+| `as_of` | Epoch seconds the answer was judged at; pass it back as `since` |
+| `control`, `shutdown_requested` | The pump's stored control mode |
+| `writer` | `{state: running\|not_running\|unknown, source: proc_locks\|tick_freshness\|none, pid}` |
+| `tick_secs`, `stale_after_secs` | Configured tick and the threshold used (default `max(30 × tick, 600)`) |
+| `last_tick` | Newest tick receipt with `age_secs`, or `null` |
+| `status_age_secs` | Age of `status.txt`, or `null` |
+| `schema` | The `pump.db` schema this server reads |
+| `units` | Count per unit status |
+| `merges` | `{total, recent: [{unit, need, title, commit, at}]}`, newest first, ten at most |
+| `blocked` | Stuck, quarantined, needs-replan and held units, then needs parked on a verdict: `{kind, id, need, state, age_secs, reason}` |
+| `planner_parked`, `baseline_red` | Parked need handles; failing baseline test names |
+| `complete_open_needs` | As `vivi pump closeout --json` |
+| `exceptions` | `{at, kind, unit, text}` after `since`, else in the last hour; fifty at most |
+| `changed_since` | Only with `since`: `{since, units: [{unit, need, status, at}], merges, exceptions}` |
+
+Verdict rules, first match wins:
+
+1. `unknown`: no `[pump]` table, no `pump.db`, or a schema this server does
+   not read (the reason names it).
+2. `stalled`: control `running` and either the writer runs with no tick inside
+   `stale_after`, or there is no writer and `status.txt` is older than
+   `stale_after`.
+3. `degraded`: control paused or stopped; no writer but a fresh status; any
+   stuck, quarantined or needs-replan unit; planner-parked needs; a red
+   baseline; or `stall-*` exceptions in the window.
+4. `ok`.
+
+MCP `pump` answers the same JSON with the same two arguments.

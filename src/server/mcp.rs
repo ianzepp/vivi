@@ -160,6 +160,9 @@ async fn call_tool(
     });
     let name = name.to_owned();
     match tokio::task::spawn_blocking(move || {
+        if name == "pump" {
+            return pump_tool(&store, &project_id, &arguments);
+        }
         if let Some(requested) = &hosted_as {
             if let Some(root) = live::hosted_root(&store, &project_id) {
                 if live::handles(&name) {
@@ -191,6 +194,35 @@ async fn call_tool(
         Err(err) => Err(project_error(crate::projects::ProjectError::Storage(
             format!("mcp tool task failed: {err}"),
         ))),
+    }
+}
+
+/// `pump`: the hosted pump's health verdict, read-only, for any caller.
+fn pump_tool(
+    store: &crate::projects::ProjectStore,
+    project_id: &str,
+    arguments: &Value,
+) -> Result<Value, tools::ToolError> {
+    let seconds = |name: &str| -> Result<Option<u64>, tools::ToolError> {
+        match arguments.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value
+                .as_u64()
+                .map(Some)
+                .ok_or_else(|| tools::ToolError::new(format!("{name}: expected whole seconds"))),
+        }
+    };
+    let opts = vivi::pump::health::HealthOptions {
+        since: seconds("since")?,
+        stale_after: seconds("stale_after")?,
+        now: None,
+    };
+    match crate::pump_health::read(store, project_id, &opts) {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(tools::ToolError::new(
+            "pump health is only available on a hosted project".to_owned(),
+        )),
+        Err(message) => Err(tools::ToolError::new(message)),
     }
 }
 
@@ -364,6 +396,14 @@ fn tools_list() -> Value {
                     }
                 },
                 "required": ["handle", "marks"],
+                "additionalProperties": false
+            })),
+            tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, unit counts, recent merges, blocked units, complete-but-open needs, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({
+                "type": "object",
+                "properties": {
+                    "since": { "type": "integer", "minimum": 0, "description": "Epoch seconds, a previous answer's as_of" },
+                    "stale_after": { "type": "integer", "minimum": 1, "description": "Seconds without a tick before a running pump is stalled (default 30 ticks, at least 600)" }
+                },
                 "additionalProperties": false
             })),
             tool("board", "Hosted projects only (API key). The project board as `vivi board --json`: open tasks, needs and wants per role, totals, and registered goals. Optional graph and pump views.", json!({

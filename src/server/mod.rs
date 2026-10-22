@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod project_wake;
 pub mod projects;
 pub mod projects_api;
+pub mod pump_health;
 pub mod rooms;
 pub mod safety;
 
@@ -125,6 +126,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/projects/{id}/keys/{key_id}",
             delete(keys::revoke_handler),
+        )
+        .route(
+            "/v1/projects/{id}/pump/health",
+            get(pump_health::pump_health_handler),
         )
         .route("/v1/projects/{id}/mcp", post(mcp::mcp_handler))
         .route("/v1/rooms/{id}/mcp", post(mcp::mcp_handler))
