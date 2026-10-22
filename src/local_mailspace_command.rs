@@ -45,6 +45,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Pool { command } => crate::local_pool_command::handle_pool_command(command),
         Command::Monitor(command) => crate::local_monitor_command::run(command),
         Command::Report(command) => crate::local_report_command::run(command),
+        Command::Project { command } => crate::local_project_command::handle(command),
         Command::Pump { command } => crate::local_pump_command::handle_pump_command(command),
         Command::Proxy { command } => vivi::proxy::handle(command),
         Command::Config { command } => crate::local_config_command::handle_config_command(command),
@@ -75,14 +76,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
 }
 
 fn init_mailspace(project: Option<&Path>) -> Result<(), VivariumError> {
-    let existed = Mailspace::config_exists(project)?;
-    let mut mailspace = Mailspace::init(project)?;
-    mailspace.ensure_operator_role()?;
-    mailspace.ensure_merge_role()?;
-    mailspace.ensure_pump_planner_role()?;
-    if !existed {
-        mailspace.ensure_starter_pump()?;
-    }
+    let (mailspace, created) = Mailspace::init_with_defaults(project)?;
     println!("mailspace {}", mailspace.config.name);
     println!("root      {}", mailspace.root.display());
     println!("store     {}", mailspace.store_path().display());
@@ -93,7 +87,7 @@ fn init_mailspace(project: Option<&Path>) -> Result<(), VivariumError> {
             ignore.display()
         );
     }
-    if !existed {
+    if created {
         println!(
             "pump      starter [pump] written; `vivi config validate` lists what it still needs"
         );

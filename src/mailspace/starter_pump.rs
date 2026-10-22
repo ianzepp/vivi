@@ -44,6 +44,26 @@ impl Mailspace {
             .is_file())
     }
 
+    /// Create the mailspace at `project` the way `vivi mailspace init` does:
+    /// the config and store, the operator, merge and planner roles, and, for a
+    /// mailspace that did not exist yet, the [`STARTER_PUMP`] table. Returns
+    /// the mailspace and whether this call created it.
+    ///
+    /// # Errors
+    /// Returns an error if the mailspace cannot be created or a role or the
+    /// starter table cannot be written.
+    pub fn init_with_defaults(project: Option<&Path>) -> Result<(Self, bool), VivariumError> {
+        let existed = Self::config_exists(project)?;
+        let mut mailspace = Self::init(project)?;
+        mailspace.ensure_operator_role()?;
+        mailspace.ensure_merge_role()?;
+        mailspace.ensure_pump_planner_role()?;
+        if !existed {
+            mailspace.ensure_starter_pump()?;
+        }
+        Ok((mailspace, !existed))
+    }
+
     /// Append the [`STARTER_PUMP`] table when the config has no `[pump]`
     /// table. Idempotent; the rest of the file keeps its text and comments.
     ///

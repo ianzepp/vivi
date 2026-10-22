@@ -90,6 +90,27 @@ mailspace's own `mind` role and will not show it. Held rows carry their
 holder in a `held_for` JSON field (own rows omit the field; the human listing
 shows a `held_for` column).
 
+### Creating a project
+
+`vivi project create <name> --projects-root P --lanes-root L --git-url-prefix U`
+makes a whole pumped project in one step: a group-shared bare repo at
+`L/<name>.git`, a mailspace at `P/<name>` (with the starter `[pump]`), the
+project's own values, and a host-registry entry (pump and serve on unless
+`--no-pump` / `--no-serve`). Both roots must already exist.
+
+- `--pool <p>` writes `[pools.<p>] remote_url = <U><name>.git` in the
+  project's file; the pool itself must come from a base mailspace above `P`
+  (`base = true`).
+- `--gate <cmd>` sets `[pump.gate] command`; `--branch` sets `[pump] branch`
+  (default `main`).
+- `--initial-commit` makes one empty commit on the branch; without it the repo
+  stays empty until the first push.
+- Any failing step undoes every earlier step this call made. The result
+  reports readiness: a project still missing items is registered and holds
+  until they are filled (`vivi config validate` names them).
+
+The library entry point is `vivi::project_create::create`; it prints nothing.
+
 ## Boot
 
 `vivi boot` prints the whole project frame in one read: seat bindings against

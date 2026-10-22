@@ -13,6 +13,7 @@ mod mailspace_command;
 mod mcp_command;
 mod monitor_command;
 mod pool_command;
+mod project_command;
 mod proxy_command;
 mod pump_command;
 mod report_command;
@@ -45,6 +46,7 @@ pub use pool_command::{
     PoolReconcileCommand, PoolRemoveCommand, PoolResetCommand, PoolScaleCommand, PoolShowCommand,
     PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
 };
+pub use project_command::{ProjectCommand, ProjectCreateCommand};
 pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
 };
@@ -172,6 +174,12 @@ pub enum Command {
     Pool {
         #[command(subcommand)]
         command: PoolSubcommand,
+    },
+
+    /// Create projects on a host: git repository, mailspace and registration
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
     },
 
     /// Run the pump: dispatch, merge and gate the planned units of a backlog
