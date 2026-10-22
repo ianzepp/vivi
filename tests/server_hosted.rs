@@ -137,7 +137,7 @@ fn hosts_a_root_under_the_id_derived_from_its_mailspace() {
     // Hosting never rewrote the host's config.
     assert_eq!(std::fs::read(mailspace.config_path()).unwrap(), toml_before);
 
-    // Reads work (an empty transport index until the indexer lands).
+    // Reads work (an empty transport index: nothing in the mailspace travels yet).
     let viewer = Viewer {
         name: &members[0].name,
         prefix: None,
@@ -339,16 +339,18 @@ fn a_bad_sync_project_is_refused() {
 }
 
 #[test]
-fn a_hosted_project_refuses_appends_and_writes_nothing_into_the_host() {
-    let env = env("readonly");
+fn a_hosted_project_accepts_an_append_and_files_it_in_the_host() {
+    let env = env("append");
     let (root, _) = host_root(&env, "app", None);
     let id = serve(&env, &[&root]).served[0].project_id.clone();
     let mid = format!("msg_{:08x}{:016x}", 1, 0);
     let item = AppendItem::new(&mid, "x", None, Some("need"), eml(&mid)).unwrap();
-    assert!(matches!(
-        env.projects.append(&id, &item),
-        Err(ProjectError::ReadOnly(_))
-    ));
+    let outcome = env.projects.append(&id, &item).unwrap();
+    assert!(!outcome.duplicate);
+    assert!(env.projects.append(&id, &item).unwrap().duplicate);
+    // The host mailspace holds the letter (an address of no local role).
+    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 1);
 }
 
 #[tokio::test]

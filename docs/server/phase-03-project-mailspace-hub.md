@@ -858,6 +858,51 @@ thread read the transport index (visibility) and parse the stored `.eml`;
 they do not query per-role mailspace folders. A later per-role queue would
 need the client's filer placements and is not required for this tool set.
 
+**Hosted projects: the index follows the mailspace (S4) and appends file
+into it (S5).** A hosted project's letters are the host mailspace's own, so
+the transport index is built from it and never copies a letter.
+
+- **What travels is vivi's rule.** An index pass runs vivi's own push
+  (`vivi::sync::push::push`, selection in `sync/select.rs`) through an
+  in-process `Transport` whose append checks the blob store holds the
+  letter's hash and inserts the transport row: the sender is the creator
+  member (name and registered prefix), the recipients are the letter's To
+  and Cc, and `appended_at` is the index time. Push then binds the letter in
+  the mailspace under the project id, so later passes skip it. The
+  mailspace's own `[sync] send` decides what is selected; the server never
+  overrides it. The hub's host config sets `send = "addressed"`, so only
+  letters addressed off the host are indexed (the default, `all`, would
+  index and show every local letter).
+- **When.** On a timer (`hosted::INDEX_INTERVAL`, 5 s) per hosted project,
+  and before a list, items, lookup, or fetch read whose mailspace
+  `Storage::change_watermark()` moved since the last pass. A pass is skipped
+  when another pass for the project is running, when the watermark has not
+  moved, or when the host's CLI holds the mailspace sync lock
+  (`.vivi/sync/sync.lock`, taken without waiting). No rate limit applies to
+  the pass.
+- **Locking.** The pass holds the per-project pass mutex (try-lock) and the
+  sync lock (try-lock) for its whole run, and the append mutex only for the
+  instant of each row insert. The HTTP append path never takes the sync
+  lock.
+- **Cost.** Push selection lists every message row and classifies each
+  letter that is not bound to the project, so a pass costs time in the
+  mailspace's size, not in the number of new letters. Measured in release
+  on a host mailspace of 5,000 sends (about 7,500 message rows): the first
+  pass, indexing 2,500 letters, 0.76 s; a pass with the watermark unmoved
+  0.3 ms; a pass for one new letter 0.13 s.
+  `cargo test --release --test measure_index -- --ignored --nocapture`.
+- **Member appends.** A member's append takes the next sequence under the
+  append mutex and files the letter with `vivi::sync::pull::file_records`
+  (a one-record page built from the append and the sequence), exactly as a
+  client pull files it: verified, filed by address under the roles' folders,
+  bound to the project at that sequence, reply-linked, item events folded
+  (`DATA_DIR/projects/<id>/sync/state.json` is the persistent `SyncState`).
+  The transport row follows. A record the filer refuses (a From that claims
+  another prefix, an envelope that disagrees with the letter's To and Cc, an
+  id that names different content) is an append error and writes nothing
+  to the index. A vouch to `postmaster` is processed as for any project and
+  kept verbatim (filing nothing by role), so the index can serve it.
+
 ### Server MCP (built 2026-10-12)
 
 Item 15 made concrete in vivi-server 1.2.0. One Streamable HTTP endpoint

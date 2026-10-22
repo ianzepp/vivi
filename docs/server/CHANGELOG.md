@@ -9,8 +9,22 @@
   mailspace UUID; the mailspace's own sync key is registered as the creator
   member. Server data stays under `DATA_DIR/projects/<id>/`; `project.json`
   gains `mailspace_root`. A root that leaves the registry stops being served
-  and loses nothing. Appends to a hosted project answer 403
-  `project_read_only` until member-append filing lands. vivi pin `v18.1.0`.
+  and loses nothing. vivi pin `v18.1.0`.
+- **The index follows the mailspace (S4).** Each hosted project's
+  `transport.sqlite` is kept current with its mailspace without copying
+  letters: vivi's own push selection runs through an in-process transport
+  that only checks the blob hash and inserts the transport row, then binds
+  the letter in the mailspace so the next pass skips it. What travels is the
+  mailspace's own `[sync] send` (the hub's host config sets `addressed`).
+  Passes run every 5 s and before a list, lookup, or fetch read when the
+  mailspace's change watermark moved; they skip while another pass runs or
+  the host's `vivi sync` holds the sync lock. See phase-03 "Storage".
+- **Member appends file into the mailspace (S5).** An append to a hosted
+  project is filed with `vivi::sync::pull::file_records` (as a client pull
+  files a record: verified, filed under the addressed role's folder, bound,
+  reply-linked, events folded), then recorded in the index; the 403
+  `project_read_only` refusal is gone. The per-member rate limit still
+  applies; the indexer has none.
 
 ## Unreleased — epoch and key identity
 

@@ -99,6 +99,8 @@ async fn main() {
     // Serve the projects the host registry lists, now and whenever it
     // changes. The first pass finishes before the listener binds.
     let _hosted = vivi_server::hosted::start(state.projects.clone(), state.identities.clone());
+    // Keep each hosted project's transport index current with its mailspace.
+    let _indexer = vivi_server::hosted::start_indexer(state.projects.clone());
     let app = vivi_server::router(state).route("/healthz", get(healthz));
 
     let addr = std::net::SocketAddr::from((config.bind, config.port));

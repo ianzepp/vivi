@@ -18,6 +18,11 @@
 //! project's creator member, named by `[sync] name` or else the mailspace
 //! name.
 //!
+//! The transport index follows the mailspace ([`start_indexer`], and the
+//! pre-read pass in `projects`), and a member's append is filed into the
+//! mailspace (`projects::ProjectStore::append`); see the `hosted_index`
+//! module of `projects`.
+//!
 //! [`reconcile`] makes the served set match the registry; [`start`] runs it
 //! once and then again whenever the registry file changes. A root that
 //! leaves the registry stops being served and loses nothing on disk.
@@ -38,6 +43,10 @@ use crate::projects::{ProjectMeta, ProjectStore};
 
 /// How often the watcher looks at the registry file.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// How often the indexer brings each hosted project's transport index up to
+/// date with its mailspace.
+pub const INDEX_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A registry root the server now serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +150,10 @@ fn serve_root(
         ));
     }
     let member = admit_creator(projects, identities, &mailspace, &project_id)?;
+    let prefix = identities
+        .by_name(&project_id, &member)
+        .and_then(|record| record.mailspace_prefix().map(str::to_owned));
+    projects.register_hosted(&project_id, &member, prefix.as_deref());
     let current = existing
         .as_ref()
         .and_then(|meta| meta.mailspace_root.as_deref());
@@ -374,6 +387,28 @@ pub fn start_with(
                     unreadable = true;
                 }
             }
+        }
+    })
+}
+
+/// Keep every hosted project's transport index current with its mailspace:
+/// one pass now, then one every [`INDEX_INTERVAL`]. A pass that finds the
+/// mailspace unchanged, or the host's sync lock held, does nothing. Must run
+/// inside a tokio runtime. See `projects::ProjectStore::index_hosted`.
+pub fn start_indexer(projects: ProjectStore) -> tokio::task::JoinHandle<()> {
+    start_indexer_with(projects, INDEX_INTERVAL)
+}
+
+/// [`start_indexer`] with an explicit interval.
+pub fn start_indexer_with(
+    projects: ProjectStore,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let store = projects.clone();
+            let _ = tokio::task::spawn_blocking(move || store.index_all_hosted()).await;
+            tokio::time::sleep(interval).await;
         }
     })
 }

@@ -34,6 +34,9 @@ use crate::ids::{mint_room_id, normalize_room_id};
 use crate::project_wake::ProjectWake;
 use crate::safety::body_over_cap;
 
+mod hosted_index;
+pub use hosted_index::{IndexOutcome, IndexSkip};
+
 /// Reserved administrative addressee (phase-03 item 9); a vouch travels as
 /// mail addressed to it.
 const POSTMASTER: &str = "postmaster";
@@ -86,7 +89,8 @@ pub enum ProjectError {
     Storage(String),
     /// A chat project is closed or past its TTL (item 17).
     Gone { closed: bool },
-    /// The project is hosted from a host mailspace and refuses this write.
+    /// The project refuses this write as read-only. No append path returns
+    /// it now that a hosted project files member appends.
     ReadOnly(String),
 }
 
@@ -913,6 +917,8 @@ pub struct ProjectStore {
     /// Ids of hosted projects whose root the registry no longer serves: the
     /// data stays on disk, the project answers as unknown.
     retired: Arc<RwLock<HashSet<String>>>,
+    /// Registered hosted projects: their indexed sender and pass state.
+    hosted: hosted_index::HostedMap,
 }
 
 /// The server clock the append stamp reads; injectable so tests can step it.
@@ -1051,6 +1057,7 @@ impl ProjectStore {
             wake: Arc::new(ProjectWake::default()),
             clock: Clock(Arc::new(clock)),
             retired: Arc::default(),
+            hosted: Arc::default(),
         }
     }
 
@@ -1319,14 +1326,7 @@ impl ProjectStore {
         let _guard = append_lock();
         let meta = self.refuse_if_chat_over(raw_id)?;
         if meta.is_hosted() {
-            // TODO(hosted member-append filing): a hosted project files a
-            // member's letter into the host mailspace and records it in the
-            // transport index. Until that lands the server writes nothing
-            // into a host mailspace, so an append is refused.
-            return Err(ProjectError::ReadOnly(
-                "this project is hosted from a host mailspace and does not accept appends yet"
-                    .to_owned(),
-            ));
+            return self.append_hosted(raw_id, &meta, item);
         }
         let dir = self.existing_project_dir(raw_id)?;
         let project_id = dir
@@ -1390,6 +1390,7 @@ impl ProjectStore {
     ) -> Result<ReadAfter, ProjectError> {
         let epoch = self.epoch(raw_id)?;
         let project = self.open_project(raw_id)?;
+        self.refresh_hosted(raw_id, &project);
         let mut params = vec![Value::Integer(
             i64::try_from(query.since).unwrap_or(i64::MAX),
         )];
@@ -1462,6 +1463,7 @@ impl ProjectStore {
     {
         let chunk = chunk.max(1);
         let project = self.open_project(raw_id)?;
+        self.refresh_hosted(raw_id, &project);
         let mut cursor = 0i64;
         loop {
             let mut params = vec![Value::Integer(cursor)];
@@ -1501,6 +1503,7 @@ impl ProjectStore {
     ) -> Result<Lookup, ProjectError> {
         let wanted = parse_handles(handles)?;
         let project = self.open_project(raw_id)?;
+        self.refresh_hosted(raw_id, &project);
         let mut params: Vec<Value> = wanted.iter().map(|h| Value::Text(h.clone())).collect();
         let marks = vec!["?"; wanted.len()].join(", ");
         let visible = visible_clause(viewer, &mut params);
@@ -1539,6 +1542,7 @@ impl ProjectStore {
         viewer: &Viewer<'_>,
     ) -> Result<Option<ProjectRecord>, ProjectError> {
         let project = self.open_project(raw_id)?;
+        self.refresh_hosted(raw_id, &project);
         let mut params = vec![Value::Text(message_id.to_owned())];
         let visible = visible_clause(viewer, &mut params);
         let sql = format!("SELECT {COLUMNS} FROM items i WHERE i.message_id = ? AND {visible}");
