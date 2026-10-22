@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased — hosted MCP
+## 1.5.0 — 2026-10-21
+
+Hosted projects: the server serves the host registry's projects from their own mailspaces (the hub's project mailspace and the server that wraps it are one mailspace). Built on vivi 18.1.0. Railway retired; self-hosted binary releases only.
+
+### hosted MCP
 
 On a hosted project the mailspace is the host's own, so MCP acts on it through
 the `vivi` library exactly as the CLI would, as a mapped vivi identity. The
@@ -26,7 +30,7 @@ caller, and every server-owned project, keep the transport tools unchanged.
   (recipient's copy), `sent`, `delivered`, `remote`; `done`/`reopen` answer
   with the library's `event`/`reported`/`joined_needs`.
 
-## Unreleased — hosted projects
+### hosted projects
 
 - **Serve the host registry.** At boot and whenever the registry file
   (`vivi::registry`, `serve = true` roots) changes, the server hosts each
@@ -52,7 +56,7 @@ caller, and every server-owned project, keep the transport tools unchanged.
   `project_read_only` refusal is gone. The per-member rate limit still
   applies; the indexer has none.
 
-## Unreleased — epoch and key identity
+### epoch and key identity
 
 - **Per-project log epoch.** Every list response (`GET .../items`, and the
   chat poll) carries a top-level `epoch`: a random u32 (1 to 4294967295)
@@ -65,7 +69,7 @@ caller, and every server-owned project, keep the transport tools unchanged.
   receives it as `acting_as` but no tool uses it yet. Key files without the
   field still load.
 
-## Unreleased — item events
+### item events
 
 The server folds item-state events by the client's rule and stops showing
 them as work. Wire detail in [`docs/contract.md`](docs/contract.md#item-events-140).
