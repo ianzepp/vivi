@@ -610,10 +610,21 @@ async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
         .call_err(&bearer, "mark", json!({"handle": "deadbeef", "marks": "x"}))
         .await;
     assert!(message.contains("API key"), "{message}");
-    // Transport reads see the (empty) projection, not the mailspace.
-    library_need(&fx.ms(), "operator", "mind", "invisible to the index");
+    // A member token reads the transport index (which the hosted indexer
+    // keeps current), never the live mailspace: items carry the transport
+    // shape (`appended_at`), not the live one (`role`, `last_event`).
+    library_need(&fx.ms(), "operator", "mind", "read through the index");
     let listed = fx.call(&bearer, "list", json!({})).await;
-    assert!(listed["items"].as_array().unwrap().is_empty(), "{listed}");
+    for item in listed["items"].as_array().unwrap() {
+        assert!(
+            item.get("role").is_none(),
+            "live shape on a token read: {item}"
+        );
+        assert!(
+            item.get("last_event").is_none(),
+            "live shape on a token read: {item}"
+        );
+    }
     // The key sees the mailspace: mind's need is not the operator's item,
     // but the operator's sent copy is open outbound work only when remote.
     let live = fx.call(&key, "overview", json!({})).await;
