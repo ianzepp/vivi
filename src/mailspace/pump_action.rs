@@ -1,12 +1,12 @@
 //! Operator actions on a pump record.
 //!
-//! Requeue, withdraw and replan are things an operator asks of one dispatch,
+//! Requeue, withdraw, replan and recover are things an operator asks of one dispatch,
 //! so each is a structured reply on the need's open pump record. The letter
 //! carries its action in headers and its free text (the reason) in the body:
 //!
 //! | header | value |
 //! | --- | --- |
-//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw` or `replan` |
+//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw`, `replan` or `recover` |
 //! | `X-Vivi-Pump-Record` | the record the action was posted on |
 //! | `X-Vivi-Need` | the need that record covers |
 //! | `X-Vivi-Pump-Unit` | requeue: the unit to requeue |
@@ -14,6 +14,7 @@
 //! | `X-Vivi-Pump-Fresh` | requeue: `1` resets the attempt counter |
 //! | `X-Vivi-Pump-Refund` | requeue: `1` refunds transient failures |
 //! | `X-Vivi-Pump-Force` | replan: `1` replans past live work |
+//! | `X-Vivi-Pump-Target` | recover: only this target's branch |
 //!
 //! Posting writes the letter and one `pump action` / `posted` event in one
 //! store transaction. The pump finds unapplied actions from those events
@@ -42,6 +43,7 @@ const ATTEMPTS_HEADER: &str = "X-Vivi-Pump-Attempts";
 const FRESH_HEADER: &str = "X-Vivi-Pump-Fresh";
 const REFUND_HEADER: &str = "X-Vivi-Pump-Refund";
 const FORCE_HEADER: &str = "X-Vivi-Pump-Force";
+const TARGET_HEADER: &str = "X-Vivi-Pump-Target";
 
 /// The event command and type every posted action logs.
 const EVENT_COMMAND: &str = "pump action";
@@ -57,6 +59,8 @@ pub enum PumpActionKind {
     Withdraw,
     /// Throw the plan away and plan the need again on a fresh record.
     Replan,
+    /// Release a need branch held `unverified`, adopting the remote tip.
+    Recover,
 }
 
 impl PumpActionKind {
@@ -67,6 +71,7 @@ impl PumpActionKind {
             Self::Requeue => "requeue",
             Self::Withdraw => "withdraw",
             Self::Replan => "replan",
+            Self::Recover => "recover",
         }
     }
 
@@ -75,6 +80,7 @@ impl PumpActionKind {
             "requeue" => Some(Self::Requeue),
             "withdraw" => Some(Self::Withdraw),
             "replan" => Some(Self::Replan),
+            "recover" => Some(Self::Recover),
             _ => None,
         }
     }
@@ -94,6 +100,8 @@ pub struct PumpActionRequest {
     pub refund: bool,
     /// Replan: replan even while units are live or a planner runs.
     pub force: bool,
+    /// Recover: only this target's need branch; every held target when absent.
+    pub target: Option<String>,
     /// Why; the letter's body.
     pub reason: String,
 }
@@ -107,6 +115,7 @@ impl PumpActionRequest {
             fresh: false,
             refund: false,
             force: false,
+            target: None,
             reason: reason.trim().to_string(),
         }
     }
@@ -146,6 +155,16 @@ impl PumpActionRequest {
         }
     }
 
+    /// Recover the need's branch held `unverified`, on `target` only when
+    /// one is named.
+    #[must_use]
+    pub fn recover(target: Option<&str>, reason: &str) -> Self {
+        Self {
+            target: target.map(str::to_string),
+            ..Self::new(PumpActionKind::Recover, reason)
+        }
+    }
+
     /// The headers the letter carries, besides the record and need headers.
     fn headers(&self) -> Vec<(String, String)> {
         let mut headers = vec![(PUMP_ACTION_HEADER.to_string(), self.kind.as_str().into())];
@@ -154,6 +173,9 @@ impl PumpActionRequest {
         }
         if let Some(attempts) = self.attempts {
             headers.push((ATTEMPTS_HEADER.into(), attempts.to_string()));
+        }
+        if let Some(target) = &self.target {
+            headers.push((TARGET_HEADER.into(), target.clone()));
         }
         for (name, set) in [
             (FRESH_HEADER, self.fresh),
@@ -178,6 +200,7 @@ impl PumpActionRequest {
             fresh: flag(FRESH_HEADER),
             refund: flag(REFUND_HEADER),
             force: flag(FORCE_HEADER),
+            target: header_value(data, TARGET_HEADER).filter(|target| !target.is_empty()),
             reason: body.trim().to_string(),
         })
     }

@@ -76,15 +76,15 @@ fn dispatch_need_group(
         ));
         return Ok(());
     }
-    if branch.as_ref().is_some_and(|record| {
+    if let Some(record) = branch.as_ref().filter(|record| {
         matches!(
             record.status,
             NeedBranchStatus::Collision | NeedBranchStatus::Unverified
         )
     }) {
-        ctx.log(&format!(
-            "need branch held for explicit recovery {target}/{need_id}"
-        ));
+        if need::announce_hold(st, target, need_id)? {
+            ctx.log(&hold_message(record));
+        }
         return Ok(());
     }
     if let Some(record) = branch.as_ref()
@@ -115,6 +115,18 @@ fn dispatch_need_group(
     enqueue_need_batch(
         ctx, st, role, target, need_id, revision, &branch, &mut units, size, started,
     )
+}
+
+/// The one line logged when a need branch first becomes held: what holds it
+/// and, for an unverified tip, the command that releases it.
+fn hold_message(record: &NeedBranch) -> String {
+    let (target, need_id) = (&record.target, &record.need);
+    match record.observed_unverified_tip_sha.as_deref() {
+        Some(tip) if record.status == NeedBranchStatus::Unverified => format!(
+            "need branch held for explicit recovery {target}/{need_id}: remote tip {tip} was not accepted; to adopt it and resume merging, run `vivi pump recover {need_id}`"
+        ),
+        _ => format!("need branch held for explicit recovery {target}/{need_id}"),
+    }
 }
 
 fn retain_current_need_units(
@@ -282,12 +294,14 @@ pub(crate) fn refresh_freezes(ctx: &Ctx, st: &mut State) -> Result<(), VivariumE
         else {
             continue;
         };
-        if (branch.status != NeedBranchStatus::Landed && branch.landing_job_id.is_some())
-            || matches!(
-                branch.status,
-                NeedBranchStatus::Collision | NeedBranchStatus::Unverified
-            )
-        {
+        if matches!(
+            branch.status,
+            NeedBranchStatus::Collision | NeedBranchStatus::Unverified
+        ) {
+            // Announced once by the dispatch step, not on every tick.
+            continue;
+        }
+        if branch.status != NeedBranchStatus::Landed && branch.landing_job_id.is_some() {
             ctx.log(&format!(
                 "need freeze held for branch recovery or landing {}/{}",
                 branch.target, branch.need
@@ -833,7 +847,7 @@ fn unit_source_payload(
 }
 
 /// Query one exact remote ref without changing local Git refs or worktrees.
-pub(super) fn observed_ref_sha(ctx: &Ctx, target: &str, reference: &str) -> Option<String> {
+pub(crate) fn observed_ref_sha(ctx: &Ctx, target: &str, reference: &str) -> Option<String> {
     observed_ref_shas(ctx, target, &[reference.to_owned()])?.remove(reference)
 }
 

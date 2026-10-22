@@ -11,6 +11,7 @@ mod need_receipts;
 mod pool_dispatch;
 mod select;
 
+pub(crate) use need_dispatch::observed_ref_sha;
 pub(crate) use need_dispatch::refresh_freezes as refresh_need_freezes;
 pub(crate) use pool_dispatch::{
     apply_dispatched, dispatch_pool, target_write_blocked, timeout_status_line,

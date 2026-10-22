@@ -24,6 +24,9 @@ pub use state::{
     managed_unlanded, units_for,
 };
 
+mod recover;
+pub use recover::{announce_hold, recover_unverified};
+
 mod init;
 pub use init::{NeedBranchInitResult, enqueue_init, ensure_creation, reopen};
 mod landing;
@@ -96,6 +99,21 @@ pub enum NeedBranchStatus {
     Landed,
 }
 
+impl NeedBranchStatus {
+    /// The kebab-case word the pump logs and persists for this status.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Creating => "creating",
+            Self::Active => "active",
+            Self::Frozen => "frozen",
+            Self::Collision => "collision",
+            Self::Unverified => "unverified",
+            Self::Landed => "landed",
+        }
+    }
+}
+
 /// Evidence recorded when a current-revision unit is stuck or replaced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NeedUnitDisposition {
@@ -148,6 +166,10 @@ pub struct NeedBranch {
     pub unverified_job_id: Option<String>,
     /// Explanation of why the observation is held for operator recovery.
     pub unverified_detail: Option<String>,
+    /// The pump has already logged this hold, so it logs it once, not every
+    /// tick; cleared when the hold ends.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hold_announced: bool,
     /// Frozen tip for the current revision, absent while active.
     pub frozen_tip_sha: Option<String>,
     /// Start of the latest audit range; the first range starts at `base_sha`.

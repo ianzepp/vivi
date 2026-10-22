@@ -45,6 +45,7 @@ pub mod ramsweep;
 pub mod readiness;
 pub mod ready;
 pub mod reclaim;
+pub mod recover;
 pub mod record;
 pub mod replan;
 pub mod report;
@@ -176,6 +177,10 @@ mod quarantine_test;
 #[cfg(test)]
 #[path = "pump/requeue_test.rs"]
 mod requeue_test;
+
+#[cfg(test)]
+#[path = "pump/recover_test.rs"]
+mod recover_test;
 
 #[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]

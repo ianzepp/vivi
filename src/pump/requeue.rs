@@ -498,7 +498,7 @@ pub fn would_line(uid: &str, status: Status, old: u32, attempts: u32) -> String 
 
 /// A context for the remote branch scan, with a real host and the pump home
 /// resolved from the mailspace's `[pump]` table.
-fn cli_ctx(project: &Path, home: &Path) -> Result<Ctx, VivariumError> {
+pub(crate) fn cli_ctx(project: &Path, home: &Path) -> Result<Ctx, VivariumError> {
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = mailspace.config.pump.clone().ok_or_else(|| {
         VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))

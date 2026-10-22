@@ -442,6 +442,99 @@ fn need_unit_merge_without_runner_source_ancestry_is_not_accepted() {
 }
 
 #[test]
+fn a_held_need_branch_is_logged_once_and_names_the_recover_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    let (base, host) = test_ctx(dir.path(), config);
+    let ctx = base.with_routing(routing());
+    let targets = ctx.cfg.target_configs();
+    let batches = BTreeMap::from([(String::from("default"), 1)]);
+    let mut state = State::default();
+    add_need(&mut state, "n1", &["n1-u1"]);
+    active_branch(&mut state, "n1", BASE, BASE);
+    need::record_unverified_tip(
+        &mut state,
+        "default",
+        "n1",
+        "job-1",
+        TIP,
+        "receipt rejected",
+    )
+    .unwrap();
+
+    for _ in 0..3 {
+        let mut waiting = BTreeMap::from([(
+            String::from("default"),
+            VecDeque::from([String::from("n1-u1")]),
+        )]);
+        let started =
+            dispatch_units(&ctx, &mut state, "merge", &targets, &batches, &mut waiting).unwrap();
+        assert!(started.is_empty());
+        refresh_freezes(&ctx, &mut state).unwrap();
+    }
+
+    let held: Vec<String> = host
+        .logs()
+        .into_iter()
+        .filter(|line| line.contains("held for explicit recovery") || line.contains("freeze held"))
+        .collect();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(held[0].contains("vivi pump recover n1"), "{held:?}");
+    assert!(held[0].contains(TIP), "{held:?}");
+}
+
+#[test]
+fn a_recovered_need_branch_queues_its_delivered_units_for_merging_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    let (base, host) = test_ctx(dir.path(), config);
+    let ctx = base.with_routing(routing());
+    let targets = ctx.cfg.target_configs();
+    let batches = BTreeMap::from([(String::from("default"), 1)]);
+    let mut state = State::default();
+    add_need(&mut state, "n1", &["n1-u1"]);
+    active_branch(&mut state, "n1", BASE, BASE);
+    reply_unit_source(&host, "n1-u1");
+    need::record_unverified_tip(
+        &mut state,
+        "default",
+        "n1",
+        "job-1",
+        TIP,
+        "receipt rejected",
+    )
+    .unwrap();
+    let mut waiting = BTreeMap::from([(
+        String::from("default"),
+        VecDeque::from([String::from("n1-u1")]),
+    )]);
+    let held = dispatch_units(&ctx, &mut state, "merge", &targets, &batches, &mut waiting).unwrap();
+    assert!(held.is_empty());
+
+    need::recover_unverified(&mut state, "default", "n1", TIP).unwrap();
+    let mut waiting = BTreeMap::from([(
+        String::from("default"),
+        VecDeque::from([String::from("n1-u1")]),
+    )]);
+    let started =
+        dispatch_units(&ctx, &mut state, "merge", &targets, &batches, &mut waiting).unwrap();
+
+    let job = started
+        .iter()
+        .map(|id| &state.jobs[id])
+        .find(|job| job.kind == "merge")
+        .expect("the delivered unit is queued for merging");
+    assert_eq!(job.payload["need"], "n1");
+    assert_eq!(
+        job.publish_contains.as_deref(),
+        Some(TIP),
+        "the merge starts from the adopted tip"
+    );
+}
+
+#[test]
 fn current_stuck_and_replaced_units_record_blockers_but_do_not_freeze() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _) = test_ctx(dir.path(), PumpConfig::default());

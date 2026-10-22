@@ -1,10 +1,10 @@
 //! The pump's side of operator actions on pump records.
 //!
-//! `vivi pump requeue`, `withdraw` and `replan` post an action letter on the
-//! need's open pump record ([`crate::mailspace::PumpActionRequest`]). Each
-//! tick the pump reads the actions posted on open records that it has not
-//! applied yet and applies them in this order: requeues, then withdraws, then
-//! replans.
+//! `vivi pump requeue`, `withdraw`, `replan` and `recover` post an action
+//! letter on the need's open pump record
+//! ([`crate::mailspace::PumpActionRequest`]). Each tick the pump reads the
+//! actions posted on open records that it has not applied yet and applies
+//! them in this order: requeues, then recovers, then withdraws, then replans.
 //!
 //! # Exactly once
 //!
@@ -86,6 +86,7 @@ fn apply_all(ctx: &Ctx, st: &mut State, actions: &[PumpAction]) {
     crate::pump::requeue::apply_batch(ctx, st, &requeues);
     for kind in [
         PumpActionKind::Requeue,
+        PumpActionKind::Recover,
         PumpActionKind::Withdraw,
         PumpActionKind::Replan,
     ] {
@@ -104,6 +105,11 @@ fn apply_one(ctx: &Ctx, st: &mut State, action: &PumpAction) -> Option<ActionMar
     let need = action.need.as_str();
     let (owes, detail) = match action.request.kind {
         PumpActionKind::Requeue => (String::new(), String::new()),
+        PumpActionKind::Recover => {
+            let (target, reason) = (action.request.target.as_deref(), &action.request.reason);
+            crate::pump::recover::apply_one(ctx, st, need, target, reason);
+            (String::new(), String::new())
+        }
         PumpActionKind::Withdraw => {
             let reason = action.request.reason.as_str();
             let text = crate::pump::withdraw::apply_one(ctx, st, need, reason);

@@ -202,6 +202,8 @@ fresh plan.
 
 **vivi pump withdraw <need>... --reason <text>** stops a need inside the pump without touching the mail board: it posts a withdraw action on the need's open pump record; the pump withdraws the need's unfinished units, stuck ones included, adds it to the closed set, drops its need-branch record (the remote **vivi/need/&lt;id&gt;** branch is left for manual deletion), records a **need-withdrawn** exception and closes the record **withdrawn**. A need with no open record is refused; the synthetic **pumpfix-** repair needs of Vivi 15 have no mail need to hold a record and can no longer be withdrawn this way.
 
+**vivi pump recover <need>... [--target <id>] [--reason <text>] [--dry-run]** releases a need branch held **unverified** (a need-merge job published a tip the pump did not accept; the log says `need branch held for explicit recovery` once). It posts a recover action on the need's open pump record. The pump reads the remote **vivi/need/&lt;id&gt;** ref again: when it still sits at the recorded unverified tip, that tip becomes the trusted tip, the hold and error clear, the branch is **active** and the need's **delivered** units merge onto it on the next dispatch; a moved or unreadable ref is refused with a **need-recover-refused** exception, and any other branch status is skipped with a **need-recover-skipped** log line. Applied recovers record **need-recovered**.
+
 A job brief over the project server's 64 KiB letter cap is never sent whole.
 Revision planner input is cut to fit (the thread, then long unit briefs), with
 a marker naming where the full text is. Any other job brief loses its middle,
