@@ -914,3 +914,145 @@ async fn a_want_has_no_reopen_and_a_read_writes_nothing_to_the_host() {
     fx.call(&key, "list", json!({})).await;
     assert_eq!(snapshot(&fx.root), before);
 }
+
+/// A need `mind` holds whose last event carries `note`, as a pool receipt does.
+fn need_with_note(ms: &Mailspace, subject: &str, note: &str) -> String {
+    let handle = library_need(ms, "operator", "mind", subject);
+    ms.move_item_outcome("mind", &handle, "needs", Some(note), "pool_collected", None)
+        .unwrap();
+    handle
+}
+
+#[tokio::test]
+async fn board_is_bounded_by_default_and_full_lifts_it() {
+    let fx = fixture("board-bounds");
+    let ms = fx.ms();
+    let note = "x".repeat(5000);
+    let needs: Vec<String> = (0..12)
+        .map(|n| need_with_note(&ms, &format!("need {n}"), &note))
+        .collect();
+    let key = fx.key(Some("mind"));
+
+    let board = fx.call(&key, "board", json!({})).await;
+    let mind = board["identities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["identity"] == "mind")
+        .unwrap();
+    assert_eq!(mind["needs"].as_array().unwrap().len(), 5, "{mind}");
+    assert_eq!(mind["needs_hidden"], 7);
+    assert_eq!(board["totals"]["needs_open"], 12, "{}", board["totals"]);
+    assert_eq!(board["totals"]["needs_hidden"], 7);
+    assert_eq!(board["totals"]["tasks_hidden"], 0);
+    let event = &mind["needs"][0]["last_event"];
+    assert_eq!(event["command"], "pool_collected", "{event}");
+    assert!(event.get("note").is_none(), "{event}");
+    assert_eq!(event["note_chars"], 5000);
+    // The preview is a short prefix, not the receipt.
+    assert!(event["note_preview"].as_str().unwrap().chars().count() <= 81);
+    assert!(
+        board.to_string().len() < 20_000,
+        "{}",
+        board.to_string().len()
+    );
+
+    // Caps are explicit arguments; hidden counts follow them.
+    let capped = fx
+        .call(&key, "board", json!({"for": "mind", "needs_cap": 2}))
+        .await;
+    assert_eq!(
+        capped["identities"][0]["needs"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(capped["identities"][0]["needs_hidden"], 10);
+
+    // `notes` keeps whole notes; `full` lifts every cap too.
+    let noted = fx
+        .call(&key, "board", json!({"for": "mind", "notes": true}))
+        .await;
+    assert_eq!(
+        noted["identities"][0]["needs"][0]["last_event"]["note"]
+            .as_str()
+            .unwrap()
+            .len(),
+        5000
+    );
+    assert_eq!(noted["identities"][0]["needs"].as_array().unwrap().len(), 5);
+    let full = fx
+        .call(&key, "board", json!({"for": "mind", "full": true}))
+        .await;
+    let all: BTreeSet<&str> = full["identities"][0]["needs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["handle"].as_str().unwrap())
+        .collect();
+    assert_eq!(all, needs.iter().map(String::as_str).collect());
+    assert_eq!(full["identities"][0]["needs_hidden"], 0);
+}
+
+#[tokio::test]
+async fn board_graph_lists_a_capped_frontier_without_the_node_table() {
+    let fx = fixture("board-graph");
+    let ms = fx.ms();
+    for n in 0..8 {
+        library_need(&ms, "operator", "mind", &format!("need {n}"));
+    }
+    let key = fx.key(Some("mind"));
+    let graph = |args: Value| {
+        let key = key.clone();
+        let fx = &fx;
+        async move { fx.call(&key, "board", args).await["graphs"][0].clone() }
+    };
+    let bounded = graph(json!({"graph": true, "graph_cap": 3})).await;
+    assert_eq!(bounded["ready"].as_array().unwrap().len(), 3, "{bounded}");
+    assert_eq!(bounded["ready_total"], 8);
+    assert_eq!(bounded["nodes_total"], 8);
+    assert!(bounded.get("nodes").is_none(), "{bounded}");
+    let full = graph(json!({"graph": true, "full": true})).await;
+    assert_eq!(full["ready"].as_array().unwrap().len(), 8);
+    assert_eq!(full["nodes"].as_array().unwrap().len(), 8);
+}
+
+#[tokio::test]
+async fn overview_ready_is_the_open_work_the_caller_holds_and_is_capped() {
+    let fx = fixture("overview-ready");
+    let ms = fx.ms();
+    let to_mind: Vec<String> = (0..60)
+        .map(|n| library_need(&ms, "operator", "mind", &format!("mind need {n}")))
+        .collect();
+    let to_hand = library_need(&ms, "operator", "hand", "hand need");
+    let done = library_need(&ms, "operator", "mind", "finished need");
+    ms.move_item_outcome("mind", &done, "done", None, "need done", None)
+        .unwrap();
+
+    // The operator holds nothing: the totals say so, and so does ready, though
+    // the project frontier is long.
+    let operator = fx.key(None);
+    let overview = fx.call(&operator, "overview", json!({})).await;
+    assert_eq!(overview["totals"]["needs_open"], 0, "{overview}");
+    assert_eq!(overview["totals"]["ready"], 0);
+    assert_eq!(overview["ready_total"], 0);
+    assert!(overview["ready"].as_array().unwrap().is_empty());
+    let frontier = fx.call(&operator, "graph", json!({"view": "ready"})).await;
+    assert_eq!(
+        frontier["ready"].as_array().unwrap().len(),
+        61,
+        "{frontier}"
+    );
+
+    // Mind holds 60 open needs (the closed one is gone): ready lists 50 of
+    // them, counts all 60, and names nothing it does not hold.
+    let mind = fx.key(Some("mind"));
+    let overview = fx.call(&mind, "overview", json!({})).await;
+    assert_eq!(overview["totals"]["needs_open"], 60);
+    assert_eq!(overview["totals"]["ready"], 60);
+    assert_eq!(overview["ready_total"], 60);
+    let ready = overview["ready"].as_array().unwrap();
+    assert_eq!(ready.len(), 50);
+    for handle in ready {
+        assert!(to_mind.iter().any(|h| h == handle), "{handle}");
+    }
+    assert!(!ready.iter().any(|h| *h == done || *h == to_hand));
+}

@@ -67,6 +67,9 @@ pub fn dispatch(
     }
 }
 
+/// Ready handles an overview lists; `ready_total` carries the full count.
+pub(super) const OVERVIEW_READY_CAP: usize = 50;
+
 fn overview(
     store: &ProjectStore,
     project_id: &str,
@@ -94,7 +97,9 @@ fn overview(
             _ => {}
         }
     }
-    let ready = ready_handles(&records, &states);
+    let mut ready = ready_handles(&records, &states);
+    let ready_total = ready.len();
+    ready.truncate(OVERVIEW_READY_CAP);
     let memos = list_memos(store, project_id, identity)?.len();
     Ok(json!({
         "you": {
@@ -110,9 +115,10 @@ fn overview(
             "wants_open": wants_open,
             "mail_visible": mail,
             "memos": memos,
-            "ready": ready.len(),
+            "ready": ready_total,
         },
         "ready": ready,
+        "ready_total": ready_total,
         "recent": recent,
     }))
 }
