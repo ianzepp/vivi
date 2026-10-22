@@ -1202,6 +1202,19 @@ fn need_merge_cap_starts_fix_units_before_priority_needs() {
 }
 
 #[test]
+fn need_merge_cap_starts_gate_fix_need_units_before_priority_needs() {
+    let mut fx = cap_fixture(3, Some(1));
+    // `n1` is a pump-created gate-fix need: an ordinary handle id whose plan
+    // is an audit report, so its unit ranks as a fix unit.
+    fx.state.needs.get_mut("n1").unwrap().reason = crate::pump::audit::REPORT_REASON.to_owned();
+    crate::pump::priority::set(&fx.ctx.home, "n3", 9).unwrap();
+
+    let started = fx.tick();
+
+    assert_eq!(fx.needs_of(&started), ["n1"]);
+}
+
+#[test]
 fn need_merge_cap_frees_a_slot_for_the_next_need_on_a_later_tick() {
     let mut fx = cap_fixture(3, Some(2));
     let first = fx.tick();

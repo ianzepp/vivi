@@ -33,6 +33,8 @@ struct GateSlot {
     forced: bool,
     /// Every pool the generic dispatcher may choose for a gate job, in order.
     pools: Vec<String>,
+    /// Pump-created gate-fix needs and units: fix work like `fix_prefix` ones.
+    fix_ids: BTreeSet<String>,
 }
 
 impl GateSlot {
@@ -44,7 +46,9 @@ impl GateSlot {
         if !self.reserved || !self.pools.iter().any(|name| name == pool) {
             return n;
         }
-        if !self.forced && uid.starts_with(ctx.cfg.fix_prefix.as_str()) {
+        if !self.forced
+            && (uid.starts_with(ctx.cfg.fix_prefix.as_str()) || self.fix_ids.contains(uid))
+        {
             return n;
         }
         n.saturating_sub(1)
@@ -65,10 +69,10 @@ fn force_gate_pending(ctx: &Ctx) -> bool {
 
 /// `true` when a unit handled by a fix need is still pending, so a fix unit is
 /// waiting for a slot.
-fn fix_unit_waiting(st: &State, prefix: &str) -> bool {
-    st.units
-        .iter()
-        .any(|(uid, unit)| unit.status == Status::Pending && uid.starts_with(prefix))
+fn fix_unit_waiting(st: &State, prefix: &str, fix_ids: &BTreeSet<String>) -> bool {
+    st.units.iter().any(|(uid, unit)| {
+        unit.status == Status::Pending && (uid.starts_with(prefix) || fix_ids.contains(uid))
+    })
 }
 
 /// The I/O outcome of trying to start one unit: pure command results with no
@@ -215,11 +219,14 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let forced = force_gate_pending(ctx);
     let gate_pools =
         crate::pump::jobs::candidate_pools(ctx, "gate", &ctx.cfg.gate.pools, false, &[]);
-    let reserve = !gate_pools.is_empty() && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix));
+    let fix_ids = crate::pump::gatefix::fix_ids(st);
+    let reserve =
+        !gate_pools.is_empty() && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix, &fix_ids));
     let gate = GateSlot {
         reserved: reserve,
         forced,
         pools: gate_pools,
+        fix_ids,
     };
     let holds = dependency_holds(ctx, st);
     let order = ranked(ctx, st, st.order.clone());

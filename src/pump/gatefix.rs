@@ -110,6 +110,23 @@ pub(crate) fn own_needs(st: &State) -> BTreeSet<String> {
     own
 }
 
+/// The ids of every pump-created gate-fix need and of each of their units.
+/// Gate-fix needs carry ordinary handle ids, so the `fix_prefix` spelling
+/// alone no longer marks their units; this set (the pump's own needs, see
+/// [`own_needs`]) is what ranking treats as fix work beside that legacy
+/// prefix.
+pub(crate) fn fix_ids(st: &State) -> BTreeSet<String> {
+    let needs = own_needs(st);
+    let mut ids = needs.clone();
+    ids.extend(
+        st.units
+            .iter()
+            .filter(|(_, unit)| needs.contains(&unit.need))
+            .map(|(uid, _)| uid.clone()),
+    );
+    ids
+}
+
 /// The gate-fix need id for a tip: `<fix_prefix>-g<tip8>`.
 pub(crate) fn fix_need(ctx: &Ctx, tip: &str) -> String {
     let short: String = tip.chars().take(8).collect();

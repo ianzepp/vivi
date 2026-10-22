@@ -100,13 +100,15 @@ pub fn priority_needs(ctx: &Ctx) -> BTreeSet<String> {
 }
 
 /// `uids` in dispatch and merge order: fix units first (they are the path
-/// back to a green gate), then units whose need has a priority level, highest
+/// back to a green gate: a `fix_prefix` handle or a unit of a pump-created
+/// gate-fix need, see [`crate::pump::gatefix::fix_ids`]), then units whose need has a priority level, highest
 /// level first, then the rest; stable within each group.
 #[must_use]
 pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
     let levels = priority::levels(ctx);
+    let fix_ids = crate::pump::gatefix::fix_ids(st);
     let rank = |uid: &String| -> (u8, Reverse<i64>) {
-        if uid.starts_with(&ctx.cfg.fix_prefix) {
+        if uid.starts_with(&ctx.cfg.fix_prefix) || fix_ids.contains(uid) {
             return (0, Reverse(0));
         }
         match st.units.get(uid).and_then(|u| levels.get(&u.need)) {

@@ -586,6 +586,10 @@ impl crate::pump::jobs::JobStore for State {
     fn jobs_mut(&mut self) -> &mut BTreeMap<String, crate::pump::jobs::PoolJob> {
         &mut self.jobs
     }
+
+    fn fix_ids(&self) -> std::collections::BTreeSet<String> {
+        crate::pump::gatefix::fix_ids(self)
+    }
 }
 
 /// Gate state isolated to one named repository target.

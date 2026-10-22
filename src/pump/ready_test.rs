@@ -654,6 +654,58 @@ fn ranked_puts_fix_units_first_then_higher_levels_then_the_rest_stably() {
 }
 
 #[test]
+fn ranked_puts_units_of_pump_created_gate_fix_needs_first() {
+    let (_dir, ctx, _host, mut st) = setup();
+    for (uid, need) in [
+        ("a-1", "plain"),
+        ("hot-1", "hot"),
+        ("8c4329ff-1", "8c4329ff"),
+        ("b-1", "plain"),
+        ("4b2d1c9e-1", "4b2d1c9e"),
+    ] {
+        let (id, mut unit) = mk(uid, Status::Pending, &[]);
+        unit.need = need.to_string();
+        st.units.insert(id, unit);
+    }
+    crate::pump::priority::set(&ctx.home, "hot", 5).unwrap();
+    // 8c4329ff: owns a red name; 4b2d1c9e: its plan is an audit report.
+    st.red
+        .insert(String::from("gate::x"), String::from("8c4329ff"));
+    st.needs.insert(
+        String::from("4b2d1c9e"),
+        NeedRecord {
+            reason: crate::pump::audit::REPORT_REASON.to_owned(),
+            ..NeedRecord::default()
+        },
+    );
+    let uids: Vec<String> = ["a-1", "hot-1", "8c4329ff-1", "b-1", "4b2d1c9e-1"]
+        .iter()
+        .map(|uid| (*uid).to_string())
+        .collect();
+    assert_eq!(
+        ranked(&ctx, &st, uids),
+        ["8c4329ff-1", "4b2d1c9e-1", "hot-1", "a-1", "b-1"]
+    );
+}
+
+#[test]
+fn ranked_ranks_a_non_default_targets_gate_fix_units_first() {
+    let (_dir, ctx, _host, mut st) = setup();
+    for (uid, need) in [("a-1", "plain"), ("3c89e015-1", "3c89e015")] {
+        let (id, mut unit) = mk(uid, Status::Pending, &[]);
+        unit.need = need.to_string();
+        st.units.insert(id, unit);
+    }
+    let mut target = crate::pump::state::TargetState::default();
+    target
+        .red
+        .insert(String::from("gate::y"), String::from("3c89e015"));
+    st.target_states.insert(String::from("gradus"), target);
+    let uids = vec![String::from("a-1"), String::from("3c89e015-1")];
+    assert_eq!(ranked(&ctx, &st, uids), ["3c89e015-1", "a-1"]);
+}
+
+#[test]
 fn ranked_keeps_plan_order_without_priorities() {
     let (_dir, ctx, _host, mut st) = setup();
     let (id, unit) = mk("x", Status::Pending, &[]);

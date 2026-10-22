@@ -28,6 +28,46 @@ fn red_state() -> State {
 }
 
 #[test]
+fn fix_ids_cover_pump_created_needs_and_their_units_only() {
+    let mut st = red_state();
+    st.needs.insert(
+        String::from("4b2d1c9e"),
+        crate::pump::state::NeedRecord {
+            reason: crate::pump::audit::REPORT_REASON.to_owned(),
+            ..crate::pump::state::NeedRecord::default()
+        },
+    );
+    let mut target = crate::pump::state::TargetState::default();
+    target
+        .red
+        .insert(String::from("gate::y"), String::from("3c89e015"));
+    st.target_states.insert(String::from("gradus"), target);
+    for (uid, need) in [
+        ("fix-1", NEED),
+        ("report-1", "4b2d1c9e"),
+        ("gradus-1", "3c89e015"),
+        ("plain-1", "plain"),
+    ] {
+        st.units.insert(
+            String::from(uid),
+            Unit {
+                need: String::from(need),
+                ..Unit::default()
+            },
+        );
+    }
+
+    let ids = crate::pump::gatefix::fix_ids(&st);
+
+    for expected in [
+        NEED, "4b2d1c9e", "3c89e015", "fix-1", "report-1", "gradus-1",
+    ] {
+        assert!(ids.contains(expected), "{expected} missing from {ids:?}");
+    }
+    assert!(!ids.contains("plain-1") && !ids.contains("plain"));
+}
+
+#[test]
 fn orphaned_requires_no_units_no_plan_and_no_live_audit() {
     let (dir, ctx, _host) = setup();
     let mut st = red_state();

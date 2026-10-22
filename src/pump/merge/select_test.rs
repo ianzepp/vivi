@@ -65,6 +65,38 @@ fn recheck_held_returns_units_whose_target_is_configured() {
 }
 
 #[test]
+fn a_held_merge_still_admits_units_of_pump_created_gate_fix_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("need list --status done", 0, "[]");
+    std::fs::create_dir_all(&ctx.home).unwrap();
+    std::fs::write(ctx.home.join("HOLD-MERGE"), "red\n").unwrap();
+    let mut st = State::default();
+    st.units
+        .insert(String::from("plain-1"), delivered("plain", false));
+    st.units
+        .insert(String::from("8c4329ff-1"), delivered("8c4329ff", false));
+    st.units
+        .insert(String::from("pumpfix-q1"), delivered("q1", false));
+    st.order = vec![
+        String::from("plain-1"),
+        String::from("8c4329ff-1"),
+        String::from("pumpfix-q1"),
+    ];
+    st.red
+        .insert(String::from("gate::x"), String::from("8c4329ff"));
+    let known = BTreeSet::from([String::from("default")]);
+
+    let waiting = eligible(&ctx, &mut st, &known);
+
+    let default = waiting.get("default").cloned().unwrap_or_default();
+    assert_eq!(
+        default.into_iter().collect::<Vec<_>>(),
+        vec!["8c4329ff-1", "pumpfix-q1"]
+    );
+}
+
+#[test]
 fn eligible_skips_units_whose_need_was_closed_on_the_board() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());

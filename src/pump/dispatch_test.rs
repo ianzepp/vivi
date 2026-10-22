@@ -1372,6 +1372,23 @@ fn an_assigned_gate_role_pool_is_reserved_without_explicit_gate_candidates() {
 }
 
 #[test]
+fn a_waiting_gate_fix_need_unit_ranks_first_and_reserves_the_gate_pool_slot() {
+    let (_dir, ctx, host) = setup_with(gate_pool_cfg());
+    wire_gate_pool(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "8c4329ff-1"]);
+    st.units.get_mut("8c4329ff-1").unwrap().need = String::from("8c4329ff");
+    st.red
+        .insert(String::from("gate::x"), String::from("8c4329ff"));
+    dispatch(&ctx, &mut st);
+    // The gate-fix unit has no `pumpfix` prefix, yet it ranks ahead of the
+    // plain unit and takes the single slot.
+    assert_eq!(st.units["8c4329ff-1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(commands_with(&host, "task send").len(), 1);
+}
+
+#[test]
 fn a_waiting_fix_unit_reserves_the_gate_pool_slot() {
     let (_dir, ctx, host) = setup_with(gate_pool_cfg());
     wire_gate_pool(&host);

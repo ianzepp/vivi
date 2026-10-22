@@ -247,8 +247,31 @@ pub fn retry_due(ctx: &Ctx, st: &mut State) {
     store(st, Some(run));
 }
 
-/// Collect a completed durable audit job and apply its report once.
+/// Collect the completed durable audit job of every target and apply each
+/// report once. A non-default target keeps its audit run in its own isolated
+/// state, so each is collected inside that target's state with its own
+/// context (the report's units belong to that target); the default target's
+/// run lives in the workspace state.
 pub fn collect_completed(ctx: &Ctx, st: &mut State) {
+    collect_target(ctx, st);
+    let targets: Vec<String> = ctx
+        .cfg
+        .target_configs()
+        .into_keys()
+        .filter(|target| target != "default")
+        .collect();
+    for target in targets {
+        let Some(target_ctx) = ctx.for_target(&target) else {
+            continue;
+        };
+        crate::pump::state::with_target_state(st, &target, |target_st| {
+            collect_target(&target_ctx, target_st);
+        });
+    }
+}
+
+/// Collect one target's completed durable audit job and apply its report once.
+fn collect_target(ctx: &Ctx, st: &mut State) {
     let Some(mut run) = current(st) else {
         return;
     };
@@ -886,6 +909,7 @@ pub(crate) fn apply_report(
             tools: String::new(),
             status: Status::Pending,
             since: ctx.now(),
+            target: ctx.target_id.clone(),
             ..Unit::default()
         };
         st.units.insert(uid.clone(), unit);

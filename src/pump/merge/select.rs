@@ -97,6 +97,7 @@ pub(super) fn eligible(
     let levels = crate::pump::priority::levels(ctx);
     let red = red_crates(st);
     let holds = dependency_holds(ctx, st);
+    let fix_ids = crate::pump::gatefix::fix_ids(st);
     let mut waiting: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
     for uid in ranked(ctx, st, st.order.clone()) {
         consider_unit(
@@ -109,6 +110,7 @@ pub(super) fn eligible(
             &levels,
             &red,
             &holds,
+            &fix_ids,
             &mut waiting,
             uid,
         );
@@ -126,6 +128,7 @@ fn consider_unit(
     levels: &BTreeMap<String, i64>,
     red: &RedCrates,
     holds: &BTreeMap<String, Vec<String>>,
+    fix_ids: &BTreeSet<String>,
     waiting: &mut BTreeMap<String, VecDeque<String>>,
     uid: String,
 ) {
@@ -147,7 +150,7 @@ fn consider_unit(
     let Some(unit) = st.units.get_mut(&uid) else {
         return;
     };
-    if hold && !uid.starts_with(&ctx.cfg.fix_prefix) {
+    if hold && !uid.starts_with(&ctx.cfg.fix_prefix) && !fix_ids.contains(&uid) {
         let level = levels.get(&unit.need).copied().unwrap_or(0);
         let clear = clear_of_red(&unit.write_scope, red);
         if level < floor && !clear {

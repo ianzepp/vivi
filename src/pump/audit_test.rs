@@ -298,6 +298,61 @@ fn a_completed_audit_mints_fix_units_and_applies_once() {
 }
 
 #[test]
+fn a_non_default_targets_terminal_audit_job_is_collected_and_its_units_minted() {
+    let (_dir, mut ctx, host) = setup(None);
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.targets.insert(
+        String::from("gradus"),
+        crate::pump::config::PumpTarget {
+            path: String::from("gradus"),
+            branch: String::from("main"),
+            ..crate::pump::config::PumpTarget::default()
+        },
+    );
+    ctx.cfg = Arc::new(cfg);
+    ready(&host);
+    let gradus = ctx.for_target("gradus").expect("gradus target resolves");
+    let mut st = State::default();
+    crate::pump::state::with_target_state(&mut st, "gradus", |target_st| {
+        start_audit(
+            &gradus,
+            target_st,
+            TIP,
+            "test result: FAILED",
+            &[String::from("gate::a_fails")],
+            &[],
+            None,
+        );
+    });
+    let job_id = format!("audit-gradus-{}-1", fix_need(&ctx, TIP));
+    assert!(st.jobs.contains_key(&job_id), "{:?}", st.jobs.keys());
+    // The pool finished the job; its receipt is waiting for collection.
+    let job = st.jobs.get_mut(&job_id).unwrap();
+    job.status = JobStatus::Finished;
+    job.task = Some(String::from("audit-task"));
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::new(),
+        receipt: String::from(
+            "agent exit 0 in 1s\nAUDIT-BEGIN\n[{\"root_cause\":\"broken\",\"brief\":\"fix it\",\"write_scope\":[\"src/a.rs\"]}]\nAUDIT-END\n",
+        ),
+        at: ctx.now(),
+    });
+    assert!(st.target_states["gradus"].extra.contains_key("audit"));
+
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+
+    let uid = format!("{}-1", fix_need(&ctx, TIP));
+    assert_eq!(st.units[&uid].title, "broken");
+    assert_eq!(st.units[&uid].target, "gradus");
+    assert_eq!(st.jobs[&job_id].applied_at, Some(ctx.now()));
+    assert!(!st.target_states["gradus"].extra.contains_key("audit"));
+    // Applied exactly once: a second collection mints nothing more.
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+    assert_eq!(st.order, [uid]);
+}
+
+#[test]
 fn an_audit_timeout_backs_off_then_fails_over_to_another_pool() {
     let (_dir, mut ctx, host) = setup(None);
     let mut cfg = (*ctx.cfg).clone();
