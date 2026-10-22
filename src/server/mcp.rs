@@ -481,6 +481,18 @@ fn tools_list() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             })),
+            tool("pool_bands", "Hosted projects only, operator only. Show, set, or unset one pool's band table (`[pools.<pool>.bands]` in the project's mailspace config), as `vivi pool bands set|unset` and `vivi pool show` do: which model and reasoning effort serves each band P0 to P5. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator; show is held to it too. `set` replaces that band's entry with one {model, reasoning} choice (reasoning defaults to xhigh) and is refused for a model not in the pool's `harness.models` (the error names the allowed list), an unknown pool (the error names the pools) or a malformed band; `unset` removes the band's entry. Both are rate limited as writes. Only the bands table of the one named pool can change: no other pool, role, remote, harness or config key is reachable. Returns {pool, bands: {band: [{model, reasoning}]}, harness_models} as the table stands afterwards.", json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["show", "set", "unset"] },
+                    "pool": { "type": "string", "description": "Pool name" },
+                    "band": { "type": "string", "enum": ["P0", "P1", "P2", "P3", "P4", "P5"], "description": "Band; required for set and unset, ignored by show" },
+                    "model": { "type": "string", "description": "Model slug, one of the pool's harness.models; required for set" },
+                    "reasoning": { "type": "string", "description": "Reasoning effort, e.g. low or xhigh; optional for set (default xhigh)" }
+                },
+                "required": ["action", "pool"],
+                "additionalProperties": false
+            })),
             tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need not addressed to the pump identity, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
                 "type": "object",
                 "properties": {

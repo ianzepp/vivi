@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **MCP `pool_bands`.** Operator-only show, set and unset of one pool's band
+  table (`[pools.<pool>.bands]` in the hosted project's mailspace config), as
+  `vivi pool bands set|unset` and `vivi pool show` do: which model and
+  reasoning effort serves each band `P0` to `P5`. Arguments: `action`
+  (`show`, `set`, `unset`), `pool`, `band` (set and unset), `model` and
+  optional `reasoning` (set; default `xhigh`, as the CLI). `set` replaces that
+  band's entry (through the library's `config_edit::set_band`) and is refused
+  for a model not in the pool's `harness.models` (the error names the allowed
+  list), an unknown pool (the error names the pools), a malformed band or a
+  malformed reasoning; `unset` removes the entry. The answer is
+  `{pool, bands, harness_models}` as the table stands afterwards. Same
+  authorization as `pump_control` (one shared check, `show` included), and
+  `set` and `unset` are rate limited as writes. Only the bands table of the
+  named pool can change: bands select among models the host already allowed,
+  so no other pool, role, remote, harness or config key is reachable. No vivi
+  change was needed (v19.0.0 already exposes the editor).
+
 ## 1.9.0 — 2026-10-22
 
 Operator pump records over MCP, and bounded board and overview.

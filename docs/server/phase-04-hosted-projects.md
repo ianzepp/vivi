@@ -140,6 +140,20 @@ mailspace).
   write. This is the only config the server edits: pools, roles and free-form
   config are deliberately not exposed, because a member who could repoint a
   pool's `remote_url` could send code elsewhere.
+- **`pool_bands`.** Operator-only, with `pump_control`'s authorization (one
+  shared check, `show` included): `action` is `show`, `set` or `unset`, with
+  `pool`, and `band` (`P0` to `P5`) for set and unset, `model` and optional
+  `reasoning` (default `xhigh`) for set. Edits `[pools.<pool>.bands]` in the
+  host's `.vivi/mailspace.toml` through `vivi::mailspace::config_edit`
+  (`set_band`, `unset_band`; format-preserving, under the mailspace config
+  lock); `set` replaces the band's entry with one choice. `set` is refused for
+  a model not in the pool's `harness.models` (the error names the list), an
+  unknown pool (the error names the pools) or a malformed band or reasoning.
+  Every action answers `{pool, bands, harness_models}`. `set` and `unset` are
+  rate limited as writes. Only that one pool's bands table is reachable:
+  bands select among models the host already allowed and cannot repoint a
+  remote or a harness, so the rule that pools, roles and other config stay
+  with the host (see `pump_gate`) holds.
 - **`pump_send`, `pump_list`, `pump_show`.** Operator-only, with
   `pump_control`'s authorization (one shared check): the pump record verbs
   `vivi pump send|list|show`, through `Mailspace::pump_send`, `pump_list` and
