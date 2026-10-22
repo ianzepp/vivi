@@ -15,8 +15,13 @@ use super::pump_roles::pump_role_checks_of;
 /// How serious a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
+    /// Something is wrong.
     Error,
+    /// Something is odd but works.
     Warning,
+    /// Something the pump needs is absent. The project is not ready, not
+    /// broken: supplying the item makes it ready.
+    NotReady,
 }
 
 /// One validate finding.
@@ -24,20 +29,33 @@ pub enum Severity {
 pub struct Issue {
     pub severity: Severity,
     pub message: String,
+    /// The named missing item, set on a [`Severity::NotReady`] finding. Two
+    /// findings with the same item are one thing missing.
+    pub item: Option<String>,
 }
 
 impl Issue {
-    pub(super) fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
             message: message.into(),
+            item: None,
         }
     }
 
-    pub(super) fn warning(message: impl Into<String>) -> Self {
+    pub(crate) fn not_ready(item: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::NotReady,
+            message: message.into(),
+            item: Some(item.into()),
+        }
+    }
+
+    pub(crate) fn warning(message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Warning,
             message: message.into(),
+            item: None,
         }
     }
 }
@@ -58,21 +76,47 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     issues
 }
 
-/// Format findings for humans. Errors first.
+impl Severity {
+    /// The lowercase tag used in reports: `error`, `warning`, `not ready`.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::NotReady => "not ready",
+        }
+    }
+}
+
+/// Format findings for humans, one `tag: message` line each.
 #[must_use]
 pub fn format_report(issues: &[Issue]) -> String {
     let mut lines = Vec::new();
     for issue in issues {
-        let tag = match issue.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        };
-        lines.push(format!("{tag}: {}", issue.message));
+        lines.push(format!("{}: {}", issue.severity.tag(), issue.message));
     }
     lines.join("\n")
 }
 
-/// Fail when any finding is an error.
+/// The not-ready findings, in report order.
+pub fn not_ready(issues: &[Issue]) -> impl Iterator<Item = &Issue> {
+    issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::NotReady)
+}
+
+/// The one-line form of the not-ready findings, or `None` when none: `not
+/// ready: <item>, <item>`.
+#[must_use]
+pub fn not_ready_summary(issues: &[Issue]) -> Option<String> {
+    let items: Vec<&str> = not_ready(issues)
+        .map(|issue| issue.item.as_deref().unwrap_or(&issue.message))
+        .collect();
+    (!items.is_empty()).then(|| format!("not ready: {}", items.join(", ")))
+}
+
+/// Fail when any finding is an error. Missing (not-ready) items are not
+/// errors.
 pub fn require_ok(issues: &[Issue]) -> Result<(), VivariumError> {
     let errors: Vec<&str> = issues
         .iter()
@@ -187,7 +231,7 @@ fn push_band_issue(
             issues.push(if fallback {
                 Issue::warning(message)
             } else {
-                Issue::error(message)
+                Issue::not_ready(format!("pool {pool} bands"), message)
             });
         }
         None if !any_bands => {
@@ -306,15 +350,21 @@ fn need_role(
             "role {} has no pool; the pump is using legacy [pump] routing for {label}",
             role.name
         ))),
-        Some(role) => issues.push(Issue::error(format!(
-            "role {} has no pool and the pump has no legacy {label} routing; \
-             set one with `vivi role pool {} <pool>`",
-            role.name, role.name
-        ))),
+        Some(role) => issues.push(Issue::not_ready(
+            format!("{label} pool"),
+            format!(
+                "role {} has no pool and the pump has no legacy {label} routing; \
+                 set one with `vivi role pool {} <pool>`",
+                role.name, role.name
+            ),
+        )),
         None if legacy => {}
-        None => issues.push(Issue::error(format!(
-            "the pump needs a {label} role with a pool (add `{name}` or keep the legacy [pump] tables)"
-        ))),
+        None => issues.push(Issue::not_ready(
+            format!("{label} pool"),
+            format!(
+                "the pump needs a {label} role with a pool (add `{name}` or keep the legacy [pump] tables)"
+            ),
+        )),
     }
 }
 

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use vivi::VivariumError;
 use vivi::cli::{
     Command, CycleCommand, LocalSendCommand, MailCommand, MailListCommand, MailReplyCommand,
@@ -72,24 +74,36 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
     }
 }
 
+fn init_mailspace(project: Option<&Path>) -> Result<(), VivariumError> {
+    let existed = Mailspace::config_exists(project)?;
+    let mut mailspace = Mailspace::init(project)?;
+    mailspace.ensure_operator_role()?;
+    mailspace.ensure_merge_role()?;
+    mailspace.ensure_pump_planner_role()?;
+    if !existed {
+        mailspace.ensure_starter_pump()?;
+    }
+    println!("mailspace {}", mailspace.config.name);
+    println!("root      {}", mailspace.root.display());
+    println!("store     {}", mailspace.store_path().display());
+    let ignore = mailspace.dir.join(".gitignore");
+    if ignore.is_file() {
+        println!(
+            "ignore    {} (nothing in .vivi is committed)",
+            ignore.display()
+        );
+    }
+    if !existed {
+        println!(
+            "pump      starter [pump] written; `vivi config validate` lists what it still needs"
+        );
+    }
+    Ok(())
+}
+
 fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumError> {
     match command {
-        MailspaceCommand::Init { project } => {
-            let mut mailspace = Mailspace::init(project.as_deref())?;
-            mailspace.ensure_operator_role()?;
-            mailspace.ensure_merge_role()?;
-            mailspace.ensure_pump_planner_role()?;
-            println!("mailspace {}", mailspace.config.name);
-            println!("root      {}", mailspace.root.display());
-            println!("store     {}", mailspace.store_path().display());
-            let ignore = mailspace.dir.join(".gitignore");
-            if ignore.is_file() {
-                println!(
-                    "ignore    {} (nothing in .vivi is committed)",
-                    ignore.display()
-                );
-            }
-        }
+        MailspaceCommand::Init { project } => init_mailspace(project.as_deref())?,
         MailspaceCommand::Status { project, json } => {
             let mailspace = Mailspace::discover(project.as_deref())?;
             if let Some(warning) = mailspace.tracked_config_warning() {

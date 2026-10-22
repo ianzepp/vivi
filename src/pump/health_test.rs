@@ -347,3 +347,34 @@ fn the_json_shape_names_the_verdict_in_lowercase() {
     assert!(value["writer"]["source"].is_string());
     assert!(super::render(&h).starts_with("verdict  degraded\n"));
 }
+
+fn fresh_initialised_project() -> tempfile::TempDir {
+    let dir = tempdir().unwrap();
+    let mut space = crate::mailspace::Mailspace::init(Some(dir.path())).unwrap();
+    space.ensure_operator_role().unwrap();
+    space.ensure_merge_role().unwrap();
+    space.ensure_pump_planner_role().unwrap();
+    space.ensure_starter_pump().unwrap();
+    dir
+}
+
+#[test]
+fn a_fresh_project_reports_not_ready_with_its_missing_items() {
+    let dir = fresh_initialised_project();
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    assert_eq!(h.verdict, Verdict::Unknown);
+    let reasons = h.reasons.join("\n");
+    assert!(reasons.contains("not ready: "), "{reasons}");
+    assert!(reasons.contains("pump.gate.command"), "{reasons}");
+}
+
+#[test]
+fn a_holding_pump_is_unknown_not_stalled() {
+    let dir = fresh_initialised_project();
+    crate::pump::run::run(dir.path(), true).unwrap();
+    let h = health(dir.path(), &HealthOptions::default()).unwrap();
+    assert_eq!(h.verdict, Verdict::Unknown, "{:?}", h.reasons);
+    assert_eq!(h.reasons.len(), 1, "{:?}", h.reasons);
+    assert!(h.reasons[0].starts_with("not ready: "), "{:?}", h.reasons);
+    assert_eq!(h.control.as_deref(), Some("running"));
+}

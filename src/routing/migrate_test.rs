@@ -427,11 +427,12 @@ fn a_merge_role_of_the_wrong_kind_is_changed_and_keeps_its_other_fields() {
 #[test]
 fn validate_requires_pump_planner_and_ignores_a_role_named_planner() {
     let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
+    // Everything that stops the pump: wrong values and missing items.
     let errors = |text: &str| -> Vec<String> {
         let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
         validate(&config)
             .into_iter()
-            .filter(|issue| issue.severity == Severity::Error)
+            .filter(|issue| issue.severity != Severity::Warning)
             .map(|issue| issue.message)
             .collect()
     };
@@ -774,11 +775,12 @@ fn an_auditor_with_a_pool_is_left_alone() {
 #[test]
 fn validate_requires_an_active_auditor_with_a_pool() {
     let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
+    // Everything that stops the pump: wrong values and missing items.
     let errors = |text: &str| -> Vec<String> {
         let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
         validate(&config)
             .into_iter()
-            .filter(|issue| issue.severity == Severity::Error)
+            .filter(|issue| issue.severity != Severity::Warning)
             .map(|issue| issue.message)
             .collect()
     };

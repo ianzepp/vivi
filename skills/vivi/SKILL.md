@@ -241,7 +241,13 @@ vivi config migrate [--write]
 
 `vivi config show` is the role -> kind -> pool -> slots -> models ->
 read_only table plus the merge/gate flow. `validate` checks those together
-and also runs at `vivi pump run|once` start. `migrate` is a dry-run diff
+and also runs at `vivi pump run|once` start. `mailspace init` writes a starter
+`[pump]` table with empty required values. A project missing things the pump
+needs (committer, branch, gate command, shared checks, roles, pools) is **not
+ready**, not invalid: `validate` prints `not ready:` with each missing item and
+exits 3 (a wrong value is an error and exits 1; ready exits 0). The pump on a
+not-ready project dispatches nothing, exits cleanly, shows the items in its
+status and `vivi pump health`, and starts by itself once they are supplied. `migrate` is a dry-run diff
 unless `--write` (a timestamped `.bak` is kept; comments survive). To upgrade a
 15.0.0 mailspace: `vivi update`, `vivi config migrate`, read the plan, then
 `vivi config migrate --write` and `vivi config validate`. It assigns the hand,

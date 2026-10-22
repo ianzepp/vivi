@@ -306,6 +306,10 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
 fn a_missing_pump_table_is_a_clear_error() {
     let project = tempfile::tempdir().unwrap();
     assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
+    // `mailspace init` writes a starter [pump]; take it out again.
+    let config = project.path().join(".vivi").join("mailspace.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace(vivi::mailspace::STARTER_PUMP, "")).unwrap();
     let out = vivi(["pump", "once", "--project", root(&project)]);
     assert!(!out.status.success(), "{}", stdout(&out));
     assert!(stderr(&out).contains("[pump]"), "{}", stderr(&out));
@@ -413,6 +417,8 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pools.test.bands]\nP2 = [{{ model = \"test/model\", reasoning = \"low\" }}]\n"
     );
     let mut parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    // `mailspace init` writes a starter [pump]; this test supplies its own.
+    parsed.as_table_mut().unwrap().remove("pump");
     for (name, kind) in [
         ("hand", "hand"),
         ("mind", "mind"),
@@ -555,4 +561,71 @@ fn mark_amended(project: &tempfile::TempDir, handle: &str) {
         record.amendment_pending = true;
     }
     store.save(&state).unwrap();
+}
+
+#[test]
+fn pump_once_on_a_freshly_initialised_project_holds_instead_of_failing() {
+    let project = tempfile::tempdir().unwrap();
+    assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
+    let out = vivi(["pump", "once", "--project", root(&project)]);
+    assert_success(&out);
+    let status = vivi(["pump", "status", "--project", root(&project)]);
+    assert_success(&status);
+    let text = stdout(&status);
+    assert!(text.contains("not ready:"), "{text}");
+    assert!(text.contains("pump.gate.command"), "{text}");
+    let health = vivi(["pump", "health", "--json", "--project", root(&project)]);
+    assert_success(&health);
+    let body = stdout(&health);
+    assert!(body.contains("not ready: "), "{body}");
+    assert!(body.contains("\"verdict\": \"unknown\""), "{body}");
+}
+
+#[test]
+fn a_service_child_on_a_not_ready_project_announces_ready_and_keeps_running() {
+    use std::io::{BufRead, BufReader};
+    let project = tempfile::tempdir().unwrap();
+    assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .args([
+            "pump",
+            "run",
+            "--service-child",
+            "--project",
+            root(&project),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "VIVI_PUMP_SERVICE_READY");
+    thread::sleep(Duration::from_millis(1500));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a held pump must stay alive, or the supervisor restarts it in a loop"
+    );
+    let stopped = vivi(["pump", "stop", "--project", root(&project)]);
+    assert_success(&stopped);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let exited = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    if exited.is_none() {
+        child.kill().unwrap();
+        let _ = child.wait();
+    }
+    assert!(
+        exited.is_some_and(|status| status.success()),
+        "the held pump did not exit cleanly after pump stop"
+    );
 }

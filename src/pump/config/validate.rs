@@ -1,0 +1,389 @@
+//! Pump config checks: what is invalid, and what is only missing.
+//!
+//! A finding is one of two kinds. An *error* is a value that is wrong: a bad
+//! number, a path that cannot be read, a name that points at nothing. A
+//! *missing* item is something the pump needs and the config does not yet
+//! say: no committer, no gate command, no pool for the dispatch role. A
+//! project in the second state is "not ready", not broken: filling the items
+//! in makes it ready with no other step.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use super::{GateConfig, MergeConfig, PumpConfig, PumpTarget, known};
+use crate::VivariumError;
+
+/// One thing the pump needs and the config does not yet say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Missing {
+    /// A short stable name, e.g. `pump.gate.command` or `hand pool`.
+    pub name: String,
+    /// What is missing and how to supply it.
+    pub detail: String,
+}
+
+/// Everything a check found, split by kind.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Findings {
+    /// Wrong values; the pump must not start until they are fixed.
+    pub errors: Vec<String>,
+    /// Absent items; the pump holds (not ready) until they are supplied.
+    pub missing: Vec<Missing>,
+}
+
+impl Findings {
+    fn invalid(&mut self, message: impl Into<String>) {
+        self.errors.push(message.into());
+    }
+
+    fn absent(&mut self, name: impl Into<String>, detail: impl Into<String>) {
+        self.missing.push(Missing {
+            name: name.into(),
+            detail: detail.into(),
+        });
+    }
+
+    /// Whether nothing is wrong and nothing is missing.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.errors.is_empty() && self.missing.is_empty()
+    }
+}
+
+impl PumpConfig {
+    /// Check the config against itself and the known pool names, strictly:
+    /// both wrong and missing items fail.
+    ///
+    /// `pools` holds the names of the mailspace's `[pools.<name>]` tables.
+    ///
+    /// `project` is the base a relative `hand_rules` path resolves against.
+    /// Empty `[pump.dispatch] lanes` is reported: pass [`Self::validate_for`]
+    /// when a role assigns a pool so capacity can come from that pool. The
+    /// pump itself uses [`Self::findings_for`], which keeps the two kinds
+    /// apart.
+    ///
+    /// # Errors
+    /// [`VivariumError::Config`] naming every violated key when a rule fails.
+    pub fn validate(&self, project: &Path, pools: &[String]) -> Result<(), VivariumError> {
+        self.validate_for(project, pools, false)
+    }
+
+    /// Like [`Self::validate`], but empty `[pump.dispatch] lanes` is allowed
+    /// when the hand role has a pool; capacity comes from its pool's slots and
+    /// optional caps, while kind-pool routing and `default_kind` are optional.
+    ///
+    /// # Errors
+    /// [`VivariumError::Config`] naming every violated key when a rule fails.
+    pub fn validate_for(
+        &self,
+        project: &Path,
+        pools: &[String],
+        hand_role_pool: bool,
+    ) -> Result<(), VivariumError> {
+        let found = self.findings_for(project, pools, hand_role_pool);
+        let mut all = found.errors;
+        all.extend(found.missing.into_iter().map(|item| item.detail));
+        if all.is_empty() {
+            Ok(())
+        } else {
+            Err(VivariumError::Config(all.join("; ")))
+        }
+    }
+
+    /// Check the config and report wrong values apart from missing items.
+    /// `hand_role_pool` is whether the hand role has a pool, which lets
+    /// `[pump.dispatch] lanes` stay empty.
+    #[must_use]
+    pub fn findings_for(&self, project: &Path, pools: &[String], hand_role_pool: bool) -> Findings {
+        let mut found = Findings::default();
+        if self.committer_name.trim().is_empty() {
+            found.absent(
+                "pump.committer_name",
+                "[pump] committer_name must not be empty",
+            );
+        }
+        if self.committer_email.trim().is_empty() {
+            found.absent(
+                "pump.committer_email",
+                "[pump] committer_email must not be empty",
+            );
+        }
+        if let Some(path) = self.hand_rules_path(project)
+            && let Err(err) = std::fs::read_to_string(&path)
+        {
+            found.invalid(format!(
+                "[pump] hand_rules `{}` cannot be read: {err}",
+                path.display()
+            ));
+        }
+        if self.tick == 0 {
+            found.invalid("[pump] tick must be >= 1");
+        }
+        self.validate_workspace(&mut found);
+        self.validate_dispatch(pools, hand_role_pool, &mut found);
+        if self.targets.is_empty() {
+            if self.branch.is_empty() {
+                found.absent("pump.branch", "[pump] branch must not be empty");
+            }
+            self.validate_merge_and_gate(pools, &mut found);
+        } else {
+            let mut target_paths = BTreeSet::new();
+            for (id, target) in self.target_configs() {
+                let normalized: PathBuf = Path::new(&target.path).components().collect();
+                if !target_paths.insert(normalized) {
+                    found.invalid(format!(
+                        "[pump.targets.{id}] path duplicates another configured repository target"
+                    ));
+                }
+                validate_target(&id, &target, pools, &mut found);
+            }
+        }
+        found
+    }
+
+    fn validate_dispatch(&self, pools: &[String], hand_role_pool: bool, found: &mut Findings) {
+        if self.dispatch.lanes.is_empty() && !hand_role_pool {
+            found.absent(
+                "hand pool",
+                "[pump.dispatch] lanes must not be empty (or give the hand role a pool: \
+                 `vivi role pool hand <pool>`)",
+            );
+        }
+        for lane in &self.dispatch.lanes {
+            if lane.cap == 0 {
+                found.invalid(format!(
+                    "[pump.dispatch] lanes: lane `{}` needs cap >= 1",
+                    lane.model
+                ));
+            }
+            if lane.model.is_empty() {
+                found.invalid("[pump.dispatch] lanes: lane model must not be empty");
+            }
+        }
+        if self.dispatch.max_attempts == 0 {
+            found.invalid("[pump.dispatch] max_attempts must be >= 1");
+        }
+        if self.dispatch.budget == 0 {
+            found.invalid("[pump.dispatch] budget must be >= 1");
+        }
+        if self.dispatch.per_tick == 0 {
+            found.invalid("[pump.dispatch] per_tick must be >= 1");
+        }
+        self.validate_kinds(pools, hand_role_pool, found);
+    }
+
+    fn validate_kinds(&self, pools: &[String], hand_role_pool: bool, found: &mut Findings) {
+        for (name, kind) in &self.dispatch.kinds {
+            if !hand_role_pool {
+                if kind.pools.is_empty() {
+                    found.absent(
+                        format!("pump.dispatch.kinds.{name}.pools"),
+                        format!("[pump.dispatch.kinds.{name}] pools must not be empty"),
+                    );
+                }
+                for pool in &kind.pools {
+                    if !known(pools, pool) {
+                        found.invalid(format!(
+                            "[pump.dispatch.kinds.{name}] pools names unknown pool `{pool}`"
+                        ));
+                    }
+                }
+            }
+            if kind.max == Some(0) {
+                found.invalid(format!("[pump.dispatch.kinds.{name}] max must be >= 1"));
+            }
+        }
+        if !hand_role_pool && !self.dispatch.kinds.is_empty() {
+            let default = &self.dispatch.default_kind;
+            if default.is_empty() {
+                found.absent(
+                    "pump.dispatch.default_kind",
+                    "[pump.dispatch] default_kind must be set when kinds is non-empty",
+                );
+            } else if !self.dispatch.kinds.contains_key(default) {
+                found.invalid(format!(
+                    "[pump.dispatch] default_kind names undefined kind `{default}`"
+                ));
+            }
+        }
+    }
+
+    /// `[pump.workspace] lane_gib`, when set, must be a plausible lane disk.
+    fn validate_workspace(&self, found: &mut Findings) {
+        if let Some(gib) = self.workspace.lane_gib
+            && !(1..=1024).contains(&gib)
+        {
+            found.invalid(format!(
+                "[pump.workspace] lane_gib must be between 1 and 1024, got {gib}"
+            ));
+        }
+    }
+
+    fn validate_merge_and_gate(&self, pools: &[String], found: &mut Findings) {
+        validate_merge(&self.merge, found);
+        if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
+            found.absent(
+                "pump.merge.shared_checks",
+                "[pump.merge] shared_checks must not be empty while promotion is enabled \
+                 (promote = true and main set)",
+            );
+        }
+        if self.gate.command.trim().is_empty() {
+            found.absent("pump.gate.command", "[pump.gate] command must not be empty");
+        }
+        if self.gate.results_dir.is_some() && self.gate.results_wait_seconds == 0 {
+            found.invalid("[pump.gate] results_dir needs results_wait_seconds >= 1");
+        }
+        for name in &self.gate.pools {
+            if !known(pools, name) {
+                found.invalid(format!("[pump.gate] pools names unknown pool `{name}`"));
+            }
+        }
+    }
+}
+
+/// The legacy `[pump.merge]` settings that are wrong when present.
+fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
+    if merge.batch == 0 {
+        found.invalid("[pump.merge] batch must be >= 1");
+    }
+    if merge.lanes == 0 {
+        found.invalid("[pump.merge] lanes must be >= 1");
+    }
+    if merge
+        .repair_budget
+        .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
+    {
+        found.invalid("[pump.merge] repair_budget must be >= proof_timeout and >= 1");
+    }
+    for entry in &merge.generated {
+        if entry.paths.is_empty() {
+            found.invalid("[[pump.merge.generated]] paths must not be empty");
+        }
+        if entry.regenerate.trim().is_empty() {
+            found.invalid("[[pump.merge.generated]] regenerate must not be empty");
+        }
+    }
+    validate_checks_for("[pump.merge.checks_for]", &merge.checks_for, found);
+}
+
+fn validate_target(id: &str, target: &PumpTarget, pools: &[String], found: &mut Findings) {
+    let prefix = format!("[pump.targets.{id}]");
+    if !valid_target_id(id) {
+        found.invalid(format!(
+            "{prefix} id must use lowercase letters, digits and hyphens"
+        ));
+    }
+    let path = Path::new(&target.path);
+    if target.path.is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        found.invalid(format!(
+            "{prefix} path must be a workspace-relative path without `..`"
+        ));
+    }
+    if target.branch.trim().is_empty() {
+        found.absent(
+            format!("pump.targets.{id}.branch"),
+            format!("{prefix} branch must not be empty"),
+        );
+    }
+    if target.github_repo.as_deref().is_some_and(str::is_empty) {
+        found.invalid(format!("{prefix} github_repo must not be empty when set"));
+    }
+    let merge = target.merge.as_ref();
+    validate_target_merge(id, merge, found);
+    if target.promote
+        && !target.main.is_empty()
+        && merge.is_some_and(|merge| merge.shared_checks.is_empty())
+    {
+        found.absent(
+            format!("pump.targets.{id}.merge.shared_checks"),
+            format!("{prefix}.merge shared_checks must not be empty while promotion is enabled"),
+        );
+    }
+    if let Some(gate) = &target.gate {
+        validate_target_gate(id, gate, pools, found);
+    } else {
+        found.absent(
+            format!("pump.targets.{id}.gate.command"),
+            format!("{prefix}.gate command must not be empty"),
+        );
+    }
+}
+
+fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {
+    let prefix = format!("[pump.targets.{id}]");
+    if merge.is_some_and(|merge| merge.batch == 0) {
+        found.invalid(format!("{prefix}.merge batch must be >= 1"));
+    }
+    if merge.is_some_and(|merge| merge.lanes == 0) {
+        found.invalid(format!("{prefix}.merge lanes must be >= 1"));
+    }
+    if merge.is_some_and(|merge| {
+        merge
+            .repair_budget
+            .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
+    }) {
+        found.invalid(format!(
+            "{prefix}.merge repair_budget must be >= proof_timeout and >= 1"
+        ));
+    }
+    for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
+        if entry.paths.is_empty() {
+            found.invalid(format!(
+                "[pump.targets.{id}.merge] generated paths must not be empty"
+            ));
+        }
+        if entry.regenerate.trim().is_empty() {
+            found.invalid(format!(
+                "[pump.targets.{id}.merge] generated regenerate must not be empty"
+            ));
+        }
+    }
+    let scope = format!("[pump.targets.{id}.merge.checks_for]");
+    let empty = BTreeMap::new();
+    validate_checks_for(
+        &scope,
+        merge.map(|merge| &merge.checks_for).unwrap_or(&empty),
+        found,
+    );
+}
+
+fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], found: &mut Findings) {
+    let prefix = format!("[pump.targets.{id}.gate]");
+    if gate.command.trim().is_empty() {
+        found.absent(
+            format!("pump.targets.{id}.gate.command"),
+            format!("{prefix} command must not be empty"),
+        );
+    }
+    if gate.results_dir.is_some() && gate.results_wait_seconds == 0 {
+        found.invalid(format!(
+            "{prefix} results_dir needs results_wait_seconds >= 1"
+        ));
+    }
+    for name in &gate.pools {
+        if !known(pools, name) {
+            found.invalid(format!("{prefix} pools names unknown pool `{name}`"));
+        }
+    }
+}
+
+fn validate_checks_for(scope: &str, table: &BTreeMap<String, Vec<String>>, found: &mut Findings) {
+    for (glob, cmds) in table {
+        if cmds.is_empty() || cmds.iter().any(|cmd| cmd.trim().is_empty()) {
+            found.invalid(format!("{scope} '{glob}' must have non-empty commands"));
+        }
+    }
+}
+
+fn valid_target_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}

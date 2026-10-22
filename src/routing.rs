@@ -37,4 +37,6 @@ pub use model::{
 };
 pub use pump_roles::{PumpRoleCheck, pump_role_checks};
 pub use show::{ConfigOverview, FlowOverview, RoleRow, overview, render_text};
-pub use validate::{Issue, Severity, format_report, require_ok, validate};
+pub use validate::{
+    Issue, Severity, format_report, not_ready, not_ready_summary, require_ok, validate,
+};

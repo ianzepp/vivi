@@ -19,7 +19,8 @@ pub struct PumpRoleCheck {
     /// `auditor`, `hand kind`, or a role's `<role> model` (the role's pool
     /// can run its jobs).
     pub name: &'static str,
-    /// Empty when the requirement is met. Every issue is an error.
+    /// Empty when the requirement is met. An issue is an error, or a
+    /// not-ready item for something the project has not set up yet.
     pub issues: Vec<Issue>,
 }
 
@@ -69,10 +70,13 @@ fn collect(name: &'static str, check: impl FnOnce(&mut Vec<Issue>)) -> PumpRoleC
 
 fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     let Some(role) = routing.pump_planner() else {
-        issues.push(Issue::error(format!(
-            "the pump needs an active {PUMP_PLANNER_ROLE} role assigned to a pool for durable \
-             planning jobs: run `vivi config migrate`"
-        )));
+        issues.push(Issue::not_ready(
+            "pump-planner role",
+            format!(
+                "the pump needs an active {PUMP_PLANNER_ROLE} role assigned to a pool for \
+                 durable planning jobs: run `vivi config migrate`"
+            ),
+        ));
         return;
     };
     if role.status != "active" {
@@ -82,17 +86,21 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
         )));
     }
     if role.pool.is_none() {
-        issues.push(Issue::error(format!(
-            "role {} must name a pool for durable planning jobs: run `vivi config migrate` \
-             or `vivi role pool {} <pool>`",
-            role.name, role.name
-        )));
+        issues.push(Issue::not_ready(
+            "pump-planner pool",
+            format!(
+                "role {} must name a pool for durable planning jobs: run `vivi config migrate` \
+                 or `vivi role pool {} <pool>`",
+                role.name, role.name
+            ),
+        ));
     }
 }
 
 fn check_merge(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     let Some(role) = routing.merge() else {
-        issues.push(Issue::error(
+        issues.push(Issue::not_ready(
+            "merge role",
             "the pump needs an active merge role assigned to a pool for durable merge jobs",
         ));
         return;
@@ -104,10 +112,13 @@ fn check_merge(routing: &RoleRouting, issues: &mut Vec<Issue>) {
         )));
     }
     if role.pool.is_none() {
-        issues.push(Issue::error(format!(
-            "merge role {} must name a pool for durable merge jobs",
-            role.name
-        )));
+        issues.push(Issue::not_ready(
+            "merge pool",
+            format!(
+                "merge role {} must name a pool for durable merge jobs",
+                role.name
+            ),
+        ));
     }
 }
 
@@ -129,18 +140,22 @@ fn check_merge_kind(routing: &RoleRouting, issues: &mut Vec<Issue>) {
 /// Need acceptance audits have no fallback: they need an auditor with a pool.
 fn check_auditor(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     let Some(role) = routing.auditor().filter(|role| role.status == "active") else {
-        issues.push(Issue::error(
+        issues.push(Issue::not_ready(
+            "auditor role",
             "the pump needs an active auditor role assigned to a pool for need acceptance \
              audits, or every need stops before landing: run `vivi config migrate`",
         ));
         return;
     };
     if role.pool.is_none() {
-        issues.push(Issue::error(format!(
-            "auditor role {} must name a pool for need acceptance audits, or every need stops \
-             before landing: run `vivi config migrate` or `vivi role pool {} <pool>`",
-            role.name, role.name
-        )));
+        issues.push(Issue::not_ready(
+            "auditor pool",
+            format!(
+                "auditor role {} must name a pool for need acceptance audits, or every need \
+                 stops before landing: run `vivi config migrate` or `vivi role pool {} <pool>`",
+                role.name, role.name
+            ),
+        ));
     }
 }
 

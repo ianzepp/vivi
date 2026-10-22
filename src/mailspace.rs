@@ -51,6 +51,8 @@ mod reply;
 mod report;
 mod rules;
 pub mod shipped;
+mod starter_pump;
+pub use starter_pump::STARTER_PUMP;
 mod step;
 #[cfg(test)]
 mod tests;

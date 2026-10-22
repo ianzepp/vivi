@@ -2770,15 +2770,7 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
         "--body",
         "done",
     ]));
-    let config_path = project.path().join(".vivi/mailspace.toml");
-    writeln!(
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&config_path)
-            .unwrap(),
-        "\n[pump]"
-    )
-    .unwrap();
+    // `mailspace init` already wrote the `[pump]` table the pump state needs.
     let pump_home = project.path().join(".vivi/pump");
     std::fs::create_dir_all(&pump_home).unwrap();
     let mut pump_state = PumpState::default();

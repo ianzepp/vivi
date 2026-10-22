@@ -12,7 +12,7 @@ use vivi::mailspace::Mailspace;
 use vivi::mailspace::config_edit;
 use vivi::routing::{
     LegacyCharter, MigrateInputs, MigratePlan, apply_plan_to_document, format_report, overview,
-    plan_migrate, render_plan, render_text, require_ok, unified_diff, validate,
+    plan_migrate, render_plan, render_text, require_ok, unified_diff,
 };
 
 pub(crate) fn handle_config_command(command: &ConfigCommand) -> Result<(), VivariumError> {
@@ -76,21 +76,42 @@ fn print_porcelain(view: &vivi::routing::ConfigOverview) {
     );
 }
 
+/// Exit status of `vivi config validate` for a project that is valid but not
+/// ready. A wrong value exits 1 like any other error; ready exits 0.
+const NOT_READY_EXIT: i32 = 3;
+
 fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    let issues = validate(&mailspace.config);
+    let issues = vivi::pump::readiness::assess(&mailspace);
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&issues_json(&issues)).map_err(json_err)?
         );
     } else {
-        let report = format_report(&issues);
-        if !report.is_empty() {
-            println!("{report}");
-        }
+        print_report(&issues);
     }
-    require_ok(&issues)
+    require_ok(&issues)?;
+    if !vivi::pump::readiness::is_ready(&issues) {
+        std::process::exit(NOT_READY_EXIT);
+    }
+    Ok(())
+}
+
+fn print_report(issues: &[vivi::routing::Issue]) {
+    let others: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue.severity != vivi::routing::Severity::NotReady)
+        .cloned()
+        .collect();
+    let report = format_report(&others);
+    if !report.is_empty() {
+        println!("{report}");
+    }
+    let missing = vivi::pump::readiness::render_missing(issues);
+    if !missing.is_empty() {
+        println!("{missing}");
+    }
 }
 
 fn issues_json(issues: &[vivi::routing::Issue]) -> serde_json::Value {
@@ -98,13 +119,18 @@ fn issues_json(issues: &[vivi::routing::Issue]) -> serde_json::Value {
         issues
             .iter()
             .map(|issue| {
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "severity": match issue.severity {
                         vivi::routing::Severity::Error => "error",
                         vivi::routing::Severity::Warning => "warning",
+                        vivi::routing::Severity::NotReady => "not_ready",
                     },
                     "message": issue.message,
-                })
+                });
+                if let Some(item) = &issue.item {
+                    row["item"] = serde_json::json!(item);
+                }
+                row
             })
             .collect::<Vec<_>>()
     )

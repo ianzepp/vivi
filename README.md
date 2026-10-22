@@ -533,6 +533,19 @@ pool references, fallback targets and cycles, model bands, read-only settings,
 and configured pump requirements. Run it before starting the pump; it also runs at **vivi pump
 run|once** startup.
 
+**vivi mailspace init** writes a starter **[pump]** table (branch, committer,
+**[pump.merge] shared_checks** and **[pump.gate] command**, all empty). A project
+that only lacks things the pump needs is *not ready*, not invalid: missing
+committer, branch, gate command, shared checks, roles and pools, or a pool
+without a harness or bands. **vivi config validate** lists each missing item
+under `not ready:` and exits 3; a wrong value (a bad number, a pool name that
+points at nothing, a misspelled role) is an error and exits 1; ready exits 0.
+**vivi pump run** and **once** on a not-ready project dispatch nothing and exit
+cleanly: the status file and log say `not ready` with the items, **vivi pump
+health** reports `not ready: ...` with verdict `unknown`, and a long-running pump
+(including the service child) keeps watching the config and starts by itself
+once the last item is supplied.
+
 **vivi config show**, **vivi config validate**, and **vivi config migrate**
 inspect, validate, and migrate routing. **vivi role pool** and **vivi role
 set** assign role settings. **vivi pool list**, **show**, **add**, **set**,

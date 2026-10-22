@@ -225,7 +225,7 @@ to = "hand"
     let issues = validate(&config);
     assert!(
         issues.iter().any(|issue| {
-            issue.severity == Severity::Error
+            issue.severity == Severity::NotReady
                 && issue
                     .message
                     .contains("active pump-planner role assigned to a pool")
@@ -258,7 +258,7 @@ lanes = 2
     let issues = validate(&config);
     assert!(
         issues.iter().any(|issue| {
-            issue.severity == Severity::Error
+            issue.severity == Severity::NotReady
                 && issue
                     .message
                     .contains("active merge role assigned to a pool")
@@ -269,14 +269,17 @@ lanes = 2
 
 #[test]
 fn validate_rejects_disabled_and_unassigned_merge_roles() {
-    for (merge, expected) in [
+    // A paused merge role is wrong; one with no pool is only missing.
+    for (merge, expected, severity) in [
         (
             "[[identities]]\nname = \"merge\"\nkind = \"merge\"\nstatus = \"paused\"\npool = \"here\"",
             "must be active",
+            Severity::Error,
         ),
         (
             "[[identities]]\nname = \"merge\"\nkind = \"merge\"\nstatus = \"active\"",
             "must name a pool",
+            Severity::NotReady,
         ),
     ] {
         let config = cfg(&format!(
@@ -284,9 +287,9 @@ fn validate_rejects_disabled_and_unassigned_merge_roles() {
         ));
         let issues = validate(&config);
         assert!(
-            issues.iter().any(|issue| {
-                issue.severity == Severity::Error && issue.message.contains(expected)
-            }),
+            issues
+                .iter()
+                .any(|issue| { issue.severity == severity && issue.message.contains(expected) }),
             "expected {expected:?} in {issues:?}"
         );
     }
@@ -383,7 +386,7 @@ to = "hand"
     let issues = validate(&config);
     assert!(
         issues.iter().any(|issue| {
-            issue.severity == Severity::Error && issue.message.contains("has no bands table")
+            issue.severity == Severity::NotReady && issue.message.contains("has no bands table")
         }),
         "{issues:?}"
     );
@@ -644,17 +647,27 @@ fn unified_diff_names_the_file() {
 }
 
 #[test]
-fn issues_distinguish_error_and_warning() {
+fn issues_distinguish_error_warning_and_not_ready() {
     let error = Issue {
         severity: Severity::Error,
         message: "bad".into(),
+        item: None,
     };
     let warning = Issue {
         severity: Severity::Warning,
         message: "old".into(),
+        item: None,
     };
+    let missing = Issue::not_ready("gate pool", "no gate pool");
     assert_eq!(error.severity, Severity::Error);
     assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(missing.severity, Severity::NotReady);
+    assert_eq!(missing.item.as_deref(), Some("gate pool"));
+    assert!(require_ok(&[missing.clone(), warning]).is_ok());
+    assert_eq!(
+        crate::routing::not_ready_summary(&[missing]),
+        Some(String::from("not ready: gate pool"))
+    );
 }
 
 #[test]

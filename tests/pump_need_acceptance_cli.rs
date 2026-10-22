@@ -738,7 +738,10 @@ fn write_config(
 ) {
     let config_path = project.join(".vivi/mailspace.toml");
     let old = fs::read_to_string(&config_path).unwrap();
-    let base_config = old.replace("identities = []\n", "");
+    // `mailspace init` writes a starter [pump]; this test supplies its own.
+    let base_config = old
+        .replace("identities = []\n", "")
+        .replace(vivi::mailspace::STARTER_PUMP, "");
     let additions = format!(
         "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = true\ntick = 1\ncommitter_name = \"Need Acceptance Test\"\ncommitter_email = \"need-acceptance@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 4\nlanes = [{{ model = \"standin\", cap = 8 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 12\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"need-acceptance\"\nrun = \"python3 '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_BIN\"]\n\n[[pools.p.bands.P2]]\nmodel = \"standin\"\nreasoning = \"low\"\n\n[pools.p.committer]\nname = \"Need Acceptance Test\"\nemail = \"need-acceptance@localhost\"\n",
         toml_string(home),

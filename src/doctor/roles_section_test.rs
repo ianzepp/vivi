@@ -69,15 +69,27 @@ fn cadence_boundaries_match_due_and_overdue_thresholds() {
 }
 
 #[test]
-fn a_pump_merge_role_without_a_pool_fails_doctor() {
+fn a_pump_merge_role_without_a_pool_is_not_ready_not_failed() {
     let views = [role("merge", Some("merge"), None, None)];
     let finding = merge_pool_finding(&views, &[]);
-    assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+    assert_eq!(finding.status, Status::Skipped, "{finding:#?}");
+    assert!(finding.detail.starts_with("not ready: "), "{finding:#?}");
     assert!(finding.detail.contains("no pool"), "{finding:#?}");
-    assert_eq!(
-        finding.fix.as_deref(),
-        Some("vivi role pool merge <pool> --project <root>")
+    assert!(
+        finding
+            .detail
+            .contains("vivi role pool merge <pool> --project <root>"),
+        "{finding:#?}"
     );
+}
+
+#[test]
+fn a_pump_merge_role_naming_an_unknown_pool_still_fails_doctor() {
+    let mut views = [role("merge", Some("merge"), None, None)];
+    views[0].pool = Some(String::from("nowhere"));
+    let finding = merge_pool_finding(&views, &["workers"]);
+    assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+    assert!(finding.detail.contains("unknown pool"), "{finding:#?}");
 }
 
 #[test]
@@ -90,10 +102,10 @@ fn a_bound_merge_pool_is_ok() {
 }
 
 #[test]
-fn a_missing_merge_role_fails_when_the_pump_is_configured() {
+fn a_missing_merge_role_is_not_ready_when_the_pump_is_configured() {
     let views = [role("hand", Some("hand"), None, None)];
     let finding = merge_pool_finding(&views, &["workers"]);
-    assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+    assert_eq!(finding.status, Status::Skipped, "{finding:#?}");
     assert!(finding.detail.contains("no merge role"), "{finding:#?}");
 }
 
@@ -131,27 +143,37 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
             "pump role hand kind"
         ]
     );
-    // Only the merge role has a pool here, and that pool has no harness.
+    // Only the merge role has a pool here, and that pool has no harness: a
+    // missing item, so doctor reports it as not ready rather than failing.
     let failing: Vec<&str> = models
         .iter()
         .filter(|f| f.status == Status::Fail)
         .map(|f| f.name.as_str())
         .collect();
-    assert_eq!(failing, ["pump role merge model"]);
+    assert!(failing.is_empty(), "{failing:?}");
+    assert_eq!(models[1].status, Status::Skipped, "{models:#?}");
     assert!(
         models[1].detail.contains("[pools.here.harness]"),
         "{models:#?}"
     );
-    assert_eq!(
-        models[1].fix.as_deref(),
-        Some("vivi pool bands set <pool> <band> <model> <reasoning> --project <root>")
+    assert!(
+        models[1]
+            .detail
+            .contains("vivi pool bands set <pool> <band> <model> <reasoning> --project <root>"),
+        "{models:#?}"
     );
+    // Wrong kinds fail; absent roles and pools are only not ready.
     for finding in &findings {
-        assert_eq!(finding.status, Status::Fail, "{finding:#?}");
-        assert_eq!(
-            finding.fix.as_deref(),
-            Some("vivi config migrate --project <root>")
-        );
+        if finding.name.ends_with(" kind") {
+            assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+            assert_eq!(
+                finding.fix.as_deref(),
+                Some("vivi config migrate --project <root>")
+            );
+        } else {
+            assert_eq!(finding.status, Status::Skipped, "{finding:#?}");
+            assert!(finding.detail.starts_with("not ready: "), "{finding:#?}");
+        }
     }
     assert!(findings[0].detail.contains("pump-planner"));
     assert!(findings[2].detail.contains("must name a pool"));

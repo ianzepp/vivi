@@ -66,7 +66,10 @@ fn scaffold() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         vivi(&["mailspace", "identity", "add", identity, "--project", proj]);
     }
     let config = project.join(".vivi/mailspace.toml");
-    let mut text = std::fs::read_to_string(&config).unwrap();
+    // `mailspace init` writes a starter [pump]; this test supplies its own.
+    let mut text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace(vivi::mailspace::STARTER_PUMP, "");
     text.push_str(&format!(
         "\n[pools.lanes]\nprovider = \"local\"\nslots = 1\nbuild_dir = \"target\"\n[pools.lanes.local]\nroot = \"{}\"\nworktree_of = \"{}\"\n[pools.lanes.harness]\nname = \"standin\"\nrun = \"true\"\nmodels = [\"standin\"]\n[pools.lanes.committer]\nname = \"bot\"\nemail = \"bot@example.com\"\n\n[pump]\nbranch = \"main\"\nhome = \"pump-home\"\n",
         root.display(),
