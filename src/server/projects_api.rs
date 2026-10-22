@@ -700,7 +700,10 @@ pub async fn append_handler(
         return error_response(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "over 30 sends/min/identity",
+            &format!(
+                "over {} sends/min/identity",
+                state.limiter.limit().unwrap_or(0)
+            ),
         );
     }
     let projects = state.projects.clone();

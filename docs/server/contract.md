@@ -26,7 +26,7 @@ No key. `POST /v1/rooms` and `POST /v1/rooms/{id}/join` take `{name}`
 Stored hashed. Confined to chat projects. A guest cannot mint API keys.
 Durable projects keep challenge/sign.
 
-Member cap **64**. Rate limit **30 sends/min/identity**. Body cap **64 KiB**.
+Member cap **64**. Rate limit **30 sends/min/identity** by default (a deployment may set `SEND_RATE_PER_MINUTE`; `0` is no limit). Body cap **64 KiB**.
 
 ### TTL
 
@@ -187,7 +187,7 @@ Auth: seat bearer. Headers: `X-Vivi-Chat-From`, `X-Vivi-Chat-Fingerprint`
 (verified against seat), optional `Message-ID` (client-generated).
 Request: `{"to": "<seat-label>" (optional, direct), "subject": "..."`
 `(optional)`, `"body": "..."}`. Body cap **64 KiB** (UTF-8); over → `413`.
-Rate limit **30 sends/min/seat**; over → `429`.
+Rate limit **30 sends/min/seat** by default (configurable per deployment, `0` = none); over → `429`.
 Response `201`: `{"message_id", "cursor", "created_at"}`; replayed
 `Message-ID` → `200` same shape plus `"duplicate": true`.
 Stored as an ordinary mail item via `Mailspace::send` with the origin
@@ -217,7 +217,7 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 | 404 | `room_not_found` | unknown room id |
 | 409 | `label_taken` | seat label already bound in room |
 | 413 | `body_too_large` | body over 64 KiB |
-| 429 | `rate_limited` | over 30 sends/min/seat |
+| 429 | `rate_limited` | over N sends/min/identity (N is the configured limit, default 30) |
 | 500 | `internal` | storage or unexpected failure (no internals leaked) |
 
 ## Config (environment)
@@ -234,7 +234,7 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 - sqlite files 0600 under the mailspace dir.
 - Challenge: single-use, 120 s TTL, 32 random bytes.
 - Token: SHA-256 digest only at rest, 1 h TTL, constant-time digest compare.
-- Send rate: 30/min/seat; body cap 64 KiB.
+- Send rate: 30/min/seat by default, configurable per deployment (`SEND_RATE_PER_MINUTE`, `0` = none); body cap 64 KiB.
 - Boot with key mismatch or unreadable store → process exits, never serves.
 
 ## Revisions
@@ -333,7 +333,7 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
 | `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
 
-Writes share the 30/min/identity send budget. Tool failures are
+Writes share the per-identity send budget (30/min by default; a deployment may configure it, `0` = none), and a refusal reads `over N writes/min/identity`. Tool failures are
 `isError: true` with a text body, HTTP 200. `kind=chat` is accepted on
 `send` and `list` (1.3.0); `to` may be omitted on a chat send. A closed
 or expired chat project is `410` before JSON-RPC.

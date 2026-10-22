@@ -377,7 +377,10 @@ fn rate_limit(state: &AppState, project_id: &str, name: &str) -> Result<(), Resp
         Err(error_response(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "over 30 sends/min/identity",
+            &format!(
+                "over {} sends/min/identity",
+                state.limiter.limit().unwrap_or(0)
+            ),
         ))
     }
 }

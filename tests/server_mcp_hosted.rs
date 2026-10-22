@@ -588,6 +588,55 @@ async fn memo_save_lands_in_the_acting_identitys_memos() {
 }
 
 #[tokio::test]
+async fn the_configured_write_limit_reaches_mcp_writes() {
+    let fx = fixture_with("rate-limit", |state| {
+        state.limiter = vivi_server::safety::RateLimiter::new(Some(2));
+    });
+    let mind = fx.key(Some("mind"));
+    for n in 0..2 {
+        fx.call(
+            &mind,
+            "memo",
+            json!({"action": "save", "subject": format!("note {n}"), "body": "b"}),
+        )
+        .await;
+    }
+    let message = fx
+        .call_err(
+            &mind,
+            "memo",
+            json!({"action": "save", "subject": "note 2", "body": "b"}),
+        )
+        .await;
+    assert_eq!(message, "over 2 writes/min/identity");
+    // Reads are not writes, and another identity has its own budget.
+    fx.call(&mind, "memo", json!({})).await;
+    let hand = fx.key(Some("hand"));
+    fx.call(
+        &hand,
+        "memo",
+        json!({"action": "save", "subject": "mine", "body": "b"}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn zero_unlimits_mcp_writes() {
+    let fx = fixture_with("rate-unlimited", |state| {
+        state.limiter = vivi_server::safety::RateLimiter::new(None);
+    });
+    let mind = fx.key(Some("mind"));
+    for n in 0..40 {
+        fx.call(
+            &mind,
+            "memo",
+            json!({"action": "save", "subject": format!("note {n}"), "body": "b"}),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
 async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
     let fx = fixture("token");
     let key = fx.key(None);

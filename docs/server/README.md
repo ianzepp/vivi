@@ -47,6 +47,7 @@ curl http://localhost:8080/healthz   # -> ok
 | `HOST_LANES_ROOT` | `create_project`: existing directory that holds bare repositories (`<root>/<name>.git`) |
 | `HOST_GIT_URL_PREFIX` | `create_project`: the git URL is `<prefix><name>.git` (for example `git@hub:`) |
 | `HOST_DEFAULT_POOL` | `create_project`: optional pool whose `remote_url` is set to the git URL; the tool's `pool` overrides it |
+| `SEND_RATE_PER_MINUTE` | Writes per minute per identity (rooms, the projects API, and MCP writes share it). Unset is 30, the public default; a positive integer sets the limit; `0` is unlimited (for a trusted tailnet host). Any other value refuses to boot |
 | `HOSTED_DEFAULT_IDENTITY` | The vivi identity an API key without its own `identity` acts as on a hosted project (default `operator`) |
 
 ## Acceptance

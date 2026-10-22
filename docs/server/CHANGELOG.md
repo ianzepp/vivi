@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`SEND_RATE_PER_MINUTE`.** The per-identity write rate limit is now a
+  deployment setting. Unset keeps the public default of 30 per minute; a
+  positive integer sets the limit; `0` turns the limit off (for a
+  tailnet-only host whose writers are all trusted). Any other value refuses to
+  boot, naming the variable. Rooms, the projects API and MCP writes (including
+  `pump_control` and `pump_gate set`) share the one configured limiter, the
+  refusal text reports the configured number (`over N sends/min/identity`,
+  `over N writes/min/identity`), and the boot log states the effective limit.
+
 ## 1.7.0 — 2026-10-22
 
 Operator control over MCP: create a hosted project from nothing, and pause,

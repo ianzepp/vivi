@@ -27,6 +27,9 @@ struct ServerConfig {
     hosted_default_identity: Option<String>,
     /// `HOST_OPERATOR_TOKEN`: the Bearer for `POST /v1/host/mcp`.
     host_operator_token: Option<String>,
+    /// `SEND_RATE_PER_MINUTE`: writes per minute per identity (default 30;
+    /// `0` is unlimited, held as `None`).
+    send_rate_per_minute: Option<u32>,
 }
 
 impl ServerConfig {
@@ -42,8 +45,12 @@ impl ServerConfig {
             Err(_) => IpAddr::from([0, 0, 0, 0]),
         };
         let data_dir = PathBuf::from(std::env::var("DATA_DIR").unwrap_or_else(|_| "data".into()));
+        let send_rate_per_minute = vivi_server::safety::parse_send_rate(
+            std::env::var("SEND_RATE_PER_MINUTE").ok().as_deref(),
+        )?;
         Ok(Self {
             bind,
+            send_rate_per_minute,
             port,
             data_dir,
             store_encryption_key: std::env::var("STORE_ENCRYPTION_KEY").ok(),
@@ -125,6 +132,7 @@ async fn main() {
     if let Some(identity) = &config.hosted_default_identity {
         state.hosted_default_identity = identity.as_str().into();
     }
+    state.limiter = vivi_server::safety::RateLimiter::new(config.send_rate_per_minute);
     state.host_operator_token = config.host_operator_token.as_deref().map(Into::into);
     state.host = vivi_server::mcp::host::HostConfig::from_env();
     // Serve the projects the host registry lists, now and whenever it
@@ -133,6 +141,11 @@ async fn main() {
     // Keep each hosted project's transport index current with its mailspace.
     let _indexer = vivi_server::hosted::start_indexer(state.projects.clone());
     let app = vivi_server::router(state).route("/healthz", get(healthz));
+
+    match config.send_rate_per_minute {
+        Some(limit) => tracing::info!("write rate limit: {limit}/min per identity"),
+        None => tracing::info!("write rate limit: unlimited"),
+    }
 
     let addr = std::net::SocketAddr::from((config.bind, config.port));
     tracing::info!(

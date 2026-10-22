@@ -902,7 +902,10 @@ pub(super) fn rate_limit(
     if limiter.allow_send(project_id, hasher.finish() as u32) {
         Ok(())
     } else {
-        Err(ToolError::new("over 30 writes/min/identity"))
+        Err(ToolError::new(format!(
+            "over {} writes/min/identity",
+            limiter.limit().unwrap_or(0)
+        )))
     }
 }
 
