@@ -1,5 +1,7 @@
 //! Hosted-project reads: live queries of the mailspace through the library.
 
+use std::collections::HashSet;
+
 use serde_json::{Value, json};
 use vivi::mailspace::board::BoardOptions;
 use vivi::mailspace::{
@@ -10,7 +12,7 @@ use vivi::message::{render_message, to_json_message};
 use vivi::storage::{MailspaceEvent, StoredMessageView};
 
 use crate::mcp::letters::parse_letter;
-use crate::mcp::tools::{ToolError, opt_str, opt_usize, req_str};
+use crate::mcp::tools::{OVERVIEW_READY_CAP, ToolError, opt_str, opt_usize, req_str};
 
 use super::{Hosted, Located, is_work, lib_error, locate, status_for_role};
 
@@ -21,6 +23,12 @@ const THREAD_MAX: usize = 50;
 /// The wants the CLI's `board` shows per identity unless asked otherwise.
 const BOARD_WANTS_DEFAULT: usize = 5;
 const RECENT: usize = 8;
+/// Open tasks and needs shown per role unless asked otherwise.
+const BOARD_ITEMS_DEFAULT: usize = 5;
+/// Graph nodes listed per frontier view (ready, blocked, active).
+const BOARD_GRAPH_DEFAULT: usize = 25;
+/// Characters of a last-event note the board keeps unless `notes` is set.
+const NOTE_PREVIEW_CHARS: usize = 80;
 
 /// `marks` and friends: one slug or a list, as a string or an array.
 pub(super) fn string_list(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError> {
@@ -449,15 +457,49 @@ pub(super) fn graph(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// `vivi board --json`, as the mailspace builds it. The host's filesystem
-/// root is dropped from the answer.
+/// `vivi board --json`, as the mailspace builds it, bounded: a faberlang-scale
+/// project holds thousands of open items whose last events carry whole
+/// receipts. Tasks, needs and wants are capped per role (newest first, the
+/// rest counted as hidden), each last-event note is cut to a preview, and the
+/// graph view lists a capped frontier without its node table. `full` lifts
+/// every bound; an explicit cap still wins. The host's filesystem root is
+/// dropped from the answer.
 pub(super) fn board(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
-    let wants_cap = opt_usize(arguments, "wants_cap", BOARD_WANTS_DEFAULT, usize::MAX)?;
     let flag = |name: &str| {
         arguments
             .get(name)
             .and_then(Value::as_bool)
             .unwrap_or(false)
+    };
+    let full = flag("full");
+    let cap_default = |bounded: usize| if full { usize::MAX } else { bounded };
+    let wants_cap = opt_usize(
+        arguments,
+        "wants_cap",
+        cap_default(BOARD_WANTS_DEFAULT),
+        usize::MAX,
+    )?;
+    let caps = BoardCaps {
+        tasks: opt_usize(
+            arguments,
+            "tasks_cap",
+            cap_default(BOARD_ITEMS_DEFAULT),
+            usize::MAX,
+        )?,
+        needs: opt_usize(
+            arguments,
+            "needs_cap",
+            cap_default(BOARD_ITEMS_DEFAULT),
+            usize::MAX,
+        )?,
+        graph: opt_usize(
+            arguments,
+            "graph_cap",
+            cap_default(BOARD_GRAPH_DEFAULT),
+            usize::MAX,
+        )?,
+        notes: full || flag("notes"),
+        nodes: full,
     };
     let for_identity = opt_str(arguments, "for")?.map(str::to_owned);
     let board =
@@ -474,25 +516,126 @@ pub(super) fn board(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
     if let Some(object) = value.as_object_mut() {
         object.remove("root");
     }
+    bound_board(&mut value, &caps);
     Ok(value)
+}
+
+/// How far `board` trims what the library returns.
+struct BoardCaps {
+    tasks: usize,
+    needs: usize,
+    graph: usize,
+    /// Keep each last event's whole `note`.
+    notes: bool,
+    /// Keep each graph's full node table.
+    nodes: bool,
+}
+
+/// Trim a serialized board in place: see [`board`].
+fn bound_board(board: &mut Value, caps: &BoardCaps) {
+    let mut totals_hidden = (0, 0);
+    if let Some(identities) = board.get_mut("identities").and_then(Value::as_array_mut) {
+        for identity in identities {
+            let tasks = cap_items(identity, "tasks", caps.tasks, caps.notes);
+            let needs = cap_items(identity, "needs", caps.needs, caps.notes);
+            if let Some(object) = identity.as_object_mut() {
+                object.insert("tasks_hidden".into(), json!(tasks));
+                object.insert("needs_hidden".into(), json!(needs));
+            }
+            if let Some(wants) = identity.get_mut("wants").and_then(Value::as_array_mut) {
+                wants
+                    .iter_mut()
+                    .for_each(|item| trim_note(item, caps.notes));
+            }
+            totals_hidden = (totals_hidden.0 + tasks, totals_hidden.1 + needs);
+        }
+    }
+    if let Some(totals) = board.get_mut("totals").and_then(Value::as_object_mut) {
+        totals.insert("tasks_hidden".into(), json!(totals_hidden.0));
+        totals.insert("needs_hidden".into(), json!(totals_hidden.1));
+    }
+    if let Some(graphs) = board.get_mut("graphs").and_then(Value::as_array_mut) {
+        for graph in graphs.iter_mut().filter_map(Value::as_object_mut) {
+            for view in ["ready", "blocked", "active"] {
+                if let Some(Value::Array(nodes)) = graph.get_mut(view) {
+                    let total = nodes.len();
+                    nodes.truncate(caps.graph);
+                    graph.insert(format!("{view}_total"), json!(total));
+                }
+            }
+            if !caps.nodes
+                && let Some(Value::Array(nodes)) = graph.remove("nodes")
+            {
+                graph.insert("nodes_total".into(), json!(nodes.len()));
+            }
+        }
+    }
+}
+
+/// Sort one role's list newest first, keep the first `cap`, trim the notes of
+/// what stays, and return how many were cut.
+fn cap_items(identity: &mut Value, list: &str, cap: usize, notes: bool) -> usize {
+    let Some(items) = identity.get_mut(list).and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    items.sort_by(|a, b| item_date(b).cmp(item_date(a)));
+    let hidden = items.len().saturating_sub(cap);
+    items.truncate(cap);
+    items.iter_mut().for_each(|item| trim_note(item, notes));
+    hidden
+}
+
+fn item_date(item: &Value) -> &str {
+    item.get("date").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Replace an item's `last_event.note` with `note_preview` and `note_chars`,
+/// unless the caller asked for whole notes.
+fn trim_note(item: &mut Value, keep: bool) {
+    if keep {
+        return;
+    }
+    let Some(event) = item.get_mut("last_event").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(Value::String(note)) = event.remove("note") else {
+        return;
+    };
+    let chars = note.chars().count();
+    let mut preview: String = note.chars().take(NOTE_PREVIEW_CHARS).collect();
+    if chars > NOTE_PREVIEW_CHARS {
+        preview.push('\u{2026}');
+    }
+    event.insert("note_preview".into(), json!(preview));
+    event.insert("note_chars".into(), json!(chars));
 }
 
 pub(super) fn overview(h: &Hosted, project_id: &str) -> Result<Value, ToolError> {
     let board =
         h.ms.board(&BoardOptions {
             for_identity: Some(h.actor.clone()),
-            wants_cap: RECENT,
+            wants_cap: usize::MAX,
             ..BoardOptions::default()
         })
         .map_err(lib_error)?;
     let mut recent = Vec::new();
+    // Every open item this caller holds: the totals count these, and so does
+    // `ready`.
+    let mut held: HashSet<&str> = HashSet::new();
     if let Some(mine) = board.identities.first() {
+        held.extend(
+            [&mine.needs, &mine.tasks, &mine.wants]
+                .into_iter()
+                .flatten()
+                .map(|item| item.handle.as_str()),
+        );
         for (kind, items) in [
             ("need", &mine.needs),
             ("task", &mine.tasks),
             ("want", &mine.wants),
         ] {
-            for item in items {
+            let shown = if kind == "want" { RECENT } else { usize::MAX };
+            for item in items.iter().take(shown) {
                 recent.push(json!({
                     "handle": item.handle,
                     "kind": kind,
@@ -507,10 +650,16 @@ pub(super) fn overview(h: &Hosted, project_id: &str) -> Result<Value, ToolError>
     }
     let skip = recent.len().saturating_sub(RECENT);
     let recent: Vec<Value> = recent.into_iter().skip(skip).collect();
-    let ready = match backlog(h)? {
+    // The backlog frontier spans every role's open work; the totals above
+    // are this caller's own. Only the frontier items the caller holds are its
+    // ready work (`graph` shows the project's whole frontier).
+    let mut ready: Vec<String> = match backlog(h)? {
         Some(show) => frontier_from_show(&show).ready,
         None => Vec::new(),
     };
+    ready.retain(|handle| held.contains(handle.as_str()));
+    let ready_total = ready.len();
+    ready.truncate(OVERVIEW_READY_CAP);
     let mail_visible = h.ms.list(&h.actor, "inbox").map_err(lib_error)?.len();
     let memos =
         h.ms.list_kind(Some(&h.actor), "memos", "memo")
@@ -535,9 +684,10 @@ pub(super) fn overview(h: &Hosted, project_id: &str) -> Result<Value, ToolError>
             "wants_open": board.totals.wants_open,
             "mail_visible": mail_visible,
             "memos": memos,
-            "ready": ready.len(),
+            "ready": ready_total,
         },
         "ready": ready,
+        "ready_total": ready_total,
         "recent": recent,
     }))
 }
