@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 — 2026-10-22
 
+Built on vivi 19.0.0, and the write rate limit becomes a deployment setting.
+
+- **vivi 19.0.0.** The `vivi` dependency moves from v18.4.0 to v19.0.0. No
+  source change was needed. vivi 19 writes `pump.db` schema 8, which a server
+  built on vivi 18.x cannot open for pump health, `pump_control` or
+  `pump_gate`; upgrade the server together with the host's pump.
 - **`SEND_RATE_PER_MINUTE`.** The per-identity write rate limit is now a
   deployment setting. Unset keeps the public default of 30 per minute; a
   positive integer sets the limit; `0` turns the limit off (for a
