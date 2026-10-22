@@ -41,8 +41,8 @@ verifies the archive SHA-256, writes a versioned binary, and points a
 relative `vivi` symlink at it:
 
 ```text
-~/.local/bin/vivi-18.1.0
-~/.local/bin/vivi -> vivi-18.1.0
+~/.local/bin/vivi-18.1.1
+~/.local/bin/vivi -> vivi-18.1.1
 ```
 
 The prefix is `~/.local`, so binaries live in `~/.local/bin` (usually
@@ -52,11 +52,11 @@ already on `PATH`). That is not `~/.vivi`, which is a mailspace
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
 # or pin a release / prefix:
-curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 18.1.0 --prefix "$HOME/.local"
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 18.1.1 --prefix "$HOME/.local"
 ```
 
 The script defaults to the release it shipped with (`VIVI_VERSION`, currently
-18.1.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
+18.1.1) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
 can point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises
 the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`.
