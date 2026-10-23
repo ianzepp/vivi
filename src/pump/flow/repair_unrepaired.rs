@@ -52,8 +52,8 @@ fn alarm_text(cx: &StartCx<'_>) -> String {
     text.push_str(&format!(
         "; attempt branches {} and {}; main stays red; \
          release with vivi pump unlock {need} or a green main rung",
-        repair::branch(need, 1),
-        repair::branch(need, 2)
+        repair::branch(need, cx.run.run, 1),
+        repair::branch(need, cx.run.run, 2)
     ));
     text
 }

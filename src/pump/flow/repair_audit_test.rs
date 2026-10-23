@@ -111,7 +111,7 @@ impl Rig {
         )?;
         if facts {
             let text = repair::facts_text(&AttemptFacts {
-                branch: repair::branch(NEED, 1),
+                branch: repair::branch(NEED, 1, 1),
                 commit: COMMIT.into(),
                 base: BASE.into(),
             });

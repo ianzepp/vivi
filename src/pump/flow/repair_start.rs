@@ -34,7 +34,7 @@ impl StepHandler for RepairerStart {
             .routing
             .lookup(REPAIRER_ROLE)
             .ok_or_else(|| VivariumError::Config("no repairer role".to_owned()))?;
-        let name = repair::branch(need, attempt);
+        let name = repair::branch(need, cx.run.run, attempt);
         let brief = brief(cx, &rec, &main_tip, &name, attempt)?;
         let mut spec = role_job(cx.ctx, cx.run, step, "repairer", &role.name, &brief);
         spec.target = Some(rec.target);
