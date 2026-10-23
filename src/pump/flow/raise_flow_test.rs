@@ -14,6 +14,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::tick::tick_with;
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -117,7 +118,7 @@ fn rig() -> Result<Rig, VivariumError> {
     script_host(&host);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     start(&ctx, &store, &mut mail, NEED, Some("slice"))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),

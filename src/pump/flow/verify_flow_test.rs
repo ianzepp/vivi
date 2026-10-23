@@ -12,6 +12,7 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -83,7 +84,7 @@ fn rig() -> Result<Rig, VivariumError> {
     replies(&host)?;
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),
         branch: format!("vivi/need/{NEED}"),

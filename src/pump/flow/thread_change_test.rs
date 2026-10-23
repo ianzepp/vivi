@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
+use crate::letter::fixture::{record_body, step_body};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::handlers::TickPhase;
@@ -38,7 +38,7 @@ fn rig() -> Result<Rig, VivariumError> {
         mailspace: p.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    MailWriter::open_record(&mut port, &need, "kind: build")?;
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build"))?;
     start(&ctx, &store, &mut port, &need, Some("plan"))?;
     Ok(Rig {
         _project: p,
