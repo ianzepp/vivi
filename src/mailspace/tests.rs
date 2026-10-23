@@ -1123,9 +1123,10 @@ fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
     };
     let parent = crate::message::normalize_message_id(&need_rfc).unwrap();
     assert!(
-        task_bytes.contains(&format!("X-Vivi-Parent: <{parent}>")),
+        task_bytes.contains(&format!("parent = \"<{parent}>\"")),
         "{task_bytes}"
     );
+    assert!(!task_bytes.contains("X-Vivi-Parent"), "{task_bytes}");
     assert_eq!(source_kind.as_deref(), Some("need"));
 
     let show = mailspace.graph_show("backlog").unwrap();

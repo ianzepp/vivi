@@ -257,7 +257,7 @@ fn a_replay_of_held_letters_changes_nothing() {
 }
 
 #[test]
-fn filing_rebuilds_the_need_bind_from_the_parent_header() {
+fn filing_rebuilds_the_need_bind_from_the_parent_front_matter() {
     let w = World::new();
     let hand = w.bob.address("hand");
     // Alice sends the need to bob's hand and pushes it; bob pulls it.
@@ -267,7 +267,7 @@ fn filing_rebuilds_the_need_bind_from_the_parent_header() {
     assert_eq!(node(&w, "the need").state, "open", "the need is held work");
 
     // Alice lowers the need into a unit task addressed to bob's hand. The
-    // bind is local to alice: the letter carries only the parent header.
+    // bind is local to alice: the letter carries only the parent front matter key.
     w.alice
         .mailspace
         .task_from_source(SourceTaskRequest {
@@ -288,7 +288,7 @@ fn filing_rebuilds_the_need_bind_from_the_parent_header() {
     assert_eq!(
         unit.subgraph.as_deref(),
         Some(need_node.source_id.as_str()),
-        "filing derives the bind from X-Vivi-Parent"
+        "filing derives the bind from the parent front matter key"
     );
 
     // Pulling the same letters again writes no second bind.
