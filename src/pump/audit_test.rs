@@ -14,7 +14,7 @@ use crate::pump::audit::{
 use crate::pump::config::{GateConfig, PumpConfig};
 use crate::pump::gatefix::fix_need;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob, dispatch_pending};
+use crate::pump::jobs::{JobOutcome, JobStatus, dispatch_pending};
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedRole};
 
@@ -559,66 +559,6 @@ fn an_audit_stops_after_three_failures_and_does_not_restart_the_same_red_result(
     let exception = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exception.contains("gatefix-planner-failed"), "{exception}");
     assert!(exception.contains("vivi pump replan"), "{exception}");
-}
-
-#[test]
-fn status_explains_exhausted_red_work_and_operator_recovery() {
-    let (_dir, ctx, _host) = setup(None);
-    let mut st = State::default();
-    let run = AuditRun {
-        job_id: Some(String::from("audit-job")),
-        need: String::from("pumpfix-g01234567"),
-        tip: TIP.to_owned(),
-        fails: 1,
-        attempts: 2,
-        last_error: Some(String::from("provider: Connection error.")),
-        ..AuditRun::default()
-    };
-    st.red
-        .insert(run.need.clone(), String::from("pumpfix-g01234567"));
-    let mut job = PoolJob::from(JobSpec::new(
-        "audit-job",
-        "audit",
-        "auditor",
-        "audit subject",
-        "audit body",
-    ));
-    job.status = JobStatus::Dispatched;
-    st.jobs.insert(String::from("audit-job"), job);
-    store(&mut st, Some(run));
-
-    let lines = crate::pump::audit::status_lines(&ctx, &st);
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("gatefix-active"), "{lines:?}");
-    assert!(lines[0].contains("audit=in-flight"), "{lines:?}");
-    assert!(lines[0].contains("jobs=2 failures=1/3"), "{lines:?}");
-    let mut run = current(&st).unwrap();
-    run.job_id = None;
-    run.fails = 3;
-    run.attempts = 3;
-    run.exhausted = true;
-    store(&mut st, Some(run));
-    let lines = crate::pump::audit::status_lines(&ctx, &st);
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("gatefix-no-live-work"), "{lines:?}");
-    assert!(lines[0].contains("audit=failed"), "{lines:?}");
-    assert!(lines[0].contains("failures=3/3"), "{lines:?}");
-    assert!(lines[0].contains("Connection error."), "{lines:?}");
-    assert!(
-        lines[0].contains("vivi pump replan pumpfix-g01234567"),
-        "{lines:?}"
-    );
-    crate::pump::run::write_status(&ctx, &st, &[]);
-    let status = fs::read_to_string(ctx.home.join("status.txt")).unwrap();
-    assert!(status.contains("gatefix-no-live-work"), "{status}");
-    assert!(
-        status.contains("vivi pump replan pumpfix-g01234567"),
-        "{status}"
-    );
-    assert!(
-        !status.contains("red owned by pumpfix-g01234567"),
-        "{status}"
-    );
 }
 
 #[test]

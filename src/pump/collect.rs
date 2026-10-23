@@ -1,42 +1,25 @@
-//! Dispatch reconcile parsing and outcome classification.
+//! Dispatch reconcile parsing and the split re-ask.
 //!
-//! `collect` reconciles the pool once per tick, classifies every
-//! in-flight unit (deliver, fail, split, no-defect), expires unanswered split
-//! planners, and returns the gate task's receipt when the gate finished; the
-//! caller hands that receipt to the gate module.
+//! `collect` reconciles the pool once per tick: it applies every finished
+//! pool job's outcome, applies planner completions, and expires unanswered
+//! split planners. `resplit_bad_plan` re-asks a split planner once after a
+//! bad plan.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
-use std::path::Path;
 
-use serde::Serialize;
-
-use crate::pump::attempt_record::{self, Ending};
-use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote, shell_split};
-use crate::pump::jobs::{self, JobSpec};
-use crate::pump::state::{Attempt, State, Status, Unit};
-
-#[path = "collect_replan.rs"]
-mod replan_failure;
-use crate::pump::transient;
-pub(crate) use replan_failure::{needs_replan, out_of_scope_marker};
+use crate::pump::state::{State, Status};
 
 #[path = "collect/burst.rs"]
-mod burst;
+pub(crate) mod burst;
 
 #[path = "collect/split_expiry.rs"]
 mod split_expiry;
 
-pub(crate) use burst::{RATE_LIMIT_EXCEPTION_WINDOW, rate_limit_burst};
+pub(crate) use burst::rate_limit_burst;
 use split_expiry::expire_splits;
 
-/// Seconds a unit may stay unreported by reconcile before the pool-status
-/// fallback decides.
-const RECONCILE_GRACE: u64 = 90;
-/// Receipt marker of a worker that found nothing to fix.
-const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
 /// Split-planner exits without a plan before the unit is parked stuck.
 pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 /// Seconds a deferred split launch waits before it retries.
@@ -56,29 +39,6 @@ PUMP-RESPLIT-INPUT-BEGIN
 {input}
 PUMP-RESPLIT-INPUT-END
 "#;
-
-/// One unit handed to the split planner (`resplit/<uid>.json`).
-#[derive(Serialize)]
-struct ResplitRecord {
-    /// Unit handle.
-    id: String,
-    /// Owning need handle.
-    need: String,
-    /// Repository target the replacement units must keep.
-    target: String,
-    /// One-line title.
-    title: String,
-    /// Full brief the unit was dispatched with.
-    brief: String,
-    /// Files the unit may write.
-    write_scope: Vec<String>,
-    /// Proof commands the unit must pass.
-    proof: Vec<String>,
-    /// The unit's kind; empty means `default_kind`.
-    tools: String,
-    /// Last 3000 chars of the text that triggered the split.
-    worker_said: String,
-}
 
 /// Parse `vivi pool reconcile --porcelain` output into task handles mapped
 /// to `(state, detail)`.
@@ -112,337 +72,6 @@ pub fn receipt_full(ctx: &Ctx, task: &str) -> String {
     ctx.vivi(&format!("task show {task} --latest"), 60).text
 }
 
-/// Record a failed attempt: append the history entry, clear the task, and
-/// either return the unit to `pending` or park it as `stuck` with an
-/// exception once `max_attempts` is reached. The attempt record is posted on
-/// the need's pump record (see [`attempt_record`]), fetching the task receipt.
-///
-/// A transient-class failure (see [`transient::classify`]) backs off and
-/// retries instead of counting toward `max_attempts`, up to
-/// `transient_max` retries; past that cap the unit takes the normal path.
-/// A transient retry of a build/no-run proof killed by the lane timeout also
-/// refunds the attempt, since it never measured the unit.
-pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
-    fail_with(ctx, st, uid, why, detail, None);
-}
-
-/// [`fail`] with the task's full receipt when the caller already has it.
-fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, receipt: Option<&str>) {
-    if replan_out_of_scope(ctx, st, uid, detail, receipt) {
-        return;
-    }
-    record_failure_attempt(ctx, st, uid, why, detail, receipt);
-}
-
-/// Send structured out-of-scope evidence to replanning before recording an
-/// attempt; `true` means the ordinary failure path was fully replaced.
-fn replan_out_of_scope(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    detail: &str,
-    receipt: Option<&str>,
-) -> bool {
-    let Some(path) = receipt
-        .map(attempt_record::hand_message)
-        .and_then(|message| {
-            st.units
-                .get(uid)
-                .and_then(|unit| out_of_scope_marker(&message, &unit.write_scope))
-        })
-    else {
-        return false;
-    };
-    needs_replan(
-        ctx,
-        st,
-        uid,
-        "hand identified a blocked file outside write scope",
-        &format!("OUT-OF-SCOPE: {path}; {}", tail(detail, 250)),
-    );
-    true
-}
-
-/// Post one failed attempt, then back off, refund a build-only timeout, or
-/// park a unit that exhausted its charged-attempt budget.
-fn record_failure_attempt(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    why: &str,
-    detail: &str,
-    receipt: Option<&str>,
-) {
-    let now = ctx.now();
-    let max = ctx.cfg.dispatch.max_attempts;
-    let cap = ctx.cfg.dispatch.transient_max;
-    let backoff = ctx.cfg.dispatch.transient_backoff;
-    let Some(unit) = st.units.get_mut(uid) else {
-        return;
-    };
-    unit.history.push(Attempt {
-        attempt: unit.attempts,
-        model: unit.model.clone(),
-        why: why.to_owned(),
-        detail: tail(detail, 2500),
-        at: now,
-        branch: unit.branch.clone(),
-        task: unit.task.clone(),
-    });
-    let attempts = unit.attempts;
-    attempt_record::post(ctx, st, uid, &Ending::failed(why, detail, receipt));
-    let Some(unit) = st.units.get_mut(uid) else {
-        return;
-    };
-    unit.task = None;
-    let (transient, refund) = try_transient_retry(ctx, st, uid, why, detail, now, cap, backoff);
-    if refund {
-        refund_unmeasured_attempt(ctx, st, uid);
-    }
-    let Some(unit) = st.units.get_mut(uid) else {
-        return;
-    };
-    if !transient {
-        // Operator ruling (need a9571e50): a repair that times out or finds no
-        // changes dissolves its quarantine at once instead of burning attempts.
-        // Key on `Unit.repairs` (not the pumpfix uid prefix) so gate-fix units
-        // (`repairs = None`) and ordinary units keep the retry budget.
-        let dissolve = unit.repairs.is_some() && (why == "timeout" || why.contains("no_changes"));
-        let stuck = dissolve || attempts.saturating_sub(unit.transient_retries) >= max;
-        unit.status = if stuck {
-            Status::Stuck
-        } else {
-            Status::Pending
-        };
-        if stuck {
-            ctx.exception("stuck", uid, &format!("{why}: {}", tail(detail, 300)));
-            crate::pump::quarantine::repair_stuck(ctx, st, uid);
-        }
-    }
-    ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
-}
-
-/// Apply the transient retry budget and report whether the attempt was
-/// retried or refunded as unmeasured.
-fn try_transient_retry(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    why: &str,
-    detail: &str,
-    now: u64,
-    cap: u32,
-    backoff: u64,
-) -> (bool, bool) {
-    let Some(class) = transient::classify(why, detail) else {
-        return (false, false);
-    };
-    let Some(unit) = st.units.get_mut(uid) else {
-        return (false, false);
-    };
-    let retried = transient_retry(unit, now, cap, backoff);
-    if !retried {
-        return (false, false);
-    }
-    let refund = class == "timeout" && transient::build_only_check(detail);
-    ctx.log(&format!(
-        "transient-retry {uid} {class} {}/{cap}",
-        unit.transient_retries
-    ));
-    (true, refund)
-}
-
-/// Give the attempt back when a transient retry never measured the unit: a
-/// build/no-run proof killed by the lane timeout. Drop the attempt branch
-/// first so the re-dispatch cannot collide with it — the re-dispatch reuses
-/// the same a-number because the attempt counter drops by one — then restore
-/// the counter. History and the retry backoff are left alone.
-fn refund_unmeasured_attempt(ctx: &Ctx, st: &mut State, uid: &str) {
-    drop_attempt_branch(ctx, st, uid);
-    if let Some(unit) = st.units.get_mut(uid) {
-        unit.attempts = unit.attempts.saturating_sub(1);
-        unit.branch = None;
-    }
-    ctx.log(&format!(
-        "refund {uid} build-only timeout; attempt restored"
-    ));
-}
-
-/// Back off and retry a transient-class failure: return the unit to
-/// `pending`, count the retry, and set the clock it may be redispatched at
-/// (`backoff * 2^retries_before`). Returns `false` at the retry cap, leaving
-/// the unit for the normal stuck/pending decision; the caller logs the class.
-fn transient_retry(unit: &mut Unit, now: u64, cap: u32, backoff: u64) -> bool {
-    if unit.transient_retries >= cap {
-        return false;
-    }
-    let retries_before = unit.transient_retries;
-    unit.transient_retries = retries_before.saturating_add(1);
-    let wait = backoff.saturating_mul(2u64.saturating_pow(retries_before));
-    unit.retry_not_before = Some(now.saturating_add(wait));
-    unit.status = Status::Pending;
-    true
-}
-
-/// A host-class failure (see [`envfail`]): the attempt never measured the
-/// unit, so undo the dispatch instead of failing it — drop the attempt
-/// branch, restore the attempt (no history entry, no record posted, no
-/// quarantine repair), count the failure toward pausing the unit's pool,
-/// and log.
-fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, receipt: &str) {
-    drop_attempt_branch(ctx, st, uid);
-    let now = ctx.now();
-    let pool = {
-        let Some(unit) = st.units.get_mut(uid) else {
-            return;
-        };
-        unit.attempts = unit.attempts.saturating_sub(1);
-        unit.status = Status::Pending;
-        unit.task = None;
-        unit.branch = None;
-        unit.since = now;
-        unit.since_dispatch = None;
-        if host.class == "provider" {
-            // A provider outage is transient: hold the restored attempt off
-            // the dispatch frontier until the backoff window passes.
-            unit.retry_not_before = Some(now.saturating_add(ctx.cfg.dispatch.transient_backoff));
-        }
-        unit.pool.clone()
-    };
-    let evidence = format!(
-        "{}: {}: {}",
-        host.class,
-        host.command.as_deref().unwrap_or("?"),
-        tail(&attempt_record::sections_tail(receipt), 300)
-    );
-    if let Some(pool) = pool {
-        let entry = st.env_pauses.entry(pool.clone()).or_default();
-        entry.fails.push(now);
-        entry
-            .fails
-            .retain(|at| now.saturating_sub(*at) <= envfail::HOST_FAIL_WINDOW);
-        entry.evidence = evidence.clone();
-        entry.probe = host
-            .command
-            .as_ref()
-            .map(|tool| format!("command -v {tool}"));
-        if entry.fails.len() >= envfail::HOST_PAUSE_AFTER && entry.paused_at.is_none() {
-            entry.paused_at = Some(now);
-            // One exception per burst, named for the outage class: provider
-            // failures report `provider-outage`, every other class keeps
-            // `environment`.
-            let kind = if host.class == "provider" {
-                "provider-outage"
-            } else {
-                "environment"
-            };
-            ctx.exception(kind, &pool, &evidence);
-        }
-    }
-    ctx.log(&format!("host-fail {uid} {}; attempt restored", host.class));
-}
-
-/// Delete the unit's attempt branch locally, and queue a runner job for the
-/// remote ref: the branch only holds a `WIP (attempt failed)` marker, and
-/// the restored attempt must not be mistaken for a delivered one. Failures
-/// are logged and never fatal.
-fn drop_attempt_branch(ctx: &Ctx, st: &mut State, uid: &str) {
-    let Some(unit) = st.units.get(uid) else {
-        return;
-    };
-    let Some(branch) = unit.branch.clone() else {
-        return;
-    };
-    let target = unit.target_id().to_string();
-    let tctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
-    if local_branch_exists(&tctx, &branch) {
-        let out = tctx.git(&format!("branch -D {}", shell_quote(&branch)), 60);
-        ctx.log(&format!(
-            "host-fail {uid} drop local branch {}: {}",
-            branch,
-            out.text.trim()
-        ));
-    }
-    queue_remote_branch_delete(ctx, st, uid, &tctx, &branch, &target);
-}
-
-/// Queue a privileged runner delete for `branch` when it still exists remotely.
-fn queue_remote_branch_delete(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    tctx: &Ctx,
-    branch: &str,
-    target: &str,
-) {
-    if !remote_has(tctx, branch) {
-        return;
-    }
-    let Some(sha) = branch_tip(tctx, branch) else {
-        ctx.log(&format!(
-            "host-fail {uid} remote branch {branch} has no SHA; skip delete job"
-        ));
-        return;
-    };
-    let Some(role) = ctx
-        .routing
-        .merge()
-        .filter(|role| role.status == "active" && ctx.routing.pool_of(role).is_some())
-    else {
-        ctx.log(&format!(
-            "host-fail {uid} remote branch {branch} not deleted: merge role has no pool"
-        ));
-        return;
-    };
-    let id = format!("ref-delete-{uid}");
-    let mut spec = JobSpec::new(
-        id.clone(),
-        "ref-delete",
-        role.name.clone(),
-        String::from("delete a merged attempt branch"),
-        format!(
-            "Do not change the checkout. After your clean exit, the privileged pool runner deletes `{branch}` only if it still matches `{sha}`."
-        ),
-    );
-    spec.target = Some(target.to_owned());
-    spec.builtin_role = Some(String::from("merge"));
-    spec.from_ref = Some(sha.clone());
-    spec.branch = Some(format!("vivi/ref-delete/{uid}"));
-    spec.delete_ref = Some(format!("refs/heads/{branch}"));
-    spec.delete_expect = Some(sha);
-    if let Err(error) = jobs::enqueue(st, spec) {
-        ctx.log(&format!(
-            "host-fail {uid} remote branch {branch} delete job failed: {error}"
-        ));
-        return;
-    }
-    ctx.log(&format!("host-fail {uid} queued remote delete {id}"));
-}
-
-/// Full SHA of `branch` from the local checkout or the remote listing.
-fn branch_tip(ctx: &Ctx, branch: &str) -> Option<String> {
-    let quoted = shell_quote(branch);
-    let local = ctx.git(&format!("rev-parse --verify refs/heads/{quoted}"), 30);
-    if let Some(sha) = full_sha(local.text.trim()) {
-        return Some(sha);
-    }
-    let out = ctx.git(
-        &format!(
-            "ls-remote {} refs/heads/{quoted}",
-            shell_quote(&ctx.cfg.remote)
-        ),
-        60,
-    );
-    if out.code != 0 {
-        return None;
-    }
-    full_sha(out.text.split_whitespace().next().unwrap_or_default())
-}
-
-fn full_sha(value: &str) -> Option<String> {
-    (value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())).then(|| value.to_owned())
-}
-
 /// Split planners currently launched and not waiting on a retry; an
 /// unprocessed exit receipt still counts, which only defers launches (the
 /// safe side).
@@ -464,87 +93,6 @@ fn live_split_planners(st: &State) -> usize {
 /// The concurrent split planner cap from config, never below one.
 fn split_planner_cap(ctx: &Ctx) -> usize {
     usize::try_from(ctx.cfg.planner.planners_max.max(1)).unwrap_or(usize::MAX)
-}
-
-/// Send a unit to the split planner: write the resplit record, queue the
-/// planner durably, and move the unit to `splitting` with a fresh clock.
-/// A quarantine repair unit (one with a `base`) is never split: its work is
-/// one branch, so a timeout counts as a failed attempt instead.
-/// When `planners_max` split planners are already live, the launch is
-/// deferred: the unit sits in `splitting` with a retry stamp and respawns
-/// through the due-retry path once a slot frees up.
-pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
-    if st.units.get(uid).is_some_and(|unit| unit.base.is_some()) {
-        fail(ctx, st, uid, "timeout", &tail(text, 3000));
-        return;
-    }
-    let now = ctx.now();
-    let cap = split_planner_cap(ctx);
-    let deferred = live_split_planners(st) >= cap;
-    let Some(record) = write_resplit_record(ctx, st, uid, text) else {
-        return;
-    };
-    let queue_error = if deferred {
-        None
-    } else {
-        let prompt = split_prompt(ctx, uid);
-        split_expiry::enqueue_split(ctx, st, uid, now, &prompt, &record.target)
-            .err()
-            .map(|error| error.to_string())
-    };
-    if deferred {
-        ctx.log(&format!(
-            "split-launch-deferred {uid}: {cap} split planners already running"
-        ));
-    } else if let Some(error) = &queue_error {
-        ctx.log(&format!("split planner {uid} could not be queued: {error}"));
-    }
-    let Some(unit) = st.units.get_mut(uid) else {
-        return;
-    };
-    unit.status = Status::Splitting;
-    unit.since = now;
-    if deferred {
-        unit.split_retry_at = Some(now + SPLIT_LAUNCH_STAGGER);
-    }
-    unit.split_rate_retries = 0;
-    unit.history.push(Attempt {
-        attempt: unit.attempts,
-        model: unit.model.clone(),
-        why: "timeout".to_owned(),
-        detail: String::new(),
-        at: now,
-        branch: unit.branch.clone(),
-        task: unit.task.clone(),
-    });
-    attempt_record::post(ctx, st, uid, &Ending::split(text));
-    if let Some(unit) = st.units.get_mut(uid) {
-        unit.task = None;
-    }
-    ctx.log(&format!("split-requested {uid}"));
-    if let Some(error) = queue_error {
-        split_expiry::mark_queue_failure(ctx, st, uid, now, &error);
-    }
-}
-
-/// Save the split planner's complete pump-local input before it is queued.
-fn write_resplit_record(ctx: &Ctx, st: &State, uid: &str, text: &str) -> Option<ResplitRecord> {
-    let unit = st.units.get(uid)?;
-    let record = ResplitRecord {
-        id: uid.to_owned(),
-        need: unit.need.clone(),
-        target: unit.target_id().to_string(),
-        title: unit.title.clone(),
-        brief: unit.brief.clone(),
-        write_scope: unit.write_scope.clone(),
-        proof: unit.proof.clone(),
-        tools: unit.tools.clone(),
-        worker_said: tail(text, 3000),
-    };
-    let dir = ctx.home.join("resplit");
-    drop(fs::create_dir_all(&dir));
-    drop(write_json(&dir.join(format!("{uid}.json")), &record));
-    Some(record)
 }
 
 /// Re-ask the split planner once after it wrote a bad split plan: the plan
@@ -594,20 +142,13 @@ pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &st
     true
 }
 
-/// Reconcile the pool against in-flight units and dispatched jobs.
+/// Reconcile the pool against dispatched jobs and planner completions.
 pub fn collect(ctx: &Ctx, st: &mut State) {
-    let inflight: BTreeMap<String, String> = st
-        .units
-        .iter()
-        .filter(|(_, unit)| unit.status == Status::Inflight)
-        .filter_map(|(uid, unit)| unit.task.as_ref().map(|task| (task.clone(), uid.clone())))
-        .collect();
-    let reconcile_jobs = crate::pump::jobs::has_dispatched(st);
-    let (out, reconcile_ok) = if inflight.is_empty() && !reconcile_jobs {
-        (String::new(), true)
-    } else {
+    let (out, reconcile_ok) = if crate::pump::jobs::has_dispatched(st) {
         let output = ctx.vivi("pool reconcile --porcelain", 300);
         (output.text, output.code == 0)
+    } else {
+        (String::new(), true)
     };
     let seen = parse_reconcile(&out);
     if !reconcile_ok {
@@ -616,197 +157,8 @@ pub fn collect(ctx: &Ctx, st: &mut State) {
         ctx.log(&format!("pool reconcile failed: {}", tail(&out, 300)));
     }
     let _terminal_jobs = crate::pump::jobs::apply_reconcile(ctx, st, &seen);
-    for (task, uid) in &inflight {
-        collect_one(ctx, st, &seen, task, uid);
-    }
     crate::pump::planner_jobs::apply_completions(ctx, st);
     expire_splits(ctx, st);
-}
-
-/// Classify one in-flight unit in a strict order.
-fn collect_one(
-    ctx: &Ctx,
-    st: &mut State,
-    seen: &BTreeMap<String, (String, String)>,
-    task: &str,
-    uid: &str,
-) {
-    let (state, detail) = seen
-        .get(task)
-        .map_or((None, None), |(s, d)| (Some(s.as_str()), Some(d.as_str())));
-    let (since, branch, target, pool) = {
-        let Some(unit) = st.units.get(uid) else {
-            return;
-        };
-        if unit.status == Status::Withdrawn {
-            return;
-        }
-        (
-            unit.since,
-            unit.branch.clone().unwrap_or_default(),
-            unit.target_id().to_string(),
-            unit.pool.clone(),
-        )
-    };
-    if state == Some("running") {
-        if ctx.now().saturating_sub(since)
-            > ctx.cfg.dispatch.budget + ctx.cfg.dispatch.overdue_grace
-        {
-            split(ctx, st, uid, "overdue: still running long past its budget");
-        }
-        return;
-    }
-    if state == Some("timeout") || detail.is_some_and(|d| d.starts_with("timeout")) {
-        split(ctx, st, uid, &receipt_full(ctx, task));
-        return;
-    }
-    if state.is_none() && ctx.now().saturating_sub(since) < RECONCILE_GRACE {
-        return;
-    }
-    if state.is_none() && still_on_pool(ctx, task) {
-        return;
-    }
-    let target_ctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
-    // A local worktree pool commits its unit branch into the pool's own
-    // repository and never pushes to the target remote, so only that
-    // repository can answer for it.
-    let source = pool.as_deref().and_then(|name| ctx.pool_sources.get(name));
-    let reachable = source.map_or_else(
-        || local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch),
-        |source| pool_source_has(ctx, source, &branch),
-    );
-    if reachable {
-        deliver(ctx, st, task, uid, &branch, state);
-        return;
-    }
-    fail_from_receipt(ctx, st, task, uid, state, detail);
-}
-
-/// The delivered path: the worker's branch reached the remote, so the unit
-/// is delivered — unless the receipt shows the agent was killed by its
-/// budget, which means split, or exited nonzero, which makes the attempt a
-/// failed one (its branch is kept and recorded, never merged).
-fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state: Option<&str>) {
-    let output = ctx.vivi(&format!("task show {task} --latest"), 60);
-    let full = output.text;
-    let Some(agent_exit) = (output.code == 0)
-        .then(|| receipt_agent_exit(&full))
-        .flatten()
-    else {
-        ctx.log(&format!(
-            "delivered branch {uid} has no readable task receipt (state={:?}, rc={}); leaving inflight",
-            state, output.code
-        ));
-        return;
-    };
-    if matches!(agent_exit, 124 | 137) {
-        split(ctx, st, uid, &full);
-        return;
-    }
-    if agent_exit != 0 {
-        let code = agent_exit;
-        let why = format!("finished/agent exit {code}");
-        if let Some(failure) = envfail::classify(&why, "", &full) {
-            host_fail(ctx, st, uid, &failure, &full);
-            return;
-        }
-        fail_with(ctx, st, uid, &why, &tail(&full, 3000), Some(&full));
-        return;
-    }
-    let now = ctx.now();
-    let (secs, model, pool) = {
-        let Some(unit) = st.units.get_mut(uid) else {
-            return;
-        };
-        let secs = unit
-            .since_dispatch
-            .map_or(-1, |at| i64::try_from(now.saturating_sub(at)).unwrap_or(-1));
-        let model = unit.model.clone().unwrap_or_else(|| "None".to_owned());
-        let pool = unit.pool.clone().unwrap_or_else(|| "?".to_owned());
-        unit.status = Status::Delivered;
-        unit.since = now;
-        (secs, model, pool)
-    };
-    let receipt = (!full.is_empty()).then_some(full.as_str());
-    attempt_record::post(ctx, st, uid, &Ending::delivered(receipt));
-    ctx.log(&format!(
-        "delivered {uid} {branch} secs={secs} model={model} pool={pool}"
-    ));
-}
-
-/// No remote branch: split on exit 124 or 137, accept a no-defect verdict, else
-/// fail the attempt.
-fn fail_from_receipt(
-    ctx: &Ctx,
-    st: &mut State,
-    task: &str,
-    uid: &str,
-    state: Option<&str>,
-    detail: Option<&str>,
-) {
-    let full = receipt_full(ctx, task);
-    let text = tail(&full, 6000);
-    if is_timeout(&full) {
-        split(ctx, st, uid, &full);
-        return;
-    }
-    if text.contains(NO_DEFECT_MARKER) {
-        let verdict = tail(&text, 1500);
-        let exc = tail(&text, 400);
-        if let Some(unit) = st.units.get_mut(uid) {
-            unit.status = Status::NoDefect;
-            unit.verdict_text = Some(verdict);
-        }
-        attempt_record::post(ctx, st, uid, &Ending::no_defect(&full));
-        ctx.exception("no-defect", uid, &exc);
-        crate::pump::quarantine::repair_no_defect(ctx, st, uid);
-        return;
-    }
-    let why = [state, detail]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("/");
-    if let Some(failure) = envfail::classify(&why, detail.unwrap_or(""), &full) {
-        host_fail(ctx, st, uid, &failure, &full);
-        return;
-    }
-    fail_with(ctx, st, uid, &why, &text, Some(&full));
-}
-
-/// True while the task still holds a pool slot (`" <task> "` appears in
-/// `vivi pool status --porcelain`).
-fn still_on_pool(ctx: &Ctx, task: &str) -> bool {
-    let status = ctx.vivi("pool status --porcelain", 120);
-    status.text.contains(&format!(" {task} "))
-}
-
-/// True when `git ls-remote` lists the branch on the configured remote.
-#[must_use]
-pub(crate) fn remote_has(ctx: &Ctx, branch: &str) -> bool {
-    let out = ctx.git(
-        &format!(
-            "ls-remote {} refs/heads/{}",
-            ctx.cfg.remote,
-            shell_quote(branch)
-        ),
-        60,
-    );
-    out.code == 0 && !out.text.trim().is_empty()
-}
-
-/// True when `git ls-remote` lists the branch in a local worktree pool's
-/// repository, where that pool commits unit branches instead of pushing.
-fn pool_source_has(ctx: &Ctx, source: &Path, branch: &str) -> bool {
-    let out = ctx.git(
-        &format!(
-            "ls-remote {} refs/heads/{}",
-            shell_quote(&source.to_string_lossy()),
-            shell_quote(branch)
-        ),
-        60,
-    );
-    out.code == 0 && !out.text.trim().is_empty()
 }
 
 /// A local worktree target commits its result branch directly into the
@@ -823,24 +175,6 @@ pub(crate) fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
         30,
     );
     out.code == 0
-}
-
-/// True when the text marks the agent as killed by its budget timeout.
-#[must_use]
-fn is_timeout(text: &str) -> bool {
-    matches!(receipt_agent_exit(text), Some(124 | 137))
-}
-
-/// Read the agent exit marker from the task summary or its structured runner
-/// log tail. The latter is how local pool runners report timeout statuses.
-fn receipt_agent_exit(text: &str) -> Option<i32> {
-    attempt_record::agent_exit(text).or_else(|| {
-        text.lines().find_map(|line| {
-            let word = line.strip_prefix("agent_rc ")?.split_whitespace().next()?;
-            let Ok(code) = word.parse() else { return None };
-            Some(code)
-        })
-    })
 }
 
 /// `SPLIT_PROMPT` with the stored resplit record and unit handle substituted.
@@ -865,15 +199,4 @@ pub(crate) fn tail(text: &str, max: usize) -> String {
     } else {
         text.chars().skip(count - max).collect()
     }
-}
-
-/// Write `value` as JSON with a one-space indent, like
-/// `json.dump(..., indent=1)`.
-fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let file = fs::File::create(path)?;
-    let mut writer = std::io::BufWriter::new(file);
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
-    let mut serializer = serde_json::Serializer::with_formatter(&mut writer, formatter);
-    value.serialize(&mut serializer)?;
-    writer.flush()
 }

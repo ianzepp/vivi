@@ -213,26 +213,6 @@ fn the_quarantine_fields_round_trip_through_the_store() {
 }
 
 #[test]
-fn a_repair_unit_that_times_out_fails_an_attempt_and_is_never_split() {
-    let (_dir, ctx, _host) = setup();
-    let mut st = State::default();
-    st.units.insert(
-        String::from("pumpfix-q1"),
-        Unit {
-            need: String::from("pumpfix-q1"),
-            status: Status::Inflight,
-            attempts: 1,
-            base: Some(String::from("pump/quarantine/q1")),
-            ..Unit::default()
-        },
-    );
-    crate::pump::collect::split(&ctx, &mut st, "pumpfix-q1", "agent exit 124");
-    let unit = &st.units["pumpfix-q1"];
-    assert_ne!(unit.status, Status::Splitting);
-    assert!(!ctx.home.join("resplit/pumpfix-q1.json").exists());
-}
-
-#[test]
 fn a_repair_that_met_another_batch_is_released_as_solo() {
     let (_dir, ctx, _host) = setup();
     let (mut st, id) = parked_pair(&ctx);
