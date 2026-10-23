@@ -17,6 +17,7 @@ use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, Retried};
 use crate::pump::flow::slice_merge::classify::{SliceMergeResult, classify};
 use crate::pump::flow::slice_merge::spec::KIND;
+use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
@@ -48,14 +49,40 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
         .cloned()
         .collect();
     for job in finished {
-        if let Err(error) = apply(ctx, st, store, mail, &runs, &job) {
-            raise_once(
-                ctx,
-                APPLY_FAILED,
-                &job.id,
-                &format!("slice merge job {} cannot be applied: {error}", job.id),
-            );
+        match apply(ctx, st, store, mail, &runs, &job) {
+            Ok(()) => step_error::note_success(ctx, &job.id),
+            Err(error) => give_up_or_alarm(ctx, st, store, &job, &error)?,
         }
+    }
+    Ok(())
+}
+
+/// A failed apply: alarm once below [`STEP_ERROR_LIMIT`] ticks in a row; at the
+/// limit mark the job applied and hold its slice for the operator.
+fn give_up_or_alarm<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    job: &PoolJob,
+    error: &VivariumError,
+) -> Result<(), VivariumError> {
+    let n = step_error::note_failure(ctx, &job.id);
+    if n < STEP_ERROR_LIMIT {
+        raise_once(
+            ctx,
+            APPLY_FAILED,
+            &job.id,
+            &format!("slice merge job {} cannot be applied: {error}", job.id),
+        );
+        return Ok(());
+    }
+    jobs::mark_applied(st, &job.id, ctx.now());
+    if let Some(task) = job.task.as_deref() {
+        let text = format!(
+            "slice merge job {} for slice {task}: expected the result to apply; actual: {error} on {n} ticks in a row; held for vivi pump answer",
+            job.id
+        );
+        step_error::hold(ctx, store, task, &text)?;
     }
     Ok(())
 }
@@ -212,6 +239,19 @@ impl Ended<'_> {
             .set_step_state(&self.slice.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
 
+    /// The remote ref's tip for the failure text: a sha, `absent`, or the git error.
+    fn ref_tip(&self, remote_ref: &str) -> String {
+        let name = self.job.target.clone().unwrap_or_default();
+        let Some(target) = self.ctx.for_target(&name) else {
+            return String::from("unknown (target not configured)");
+        };
+        match verify::remote_tip(&target, &target.cfg.remote, remote_ref) {
+            Ok(Some(sha)) => sha,
+            Ok(None) => String::from("absent"),
+            Err(reason) => format!("unknown ({reason})"),
+        }
+    }
+
     /// The receipt did not settle it: git decides.
     fn unclear<S: JobStore, M: FlowMail>(
         &self,
@@ -241,11 +281,18 @@ impl Ended<'_> {
         };
         match verify::check(self.ctx, &req) {
             SideEffect::Verified { sha } => self.merged(mail, &sha),
-            SideEffect::Absent => self.failed(
-                st,
-                mail,
-                "the slice merge left no change on the need branch",
-            ),
+            SideEffect::Absent => {
+                let tip = self.ref_tip(&remote_ref);
+                self.failed(
+                    st,
+                    mail,
+                    &format!(
+                        "the slice merge left no change on the need branch: expected {} on {remote_ref}; actual: ref tip {tip}, before {}",
+                        text(job, "hand_sha"),
+                        text(job, "before")
+                    ),
+                )
+            }
             SideEffect::Unclear { reason } => {
                 self.ctx.exception(
                     SIDE_EFFECT_UNCLEAR,
