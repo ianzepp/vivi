@@ -21,9 +21,6 @@ use crate::pump::jobs::PoolJob;
 use crate::pump::record::{reply_on_task, send_reply};
 use crate::pump::state::State;
 
-/// First line of an attempt-context reply on a slice task; the pool task
-/// reader (`mailspace::pool_record`) picks replies up by it.
-const ATTEMPT_MARKER: &str = "pump-attempt:";
 /// Commits listed in a record.
 const MAX_COMMITS: usize = 20;
 /// Lines of `git diff --stat` listed in a record.
@@ -377,7 +374,7 @@ pub fn post_on_task(
     };
     let body = format!(
         "{}\n{}",
-        crate::mailspace::marked_line(ATTEMPT_MARKER, &ending.label),
+        crate::mailspace::marked_line(crate::mailspace::ATTEMPT_MARKER, &ending.label),
         compose(&facts)
     );
     let sent = reply_on_task(

@@ -285,24 +285,20 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
     }
 }
 
-/// First line of the reply that carries a preset-task job's brief.
-const BRIEF_MARKER: &str = "pump-brief:";
-
 /// Post the job brief on its preset `task` as one `pump-brief: <job id>`
 /// reply from the pump identity, so any pool reads it from mail. A task that
 /// already carries a brief reply for this job id is left alone, so a
 /// deferred dispatch retried on the next tick posts nothing new.
 fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError> {
-    let first = crate::mailspace::marked_line(BRIEF_MARKER, &job.id);
+    let first = crate::mailspace::marked_line(crate::mailspace::BRIEF_MARKER, &job.id);
     let thread = ctx.vivi(
         &format!("mail thread {} --limit 1000", shell_quote(task)),
         60,
     );
     if thread.code == 0
-        && thread
-            .text
-            .lines()
-            .any(|line| crate::mailspace::marked_payload(line, BRIEF_MARKER) == Some(&job.id))
+        && thread.text.lines().any(|line| {
+            crate::mailspace::marked_payload(line, crate::mailspace::BRIEF_MARKER) == Some(&job.id)
+        })
     {
         return Ok(());
     }

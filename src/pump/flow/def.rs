@@ -4,8 +4,6 @@
 pub const STEP_MARKER: &str = "pump-step:";
 /// A run sentinel's body starts with `pump-run-sentinel: <need> r<run>`.
 pub const SENTINEL_MARKER: &str = "pump-run-sentinel:";
-/// Pump attempt-context replies start with `pump-attempt:`.
-pub const ATTEMPT_MARKER: &str = "pump-attempt:";
 
 /// Verdict word: the task was withdrawn.
 pub const VERDICT_WITHDRAWN: &str = "withdrawn";
