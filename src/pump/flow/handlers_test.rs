@@ -206,7 +206,7 @@ fn phases_come_back_in_registration_order() -> Result<(), VivariumError> {
 }
 
 #[test]
-fn shipped_registry_starts_with_no_handlers_or_phases() -> Result<(), VivariumError> {
+fn shipped_registry_starts_with_no_handlers() -> Result<(), VivariumError> {
     let rig = rig()?;
     struct Jobs(std::collections::BTreeMap<String, crate::pump::jobs::PoolJob>);
     impl JobStore for Jobs {
@@ -221,8 +221,38 @@ fn shipped_registry_starts_with_no_handlers_or_phases() -> Result<(), VivariumEr
         }
     }
     let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
-    assert!(registry.phases().is_empty());
     let plan = node("plan", NodeClass::Planner);
     assert!(registry.handler_for(FlowKind::Build, &plan).is_none());
+    Ok(())
+}
+
+#[test]
+fn shipped_registers_a_collector_for_every_step_class() -> Result<(), VivariumError> {
+    let rig = rig()?;
+    struct Jobs(std::collections::BTreeMap<String, crate::pump::jobs::PoolJob>);
+    impl JobStore for Jobs {
+        fn jobs(&self) -> &std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
+            &self.0
+        }
+
+        fn jobs_mut(
+            &mut self,
+        ) -> &mut std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
+            &mut self.0
+        }
+    }
+    let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
+    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+        let def = load(kind)?;
+        for node in def.nodes.iter().filter(|n| n.class.is_step()) {
+            assert!(
+                registry.collector_for(kind, &node.class).is_some(),
+                "no collector for {} ({}) of {}",
+                node.id,
+                node.class.name(),
+                kind.name()
+            );
+        }
+    }
     Ok(())
 }
