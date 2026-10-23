@@ -1010,8 +1010,7 @@ goes to which pool is the role's `pool` assignment (`vivi role pool` /
 `vivi config show`). Durable role jobs follow the pool's optional
 `fallback = "<pool>"` chain when a pool has no free slot or rejects a
 dispatch. Fallback targets must exist and chains cannot cycle; if no pool in
-the chain can accept the job, it stays pending. Hand unit tasks follow the
-hand role's fallback chain too, or the configured kind pools when no hand pool is assigned.
+the chain can accept the job, it stays pending.
 
 ```sh
 vivi pool list [--json | --porcelain]
@@ -1047,13 +1046,10 @@ then a random pick). A retry avoids the previous attempt's model while another
 one has room, so load spreads across providers and failures change model.
 Order in `caps` carries no preference. A role that names a concrete model slug
 still uses that slug.
-Unit tasks use the hand role's assigned pool and its fallback chain when
-one is configured. In that mode, `tools` may be empty or name an unknown kind.
-A defined kind's `max` and `skip_proof` metadata still applies; its pool list
-is ignored. Without a hand role pool, configured kinds and `default_kind` route
-unit tasks. Durable pump jobs use their recipient role's pool and fallback
-chain, and stay pending when no candidate has capacity. The merge role's pool
-runs durable integration jobs; a local provider is one supported pool choice.
+Pump jobs, hand slice tasks included, use their recipient role's pool and
+fallback chain, and stay pending when no candidate has capacity. The merge
+role's pool runs the merge jobs; a local provider is one supported pool
+choice.
 
 ```toml
 [[identities]]
@@ -1078,18 +1074,8 @@ provider = "local"
 slots = 4
 ```
 
-Legacy `[pump.dispatch.kinds]` routes unit tasks when the hand role has no pool;
-`[[pump.dispatch.lanes]]` supplies legacy model caps when a pool has no per-model caps.
-The old `[pump.merge]` keys `batch`, `lanes`, `need_parallel`, `shared_checks`,
-`checks_for`, `proof_timeout` and `remote_wait`, and the `[pump.need]` table
-(`repair_rounds`), are retired: they are no longer read and a config that still
-carries them parses with them ignored. `vivi config validate` names each
-retired key it finds, also under `[pump.targets.<id>.merge]`, and
-`vivi config migrate --write` removes them. Convert supported legacy
-dispatch and gate routing with
-`vivi config migrate` (dry-run) or `vivi config migrate --write`.
 A role that names a band when its pool has no `[pools.X.bands]` table
-fails `vivi config validate` unless caps or legacy lanes still cover it.
+fails `vivi config validate` unless the pool's caps cover it.
 A role's `model` may also be a model slug listed in the pool's
 `harness.models` instead of a band: its effort then comes from the role's
 `thinking`, else from the first band entry that names that model.
@@ -1770,18 +1756,11 @@ slots = 4
   runs between jobs, before dispatch when free space is under 20 GiB, and from
   `vivi pool clean`. A slot that is claimed or whose boot process is alive is
   never touched. Source changes and unmerged commits stay.
-- **After-merge cleanup.** Pump merged means that the unit branch has been
-  integrated and verified on the configured integration branch; promotion to
-  main is a separate step. The pump queues a local-only reclaim job after
-  merge. It can recycle free local worktrees that served the unit or merge
-  role, removing disposable worktree and target-cache state only when the
-  recorded branch is contained in the integration branch. The worktree then
-  resets to the configured main branch (or an explicit --base). The pump
-  leaves remote slots for their next dispatch-time reset. A missing origin
-  branch fails the reset and leaves the slot free and clean. Pool clean also
-  sweeps eligible source-repository worktrees and prunes stale entries. The
-  live merge worker runs as a pool job; merge-role pool slots are task
-  capacity, not local pump merge lanes.
+- **Clean-up.** `vivi pool clean` reclaims build output by the 2x rule on free
+  slots. It also sweeps eligible source-repository worktrees and prunes stale
+  entries. `vivi pool reset` puts a free slot on a freshly fetched origin
+  branch (`--base` names it); a missing origin branch fails the reset and
+  leaves the slot free and clean. Merge-role pool slots are task capacity.
 - **Free-disk guard.** A local dispatch first reclaims free slots when the
   volume has under 20 GiB free, then refuses if it is still under 10 GiB.
 - **State** is the marks (small files in the slot directory) and the claim (a
@@ -1969,11 +1948,12 @@ a front matter `band`. From the role it takes:
   cannot be followed: the note tells the worker to end with its receipt on
   standard output instead, and the Mind settles the handle. With
   `[pools.<name>.bridge] enabled` the pool note instead tells the worker to
-  read and settle its handle through the vivi tools. A role with no
+  read its handle and report through the vivi tools. A role with no
   charter leaves the pool rules unchanged.
 - **Read-only mode from the role.** `--read-only` wins; else the role's
   `read_only` flag; else the kind default. Auditor, triage, cadence/steward,
-  head, and gate default read-only; hand, merge, and lint write.
+  head, gate, digest, researcher, admitter, and slicer default read-only;
+  hand, merge, and lint write.
 - **The model and reasoning from the band.** The role's `model` field holds a
   band string such as `P2-S0` (set it with `vivi role set <role> --model P2`)
   or a model slug listed in the pool's `harness.models`. The pool's `bands`
@@ -3030,8 +3010,7 @@ a pump) and `serve` (default false: a server hosts it). `add` registers with
 so `add <root> --serve` serves a pumped project and `add <root> --no-pump
 --serve` registers a serve-only one (no `[pump]` config needed); `--pump` and
 `--no-serve` reverse them. `list` shows
-the flags. The older `projects = [...]` list still loads as `pump=true
-serve=false` and is rewritten as `[[project]]` tables on the next change.
+the flags.
 
 ## Delivery
 
@@ -3243,14 +3222,13 @@ recipient are part of the hashed object. Treat the file as machine-local
 (`.vivi/` ignores itself, so nothing in it is committed): do not commit it,
 edit the `id`, or copy a `.vivi` directory to another machine (the server
 refuses a second member under a prefix already claimed). Letters
-written before the id existed keep their old `name.local` domain; they travel
+from a mailspace without an id carry a `name.local` domain; they travel
 but are not routable, so address a reply to one explicitly.
 
 **Configuration** is the `[sync]` table: `server`, `project` (the server-side
 project id), and `name` (this checkout's registered member name). Identity is
 transparent: one ED25519 keypair per mailspace, minted on first use at
-`.vivi/chat/identity.ed25519` (0600). The directory keeps the name of the
-retired `vivi chat` so names already registered stay valid, and writes its own
+`.vivi/chat/identity.ed25519` (0600). The directory is `.vivi/chat/`; it writes its own
 `.gitignore`, so the key is never committed. A member's key must be vouched
 for by an existing member before `vivi sync join` is accepted. There is no recipient or name map: the address carries both. The
 server binds a name to the first key admitted under it and has no re-key, so a
