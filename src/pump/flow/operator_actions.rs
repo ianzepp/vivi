@@ -9,7 +9,10 @@
 //! - `withdraw` closes the need's pump record (the tick withdraws a run whose
 //!   record closed);
 //! - `requeue` queues the step's newest job again, as `<job id>-q<n>`, at the
-//!   same attempt.
+//!   same attempt; it is refused unless that job is terminal and the step is
+//!   open (a done step is reopened by advance, never here);
+//! - `recover` is refused: it has no meaning for a flow run;
+//! - `answer` and `unlock` are left alone: other phases apply them.
 //!
 //! Every letter is applied or refused exactly once: its id goes into
 //! `applied_actions` either way, and a refusal raises `flow-action-refused`.
@@ -100,13 +103,13 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
 
 /// The active run a flow-owned action applies to; None leaves the letter alone.
 fn run_for(store: &PumpStore, action: &PumpAction) -> Result<Option<RunRow>, VivariumError> {
-    if !matches!(
-        action.request.kind,
-        PumpActionKind::Replan | PumpActionKind::Withdraw | PumpActionKind::Requeue
-    ) {
-        return Ok(None);
+    match action.request.kind {
+        PumpActionKind::Replan
+        | PumpActionKind::Withdraw
+        | PumpActionKind::Requeue
+        | PumpActionKind::Recover => active_run(store, &action.need),
+        PumpActionKind::Answer | PumpActionKind::Unlock => Ok(None),
     }
-    active_run(store, &action.need)
 }
 
 /// The alarm text of a refused action.
@@ -139,7 +142,15 @@ fn apply_one<M: MailWriter + MailReader>(
             run_restart::restart(ctx, store, mail, run, REPLAN_ENTRY).map(drop)
         }
         PumpActionKind::Withdraw => mail.close_record(&action.need, "withdrawn"),
-        _ => requeue(st, store, run, action.request.unit.as_deref()),
+        PumpActionKind::Requeue => requeue(st, store, run, action.request.unit.as_deref()),
+        PumpActionKind::Recover => Err(VivariumError::Message(format!(
+            "recover has no meaning for a flow run (need {} run r{})",
+            action.need, run.run
+        ))),
+        PumpActionKind::Answer | PumpActionKind::Unlock => Err(VivariumError::Message(format!(
+            "{} is applied by another phase",
+            action.request.kind.as_str()
+        ))),
     }
 }
 
@@ -157,8 +168,23 @@ fn requeue(
         .ok_or_else(|| {
             VivariumError::Message(format!("{task} is not a step of run r{}", run.run))
         })?;
+    if !matches!(
+        step.state,
+        StepState::Pending | StepState::Running | StepState::Waiting
+    ) {
+        return Err(VivariumError::Message(format!(
+            "step {task} is {:?}, not open",
+            step.state
+        )));
+    }
     let (old, row) = newest_job(st, store, task)?
         .ok_or_else(|| VivariumError::Message(format!("step {task} has no job to requeue")))?;
+    if !old.status.is_terminal() {
+        return Err(VivariumError::Message(format!(
+            "job {} is {:?}, not finished",
+            old.id, old.status
+        )));
+    }
     let id = unused_id(st.jobs().keys().collect(), &old.id);
     jobs::enqueue(st, copy_spec(&old, id.clone()))?;
     store.insert_step_job(
