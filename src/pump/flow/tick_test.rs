@@ -11,17 +11,22 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     FINISHING_STUCK, FOLLOW_UP, FOLLOW_UP_MARKER, KIND_CHANGED, OPERATOR_HOLD, RUN_ERROR,
-    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, tick_with,
+    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
+use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::registry;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
+use crate::pump::flow::validate::validate;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -637,5 +642,59 @@ fn a_run_that_keeps_failing_to_finish_raises_the_stuck_alarm_once() -> R {
             .iter()
             .all(|s| s.node != SENTINEL_NODE)
     );
+    Ok(())
+}
+
+// ---- start answers and startup validation ---------------------------------------
+
+struct AnswersAtStart;
+
+impl StepHandler for AnswersAtStart {
+    fn start(&self, _cx: &StartCx<'_>, _step: &StepRow) -> Result<StartAction, VivariumError> {
+        Ok(StartAction::Answer {
+            word: "planned".into(),
+            payload: serde_json::json!({"reason": "r"}),
+        })
+    }
+}
+
+#[test]
+fn a_start_answer_advances_the_step_and_records_its_payload() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    let mut registry = Registry::new();
+    registry.node_handler(FlowKind::Build, "plan", Box::new(AnswersAtStart));
+
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )?;
+
+    let plan = rig.step("plan")?;
+    assert_eq!(plan.state, StepState::Done);
+    assert_eq!(plan.verdict.as_deref(), Some("planned"));
+    let stored = rig.store.step_payload(&plan.task)?.expect("payload row");
+    assert_eq!(stored.payload, serde_json::json!({"reason": "r"}));
+    Ok(())
+}
+
+#[test]
+fn every_shipped_flow_is_validated_at_startup() -> R {
+    let kinds = [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ];
+    for kind in kinds {
+        assert!(registry::shipped(kind).is_some(), "{} ships", kind.name());
+        assert!(VALIDATED.contains(&kind), "{} is validated", kind.name());
+        let def = load(kind)?;
+        validate(&def).map_err(|problems| VivariumError::Parse(problems.join("; ")))?;
+    }
+    assert_eq!(VALIDATED.len(), kinds.len());
     Ok(())
 }
