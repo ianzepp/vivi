@@ -97,7 +97,8 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
         .collect();
     let tail = format!("mode: {}\nslice: {}\n\n{input}", mode.word(), slice.task);
     for row in &earlier {
-        if row.state != StepState::Done && body_tail(&mail.task_body(&row.task)?) == tail {
+        if row.state != StepState::Done && same_text(body_tail(&mail.task_body(&row.task)?), &tail)
+        {
             return Ok(row.task.clone());
         }
     }
@@ -168,6 +169,19 @@ fn job(
         "mode": mode.name(),
     });
     Ok(spec)
+}
+
+/// Whether two texts hold the same lines once each line is trimmed and
+/// trailing blank lines are dropped (a mailspace may add a final newline).
+fn same_text(a: &str, b: &str) -> bool {
+    let lines = |text: &str| -> Vec<String> {
+        let mut lines: Vec<String> = text.lines().map(|line| line.trim().to_owned()).collect();
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines
+    };
+    lines(a) == lines(b)
 }
 
 /// The text of a task body from its `mode:` line on.
@@ -316,3 +330,7 @@ fn reply_of(
 #[cfg(test)]
 #[path = "reslice_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reslice_mailspace_test.rs"]
+mod mailspace_tests;
