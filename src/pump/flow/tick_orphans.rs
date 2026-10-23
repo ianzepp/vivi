@@ -2,9 +2,9 @@
 //! that are no longer live, and a fanout step with no open fanout row.
 
 use super::{
-    Ctx, FANOUT_UNBOUND, FlowMail, JobStatus, JobStore, NodeClass, OVERDUE_GRACE_SECS, PoolJob,
-    PumpStore, RunCx, SENTINEL_NODE, STEP_OVERDUE, StepState, VivariumError, is_slice_row,
-    orphan_state, raise_once, run_state,
+    Ctx, FANOUT_UNBOUND, FlowMail, JobStore, NodeClass, PumpStore, RunCx, SENTINEL_NODE,
+    STEP_OVERDUE, StepState, VivariumError, is_slice_row, orphan_state, overdue_jobs, overdue_text,
+    raise_once, run_state,
 };
 
 /// Raise once for each dispatched step job past its budget plus grace whose
@@ -18,17 +18,7 @@ pub(super) fn overdue_orphans<S: JobStore>(
     st: &S,
     store: &PumpStore,
 ) -> Result<(), VivariumError> {
-    let now = ctx.now();
-    let late: Vec<&PoolJob> = st
-        .jobs()
-        .values()
-        .filter(|job| job.status == JobStatus::Dispatched)
-        .filter(|job| {
-            job.dispatched_at
-                .is_some_and(|at| now > at + job.budget + OVERDUE_GRACE_SECS)
-        })
-        .collect();
-    for job in late {
+    for job in overdue_jobs(st, ctx.now()) {
         let Some(row) = store.step_job(&job.id)? else {
             continue;
         };
@@ -41,13 +31,8 @@ pub(super) fn overdue_orphans<S: JobStore>(
             STEP_OVERDUE,
             &job.id,
             &format!(
-                "step {} task {} job {} pool {} dispatched at {}: budget {}s + {OVERDUE_GRACE_SECS}s grace passed; run r{run} is {state}, not live",
-                row.node,
-                row.task,
-                job.id,
-                job.pool.as_deref().unwrap_or("?"),
-                job.dispatched_at.unwrap_or_default(),
-                job.budget
+                "{}; run r{run} is {state}, not live",
+                overdue_text(job, &row)
             ),
         );
     }
