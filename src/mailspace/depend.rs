@@ -1,6 +1,6 @@
 //! Dependency edges on an item that was already sent.
 //!
-//! An item is sent with its prerequisites in `X-Vivi-Depends-On` headers.
+//! An item is sent with its prerequisites in the `depends_on` front matter key.
 //! [`Mailspace::set_dependencies`] adds or drops prerequisites afterwards
 //! and writes each change as a `dependency-added` / `dependency-removed`
 //! property letter on the item, so the change travels like a mark and the

@@ -4,7 +4,7 @@
 //! The record lives in the store's own `storage_metadata` table as one JSON
 //! map (`message_id` -> references), so it exists in a mailspace with no
 //! `[sync]` and never appears as item metadata. It is a cache of what the
-//! letters' `X-Vivi-Depends-On` headers say: `graph audit --repair` rebuilds
+//! letters' `depends_on` front matter says: `graph audit --repair` rebuilds
 //! it, so losing it loses nothing a later audit cannot restore.
 
 use std::collections::BTreeMap;

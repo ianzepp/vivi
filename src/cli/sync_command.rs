@@ -47,7 +47,7 @@ pub enum SyncSubcommand {
         #[arg(long, value_name = "AGE|DATE")]
         since: Option<String>,
         /// After the pull, look up the letters the new letters reference
-        /// (X-Vivi-Depends-On, 8-hex handles in the subject or body)
+        /// (front-matter depends_on, 8-hex handles in the subject or body)
         #[arg(long)]
         refs: bool,
         /// Hops of references to follow, 1 to 3
