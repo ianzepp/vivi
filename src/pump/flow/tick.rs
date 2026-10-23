@@ -361,7 +361,10 @@ where
                 self.step_unit(&row.task, &step.node, "collect", Some(id), result);
             }
         }
-        self.release_scope_waits()?;
+        for step in self.scope_wait_rows()? {
+            let result = self.release_one(&step);
+            self.step_unit(&step.task, &step.node, "release", None, result);
+        }
         self.settle_fanouts()?;
         self.start_steps()?;
         self.poll_waiting()?;
@@ -479,14 +482,37 @@ where
     // ---- fanouts, new steps, alarms ---------------------------------------
 
     fn settle_fanouts(&mut self) -> Result<(), VivariumError> {
-        let Some(word) = fanout::settle(self.store, &*self.mail, &self.run)? else {
-            return Ok(());
+        let word = match fanout::settle(self.store, &*self.mail, &self.run) {
+            Ok(Some(word)) => word,
+            Ok(None) => return Ok(()),
+            Err(error) => return self.settle_failed(error),
         };
         for step in self.open_rows()? {
             if self.class_of(&step.node) == Some(NodeClass::Fanout) {
-                let payload = self.fanout_payload(&step, word)?;
-                self.advance_word(&step, word, payload)?;
+                let result = self
+                    .fanout_payload(&step, word)
+                    .and_then(|payload| self.advance_word(&step, word, payload));
+                self.step_unit(&step.task, &step.node, "settle", None, result);
             }
+        }
+        Ok(())
+    }
+
+    /// A failed `fanout::settle` belongs to the open fanout step; with none
+    /// open it goes to the run boundary.
+    fn settle_failed(&mut self, error: VivariumError) -> Result<(), VivariumError> {
+        let open = self.store.open_fanout(&self.run.need, self.run.run)?;
+        let step = match open {
+            Some(task) => self.store.step_by_task(&task)?,
+            None => None,
+        };
+        match step {
+            Some(step) => self.step_unit(&step.task, &step.node, "settle", None, Err(error)),
+            None => boundary(
+                self.ctx,
+                &format!("{} r{}", self.run.need, self.run.run),
+                Err::<(), _>(error),
+            ),
         }
         Ok(())
     }

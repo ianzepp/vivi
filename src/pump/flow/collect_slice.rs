@@ -312,28 +312,34 @@ where
         .map(|_| ())
     }
 
-    /// A `scope-wait` slice whose holders all closed goes out again.
-    pub(crate) fn release_scope_waits(&mut self) -> Result<(), VivariumError> {
+    /// The slice rows of this run that wait on holders (`ScopeState::Wait`).
+    pub(crate) fn scope_wait_rows(&self) -> Result<Vec<StepRow>, VivariumError> {
+        let mut rows = Vec::new();
         for step in self.store.steps_of(&self.run.need, self.run.run)? {
-            if !is_slice_row(&step) || self.store.scope_state(&step.task)? != Some(ScopeState::Wait)
+            if is_slice_row(&step) && self.store.scope_state(&step.task)? == Some(ScopeState::Wait)
             {
-                continue;
+                rows.push(step);
             }
-            let mut all_closed = true;
-            for holder in wait_holders(self.store, &step.task)? {
-                let state = self.mail.task_state(&holder)?;
-                let landed = matches!(
-                    state.verdict.as_deref(),
-                    Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
-                );
-                all_closed &= state.status == TaskStatus::Done && landed;
-            }
-            if all_closed {
-                grant_held(self.store, &step.task)?;
-                let attempt = self.current_attempt(&step.task)?;
-                self.redispatch(&step, attempt)?;
-                finish_grant(self.store, &step.task)?;
-            }
+        }
+        Ok(rows)
+    }
+
+    /// A `scope-wait` slice whose holders all closed goes out again.
+    pub(crate) fn release_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let mut all_closed = true;
+        for holder in wait_holders(self.store, &step.task)? {
+            let state = self.mail.task_state(&holder)?;
+            let landed = matches!(
+                state.verdict.as_deref(),
+                Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
+            );
+            all_closed &= state.status == TaskStatus::Done && landed;
+        }
+        if all_closed {
+            grant_held(self.store, &step.task)?;
+            let attempt = self.current_attempt(&step.task)?;
+            self.redispatch(step, attempt)?;
+            finish_grant(self.store, &step.task)?;
         }
         Ok(())
     }
