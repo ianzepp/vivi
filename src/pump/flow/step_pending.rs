@@ -10,9 +10,12 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::error::VivariumError;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
+use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::mail::{MailReader, TaskStatus};
 use crate::pump::flow::reslice;
+use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
@@ -36,12 +39,17 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for StepPending {
         ctx: &Ctx,
         st: &mut S,
         store: &PumpStore,
-        _mail: &mut M,
+        mail: &mut M,
     ) -> Result<(), VivariumError> {
         for run in store.live_runs()? {
             let steps = store.steps_of(&run.need, run.run)?;
             for step in &steps {
-                if step.state == StepState::Pending && step.node != SENTINEL_NODE {
+                if step.state != StepState::Pending || step.node == SENTINEL_NODE {
+                    continue;
+                }
+                if is_slice_row(step) && slice_waiting(store, &*mail, step)? {
+                    forget(ctx, &step.task);
+                } else {
                     check_step(ctx, &run, step);
                 }
             }
@@ -58,6 +66,36 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for StepPending {
 /// Registry hook: the step-pending phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     registry.phase(Box::new(StepPending));
+}
+
+/// Whether a slice row waits by design: a dependency is not closed merged or
+/// no-defect, or its scope request is waiting or being reworked.
+fn slice_waiting<M: MailReader + ?Sized>(
+    store: &PumpStore,
+    mail: &M,
+    step: &StepRow,
+) -> Result<bool, VivariumError> {
+    if matches!(
+        store.scope_state(&step.task)?,
+        Some(ScopeState::Wait | ScopeState::Rework)
+    ) {
+        return Ok(true);
+    }
+    let Some(link) = store.slice_link(&step.task)? else {
+        return Ok(false);
+    };
+    for dep in &link.deps {
+        let state = mail.task_state(dep)?;
+        let built = state.status == TaskStatus::Done
+            && matches!(
+                state.verdict.as_deref(),
+                Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
+            );
+        if !built {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Raise when a Pending step row has been seen longer than budget plus grace.
@@ -116,16 +154,25 @@ fn belongs(
         .is_some_and(|row| row.run == run.run && steps.iter().any(|step| step.task == row.task)))
 }
 
+fn seen_map() -> std::sync::MutexGuard<'static, HashMap<String, u64>> {
+    static SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn seen_key(ctx: &Ctx, task: &str) -> String {
+    format!("{}\u{0}{task}", ctx.home.display())
+}
+
 /// The first time this process saw `task` Pending, recording `now` if new.
 fn first_seen(ctx: &Ctx, task: &str, now: u64) -> u64 {
-    static SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-    let mut seen = SEEN
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *seen
-        .entry(format!("{}\u{0}{task}", ctx.home.display()))
-        .or_insert(now)
+    *seen_map().entry(seen_key(ctx, task)).or_insert(now)
+}
+
+/// Drop the first-seen time of `task`: its budget restarts when it is ready.
+fn forget(ctx: &Ctx, task: &str) {
+    seen_map().remove(&seen_key(ctx, task));
 }
 
 #[cfg(test)]
