@@ -111,9 +111,9 @@ Return one verdict per need:
 | --- | --- |
 | `admitted` | Correctly defined at the need level: must-do, trigger, owner, and done-when are each observable |
 | `revise` | Real work, wrong definition: return corrected need text the Mind can file as the successor |
-| `demote` | Real but not must-do-soon: it belongs in the want backlog |
+| `defer` | Real but not must-do-soon: the Mind withdraws the need and keeps the idea as a want (a discussion); a serving need goes out when the idea is formed |
 | `drop` | Superseded, moot, or purity theater: name which, with evidence |
-| `promote` | Must-do now with a live owner available: the Mind lowers it into a task |
+| `ready` | Must-do now with a live owner available: the Mind lowers it into a task |
 
 Return the verdict, the evidence behind it, and the corrected text when the
 verdict is `revise`. Do not mutate Vivi records yourself: the Mind owns

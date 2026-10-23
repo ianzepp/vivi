@@ -27,17 +27,17 @@ failure here is a real test failure, not lint noise.
   turn ends the session and loses the run.
 - **Do not commit.**
 
-## Report and close
+## Report
 
 Report on the handle: the per-stage pass or fail, the exact command, the first
 failing lines, the path, and the exit code. Distinguish a regression from a
 known failure only when the output supports it. A clean run is a short "clean"
 with a per-stage summary.
 
-Before you stop, **close your own handle**. Reporting is not closing.
+Before you stop, report done on your handle. `task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked.
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for test --note '<what you ran, and the result>'
 ```
 
-Your run is complete when you have reported and closed. Stop then.
+Your run is complete when you have reported. Stop then; the Mind accepts the report.

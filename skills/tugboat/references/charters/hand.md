@@ -18,7 +18,7 @@ your whole assignment.
 ## Job
 
 Implement one logical change inside `write_scope`. Run at most one sanity check
-of the touched surface. Commit path-limited. Close the handle. Stop.
+of the touched surface. Commit path-limited. Report done. Stop.
 
 Start editing. Planning already happened. Do not re-read the campaign,
 historical reports, or sibling goals to reconstruct the assignment.
@@ -44,7 +44,7 @@ and report them.
 
 ## Close
 
-Commit, then settle your own handle with the receipt:
+Commit, then report done on your handle with the receipt:
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for hand \
@@ -52,8 +52,7 @@ vivi task done <handle> --project "$ROOT" --for hand \
 ```
 
 Then reply with one line: `done handle <handle>. commit <sha>. unit <id>.`
-Reporting is not closing: a seat that stops with its handle still open leaves a
-finished unit looking live on the board.
+`task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked. Do not wait for it.
 
 ## Landing is part of the unit
 

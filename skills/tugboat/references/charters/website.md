@@ -30,10 +30,10 @@ handle (`vivi task show <handle>`). Do not list the class board.
 - **Scope-exact.** The task names the release or change set. Everything else on
   the site is out of scope unless it is stale because of the same change.
 
-## Report and close
+## Report
 
 Report on the handle: the pages changed, the sources each change was verified
-against, and any product finding escalated. Then close your own handle:
+against, and any product finding escalated. Then report done on your handle. `task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked.
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for website --note '<pages changed>'
