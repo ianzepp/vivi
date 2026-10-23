@@ -13,6 +13,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::rung_step;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
+use crate::pump::jobs::rung_result::{self, EnvFailure};
 use crate::pump::jobs::{self, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
@@ -26,6 +27,10 @@ pub(crate) const STARTED: &str = "main-started";
 pub(crate) const FAILING: &str = "main-failing";
 /// main_state key: the long-lived task the main rung jobs run on.
 pub(crate) const TASK: &str = "main-rung-task";
+/// main_state key: `<tip> <count>`, the lost main rung jobs seen on that tip.
+pub(crate) const LOST: &str = "main-lost";
+/// Lost, timed-out or setup-failed main rung jobs one tip may take before it counts as tested.
+pub(crate) const MAX_LOST_PER_TIP: u32 = 2;
 /// Job payload key holding the target a main rung job tests.
 pub(crate) const PAYLOAD_KEY: &str = "main_rung";
 
@@ -103,8 +108,106 @@ fn collect<S: JobStore, M: FlowMail>(
         .cloned()
         .collect();
     for job in finished {
-        apply(ctx, store, mail, target, &job)?;
+        let same_tip = same_tip_ids(st, target, &job);
+        apply(ctx, store, mail, target, &job, &same_tip)?;
         jobs::mark_applied(st, &job.id, ctx.now());
+    }
+    Ok(())
+}
+
+/// Ids of every main rung job of `target` that ran at the same tip as `job`, sorted.
+fn same_tip_ids<S: JobStore>(st: &S, target: &str, job: &PoolJob) -> Vec<String> {
+    let tip = job.payload.get("tip");
+    let mut ids: Vec<String> = st
+        .jobs()
+        .values()
+        .filter(|other| {
+            other.kind == "rung"
+                && other.payload.get(PAYLOAD_KEY).and_then(|v| v.as_str()) == Some(target)
+                && other.payload.get("tip") == tip
+        })
+        .map(|other| other.id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// An environment failure is not a red main: no repair need, one alarm per
+/// target and tool, and the tip counts as tested so it does not run again.
+fn env_hold(
+    ctx: &Ctx,
+    store: &PumpStore,
+    target: &str,
+    tip: &str,
+    job: &PoolJob,
+    env: &EnvFailure,
+) -> Result<(), VivariumError> {
+    store.set_main_state(&key(TESTED, target), tip)?;
+    let tool = env.tool.as_deref().unwrap_or("host");
+    raise_once(
+        ctx,
+        rung_result::ENV_FAILURE,
+        &format!("{target}:{tool}"),
+        &format!(
+            "main rung for target {target} at {tip} hit an environment failure ({:?}, tool {tool}): job {}, pool {}, evidence: {}. No repair need was filed; fix the worker, the tip is marked tested",
+            env.kind,
+            job.id,
+            job.pool.as_deref().unwrap_or("none"),
+            env.evidence
+        ),
+    );
+    Ok(())
+}
+
+/// The lost count stored for `tip`; 0 when absent, for another tip, or unreadable.
+fn lost_count(store: &PumpStore, target: &str, tip: &str) -> Result<u32, VivariumError> {
+    let Some(text) = store.main_state(&key(LOST, target))? else {
+        return Ok(0);
+    };
+    match text.split_once(' ') {
+        Some((seen, count)) if seen == tip => match count.parse::<u32>() {
+            Ok(n) => Ok(n),
+            Err(_) => Ok(0),
+        },
+        _ => Ok(0),
+    }
+}
+
+/// A main rung job that ended without an exit code: count it against the tip.
+/// At [`MAX_LOST_PER_TIP`] the tip counts as tested; below it the schedule
+/// runs the tip once more after the interval.
+fn lost(
+    ctx: &Ctx,
+    store: &PumpStore,
+    target: &str,
+    tip: &str,
+    job: &PoolJob,
+    same_tip: &[String],
+) -> Result<(), VivariumError> {
+    let count = lost_count(store, target, tip)? + 1;
+    store.set_main_state(&key(LOST, target), &format!("{tip} {count}"))?;
+    if count >= MAX_LOST_PER_TIP {
+        store.set_main_state(&key(TESTED, target), tip)?;
+        raise_once(
+            ctx,
+            MAIN_RUNG_FAILED,
+            &job.id,
+            &format!(
+                "main rung for target {target} at {tip} ended {:?} with no exit code {count} times (jobs {}); the tip is marked tested and will not run again",
+                job.status,
+                same_tip.join(", ")
+            ),
+        );
+    } else {
+        raise_once(
+            ctx,
+            MAIN_RUNG_FAILED,
+            &job.id,
+            &format!(
+                "main rung job {} for target {target} at {tip} ended {:?} with no exit code; the tip runs again after the interval",
+                job.id, job.status
+            ),
+        );
     }
     Ok(())
 }
@@ -116,12 +219,16 @@ fn apply<M: FlowMail>(
     mail: &mut M,
     target: &str,
     job: &PoolJob,
+    same_tip: &[String],
 ) -> Result<(), VivariumError> {
     let tip = job
         .payload
         .get("tip")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    if let Some(env) = rung_result::env_failure(job) {
+        return env_hold(ctx, store, target, tip, job, &env);
+    }
     let (word, payload) = rung_step::answer(job);
     match word {
         "pass" => {
@@ -149,15 +256,7 @@ fn apply<M: FlowMail>(
             let tail = payload.get("tail").and_then(|v| v.as_str()).unwrap_or("");
             red::report_red(ctx, store, mail, target, tip, &failing, tail)?;
         }
-        _ => raise_once(
-            ctx,
-            MAIN_RUNG_FAILED,
-            &job.id,
-            &format!(
-                "main rung job {} for target {target} at {tip} ended {:?} with no exit code; the tip runs again after the interval",
-                job.id, job.status
-            ),
-        ),
+        _ => lost(ctx, store, target, tip, job, same_tip)?,
     }
     Ok(())
 }
