@@ -129,7 +129,7 @@ fn close_pos(rig: &Rig, task: &str) -> Option<usize> {
 }
 
 #[test]
-fn done_closes_sentinel_then_need_then_record() -> R {
+fn done_closes_step_then_need_then_sentinel_then_record() -> R {
     let mut rig = rig()?;
     let plan = rig.step("plan", "delivered")?;
     rig.mail.calls.clear();
@@ -147,7 +147,7 @@ fn done_closes_sentinel_then_need_then_record() -> R {
         .mail
         .position(|c| matches!(c, Call::CloseRecord { outcome, .. } if outcome == "landed"))
         .expect("record closed");
-    assert!(step < sentinel && sentinel < need && need < record);
+    assert!(step < need && need < sentinel && sentinel < record);
     assert_eq!(
         rig.mail.task_state(&rig.sentinel)?.verdict.as_deref(),
         Some("delivered")

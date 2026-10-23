@@ -17,6 +17,8 @@ const VERDICT_DELIVERED: &str = "delivered";
 const RECORD_LANDED: &str = "landed";
 /// The pump record outcome of a withdrawn run.
 const RECORD_WITHDRAWN: &str = "withdrawn";
+/// Run state: the terminal is closing the need; neither live nor withdrawn.
+const RUN_FINISHING: &str = "finishing";
 /// Run state: finished and landed.
 const RUN_DONE: &str = "done";
 /// Run state: replaced by a newer run.
@@ -52,8 +54,14 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
     let sentinel = sentinel_of(store, &outcome.need, outcome.run)?;
     match &terminal.class {
         NodeClass::Done => {
-            close_row(store, mail, &sentinel, VERDICT_DELIVERED)?;
+            // The run is no longer live, but it is not withdrawn either: a tick
+            // that sees the need closed mid-finish must not read a withdrawal.
+            store.set_run_state(&outcome.need, outcome.run, RUN_FINISHING)?;
+            // The travelling close goes first, while the record is open. The
+            // sentinel closes after it, so the join finds the need already
+            // done and the pump's letter is the close every member folds.
             mail.close_need(&outcome.need, LANDED_NOTE)?;
+            close_row(store, mail, &sentinel, VERDICT_DELIVERED)?;
             mail.close_record(&outcome.need, RECORD_LANDED)?;
             store.set_run_state(&outcome.need, outcome.run, RUN_DONE)?;
             Ok(Finished::Landed)

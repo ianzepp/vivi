@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::MailspacePort;
+use super::{MailReader, MailspacePort, TaskStatus};
 use crate::error::VivariumError;
 use crate::mailspace::PumpState;
 
@@ -71,10 +71,19 @@ impl MailspacePort {
     /// open pump record this travels as an event letter to every member
     /// (operator ruling Q7), so close the need before closing its record.
     ///
+    /// Idempotent for its own close: a need already done whose newest close
+    /// was written by the pump identity returns Ok, so a tick that retries
+    /// after a partial failure is safe.
+    ///
     /// # Errors
-    /// Returns a [`VivariumError`] when the need is unknown, already closed, or
-    /// the pump identity has no authority over it.
+    /// Returns a [`VivariumError`] when the need is unknown, closed by anyone
+    /// else, or the pump identity has no authority over it.
     pub fn close_need(&self, need: &str, note: &str) -> Result<(), VivariumError> {
+        let state = self.task_state(need)?;
+        if state.status == TaskStatus::Done && state.closer.as_deref() == Some(&self.pump_identity)
+        {
+            return Ok(());
+        }
         self.mailspace.move_item_outcome(
             &self.pump_identity,
             need,

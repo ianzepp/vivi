@@ -1,7 +1,7 @@
 //! Closing-half tests on a real mailspace.
 
 use super::MailspacePort;
-use crate::mailspace::SendRequest;
+use crate::mailspace::{RoleUpdate, SendRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 
@@ -16,10 +16,15 @@ fn port(p: &Project) -> MailspacePort {
 
 /// A need authored by `elsewhere`, addressed to the pump's reply identity.
 fn foreign_need(p: &Project) -> String {
+    need_to(p, "elsewhere", &["mind"])
+}
+
+/// A need authored by `from` addressed to `to`.
+fn need_to(p: &Project, from: &str, to: &[&str]) -> String {
     p.mailspace
         .send(SendRequest {
-            from: "elsewhere".into(),
-            to: vec!["mind".into()],
+            from: from.into(),
+            to: to.iter().map(|t| (*t).to_string()).collect(),
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "authored elsewhere".into(),
@@ -95,4 +100,55 @@ fn a_branch_without_a_commit_is_refused() {
         .unwrap();
     assert!(port.close_task(&task, "merged", Some("b"), None).is_err());
     assert_eq!(port.task_state(&task).unwrap().status, TaskStatus::Open);
+}
+
+#[test]
+fn a_second_close_of_the_pumps_own_close_is_ok_and_an_operators_close_errors() {
+    let mut p = project();
+    let mut port = port(&p);
+    let need = foreign_need(&p);
+    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+    port.close_need(&need, "flow finished").unwrap();
+    // The retry after a partial failure is safe.
+    port.close_need(&need, "flow finished").unwrap();
+    assert_eq!(port.need_state(&need).unwrap(), NeedStatus::Done);
+
+    // A need closed by someone else is not the pump's to close again.
+    p.mailspace
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let other = need_to(&p, "operator", &["mind"]);
+    p.mailspace
+        .move_item_outcome("mind", &other, "done", None, "need done", None)
+        .unwrap();
+    let port = self::port(&p);
+    let state = port.task_state(&other).unwrap();
+    assert_eq!(state.closer.as_deref(), Some("mind"));
+    let err = port.close_need(&other, "mine too").unwrap_err();
+    assert!(!err.to_string().contains("not found"), "{err}");
+}
+
+#[test]
+fn closing_the_sentinel_after_the_need_leaves_the_pumps_close_as_the_last_word() {
+    let p = project();
+    let mut port = port(&p);
+    let need = foreign_need(&p);
+    let sentinel = port
+        .send_step("operator", "operator", "run", "pump-sentinel: x r1", &[])
+        .unwrap();
+    port.bind(&need, std::slice::from_ref(&sentinel)).unwrap();
+    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+
+    port.close_need(&need, "flow finished").unwrap();
+    port.close_task(&sentinel, "delivered", None, None).unwrap();
+
+    let state = port.task_state(&need).unwrap();
+    assert_eq!(state.status, TaskStatus::Done);
+    assert_eq!(state.closer.as_deref(), Some("operator"));
 }
