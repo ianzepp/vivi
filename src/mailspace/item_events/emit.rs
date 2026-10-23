@@ -287,11 +287,11 @@ impl Mailspace {
         } else {
             format!("--for {holder} (vivi {command} {token} --for {holder})")
         };
-        let why = format!("'{identity}' is neither");
         VivariumError::Message(format!(
             "message '{token}' is held by identity '{holder}'; to report on it retry with \
              {report}, which moves only that copy. Closing or reopening it for everyone is \
-             for its author {author}, a mind-kind role or an operator-kind role; {why}"
+             for its author {author}, a mind-kind role or an operator-kind role; \
+             '{identity}' is neither"
         ))
     }
 
@@ -322,7 +322,7 @@ impl Mailspace {
             parent_content_id: &item.content_id,
             moves: &moves,
         })?;
-        if matches!(request.kind, ItemEventKind::Done | ItemEventKind::Reopened) {
+        if closes_or_reopens(request.kind) {
             let location = BTreeMap::from([
                 (
                     "branch".into(),
@@ -421,20 +421,13 @@ impl Mailspace {
         for (name, value) in &request.headers {
             data = add_header(&data, name, value)?;
         }
-        if matches!(request.kind, ItemEventKind::Done | ItemEventKind::Reopened)
+        if closes_or_reopens(request.kind)
             && close_header_value(&request.headers, "X-Vivi-Branch").is_none()
             && close_header_value(&request.headers, "X-Vivi-Commit").is_none()
         {
-            data = add_header(
-                &data,
-                "X-Vivi-Branch",
-                super::property::PROVENANCE_CLEAR_SENTINEL,
-            )?;
-            data = add_header(
-                &data,
-                "X-Vivi-Commit",
-                super::property::PROVENANCE_CLEAR_SENTINEL,
-            )?;
+            for name in ["X-Vivi-Branch", "X-Vivi-Commit"] {
+                data = add_header(&data, name, super::property::PROVENANCE_CLEAR_SENTINEL)?;
+            }
         }
         data = add_reply_headers(&data, &item.bytes)?;
         Ok(EventLetterDraft {
@@ -509,6 +502,11 @@ impl Mailspace {
             })
             .collect()
     }
+}
+
+/// A close or reopen restates where the work was integrated; a promotion does not.
+fn closes_or_reopens(kind: ItemEventKind) -> bool {
+    matches!(kind, ItemEventKind::Done | ItemEventKind::Reopened)
 }
 
 fn close_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
