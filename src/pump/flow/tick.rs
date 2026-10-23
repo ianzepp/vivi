@@ -687,7 +687,7 @@ where
             return Ok(());
         };
         let marks = self.mail.need_marks(&need)?;
-        let (now_kind, _) = kind::of(Some(&body), &marks);
+        let now_kind = kind::of(Some(&body), &marks);
         if now_kind.name() != self.run.kind {
             raise_once(
                 self.ctx,

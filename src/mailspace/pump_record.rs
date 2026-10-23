@@ -171,7 +171,7 @@ impl Mailspace {
                 "need {need} is done: a pump record needs an open need"
             )));
         }
-        let (kind, _) = crate::pump::flow::kind::of(Some(rendered), &marks);
+        let kind = crate::pump::flow::kind::of(Some(rendered), &marks);
         if kind != crate::pump::flow::def::FlowKind::Repair {
             return Ok(());
         }
