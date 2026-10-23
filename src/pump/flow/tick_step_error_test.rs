@@ -10,6 +10,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{OPERATOR_HOLD, STEP_OVERDUE, tick_with};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::start;
@@ -276,7 +277,7 @@ const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
 impl Rig {
     /// Add a step row `node` with a fresh task in `state`.
     fn add_step(&mut self, node: &str, state: StepState) -> Result<StepRow, VivariumError> {
-        let body = format!("pump-step: {NEED} r1 {node}");
+        let body = step_body(NEED, 1, node, "");
         let task = self.mail.send_step("mind", "mind", node, &body, &[])?;
         let row = StepRow {
             run: 1,

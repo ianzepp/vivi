@@ -6,10 +6,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::{UNREPAIRED_NODE, answer_green};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::def::{
-    FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass, SENTINEL_MARKER, STEP_MARKER,
-};
+use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus};
@@ -93,13 +92,9 @@ impl Rig {
             entry: node.into(),
             state: "live".into(),
         })?;
-        let sentinel = self.mail.send_step(
-            "pump",
-            "pump",
-            "run",
-            &format!("{SENTINEL_MARKER} {need} r1"),
-            &[],
-        )?;
+        let sentinel =
+            self.mail
+                .send_step("pump", "pump", "run", &sentinel_body(need, 1, ""), &[])?;
         self.mail.bind(need, std::slice::from_ref(&sentinel))?;
         self.store.insert_step(
             need,
@@ -111,13 +106,9 @@ impl Rig {
                 verdict: None,
             },
         )?;
-        let task = self.mail.send_step(
-            "pump",
-            "pump",
-            node,
-            &format!("{STEP_MARKER} {need} r1 {node}"),
-            &[],
-        )?;
+        let task = self
+            .mail
+            .send_step("pump", "pump", node, &step_body(need, 1, node, ""), &[])?;
         self.mail.bind(need, std::slice::from_ref(&task))?;
         self.store.insert_step(
             need,
