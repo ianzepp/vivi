@@ -7,7 +7,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::RepairerStart;
 use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
+use crate::letter::fixture::repair_record_body;
+use crate::letter::records::{NoteWord, RecordFront, RecordKind};
+use crate::letter::render;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::restart::restart;
@@ -29,7 +31,21 @@ type R = Result<(), VivariumError>;
 const NEED: &str = "abcd1234";
 const MAIN_A: &str = "1111111111111111111111111111111111111111";
 const MAIN_B: &str = "2222222222222222222222222222222222222222";
-const RECORD: &str = "kind: repair\ntarget: default\ntested: 0000\n\nFAILED a::b\n";
+
+fn record() -> String {
+    repair_record_body(NEED, "default", Some("0000"), "FAILED a::b")
+}
+
+/// A repair record that names no target.
+fn targetless_record() -> String {
+    let front = RecordFront {
+        need: NEED.into(),
+        kind: Some(RecordKind::Repair),
+        target: None,
+        tested: None,
+    };
+    render(&front, "FAILED a::b").unwrap()
+}
 
 struct Rig {
     _dir: TempDir,
@@ -122,7 +138,7 @@ fn job(action: StartAction) -> Box<crate::pump::jobs::JobSpec> {
 
 #[test]
 fn attempt_one_cuts_a_repair_branch_from_the_main_tip() -> R {
-    let rig = rig(true, RECORD)?;
+    let rig = rig(true, &record())?;
     main_tip(&rig.host, MAIN_A);
     let spec = job(start(&rig, &step("fix1", "t1", StepState::Pending, None))?);
     assert_eq!(spec.kind, "repairer");
@@ -151,7 +167,7 @@ fn attempt_one_cuts_a_repair_branch_from_the_main_tip() -> R {
 
 #[test]
 fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
-    let mut rig = rig(true, RECORD)?;
+    let mut rig = rig(true, &record())?;
     let fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
     let rung = rig.mail.send_step("mind", "mind", "rung1", "b", &[])?;
     rig.store
@@ -194,7 +210,7 @@ fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
 
 #[test]
 fn no_repairer_role_is_an_error() -> R {
-    let rig = rig(false, RECORD)?;
+    let rig = rig(false, &record())?;
     main_tip(&rig.host, MAIN_A);
     let err = start(&rig, &step("fix1", "t1", StepState::Pending, None)).unwrap_err();
     assert!(err.to_string().contains("no repairer role"), "{err}");
@@ -203,7 +219,7 @@ fn no_repairer_role_is_an_error() -> R {
 
 #[test]
 fn a_record_without_a_target_is_an_error() -> R {
-    let rig = rig(true, "kind: repair\nFAILED a::b\n")?;
+    let rig = rig(true, &targetless_record())?;
     main_tip(&rig.host, MAIN_A);
     let err = start(&rig, &step("fix1", "t1", StepState::Pending, None)).unwrap_err();
     assert!(err.to_string().contains("target"), "{err}");
@@ -213,7 +229,7 @@ fn a_record_without_a_target_is_an_error() -> R {
 
 #[test]
 fn a_node_without_an_attempt_is_an_error() -> R {
-    let rig = rig(true, RECORD)?;
+    let rig = rig(true, &record())?;
     let err = start(&rig, &step("unrepaired", "t1", StepState::Pending, None)).unwrap_err();
     assert!(matches!(err, VivariumError::Parse(_)), "{err}");
     Ok(())
@@ -221,7 +237,7 @@ fn a_node_without_an_attempt_is_an_error() -> R {
 
 #[test]
 fn a_restarted_repair_run_publishes_to_fresh_refs() -> R {
-    let mut rig = rig(true, RECORD)?;
+    let mut rig = rig(true, &record())?;
     let old = start_run(&rig.ctx, &rig.store, &mut rig.mail, NEED, Some("fix1"))?;
     let rows = rig.store.steps_of(NEED, old.run)?;
     let fix1 = rows
@@ -286,7 +302,7 @@ fn a_restarted_repair_run_publishes_to_fresh_refs() -> R {
 
 #[test]
 fn attempt_two_brief_says_why_attempt_one_changed_nothing() -> R {
-    let mut rig = rig(true, RECORD)?;
+    let mut rig = rig(true, &record())?;
     let fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
     rig.store.insert_step(
         NEED,

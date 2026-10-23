@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::super::register;
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
+use crate::letter::fixture::{repair_record_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -75,7 +75,11 @@ fn rig() -> Result<Rig, VivariumError> {
     let ctx = ctx.with_routing(routing);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: repair\ntarget: default")?;
+    MailWriter::open_record(
+        &mut mail,
+        NEED,
+        &repair_record_body(NEED, "default", None, ""),
+    )?;
     start(&ctx, &store, &mut mail, NEED, Some("fix1"))?;
     let task = mail.send_step("mind", "mind", NODE, &step_body(NEED, 1, NODE, ""), &[])?;
     store.insert_step(

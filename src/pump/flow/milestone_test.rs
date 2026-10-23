@@ -9,6 +9,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{MILESTONE_PREREQ_HELD, MILESTONE_UNLANDED, register};
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::FlowKind;
@@ -60,7 +61,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
     mail.set_prerequisites(NEED, &[DEP]);
-    MailWriter::open_record(&mut mail, NEED, "kind: release")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "release"))?;
     start(&ctx, &store, &mut mail, NEED, None)?;
     let mut registry = Reg::new();
     register(&mut registry);
@@ -142,7 +143,7 @@ impl Rig {
 
     /// The prerequisite closed with a pump record outcome, then done.
     fn closed_with(&mut self, outcome: &str) -> R {
-        self.mail.open_record(DEP, "kind: build")?;
+        self.mail.open_record(DEP, &record_body(DEP, "build"))?;
         self.mail.close_record(DEP, outcome)?;
         self.mail.close_need(DEP, "done")
     }
