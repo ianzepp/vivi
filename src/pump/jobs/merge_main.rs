@@ -83,7 +83,9 @@ pub fn spec(
     Some(job)
 }
 
-fn ref_safe(text: &str) -> String {
+/// Map a name to one ref segment: ASCII alphanumerics, `-` and `_` are kept
+/// and everything else becomes `-`.
+pub(crate) fn ref_safe(text: &str) -> String {
     text.chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
