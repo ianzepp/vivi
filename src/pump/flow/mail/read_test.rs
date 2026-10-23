@@ -125,3 +125,43 @@ fn need_state_marks_and_open_record_are_read() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].0, need);
 }
+
+#[test]
+fn prerequisites_and_last_closed_record_are_read() {
+    let project = project();
+    let first = project.need("first need");
+    let second = project.need("second need");
+    let dependent = project
+        .mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "dependent need".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: vec![first.clone()],
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let port = MailspacePort {
+        mailspace: project.mailspace,
+        pump_identity: "mind".into(),
+    };
+    assert_eq!(port.need_prerequisites(&dependent).unwrap(), vec![first]);
+    assert!(port.need_prerequisites(&second).unwrap().is_empty());
+
+    assert_eq!(port.last_closed_record(&second).unwrap(), None);
+    port.open_pump_record(&second, "kind: release").unwrap();
+    assert_eq!(port.last_closed_record(&second).unwrap(), None);
+    port.close_pump_record(&second, "landed").unwrap();
+    assert_eq!(
+        port.last_closed_record(&second).unwrap(),
+        Some("landed".to_string())
+    );
+}
