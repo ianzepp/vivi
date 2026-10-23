@@ -5,16 +5,26 @@
 //! holds anything. The `applied_actions` table is the durable done-marker: the
 //! key `repair-audit:<need>:r<run>` is set once the audit is settled (or has
 //! nothing to audit).
+//!
+//! The collect half reads the terminal audit job: every `[[finding]]` of its
+//! auditor envelope files one new need (a `weakened-test` finding at top
+//! priority) and gets its own applied key, so a failed tick files only what is
+//! still missing. Nothing is ever held or reopened.
+
+use std::collections::BTreeSet;
 
 use serde_json::json;
 
 use crate::error::VivariumError;
+use crate::pump::attempt_record::hand_message;
+use crate::pump::envelope::review::Finding;
+use crate::pump::envelope::roles::{RoleKind, parse_for};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::RunRow;
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::flow::tick::raise_once;
-use crate::pump::host::Ctx;
-use crate::pump::jobs::{self, JobSpec, JobStore};
+use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
 /// Exception kind of an audit that could not be queued or collected.
@@ -25,6 +35,12 @@ const RUN_DONE: &str = "done";
 
 /// Kind of a landed repair run.
 const REPAIR_KIND: &str = "repair";
+
+/// Pump priority of a need filed for a weakened, deleted, ignored or gated test.
+const WEAKENED_TEST_PRIORITY: i64 = 100;
+
+/// Finding ids with this prefix name a weakened test.
+const WEAKENED_PREFIX: &str = "weakened-test";
 
 /// Kind label of an audit job.
 pub(crate) const JOB_KIND: &str = "auditor";
@@ -53,9 +69,14 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for RepairAudit {
         store: &PumpStore,
         mail: &mut M,
     ) -> Result<(), VivariumError> {
+        let applied = store.applied_action_ids()?;
         for run in store.runs_in_state(RUN_DONE)? {
-            if run.kind == REPAIR_KIND {
-                enqueue(ctx, st, store, mail, &run)?;
+            if run.kind != REPAIR_KIND || applied.contains(&run_key(&run.need, run.run)) {
+                continue;
+            }
+            match st.jobs().get(&job_id(&run.need, run.run)).cloned() {
+                Some(job) => collect(ctx, store, &job, &run)?,
+                None => enqueue(ctx, st, store, mail, &run)?,
             }
         }
         Ok(())
@@ -78,9 +99,6 @@ fn enqueue<S: JobStore, M: FlowMail>(
 ) -> Result<(), VivariumError> {
     let key = run_key(&run.need, run.run);
     let id = job_id(&run.need, run.run);
-    if store.applied_action_ids()?.contains(&key) || st.jobs().contains_key(&id) {
-        return Ok(());
-    }
     let Some(facts) = published_facts(store, mail, run)? else {
         ctx.log(&format!(
             "repair audit: {} r{} published nothing; nothing to audit",
@@ -119,6 +137,148 @@ fn enqueue<S: JobStore, M: FlowMail>(
         "base": facts.base,
     });
     jobs::enqueue(st, spec)
+}
+
+/// Settle one terminal audit job: file its findings, then mark the run. A job
+/// that ended without a readable reply raises the alarm once and is marked.
+fn collect(ctx: &Ctx, store: &PumpStore, job: &PoolJob, run: &RunRow) -> Result<(), VivariumError> {
+    if !job.status.is_terminal() {
+        return Ok(());
+    }
+    let key = run_key(&run.need, run.run);
+    let findings = match findings_of(job) {
+        Ok(findings) => findings,
+        Err(error) => {
+            let text = format!("{} r{}: {error}", run.need, run.run);
+            raise_once(ctx, REPAIR_AUDIT_FAILED, &job.id, &text);
+            return settle(ctx, store, &key);
+        }
+    };
+    let applied = store.applied_action_ids()?;
+    let mut complete = true;
+    for finding in &findings {
+        let fkey = format!("{key}:{}", finding.id);
+        if applied.contains(&fkey) {
+            continue;
+        }
+        match file(ctx, store, &applied, (run, job, finding), &fkey) {
+            Ok(()) => settle(ctx, store, &fkey)?,
+            Err(error) => {
+                let text = format!("{} r{}: finding {}: {error}", run.need, run.run, finding.id);
+                raise_once(ctx, REPAIR_AUDIT_FAILED, &fkey, &text);
+                complete = false;
+            }
+        }
+    }
+    if complete {
+        settle(ctx, store, &key)?;
+    }
+    Ok(())
+}
+
+/// The findings of a finished audit job's envelope.
+fn findings_of(job: &PoolJob) -> Result<Vec<Finding>, String> {
+    let Some(outcome) = job
+        .outcome
+        .as_ref()
+        .filter(|_| job.status == JobStatus::Finished)
+    else {
+        return Err(format!("audit job ended {:?} with no reply", job.status));
+    };
+    let parsed = parse_for(RoleKind::Auditor, &hand_message(&outcome.receipt))
+        .map_err(|error| format!("auditor reply unreadable: {error}"))?;
+    match parsed.front.get("finding") {
+        Some(rows) => serde_json::from_value(rows.clone())
+            .map_err(|error| format!("auditor findings unreadable: {error}")),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// File one finding as a new need, give it a pump record, and raise a
+/// weakened-test finding to top priority. The need handle is remembered under
+/// `<fkey>:need:<handle>` so a retry after a later step failed does not file
+/// the need twice.
+fn file(
+    ctx: &Ctx,
+    store: &PumpStore,
+    applied: &BTreeSet<String>,
+    (run, job, finding): (&RunRow, &PoolJob, &Finding),
+    fkey: &str,
+) -> Result<(), String> {
+    let prefix = format!("{fkey}:need:");
+    let handle = match applied.iter().find_map(|id| id.strip_prefix(&prefix)) {
+        Some(handle) => handle.to_owned(),
+        None => {
+            let handle = send_need(ctx, run, job, finding)?;
+            store
+                .mark_action_applied(&format!("{prefix}{handle}"), ctx.now())
+                .map_err(|error| error.to_string())?;
+            handle
+        }
+    };
+    vivi_ok(ctx, &format!("pump send --need {}", shell_quote(&handle)))?;
+    if finding.id.starts_with(WEAKENED_PREFIX) {
+        let level = WEAKENED_TEST_PRIORITY;
+        vivi_ok(
+            ctx,
+            &format!("pump priority set {} {level}", shell_quote(&handle)),
+        )?;
+    }
+    Ok(())
+}
+
+/// `need send` for one finding; returns the new need handle.
+fn send_need(ctx: &Ctx, run: &RunRow, job: &PoolJob, finding: &Finding) -> Result<String, String> {
+    let subject = format!("repair audit {} r{}: {}", run.need, run.run, finding.id);
+    let paths = if finding.paths.is_empty() {
+        String::from("none named")
+    } else {
+        finding.paths.join(", ")
+    };
+    let body = format!(
+        "{}\n\nPaths: {paths}\nAudited repair range: {}..{}\nRepair: {} r{}\n",
+        finding.content,
+        job.payload["base"].as_str().unwrap_or("unknown"),
+        job.payload["commit"].as_str().unwrap_or("unknown"),
+        run.need,
+        run.run,
+    );
+    let from = shell_quote(&ctx.cfg.reply_from);
+    let command = format!(
+        "need send --from {from} --to {from} --subject {} --body {}",
+        shell_quote(&subject),
+        shell_quote(&body),
+    );
+    let out = ctx.vivi(&command, 60);
+    if out.code != 0 {
+        return Err(format!("need send failed: {}", out.text.trim()));
+    }
+    need_handle(&out.text).ok_or_else(|| format!("need send gave no handle: {}", out.text.trim()))
+}
+
+/// Run one `vivi` subcommand; an error names the command and its output.
+fn vivi_ok(ctx: &Ctx, command: &str) -> Result<(), String> {
+    let out = ctx.vivi(command, 60);
+    if out.code == 0 {
+        Ok(())
+    } else {
+        Err(format!("{command} failed: {}", out.text.trim()))
+    }
+}
+
+/// The handle in `need send` output: the third token of the `created ` line
+/// (`created <identity> <handle>`), else the second token of a `sent ` line.
+fn need_handle(text: &str) -> Option<String> {
+    let created = text
+        .lines()
+        .find(|line| line.starts_with("created "))
+        .and_then(|line| line.split_whitespace().nth(2));
+    let token = created.or_else(|| {
+        text.lines()
+            .find(|line| line.starts_with("sent "))
+            .and_then(|line| line.split_whitespace().nth(1))
+    });
+    token.map(str::to_owned)
 }
 
 /// Mark one audit key applied.
