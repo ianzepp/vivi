@@ -8,7 +8,7 @@ use crate::mailspace::shipped::{ADMITTER_ROLE, PUMP_PLANNER_ROLE, RESEARCHER_ROL
 use crate::pool::config::PoolConfig;
 use crate::pump::config::PumpConfig;
 
-use super::model::{RoleRouting, from_mailspace};
+use super::model::{RoleRouting, RoutedRole, from_mailspace};
 use super::pump_models::check_role_runs;
 use super::validate::Issue;
 
@@ -60,13 +60,13 @@ pub(super) fn pump_role_checks_of(
             check_role_runs(routing.pump_planner(), pools, issues);
         }),
         collect("researcher model", |issues| {
-            check_role_runs(routing.lookup(RESEARCHER_ROLE), pools, issues);
+            check_flow_role_runs(routing.lookup(RESEARCHER_ROLE), pools, issues);
         }),
         collect("admitter model", |issues| {
-            check_role_runs(routing.lookup(ADMITTER_ROLE), pools, issues);
+            check_flow_role_runs(routing.lookup(ADMITTER_ROLE), pools, issues);
         }),
         collect("slicer model", |issues| {
-            check_role_runs(routing.lookup(SLICER_ROLE), pools, issues);
+            check_flow_role_runs(routing.lookup(SLICER_ROLE), pools, issues);
         }),
         collect("merge model", |issues| {
             check_role_runs(routing.merge(), pools, issues);
@@ -115,17 +115,16 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     }
 }
 
-/// The flow roles (researcher, admitter, slicer) run durable jobs like the
-/// planner: each needs an active role assigned to a pool.
+/// The flow roles (researcher, admitter, slicer) will run durable jobs like
+/// the planner: each needs an active role assigned to a pool. Until the flow
+/// engine dispatches role steps, a missing role or pool is only a warning;
+/// the pump holds for them once it really uses them.
 fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
     let Some(role) = routing.lookup(name) else {
-        issues.push(Issue::not_ready(
-            format!("{name} role"),
-            format!(
-                "the pump flows need an active {name} role assigned to a pool for durable \
-                 jobs: run `vivi config migrate`"
-            ),
-        ));
+        issues.push(Issue::warning(format!(
+            "the pump flows need an active {name} role assigned to a pool for durable jobs \
+             (required once the flow engine dispatches role steps): run `vivi config migrate`"
+        )));
         return;
     };
     if role.status != "active" {
@@ -135,15 +134,28 @@ fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
         )));
     }
     if role.pool.is_none() {
-        issues.push(Issue::not_ready(
-            format!("{name} pool"),
-            format!(
-                "role {} must name a pool for durable {name} jobs: run `vivi config migrate` \
-                 or `vivi role pool {} <pool>`",
-                role.name, role.name
-            ),
-        ));
+        issues.push(Issue::warning(format!(
+            "role {} must name a pool for durable {name} jobs (required once the flow engine \
+             dispatches role steps): run `vivi config migrate` or `vivi role pool {} <pool>`",
+            role.name, role.name
+        )));
     }
+}
+
+/// A flow role's `<role> model` findings, as warnings for the same reason.
+fn check_flow_role_runs(
+    role: Option<&RoutedRole>,
+    pools: &BTreeMap<String, PoolConfig>,
+    issues: &mut Vec<Issue>,
+) {
+    let mut found = Vec::new();
+    check_role_runs(role, pools, &mut found);
+    issues.extend(found.into_iter().map(|issue| {
+        Issue::warning(format!(
+            "{} (required once the flow engine dispatches role steps)",
+            issue.message
+        ))
+    }));
 }
 
 fn check_merge(routing: &RoleRouting, issues: &mut Vec<Issue>) {
