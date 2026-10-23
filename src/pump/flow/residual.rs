@@ -7,14 +7,63 @@ use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
 use crate::pump::board::{NeedRow, parse_rows};
+use crate::pump::envelope::correct;
 use crate::pump::envelope::review::{
     Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus,
 };
+use crate::pump::envelope::roles::RoleKind;
+use crate::pump::flow::collect::{self, Collected};
+use crate::pump::flow::collect_step::{RunCx, StepCollector};
+use crate::pump::flow::def::{FAILED, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
+use crate::pump::flow::index::{StepJobRow, StepRow};
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::jobs::JobStore;
+use crate::pump::jobs::{JobStore, PoolJob};
 
-pub(crate) fn register<S: JobStore, M: FlowMail>(_registry: &mut Registry<S, M>) {}
+pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
+    registry.collector(
+        FlowKind::Build,
+        NodeClass::Auditor,
+        Box::new(AuditCollector),
+    );
+}
+
+/// Build auditor steps: the role collector, plus the residual and gap needs
+/// the audit found are filed before the answer routes.
+pub(crate) struct AuditCollector;
+
+impl<S: JobStore, M: FlowMail> StepCollector<S, M> for AuditCollector {
+    fn collect(
+        &self,
+        cx: &mut RunCx<'_, S, M>,
+        job: &PoolJob,
+        row: &StepJobRow,
+        step: &StepRow,
+        class: &NodeClass,
+    ) -> Result<(), VivariumError> {
+        let expected = job.publish_ref.clone().unwrap_or_default();
+        match collect::collect(cx.ctx, cx.mail, job, row, class, &expected) {
+            Collected::Outcome(word, payload) => {
+                let front: Auditor = serde_json::from_value(payload["front"].clone())
+                    .map_err(|e| VivariumError::Parse(format!("auditor envelope: {e}")))?;
+                file(cx.ctx, &cx.run.need, cx.run.run, &step.task, &front)?;
+                cx.advance_word(step, &word, payload)
+            }
+            Collected::Failed => cx.advance_word(step, FAILED, serde_json::json!({"job": job.id})),
+            Collected::Verify => cx.verify_step(job, step),
+            Collected::Retry if job.kind == correct::KIND => {
+                cx.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
+            }
+            Collected::Retry => cx.rerun(job, row, step),
+            Collected::Correct { error } => {
+                let kind = RoleKind::from_class(class).ok_or_else(|| {
+                    VivariumError::Parse(format!("node {} has no role kind", step.node))
+                })?;
+                cx.correct(job, row, kind, &error)
+            }
+        }
+    }
+}
 
 /// File one need per requirement gap (any answer) and, when the answer is
 /// `residual`, one per finding. Returns the handles in filing order. A repeat
