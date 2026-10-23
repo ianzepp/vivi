@@ -31,8 +31,8 @@ const MERGE_SLOTS: usize = 2;
 const TEST_HARNESS: &str = r#"#!/bin/sh
 set -eu
 brief="$1"
-id=$(sed -n 's/^pump-job-id: //p' "$brief" | head -n 1)
-kind=$(sed -n 's/^pump-job-kind: //p' "$brief" | head -n 1)
+id=$(sed -n 's/^id = "\(.*\)"$/\1/p' "$brief" | head -n 1)
+kind=$(sed -n 's/^kind = "\(.*\)"$/\1/p' "$brief" | head -n 1)
 printf '%s %s\n' "$kind" "$id" > "$VIVI_TEST_MARKERS/$id.started"
 while [ ! -f "$VIVI_TEST_MARKERS/release-workers" ]; do sleep 0.1; done
 case "$kind" in
@@ -333,7 +333,7 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
         mailspace,
         pump_identity: String::from("mind"),
     };
-    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+    MailWriter::open_record(&mut port, &need, "").unwrap();
 
     let branch = need_branch::branch(&need);
     git(&rig.seed, &["checkout", "-q", "-B", "need-work", "main"]);

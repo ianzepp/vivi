@@ -98,7 +98,18 @@ fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
     let task = PoolTask {
         handle: String::from("abcd1234"),
         subject: String::from("audit"),
-        body: String::from("pump-builtin-role: auditor\nAudit this range."),
+        body: vivi::letter::render(
+            &vivi::letter::work::TaskFront {
+                job: Some(vivi::letter::work::JobFront {
+                    id: String::from("audit-1"),
+                    kind: String::from("auditor:range"),
+                    builtin_role: Some(String::from("auditor")),
+                }),
+                ..Default::default()
+            },
+            "Audit this range.",
+        )
+        .unwrap(),
         addressee: Some(String::from("hand")),
     };
 

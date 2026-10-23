@@ -325,7 +325,23 @@ fn recovery_finds_a_task_created_before_the_last_state_save() {
     host.reply(
         "task show a1b2c3d4 --json",
         0,
-        r#"{"messages":[{"body":"pump-job-id: plan-board-1"}]}"#,
+        &serde_json::json!({
+            "messages": [{
+                "body": crate::letter::render(
+                    &crate::letter::work::TaskFront {
+                        job: Some(crate::letter::work::JobFront {
+                            id: String::from("plan-board-1"),
+                            kind: String::from("planner:board"),
+                            builtin_role: None,
+                        }),
+                        ..Default::default()
+                    },
+                    "write a plan",
+                )
+                .unwrap(),
+            }],
+        })
+        .to_string(),
     );
     host.reply(
         "task show a1b2c3d4 --latest",
@@ -491,6 +507,29 @@ fn a_brief_under_the_cap_is_sent_whole() {
     assert!(sent.ends_with("a short brief"));
     assert!(!ctx.home.join("job-briefs/planner-small.full.txt").exists());
     assert!(!ctx.home.join("exceptions.txt").exists());
+}
+
+#[test]
+fn a_sent_job_brief_carries_the_job_front_matter() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    let mut spec = JobSpec::new("audit-1", "auditor:range", "auditor", "audit", "look at it");
+    spec.builtin_role = Some(String::from("auditor"));
+    let mut store = Store::default();
+    enqueue(&mut store, spec).unwrap();
+    let job = store.jobs["audit-1"].clone();
+
+    send_task(&ctx, &job).unwrap();
+
+    let sent = std::fs::read_to_string(ctx.home.join("job-briefs/audit-1.txt")).unwrap();
+    let envelope = crate::letter::read::task_of("", &sent).unwrap();
+    let front = envelope.front.job.unwrap();
+    assert_eq!(front.id, "audit-1");
+    assert_eq!(front.kind, "auditor:range");
+    assert_eq!(front.builtin_role.as_deref(), Some("auditor"));
+    assert!(!sent.contains("pump-job-"));
+    assert!(sent.ends_with("look at it"));
 }
 
 fn queued(id: &str, body: &str) -> PoolJob {

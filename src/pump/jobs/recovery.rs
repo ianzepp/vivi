@@ -75,7 +75,7 @@ fn recover_role_tasks(
         }
         if !marker_matches(&shown.text, id) {
             return Err(VivariumError::Message(format!(
-                "task {task} subject matched pump job {id}, but its body marker is missing"
+                "task {task} subject matched pump job {id}, but its body has no [job] table naming the job"
             )));
         }
         let latest = crate::pump::collect::receipt_full(ctx, &task);
@@ -148,8 +148,43 @@ fn pool_name(latest: &str) -> Option<String> {
     })
 }
 
+/// `true` when `text` carries the job's subject marker, or a message body
+/// whose `[job]` front-matter table names the job.
 fn marker_matches(text: &str, id: &str) -> bool {
-    text.contains(&format!("pump-job-id: {id}")) || text.contains(&format!("[pump-job:{id}]"))
+    text.contains(&format!("[pump-job:{id}]"))
+        || bodies_of(text).iter().any(|body| {
+            crate::letter::read::task_of("", body)
+                .is_ok_and(|task| task.front.job.is_some_and(|job| job.id == id))
+        })
+}
+
+/// Every string `body` field found by walking the JSON in `text`, objects and
+/// arrays alike. Text that is not JSON has none.
+pub(super) fn bodies_of(text: &str) -> Vec<String> {
+    let mut bodies = Vec::new();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        collect_bodies(&value, &mut bodies);
+    }
+    bodies
+}
+
+fn collect_bodies(value: &serde_json::Value, bodies: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                match child.as_str() {
+                    Some(body) if key == "body" => bodies.push(body.to_owned()),
+                    _ => collect_bodies(child, bodies),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_bodies(item, bodies);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn listed_tasks(text: &str) -> Result<Vec<(String, String)>, VivariumError> {

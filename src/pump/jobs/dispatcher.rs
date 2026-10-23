@@ -8,6 +8,7 @@ use std::path::Path;
 
 use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
 use crate::error::VivariumError;
+use crate::letter::work::{JobFront, TaskFront};
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
@@ -369,16 +370,16 @@ pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, Viva
     let dir = ctx.home.join("job-briefs");
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.txt", job.id));
-    let body = format!(
-        "pump-job-id: {}\npump-job-kind: {}\n{}{}\n{}",
-        job.id,
-        job.kind,
-        job.builtin_role
-            .as_deref()
-            .map_or(String::new(), |role| format!("pump-builtin-role: {role}\n")),
-        "",
-        job.body,
-    );
+    let front = TaskFront {
+        job: Some(JobFront {
+            id: job.id.clone(),
+            kind: job.kind.clone(),
+            builtin_role: job.builtin_role.clone(),
+        }),
+        ..TaskFront::default()
+    };
+    let body = crate::letter::render(&front, &job.body)
+        .map_err(|err| VivariumError::Message(format!("job {} brief: {err}", job.id)))?;
     let body = fit_brief(ctx, job, &dir, body)?;
     fs::write(&path, body)?;
     let subject = format!("[pump-job:{}] {}", job.id, job.subject);
