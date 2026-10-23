@@ -1,3 +1,4 @@
+use crate::letter::fixture::body_with_deps;
 use crate::sync::fake_server::{World, handle, letter, wire_id};
 use crate::sync::pull::{PullPlan, PullReport, pull_with};
 use crate::sync::refs::{MAX_DEPTH, MAX_LOOKUPS, RefsReport, follow_refs, references_in};
@@ -14,13 +15,19 @@ fn eml(subject: &str, body: &str, extra: &str) -> Vec<u8> {
     )
 }
 
+/// The headers of a format-1 letter of `kind`.
+fn format_one(kind: &str) -> String {
+    format!("X-Vivi-Format: 1\r\nX-Vivi-Kind: {kind}\r\n")
+}
+
 #[test]
-fn references_come_from_the_header_the_subject_and_the_body_in_order() {
-    let bytes = eml(
-        "Re: 0000AAAA status",
-        "see 000000b2 and (000000c3), again 000000b2.\r\nand 000000D4\r\n",
-        "X-Vivi-Depends-On: msg_00000e0e00000000000000f0\r\n",
+fn references_come_from_the_front_matter_the_subject_and_the_body_in_order() {
+    let body = body_with_deps(
+        "task",
+        "see 000000b2 and (000000c3), again 000000b2.\nand 000000D4\n",
+        &[String::from("msg_00000e0e00000000000000f0")],
     );
+    let bytes = eml("Re: 0000AAAA status", &body, &format_one("task"));
 
     assert_eq!(
         references_in(&bytes),
@@ -42,14 +49,22 @@ fn only_whole_word_eight_hex_tokens_count() {
 }
 
 #[test]
-fn a_depends_on_header_that_is_not_a_handle_is_ignored() {
-    for value in ["not-a-handle", "12345", "zzzzzzzz", ""] {
-        let extra = format!("X-Vivi-Depends-On: {value}\r\n");
+fn a_front_matter_depends_on_that_is_not_a_handle_is_ignored() {
+    for value in ["not-a-handle", "12345", "zzzzzzzz"] {
+        let body = body_with_deps("task", "b", &[value.to_owned()]);
         assert!(
-            references_in(&eml("s", "b", &extra)).is_empty(),
+            references_in(&eml("s", &body, &format_one("task"))).is_empty(),
             "{value:?}"
         );
     }
+}
+
+#[test]
+fn a_legacy_depends_on_header_is_no_longer_a_reference() {
+    let extra = "X-Vivi-Depends-On: msg_00000e0e00000000000000f0\r\n";
+    assert!(references_in(&eml("s", "b", extra)).is_empty());
+    let extra = format!("{}{extra}", format_one("task"));
+    assert!(references_in(&eml("s", "b", &extra)).is_empty());
 }
 
 /// Bob's window starts after `old`; `new` is the letter the window holds.
@@ -96,18 +111,27 @@ fn follow(w: &World, report: &mut PullReport, depth: u8) -> RefsReport {
     .unwrap()
 }
 
-/// a1 <- b2 (body names a1) <- c3 (header names b2). Only c3 is in the window.
-fn chain() -> Vec<(u64, &'static str, &'static str)> {
+/// The body of c3: a need whose front matter depends on b2.
+fn head_body() -> String {
+    body_with_deps("need", "the head", &[String::from("000000b2")])
+}
+
+/// a1 <- b2 (body names a1) <- c3 (front matter names b2, `head` is its
+/// body). Only c3 is in the window.
+fn chain_of(head: &str) -> Vec<(u64, &str, &str)> {
     vec![
         (0xa1, "the root", ""),
         (0xb2, "builds on 000000a1", ""),
-        (0xc3, "the head", "X-Vivi-Depends-On: 000000b2\r\n"),
+        (0xc3, head, FORMAT_ONE_NEED),
     ]
 }
 
+const FORMAT_ONE_NEED: &str = "X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n";
+
 #[test]
 fn depth_one_follows_one_hop() {
-    let (w, mut report) = windowed_world(&chain());
+    let head = head_body();
+    let (w, mut report) = windowed_world(&chain_of(&head));
     assert_eq!(w.live_ids(), vec![wire_id(0xc3, 0)]);
     let state = w.state();
 
@@ -129,7 +153,8 @@ fn depth_one_follows_one_hop() {
 
 #[test]
 fn depth_two_follows_what_the_first_hop_filed() {
-    let (w, mut report) = windowed_world(&chain());
+    let head = head_body();
+    let (w, mut report) = windowed_world(&chain_of(&head));
 
     let refs = follow(&w, &mut report, 2);
 
@@ -143,7 +168,8 @@ fn depth_two_follows_what_the_first_hop_filed() {
 
 #[test]
 fn held_letters_and_repeated_references_are_not_looked_up_again() {
-    let (w, mut report) = windowed_world(&chain());
+    let head = head_body();
+    let (w, mut report) = windowed_world(&chain_of(&head));
     follow(&w, &mut report, 3);
     assert_eq!(w.live_ids().len(), 3);
     let lookups = w.server.lookups().len();
@@ -192,7 +218,8 @@ fn an_invocation_looks_up_at_most_five_hundred_handles() {
 
 #[test]
 fn depth_outside_one_to_three_is_refused() {
-    let (w, mut report) = windowed_world(&chain());
+    let head = head_body();
+    let (w, mut report) = windowed_world(&chain_of(&head));
     for depth in [0, MAX_DEPTH + 1] {
         let error = follow_refs(
             &w.bob.mailspace,

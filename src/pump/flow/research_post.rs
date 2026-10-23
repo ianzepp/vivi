@@ -1,7 +1,7 @@
 //! Posts a landed research analysis on its want.
 //!
 //! The landing terminal can neither read the need body that holds the
-//! `for: <want>` line nor see the job store, so the post is a tick phase over
+//! `explores` front-matter key nor see the job store, so the post is a tick phase over
 //! `done` research runs. The pump.db `applied_actions` set is the durable
 //! done-marker: the key is written only after the reply succeeded, so a failed
 //! reply is tried again on the next tick. One run that fails does not stop the

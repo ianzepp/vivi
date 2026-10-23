@@ -46,20 +46,17 @@ struct Rig {
     want: String,
 }
 
-/// A rig whose need body is `body` (`{want}` stands for the want's handle).
-fn rig(body: &str) -> Result<Rig, VivariumError> {
+/// A rig whose need explores the want when `explores` is set.
+fn rig(explores: bool) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
     let want = mail.send_step("mind", "mind", "the want", "wanted", &[])?;
-    let need = mail.send_step(
-        "mind",
-        "mind",
-        "the need",
-        &body.replace("{want}", &want),
-        &[],
-    )?;
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    front.explores = explores.then(|| want.clone());
+    let body = crate::letter::fixture::need_body_with(&front, "research it");
+    let need = mail.send_step("mind", "mind", "the need", &body, &[])?;
     let mut registry = Registry::new();
     register(&mut registry);
     Ok(Rig {
@@ -141,7 +138,7 @@ impl Rig {
 
 #[test]
 fn a_done_research_run_posts_one_reply_on_its_want() -> R {
-    let mut rig = rig("research it\nfor: <{want}>")?;
+    let mut rig = rig(true)?;
     rig.land("research", ENVELOPE)?;
     rig.tick()?;
     let replies = rig.replies();
@@ -160,7 +157,7 @@ fn a_done_research_run_posts_one_reply_on_its_want() -> R {
 
 #[test]
 fn a_second_run_of_the_phase_posts_nothing() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land("research", ENVELOPE)?;
     rig.tick()?;
     rig.tick()?;
@@ -170,7 +167,7 @@ fn a_second_run_of_the_phase_posts_nothing() -> R {
 
 #[test]
 fn a_build_run_posts_nothing() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land("build", ENVELOPE)?;
     rig.tick()?;
     assert!(rig.replies().is_empty());
@@ -179,8 +176,8 @@ fn a_build_run_posts_nothing() -> R {
 }
 
 #[test]
-fn a_need_with_no_for_line_posts_nothing_and_marks_the_key() -> R {
-    let mut rig = rig("no pointer here")?;
+fn a_need_with_no_explores_posts_nothing_and_marks_the_key() -> R {
+    let mut rig = rig(false)?;
     rig.land("research", ENVELOPE)?;
     rig.tick()?;
     assert!(rig.replies().is_empty());
@@ -190,7 +187,7 @@ fn a_need_with_no_for_line_posts_nothing_and_marks_the_key() -> R {
 
 #[test]
 fn the_newest_parsable_reply_wins_and_a_broken_one_is_skipped() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land("research", ENVELOPE)?;
     rig.finish("job-2", 20, "not an envelope");
     rig.tick()?;
@@ -202,7 +199,7 @@ fn the_newest_parsable_reply_wins_and_a_broken_one_is_skipped() -> R {
 
 #[test]
 fn a_failed_reply_is_retried_on_the_next_tick() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land("research", ENVELOPE)?;
     rig.mail.fail_at = Some(rig.mail.calls.len());
     assert!(rig.tick().is_err());
@@ -215,7 +212,7 @@ fn a_failed_reply_is_retried_on_the_next_tick() -> R {
 
 #[test]
 fn a_bad_run_does_not_stop_the_runs_after_it() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land("research", ENVELOPE)?;
     // "a-missing" sorts before the real need and has no task in the fake mail.
     rig.store.insert_run(&RunRow {
@@ -265,7 +262,7 @@ impl Rig {
 
 #[test]
 fn a_failed_research_run_tells_the_want_and_alarms_once() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land_failed()?;
     rig.tick()?;
     rig.tick()?;
@@ -282,7 +279,7 @@ fn a_failed_research_run_tells_the_want_and_alarms_once() -> R {
 
 #[test]
 fn a_reply_that_keeps_failing_is_given_up_on_the_third_tick() -> R {
-    let mut rig = rig("for: {want}")?;
+    let mut rig = rig(true)?;
     rig.land("research", ENVELOPE)?;
     for _ in 0..2 {
         rig.mail.fail_at = Some(rig.mail.calls.len());
