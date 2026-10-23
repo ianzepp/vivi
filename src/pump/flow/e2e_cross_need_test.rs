@@ -2,9 +2,11 @@
 //!
 //! Region: the tick across needs. Covers runs of different needs that share a
 //! target and a pool, so one need's steps and jobs do not touch the other's.
-//! W2-IN-7 (c): a repair need still merges while ordinary merge work fills
-//! the queue (`rank::flow_key` puts repair first; `rank::single_flight` holds
-//! one merge-main per target in flight).
+//! W2-IN-7 (c), as ruled: a repair merge-main never waits behind QUEUED
+//! ordinary work (`rank::flow_key` puts repair first), but one merge-main per
+//! target in flight is a correctness invariant (`rank::single_flight`), so a
+//! repair cannot preempt an in-flight merge-main: it goes next, ahead of any
+//! newer ordinary one, and the ruled wait raises no alarm.
 
 use super::e2e_rig::{Rig, agent_receipt, push_receipt, rig};
 use crate::error::VivariumError;
@@ -201,42 +203,85 @@ fn a_repair_merge_main_is_dispatched_before_an_older_ordinary_merge_main() -> R 
     Ok(())
 }
 
-/// W2-IN-7 (c) read strictly: `rank::single_flight` keeps one merge-main per
-/// target in flight, counting only dispatched ones, so a repair merge-main
-/// that becomes pending while an ordinary one is dispatched is held back by
-/// it. Ignored until the holding rule is ruled on (see the follow-up); the
-/// assertion is the requirement.
-#[test]
-#[ignore = "single_flight holds a repair merge-main behind a dispatched ordinary merge-main"]
-fn a_repair_merge_main_is_dispatched_while_an_ordinary_merge_main_is_in_flight() -> R {
-    let mut rig = ordinary_at_merge()?;
-    let ordinary = open_job(&rig, "merge")?;
-    script_task_handles(&rig);
-    let first = jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
-    assert!(first.contains(&ordinary.id), "{first:?}");
-    assert_eq!(status_of(&rig, &ordinary.id)?, JobStatus::Dispatched);
-
-    repair_at_merge1(&mut rig)?;
-    let repair = open_job(&rig, "merge1")?;
-    jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
-    assert_eq!(
-        status_of(&rig, &repair.id)?,
-        JobStatus::Dispatched,
-        "the repair merge does not wait behind the ordinary merge in flight"
-    );
-    Ok(())
+/// A second ordinary build need brought to a pending merge-main job, queued
+/// after whatever the rig already holds. Returns that job.
+fn second_ordinary_at_merge(rig: &mut Rig) -> Result<PoolJob, VivariumError> {
+    let known: Vec<String> = rig.jobs.jobs.keys().cloned().collect();
+    let need = rig.add_need("a second build need", "kind: build", "rework1")?;
+    rig.store.upsert_need_branch(&NeedBranchRow {
+        need: need.clone(),
+        branch: format!("vivi/need/{need}"),
+        base: Some(BASE.into()),
+        status: "live".into(),
+        run: 1,
+        target: "default".into(),
+        priors: Vec::new(),
+    })?;
+    rig.git(&format!("refs/heads/vivi/need/{need}"), TIP);
+    let shown = serde_json::json!([
+        {"handle": rig.need, "message_id": "m1", "from": "operator@local",
+         "subject": "Need", "body": "Build the thing"},
+        {"handle": need, "message_id": "m2", "from": "operator@local",
+         "subject": "Need", "body": "Build another thing"}
+    ]);
+    rig.project.host.reply("need show", 0, &shown.to_string());
+    finish(rig, "rework1", &agent_receipt(0, SLICED))?;
+    rig.tick_until("the second audit2 and test2 jobs", |rig| {
+        rig.open_job("audit2").is_some() && rig.open_job("test2").is_some()
+    })?;
+    finish(rig, "audit2", &agent_receipt(0, CLEAN))?;
+    finish(rig, "test2", &agent_receipt(0, "all tests passed"))?;
+    let fresh = |rig: &Rig| {
+        rig.jobs
+            .jobs
+            .values()
+            .find(|job| {
+                !known.contains(&job.id) && job.payload.get("node").is_some_and(|n| n == "merge")
+            })
+            .cloned()
+    };
+    rig.tick_until("the second ordinary merge job", |rig| fresh(rig).is_some())?;
+    fresh(rig).ok_or_else(|| VivariumError::Message("no second ordinary merge job".into()))
 }
 
+/// W2-IN-7 ruling: one merge-main in flight per target is a correctness
+/// invariant (two concurrent merges to one main would conflict under the CAS
+/// rule). A repair never waits behind queued ordinary work, but it cannot
+/// preempt an in-flight job: it goes next. While the ordinary merge-main is
+/// dispatched the repair stays pending without an alarm, a newer ordinary
+/// merge-main queued meanwhile does not overtake it, and when the in-flight
+/// job ends the repair is dispatched and the newer ordinary one still waits.
 #[test]
 fn a_repair_merge_main_waits_only_for_the_ordinary_merge_in_flight() -> R {
     let mut rig = ordinary_at_merge()?;
     let ordinary = open_job(&rig, "merge")?;
     script_task_handles(&rig);
     jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
+    assert_eq!(status_of(&rig, &ordinary.id)?, JobStatus::Dispatched);
     repair_at_merge1(&mut rig)?;
     let repair = open_job(&rig, "merge1")?;
+
+    // The repair does not preempt the in-flight merge; the wait is ruled, so
+    // it raises nothing.
+    jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
+    for _ in 0..3 {
+        rig.tick()?;
+        jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
+    }
+    assert_eq!(status_of(&rig, &repair.id)?, JobStatus::Pending);
+    assert_eq!(status_of(&rig, &ordinary.id)?, JobStatus::Dispatched);
+    assert_eq!(rig.exceptions(), "");
+
+    // A newer ordinary merge-main queued after the repair.
+    let newer = second_ordinary_at_merge(&mut rig)?;
+    assert!(
+        repair.queued_at <= newer.queued_at,
+        "the newer one was queued last"
+    );
     jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
     assert_eq!(status_of(&rig, &repair.id)?, JobStatus::Pending);
+    assert_eq!(status_of(&rig, &newer.id)?, JobStatus::Pending);
+    assert_eq!(rig.exceptions(), "");
 
     // The moment the ordinary merge ends, the repair merge goes next.
     let publish = format!("runner publish: pushed refs/heads/main {MERGED} {MERGED}");
@@ -245,7 +290,9 @@ fn a_repair_merge_main_waits_only_for_the_ordinary_merge_in_flight() -> R {
         JobStatus::Finished,
         &push_receipt(0, "", &publish, ""),
     )?;
+    script_task_handles(&rig);
     jobs::dispatch_pending(&rig.ctx, &mut rig.jobs)?;
     assert_eq!(status_of(&rig, &repair.id)?, JobStatus::Dispatched);
+    assert_eq!(status_of(&rig, &newer.id)?, JobStatus::Pending);
     Ok(())
 }
