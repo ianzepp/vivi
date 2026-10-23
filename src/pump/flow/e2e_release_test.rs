@@ -15,7 +15,11 @@ type R = Result<(), VivariumError>;
 /// A release rig at its `wait` milestone, depending on one open prerequisite
 /// need per subject (none has a pump record yet).
 fn release(subjects: &[&str]) -> Result<(Rig, Vec<String>), VivariumError> {
-    let mut rig = rig(PumpConfig::default(), "kind: release", "wait")?;
+    let mut rig = rig(
+        PumpConfig::default(),
+        "+++\nkind = \"release\"\n+++\n",
+        "wait",
+    )?;
     let prereqs: Vec<String> = subjects
         .iter()
         .map(|subject| rig.project.need(subject))
@@ -35,7 +39,11 @@ fn release(subjects: &[&str]) -> Result<(Rig, Vec<String>), VivariumError> {
 /// Close `prereq` as the pump would: its pump record opened, the need
 /// closed, then the record closed with `outcome`.
 fn close_as(rig: &mut Rig, prereq: &str, outcome: &str) -> R {
-    MailWriter::open_record(&mut rig.port, prereq, "kind: build")?;
+    MailWriter::open_record(
+        &mut rig.port,
+        prereq,
+        &crate::letter::fixture::record_body(prereq, "build"),
+    )?;
     rig.port.close_need(prereq, "done")?;
     rig.port.close_record(prereq, outcome)
 }

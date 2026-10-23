@@ -113,7 +113,11 @@ fn rig() -> Result<Rig, VivariumError> {
         mailspace: p.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    crate::pump::flow::mail::MailWriter::open_record(&mut port, &need, "kind: build")?;
+    crate::pump::flow::mail::MailWriter::open_record(
+        &mut port,
+        &need,
+        &crate::letter::fixture::record_body(&need, "build"),
+    )?;
     Ok(Rig {
         _project: p,
         ctx,

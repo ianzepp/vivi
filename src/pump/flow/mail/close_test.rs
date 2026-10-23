@@ -1,7 +1,7 @@
 //! Closing-half tests on a real mailspace.
 
 use super::MailspacePort;
-use crate::letter::fixture::{need_body, sentinel_body, task_body};
+use crate::letter::fixture::{need_body, record_body, sentinel_body, task_body};
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
@@ -51,7 +51,7 @@ fn the_pump_closes_a_foreign_need_with_an_open_record_and_writes_a_done_letter()
     let p = project();
     let mut port = port(&p);
     let need = foreign_need(&p);
-    let record = MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+    let record = MailWriter::open_record(&mut port, &need, &record_body(&need, "build")).unwrap();
     assert_eq!(
         MailReader::open_record(&port, &need).unwrap().unwrap().0,
         record
@@ -71,7 +71,7 @@ fn the_same_close_no_longer_travels_once_the_record_is_closed() {
     let p = project();
     let mut port = port(&p);
     let need = foreign_need(&p);
-    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build")).unwrap();
     port.close_record(&need, "landed").unwrap();
 
     // The pump identity holds its own copy, so the late close is only a local
@@ -114,7 +114,7 @@ fn a_second_close_of_the_pumps_own_close_is_ok_and_an_operators_close_stays_the_
     let p = project();
     let mut port = port(&p);
     let need = foreign_need(&p);
-    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build")).unwrap();
     port.close_need(&need, "flow finished").unwrap();
     // The retry after a partial failure is safe.
     port.close_need(&need, "flow finished").unwrap();
@@ -144,7 +144,7 @@ fn closing_the_sentinel_after_the_need_leaves_the_pumps_close_as_the_last_word()
         .send_step("mind", "mind", "run", &sentinel_body("x", 1, ""), &[])
         .unwrap();
     port.bind(&need, std::slice::from_ref(&sentinel)).unwrap();
-    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build")).unwrap();
 
     port.close_need(&need, "flow finished").unwrap();
     port.close_task(&sentinel, "delivered", None, None).unwrap();
