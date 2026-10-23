@@ -22,6 +22,7 @@ use crate::pump::flow::{
     repair_collect, repair_start, repair_steps, repair_unrepaired, research, research_post,
     residual, rework_step, rung_step, unlock,
 };
+use crate::pump::flow::{integration, main_rung, slice_merge};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
@@ -187,6 +188,9 @@ pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     need_branch::register(&mut registry);
     prune::register(&mut registry);
     rung_step::register(&mut registry);
+    slice_merge::register(&mut registry);
+    integration::register(&mut registry);
+    main_rung::register(&mut registry);
     research::register(&mut registry);
     milestone::register(&mut registry);
     repair_start::register(&mut registry);
