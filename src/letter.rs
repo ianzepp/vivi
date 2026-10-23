@@ -5,8 +5,10 @@
 //! is one kind of letter.
 
 pub mod kinds;
+pub(crate) mod legacy;
 pub mod message;
 pub mod plain;
+pub mod read;
 pub mod records;
 pub mod work;
 
