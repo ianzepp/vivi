@@ -117,3 +117,14 @@ fn garbage_bytes_never_parse_as_a_letter() {
     raw.extend_from_slice(b"\r\n\xff\xfe\x00\x01");
     assert_eq!(of_message(&raw, "h1"), Err(LetterError::NoOpening));
 }
+
+#[test]
+fn a_blank_format_header_gets_its_own_message() {
+    let err = of_message(
+        &stored("X-Vivi-Format:\r\nX-Vivi-Kind: need\r\n", NEED),
+        "h1",
+    )
+    .unwrap_err();
+    assert_eq!(err, LetterError::UnknownFormat(String::new()));
+    assert!(err.to_string().contains("blank `X-Vivi-Format`"), "{err}");
+}

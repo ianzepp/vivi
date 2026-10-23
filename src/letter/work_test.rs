@@ -22,6 +22,7 @@ fn full_need() -> NeedFront {
         write_scope: vec![s("src/a.rs"), s("src/b.rs")],
         priority: Some(-4),
         serves: Some(s("cc33")),
+        explores: None,
     }
 }
 
@@ -175,4 +176,70 @@ fn step_rules_name_the_key() {
     assert!(sentinel_node.contains("step.node"));
     let blank_need = invalid::<TaskFront>("[step]\nneed = \"\"\nrun = 1\nnode = \"n\"\n");
     assert!(blank_need.contains("step.need"));
+}
+
+#[test]
+fn explores_round_trips_and_is_refused_with_serves() {
+    let mut need = NeedFront::new(vec![s("answered")]);
+    need.explores = Some(s("ff66"));
+    assert_eq!(round(&need), need);
+    let both =
+        invalid::<NeedFront>("done_when = [\"a\"]\nserves = \"cc33\"\nexplores = \"ff66\"\n");
+    assert!(
+        both.contains("`serves`") && both.contains("`explores`"),
+        "{both}"
+    );
+    assert!(invalid::<NeedFront>("done_when = [\"a\"]\nexplores = \" \"\n").contains("explores"));
+}
+
+#[test]
+fn constructors_set_only_their_fields() {
+    let need = NeedFront::new(vec![s("x")]);
+    assert_eq!(
+        need,
+        NeedFront {
+            done_when: vec![s("x")],
+            ..NeedFront::default()
+        }
+    );
+    assert_eq!(
+        TaskFront::step("ab12", 2, "build"),
+        TaskFront {
+            step: Some(StepFront {
+                need: s("ab12"),
+                run: 2,
+                node: Some(s("build")),
+                sentinel: false,
+            }),
+            ..TaskFront::default()
+        }
+    );
+    let sentinel = TaskFront::sentinel("ab12", 2);
+    assert_eq!(
+        sentinel.step,
+        Some(StepFront {
+            need: s("ab12"),
+            run: 2,
+            node: None,
+            sentinel: true,
+        })
+    );
+    assert!(sentinel.validate().is_ok());
+}
+
+#[test]
+fn fixture_bodies_parse_back() {
+    use crate::letter::fixture;
+    use crate::letter::parse_letter;
+    let need = parse_letter::<NeedFront>(&fixture::body_for("need", "x")).unwrap();
+    assert_eq!(need.front.done_when, ["done"]);
+    assert_eq!(need.body, "x");
+    let deps = [s("aa11")];
+    let want = parse_letter::<WantFront>(&fixture::body_with_deps("want", "x", &deps)).unwrap();
+    assert_eq!(want.front.depends_on, deps);
+    assert_eq!(fixture::body_for("memo", "plain"), "plain");
+    let step = parse_letter::<TaskFront>(&fixture::step_body("ab12", 1, "n", "p")).unwrap();
+    assert_eq!(step.front, TaskFront::step("ab12", 1, "n"));
+    let sentinel = parse_letter::<TaskFront>(&fixture::sentinel_body("ab12", 1, "p")).unwrap();
+    assert_eq!(sentinel.front, TaskFront::sentinel("ab12", 1));
 }
