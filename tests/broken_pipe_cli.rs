@@ -128,6 +128,8 @@ fn mailspace_with_large_need(project: &Path) -> String {
         "large body for the broken-pipe test",
         "--body-file",
         body.to_str().unwrap(),
+        "--done-when",
+        "done",
     ]);
     let line = sent
         .lines()

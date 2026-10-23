@@ -35,26 +35,32 @@ fn project() -> tempfile::TempDir {
 
 /// The handle of the hand's delivered copy of a send.
 fn send(p: &Path, kind: &str, subject: &str, body: &str) -> String {
-    let out = ok(
-        p,
-        &[
-            kind,
-            "send",
-            "--from",
-            "mind",
-            "--to",
-            "hand",
-            "--subject",
-            subject,
-            "--body",
-            body,
-        ],
-    );
+    let mut args = vec![
+        kind,
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "hand",
+        "--subject",
+        subject,
+        "--body",
+        body,
+    ];
+    if kind == "need" {
+        args.extend(["--done-when", "done"]);
+    }
+    let out = ok(p, &args);
     out.lines()
         .find_map(|line| line.strip_prefix("created hand "))
         .unwrap()
         .trim()
         .to_string()
+}
+
+/// A pump run sentinel as a whole front-matter letter.
+fn sentinel_body(need: &str, run: u32) -> String {
+    vivi::letter::render(&vivi::letter::work::TaskFront::sentinel(need, run), "").unwrap()
 }
 
 fn board_line(board: &str, handle: &str) -> String {
@@ -70,18 +76,8 @@ fn a_need_with_two_bound_sentinels_shows_two_runs() {
     let tmp = project();
     let p = tmp.path();
     let need = send(p, "need", "N flow need", "need body");
-    let first = send(
-        p,
-        "task",
-        "sentinel 1",
-        &format!("pump-run-sentinel: {need} r1"),
-    );
-    let second = send(
-        p,
-        "task",
-        "sentinel 2",
-        &format!("pump-run-sentinel: {need} r2"),
-    );
+    let first = send(p, "task", "sentinel 1", &sentinel_body(&need, 1));
+    let second = send(p, "task", "sentinel 2", &sentinel_body(&need, 2));
     let plain = send(p, "task", "plain unit", "ordinary unit body");
     ok(p, &["need", "bind", &need, &first, &second, &plain]);
 

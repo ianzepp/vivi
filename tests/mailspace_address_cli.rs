@@ -83,12 +83,30 @@ fn processes_opening_a_fresh_mailspace_together_agree_on_one_id() {
     assert!(line.trim_end().ends_with(".local"), "{line}");
 }
 
+/// A format-1 work letter body of `kind`, with its required front matter.
+fn work_body(kind: &str) -> String {
+    use vivi::letter::work::{NeedFront, TaskFront, WantFront};
+    let rendered = match kind {
+        "need" => vivi::letter::render(&NeedFront::new(vec!["it is done".to_string()]), "body"),
+        "want" => vivi::letter::render(
+            &WantFront {
+                question: "is it done".to_string(),
+                depends_on: Vec::new(),
+            },
+            "body",
+        ),
+        _ => vivi::letter::render(&TaskFront::default(), "body"),
+    };
+    rendered.unwrap().replace('\n', "\r\n")
+}
+
 fn ingest(mailspace: &Mailspace, account: &str, role: &str, subject: &str, kind: &str) -> String {
+    let body = work_body(kind);
     let letter = format!(
         "From: alice@a1b2c3d4.local\r\nTo: {account}\r\nSubject: {subject}\r\n\
          Message-ID: <{subject}@a1b2c3d4.local>\r\nX-Vivi-Kind: {kind}\r\n\
-         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nbody\r\n\
-         done_when: it is done\r\n"
+         X-Vivi-Format: 1\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{body}"
     );
     let mut storage = mailspace.storage().unwrap();
     let stored = storage

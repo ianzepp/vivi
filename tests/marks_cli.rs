@@ -284,7 +284,7 @@ fn marks_do_not_change_step_or_bind() {
         "need",
         "cto",
         "dispatch me",
-        "done_when: the unit lands\n",
+        "the unit lands\n",
     );
     assert_success(&vivi([
         "need",
@@ -300,13 +300,7 @@ fn marks_do_not_change_step_or_bind() {
     assert!(step.contains("dispatch me"), "{step}");
     assert!(step.contains("need"), "{step}");
 
-    let task = send_work(
-        project.path(),
-        "task",
-        "cto",
-        "the unit",
-        "done_when: lands\n",
-    );
+    let task = send_work(project.path(), "task", "cto", "the unit", "lands\n");
     assert_success(&vivi(["need", "bind", &need, &task, "--project", root]));
     let lowered = stdout(&vivi(["step", "--project", root]));
     assert!(lowered.contains("lowered_awaiting_units"), "{lowered}");
@@ -391,20 +385,30 @@ fn init_roster(project: &Path) {
 }
 
 fn send_work(project: &Path, kind: &str, to: &str, subject: &str, body: &str) -> String {
-    let output = vivi([
-        kind,
-        "send",
-        "--project",
-        project.to_str().unwrap(),
-        "--from",
-        "ceo",
-        "--to",
-        to,
-        "--subject",
-        subject,
-        "--body",
-        body,
-    ]);
+    // A need carries a done_when and a want a question: their send flags.
+    let required: &[&str] = match kind {
+        "need" => &["--done-when", "done"],
+        "want" => &["--question", "why"],
+        _ => &[],
+    };
+    let output = vivi(
+        [
+            kind,
+            "send",
+            "--project",
+            project.to_str().unwrap(),
+            "--from",
+            "ceo",
+            "--to",
+            to,
+            "--subject",
+            subject,
+            "--body",
+            body,
+        ]
+        .into_iter()
+        .chain(required.iter().copied()),
+    );
     assert_success(&output);
     handle_after(&stdout(&output), &format!("created {to}"))
 }
