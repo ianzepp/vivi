@@ -534,8 +534,10 @@ fn a_second_instance_is_refused_by_the_lock() {
 
 #[test]
 fn a_missing_default_roster_role_holds_the_pump_and_names_the_fix_command() {
-    let missing_hand =
-        PUMP_TOML_IDENTITIES.replace("[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n\n", "");
+    let missing_hand = PUMP_TOML_IDENTITIES.replace(
+        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n\n",
+        "",
+    );
     let dir = mailspace_project(&format!("{PUMP_TOML}{missing_hand}"));
     crate::pump::control::set_project_mode(dir.path(), crate::pump::control::PumpMode::Running)
         .unwrap();
