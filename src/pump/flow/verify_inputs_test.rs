@@ -6,7 +6,8 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    admitted_plan, branch_range, capped, latest_of_class, need_thread, requirements, rung_report,
+    admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread,
+    requirements, rung_report,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::index::{StepRow, StepState};
@@ -194,4 +195,65 @@ fn need_thread_errors_on_an_empty_array_and_on_failure() {
         err.to_string().contains("cannot read full need thread"),
         "{err}"
     );
+}
+
+fn put(f: &Fixture, task: &str, run: u32, class: &str, body: serde_json::Value) {
+    f.store
+        .record_step_payload(&payload(task, run, class, body))
+        .unwrap();
+}
+
+#[test]
+fn audit_context_reads_the_earlier_run_when_this_run_has_no_audit() {
+    let f = fixture();
+    put(
+        &f,
+        "a1",
+        1,
+        "auditor",
+        json!({ "front": { "answer": "block_range" } }),
+    );
+    put(&f, "r1", 1, "rung", json!({ "exit": 1 }));
+    put(&f, "s2", 2, "slicer", json!({}));
+    let (run, rows) = audit_context(&f.store, NEED, 2).unwrap();
+    assert_eq!(run, 1);
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.run == 1));
+}
+
+#[test]
+fn audit_context_keeps_a_run_that_audited() {
+    let f = fixture();
+    put(&f, "a1", 1, "auditor", json!({}));
+    put(&f, "a2", 2, "auditor", json!({}));
+    let (run, rows) = audit_context(&f.store, NEED, 2).unwrap();
+    assert_eq!(run, 2);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].task, "a2");
+}
+
+#[test]
+fn audit_context_without_any_audit_gives_the_asked_run() {
+    let f = fixture();
+    put(&f, "s1", 1, "slicer", json!({}));
+    put(&f, "s2", 2, "slicer", json!({}));
+    let (run, rows) = audit_context(&f.store, NEED, 2).unwrap();
+    assert_eq!(run, 2);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].task, "s2");
+}
+
+#[test]
+fn cto_ruling_is_the_earlier_runs_answer_reason_and_new_fact() {
+    let f = fixture();
+    put(
+        &f,
+        "c1",
+        1,
+        "cto",
+        json!({ "front": { "answer": "rework", "reason": "R", "new_fact": "X" } }),
+    );
+    let ruling = cto_ruling(&f.store, NEED, 2).unwrap().unwrap();
+    assert_eq!(ruling, "answer: rework\nreason: R\nnew_fact: X");
+    assert_eq!(cto_ruling(&f.store, NEED, 1).unwrap(), None);
 }

@@ -16,6 +16,9 @@ use crate::pump::store::step_payload::StepPayloadRow;
 /// The planner verdict that marks an admitted plan.
 const PLANNED: &str = "planned";
 
+/// The class of an audit step.
+const AUDITOR: &str = "auditor";
+
 /// The need branch of a need and the range an audit reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BranchRange {
@@ -116,6 +119,68 @@ pub(crate) fn latest_of_class<'a>(
     class: &str,
 ) -> Option<&'a StepPayloadRow> {
     rows.iter().rev().find(|row| row.class == class)
+}
+
+/// The step payload rows a brief reads for audit context, with the run they
+/// came from. A run restarted at rework1 has no audit of its own, so the rows
+/// come from the newest earlier run that holds an auditor row. When no run
+/// has an audit, the asked run's rows come back.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+pub(crate) fn audit_context(
+    store: &PumpStore,
+    need: &str,
+    run: u32,
+) -> Result<(u32, Vec<StepPayloadRow>), VivariumError> {
+    let own = store.step_payloads_of_run(need, run)?;
+    if own.iter().any(|row| row.class == AUDITOR) {
+        return Ok((run, own));
+    }
+    let mut earlier: Vec<(u32, Vec<StepPayloadRow>)> = Vec::new();
+    for row in store.step_payloads_of_need(need)? {
+        if row.run >= run {
+            continue;
+        }
+        match earlier.last_mut() {
+            Some((number, rows)) if *number == row.run => rows.push(row),
+            _ => earlier.push((row.run, vec![row])),
+        }
+    }
+    let found = earlier
+        .into_iter()
+        .rev()
+        .find(|(_, rows)| rows.iter().any(|row| row.class == AUDITOR));
+    Ok(found.unwrap_or((run, own)))
+}
+
+/// The newest CTO answer from a run below `run`, as `answer`, `reason` and
+/// `new_fact` lines. None when no earlier run has a CTO row.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+pub(crate) fn cto_ruling(
+    store: &PumpStore,
+    need: &str,
+    run: u32,
+) -> Result<Option<String>, VivariumError> {
+    let rows = store.step_payloads_of_need(need)?;
+    let Some(row) = rows
+        .iter()
+        .rev()
+        .find(|row| row.run < run && row.class == "cto")
+    else {
+        return Ok(None);
+    };
+    let lines: Vec<String> = ["answer", "reason", "new_fact"]
+        .iter()
+        .filter_map(|key| {
+            row.payload["front"][key]
+                .as_str()
+                .map(|value| format!("{key}: {value}"))
+        })
+        .collect();
+    Ok(Some(lines.join("\n")))
 }
 
 /// A rung payload as plain text: the exit code, the sorted failing ids and
