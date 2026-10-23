@@ -486,10 +486,12 @@ fn print_text_message(message: &MailspaceThreadMessage) {
     println!("{}", message.body.trim());
 }
 
+/// The text body of a stored message with LF line ends. Compose stores bodies
+/// CR LF; every reader of a thread body sees LF.
 pub(super) fn text_body(data: &[u8]) -> String {
     mail_parser::MessageParser::default()
         .parse(data)
-        .and_then(|parsed| parsed.body_text(0).map(|body| body.to_string()))
+        .and_then(|parsed| parsed.body_text(0).map(|body| body.replace("\r\n", "\n")))
         .unwrap_or_default()
 }
 
