@@ -208,6 +208,21 @@ fn order_is_send_then_bind_then_close() -> R {
 }
 
 #[test]
+fn routed_steps_are_sent_from_and_to_the_pump_identity() -> R {
+    let mut rig = rig()?;
+    let build = rig.step("build1")?;
+    let routed = rig.route(&with_word(build, "built"), "")?;
+    assert!(!routed.sent.is_empty());
+    let pump = rig.ctx.cfg.reply_from.clone();
+    assert_ne!(pump, rig.ctx.cfg.to, "default to must differ for this test");
+    for sent in &routed.sent {
+        let task = &rig.mail.tasks[&sent.task];
+        assert_eq!((&task.from, &task.to), (&pump, &pump));
+    }
+    Ok(())
+}
+
+#[test]
 fn join_fires_only_after_both_inputs() -> R {
     let mut rig = rig()?;
     let audit = rig.step("audit1")?;

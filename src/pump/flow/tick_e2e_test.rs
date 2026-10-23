@@ -101,12 +101,6 @@ fn rig() -> Result<Rig, VivariumError> {
     let mut ctx = p.pump_ctx();
     let mut cfg = (*ctx.cfg).clone();
     cfg.reply_from = PUMP.into();
-    // `run::start` sends its step tasks from and to `reply_from`, but routing
-    // (`route::open_task`) sends the next steps from `from` to `to`, whose
-    // default is the hand role. The fixture has no such identity, so all
-    // three name the pump: every step task is self-sent by the pump.
-    cfg.from = PUMP.into();
-    cfg.to = PUMP.into();
     ctx.cfg = Arc::new(cfg);
     let store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
     let mut port = MailspacePort {
