@@ -17,6 +17,7 @@ mod dispatcher;
 pub mod merge_main;
 mod receipts;
 mod recovery;
+mod release;
 pub mod rung;
 pub mod rung_result;
 mod slots;

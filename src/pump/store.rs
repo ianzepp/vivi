@@ -17,6 +17,7 @@ use crate::error::VivariumError;
 mod codec;
 mod flow_index;
 pub mod flow_links;
+mod job_release;
 mod main_state;
 mod need_branch;
 mod priority;
@@ -475,6 +476,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     flow_index::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
+    job_release::ensure_table(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
     }

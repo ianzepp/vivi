@@ -181,15 +181,11 @@ fn requeue(
             step.state
         )));
     }
-    let (old, row) = newest_job(st, store, task)?
-        .ok_or_else(|| VivariumError::Message(format!("step {task} has no job to requeue")))?;
-    if old.status == JobStatus::Pending && old.held.is_some() {
-        if let Some(job) = st.jobs_mut().get_mut(&old.id) {
-            job.held = None;
-            job.dispatch_refusals = 0;
-        }
+    if release_held(st, store, &run.need, task)? {
         return Ok(());
     }
+    let (old, row) = newest_job(st, store, task)?
+        .ok_or_else(|| VivariumError::Message(format!("step {task} has no job to requeue")))?;
     if !old.status.is_terminal() {
         return Err(VivariumError::Message(format!(
             "job {} is {:?}, not finished",
@@ -203,6 +199,34 @@ fn requeue(
     jobs::enqueue(st, spec)?;
     store.insert_step_job(&run.need, &again)?;
     store.set_step_state(&step.task, StepState::Running, None)
+}
+
+/// Release every held Pending job of step `task` in place: a job whose
+/// payload names this task and need (a slice-merge job, a correction) or that
+/// has a `step_jobs` row for it. True when any was released.
+fn release_held(
+    st: &mut impl JobStore,
+    store: &PumpStore,
+    need: &str,
+    task: &str,
+) -> Result<bool, VivariumError> {
+    let mut ids = Vec::new();
+    for job in st.jobs().values() {
+        if job.status != JobStatus::Pending || job.held.is_none() {
+            continue;
+        }
+        let stamped = job.payload["task"] == task && job.payload["need"] == need;
+        if stamped || store.step_job(&job.id)?.is_some_and(|row| row.task == task) {
+            ids.push(job.id.clone());
+        }
+    }
+    for id in &ids {
+        if let Some(job) = st.jobs_mut().get_mut(id) {
+            job.held = None;
+            job.dispatch_refusals = 0;
+        }
+    }
+    Ok(!ids.is_empty())
 }
 
 /// The step's job at its highest attempt, with its `step_jobs` row.
