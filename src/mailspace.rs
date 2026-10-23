@@ -64,6 +64,7 @@ mod step;
 mod tests;
 mod thread;
 mod trace;
+mod want_node;
 pub mod want_state;
 mod watch;
 
