@@ -134,6 +134,19 @@ fn thread_mentions(rig: &Rig, text: &str) -> Result<bool, VivariumError> {
     Ok(thread.iter().any(|message| message.body.contains(text)))
 }
 
+/// The sorted exception kinds raised so far: the second field of every
+/// `exceptions.txt` line.
+fn kinds(rig: &Rig) -> Vec<String> {
+    let mut kinds: Vec<String> = rig
+        .exceptions()
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+        .collect();
+    kinds.sort();
+    kinds
+}
+
 #[test]
 fn a_green_main_rung_answers_unrepaired_green_and_lands_the_need() -> R {
     let mut rig = at_unrepaired("failed", None)?;
@@ -151,6 +164,8 @@ fn a_green_main_rung_answers_unrepaired_green_and_lands_the_need() -> R {
         Some(MAIN_B.to_owned())
     );
     assert_eq!(main_jobs(&rig).len(), 1, "one main rung job");
+    // The alarm raised while the run waited at `unrepaired`; green adds none.
+    assert_eq!(kinds(&rig), [MAIN_UNREPAIRED], "{}", rig.exceptions());
     Ok(())
 }
 
@@ -181,6 +196,7 @@ fn a_green_main_rung_closes_a_run_still_at_fix1_and_a_late_repairer_changes_noth
         "the withdrawn run starts nothing"
     );
     assert_eq!(rig.runs()?.len(), 1, "no second run");
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -200,11 +216,7 @@ fn a_last_green_on_the_current_main_answers_the_poll_with_no_new_main_rung() -> 
     rig.tick_until("run done", |rig| run_state(rig).is_ok_and(|s| s == "done"))?;
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Done);
     assert!(main_jobs(&rig).is_empty(), "no main rung ran");
-    assert!(
-        !rig.exceptions().contains(MAIN_UNREPAIRED),
-        "{}",
-        rig.exceptions()
-    );
+    assert_eq!(rig.exceptions(), "");
     let unrepaired = rig.row("unrepaired")?.map(|row| row.verdict);
     assert_eq!(unrepaired, Some(Some(String::from("green"))));
     Ok(())
@@ -217,7 +229,7 @@ fn the_unrepaired_alarm_names_main_the_last_green_and_both_attempts() -> R {
         rig.tick()?;
     }
     let log = rig.exceptions();
-    assert_eq!(log.matches(MAIN_UNREPAIRED).count(), 1, "{log}");
+    assert_eq!(kinds(&rig), [MAIN_UNREPAIRED], "{log}");
     assert!(log.contains(&format!("main tip {MAIN_A}")), "{log}");
     assert!(log.contains(&format!("last green {MAIN_B}")), "{log}");
     assert!(log.contains("attempt 1: failed"), "{log}");
