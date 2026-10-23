@@ -7,7 +7,6 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use super::{Finding, Project};
-use crate::pump::config::PumpConfig;
 use crate::pump::control::PumpMode;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -49,7 +48,6 @@ pub enum ServicePresence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpStateFacts {
     pub exceptions: Vec<String>,
-    pub quarantines: Option<usize>,
 }
 
 /// Gather pump facts through the read-only project context.
@@ -73,7 +71,7 @@ pub fn findings(project: &Project) -> Vec<Finding> {
         return findings_from(&missing_home_facts());
     }
     let mut findings = findings_from(&gather_facts(&home, probe_service));
-    findings.extend(pump_state_findings(config, &project.root, &home));
+    findings.extend(pump_state_findings(&home));
     findings
 }
 
@@ -94,24 +92,13 @@ pub fn findings_from(facts: &PumpFacts) -> Vec<Finding> {
     findings
 }
 
-/// Render store-backed exception and quarantine findings.
+/// Render store-backed exception findings.
 #[must_use]
 pub fn state_findings_from(facts: &PumpStateFacts) -> Vec<Finding> {
-    let mut out = vec![exceptions_finding(&facts.exceptions)];
-    out.push(match facts.quarantines {
-        Some(0) => Finding::ok(SECTION, "quarantines", "no quarantines"),
-        Some(count) => Finding::warn(
-            SECTION,
-            "quarantines",
-            &format!("{count} quarantine branch(es) pending repair"),
-            "the pump mints repair units automatically; see vivi pump log --exceptions",
-        ),
-        None => Finding::skipped(SECTION, "quarantines", "integration clone unavailable"),
-    });
-    out
+    vec![exceptions_finding(&facts.exceptions)]
 }
 
-fn pump_state_findings(config: &PumpConfig, project: &Path, home: &Path) -> Vec<Finding> {
+fn pump_state_findings(home: &Path) -> Vec<Finding> {
     let store = match PumpStore::open_read_only(&home.join(DB_FILENAME)) {
         Ok(Some(store)) => store,
         Ok(None) => return vec![Finding::skipped(SECTION, "state", "no pump state yet")],
@@ -138,11 +125,7 @@ fn pump_state_findings(config: &PumpConfig, project: &Path, home: &Path) -> Vec<
             )];
         }
     };
-    let quarantines = quarantine_count(config, project);
-    state_findings_from(&PumpStateFacts {
-        exceptions,
-        quarantines,
-    })
+    state_findings_from(&PumpStateFacts { exceptions })
 }
 
 fn exceptions_finding(exceptions: &[String]) -> Finding {
@@ -162,42 +145,6 @@ fn exceptions_finding(exceptions: &[String]) -> Finding {
             "vivi pump log --exceptions --project <root>, then requeue or repair",
         )
     }
-}
-
-fn quarantine_count(config: &PumpConfig, project: &Path) -> Option<usize> {
-    let targets = config.target_configs();
-    let mut total = 0_usize;
-    for target in targets.keys() {
-        let repo = config.target_repo_dir(project, target)?;
-        total = total.checked_add(count_quarantines(&repo)?)?;
-    }
-    Some(total)
-}
-
-fn count_quarantines(repo: &Path) -> Option<usize> {
-    let prefix = format!(
-        "refs/heads/{}",
-        crate::pump::need::quarantine_namespace_prefix()
-    );
-    let output = match std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["for-each-ref", "--format=%(refname)"])
-        .arg(prefix)
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return None,
-    };
-    if !output.status.success() {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|line| !line.is_empty())
-            .count(),
-    )
 }
 
 fn missing_home_facts() -> PumpFacts {
