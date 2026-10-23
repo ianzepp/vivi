@@ -62,6 +62,9 @@ pub mod run_state {
     }
 }
 
+/// The flow definition version recorded in a run row and expected of it.
+pub const FLOW_VERSION_NUMBER: u32 = 2;
+
 /// Exception kind for a job whose identity does not match the live state.
 pub const JOB_STALE: &str = "flow-job-stale";
 
