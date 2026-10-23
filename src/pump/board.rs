@@ -40,6 +40,13 @@ pub fn parse_rows(out: &str) -> Option<Vec<NeedRow>> {
 
 /// Build a row from one JSON object; missing keys are empty.
 fn row_from(value: &Value) -> NeedRow {
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     let marks = value
         .get("marks")
         .and_then(Value::as_array)
@@ -48,25 +55,13 @@ fn row_from(value: &Value) -> NeedRow {
                 .iter()
                 .filter_map(Value::as_str)
                 .map(String::from)
-                .collect::<Vec<_>>()
+                .collect()
         })
         .unwrap_or_default();
     NeedRow {
-        handle: value
-            .get("handle")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        date: value
-            .get("date")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        subject: value
-            .get("subject")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+        handle: text("handle"),
+        date: text("date"),
+        subject: text("subject"),
         marks,
     }
 }
@@ -117,15 +112,17 @@ pub fn done_need_handles(ctx: &Ctx) -> Option<BTreeSet<String>> {
         ),
         60,
     );
-    let rows = match (out.code == 0).then(|| parse_rows(&out.text)).flatten() {
-        Some(rows) => rows,
-        None => {
-            ctx.log(&format!(
-                "done need list unreadable: {}",
-                tail_note(&out.text, 150)
-            ));
-            return None;
-        }
+    let rows = if out.code == 0 {
+        parse_rows(&out.text)
+    } else {
+        None
+    };
+    let Some(rows) = rows else {
+        ctx.log(&format!(
+            "done need list unreadable: {}",
+            tail_note(&out.text, 150)
+        ));
+        return None;
     };
     Some(
         rows.into_iter()
@@ -149,6 +146,7 @@ pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String
     Some(done)
 }
 
+/// Withdraw every unfinished unit of a closed need; counts per need.
 fn withdraw_closed_need_units(
     st: &mut State,
     done: &BTreeSet<String>,
@@ -253,7 +251,7 @@ fn header_time(line: &str) -> Option<&str> {
 /// True when RFC 3339 `stamp` parses and is strictly later than `since`.
 fn newer_than(stamp: &str, since: u64) -> bool {
     chrono::DateTime::parse_from_rfc3339(stamp)
-        .is_ok_and(|time| u64::try_from(time.timestamp()).unwrap_or(0) > since)
+        .is_ok_and(|time| u64::try_from(time.timestamp()).is_ok_and(|secs| secs > since))
 }
 
 /// Epoch seconds of a file's mtime; 0 when the clock sits before the epoch.
@@ -265,8 +263,8 @@ fn mtime_secs(meta: &fs::Metadata) -> u64 {
 }
 
 /// A parked need (verdict `operator`, `design` or `hold`, no units) whose
-/// thread gained a reply from anyone but the pump after its plan was written is planned
-/// again: the plan moves to `plans/superseded/`, the basename leaves
+/// thread gained a reply from anyone but the pump after its plan was written
+/// is planned again: the plan moves to `plans/superseded/`, the basename leaves
 /// `plans_seen`, the need record and its `planned` reply key are dropped, and
 /// the board plans the need again on its open pump record.
 pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
@@ -463,8 +461,7 @@ fn unit_list(st: &State, units: &[String], commits: bool) -> String {
         .join("\n")
 }
 
-/// The last line of `text` cut to
-/// `max` chars, empty when the output is blank.
+/// The last line of `text` cut to `max` chars, empty when the output is blank.
 pub(crate) fn last_line(text: &str, max: usize) -> String {
     text.trim()
         .lines()
