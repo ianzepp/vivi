@@ -15,8 +15,7 @@ use crate::pump::config::{BoardConfig, DispatchConfig, Kind, Lane, PumpConfig, P
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 use crate::pump::run::{
-    actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
-    write_status,
+    actor_string, ensure_repo, refresh_config, run, run_with, tick as run_tick, write_status,
 };
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
@@ -592,50 +591,6 @@ fn stopped_control_state_prevents_the_run_loop_from_ticking() {
         .count();
     assert_eq!(statuses, 0);
     assert!(dir.path().join("home").join(DB_FILENAME).is_file());
-}
-
-#[test]
-fn status_reads_the_status_file_or_says_no_status_yet() {
-    let with_file = mailspace_project("name = \"s\"\n\n[pump]\nhome = \"pump-home\"\n");
-    let home = with_file.path().join("pump-home");
-    fs::create_dir_all(&home).unwrap();
-    fs::write(home.join("status.txt"), "1970-01-12T13:46:40Z\nunits \n").unwrap();
-    let shown = status(with_file.path()).unwrap();
-    assert!(
-        shown.starts_with(
-            "1970-01-12T13:46:40Z\nunits \ncontrol  stopped\nwriter   not running\nage "
-        ),
-        "{shown}"
-    );
-    let without_file = mailspace_project("name = \"s\"\n\n[pump]\nhome = \"pump-home\"\n");
-    assert_eq!(
-        status(without_file.path()).unwrap(),
-        "no status yet\ncontrol  stopped\nwriter   not running\nage      never\n"
-    );
-    let no_mailspace = tempdir().unwrap();
-    assert_eq!(
-        status(no_mailspace.path()).unwrap(),
-        "no status yet\ncontrol  stopped\nwriter   not running\nage      never\n"
-    );
-}
-
-#[test]
-fn status_names_a_stopped_pump_and_a_running_writer() {
-    let dir = mailspace_project("name = \"s\"\n\n[pump]\nhome = \"pump-home\"\n");
-    let home = dir.path().join("pump-home");
-    fs::create_dir_all(&home).unwrap();
-    let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
-    store.initialize_control("stopped").unwrap();
-    // The store holds the migration lock until it is dropped.
-    drop(store);
-    let writer = File::create(home.join("lock")).unwrap();
-    writer.try_lock().unwrap();
-    fs::write(home.join("status.txt"), "1970-01-12T13:46:40Z\nunits \n").unwrap();
-    let shown = status(dir.path()).unwrap();
-    assert!(
-        shown.contains("control  stopped\nwriter   running\nage "),
-        "{shown}"
-    );
 }
 
 #[test]

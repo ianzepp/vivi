@@ -702,7 +702,7 @@ fn startup_diagnostics(rig: &Rig) -> String {
     [
         format!(
             "pump status:\n{}",
-            command_report(["pump", "status", "--project", path(&rig.project)])
+            fs::read_to_string(rig.home.join("status.txt")).unwrap_or_default()
         ),
         format!(
             "pool status:\n{}",

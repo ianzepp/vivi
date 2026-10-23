@@ -40,7 +40,7 @@ fn a_held_pump_dispatches_nothing_and_never_opens_the_repository() {
     run::run(tmp.path(), true).unwrap();
     // No integration clone is made and no unit state is written.
     assert!(!home(tmp.path()).join("repo").exists());
-    let status = run::status(tmp.path()).unwrap();
+    let status = fs::read_to_string(home(tmp.path()).join("status.txt")).unwrap();
     assert!(status.contains("not ready:"), "{status}");
 }
 

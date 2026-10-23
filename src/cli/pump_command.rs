@@ -8,18 +8,12 @@ use clap::{Args, Subcommand, ValueEnum};
 pub enum PumpSubcommand {
     /// Run the pump until its stored control state stops it
     Run(PumpRunCommand),
-    /// Print the pump's status file
-    Status(PumpStatusCommand),
     /// Judge the pump read-only: ok, degraded, stalled or unknown, with reasons
     Health(PumpHealthCommand),
-    /// Print the pump's log (last lines; filter by lane, unit or text; follow)
+    /// Print the pump's log (last lines; filter by handle or text; follow)
     Log(PumpLogCommand),
     /// Run one pump tick and exit
     Once(PumpOnceCommand),
-    /// Write the live pump.db as the state.json shape
-    Export(PumpExportCommand),
-    /// List complete but open needs, or close one
-    Closeout(PumpCloseoutCommand),
     /// Pause processing while keeping the pump available
     Pause(PumpControlCommand),
     /// Resume a paused pump
@@ -51,7 +45,7 @@ pub enum PumpSubcommand {
     Replan(PumpReplanCommand),
     /// Answer a flow step by hand: posts the word on the need's open pump record; the pump routes it at its next tick
     Answer {
-        /// The step task handle (see `vivi step` or `vivi pump status`)
+        /// The step task handle (see `vivi step` or `vivi flow show <kind> --need <need>`)
         step: String,
         /// The answer word (one of the step's words, `failed` included)
         word: String,
@@ -78,8 +72,6 @@ pub enum PumpSubcommand {
     },
     /// File a pump record: one dispatch of one need, addressed to the pump
     Send(PumpSendCommand),
-    /// Open a pump record for every need the pump has in flight and no record for (the vivi 19 upgrade step)
-    Adopt(PumpAdoptCommand),
     /// List pump records (default: open ones)
     List(PumpListCommand),
     /// Show one pump record
@@ -205,7 +197,7 @@ pub struct PumpTargetAddCommand {
     /// Rung command for this target; repeatable (rung name: task, need, main or release)
     #[arg(long = "rung", value_name = "NAME=CMD")]
     pub rungs: Vec<String>,
-    /// Merge setting; repeatable (format, repair_budget or remote_limit; the value is read as TOML)
+    /// Merge setting; repeatable (format or remote_limit; the value is read as TOML)
     #[arg(long = "merge", value_name = "KEY=VALUE")]
     pub merge: Vec<String>,
     /// Project root that owns .vivi/ (also accepted globally)
@@ -351,13 +343,6 @@ pub struct PumpRunCommand {
 }
 
 #[derive(Debug, Args)]
-pub struct PumpStatusCommand {
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
 pub struct PumpHealthCommand {
     /// Output the full answer as JSON
     #[arg(long)]
@@ -381,10 +366,7 @@ pub struct PumpLogCommand {
     /// Keep printing lines as they are appended
     #[arg(short = 'f', long)]
     pub follow: bool,
-    /// Only merge-lane lines (`lane <L>:`); `2` means `default/2`
-    #[arg(long, value_name = "LANE")]
-    pub lane: Option<String>,
-    /// Only lines naming this unit or need handle as a whole token
+    /// Only lines naming this handle as a whole token
     #[arg(long, value_name = "HANDLE")]
     pub unit: Option<String>,
     /// Only lines containing this text (case-sensitive)
@@ -405,32 +387,6 @@ pub struct PumpOnceCommand {
     pub project: Option<PathBuf>,
 }
 
-#[derive(Debug, Args)]
-pub struct PumpCloseoutCommand {
-    /// Output as JSON
-    #[arg(long)]
-    pub json: bool,
-    /// Close this complete need (handle or unambiguous prefix)
-    #[arg(long, value_name = "HANDLE")]
-    pub close: Option<String>,
-    /// Identity performing the close (required with --close)
-    #[arg(long = "for")]
-    pub for_identity: Option<String>,
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-pub struct PumpExportCommand {
-    /// Output path for the state.json-shaped export
-    #[arg(long, value_name = "PATH")]
-    pub json: PathBuf,
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
 /// Stop needs. Closes each need `withdrawn` (as the pump identity, so the
 /// close syncs), then posts a withdraw action on its open pump record; the
 /// running pump applies it at its next tick: every unfinished unit of the need (stuck ones
@@ -445,19 +401,6 @@ pub struct PumpWithdrawCommand {
     /// Why the need is withdrawn; recorded in the pump log and exceptions
     #[arg(long, value_name = "TEXT")]
     pub reason: String,
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
-/// Open a pump record for every need the pump has planned (or is planning)
-/// and not finished, unless it already has an open record. Idempotent. Run it
-/// once after upgrading to vivi 19, so work that was in flight keeps replying.
-#[derive(Debug, Args)]
-pub struct PumpAdoptCommand {
-    /// Print the needs that would be adopted and open nothing
-    #[arg(long)]
-    pub dry_run: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -521,7 +464,7 @@ pub struct PumpShowCommand {
 pub struct PumpDoneCommand {
     /// Pump record handle
     pub handle: String,
-    /// Outcome, such as landed, gave-up, withdrawn or superseded
+    /// Outcome, such as landed, withdrawn or superseded
     #[arg(long, value_name = "TEXT")]
     pub note: Option<String>,
     /// Project root that owns .vivi/ (also accepted globally)

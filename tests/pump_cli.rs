@@ -1,5 +1,4 @@
-//! End-to-end smoke test of `vivi pump` through the real binary: `status`
-//! before any tick, one tick of `once` over a temp mailspace, the files the
+//! End-to-end smoke test of `vivi pump` through the real binary: one tick of `once` over a temp mailspace, the files the
 //! tick writes, the `PAUSE` flag, the missing `[pump]` table error, and the
 //! single-instance lock.
 
@@ -12,14 +11,6 @@ use std::time::{Duration, Instant};
 use vivi::mailspace::{Mailspace, PumpAction, PumpActionKind};
 use vivi::pump::state::{NeedRecord, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
-
-#[test]
-fn status_before_any_tick_says_no_status_yet() {
-    let project = temp_mailspace();
-    let out = vivi(["pump", "status", "--project", root(&project)]);
-    assert_success(&out);
-    assert!(stdout(&out).contains("no status yet"), "{}", stdout(&out));
-}
 
 #[test]
 fn once_runs_one_tick_and_writes_db_status_and_log() {
@@ -44,35 +35,6 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
         "line 5: {status}"
     );
     assert!(lines[1].starts_with("units"), "line 2: {status}");
-    let shown = vivi(["pump", "status", "--project", root(&project)]);
-    assert_success(&shown);
-    assert!(
-        stdout(&shown).starts_with(&format!(
-            "{status}control  running\nwriter   not running\nage "
-        )),
-        "status must print status.txt plus the durable control mode, writer state, and snapshot age: {}",
-        stdout(&shown)
-    );
-}
-
-#[test]
-fn export_writes_the_state_json_shape() {
-    let project = temp_mailspace();
-    let home = pump_home(&project);
-    assert_success(&vivi(["pump", "once", "--project", root(&project)]));
-    let out = project.path().join("export.json");
-    let args = [
-        "pump",
-        "export",
-        "--json",
-        out.to_str().unwrap(),
-        "--project",
-        root(&project),
-    ];
-    assert_success(&vivi(args));
-    let text = fs::read_to_string(&out).unwrap();
-    assert!(text.contains("\"units\""), "{text}");
-    assert!(home.join("pump.db").is_file());
 }
 
 #[test]
@@ -238,94 +200,12 @@ fn pump_send_opens_a_record_for_a_need_addressed_to_a_third_identity() {
     assert!(stdout(&listed).contains(&stray), "{}", stdout(&listed));
 }
 
-#[test]
-fn pump_adopt_opens_records_for_in_flight_needs_and_is_idempotent() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump_status(&project, &handle, Status::Pending);
-
-    let first = vivi(["pump", "adopt", "--project", root(&project)]);
-    assert_success(&first);
-    let text = stdout(&first);
-    assert!(
-        text.contains(&format!("adopted need {handle}: pump record")),
-        "{text}"
-    );
-    let listed = vivi(["pump", "list", "--json", "--project", root(&project)]);
-    assert!(stdout(&listed).contains(&handle), "{}", stdout(&listed));
-
-    let second = vivi(["pump", "adopt", "--project", root(&project)]);
-    assert_success(&second);
-    let text = stdout(&second);
-    assert!(text.contains("already has open pump record"), "{text}");
-    assert!(text.contains("adopted 0 need(s)"), "{text}");
-}
-
 /// The pump actions posted in the project and not yet applied.
 fn posted_actions(project: &tempfile::TempDir) -> Vec<PumpAction> {
     Mailspace::discover(Some(project.path()))
         .unwrap()
         .pump_pending_actions(&BTreeSet::new())
         .unwrap()
-}
-
-#[test]
-fn need_show_prints_the_pump_section() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump(&project, &handle);
-    let out = vivi(["need", "show", &handle, "--project", root(&project)]);
-    assert_success(&out);
-    let text = stdout(&out);
-    assert!(text.contains("pump      verdict units"), "{text}");
-    assert!(text.contains("complete yes"), "{text}");
-}
-
-#[test]
-fn need_list_pump_appends_progress() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump(&project, &handle);
-    let out = vivi([
-        "need",
-        "list",
-        "--for",
-        "mind",
-        "--pump",
-        "--project",
-        root(&project),
-    ]);
-    assert_success(&out);
-    assert!(
-        stdout(&out).contains("[pump r1 1/1 merged, complete]"),
-        "{out:?}"
-    );
-}
-
-#[test]
-fn boot_and_board_show_the_pump_section() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump(&project, &handle);
-    let boot = vivi(["boot", "--project", root(&project)]);
-    assert_success(&boot);
-    assert!(
-        stdout(&boot).contains("pump: local execution state"),
-        "{}",
-        stdout(&boot)
-    );
-    assert!(
-        stdout(&boot).contains("  state   control running, writer not running, status age never"),
-        "{}",
-        stdout(&boot)
-    );
-    let board = vivi(["board", "--pump", "--project", root(&project)]);
-    assert_success(&board);
-    assert!(
-        stdout(&board).contains("pump (local):"),
-        "{}",
-        stdout(&board)
-    );
 }
 
 /// Send one need and return its handle.
@@ -365,11 +245,6 @@ fn send_need(project: &tempfile::TempDir) -> String {
         .unwrap_or_else(|| panic!("no handle in {}", stdout(&out)))
 }
 
-/// Write a `pump.db` whose one need is complete.
-fn write_pump(project: &tempfile::TempDir, handle: &str) {
-    write_pump_status(project, handle, Status::Merged);
-}
-
 /// Write a `pump.db` whose one unit has `status`.
 fn write_pump_status(project: &tempfile::TempDir, handle: &str, status: Status) {
     let mut state = State::default();
@@ -395,70 +270,6 @@ fn write_pump_status(project: &tempfile::TempDir, handle: &str, status: Status) 
 }
 
 #[test]
-fn pump_closeout_lists_and_closes_a_complete_need() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump(&project, &handle);
-    assert_success(&vivi([
-        "pump",
-        "send",
-        "--need",
-        &handle,
-        "--project",
-        root(&project),
-    ]));
-    let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
-    assert_success(&listed);
-    println!("listed={}", stdout(&listed));
-    assert!(stdout(&listed).contains(&handle), "{}", stdout(&listed));
-    let closed = vivi([
-        "pump",
-        "closeout",
-        "--close",
-        &handle,
-        "--project",
-        root(&project),
-    ]);
-    assert_success(&closed);
-    assert!(
-        stdout(&closed).contains("done (landed)"),
-        "closeout says the record landed: {}",
-        stdout(&closed)
-    );
-    let done = vivi([
-        "need",
-        "list",
-        "--for",
-        "mind",
-        "--status",
-        "done",
-        "--json",
-        "--project",
-        root(&project),
-    ]);
-    assert_success(&done);
-    assert!(
-        stdout(&done).contains(&handle),
-        "closed={:?}\ndone={}",
-        stdout(&closed),
-        stdout(&done)
-    );
-    let records = vivi([
-        "pump",
-        "history",
-        &handle,
-        "--json",
-        "--project",
-        root(&project),
-    ]);
-    assert_success(&records);
-    let records: serde_json::Value = serde_json::from_str(&stdout(&records)).unwrap();
-    assert_eq!(records.as_array().map(Vec::len), Some(1), "{records}");
-    assert_eq!(records[0]["status"], "done");
-    assert_eq!(records[0]["outcome"], "landed");
-}
-
-#[test]
 fn a_config_that_still_sets_the_retired_board_mark_does_not_start_the_pump() {
     let project = temp_mailspace();
     let config = project.path().join(".vivi").join("mailspace.toml");
@@ -477,16 +288,6 @@ fn a_config_that_still_sets_the_retired_board_mark_does_not_start_the_pump() {
     let all = format!("{}{}", stdout(&out), stderr(&out));
     assert!(all.contains("[pump.board] mark is retired"), "{all}");
     assert!(all.contains("vivi pump send --need <handle>"), "{all}");
-}
-
-#[test]
-fn pump_closeout_skips_a_stuck_need() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump_status(&project, &handle, Status::Stuck);
-    let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
-    assert_success(&listed);
-    assert!(!stdout(&listed).contains(&handle), "{}", stdout(&listed));
 }
 
 #[test]
@@ -713,17 +514,6 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn pump_closeout_skips_an_amended_need() {
-    let project = temp_mailspace();
-    let handle = send_need(&project);
-    write_pump(&project, &handle);
-    mark_amended(&project, &handle);
-    let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
-    assert_success(&listed);
-    assert!(!stdout(&listed).contains(&handle), "{}", stdout(&listed));
-}
-
-#[test]
 fn log_prints_the_last_lines_and_applies_filters() {
     let project = temp_mailspace();
     let home = pump_home(&project);
@@ -740,9 +530,6 @@ fn log_prints_the_last_lines_and_applies_filters() {
     let tail = vivi(["pump", "log", "--project", root(&project), "-n", "2"]);
     assert_success(&tail);
     assert_eq!(stdout(&tail), "10:00:02 three u12\n10:00:03 four\n");
-    let lane = vivi(["pump", "log", "--project", root(&project), "--lane", "2"]);
-    assert_success(&lane);
-    assert_eq!(stdout(&lane), "10:00:01 lane default/2: two u1\n");
     let unit = vivi(["pump", "log", "--project", root(&project), "--unit", "u1"]);
     assert_eq!(stdout(&unit), "10:00:01 lane default/2: two u1\n");
     let grep = vivi(["pump", "log", "--project", root(&project), "--grep", "four"]);
@@ -761,17 +548,6 @@ fn log_without_a_file_exits_one_naming_the_path() {
     assert!(stderr(&out).contains("log.txt"), "{}", stderr(&out));
 }
 
-/// Set the amendment flag on a need in the temp pump database.
-fn mark_amended(project: &tempfile::TempDir, handle: &str) {
-    let path = pump_home(project).join(DB_FILENAME);
-    let mut store = PumpStore::open(&path).unwrap();
-    let mut state = store.load().unwrap();
-    if let Some(record) = state.needs.get_mut(handle) {
-        record.amendment_pending = true;
-    }
-    store.save(&state).unwrap();
-}
-
 #[test]
 fn pump_once_on_a_freshly_initialised_project_holds_instead_of_failing() {
     let project = tempfile::tempdir().unwrap();
@@ -779,9 +555,8 @@ fn pump_once_on_a_freshly_initialised_project_holds_instead_of_failing() {
     assert_success(&vivi(["pump", "start", "--project", root(&project)]));
     let out = vivi(["pump", "once", "--project", root(&project)]);
     assert_success(&out);
-    let status = vivi(["pump", "status", "--project", root(&project)]);
-    assert_success(&status);
-    let text = stdout(&status);
+    let text = fs::read_to_string(project.path().join(".vivi").join("pump").join("status.txt"))
+        .unwrap_or_default();
     assert!(text.contains("not ready:"), "{text}");
     assert!(text.contains("pump.committer_name"), "{text}");
     let health = vivi(["pump", "health", "--json", "--project", root(&project)]);

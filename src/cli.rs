@@ -53,12 +53,11 @@ pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
 };
 pub use pump_command::{
-    PumpAdoptCommand, PumpCloseoutCommand, PumpControlCommand, PumpDoneCommand, PumpExportCommand,
-    PumpHealthCommand, PumpHistoryCommand, PumpListCommand, PumpListStatus, PumpLogCommand,
-    PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand,
-    PumpReopenCommand, PumpReplanCommand, PumpRequeueCommand, PumpRunCommand, PumpRungsCommand,
-    PumpRungsSetCommand, PumpRungsShowCommand, PumpSendCommand, PumpServiceAddCommand,
-    PumpServiceCommand, PumpServiceProjectCommand, PumpShowCommand, PumpStatusCommand,
+    PumpControlCommand, PumpDoneCommand, PumpHealthCommand, PumpHistoryCommand, PumpListCommand,
+    PumpListStatus, PumpLogCommand, PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand,
+    PumpPrioritySetCommand, PumpReopenCommand, PumpReplanCommand, PumpRequeueCommand,
+    PumpRunCommand, PumpRungsCommand, PumpRungsSetCommand, PumpRungsShowCommand, PumpSendCommand,
+    PumpServiceAddCommand, PumpServiceCommand, PumpServiceProjectCommand, PumpShowCommand,
     PumpSubcommand, PumpTargetAddCommand, PumpTargetCommand, PumpTargetListCommand,
     PumpTargetRemoveCommand, PumpWithdrawCommand,
 };
@@ -187,7 +186,7 @@ pub enum Command {
         command: ProjectCommand,
     },
 
-    /// Run the pump: dispatch, merge and gate the planned units of a backlog
+    /// Run the pump: the flows that plan, slice, build, verify and merge each need with an open pump record
     Pump {
         #[command(subcommand)]
         command: PumpSubcommand,
