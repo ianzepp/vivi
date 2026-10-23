@@ -1,5 +1,5 @@
 //! Dependency edges converge across mailspaces: the prerequisites of an
-//! item are a function of its `X-Vivi-Depends-On` headers and its
+//! item are a function of its front-matter `depends_on` and its
 //! `dependency-added` / `dependency-removed` letters alone. Per dependency
 //! the newest letter by `(X-Vivi-Event-At, Message-ID)` wins, over the
 //! header too, so members that pull the same letters land the same edges
@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout, wire_id};
+use crate::letter::fixture::body_with_deps;
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::sync::transport::{Envelope, Transport};
 
@@ -76,11 +77,17 @@ impl World {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: subject.into(),
-                body: "done_when: it works\n".into(),
+                body: body_with_deps(
+                    "need",
+                    "it works\n",
+                    &depends_on
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                ),
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
-                depends_on: depends_on.iter().map(ToString::to_string).collect(),
             })
             .unwrap();
         result

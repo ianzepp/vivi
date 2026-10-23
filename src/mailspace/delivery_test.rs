@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use chrono::Utc;
 
+use crate::letter::fixture::{body_for, body_with_deps, need_body, task_body};
 use crate::mailspace::memos::MemoConfig;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{MessageIngestRequest, StoredMessageView};
@@ -36,7 +37,6 @@ fn request(to: &str, body: String) -> SendRequest {
         role: "inbox".into(),
         kind: Some("mail".into()),
         reply_to: None,
-        depends_on: Vec::new(),
     }
 }
 
@@ -87,11 +87,10 @@ fn a_reply_records_a_replied_event_on_the_parent_need() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "need a thing".into(),
-            body: "done_when: it works".into(),
+            body: need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -144,11 +143,10 @@ fn a_task_reply_does_not_rekind_its_mail_parent() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "Implement follow-up".into(),
-            body: "Follow up on the review.".into(),
+            body: body_for("task", "Follow up on the review."),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: Some(handle),
-            depends_on: Vec::new(),
         })
         .unwrap();
 
@@ -330,11 +328,10 @@ fn a_close_with_verdict_carries_it_as_letter_headers() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "unit".into(),
-            body: "done_when: lands\n".into(),
+            body: task_body("lands"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered.remove(0).handle;
@@ -376,11 +373,10 @@ fn a_report_with_verdict_carries_it_as_a_letter() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "unit".into(),
-            body: "done_when: lands\n".into(),
+            body: task_body("lands"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered.remove(0).handle;
@@ -423,15 +419,13 @@ fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     let (_tmp, mailspace) = space(false);
     let domain = mailspace.address_domain();
     let work = |subject: &str, kind: &str, deps: &[&str]| {
-        let mut headers = format!(
+        let headers = format!(
             "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: {subject}\r\n\
              Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
-             X-Vivi-Kind: {kind}\r\n"
+             X-Vivi-Kind: {kind}\r\nX-Vivi-Format: 1\r\n"
         );
-        for dep in deps {
-            headers.push_str(&format!("X-Vivi-Depends-On: {dep}\r\n"));
-        }
-        format!("{headers}\r\ndone_when: {subject}\r\n")
+        let deps: Vec<String> = deps.iter().map(ToString::to_string).collect();
+        format!("{headers}\r\n{}", body_with_deps(kind, subject, &deps))
     };
     let node = |item: &str| {
         mailspace
@@ -490,7 +484,8 @@ fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     let event = format!(
         "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: done\r\n\
          Message-ID: <event@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
-         X-Vivi-Event: done\r\nX-Vivi-Kind: task\r\n\r\ndone_when: third\r\n"
+         X-Vivi-Event: done\r\nX-Vivi-Kind: task\r\nX-Vivi-Format: 1\r\n\r\n{}",
+        task_body("third")
     );
     mailspace.deliver_raw(event.as_bytes(), "tasks").unwrap();
     assert_eq!(nodes(), before, "an event letter mints no node");

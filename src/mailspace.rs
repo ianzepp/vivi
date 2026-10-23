@@ -54,6 +54,7 @@ mod pump_record;
 mod reply;
 mod report;
 mod rules;
+mod serves;
 pub mod shipped;
 mod shipped_roles;
 mod starter_pump;
@@ -72,6 +73,7 @@ pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_a
 pub use body::{read_body_arg, read_body_input};
 pub use config_edit::{IdentityPatch, PoolAdd};
 pub use depend::{BacklogDependency, DependWrite};
+pub(crate) use dependencies::depends_on_refs;
 pub use dump::{
     DumpFilters, DumpRecord, MailDumpRequest, TaskDumpRequest, TaskDumpStatus, parse_time_bound,
 };
@@ -112,7 +114,7 @@ pub use pump_action::{
 pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
-pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
+pub use step::{StepDispatch, StepException, StepManifest};
 pub use thread::{
     MailspaceThreadMessage, ThreadOutlineRow, print_thread, print_thread_newest,
     print_thread_outline,
@@ -270,7 +272,6 @@ pub struct SendRequest {
     pub role: String,
     pub kind: Option<String>,
     pub reply_to: Option<String>,
-    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

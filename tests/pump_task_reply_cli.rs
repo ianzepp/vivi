@@ -4,6 +4,8 @@
 
 use std::process::{Command, Output};
 
+use vivi::letter::render;
+use vivi::letter::work::TaskFront;
 use vivi::mailspace::{Mailspace, SendRequest};
 
 fn project() -> (tempfile::TempDir, Mailspace) {
@@ -22,11 +24,10 @@ fn self_task(mailspace: &Mailspace) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "step".into(),
-            body: "pump-step: n1 r1 plan".into(),
+            body: render(&TaskFront::step("n1", 1, "plan"), "").unwrap(),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

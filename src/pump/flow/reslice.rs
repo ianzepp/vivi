@@ -1,11 +1,13 @@
 //! Reslice: split, rework and follow-up slicer jobs on an existing slice.
 
 use crate::error::VivariumError;
+use crate::letter::render;
+use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::envelope::roles::{Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::collect_slice::runner_env_failure;
-use crate::pump::flow::def::{NodeClass, STEP_MARKER};
+use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -104,7 +106,8 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
         }
     }
     let node = format!("{prefix}{}", earlier.len() + 1);
-    let body = format!("{STEP_MARKER} {} r{} {node}\n{tail}", run.need, run.run);
+    let body = render(&TaskFront::step(&run.need, run.run, &node), &tail)
+        .map_err(|err| VivariumError::Message(format!("reslice body for {node}: {err}")))?;
     let sentinel = sentinel_task(&rows, run)?;
     let subject = format!("{} {id} ({} r{})", mode.name(), run.need, run.run);
     let task = mail.send_step(

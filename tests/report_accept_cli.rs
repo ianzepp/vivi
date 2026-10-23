@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-const BODY: &str = "done_when: it works";
+const BODY: &str = "it works";
 
 fn vivi(project: &Path, args: &[&str]) -> Output {
     let mut full: Vec<&str> = args.to_vec();
@@ -53,6 +53,9 @@ fn send(p: &Path, kind: &str, subject: &str, depends_on: &[&str]) -> String {
         "--body",
         BODY,
     ];
+    if kind == "need" {
+        args.extend(["--done-when", BODY]);
+    }
     for dep in depends_on {
         args.extend(["--depends-on", dep]);
     }

@@ -1,11 +1,11 @@
 //! Dependency edges of held work letters.
 //!
-//! A work letter names its prerequisites in repeated `X-Vivi-Depends-On`
-//! headers, so the order of work is a fact of the letters, not of the route
-//! that filed them. Every route that attaches a work letter's node (local
-//! send, pull, fetch, resync, raw delivery `vivi mail deliver`, reference
-//! follow, audit repair, role adoption, `mailspace import`) goes through
-//! [`Mailspace::backlog_attach_letter`], which mints the node and
+//! A work letter names its prerequisites in the `depends_on` front matter key
+//! of a format-1 letter, so the order of work is a fact of the letters, not of
+//! the route that filed them. Every route that attaches a work letter's node
+//! (local send, pull, fetch, resync, raw delivery `vivi mail deliver`,
+//! reference follow, audit repair, role adoption, `mailspace import`) goes
+//! through [`Mailspace::backlog_attach_letter`], which mints the node and
 //! one prerequisite edge for each dependency this mailspace holds as backlog
 //! work.
 //!
@@ -15,8 +15,8 @@
 //! work here (foreign-held, plain mail, not a handle) is recorded the same
 //! way: unresolved references are remembered and block readiness until the
 //! named letter is present and done. Only a held reference mints an edge.
-//! `graph audit` reads the same headers, so a drifted graph is reported and
-//! repaired from the letters alone.
+//! `graph audit` reads the same front matter, so a drifted graph is reported
+//! and repaired from the letters alone.
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,14 +27,12 @@ use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep, res
 use super::graph::GraphNodeView;
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
+use crate::letter::Front;
 use crate::message::normalize_message_id;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, Storage, StoredMessage,
     WorkGraphEdgeInput, WorkGraphEdgeRow, WorkGraphNodeRow,
 };
-
-const DEPENDS_ON_HEADER: &str = "X-Vivi-Depends-On";
-const PARENT_HEADER: &str = "X-Vivi-Parent";
 
 /// A letter written to the store: `(message id, content id)`.
 pub type ArrivedLetter = (String, String);
@@ -63,41 +61,40 @@ pub(super) struct MissingEdge {
     pub(super) dependency: String,
 }
 
-/// The dependency references a letter's bytes name: trimmed, in header
-/// order, without duplicates.
+/// The dependency references a letter's bytes name: trimmed, in order,
+/// without duplicates. A format-1 work letter names them in its front matter;
+/// an old-format letter or one with invalid front matter names none.
 pub(crate) fn depends_on_refs(bytes: &[u8]) -> Vec<String> {
-    let Some(parsed) = mail_parser::MessageParser::default().parse(bytes) else {
-        return Vec::new();
+    let listed: Vec<String> = match crate::letter::of_message(bytes, "") {
+        Ok(letter) => match letter.front {
+            Front::Need(front) => front.depends_on,
+            Front::Want(front) => front.depends_on,
+            Front::Task(front) => front.depends_on,
+            _ => return Vec::new(),
+        },
+        Err(_) => return Vec::new(),
     };
     let mut refs: Vec<String> = Vec::new();
-    for header in parsed.headers() {
-        if !header.name().eq_ignore_ascii_case(DEPENDS_ON_HEADER) {
-            continue;
-        }
-        if let mail_parser::HeaderValue::Text(text) = header.value() {
-            let value = text.trim().to_string();
-            if !value.is_empty() && !refs.contains(&value) {
-                refs.push(value);
-            }
+    for value in listed {
+        let value = value.trim().to_string();
+        if !value.is_empty() && !refs.contains(&value) {
+            refs.push(value);
         }
     }
     refs
 }
 
-/// The normalized RFC `Message-ID` a letter names in its `X-Vivi-Parent`
-/// header: the source a `task from` was lowered from. `None` when the letter
-/// carries no such header (plain mail, an event letter).
+/// The normalized RFC `Message-ID` a task letter names as its parent: the
+/// source a `task from` was lowered from. `None` when the letter names none
+/// (plain mail, an event letter, an old-format letter).
 pub(crate) fn parent_ref(bytes: &[u8]) -> Option<String> {
-    let parsed = MessageParser::default().parse(bytes)?;
-    parsed.headers().iter().find_map(|header| {
-        if !header.name().eq_ignore_ascii_case(PARENT_HEADER) {
-            return None;
-        }
-        let mail_parser::HeaderValue::Text(text) = header.value() else {
-            return None;
-        };
-        normalize_message_id(text)
-    })
+    match crate::letter::of_message(bytes, "") {
+        Ok(letter) => match letter.front {
+            Front::Task(front) => front.parent.as_deref().and_then(normalize_message_id),
+            _ => None,
+        },
+        Err(_) => None,
+    }
 }
 
 /// The normalized `Message-ID` of the letter itself, if it carries one.
@@ -181,7 +178,7 @@ struct LinkPlan {
 
 impl Mailspace {
     /// Attach the backlog node of a work letter this mailspace holds and
-    /// build the prerequisite edges its `X-Vivi-Depends-On` headers name.
+    /// build the prerequisite edges its `depends_on` front matter names.
     /// Idempotent. A dependency that is not held yet waits (see the module
     /// docs); the caller settles waiting edges with
     /// [`Mailspace::backlog_settle_pending_dependencies`] once the letter's
@@ -198,6 +195,10 @@ impl Mailspace {
     ) -> Result<(), VivariumError> {
         let handle = self.storage()?.display_handle(message_id)?;
         self.backlog_attach(kind, &handle, subject, &[])?;
+        if let Ok(parsed) = crate::letter::of_message(letter, "") {
+            let storage = self.storage()?;
+            super::serves::index_front(&storage, message_id, &parsed)?;
+        }
         let refs = depends_on_refs(letter);
         if refs.is_empty() {
             return Ok(());
@@ -231,11 +232,11 @@ impl Mailspace {
         Ok(())
     }
 
-    /// Rebuild this item's need bind from the `X-Vivi-Parent` headers the
+    /// Rebuild this item's need bind from the `parent` front-matter key the
     /// letters carry. A `task from` a need binds its unit locally and writes
     /// no bind letter, so a mailspace that receives the letter learns the
-    /// bind from the header instead: the item's own `X-Vivi-Parent` naming a
-    /// need held here, and each reply of it whose header names this item.
+    /// bind from the front matter instead: the item's own `parent` naming a
+    /// need held here, and each reply of it whose `parent` names this item.
     /// That covers both arrival orders — the task after the need, and the
     /// task before it, once the reply link is made. Idempotent: a unit whose
     /// node already carries a `subgraph` is left alone, so a later pull of

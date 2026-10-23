@@ -5,6 +5,7 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{Collected, collect};
+use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::flow::def::NodeClass;
@@ -29,7 +30,7 @@ fn fixture() -> Fixture {
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let mut mail = FakeMail::new("pump");
     let task = mail
-        .send_step("pump", "pump", "plan", "pump-step: n1 r1 plan", &[])
+        .send_step("pump", "pump", "plan", &step_body("n1", 1, "plan", ""), &[])
         .unwrap();
     Fixture {
         _dir: dir,

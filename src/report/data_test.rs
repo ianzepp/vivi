@@ -40,11 +40,10 @@ fn reopening_a_need_resets_its_active_lead_time_window() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "A need".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::need_body(&["done"], "do it"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let need = sent.delivered[0].handle.clone();
@@ -94,11 +93,10 @@ fn a_reopen_without_a_valid_timestamp_has_unavailable_lead_time() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "A need".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::need_body(&["done"], "do it"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let need = sent.delivered[0].handle.clone();

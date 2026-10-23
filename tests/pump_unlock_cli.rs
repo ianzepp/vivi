@@ -5,6 +5,8 @@
 use std::collections::BTreeSet;
 use std::process::{Command, Output};
 
+use vivi::letter::render;
+use vivi::letter::work::NeedFront;
 use vivi::mailspace::{Mailspace, PumpActionKind, SendRequest};
 
 fn project() -> (tempfile::TempDir, Mailspace) {
@@ -23,11 +25,10 @@ fn need(mailspace: &Mailspace) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "item".into(),
-            body: "done_when: it works".into(),
+            body: render(&NeedFront::new(vec!["it works".into()]), "").unwrap(),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

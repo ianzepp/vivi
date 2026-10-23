@@ -12,6 +12,8 @@ use super::{
     dispatch, redispatch_scope, retry,
 };
 use crate::error::VivariumError;
+use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::parse;
 use crate::pump::envelope::roles::Hand;
@@ -115,8 +117,12 @@ impl Rig {
             "pump",
             "pump",
             &format!("slice {id}"),
-            &format!(
-                "pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"
+            &task_body_with(
+                &TaskFront {
+                    target: Some("default".into()),
+                    ..TaskFront::step(NEED, 1, &format!("slice:{id}"))
+                },
+                &format!("title {id}\n\nbrief {id}"),
             ),
             &[],
         )?;
@@ -204,7 +210,7 @@ fn the_body_holds_rules_scope_contract_then_the_task_body() -> R {
     let rules = at("You are a Hand");
     let scope = at("WRITE SCOPE:\n- src/a.rs\n- src/b/");
     let contract = at("HAND ENVELOPE CONTRACT");
-    let task = at("pump-step: n1 r1 slice:a");
+    let task = at("slice:a");
     assert!(
         rules < scope && scope < contract && contract < task,
         "{body}"
@@ -234,7 +240,7 @@ fn a_slice_task_without_a_target_line_is_refused() -> R {
         "pump",
         "pump",
         "s",
-        "pump-step: n1 r1 slice:x\n\nno target",
+        &step_body(NEED, 1, "slice:x", "no target"),
         &[],
     )?;
     let row = StepRow {
@@ -406,7 +412,7 @@ fn deviations_of_merged_siblings_come_newest_first_and_skip_unmerged_ones() -> R
     assert!(!body.contains("unmerged slice"));
     assert!(!body.contains("my own"));
     // The deviations come before the slice task body.
-    assert!(older < body.find("pump-step: n1 r1 slice:me").unwrap());
+    assert!(older < body.find("slice:me").unwrap());
     Ok(())
 }
 
@@ -661,7 +667,13 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
             "mind",
             "operator",
             "slice",
-            "pump-step: n1 r1 slice:a\ntarget: vivi",
+            &task_body_with(
+                &TaskFront {
+                    target: Some("vivi".into()),
+                    ..TaskFront::step("n1", 1, "slice:a")
+                },
+                "",
+            ),
             &[],
         )
         .unwrap();
@@ -675,7 +687,10 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
     port.reply(&task, &stamped("pump-deviations:", "third"))
         .unwrap();
 
-    assert!(port.task_body(&task).unwrap().contains("target: vivi"));
+    assert_eq!(
+        crate::pump::flow::fanout::target_of(&port.task_body(&task).unwrap()).as_deref(),
+        Some("vivi")
+    );
     let found = port.marked_replies(&task, DEVIATIONS_MARKER).unwrap();
     let texts: Vec<&str> = found.iter().map(|(_, text)| text.as_str()).collect();
     assert_eq!(
@@ -729,7 +744,13 @@ fn a_published_need_branch_is_where_the_hand_starts() -> R {
 #[test]
 fn the_fake_returns_port_replies_for_its_identity_and_foreign_ones_only_for_their_sender() -> R {
     let mut mail = FakeMail::new("pump");
-    let task = mail.send_step("pump", "mind", "slice", "pump-step: n1 r1 slice:a", &[])?;
+    let task = mail.send_step(
+        "pump",
+        "mind",
+        "slice",
+        &step_body(NEED, 1, "slice:a", ""),
+        &[],
+    )?;
     mail.reply(&task, "pump-attempt: mine")?;
     mail.foreign_reply(&task, "mind", "pump-attempt: forged");
     mail.foreign_reply(&task, "mind", "other: not marked");
@@ -788,7 +809,13 @@ fn the_real_port_reads_marked_replies_from_one_sender_only() -> R {
         mailspace: p.mailspace.clone(),
         pump_identity: "mind".into(),
     };
-    let task = port.send_step("mind", "operator", "slice", "pump-step: n1 r1 slice:a", &[])?;
+    let task = port.send_step(
+        "mind",
+        "operator",
+        "slice",
+        &step_body(NEED, 1, "slice:a", ""),
+        &[],
+    )?;
     let marker = "pump-attempt:";
     port.reply(
         &task,

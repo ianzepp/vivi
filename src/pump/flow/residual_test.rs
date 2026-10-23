@@ -74,6 +74,32 @@ fn residual_files_finding_and_gap() {
     assert_eq!(sends.len(), 2);
     assert!(sends.iter().any(|c| c.contains("audit requirement gap n1")));
     assert!(sends.iter().any(|c| c.contains("audit finding n1")));
+    assert!(
+        sends.iter().all(|c| c.contains(" --done-when ")),
+        "{sends:?}"
+    );
+    assert!(
+        sends
+            .iter()
+            .any(|c| c.contains("--done-when 'recheck a.rs'")),
+        "{sends:?}"
+    );
+}
+
+#[test]
+fn a_blank_recheck_trigger_files_with_a_fixed_done_when() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = context(dir.path());
+    let mut residual = front(AuditorAnswer::Residual);
+    residual.requirement.clear();
+    residual.finding[0].recheck_trigger = String::from("  ");
+    file(&ctx, "n1", 1, "audit-task", &residual).unwrap();
+    let sends = send_commands(&host);
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    assert!(
+        sends[0].contains("--done-when 'the residual finding is resolved'"),
+        "{sends:?}"
+    );
 }
 
 #[test]
@@ -228,7 +254,13 @@ fn the_shipped_registry_files_residual_needs_from_a_build_audit() -> Result<(), 
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, "n1", "kind: build")?;
     start(&ctx, &store, &mut mail, "n1", Some("plan"))?;
-    let task = mail.send_step("mind", "mind", "audit", "pump-step: n1 r1 audit1", &[])?;
+    let task = mail.send_step(
+        "mind",
+        "mind",
+        "audit",
+        &crate::letter::fixture::step_body("n1", 1, "audit1", ""),
+        &[],
+    )?;
     store.insert_step(
         "n1",
         &StepRow {

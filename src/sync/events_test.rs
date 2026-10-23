@@ -14,12 +14,11 @@ mod property_emit;
 #[path = "property_marks_test.rs"]
 mod property_marks;
 
+use crate::letter::fixture::{body_for, need_body};
 use crate::mailspace::{AbsorbConfig, Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
-
-pub(super) const BODY: &str = "done_when: it works\n";
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])
@@ -46,11 +45,10 @@ fn send_item(from: &Checkout, to: &str, subject: &str, role: &str, kind: &str) -
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: BODY.into(),
+            body: body_for(kind, "it works\n"),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result
@@ -636,7 +634,7 @@ fn need_state(w: &World, item: u64) -> (String, String) {
 #[test]
 fn a_later_date_wins_even_over_an_event_that_names_it_as_prev() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     // A done at noon with no Prev, then a reopen from a skewed clock an hour
     // earlier that names the done as its Prev.
     put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
@@ -661,7 +659,7 @@ fn a_later_date_wins_even_over_an_event_that_names_it_as_prev() {
 #[test]
 fn a_fork_picks_the_later_date_then_the_larger_id_on_every_checkout() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
     put_event(&w, 3, 1, "reopened", &[], "Sun, 11 Oct 2026 12:00:01 +0000");
     // A third head at the same second as the second: the larger Message-ID.
@@ -711,8 +709,8 @@ fn put_stamped_event(
 #[test]
 fn on_an_equal_date_the_successor_then_the_larger_id_wins_on_every_checkout() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
-    w.put(5, "item", "done_when: y\n");
+    w.put(1, "item", &need_body(&["x"], ""));
+    w.put(5, "item", &need_body(&["y"], ""));
     // Equal dates: the reopen names the done as its Prev, so the successor
     // wins although the done carries the larger Message-ID.
     put_event(&w, 3, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
@@ -751,7 +749,7 @@ fn on_an_equal_date_the_successor_then_the_larger_id_wins_on_every_checkout() {
 #[test]
 fn an_event_at_stamp_beats_the_date_header() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     // The done is stamped after the reopen's later Date: the stamp decides,
     // and beats even the successor that names the done as its Prev.
     put_stamped_event(
@@ -790,7 +788,7 @@ fn an_event_at_stamp_beats_the_date_header() {
 #[test]
 fn an_event_for_a_sealed_item_is_not_counted_and_not_applied() {
     let w = World::new();
-    let id = w.put(1, "item", "done_when: x\n");
+    let id = w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     let handle = crate::sync::fake_server::handle(1);
     w.bob
@@ -813,7 +811,7 @@ fn an_event_for_a_sealed_item_is_not_counted_and_not_applied() {
 #[test]
 fn a_fully_absorbed_item_adds_nothing_to_ignored_across_settles() {
     let w = World::new();
-    let id = w.put(1, "item", "done_when: x\n");
+    let id = w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     let handle = crate::sync::fake_server::handle(1);
     put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
@@ -1134,7 +1132,7 @@ fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
 fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
     let mut w = World::new();
     minds(&mut w.bob, "lead");
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     // A held event stamped five minutes ahead of the machine clock: far
     // enough that the clock alone would stamp below it, and inside the ten
     // minutes of skew a receiver still counts — a later stamp would be

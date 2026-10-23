@@ -2,7 +2,8 @@
 //! moves with its event letters, a seal keeps the event out, and audit repair
 //! re-applies a stale foreign row.
 
-use super::events::{BODY, put_event, role_of, state};
+use super::events::{put_event, role_of, state};
+use crate::letter::fixture::need_body;
 use crate::mailspace::is_foreign_account;
 use crate::sync::fake_server::{Checkout, LETTER_DATE, World, checkout, handle, wire_id};
 
@@ -32,7 +33,7 @@ fn foreign_need(w: &World) -> Foreign {
         "need",
         &carol.address("mind"),
         "for carol",
-        BODY,
+        &need_body(&["it works"], ""),
         LETTER_DATE,
         "",
     );

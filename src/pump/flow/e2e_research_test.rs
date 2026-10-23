@@ -5,6 +5,8 @@
 use std::sync::Arc;
 
 use crate::error::VivariumError;
+use crate::letter::fixture::{need_body_with, want_body};
+use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
@@ -26,8 +28,20 @@ const RESEARCH_FAILED: &str = "flow-research-failed";
 /// body, so the rig is assembled here from the same parts.
 fn research_rig() -> Result<(Rig, String), VivariumError> {
     let project = project();
-    let want = send(&project.mailspace, "wants", "want", "the want", "wanted")?;
-    let body = format!("done_when: it works\nfor: {want}");
+    let want = send(
+        &project.mailspace,
+        "wants",
+        "want",
+        "the want",
+        &want_body("wanted", ""),
+    )?;
+    let body = need_body_with(
+        &NeedFront {
+            explores: Some(want.clone()),
+            ..NeedFront::new(vec!["it works".into()])
+        },
+        "",
+    );
     let need = send(
         &project.mailspace,
         "needs",
@@ -90,7 +104,6 @@ fn send(
         role: role.into(),
         kind: Some(kind.into()),
         reply_to: None,
-        depends_on: Vec::new(),
     })?;
     if result.delivered.is_empty() {
         return Err(VivariumError::Message(format!("{subject}: not delivered")));

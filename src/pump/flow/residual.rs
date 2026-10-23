@@ -89,15 +89,19 @@ pub(crate) fn file(
     for requirement in front.requirement.iter().filter(|r| is_gap(r.status)) {
         let key = format!("{base}:requirement:{}", requirement.id);
         let subject = format!("pump: audit requirement gap {need} {}", short_hash(&key));
-        let body = requirement_body(need, run, audit_task, requirement);
-        handles.push(ensure_need(ctx, &key, &subject, &recipient, &body)?);
+        let (body, done_when) = requirement_body(need, run, audit_task, requirement);
+        handles.push(ensure_need(
+            ctx, &key, &subject, &recipient, &body, &done_when,
+        )?);
     }
     if front.answer == AuditorAnswer::Residual {
         for finding in &front.finding {
             let key = format!("{base}:finding:{}", finding.id);
             let subject = format!("pump: audit finding {need} {}", short_hash(&key));
-            let body = finding_body(need, run, audit_task, finding);
-            handles.push(ensure_need(ctx, &key, &subject, &recipient, &body)?);
+            let (body, done_when) = finding_body(need, run, audit_task, finding);
+            handles.push(ensure_need(
+                ctx, &key, &subject, &recipient, &body, &done_when,
+            )?);
         }
     }
     Ok(handles)
@@ -120,7 +124,13 @@ fn status_label(status: RequirementStatus) -> &'static str {
     }
 }
 
-fn requirement_body(need: &str, run: u32, audit_task: &str, requirement: &Requirement) -> String {
+/// The need body and its one-line `done_when` (the recheck trigger).
+fn requirement_body(
+    need: &str,
+    run: u32,
+    audit_task: &str,
+    requirement: &Requirement,
+) -> (String, String) {
     let content = format!(
         "Declared requirement {} was {}: {}",
         requirement.id,
@@ -137,7 +147,7 @@ fn requirement_body(need: &str, run: u32, audit_task: &str, requirement: &Requir
     body_tail(body, &trigger)
 }
 
-fn finding_body(need: &str, run: u32, audit_task: &str, finding: &Finding) -> String {
+fn finding_body(need: &str, run: u32, audit_task: &str, finding: &Finding) -> (String, String) {
     let mut body = body_head(need, run, audit_task, &finding.id, &finding.content);
     body.push_str("Affected paths:\n");
     append_bullets(&mut body, &finding.paths);
@@ -154,12 +164,16 @@ fn body_head(need: &str, run: u32, audit_task: &str, id: &str, content: &str) ->
     )
 }
 
-fn body_tail(mut body: String, recheck_trigger: &str) -> String {
-    let trigger = one_line(recheck_trigger);
-    body.push_str(&format!(
-        "\nRecheck trigger: {trigger}\n\ndone_when: {trigger}\n"
-    ));
-    body
+/// The `done_when` of a filed finding whose auditor left `recheck_trigger` blank.
+const BLANK_TRIGGER_DONE_WHEN: &str = "the residual finding is resolved";
+
+fn body_tail(mut body: String, recheck_trigger: &str) -> (String, String) {
+    let mut trigger = one_line(recheck_trigger);
+    if trigger.is_empty() {
+        trigger = String::from(BLANK_TRIGGER_DONE_WHEN);
+    }
+    body.push_str(&format!("\nRecheck trigger: {trigger}\n"));
+    (body, trigger)
 }
 
 fn append_bullets(out: &mut String, items: &[String]) {
@@ -172,7 +186,7 @@ fn append_bullets(out: &mut String, items: &[String]) {
     }
 }
 
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect::<String>()
@@ -207,6 +221,7 @@ fn ensure_need(
     subject: &str,
     recipient: &str,
     body: &str,
+    done_when: &str,
 ) -> Result<String, VivariumError> {
     if let Some(handle) = find_outgoing_need(ctx, subject)? {
         return Ok(handle);
@@ -221,9 +236,10 @@ fn ensure_need(
         command.push_str(&format!(" --to {}", shell_quote(recipient)));
     }
     command.push_str(&format!(
-        " --subject {} --body-file {}",
+        " --subject {} --body-file {} --done-when {}",
         shell_quote(subject),
         shell_quote(&path.to_string_lossy()),
+        shell_quote(done_when),
     ));
     let output = ctx.vivi(&command, 60);
     if output.code != 0 {

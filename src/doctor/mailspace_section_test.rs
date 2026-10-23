@@ -1,5 +1,7 @@
 use super::*;
 use crate::doctor::Status;
+use crate::letter::fixture::{task_body, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::mailspace::{Mailspace, SendRequest};
 
 fn open_mailspace() -> (Mailspace, tempfile::TempDir) {
@@ -108,7 +110,7 @@ fn older_schema_warns() {
 }
 
 #[test]
-fn need_without_done_when_warns() {
+fn ready_item_without_done_when_warns() {
     let (mailspace, tmp) = with_roster();
     let handle = mailspace
         .send(SendRequest {
@@ -116,12 +118,11 @@ fn need_without_done_when_warns() {
             to: vec!["cto".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: "vague need".into(),
-            body: "no clause here".into(),
-            role: "needs".into(),
-            kind: Some("need".into()),
+            subject: "vague task".into(),
+            body: task_body("no clause here"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -134,7 +135,7 @@ fn need_without_done_when_warns() {
 }
 
 #[test]
-fn done_when_matches_step_and_ignores_blocked_needs() {
+fn done_when_matches_step_and_ignores_blocked_items() {
     let (mailspace, tmp) = with_roster();
     let ready = mailspace
         .send(SendRequest {
@@ -142,12 +143,11 @@ fn done_when_matches_step_and_ignores_blocked_needs() {
             to: vec!["cto".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: "ready need".into(),
-            body: "no clause here".into(),
-            role: "needs".into(),
-            kind: Some("need".into()),
+            subject: "ready task".into(),
+            body: task_body("no clause here"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -159,12 +159,17 @@ fn done_when_matches_step_and_ignores_blocked_needs() {
             to: vec!["cto".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: "blocked need".into(),
-            body: "also no clause here".into(),
-            role: "needs".into(),
-            kind: Some("need".into()),
+            subject: "blocked task".into(),
+            body: task_body_with(
+                &TaskFront {
+                    depends_on: vec![ready.clone()],
+                    ..TaskFront::default()
+                },
+                "also no clause here",
+            ),
+            role: "tasks".into(),
+            kind: Some("task".into()),
             reply_to: None,
-            depends_on: vec![ready.clone()],
         })
         .unwrap()
         .delivered
@@ -176,4 +181,49 @@ fn done_when_matches_step_and_ignores_blocked_needs() {
     assert_eq!(done_when.status, Status::Warn, "{done_when:#?}");
     assert!(done_when.detail.contains(&ready), "{done_when:#?}");
     assert!(!done_when.detail.contains(&blocked), "{done_when:#?}");
+}
+
+#[test]
+fn letter_invalid_item_is_reported() {
+    let (mailspace, tmp) = with_roster();
+    let domain = mailspace.address_domain();
+    let bytes = format!(
+        "From: ceo@{domain}\r\nTo: cto@{domain}\r\nSubject: broken\r\n\
+         Message-ID: <broken@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         X-Vivi-Kind: need\r\n\r\n+++\ndone_when = 5\n+++\nbody\n"
+    )
+    .into_bytes();
+    let storage = mailspace.storage().unwrap();
+    let stored = storage
+        .ingest_message(
+            &crate::storage::MessageIngestRequest {
+                account: "cto".into(),
+                local_role: "needs".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: "cto\0broken".into(),
+                remote: None,
+            },
+            &bytes,
+        )
+        .unwrap();
+    let handle = storage.display_handle(&stored.message_id).unwrap();
+    drop(storage);
+    mailspace
+        .backlog_attach_letter("need", &stored.message_id, "broken", &bytes)
+        .unwrap();
+    mailspace
+        .backlog_settle_pending_dependencies(&[(stored.message_id.clone(), stored.content_id)])
+        .unwrap();
+
+    let findings = findings(Some(tmp.path()));
+    let done_when = status_of(&findings, "done_when");
+    assert_eq!(done_when.status, Status::Warn, "{done_when:#?}");
+    assert!(
+        done_when.detail.contains("letter_invalid"),
+        "{done_when:#?}"
+    );
+    assert!(done_when.detail.contains(&handle), "{done_when:#?}");
 }

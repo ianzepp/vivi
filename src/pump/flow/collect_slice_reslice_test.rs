@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
@@ -108,7 +110,13 @@ fn add_slice(rig: &mut Rig, id: &str, path: &str) -> Result<StepRow, VivariumErr
         "mind",
         "mind",
         &format!("slice {id}"),
-        &format!("pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"),
+        &task_body_with(
+            &TaskFront {
+                target: Some("default".into()),
+                ..TaskFront::step(NEED, 1, &format!("slice:{id}"))
+            },
+            &format!("title {id}\n\nbrief {id}"),
+        ),
         &[],
     )?;
     let slice = StepRow {

@@ -9,10 +9,10 @@
 //!
 //! 1. Read-only: the `--read-only` flag, or the role's kind is `auditor`,
 //!    `triage` or `cadence` (case-insensitive).
-//! 2. Band: the body's `band:` line, else the role's `model` band string
+//! 2. Band: the task front matter's `band` key, else the role's `model` band string
 //!    parsed with [`parse_band`]. A role `model` that is not a band but is a
 //!    model in the pool's `harness.models` is a model slug, not a band.
-//! 3. Model: `--model` wins; then a body `band:` line; then the role's slug;
+//! 3. Model: `--model` wins; then the task front matter's `band` key; then the role's slug;
 //!    then the role's band, which must resolve through the pool's bands table
 //!    with [`choose`]. With `--model`, the band's reasoning is taken only
 //!    when the pool's choice for that band names the same model. A role's
@@ -76,7 +76,7 @@ pub struct Input<'a> {
     pub read_only_flag: bool,
     /// The role the task is addressed to, when it has one.
     pub role: Option<&'a RoleFacts>,
-    /// The task body, which may carry a `band:` line.
+    /// The task body, which may carry a `band` key in its front matter.
     pub body: &'a str,
 }
 
@@ -209,7 +209,7 @@ fn is_read_only(input: &Input) -> bool {
     )
 }
 
-/// The body's `band:` line, else the role's band string. The role's band is
+/// The task front matter's `band` key, else the role's band string. The role's band is
 /// only consulted (and so only refused when neither a band nor a harness
 /// model) when the body gives no band of its own. A role model slug is no
 /// band.
@@ -321,12 +321,12 @@ fn bad_role_band(config: &PoolConfig, role: &str, band: &str) -> VivariumError {
 fn no_model(role: Option<&RoleFacts>) -> VivariumError {
     match role {
         Some(role) => VivariumError::Config(format!(
-            "no model: pass --model, give the task a `band:` line, \
+            "no model: pass --model, give the task a `band` key in its front matter, \
              or give role {} a band (`vivi role set {} --model P2`)",
             role.name, role.name
         )),
         None => VivariumError::Config(
-            "no model: pass --model, give the task a `band:` line, \
+            "no model: pass --model, give the task a `band` key in its front matter, \
              or give the role a band (`vivi role set <name> --model P2`)"
                 .to_string(),
         ),

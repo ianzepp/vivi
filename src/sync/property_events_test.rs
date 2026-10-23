@@ -3,6 +3,7 @@
 //! beside or after the seal is only counted.
 
 use super::node_state;
+use crate::letter::fixture::need_body;
 use crate::sync::fake_server::{LETTER_DATE, World, handle, letter, wire_id};
 use crate::sync::transport::{Envelope, Transport};
 
@@ -49,7 +50,7 @@ fn item_row(w: &World, item: u64) -> (String, bool) {
 #[test]
 fn an_absorbed_event_with_state_done_seals_the_item_here_in_done() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     put_absorbed(&w, 2, 1, "done");
 
@@ -64,7 +65,7 @@ fn an_absorbed_event_with_state_done_seals_the_item_here_in_done() {
 #[test]
 fn an_absorbed_event_naming_open_leaves_the_item_open_and_sealed() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     put_absorbed(&w, 2, 1, "open");
 
@@ -78,7 +79,7 @@ fn an_absorbed_event_naming_open_leaves_the_item_open_and_sealed() {
 #[test]
 fn after_the_seal_a_later_reopen_is_ignored_and_counted() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     put_absorbed(&w, 2, 1, "done");
     w.bob.pull(&w.bob_client);
@@ -97,7 +98,7 @@ fn after_the_seal_a_later_reopen_is_ignored_and_counted() {
 #[test]
 fn an_older_done_event_arriving_after_the_absorb_changes_nothing() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     put_absorbed(&w, 2, 1, "open");
     w.bob.pull(&w.bob_client);
@@ -115,7 +116,7 @@ fn an_older_done_event_arriving_after_the_absorb_changes_nothing() {
 #[test]
 fn an_absorbed_event_from_a_bare_or_legacy_domain_is_ignored() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     let to = w.bob.address("mind");
     let headers = event_headers(1, "absorbed", "X-Vivi-Event-State: done\r\n");
@@ -155,7 +156,7 @@ fn an_absorbed_event_from_a_bare_or_legacy_domain_is_ignored() {
 fn an_absorbed_event_that_arrives_before_its_item_is_applied_when_the_item_arrives() {
     let w = World::new();
     put_absorbed(&w, 2, 1, "done");
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
 
     let pulled = w.bob.pull(&w.bob_client);
 

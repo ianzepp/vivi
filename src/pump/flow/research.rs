@@ -1,7 +1,7 @@
 //! Researcher step handler.
 //!
 //! The research step of the build and research flows hands the researcher the
-//! need thread, plus the want a `for: <want>` line of the need body names. The
+//! need thread, plus the want the need front's `explores` names. The
 //! job is read-only; the researcher answers with its envelope.
 
 use crate::error::VivariumError;
@@ -19,17 +19,28 @@ const SECTION_CAP: usize = 24 * 1024;
 /// Seconds one `vivi` read may take.
 const READ_TIMEOUT: u64 = 60;
 
-/// The want a need body names with a `for:` line: the first such line,
-/// trimmed, without surrounding `<>` or backticks.
+/// The want a need body explores: the need front's `explores`, read through
+/// the one need reader.
 pub(crate) fn for_want(body: &str) -> Option<String> {
-    body.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("for:")?;
-        let want = rest
-            .trim()
-            .trim_matches(|c| matches!(c, '<' | '>' | '`'))
-            .trim();
-        (!want.is_empty()).then(|| want.to_owned())
-    })
+    match crate::letter::read::need_of("", body) {
+        Ok(envelope) => envelope.front.explores,
+        Err(_) => None,
+    }
+}
+
+/// The handle of this mailspace's copy of the want a need explores. A want
+/// with no copy here is logged once for the step and left out of the brief.
+fn own_want(cx: &StartCx<'_>, stored: Option<String>) -> Result<Option<String>, VivariumError> {
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let handle = cx.mail.resolve_want(&stored)?;
+    if handle.is_none() {
+        cx.ctx.log(&format!(
+            "research: want {stored} is not in this mailspace; the brief has no want thread"
+        ));
+    }
+    Ok(handle)
 }
 
 /// Starts the research step as a read-only researcher job.
@@ -44,7 +55,7 @@ impl StepHandler for ResearcherStart {
         })?;
         let need = &cx.run.need;
         let body = cx.mail.task_body(need)?;
-        let want = for_want(&body);
+        let want = own_want(cx, for_want(&body))?;
         let thread = section(
             cx.ctx,
             &format!("need show {} --newest 40", shell_quote(need)),
@@ -75,7 +86,7 @@ fn render(
 ) -> String {
     let mut parts = vec![format!("Research request for need {need}.")];
     if let Some(want) = want {
-        parts.push(format!("for: {want}"));
+        parts.push(format!("explores: {want}"));
     }
     parts.push(format!("NEED BODY:\n{}", body.trim()));
     parts.push(format!("NEED THREAD:\n{thread}"));

@@ -5,10 +5,11 @@ use std::fs;
 
 use super::{ANSWER_REFUSED, apply_pending};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::route::JoinInput;
-use crate::pump::flow::def::{FlowKind, FlowNode, STEP_MARKER};
+use crate::pump::flow::def::{FlowKind, FlowNode};
 use crate::pump::flow::fake_mail::{Call, FakeMail, FakeTask};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -41,11 +42,10 @@ fn rig(state: StepState) -> Rig {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "build1".into(),
-            body: format!("{STEP_MARKER} {need} r1 build1"),
+            body: step_body(&need, 1, "build1", ""),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -53,7 +53,7 @@ fn rig(state: StepState) -> Rig {
         .handle;
     let mut mail = FakeMail::new("pump");
     let sentinel = mail
-        .send_step("pump", "pump", "run", "pump-run-sentinel: x r1", &[])
+        .send_step("pump", "pump", "run", &sentinel_body("x", 1, ""), &[])
         .unwrap();
     mail.tasks.insert(
         step.clone(),
@@ -61,7 +61,7 @@ fn rig(state: StepState) -> Rig {
             from: "pump".into(),
             to: "pump".into(),
             subject: "build1".into(),
-            body: format!("{STEP_MARKER} {need} r1 build1"),
+            body: step_body(&need, 1, "build1", ""),
             depends_on: Vec::new(),
             replies: Vec::new(),
             state: TaskState {
@@ -237,11 +237,10 @@ fn the_run_sentinel_and_an_unindexed_task_are_refused() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "ghost".into(),
-            body: format!("{STEP_MARKER} {} r1 plan", rig.need),
+            body: step_body(&rig.need, 1, "plan", ""),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

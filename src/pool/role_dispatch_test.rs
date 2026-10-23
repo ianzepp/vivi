@@ -1,7 +1,17 @@
 use super::*;
 use chrono::TimeZone;
 
+use crate::letter::work::TaskFront;
 use crate::pool::slot::PoolId;
+
+/// A task letter whose front matter sets `band`.
+fn band_body(band: &str) -> String {
+    let front = TaskFront {
+        band: Some(band.to_string()),
+        ..TaskFront::default()
+    };
+    crate::letter::fixture::task_body_with(&front, "build it")
+}
 
 /// A pool that serves `P1` with the flash model at `xhigh` and `P2` with the
 /// other model at `low`, and offers both models to its harness.
@@ -222,12 +232,12 @@ fn a_read_only_flag_makes_a_hand_role_read_only() {
 }
 
 #[test]
-fn a_body_band_line_beats_the_role_band() {
+fn a_body_band_key_beats_the_role_band() {
     let worker = role("lane-3", Some("hand"), Some("P2-S0"));
     let resolved = resolve(
         &pool(),
         "bridge",
-        &input(Some(&worker), "build it\nband: P1", None, false),
+        &input(Some(&worker), &band_body("P1"), None, false),
     )
     .unwrap();
     assert_eq!(resolved.band, Some(1));
@@ -274,7 +284,7 @@ fn no_band_and_no_model_is_an_error_naming_the_role() {
     .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "configuration error: no model: pass --model, give the task a `band:` line, \
+        "configuration error: no model: pass --model, give the task a `band` key in its front matter, \
          or give role scribe a band (`vivi role set scribe --model P2`)"
     );
 }
@@ -284,14 +294,14 @@ fn no_band_and_no_model_without_a_role_blames_the_role_slot() {
     let err = resolve(&pool(), "bridge", &plain("write it")).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "configuration error: no model: pass --model, give the task a `band:` line, \
+        "configuration error: no model: pass --model, give the task a `band` key in its front matter, \
          or give the role a band (`vivi role set <name> --model P2`)"
     );
 }
 
 #[test]
 fn a_band_the_pool_does_not_serve_is_refused_naming_the_band_and_pool() {
-    let err = resolve(&pool(), "bridge", &plain("build it\nband: P3")).unwrap_err();
+    let err = resolve(&pool(), "bridge", &plain(&band_body("P3"))).unwrap_err();
     let message = err.to_string();
     assert!(message.contains("band P3"), "got: {message}");
     assert!(message.contains("bridge"), "got: {message}");
@@ -705,7 +715,7 @@ fn a_body_band_beats_a_slug_role() {
     let resolved = resolve(
         &pool(),
         "bridge",
-        &input(Some(&worker), "build it\nband: P1", None, false),
+        &input(Some(&worker), &band_body("P1"), None, false),
     )
     .unwrap();
     assert_eq!(resolved.model, "zai/glm-5.3-flash");

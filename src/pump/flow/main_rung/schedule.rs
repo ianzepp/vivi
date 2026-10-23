@@ -7,6 +7,8 @@
 
 use super::{ENV_FAILED, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::error::VivariumError;
+use crate::letter::render;
+use crate::letter::work::TaskFront;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
@@ -125,11 +127,16 @@ fn task_for<M: FlowMail>(
         return Ok(task);
     }
     let pump = &ctx.cfg.reply_from;
+    let body = render(
+        &TaskFront::default(),
+        &format!("pump main rung on {target}"),
+    )
+    .map_err(|e| VivariumError::Message(e.to_string()))?;
     let task = mail.send_step(
         pump,
         pump,
         &format!("pump: main rung on {target}"),
-        &format!("pump-main-rung: {target}"),
+        &body,
         &[],
     )?;
     store.set_main_state(&key(TASK, target), &task)?;

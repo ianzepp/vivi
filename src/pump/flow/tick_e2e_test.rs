@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 use super::tick_with;
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -235,11 +236,10 @@ fn send_need_from(p: &Project, from: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: it works".into(),
+            body: need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

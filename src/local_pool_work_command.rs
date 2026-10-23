@@ -669,7 +669,7 @@ fn abandoned_suffix(made: &DispatchRecord) -> String {
     }
 }
 
-/// What a read-only dispatch tells the caller: that a `branch:` body line is
+/// What a read-only dispatch tells the caller: that a `branch` front-matter key is
 /// ignored (human output only), and what the provider cannot promise (always,
 /// on standard error). A read-only mode a role kind forced gets the same
 /// notes as one the flag forced.

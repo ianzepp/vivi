@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use crate::b64;
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{StoredMessageView, is_traveling_id, sha256_hex};
 use crate::sync::link;
@@ -548,11 +549,10 @@ impl Checkout {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: subject.into(),
-                body: format!("{subject} body\n"),
+                body: need_body(&["done"], &format!("{subject} body\n")),
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
         result
@@ -575,7 +575,6 @@ impl Checkout {
                 role: "inbox".into(),
                 kind: Some("mail".into()),
                 reply_to: Some(parent.into()),
-                depends_on: Vec::new(),
             })
             .unwrap();
         result

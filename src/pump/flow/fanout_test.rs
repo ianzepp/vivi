@@ -7,10 +7,12 @@ use super::{
     slice_node, target_of, wait_on,
 };
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
+use crate::letter::read::{step_of, task_of};
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::{Slice, SlicerAnswer, SlicerMode};
-use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -49,18 +51,12 @@ fn rig() -> Result<Rig, VivariumError> {
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
-    let sentinel = mail.send_step(
-        "pump",
-        "pump",
-        "run",
-        &format!("{SENTINEL_MARKER} {NEED} r1"),
-        &[],
-    )?;
+    let sentinel = mail.send_step("pump", "pump", "run", &sentinel_body(NEED, 1, ""), &[])?;
     let slicer_task = mail.send_step(
         "pump",
         "pump",
         "slice",
-        &format!("{STEP_MARKER} {NEED} r1 slice"),
+        &step_body(NEED, 1, "slice", ""),
         &[],
     )?;
     mail.bind(NEED, &[sentinel.clone(), slicer_task.clone()])?;
@@ -245,8 +241,15 @@ fn expand_binds_with_the_sentinel_and_indexes_rows_and_scope() -> R {
     assert_eq!(r.store.slice_scope(&a)?, Some(vec!["src/A.rs".to_string()]));
     assert_eq!(r.store.slice_scope(&b)?, Some(vec!["src/B.rs".to_string()]));
     let body = &r.mail.tasks[&a].body;
-    assert!(body.starts_with(&format!("{STEP_MARKER} {NEED} r1 slice:A")));
-    assert_eq!(target_of(body), Some("vivi"));
+    let step = step_of(body).expect("step");
+    assert_eq!((step.need.as_str(), step.run), (NEED, 1));
+    assert_eq!(step.node.as_deref(), Some("slice:A"));
+    assert!(!step.sentinel);
+    assert_eq!(
+        task_of("", body).expect("task").front.target.as_deref(),
+        Some("vivi")
+    );
+    assert_eq!(target_of(body), Some("vivi".to_string()));
     assert!(body.contains("brief A"));
     Ok(())
 }
@@ -507,7 +510,13 @@ fn expand_adopts_a_task_sent_but_never_recorded() -> R {
         &r.ctx.cfg.reply_from,
         &r.ctx.cfg.reply_from,
         &format!("{} ({NEED} r1)", a.title),
-        &format!("{STEP_MARKER} {NEED} r1 slice:A\ntarget: vivi\n\nx"),
+        &{
+            let front = crate::letter::work::TaskFront {
+                target: Some("vivi".into()),
+                ..crate::letter::work::TaskFront::step(NEED, 1, "slice:A")
+            };
+            crate::letter::fixture::task_body_with(&front, "x")
+        },
         &[],
     )?;
     let tasks = r.expand(&[a])?;
@@ -636,4 +645,15 @@ fn expanded_rows_and_links_carry_the_run_of_the_run_row() -> R {
         assert_eq!(row.run, r.run.run);
     }
     Ok(())
+}
+
+#[test]
+fn target_of_reads_the_front_matter_target() {
+    let front = TaskFront {
+        target: Some("vivi".into()),
+        ..TaskFront::step("n1", 1, "slice:A")
+    };
+    let body = crate::letter::fixture::task_body_with(&front, "x");
+    assert_eq!(target_of(&body), Some("vivi".to_string()));
+    assert_eq!(target_of(&crate::letter::fixture::task_body("x")), None);
 }

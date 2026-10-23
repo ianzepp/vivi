@@ -116,3 +116,33 @@ fn parse_letter_keeps_table_lines_in_prose_and_parse_refuses_them() {
     let letter = parse_letter::<Probe>(text).unwrap();
     assert_eq!(letter.body, "[[check]]\nx");
 }
+
+#[derive(Serialize)]
+struct Text {
+    value: String,
+}
+
+#[test]
+fn render_refuses_a_value_with_a_fence_line() {
+    let err = render(
+        &Text {
+            value: "a\n+++\nb".into(),
+        },
+        "p",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, LetterError::Invalid(m) if m.contains("`+++` line")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn render_allows_a_fence_inside_a_one_line_value() {
+    let probe = Probe {
+        answer: "a +++ b".into(),
+        note: None,
+    };
+    let text = render(&probe, "p").unwrap();
+    assert_eq!(parse::<Probe>(&text).unwrap().front, probe);
+}

@@ -1,5 +1,6 @@
 //! Letters a pull files wake `watch` exactly as locally delivered ones do.
 
+use crate::letter::fixture::task_body;
 use crate::mailspace::{Mailspace, MailspaceWatchRequest, SendRequest, run_watch};
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
 use crate::sync::fetch::fetch_handles;
@@ -152,11 +153,10 @@ fn an_event_applied_by_pull_wakes_the_assignees_watcher() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "ship it".into(),
-            body: "done_when: it works\n".into(),
+            body: task_body("it works\n"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let task = sent

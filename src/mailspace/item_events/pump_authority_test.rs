@@ -28,11 +28,10 @@ fn need_of(mailspace: &Mailspace) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "run by the pump".into(),
-            body: "done_when: ok\n".into(),
+            body: crate::letter::fixture::need_body(&["ok"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

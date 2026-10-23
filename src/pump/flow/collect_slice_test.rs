@@ -7,6 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{BuiltHook, register_defaults, runner_env_failure};
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Hand;
 use crate::pump::flow::advance::start::start;
@@ -113,7 +115,13 @@ fn built_slice(rig: &mut Rig) -> Result<StepRow, VivariumError> {
         "mind",
         "mind",
         "slice a",
-        &format!("pump-step: {NEED} r1 slice:a\ntarget: default\n\ntitle a\n\nbrief a"),
+        &task_body_with(
+            &TaskFront {
+                target: Some("default".into()),
+                ..TaskFront::step(NEED, 1, "slice:a")
+            },
+            "title a\n\nbrief a",
+        ),
         &[],
     )?;
     let slice = StepRow {

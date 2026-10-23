@@ -10,11 +10,24 @@ fn space() -> (tempfile::TempDir, Mailspace) {
 
 /// File a letter under a raw account as a pull does, minting no node.
 fn hold(mailspace: &Mailspace, account: &str, role: &str, kind: &str, subject: &str) -> String {
+    let work = matches!(kind, "need" | "want" | "task");
     let bytes = format!(
         "From: mind@{domain}\r\nTo: {account}@{domain}\r\nSubject: {subject}\r\n\
          Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
-         X-Vivi-Kind: {kind}\r\n\r\ndone_when: {subject}\r\n",
-        domain = mailspace.address_domain()
+         X-Vivi-Kind: {kind}\r\n{format}\r\n{body}",
+        domain = mailspace.address_domain(),
+        format = if work { "X-Vivi-Format: 1\r\n" } else { "" },
+        body = if kind == "task" {
+            crate::letter::fixture::task_body_with(
+                &crate::letter::work::TaskFront {
+                    done_when: vec![subject.into()],
+                    ..Default::default()
+                },
+                "",
+            )
+        } else {
+            crate::letter::fixture::body_for(kind, subject)
+        },
     );
     let storage = mailspace.storage().unwrap();
     let stored = storage

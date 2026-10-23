@@ -13,7 +13,8 @@ const CONFIG_FIX: &str =
 const STORE_FIX: &str = "run any vivi command once to create it";
 const NEWER_FIX: &str = "upgrade the vivi binary (vivi update)";
 const OLDER_FIX: &str = "run one write command (e.g. vivi board) to migrate";
-const DONE_WHEN_FIX: &str = "add a done_when: clause to each need body (vivi need show <handle>)";
+const DONE_WHEN_FIX: &str =
+    "give each need a done_when entry and a valid letter (vivi need show <handle>)";
 
 /// Report project config, storage, unabsorbed inbox mail, and open needs with
 /// no `done_when:` clause. No check creates or migrates project data.
@@ -158,30 +159,39 @@ fn done_when_finding(project: &Project, storage: &crate::storage::Storage) -> Fi
             );
         }
     };
-    let missing: Vec<&str> = manifest
-        .exceptions
-        .iter()
-        .filter(|exception| exception.reason == "no_done_when")
-        .map(|exception| exception.item.as_str())
-        .collect();
-    if missing.is_empty() {
+    let items_for = |reason: &str| -> Vec<&str> {
+        manifest
+            .exceptions
+            .iter()
+            .filter(|exception| exception.reason == reason)
+            .map(|exception| exception.item.as_str())
+            .collect()
+    };
+    let missing = items_for("no_done_when");
+    let invalid = items_for("letter_invalid");
+    if missing.is_empty() && invalid.is_empty() {
         return Finding::ok(SECTION, "done_when", "every ready item declares done_when");
     }
-    Finding::warn(
-        SECTION,
-        "done_when",
-        &format!(
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!(
             "{} ready item(s) declare no done_when: {}",
             missing.len(),
-            missing
-                .iter()
-                .take(5)
-                .copied()
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        DONE_WHEN_FIX,
-    )
+            first_items(&missing)
+        ));
+    }
+    if !invalid.is_empty() {
+        parts.push(format!(
+            "{} ready item(s) are not valid letters (letter_invalid): {}",
+            invalid.len(),
+            first_items(&invalid)
+        ));
+    }
+    Finding::warn(SECTION, "done_when", &parts.join("; "), DONE_WHEN_FIX)
+}
+
+fn first_items(items: &[&str]) -> String {
+    items.iter().take(5).copied().collect::<Vec<_>>().join(", ")
 }
 
 fn local_accounts(project: &Project) -> HashSet<String> {

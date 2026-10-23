@@ -10,12 +10,14 @@ use super::{
     canonical_local_role,
 };
 use crate::error::VivariumError;
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Letter};
 use crate::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 use crate::storage::{
     MailspaceEventInput, MailspaceMoveWithReply, MessageIngestRequest, Storage, StoredMessageView,
 };
 use crate::sync::{MAX_LETTER_BYTES, SyncSettings};
 
+mod compose;
 mod ingest;
 mod retention;
 
@@ -52,7 +54,7 @@ impl Mailspace {
     #[allow(clippy::needless_pass_by_value)]
     pub(super) fn send_with_extras(
         &self,
-        request: SendRequest,
+        mut request: SendRequest,
         extras: &[(String, String)],
     ) -> Result<DeliveryResult, VivariumError> {
         if !request.bcc.is_empty() {
@@ -60,9 +62,17 @@ impl Mailspace {
                 "Bcc is not supported for local mailspace delivery in v1".into(),
             ));
         }
+        let work_letter = compose::work_letter(self, request.kind.as_deref(), &request.body)?;
+        let depends_on = work_letter
+            .as_ref()
+            .map(|w| w.depends_on.clone())
+            .unwrap_or_default();
+        if let Some(work) = &work_letter {
+            request.body.clone_from(&work.body);
+        }
         let work_kind = work_send_kind(&request.role, request.kind.as_deref());
-        if work_kind.is_some() && !request.depends_on.is_empty() {
-            self.backlog_validate_deps(&request.depends_on)?;
+        if work_kind.is_some() && !depends_on.is_empty() {
+            self.backlog_validate_deps(&depends_on)?;
         }
         let from = self.resolve_identity(&request.from)?;
         let (recipients, remote) = self.split_recipients(&request.to, &request.cc)?;
@@ -82,6 +92,7 @@ impl Mailspace {
             &request,
             reply_parent.as_ref().map(|(_, data)| data.as_slice()),
             extras,
+            work_letter.is_some(),
         )?;
         self.check_letter_size(eml.len())?;
         if work_kind.is_some() {
@@ -111,7 +122,15 @@ impl Mailspace {
         let delivered = delivered_with_handles(&storage, delivered_ids)?;
         let sent_handle = storage.display_handle(&sent.message_id)?;
         if let Some(kind) = work_kind {
-            self.attach_sent_work(kind, &request, &delivered, &sent_handle)?;
+            let letter = work_letter.as_ref().map(|w| &w.letter);
+            self.attach_sent_work(
+                kind,
+                &request,
+                &depends_on,
+                &delivered,
+                &sent_handle,
+                letter,
+            )?;
         }
         Ok(DeliveryResult {
             delivered,
@@ -126,8 +145,10 @@ impl Mailspace {
         &self,
         kind: &str,
         request: &SendRequest,
+        depends_on: &[String],
         delivered: &[DeliveredMessage],
         sent_handle: &str,
+        letter: Option<&Letter>,
     ) -> Result<(), VivariumError> {
         let handles: Vec<&str> = if delivered.is_empty() {
             vec![sent_handle]
@@ -135,7 +156,12 @@ impl Mailspace {
             delivered.iter().map(|m| m.handle.as_str()).collect()
         };
         for handle in handles {
-            self.backlog_attach(kind, handle, &request.subject, &request.depends_on)?;
+            self.backlog_attach(kind, handle, &request.subject, depends_on)?;
+            if let Some(letter) = letter {
+                let storage = self.storage()?;
+                let row = storage.resolve_message_token(handle)?;
+                super::serves::index_front(&storage, &row, letter)?;
+            }
         }
         Ok(())
     }
@@ -198,6 +224,7 @@ impl Mailspace {
         request: &SendRequest,
         parent: Option<&[u8]>,
         extras: &[(String, String)],
+        work_letter: bool,
     ) -> Result<String, VivariumError> {
         let to = self.addresses_for(&request.to)?;
         let cc = self.addresses_for(&request.cc)?;
@@ -213,8 +240,8 @@ impl Mailspace {
         if let Some(kind) = &request.kind {
             eml = add_header(&eml, "X-Vivi-Kind", kind)?;
         }
-        for dependency in &request.depends_on {
-            eml = add_header(&eml, "X-Vivi-Depends-On", dependency)?;
+        if work_letter {
+            eml = add_header(&eml, FORMAT_HEADER, FORMAT_VERSION)?;
         }
         for (name, value) in extras {
             eml = add_header(&eml, name, value)?;
@@ -539,7 +566,7 @@ impl Mailspace {
 
     /// Extract the dependency handles recorded on a task message.
     ///
-    /// Dependencies are stored as repeated `X-Vivi-Depends-On` headers, then
+    /// Dependencies are stored in the task's `depends_on` front matter, then
     /// changed by any `dependency-added` / `dependency-removed` letters on the
     /// task: the newest letter per dependency wins over the header.
     ///
@@ -548,21 +575,7 @@ impl Mailspace {
     pub fn task_depends_on(&self, message_id: &str) -> Result<Vec<String>, VivariumError> {
         let storage = self.storage()?;
         let data = storage.read_message(message_id)?;
-        let parsed = mail_parser::MessageParser::default()
-            .parse(&data)
-            .ok_or_else(|| VivariumError::Parse("failed to parse task message".into()))?;
-        let header: Vec<String> = parsed
-            .headers()
-            .iter()
-            .filter(|h| h.name().eq_ignore_ascii_case("X-Vivi-Depends-On"))
-            .filter_map(|h| {
-                if let mail_parser::HeaderValue::Text(text) = h.value() {
-                    Some(text.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let header = super::dependencies::depends_on_refs(&data);
         self.effective_dependency_refs(&storage, message_id, &header)
     }
 

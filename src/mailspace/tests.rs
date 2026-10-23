@@ -35,7 +35,6 @@ fn local_delivery_rejects_unknown_identity() {
             role: "inbox".into(),
             kind: None,
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap_err();
 
@@ -72,7 +71,6 @@ fn absorb_mail_marks_message_read() {
             role: "inbox".into(),
             kind: None,
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -100,11 +98,10 @@ fn absorb_rejects_mutation_and_is_idempotent() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "task".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::body_for("task", "do it"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -158,11 +155,10 @@ fn set_archive_requires_git_repo_and_absorb_writes_once() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "archive me".into(),
-            body: "seal this task".into(),
+            body: crate::letter::fixture::body_for("task", "seal this task"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -204,11 +200,10 @@ fn export_archive_writes_prior_absorbs_and_is_idempotent() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "later".into(),
-            body: "already sealed".into(),
+            body: crate::letter::fixture::body_for("task", "already sealed"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -256,11 +251,10 @@ fn export_archive_includes_done_work_items_but_not_done_mail() {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: subject.into(),
-                body: body.into(),
+                body: crate::letter::fixture::body_for(kind.unwrap_or(""), body),
                 role: role.into(),
                 kind: kind.map(str::to_owned),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap()
             .delivered[0]
@@ -324,11 +318,10 @@ fn task_move_keeps_handle_stable() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "task".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::body_for("task", "do it"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -358,11 +351,10 @@ fn task_done_records_verdict_and_tips() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "task".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::body_for("task", "do it"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -401,11 +393,10 @@ fn lifecycle_note_on_self_addressed_item_leaves_no_inbox_twin() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "parked idea".into(),
-            body: "someday".into(),
+            body: crate::letter::fixture::body_for("want", "someday"),
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -448,11 +439,10 @@ fn lifecycle_note_delivers_receipt_to_parent_sender() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "task".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::body_for("task", "do it"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -481,11 +471,10 @@ fn rename_identity_keeps_historical_mail_and_old_alias_working() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "task".into(),
-            body: "do it".into(),
+            body: crate::letter::fixture::body_for("task", "do it"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -626,7 +615,6 @@ fn fixture_with_noise(noise: usize) -> (tempfile::TempDir, Mailspace, String) {
                 role: "inbox".into(),
                 kind: None,
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
     }
@@ -637,11 +625,10 @@ fn fixture_with_noise(noise: usize) -> (tempfile::TempDir, Mailspace, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "target need".into(),
-            body: "need body to show".into(),
+            body: crate::letter::fixture::body_for("need", "need body to show"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     (tmp, mailspace, sent.delivered[0].handle.clone())
@@ -890,7 +877,6 @@ fn schedule_report_skips_outbound_query_without_cadence() {
             role: "inbox".into(),
             kind: None,
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let report = mailspace.schedule_report("hand").unwrap();
@@ -935,11 +921,10 @@ fn list_kind_all_keeps_a_need_reply_linked_to_a_want() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: String::from("investigate this want"),
-            body: String::from("review the issue"),
+            body: crate::letter::fixture::body_for("want", "review the issue"),
             role: String::from("wants"),
             kind: Some(String::from("want")),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered[0]
@@ -952,11 +937,16 @@ fn list_kind_all_keeps_a_need_reply_linked_to_a_want() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: String::from("triage want"),
-            body: format!("investigate\nfor: {want}\ntriage and report"),
+            body: crate::letter::fixture::need_body_with(
+                &crate::letter::work::NeedFront {
+                    explores: Some(want.clone()),
+                    ..crate::letter::work::NeedFront::new(vec![String::from("done")])
+                },
+                "investigate\ntriage and report",
+            ),
             role: String::from("needs"),
             kind: Some(String::from("need")),
             reply_to: Some(want),
-            depends_on: Vec::new(),
         })
         .unwrap();
 
@@ -986,11 +976,10 @@ fn thread_outline_lists_the_anchor_then_every_reply() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "settle the frob design".into(),
-            body: "root body".into(),
+            body: crate::letter::fixture::body_for("want", "root body"),
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let root = sent.delivered[0].handle.clone();
@@ -1007,7 +996,6 @@ fn thread_outline_lists_the_anchor_then_every_reply() {
                 role: "inbox".into(),
                 kind: None,
                 reply_to: Some(root.clone()),
-                depends_on: Vec::new(),
             })
             .unwrap();
     }
@@ -1038,11 +1026,10 @@ fn thread_outline_stays_complete_where_the_capped_thread_stops() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "long design".into(),
-            body: "root body".into(),
+            body: crate::letter::fixture::body_for("want", "root body"),
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let root = sent.delivered[0].handle.clone();
@@ -1058,7 +1045,6 @@ fn thread_outline_stays_complete_where_the_capped_thread_stops() {
                 role: "inbox".into(),
                 kind: None,
                 reply_to: Some(root.clone()),
-                depends_on: Vec::new(),
             })
             .unwrap();
     }
@@ -1083,11 +1069,10 @@ fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: subject.into(),
-                body: "body".into(),
+                body: crate::letter::fixture::body_for(kind, "body"),
                 role: role.into(),
                 kind: Some(kind.into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap()
     };
@@ -1123,9 +1108,10 @@ fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
     };
     let parent = crate::message::normalize_message_id(&need_rfc).unwrap();
     assert!(
-        task_bytes.contains(&format!("X-Vivi-Parent: <{parent}>")),
+        task_bytes.contains(&format!("parent = \"<{parent}>\"")),
         "{task_bytes}"
     );
+    assert!(!task_bytes.contains("X-Vivi-Parent"), "{task_bytes}");
     assert_eq!(source_kind.as_deref(), Some("need"));
 
     let show = mailspace.graph_show("backlog").unwrap();

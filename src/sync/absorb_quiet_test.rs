@@ -3,11 +3,10 @@
 //! the state the author's absorb letter names for its own `sent` row of a
 //! closed item, and the one seal two concurrent absorbs converge on.
 
+use crate::letter::fixture::{need_body, task_body};
 use crate::mailspace::{AbsorbConfig, Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
-
-const BODY: &str = "done_when: it works\n";
 
 /// The value of a letter's header, when it has one.
 fn header_of(bytes: &[u8], name: &str) -> Option<String> {
@@ -76,9 +75,9 @@ fn need_done_age(age: chrono::Duration) -> (World, String) {
         "need",
         &w.bob.address("lead"),
         "quiet",
-        "done_when: x\n",
+        &need_body(&["x"], ""),
         crate::sync::fake_server::LETTER_DATE,
-        "",
+        "X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n",
     );
     w.bob.pull(&w.bob_client);
     let at = (chrono::Utc::now() - age).to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
@@ -151,11 +150,10 @@ fn the_authors_absorb_of_its_sent_row_names_done_and_members_seal_done() {
             cc: vec![a.address("mind")],
             bcc: Vec::new(),
             subject: "folded".into(),
-            body: BODY.into(),
+            body: task_body("it works\n"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .sent;
@@ -212,11 +210,10 @@ fn converged_row(push_first: &str) -> (String, bool) {
             cc: vec![c.address("hand")],
             bcc: Vec::new(),
             subject: "converge".into(),
-            body: BODY.into(),
+            body: task_body("it works\n"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .sent;

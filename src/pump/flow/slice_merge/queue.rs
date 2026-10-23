@@ -143,8 +143,13 @@ fn already_merged<M: FlowMail>(
         return Ok(None);
     };
     let body = mail.task_body(&row.task)?;
-    let target = fanout::target_of(&body)
-        .ok_or_else(|| VivariumError::Parse(format!("slice task {} names no target", row.task)))?;
+    let target = fanout::target_of(&body).ok_or_else(|| {
+        VivariumError::Parse(format!(
+            "slice task {} names no target in its front matter",
+            row.task
+        ))
+    })?;
+    let target = target.as_str();
     let remote_ref = format!("refs/heads/{}", need_branch::branch(&run.need));
     verify::ref_contains(ctx, target, &remote_ref, &sha).map_err(VivariumError::Other)
 }

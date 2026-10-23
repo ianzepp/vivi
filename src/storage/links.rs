@@ -223,6 +223,27 @@ impl Storage {
         .collect()
     }
 
+    /// When this content was first stored, at sub-second precision. Orders
+    /// messages whose `Date` header falls in the same second; `None` when no
+    /// live message carries the content.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn discovered_at_by_content_id(
+        &self,
+        content_id: &str,
+    ) -> Result<Option<String>, VivariumError> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT MIN(discovered_at) FROM messages
+                 WHERE content_id = ?1 AND deleted_at IS NULL",
+                params![content_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to read content store time: {e}")))
+    }
+
     /// Look up a message by content hash.
     ///
     /// # Errors

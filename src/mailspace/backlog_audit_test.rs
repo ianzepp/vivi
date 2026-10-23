@@ -18,11 +18,10 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str) -> St
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: done".into(),
+            body: crate::letter::fixture::body_for(kind, ""),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -34,9 +33,10 @@ fn deliver_untracked_task(mailspace: &Mailspace, subject: &str) {
     // The letter is ingested straight into the store, never running a route
     // that attaches a node — the shape an older vivi binary leaves behind.
     let eml = format!(
-        "From: {}\r\nTo: {}\r\nSubject: {subject}\r\nX-Vivi-Kind: task\r\n\r\nplain body\r\n",
+        "From: {}\r\nTo: {}\r\nSubject: {subject}\r\nX-Vivi-Kind: task\r\nX-Vivi-Format: 1\r\n\r\n{}",
         mailspace.address_for("ceo"),
         mailspace.address_for("cto"),
+        crate::letter::fixture::task_body("plain body"),
     );
     mailspace
         .storage()

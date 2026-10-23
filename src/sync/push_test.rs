@@ -1,3 +1,4 @@
+use crate::letter::fixture::body_for;
 use crate::storage::{MessageIngestRequest, RemoteBindingInput};
 use crate::sync::MAX_LETTER_BYTES;
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
@@ -222,11 +223,10 @@ fn tasks_and_wants_travel_with_their_kind() {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: format!("a {kind}"),
-                body: "b\n".into(),
+                body: body_for(kind, "b\n"),
                 role: role.into(),
                 kind: Some(kind.into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
     }

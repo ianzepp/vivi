@@ -1,6 +1,18 @@
 use super::*;
 use crate::mailspace::SendRequest;
 
+/// The task letter the tests send: pool lines in the front matter, prose "do it".
+fn brief_body() -> String {
+    crate::letter::fixture::task_body_with(
+        &crate::letter::work::TaskFront {
+            from: Some("main".into()),
+            branch: Some("factory/x".into()),
+            ..Default::default()
+        },
+        "do it",
+    )
+}
+
 fn space_with_task(from: &str, to: &str) -> (tempfile::TempDir, Mailspace, String) {
     let tmp = tempfile::tempdir().unwrap();
     let mut space = Mailspace::init(Some(tmp.path())).unwrap();
@@ -13,11 +25,10 @@ fn space_with_task(from: &str, to: &str) -> (tempfile::TempDir, Mailspace, Strin
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "Fix the edge".into(),
-            body: "do it\nfrom: main\nbranch: factory/x\n".into(),
+            body: brief_body(),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -30,7 +41,10 @@ fn the_task_body_is_the_brief() {
     let task = space.pool_task(&handle).unwrap();
     assert_eq!(task.handle, handle);
     assert_eq!(task.subject, "Fix the edge");
-    assert!(task.body.contains("branch: factory/x"));
+    assert!(task.body.contains("do it"));
+    let front = crate::pool::job::task_front(&task.body);
+    assert_eq!(front.branch.as_deref(), Some("factory/x"));
+    assert_eq!(front.from.as_deref(), Some("main"));
 }
 
 #[test]
@@ -110,7 +124,6 @@ fn reply_on_task(space: &Mailspace, handle: &str, body: &str) {
             role: "tasks".into(),
             kind: None,
             reply_to: Some(handle.into()),
-            depends_on: Vec::new(),
         })
         .unwrap();
 }
@@ -142,7 +155,7 @@ fn attempt_replies_are_appended_in_order() {
     let heading = body.find("## Earlier attempts").expect("heading");
     let first = body.find("first body").expect("first");
     let second = body.find("second body").expect("second");
-    assert!(body.starts_with("do it"), "{body}");
+    assert!(body.starts_with(&brief_body()), "{body}");
     assert!(heading < first && first < second, "{body}");
 }
 
@@ -192,8 +205,10 @@ fn only_the_newest_brief_is_the_body_with_attempts_after_it() {
         ),
     );
     let body = space.pool_task(&handle).unwrap().body;
-    assert!(body.starts_with("pump-brief: t="), "{body}");
-    assert!(body.lines().next().unwrap().ends_with("job-b"), "{body}");
+    assert!(!body.contains("pump-brief:"), "{body}");
+    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
+    assert!(envelope.body.starts_with("WRITE SCOPE"), "{body}");
     assert!(!body.contains("OLD BRIEF"), "{body}");
     assert!(!body.contains("do it"), "task body not repeated: {body}");
     let heading = body.find("## Earlier attempts").expect("heading");
@@ -206,7 +221,7 @@ fn a_task_with_no_brief_reply_keeps_its_body() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
     reply_on_task(&space, &handle, "not a pump-brief: reply");
     let body = space.pool_task(&handle).unwrap().body;
-    assert!(body.starts_with("do it"), "{body}");
+    assert!(body.starts_with(&brief_body()), "{body}");
 }
 
 #[test]
@@ -270,8 +285,33 @@ fn the_shared_markers_read_back_as_attempt_and_brief() {
         &format!("{}\nATTEMPT BODY", marked_line(ATTEMPT_MARKER, "first")),
     );
     let body = space.pool_task(&handle).unwrap().body;
-    assert!(body.starts_with(BRIEF_MARKER), "{body}");
+    assert!(!body.contains(BRIEF_MARKER), "{body}");
     assert!(body.contains("BRIEF BODY"), "{body}");
     assert!(body.contains("## Earlier attempts"), "{body}");
     assert!(body.contains("ATTEMPT BODY"), "{body}");
+}
+
+#[test]
+fn a_brief_becomes_the_prose_of_the_task_letter() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nBRIEF BODY", marked_line(BRIEF_MARKER, "job-a")),
+    );
+    let body = space.pool_task(&handle).unwrap().body;
+    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    assert_eq!(envelope.front.from.as_deref(), Some("main"));
+    assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
+    assert_eq!(envelope.body.trim(), "BRIEF BODY");
+    assert!(!body.contains("do it"), "{body}");
+}
+
+#[test]
+fn a_task_without_a_brief_keeps_its_body() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    let body = space.pool_task(&handle).unwrap().body;
+    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
+    assert_eq!(envelope.body.trim(), "do it");
 }

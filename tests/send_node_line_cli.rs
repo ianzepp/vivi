@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-const BODY: &str = "done_when: it works";
+const BODY: &str = "it works";
 
 fn vivi<I, S>(args: I) -> Output
 where
@@ -95,6 +95,8 @@ fn task_send_prints_the_node_handle_after_the_old_lines() {
             "hand",
             "--subject",
             "Fix the thing",
+            "--done-when",
+            BODY,
             "--body",
             BODY,
         ],
@@ -127,7 +129,7 @@ fn task_send_prints_the_node_handle_after_the_old_lines() {
 fn need_and_want_send_print_the_node_line_too() {
     let tmp = project();
     let p = tmp.path();
-    for kind in ["need", "want"] {
+    for (kind, flag) in [("need", "--done-when"), ("want", "--question")] {
         let stdout = ok(
             p,
             &[
@@ -139,6 +141,8 @@ fn need_and_want_send_print_the_node_line_too() {
                 "hand",
                 "--subject",
                 format!("{kind} item").as_str(),
+                flag,
+                BODY,
                 "--body",
                 BODY,
             ],
@@ -172,6 +176,8 @@ fn multi_recipient_send_prints_one_node_line_per_delivered_copy() {
             "mind",
             "--subject",
             "Two holders",
+            "--done-when",
+            BODY,
             "--body",
             BODY,
         ],
@@ -212,6 +218,8 @@ fn task_from_prints_the_node_line_for_the_lowered_task() {
             "mind",
             "--subject",
             "Root want",
+            "--question",
+            "what to do",
             "--body",
             "a want body",
         ],
@@ -260,6 +268,8 @@ fn remote_only_send_holds_the_node_on_the_sent_copy() {
             "hand@3f9a1c7e.local",
             "--subject",
             "Away task",
+            "--done-when",
+            BODY,
             "--body",
             BODY,
         ],

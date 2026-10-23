@@ -1,4 +1,5 @@
 use super::*;
+use crate::letter::fixture::{body_for, body_with_deps};
 use crate::mailspace::{GraphNodeView, RoleUpdate, SendRequest};
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
@@ -27,6 +28,7 @@ fn send_item(
     subject: &str,
     depends_on: &[&String],
 ) -> (String, String) {
+    let deps: Vec<String> = depends_on.iter().map(|h| (*h).clone()).collect();
     let result = mailspace
         .send(SendRequest {
             from: "ceo".into(),
@@ -34,11 +36,10 @@ fn send_item(
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "body".into(),
+            body: body_with_deps(kind, "body", &deps),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: depends_on.iter().map(|h| (*h).clone()).collect(),
         })
         .unwrap();
     (result.sent, result.delivered[0].handle.clone())
@@ -246,11 +247,10 @@ fn a_mind_that_did_not_author_the_item_may_change_it() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "release".into(),
-            body: "body".into(),
+            body: body_for("need", "body"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let held = result.delivered[0].handle.clone();

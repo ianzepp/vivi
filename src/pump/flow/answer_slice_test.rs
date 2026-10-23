@@ -6,10 +6,11 @@ use std::fs;
 
 use super::{ANSWER_REFUSED, ANSWER_RETRYING, apply_pending};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::route::JoinInput;
-use crate::pump::flow::def::{FlowKind, FlowNode, STEP_MARKER};
+use crate::pump::flow::def::{FlowKind, FlowNode};
 use crate::pump::flow::fake_mail::{Call, FakeMail, FakeTask};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -37,7 +38,7 @@ fn rig() -> Rig {
     project.mailspace.pump_send(None, &need, None).unwrap();
     let mut mail = FakeMail::new("pump");
     let sentinel = mail
-        .send_step("pump", "pump", "run", "pump-run-sentinel: x r1", &[])
+        .send_step("pump", "pump", "run", &sentinel_body("x", 1, ""), &[])
         .unwrap();
     store
         .insert_run(&RunRow {
@@ -87,7 +88,7 @@ fn step_task(
     need: &str,
     node: &str,
 ) -> String {
-    let body = format!("{STEP_MARKER} {need} r1 {node}");
+    let body = step_body(&need, 1, node, "");
     let task = project
         .mailspace
         .send(SendRequest {
@@ -100,7 +101,6 @@ fn step_task(
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

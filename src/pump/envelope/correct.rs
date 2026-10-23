@@ -4,7 +4,6 @@
 use super::EnvelopeError;
 use super::roles::RoleKind;
 use crate::error::VivariumError;
-use crate::pump::flow::def::STEP_MARKER;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
@@ -49,8 +48,9 @@ fn split_id(job_id: &str) -> (&str, u32) {
 
 /// The correction job number `n` for the broken output of `original`.
 ///
-/// `need` and the step's run and node name the step in the body's first line,
-/// so `vivi step` reports the helper as pump-owned.
+/// `need` and the step's run and node are named in the body's first prose
+/// line. The body is a pool job body, not a task letter, so it carries no
+/// `[step]` table; the job's own front matter (W3-B3) is where one can go.
 #[must_use]
 pub fn spec(
     need: &str,
@@ -63,7 +63,7 @@ pub fn spec(
 ) -> JobSpec {
     let id = format!("{}-c{n}", base_id(&original.id));
     let body = format!(
-        "{STEP_MARKER} {need} r{} {}\n\n\
+        "Correction for pump step {need} r{} {}.\n\n\
          Your last reply did not parse as a reply envelope.\n\
          Parse error: {error}\n\n\
          Rewrite only the envelope; do not redo the work; keep every fact. \

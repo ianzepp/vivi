@@ -2,6 +2,7 @@
 //! addressed to a role at the other's prefix, arrives with the same bytes,
 //! id, handle, and hash, and the reply finds its way back.
 
+use crate::letter::fixture::need_body;
 use crate::mailspace::SendRequest;
 use crate::storage::sha256_hex;
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
@@ -244,11 +245,10 @@ fn a_send_to_a_local_role_and_a_remote_one_does_both() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "both".into(),
-            body: "to both\n".into(),
+            body: need_body(&["done"], "to both\n"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
 

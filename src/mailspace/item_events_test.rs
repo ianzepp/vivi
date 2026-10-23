@@ -20,11 +20,10 @@ fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: format!("a {kind}"),
-            body: "done_when: ok\n".into(),
+            body: crate::letter::fixture::body_for(kind, ""),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let delivered = result
@@ -353,11 +352,10 @@ fn the_event_letter_goes_to_the_items_recipients_minus_the_sender() {
             cc: vec!["auditor".into(), "hand@3f9a1c7e.local".into()],
             bcc: Vec::new(),
             subject: "wide".into(),
-            body: "done_when: ok\n".into(),
+            body: crate::letter::fixture::need_body(&["ok"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
 

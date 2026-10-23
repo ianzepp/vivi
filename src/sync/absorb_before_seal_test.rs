@@ -13,10 +13,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
+use crate::letter::fixture::body_for;
 use crate::mailspace::{AbsorbConfig, RoleUpdate, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 
-const BODY: &str = "done_when: it works\n";
 const TRAVEL: &str = "travel";
 
 /// A member whose `mind` seat is of kind `mind`: it may close, mark, bind
@@ -47,11 +47,10 @@ fn send(from: &Checkout, to: &[String], role: &str, kind: &str, subject: &str) -
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: BODY.into(),
+            body: body_for(kind, "it works\n"),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

@@ -6,8 +6,8 @@ use tempfile::tempdir;
 
 use super::pass;
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
@@ -35,14 +35,8 @@ fn fixture() -> Result<Fixture, VivariumError> {
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new(PUMP);
-    let sentinel = mail.send_step(PUMP, PUMP, "run", &format!("{SENTINEL_MARKER} n1 r1"), &[])?;
-    let step = mail.send_step(
-        PUMP,
-        "hand",
-        "plan",
-        &format!("{STEP_MARKER} n1 r1 plan"),
-        &[],
-    )?;
+    let sentinel = mail.send_step(PUMP, PUMP, "run", &sentinel_body("n1", 1, ""), &[])?;
+    let step = mail.send_step(PUMP, "hand", "plan", &step_body("n1", 1, "plan", ""), &[])?;
     mail.bind(NEED, &[sentinel.clone(), step.clone()])?;
     let run = RunRow {
         need: NEED.into(),

@@ -5,6 +5,7 @@
 use std::rc::Rc;
 
 use crate::b64;
+use crate::letter::fixture::need_body;
 use crate::mailspace::{AbsorbConfig, SendRequest};
 use crate::sync::fake_server::{Checkout, FakeServer, Item, checkout};
 use crate::sync::pull::{PullReport, file_records};
@@ -31,11 +32,10 @@ fn send_need(from: &Checkout, to: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "ship it".into(),
-            body: "done_when: it works\n".into(),
+            body: need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

@@ -250,7 +250,7 @@ fn assemble_thread(
     links: &BTreeMap<String, MailspaceLink>,
     included: BTreeSet<String>,
 ) -> Result<Vec<MailspaceThreadMessage>, VivariumError> {
-    let mut messages = Vec::with_capacity(included.len());
+    let mut entries = Vec::with_capacity(included.len());
     for content_id in included {
         let view = if content_id == seed.content_id {
             seed.clone()
@@ -259,15 +259,31 @@ fn assemble_thread(
         } else {
             continue;
         };
+        let stored = storage.discovered_at_by_content_id(&content_id)?;
         let candidate = load_candidate(storage, view)?;
-        messages.push(thread_message(&candidate, links.get(&content_id)));
+        entries.push((
+            thread_message(&candidate, links.get(&content_id)),
+            stored_instant(stored.as_deref()),
+        ));
     }
-    messages.sort_by(|left, right| {
+    // `Date` has one-second precision, so replies sent in the same second
+    // fall back to when each was stored.
+    entries.sort_by(|(left, left_stored), (right, right_stored)| {
         left.date
             .cmp(&right.date)
+            .then_with(|| left_stored.cmp(right_stored))
             .then_with(|| left.content_id.cmp(&right.content_id))
     });
+    let messages = entries.into_iter().map(|(message, _)| message).collect();
     Ok(messages)
+}
+
+/// Unix nanoseconds of a stored `discovered_at`, 0 when absent or unparsed.
+fn stored_instant(stored: Option<&str>) -> i64 {
+    match stored.map(chrono::DateTime::parse_from_rfc3339) {
+        Some(Ok(parsed)) => parsed.timestamp_nanos_opt().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 fn thread_candidates(storage: &Storage) -> Result<Vec<ThreadCandidate>, VivariumError> {

@@ -7,8 +7,10 @@ use tempfile::{TempDir, tempdir};
 
 use super::{JoinInput, Routed, route};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
+use crate::letter::read::step_of;
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, SENTINEL_MARKER, STEP_MARKER};
+use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -44,13 +46,7 @@ fn rig() -> Result<Rig, VivariumError> {
         state: "live".into(),
     })?;
     let mut mail = FakeMail::new("pump");
-    let sentinel = mail.send_step(
-        "pump",
-        "pump",
-        "run",
-        &format!("{SENTINEL_MARKER} {NEED} r1"),
-        &[],
-    )?;
+    let sentinel = mail.send_step("pump", "pump", "run", &sentinel_body(NEED, 1, ""), &[])?;
     mail.bind(NEED, std::slice::from_ref(&sentinel))?;
     store.insert_step(
         NEED,
@@ -75,13 +71,9 @@ fn rig() -> Result<Rig, VivariumError> {
 impl Rig {
     /// An open step of `node` in the run, already bound.
     fn step(&mut self, node: &str) -> Result<Outcome, VivariumError> {
-        let task = self.mail.send_step(
-            "pump",
-            "pump",
-            node,
-            &format!("{STEP_MARKER} {NEED} r1 {node}"),
-            &[],
-        )?;
+        let task = self
+            .mail
+            .send_step("pump", "pump", node, &step_body(NEED, 1, node, ""), &[])?;
         self.mail.bind(NEED, std::slice::from_ref(&task))?;
         self.store.insert_step(
             NEED,
@@ -150,7 +142,10 @@ fn one_word_fans_out_to_every_matching_edge() -> R {
             rig.mail.tasks[&sent.task].depends_on,
             vec![build.task.clone()]
         );
-        assert!(rig.mail.tasks[&sent.task].body.starts_with(STEP_MARKER));
+        assert_eq!(
+            step_of(&rig.mail.tasks[&sent.task].body).and_then(|s| s.node),
+            Some(sent.node.clone())
+        );
         let row = rig.store.step_by_task(&sent.task)?.expect("step row");
         assert_eq!(
             (row.node, row.state),
@@ -369,11 +364,10 @@ fn a_retried_route_reuses_the_step_an_earlier_partial_route_sent() -> R {
     assert_eq!(nodes(&routed), vec!["audit1", "test1"]);
 
     let tasks_of = |node: &str| {
-        let tag = format!(" r1 {node}\n");
         rig.mail
             .tasks
             .values()
-            .filter(|t| t.body.contains(&tag))
+            .filter(|t| step_of(&t.body).and_then(|s| s.node).as_deref() == Some(node))
             .count()
     };
     assert_eq!(tasks_of("audit1"), 1);

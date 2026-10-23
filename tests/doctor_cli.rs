@@ -126,21 +126,41 @@ fn doctor_warns_for_a_ready_need_and_json_matches_exit_status() {
     let project = tempfile::tempdir().unwrap();
     init(project.path());
     let root = project.path().to_str().unwrap();
+    // A ready need whose front matter declares no done_when: the send gate
+    // refuses to write one, so it arrives as a raw letter.
+    let identities = vivi(
+        project.path(),
+        &["mailspace", "identity", "list", "--project", root],
+    );
+    let address = |name: &str| -> String {
+        text(&identities)
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} ")))
+            .expect("identity address")
+            .trim()
+            .to_string()
+    };
+    let letter = project.path().join("missing-done-when.eml");
+    std::fs::write(
+        &letter,
+        format!(
+            "From: {}\r\nTo: {}\r\nSubject: missing done_when\r\nX-Vivi-Kind: need\r\n\
+             X-Vivi-Format: 1\r\n\r\n+++\ndone_when = []\n+++\n\na ready need without a done_when entry\n",
+            address("mind"),
+            address("cto"),
+        ),
+    )
+    .unwrap();
     let sent = vivi(
         project.path(),
         &[
-            "need",
-            "send",
+            "mail",
+            "deliver",
+            letter.to_str().unwrap(),
+            "--folder",
+            "needs",
             "--project",
             root,
-            "--from",
-            "mind",
-            "--to",
-            "cto",
-            "--subject",
-            "missing done_when",
-            "--body",
-            "a ready need without a done_when clause",
         ],
     );
     assert!(sent.status.success(), "{}", text(&sent));

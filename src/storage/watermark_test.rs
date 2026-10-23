@@ -1,3 +1,4 @@
+use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{ChangeWatermark, Storage};
 
@@ -17,11 +18,10 @@ fn send_need(mailspace: &Mailspace) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "watched".into(),
-            body: "body".into(),
+            body: need_body(&["done"], "body"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

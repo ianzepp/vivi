@@ -120,11 +120,11 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub model: Option<String>,
 
-    /// Commit or branch to start from (default: a `from:` line in the task body)
+    /// Commit or branch to start from (default: the `from` key in the task front matter)
     #[arg(long)]
     pub from: Option<String>,
 
-    /// Branch to push to (default: a `branch:` line in the task body)
+    /// Branch to push to (default: the `branch` key in the task front matter)
     #[arg(long)]
     pub branch: Option<String>,
 

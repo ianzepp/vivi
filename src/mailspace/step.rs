@@ -239,35 +239,26 @@ fn adjudicate_node(
     };
     let kind = kind_for_role(&message.local_role);
     let body = item_body(storage, &message.message_id)?;
-    let clauses = count_labeled_clauses(&body, "done_when");
     if kind == "want" {
-        return Ok(StepOutcome::Exception(want_exception(node, clauses)));
+        return Ok(StepOutcome::Exception(want_exception(node)));
     }
-    if is_pump_owned(&body) {
-        return Ok(StepOutcome::Exception(exception(
-            node,
-            &kind,
-            "pump_owned",
-            "the pump runs and closes this step",
-        )));
-    }
-    if !storage
+    let read = match read_work(&kind, &node.source_id, &body) {
+        Ok(read) => read,
+        Err(error) => {
+            return Ok(StepOutcome::Exception(exception(
+                node,
+                &kind,
+                "letter_invalid",
+                &error.to_string(),
+            )));
+        }
+    };
+    let lowered = !storage
         .work_graph_nodes_by_subgraph(graph_handle, &node.source_id)?
-        .is_empty()
-    {
+        .is_empty();
+    if let Some((reason, detail)) = blocked_reason(&read, lowered) {
         return Ok(StepOutcome::Exception(exception(
-            node,
-            &kind,
-            "lowered_awaiting_units",
-            "completion derives from bound unit tasks",
-        )));
-    }
-    if clauses == 0 {
-        return Ok(StepOutcome::Exception(exception(
-            node,
-            &kind,
-            "no_done_when",
-            &no_done_when_detail(&body),
+            node, &kind, reason, &detail,
         )));
     }
     Ok(StepOutcome::Dispatch(StepDispatch {
@@ -275,24 +266,67 @@ fn adjudicate_node(
         item: node.source_id.clone(),
         kind,
         subject: message.subject,
-        done_when_clauses: clauses,
-        write_scope: has_labeled_field(&body, "write_scope"),
+        done_when_clauses: read.done_when.len(),
+        write_scope: read.write_scope,
     }))
 }
 
-fn want_exception(node: &GraphNodeView, clauses: usize) -> StepException {
-    let mut detail = "parked: wants never dispatch before explicit promotion".to_string();
-    if clauses == 0 {
-        detail.push_str("; body declares no done_when clause");
+/// Why a readable item cannot dispatch, in check order.
+fn blocked_reason(read: &WorkRead, lowered: bool) -> Option<(&'static str, String)> {
+    if read.pump_owned {
+        return Some(("pump_owned", "the pump runs and closes this step".into()));
     }
-    exception(node, "want", "want_requires_promotion", &detail)
+    if lowered {
+        return Some((
+            "lowered_awaiting_units",
+            "completion derives from bound unit tasks".into(),
+        ));
+    }
+    read.done_when
+        .is_empty()
+        .then(|| ("no_done_when", no_done_when_detail(&read.prose)))
 }
 
-/// A pump step task or run sentinel: the pump runs and closes it, never step.
-fn is_pump_owned(body: &str) -> bool {
-    let first = body.lines().next().unwrap_or("").trim_start();
-    first.starts_with(crate::pump::flow::def::STEP_MARKER)
-        || first.starts_with(crate::pump::flow::def::SENTINEL_MARKER)
+/// What step needs from a need or task letter body, read from its front.
+struct WorkRead {
+    done_when: Vec<String>,
+    write_scope: bool,
+    pump_owned: bool,
+    prose: String,
+}
+
+/// Read a need or task body through the letter reader; any kind other than
+/// a need reads as a task.
+fn read_work(kind: &str, handle: &str, body: &str) -> Result<WorkRead, crate::letter::LetterError> {
+    match kind {
+        "need" => {
+            let envelope = crate::letter::read::need_of(handle, body)?;
+            Ok(WorkRead {
+                write_scope: !envelope.front.write_scope.is_empty(),
+                done_when: envelope.front.done_when,
+                pump_owned: false,
+                prose: envelope.body,
+            })
+        }
+        _ => {
+            let envelope = crate::letter::read::task_of(handle, body)?;
+            Ok(WorkRead {
+                write_scope: !envelope.front.write_scope.is_empty(),
+                pump_owned: envelope.front.step.is_some(),
+                done_when: envelope.front.done_when,
+                prose: envelope.body,
+            })
+        }
+    }
+}
+
+fn want_exception(node: &GraphNodeView) -> StepException {
+    exception(
+        node,
+        "want",
+        "want_requires_promotion",
+        "parked: wants never dispatch before explicit promotion",
+    )
 }
 
 fn kind_for_role(role: &str) -> String {
@@ -317,31 +351,6 @@ fn exception(node: &GraphNodeView, kind: &str, reason: &str, detail: &str) -> St
 fn item_body(storage: &crate::storage::Storage, message_id: &str) -> Result<String, VivariumError> {
     let data = storage.read_message(message_id)?;
     crate::extract::extract_text(&data)
-}
-
-fn count_labeled_clauses(body: &str, label: &str) -> usize {
-    body.lines()
-        .filter(|line| {
-            line.trim_start()
-                .to_ascii_lowercase()
-                .starts_with(&format!("{label}:"))
-        })
-        .count()
-}
-
-fn has_labeled_field(body: &str, label: &str) -> bool {
-    body.lines().any(|line| {
-        line.trim_start()
-            .to_ascii_lowercase()
-            .starts_with(&format!("{label}:"))
-    })
-}
-
-/// Whether a body carries at least one `label:` clause line. Shared with
-/// the send runners' clause warning.
-#[must_use]
-pub fn body_has_labeled_clause(body: &str, label: &str) -> bool {
-    has_labeled_field(body, label)
 }
 
 /// Detail for clauseless bodies: name the labeled fields the body does
@@ -376,20 +385,6 @@ fn labeled_line_label(line: &str) -> Option<String> {
     valid.then(|| label.to_ascii_lowercase())
 }
 
-/// Extract the text of each labeled clause (e.g. every `done_when:` line).
-fn labeled_clauses(body: &str, label: &str) -> Vec<String> {
-    let prefix = format!("{label}:");
-    body.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim_start();
-            let lower = trimmed.to_ascii_lowercase();
-            lower
-                .starts_with(&prefix)
-                .then(|| trimmed[prefix.len()..].trim().to_string())
-        })
-        .collect()
-}
-
 /// Screen one settled item's receipt through the judgment provider. Shadow:
 /// answers are appended to the calibration corpus and the returned note
 /// summarizes them, but the caller's mechanical completion has already
@@ -407,7 +402,7 @@ fn screen_receipt(
         .message_by_id(message_id)?
         .map(|message| message.subject)
         .unwrap_or_default();
-    let clauses = labeled_clauses(&body, "done_when");
+    let clauses = receipt_clauses(&storage, display, message_id, &body);
     let questions = receipt_questions(&clauses);
     let state = serde_json::json!({
         "item": display,
@@ -440,6 +435,24 @@ fn screen_receipt(
             "judgment=skipped({})",
             error_class(&error.to_string())
         )),
+    }
+}
+
+/// The done_when clauses of the settled item, read from its need or task
+/// front; empty when the letter does not read.
+fn receipt_clauses(
+    storage: &crate::storage::Storage,
+    display: &str,
+    message_id: &str,
+    body: &str,
+) -> Vec<String> {
+    let role = match storage.message_by_id(message_id) {
+        Ok(Some(message)) => message.local_role,
+        _ => return Vec::new(),
+    };
+    match read_work(&kind_for_role(&role), display, body) {
+        Ok(read) => read.done_when,
+        Err(_) => Vec::new(),
     }
 }
 

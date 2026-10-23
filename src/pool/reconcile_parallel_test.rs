@@ -24,11 +24,10 @@ fn task(space: &mut Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "do it\n".into(),
+            body: crate::letter::fixture::task_body("do it\n"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered[0]

@@ -19,11 +19,10 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -200,7 +199,6 @@ fn send_task(mailspace: &Mailspace, body: &str) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -213,7 +211,10 @@ fn an_answer_posts_on_the_open_record_of_the_steps_need_with_step_and_word_heade
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
     let record = mailspace.pump_send(None, &need, None).unwrap();
-    let step = send_task(&mailspace, &format!("pump-step: {need} r1 plan\n\nPlan"));
+    let step = send_task(
+        &mailspace,
+        &crate::letter::fixture::step_body(&need, 1, "plan", "Plan"),
+    );
 
     let posted = mailspace
         .pump_post_answer(None, &step, "planned", "operator ruled")
@@ -235,7 +236,10 @@ fn an_answer_to_the_run_sentinel_posts_too() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
     mailspace.pump_send(None, &need, None).unwrap();
-    let sentinel = send_task(&mailspace, &format!("pump-run-sentinel: {need} r1"));
+    let sentinel = send_task(
+        &mailspace,
+        &crate::letter::fixture::sentinel_body(&need, 1, ""),
+    );
 
     mailspace
         .pump_post_answer(None, &sentinel, "failed", "")
@@ -248,7 +252,10 @@ fn an_answer_to_the_run_sentinel_posts_too() {
 fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
-    let step = send_task(&mailspace, &format!("pump-step: {need} r1 plan"));
+    let step = send_task(
+        &mailspace,
+        &crate::letter::fixture::step_body(&need, 1, "plan", ""),
+    );
     let error = mailspace
         .pump_post_answer(None, &step, "planned", "")
         .unwrap_err()
@@ -256,7 +263,10 @@ fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     assert!(error.contains("no open pump record"), "{error}");
 
     mailspace.pump_send(None, &need, None).unwrap();
-    let plain = send_task(&mailspace, "just a task");
+    let plain = send_task(
+        &mailspace,
+        &crate::letter::fixture::task_body("just a task"),
+    );
     let error = mailspace
         .pump_post_answer(None, &plain, "planned", "")
         .unwrap_err()

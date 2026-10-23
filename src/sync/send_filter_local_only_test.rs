@@ -11,6 +11,7 @@
 
 use std::rc::Rc;
 
+use crate::letter::fixture::body_for;
 use crate::mailspace::{AbsorbConfig, SendRequest};
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
 use crate::sync::push;
@@ -41,11 +42,10 @@ fn send_item_to_own_hand(co: &Checkout, role: &str, kind: &str, subject: &str) -
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: format!("{subject} body\n"),
+            body: body_for(kind, &format!("{subject} body\n")),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

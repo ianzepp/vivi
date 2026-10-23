@@ -9,6 +9,7 @@
 
 use std::rc::Rc;
 
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::mailspace::{Mailspace, RoleUpdate};
 use crate::pump::flow::mail::MailspacePort;
 use crate::storage::BACKLOG_GRAPH_CODE;
@@ -119,8 +120,12 @@ fn hub_run(hub: &Checkout, to: &str) -> Run {
     port.post_to_need_audience(&need, "pump: run r1 started (build, entry plan)")
         .unwrap();
     let step = |subject: &str, after: &[String]| {
-        port.send_step("mind", to, subject, "step\n", after)
-            .unwrap()
+        let body = if subject == "sentinel" {
+            sentinel_body(&need, 1, "step\n")
+        } else {
+            step_body(&need, 1, subject, "step\n")
+        };
+        port.send_step("mind", to, subject, &body, after).unwrap()
     };
     let sentinel = step("sentinel", &[]);
     let pred = step("pred", &[]);

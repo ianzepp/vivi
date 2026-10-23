@@ -5,7 +5,8 @@
 
 use std::rc::Rc;
 
-use super::{BODY, alice, bob, close, node_state, rfc_id, role_of, send_task};
+use super::{alice, bob, close, node_state, rfc_id, role_of, send_task};
+use crate::letter::fixture::body_for;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, letter, wire_id};
@@ -36,11 +37,10 @@ fn send_work(from: &Checkout, role: &str, kind: &str, to: &str, subject: &str) -
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: BODY.into(),
+            body: body_for(kind, "it works\n"),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

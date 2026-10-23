@@ -37,21 +37,22 @@ fn project() -> tempfile::TempDir {
 
 /// The handle of the delivered copy of a send under the recipient.
 fn send(p: &Path, kind: &str, subject: &str, body: &str) -> String {
-    let out = ok(
-        p,
-        &[
-            kind,
-            "send",
-            "--from",
-            "mind",
-            "--to",
-            "hand",
-            "--subject",
-            subject,
-            "--body",
-            body,
-        ],
-    );
+    let mut args = vec![
+        kind,
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "hand",
+        "--subject",
+        subject,
+        "--body",
+        body,
+    ];
+    if kind == "need" {
+        args.extend(["--done-when", "it works"]);
+    }
+    let out = ok(p, &args);
     out.lines()
         .find_map(|line| line.strip_prefix("created hand "))
         .unwrap()
@@ -98,7 +99,7 @@ fn record(attempt: &str, agent_seconds: u64) -> String {
 fn need_done_prints_the_timing_summary() {
     let tmp = project();
     let p = tmp.path();
-    let need = send(p, "need", "N the timed need", "done_when: it works");
+    let need = send(p, "need", "N the timed need", "the timed need");
     settle();
     reply(p, &need, &record("n1-1-a1", 3600));
 
@@ -117,7 +118,7 @@ fn need_done_prints_the_timing_summary() {
 fn task_done_prints_the_timing_summary() {
     let tmp = project();
     let p = tmp.path();
-    let task = send(p, "task", "s", "done_when: x");
+    let task = send(p, "task", "s", "x");
     settle();
     reply(
         p,

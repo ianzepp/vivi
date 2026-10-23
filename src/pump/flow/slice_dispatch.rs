@@ -151,9 +151,21 @@ pub trait SliceMail: MailReader {
         marker: &str,
         sender: &str,
     ) -> Result<Vec<(String, String)>, VivariumError>;
+
+    /// The handle of this mailspace's own copy of the want `id` names (the
+    /// `explores` or `serves` value a need stores), or `None` when no copy of
+    /// that want is here.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the mailspace cannot be read.
+    fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError>;
 }
 
 impl SliceMail for MailspacePort {
+    fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError> {
+        self.mailspace.resolve_want(id)
+    }
+
     fn task_body(&self, task: &str) -> Result<String, VivariumError> {
         let (id, thread) = self.thread_of(task)?;
         thread
@@ -253,7 +265,7 @@ impl MailspacePort {
 ///
 /// # Errors
 /// Returns [`VivariumError`] when there is no hand role, the task has no
-/// `target:` line or no recorded scope, or a mail, job or index call fails.
+/// target in its front matter or no recorded scope, or a mail, job or index call fails.
 pub fn dispatch<S: JobStore, M: SliceMail>(
     ctx: &Ctx,
     st: &mut S,
@@ -369,8 +381,12 @@ fn hand_spec<M: SliceMail>(
     })?;
     let task_body = mail.task_body(&slice.task)?;
     let target = target_of(&task_body).ok_or_else(|| {
-        VivariumError::Parse(format!("slice task {} has no `target:` line", slice.task))
+        VivariumError::Parse(format!(
+            "slice task {} names no target in its front matter",
+            slice.task
+        ))
     })?;
+    let target = target.as_str();
     let scope = store.slice_scope(&slice.task)?.ok_or_else(|| {
         VivariumError::Parse(format!("slice task {} has no recorded scope", slice.task))
     })?;
@@ -713,6 +729,10 @@ fn push_of(receipt: &str) -> Push<'_> {
 
 #[cfg(test)]
 impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
+    fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError> {
+        Ok(Some(id.to_string()))
+    }
+
     fn task_body(&self, task: &str) -> Result<String, VivariumError> {
         self.tasks
             .get(task)

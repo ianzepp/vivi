@@ -1,6 +1,7 @@
 //! The flow engine's port onto the mailspace: every read and write a run needs.
 
 use crate::error::VivariumError;
+use crate::letter::work::StepFront;
 use crate::mailspace::Mailspace;
 
 pub mod close;
@@ -96,8 +97,8 @@ pub trait MailReader {
     /// Returns an error when the pump records cannot be read.
     fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError>;
     /// An OPEN task the pump identity sent with exactly this subject whose
-    /// body starts with this line; the newest when several match.
-    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError>;
+    /// step table equals `step`; the newest when several match.
+    fn sent_step(&self, subject: &str, step: &StepFront) -> Result<Option<String>, VivariumError>;
 }
 
 /// Listing the pump records that are still open.

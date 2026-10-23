@@ -60,20 +60,30 @@ fn add_role(root: &Path, name: &str, extra: &[&str]) {
 }
 
 fn send(project: &Path, kind: &str, from: &str, to: &str, subject: &str) -> String {
-    let output = vivi([
-        kind,
-        "send",
-        "--project",
-        path_str(project),
-        "--from",
-        from,
-        "--to",
-        to,
-        "--subject",
-        subject,
-        "--body",
-        "body",
-    ]);
+    // A need carries a done_when and a want a question: their send flags.
+    let required: &[&str] = match kind {
+        "need" => &["--done-when", "done"],
+        "want" => &["--question", "why"],
+        _ => &[],
+    };
+    let output = vivi(
+        [
+            kind,
+            "send",
+            "--project",
+            path_str(project),
+            "--from",
+            from,
+            "--to",
+            to,
+            "--subject",
+            subject,
+            "--body",
+            "body",
+        ]
+        .into_iter()
+        .chain(required.iter().copied()),
+    );
     assert_success(&output);
     let text = stdout(&output);
     // Local delivery prints `created <to> <handle>` for work kinds and

@@ -40,11 +40,10 @@ fn task_of(mailspace: &Mailspace) -> (String, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "judged by the sender address".into(),
-            body: "done_when: ok\n".into(),
+            body: crate::letter::fixture::task_body(""),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let delivered = result

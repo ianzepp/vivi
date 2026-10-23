@@ -199,6 +199,11 @@ fn send_work(project: &Path, kind: &str, subject: &str, depends_on: &[&String]) 
     .iter()
     .map(ToString::to_string)
     .collect();
+    match kind {
+        "need" => args.extend(["--done-when".into(), "done".into()]),
+        "want" => args.extend(["--question".into(), subject.into()]),
+        _ => {}
+    }
     for dep in depends_on {
         args.push("--depends-on".into());
         args.push((*dep).clone());

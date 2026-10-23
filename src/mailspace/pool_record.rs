@@ -124,6 +124,24 @@ const ATTEMPTS_CAP: usize = 8 * 1024;
 /// Line that opens the attempt text when older replies were cut.
 const ATTEMPTS_CUT: &str = "[older attempts cut]";
 
+/// The task letter with `brief` as its prose: the task's own front matter
+/// stays, the brief's marker line is dropped. A task body that does not parse
+/// as a task letter is replaced by the brief unchanged, so the dispatcher's
+/// refusal names the task.
+fn briefed_body(task_body: &str, brief: &str) -> String {
+    let prose = match brief.split_once('\n') {
+        Some((first, rest)) if first.starts_with(BRIEF_MARKER) => rest.trim_start_matches('\n'),
+        _ => brief,
+    };
+    match crate::letter::read::task_of("", task_body) {
+        Ok(envelope) => match crate::letter::render(&envelope.front, prose) {
+            Ok(rendered) => rendered,
+            Err(_) => brief.to_owned(),
+        },
+        Err(_) => brief.to_owned(),
+    }
+}
+
 /// Event types the pool writes.
 pub const POOL_EVENT_TYPES: [&str; 2] = ["pool_dispatched", "pool_collected"];
 
@@ -151,12 +169,12 @@ impl Mailspace {
         let handle = storage.display_handle(&id)?;
         let thread = self.marked_thread_replies(&handle, &id)?;
         // A preset-task job carries its brief as a reply; the newest brief
-        // replaces the task body, which it already contains.
-        let body = thread
-            .briefs
-            .into_iter()
-            .next_back()
-            .unwrap_or_else(|| text_body(&data));
+        // becomes the prose of the task letter, which keeps its own front.
+        let task_body = text_body(&data);
+        let body = match thread.briefs.into_iter().next_back() {
+            Some(brief) => briefed_body(&task_body, &brief),
+            None => task_body,
+        };
         let body = with_attempts(body, thread.attempts);
         // The copy is held under the recipient's account; a recipient that
         // is not a known local role leaves no addressee.

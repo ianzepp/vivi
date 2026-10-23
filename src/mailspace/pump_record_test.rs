@@ -17,11 +17,10 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -120,11 +119,10 @@ fn unknown_need_and_non_need_are_refused() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "a task".into(),
-            body: "body".into(),
+            body: crate::letter::fixture::task_body("body"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -187,11 +185,10 @@ fn pump_config_names_the_sender_and_the_pump_identity() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "fix auth".into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -299,11 +296,10 @@ fn send_admits_a_need_addressed_to_a_third_identity() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "not for the pump".into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -328,11 +324,10 @@ fn a_need_copied_to_the_pump_identity_is_plannable() {
             cc: vec!["mind".into()],
             bcc: Vec::new(),
             subject: "cc the pump".into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -354,11 +349,10 @@ fn a_need_the_pump_identity_sent_itself_gets_a_record_whoever_it_is_addressed_to
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: subject.into(),
-                body: "done_when: it works".into(),
+                body: crate::letter::fixture::need_body(&["it works"], ""),
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap()
             .delivered
@@ -495,11 +489,10 @@ fn send_accepts_a_need_addressed_to_hand() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "for hand".into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

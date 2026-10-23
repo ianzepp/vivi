@@ -2,8 +2,8 @@
 //! run is resumed, and the need ends with one run and no duplicate tasks.
 
 use super::{SENTINEL_NODE, resume, start};
+use crate::letter::read::step_of;
 use crate::pump::fixture::{Project, project};
-use crate::pump::flow::def::SENTINEL_MARKER;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::index::run_state;
@@ -49,7 +49,7 @@ fn a_failure_at_any_write_resumes_to_one_live_run() {
         let sentinels = mail
             .tasks
             .values()
-            .filter(|t| t.body.starts_with(SENTINEL_MARKER))
+            .filter(|t| step_of(&t.body).is_some_and(|s| s.sentinel))
             .count();
         assert_eq!(sentinels, 1, "write {write}");
         let steps = store.steps_of(NEED, 1).unwrap();

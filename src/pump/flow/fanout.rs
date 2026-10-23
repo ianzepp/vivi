@@ -11,10 +11,12 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
+use crate::letter::render;
+use crate::letter::work::TaskFront;
 use crate::pump::envelope::roles::{Slice, Slicer};
 use crate::pump::envelope::{EnvelopeError, parse};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
-use crate::pump::flow::def::{FAILED, STEP_MARKER};
+use crate::pump::flow::def::FAILED;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, TaskStatus};
 use crate::pump::flow::reslice::RESLICE_NODE_PREFIX;
@@ -65,13 +67,13 @@ pub fn is_slice_row(row: &StepRow) -> bool {
     row.node.starts_with(SLICE_NODE_PREFIX)
 }
 
-/// The `target:` line of a slice task body, if it has one.
+/// The `target` key of a slice task's front matter, if it has one.
 #[must_use]
-pub fn target_of(body: &str) -> Option<&str> {
-    body.lines()
-        .find_map(|line| line.strip_prefix("target:"))
-        .map(str::trim)
-        .filter(|target| !target.is_empty())
+pub fn target_of(body: &str) -> Option<String> {
+    match crate::letter::read::task_of("", body) {
+        Ok(envelope) => envelope.front.target,
+        Err(_) => None,
+    }
 }
 
 /// Send the slice tasks of `slices` in topological order and index them.
@@ -184,7 +186,13 @@ fn adopt_or_send<M: MailWriter + MailReader>(
     fanout: &Option<String>,
 ) -> Result<String, VivariumError> {
     let subject = slice_subject(run, slice);
-    if let Some(task) = mail.sent_step(&subject, &slice_header(run, slice))? {
+    let body = slice_body(run, slice)?;
+    let key = TaskFront::step(&run.need, run.run, &slice_node(&slice.id))
+        .step
+        .ok_or_else(|| {
+            VivariumError::Message(format!("slice body for {} has no step", slice.id))
+        })?;
+    if let Some(task) = mail.sent_step(&subject, &key)? {
         let owned_elsewhere = match store.slice_link(&task)? {
             Some(link) => link.fanout != *fanout,
             None => false,
@@ -197,7 +205,7 @@ fn adopt_or_send<M: MailWriter + MailReader>(
         &ctx.cfg.reply_from,
         &ctx.cfg.reply_from,
         &subject,
-        &slice_body(run, slice),
+        &body,
         depends_on,
     )
 }
@@ -238,24 +246,13 @@ fn slice_subject(run: &RunRow, slice: &Slice) -> String {
     format!("{} ({} r{})", slice.title, run.need, run.run)
 }
 
-/// The first line of a slice task body.
-fn slice_header(run: &RunRow, slice: &Slice) -> String {
-    format!(
-        "{STEP_MARKER} {} r{} {}",
-        run.need,
-        run.run,
-        slice_node(&slice.id)
-    )
-}
-
-fn slice_body(run: &RunRow, slice: &Slice) -> String {
-    format!(
-        "{}\ntarget: {}\n\n{}\n\n{}",
-        slice_header(run, slice),
-        slice.target,
-        slice.title,
-        slice.brief
-    )
+fn slice_body(run: &RunRow, slice: &Slice) -> Result<String, VivariumError> {
+    let front = TaskFront {
+        target: Some(slice.target.clone()),
+        ..TaskFront::step(&run.need, run.run, &slice_node(&slice.id))
+    };
+    render(&front, &format!("{}\n\n{}", slice.title, slice.brief))
+        .map_err(|err| VivariumError::Message(format!("slice body for {}: {err}", slice.id)))
 }
 
 /// The task of the latest slice an earlier fanout of the run sent for `dep`.

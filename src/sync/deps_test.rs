@@ -2,23 +2,38 @@
 //! route files a letter, the receiver's graph, `step` and
 //! `task list --blocked` agree.
 
+use crate::letter::fixture::{body_with_deps, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::mailspace::{GraphNodeView, RoleUpdate, SourceTaskRequest};
 use crate::sync::fake_server::{LETTER_DATE, World, wire_id};
 use crate::sync::fetch::fetch_handles;
 use crate::sync::pull::{PullPlan, pull_with};
 use crate::sync::refs::follow_refs;
 
+/// A need or task that declares `it is done`, so `step` can dispatch it.
+fn body(kind: &str, deps: &[String]) -> String {
+    match kind {
+        "task" => task_body_with(
+            &TaskFront {
+                done_when: vec!["it is done".into()],
+                depends_on: deps.to_vec(),
+                ..TaskFront::default()
+            },
+            "it is done\n",
+        ),
+        _ => body_with_deps(kind, "it is done\n", deps),
+    }
+}
+
 fn put(w: &World, n: u64, kind: &str, to: &str, subject: &str, deps: &[u64]) -> String {
-    let headers: String = deps
-        .iter()
-        .map(|dep| format!("X-Vivi-Depends-On: {dep:08x}\r\n"))
-        .collect();
+    let deps: Vec<String> = deps.iter().map(|dep| format!("{dep:08x}")).collect();
+    let headers = format!("X-Vivi-Kind: {kind}\r\nX-Vivi-Format: 1\r\n");
     w.put_full(
         &wire_id(n, 0),
         kind,
         to,
         subject,
-        "done_when: it is done\r\n",
+        &body(kind, &deps),
         LETTER_DATE,
         &headers,
     )
@@ -257,7 +272,7 @@ fn a_replay_of_held_letters_changes_nothing() {
 }
 
 #[test]
-fn filing_rebuilds_the_need_bind_from_the_parent_header() {
+fn filing_rebuilds_the_need_bind_from_the_parent_front_matter() {
     let w = World::new();
     let hand = w.bob.address("hand");
     // Alice sends the need to bob's hand and pushes it; bob pulls it.
@@ -267,7 +282,7 @@ fn filing_rebuilds_the_need_bind_from_the_parent_header() {
     assert_eq!(node(&w, "the need").state, "open", "the need is held work");
 
     // Alice lowers the need into a unit task addressed to bob's hand. The
-    // bind is local to alice: the letter carries only the parent header.
+    // bind is local to alice: the letter carries only the parent front matter key.
     w.alice
         .mailspace
         .task_from_source(SourceTaskRequest {
@@ -288,7 +303,7 @@ fn filing_rebuilds_the_need_bind_from_the_parent_header() {
     assert_eq!(
         unit.subgraph.as_deref(),
         Some(need_node.source_id.as_str()),
-        "filing derives the bind from X-Vivi-Parent"
+        "filing derives the bind from the parent front matter key"
     );
 
     // Pulling the same letters again writes no second bind.

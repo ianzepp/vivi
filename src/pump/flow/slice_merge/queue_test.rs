@@ -8,6 +8,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{MERGE_QUEUED, run};
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -103,7 +105,13 @@ impl Rig {
             "mind",
             "mind",
             &format!("slice {id}"),
-            &format!("pump-step: {need} r1 slice:{id}\ntarget: default\n\ntitle\n\nbrief"),
+            &task_body_with(
+                &TaskFront {
+                    target: Some("default".into()),
+                    ..TaskFront::step(need, 1, &format!("slice:{id}"))
+                },
+                "title\n\nbrief",
+            ),
             &[],
         )?;
         let row = StepRow {

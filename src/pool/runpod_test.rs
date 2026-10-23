@@ -46,7 +46,11 @@ fn plan(r: &Rig) -> JobPlan {
     plan_job(
         &r.config,
         "gpu",
-        ("abcd1234", "Subject", "body"),
+        (
+            "abcd1234",
+            "Subject",
+            &crate::letter::fixture::task_body("body"),
+        ),
         &flags,
         "rules".into(),
         "job000000001".into(),

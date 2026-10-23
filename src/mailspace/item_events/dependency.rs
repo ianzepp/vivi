@@ -1,20 +1,20 @@
 //! Dependency edges as letters.
 //!
-//! An item is sent with its prerequisites in `X-Vivi-Depends-On` headers.
+//! An item is sent with its prerequisites in the `depends_on` front matter key.
 //! After the send, a `dependency-added` or `dependency-removed` property
 //! letter on the item (see `property.rs`) adds or drops prerequisites, one
 //! `X-Vivi-Event-Dep` header per dependency naming its `Message-ID`.
 //!
 //! Per dependency the newest counted letter by `(instant, Message-ID)`
-//! says whether the edge is there, and it wins over the header the item
-//! was sent with: a header edge is removed by a newer `dependency-removed`
+//! says whether the edge is there, and it wins over the front matter the item
+//! was sent with: a front matter edge is removed by a newer `dependency-removed`
 //! letter, and added back by a newer `dependency-added` one. The state is a
 //! function of the letters held, so every member lands the same edges
 //! whatever order the letters arrive in. A sealed item counts only the
 //! letters dated before its seal, as marks and binds do.
 //!
-//! The same fold decides which references an item's `X-Vivi-Depends-On`
-//! headers still stand for: [`Mailspace::dependency_verdicts`] is read by
+//! The same fold decides which references an item's `depends_on`
+//! front matter still stands for: [`Mailspace::dependency_verdicts`] is read by
 //! every route that builds edges from the letters (attach, pull, pending
 //! settle, `graph audit --repair`), so none of them puts back an edge a
 //! newer letter removed.

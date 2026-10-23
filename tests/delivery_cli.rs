@@ -10,6 +10,11 @@ fn vivi(project: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn prose_json(stored: &str) -> serde_json::Value {
+    let (_, prose) = vivi::letter::split(stored).unwrap();
+    serde_json::from_str(prose).unwrap()
+}
+
 fn ok(project: &Path, args: &[&str]) -> String {
     let output = vivi(project, args);
     assert!(
@@ -80,8 +85,10 @@ fn delivery_pushes_under_mind_prefix_and_merge_role_closes_with_commit() {
                 "merge",
                 "--subject",
                 "unit need",
+                "--done-when",
+                "unit is merged",
                 "--body",
-                "done_when: unit is merged",
+                "Merge the unit.",
             ],
         );
         let parse = |prefix: &str| {
@@ -152,7 +159,15 @@ fn delivery_pushes_under_mind_prefix_and_merge_role_closes_with_commit() {
         .iter()
         .find(|message| message["handle"] == delivery)
         .unwrap();
-    let body: serde_json::Value = serde_json::from_str(root["body"].as_str().unwrap()).unwrap();
+    let stored = root["body"].as_str().unwrap();
+    let (front, _) = vivi::letter::split(stored).unwrap();
+    assert!(
+        front.contains(&format!(
+            "branch mind/review at {tip} is merged into {base}"
+        )),
+        "{front}"
+    );
+    let body = prose_json(stored);
     assert_eq!(body["branch"], "mind/review");
     assert_eq!(body["tip"], tip);
     assert_eq!(body["base"], base);
@@ -216,7 +231,7 @@ fn delivery_pushes_under_mind_prefix_and_merge_role_closes_with_commit() {
         .iter()
         .find(|message| message["handle"] == pending)
         .unwrap();
-    let body: serde_json::Value = serde_json::from_str(root["body"].as_str().unwrap()).unwrap();
+    let body = prose_json(root["body"].as_str().unwrap());
     assert_eq!(body["push"]["status"], "not_pushed");
     assert_eq!(
         body["push"]["detail"],

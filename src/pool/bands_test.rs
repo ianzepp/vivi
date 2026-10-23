@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::letter::work::TaskFront;
 use crate::pool::slot::PoolId;
 
 /// A pool with two choices for `P1` and one for `P2`.
@@ -93,33 +94,40 @@ fn a_pool_with_no_bands_table_serves_no_bands() {
     assert!(err.contains("it serves no bands"), "got: {err}");
 }
 
-#[test]
-fn the_first_band_line_of_a_body_wins() {
-    assert_eq!(
-        body_band("Do it.\n\nband: P1\nband: P2\n").unwrap(),
-        Some(1)
-    );
-    assert_eq!(body_band("- band: p2\n").unwrap(), Some(2));
-    assert_eq!(body_band("* band: P3-S1\n").unwrap(), Some(3));
+fn band_body(band: Option<&str>) -> String {
+    let front = TaskFront {
+        band: band.map(str::to_string),
+        ..TaskFront::default()
+    };
+    crate::letter::fixture::task_body_with(&front, "Do it.")
 }
 
 #[test]
-fn a_body_without_a_band_line_has_no_band() {
-    assert_eq!(body_band("Do it.\n\nfrom: main\n").unwrap(), None);
+fn the_band_key_of_the_front_matter_is_read() {
+    assert_eq!(body_band(&band_body(Some("P1"))).unwrap(), Some(1));
+    assert_eq!(body_band(&band_body(Some("p2"))).unwrap(), Some(2));
+    assert_eq!(body_band(&band_body(Some("P3-S1"))).unwrap(), Some(3));
+}
+
+#[test]
+fn a_body_without_a_band_key_has_no_band() {
+    let front = TaskFront {
+        from: Some("main".into()),
+        ..TaskFront::default()
+    };
+    let body = crate::letter::fixture::task_body_with(&front, "Do it.");
+    assert_eq!(body_band(&body).unwrap(), None);
+    assert_eq!(body_band(&band_body(None)).unwrap(), None);
     assert_eq!(body_band("").unwrap(), None);
-    assert_eq!(body_band("bandwith: P1").unwrap(), None);
 }
 
 #[test]
-fn a_band_value_with_spaces_is_skipped_not_an_error() {
-    assert_eq!(body_band("band: P1 now\nband: P2\n").unwrap(), Some(2));
-}
-
-#[test]
-fn a_band_line_that_does_not_parse_is_an_error_naming_the_value() {
-    let err = body_band("band: P9\n").unwrap_err().to_string();
+fn a_band_key_that_does_not_parse_is_an_error_naming_the_value() {
+    let err = body_band(&band_body(Some("P9"))).unwrap_err().to_string();
     assert!(err.contains("band: P9"), "got: {err}");
-    let err = body_band("band: quick\n").unwrap_err().to_string();
+    let err = body_band(&band_body(Some("quick")))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("band: quick"), "got: {err}");
 }
 

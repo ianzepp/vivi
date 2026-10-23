@@ -25,6 +25,21 @@ pub struct NeedFront {
     /// The want this need serves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serves: Option<String>,
+    /// The want a research need explores. It does not count toward the want
+    /// state, and a need never both serves and explores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explores: Option<String>,
+}
+
+impl NeedFront {
+    /// A need with the given done conditions and every other field unset.
+    #[must_use]
+    pub fn new(done_when: Vec<String>) -> Self {
+        Self {
+            done_when,
+            ..Self::default()
+        }
+    }
 }
 
 impl Validate for NeedFront {
@@ -38,7 +53,15 @@ impl Validate for NeedFront {
         check_opt("target", self.target.as_deref())?;
         check_list("depends_on", &self.depends_on)?;
         check_list("write_scope", &self.write_scope)?;
-        check_opt("serves", self.serves.as_deref())
+        check_opt("serves", self.serves.as_deref())?;
+        check_opt("explores", self.explores.as_deref())?;
+        if self.serves.is_some() && self.explores.is_some() {
+            return Err(
+                "need carries both `serves` and `explores`: a need serves a want or explores it, never both"
+                    .into(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -94,6 +117,36 @@ pub struct TaskFront {
     /// The pump step this task belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<StepFront>,
+}
+
+impl TaskFront {
+    /// A task for one flow node of a pump run; every other field is unset.
+    #[must_use]
+    pub fn step(need: &str, run: u32, node: &str) -> Self {
+        Self {
+            step: Some(StepFront {
+                need: need.to_string(),
+                run,
+                node: Some(node.to_string()),
+                sentinel: false,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// The sentinel task of a pump run, which has no node of its own.
+    #[must_use]
+    pub fn sentinel(need: &str, run: u32) -> Self {
+        Self {
+            step: Some(StepFront {
+                need: need.to_string(),
+                run,
+                node: None,
+                sentinel: true,
+            }),
+            ..Self::default()
+        }
+    }
 }
 
 impl Validate for TaskFront {

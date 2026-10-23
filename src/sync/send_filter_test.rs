@@ -7,6 +7,7 @@
 //! follows it. Everything else is machine-local traffic, counted as `local
 //! only` and never unsent.
 
+use crate::letter::fixture::task_body;
 use crate::mailspace::SendRequest;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
 use crate::sync::push::{self, PushReport};
@@ -32,11 +33,10 @@ fn send_task(co: &Checkout, to: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: format!("{subject} body\n"),
+            body: task_body(&format!("{subject} body\n")),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

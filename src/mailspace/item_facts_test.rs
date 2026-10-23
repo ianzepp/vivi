@@ -90,11 +90,10 @@ fn a_held_item_reads_rows_and_marks_from_a_real_mailspace() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "fix auth".into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

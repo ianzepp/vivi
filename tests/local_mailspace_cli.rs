@@ -604,6 +604,8 @@ fn local_send_reads_body_file_and_stdin() {
         "Read file body",
         "--body-file",
         body_file.to_str().unwrap(),
+        "--done-when",
+        "done",
     ]);
     assert_success(&need);
     let need_handle = handle_after(&stdout(&need), "created cto");
@@ -1051,6 +1053,8 @@ fn want_promotes_to_need_and_done_without_polluting_task_done() {
         "Improve board visibility",
         "--body",
         "Consider a future governance dashboard.",
+        "--question",
+        "Improve board visibility?",
     ]);
     assert_success(&want);
     let want_handle = handle_after(&stdout(&want), "created ceo");
@@ -1304,22 +1308,26 @@ fn need_and_want_lists_show_a_thread_only_by_its_root() {
 
     for kind in ["need", "want"] {
         let root = send_work(project.path(), kind, "cto", &format!("{kind} root"), "body");
-        let reply = vivi([
-            kind,
-            "send",
-            "--project",
-            p,
-            "--from",
-            "ceo",
-            "--to",
-            "cto",
-            "--subject",
-            &format!("Re: {kind} root"),
-            "--body",
-            "a reply",
-            "--reply-to",
-            &root,
-        ]);
+        let reply = vivi(
+            [
+                kind,
+                "send",
+                "--project",
+                p,
+                "--from",
+                "ceo",
+                "--to",
+                "cto",
+                "--subject",
+                &format!("Re: {kind} root"),
+                "--body",
+                "a reply",
+                "--reply-to",
+                &root,
+            ]
+            .into_iter()
+            .chain(required_flags(kind).iter().copied()),
+        );
         assert_success(&reply);
 
         let listed = vivi([kind, "list", "--project", p, "--for", "cto", "--json"]);
@@ -2634,7 +2642,14 @@ fn task_from_records_source_provenance_and_want_list_has_no_task_column() {
         "--subject",
         "task: tidy the seam",
         "--body",
-        "done_when: the seam is tidy",
+        &vivi::letter::render(
+            &vivi::letter::work::TaskFront {
+                done_when: vec!["the seam is tidy".into()],
+                ..Default::default()
+            },
+            "",
+        )
+        .unwrap(),
         &want,
     ]);
     assert_success(&created);
@@ -2693,21 +2708,45 @@ fn init_roster(project: &std::path::Path) {
     }
 }
 
+/// The flag a need or want must carry to be a valid letter; a task needs none.
+fn required_flags(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "need" => &["--done-when", "done"],
+        "want" => &["--question", "why"],
+        _ => &[],
+    }
+}
+
 fn send_work(project: &std::path::Path, kind: &str, to: &str, subject: &str, body: &str) -> String {
-    let output = vivi([
-        kind,
-        "send",
-        "--project",
-        project.to_str().unwrap(),
-        "--from",
-        "ceo",
-        "--to",
-        to,
-        "--subject",
-        subject,
-        "--body",
-        body,
-    ]);
+    send_work_with(project, kind, to, subject, body, required_flags(kind))
+}
+
+fn send_work_with(
+    project: &std::path::Path,
+    kind: &str,
+    to: &str,
+    subject: &str,
+    body: &str,
+    flags: &[&str],
+) -> String {
+    let output = vivi(
+        [
+            kind,
+            "send",
+            "--project",
+            project.to_str().unwrap(),
+            "--from",
+            "ceo",
+            "--to",
+            to,
+            "--subject",
+            subject,
+            "--body",
+            body,
+        ]
+        .into_iter()
+        .chain(flags.iter().copied()),
+    );
     assert_success(&output);
     handle_after(&stdout(&output), &format!("created {to}"))
 }
@@ -3207,12 +3246,13 @@ fn task_show_and_activate_pin_task_content() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
-    let task = send_work(
+    let task = send_work_with(
         project.path(),
         "task",
         "cto",
         "pinned unit",
-        "done_when: lands",
+        "",
+        &["--done-when", "lands"],
     );
 
     let show = vivi(["task", "show", &task, "--project", project_s]);
@@ -3372,12 +3412,13 @@ fn graph_activate_refuses_decision_nodes() {
         "--project",
         project_s,
     ]));
-    let task = send_work(
+    let task = send_work_with(
         project.path(),
         "task",
         "cto",
         "probe",
-        "done_when: probe lands",
+        "",
+        &["--done-when", "probe lands"],
     );
     let activate = vivi([
         "graph",
@@ -3444,69 +3485,59 @@ fn graph_complete_ignores_task_flag_with_hint() {
 }
 
 #[test]
-fn task_send_without_done_when_warns_on_stderr() {
+fn bare_prose_send_follows_the_front_matter_rule() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let p = project.path().to_str().unwrap();
-    let vague = vivi([
-        "task",
-        "send",
-        "--project",
-        p,
-        "--from",
-        "ceo",
-        "--to",
-        "cto",
-        "--subject",
-        "vague work",
-        "--body",
-        "just do it",
-    ]);
-    assert_success(&vague);
-    assert!(
-        stderr(&vague).contains("no_done_when"),
-        "{}",
-        stderr(&vague)
-    );
+    let send = |kind: &str, extra: &[&str]| {
+        let mut args = vec![
+            kind,
+            "send",
+            "--project",
+            p,
+            "--from",
+            "ceo",
+            "--to",
+            "cto",
+            "--subject",
+            "vague work",
+            "--body",
+            "just do it",
+        ];
+        args.extend_from_slice(extra);
+        vivi(args)
+    };
 
-    let clear = vivi([
-        "task",
-        "send",
-        "--project",
-        p,
-        "--from",
-        "ceo",
-        "--to",
-        "cto",
-        "--subject",
-        "clear work",
-        "--body",
-        "done_when: it works",
-    ]);
-    assert_success(&clear);
+    let need = send("need", &[]);
+    assert!(!need.status.success());
     assert!(
-        !stderr(&clear).contains("no_done_when"),
+        stderr(&need).contains("need has no done_when: pass --done-when"),
         "{}",
-        stderr(&clear)
+        stderr(&need)
     );
+    let needs = vivi(["need", "list", "--project", p, "--for", "cto"]);
+    assert_success(&needs);
+    assert!(!stdout(&needs).contains("vague work"), "{}", stdout(&needs));
 
-    // Wants stay quiet: they are parked by design.
-    let want = vivi([
-        "want",
-        "send",
-        "--project",
-        p,
-        "--from",
-        "ceo",
-        "--to",
-        "ceo",
-        "--subject",
-        "someday",
-        "--body",
-        "someday",
-    ]);
-    assert_success(&want);
-    assert!(!stderr(&want).contains("no_done_when"), "{}", stderr(&want));
+    let task = send("task", &[]);
+    assert_success(&task);
+    let handle = stdout(&task)
+        .lines()
+        .find_map(|line| line.strip_prefix("created cto "))
+        .unwrap()
+        .trim()
+        .to_string();
+    let shown = vivi(["task", "show", &handle, "--project", p]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains("just do it"), "{}", stdout(&shown));
+
+    let want = send("want", &[]);
+    assert!(!want.status.success());
+    assert!(
+        stderr(&want).contains("want has no question: pass --question"),
+        "{}",
+        stderr(&want)
+    );
 }
 
 #[test]
@@ -3702,6 +3733,8 @@ fn backlog_citizenship_mints_unlocks_and_never_promotes() {
         "auth fix",
         "--body",
         "must land",
+        "--done-when",
+        "done",
     ]);
     assert_success(&dep_output);
     let dep = handle_after(&stdout(&dep_output), "created cto");
@@ -3719,6 +3752,8 @@ fn backlog_citizenship_mints_unlocks_and_never_promotes() {
         "retry helper",
         "--body",
         "later",
+        "--question",
+        "later?",
         "--depends-on",
         &dep,
     ]);
@@ -3868,20 +3903,24 @@ fn need_bind_joins_completion_via_cli() {
     let project_s = project.path().to_str().unwrap();
 
     let send = |kind: &str, subject: &str| -> String {
-        let output = vivi([
-            kind,
-            "send",
-            "--project",
-            project_s,
-            "--from",
-            "ceo",
-            "--to",
-            "cto",
-            "--subject",
-            subject,
-            "--body",
-            "work",
-        ]);
+        let output = vivi(
+            [
+                kind,
+                "send",
+                "--project",
+                project_s,
+                "--from",
+                "ceo",
+                "--to",
+                "cto",
+                "--subject",
+                subject,
+                "--body",
+                "work",
+            ]
+            .into_iter()
+            .chain(required_flags(kind).iter().copied()),
+        );
         assert_success(&output);
         handle_after(&stdout(&output), "created cto")
     };
@@ -3966,7 +4005,11 @@ fn step_manifest_reports_dispatches_and_exceptions() {
         "--subject",
         "unit A",
         "--body",
-        "unit: U-1\ndone_when: malformed input rejected\nwrite_scope: src/validate.rs",
+        "unit: U-1",
+        "--done-when",
+        "malformed input rejected",
+        "--write-scope",
+        "src/validate.rs",
     ]);
     assert_success(&task_output);
     let task = handle_after(&stdout(&task_output), "created cto");
@@ -3983,7 +4026,9 @@ fn step_manifest_reports_dispatches_and_exceptions() {
         "--subject",
         "later work",
         "--body",
-        "done_when: exists",
+        "exists",
+        "--question",
+        "does it exist",
     ]);
     assert_success(&want_output);
     let want = handle_after(&stdout(&want_output), "created cto");
@@ -4130,12 +4175,13 @@ fn delivered_work_is_tracked_without_repair() {
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
     // A tracked send creates the backlog graph.
-    send_work(
+    send_work_with(
         project.path(),
         "task",
         "cto",
         "tracked unit",
-        "done_when: x",
+        "",
+        &["--done-when", "x"],
     );
 
     // An .eml delivered straight into tasks is tracked like any other work:
@@ -4164,7 +4210,7 @@ fn delivered_work_is_tracked_without_repair() {
         &eml_path,
         format!(
             "From: {ceo_addr}\r\nTo: {cto_addr}\r\nSubject: untracked unit\r\nX-Vivi-Kind: \
-             task\r\n\r\ndone_when: y\r\n"
+             task\r\nX-Vivi-Format: 1\r\n\r\n+++\r\ndone_when = [\"y\"]\r\n+++\r\n"
         ),
     )
     .unwrap();
@@ -4218,13 +4264,21 @@ fn graph_connect_adds_post_hoc_prerequisite() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
-    let prereq = send_work(project.path(), "task", "cto", "prereq unit", "done_when: x");
-    let dependent = send_work(
+    let prereq = send_work_with(
+        project.path(),
+        "task",
+        "cto",
+        "prereq unit",
+        "",
+        &["--done-when", "x"],
+    );
+    let dependent = send_work_with(
         project.path(),
         "task",
         "cto",
         "dependent unit",
-        "done_when: y",
+        "",
+        &["--done-when", "y"],
     );
 
     assert_success(&vivi([
@@ -4287,19 +4341,21 @@ fn need_bind_join_settles_need_item_and_lists_units() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
-    let need = send_work(
+    let need = send_work_with(
         project.path(),
         "need",
         "cto",
         "lowered outcome",
-        "done_when: z",
+        "",
+        &["--done-when", "z"],
     );
-    let unit = send_work(
+    let unit = send_work_with(
         project.path(),
         "task",
         "cto",
         "unit for need",
-        "done_when: w",
+        "",
+        &["--done-when", "w"],
     );
 
     assert_success(&vivi([
@@ -4362,7 +4418,14 @@ fn cross_identity_close_names_the_holder() {
         "--project",
         project_s,
     ]));
-    let task = send_work(project.path(), "task", "cto", "routed unit", "done_when: x");
+    let task = send_work_with(
+        project.path(),
+        "task",
+        "cto",
+        "routed unit",
+        "",
+        &["--done-when", "x"],
+    );
 
     // `cfo` neither authored the task nor is a mind: it may only report,
     // and the refusal says through whom and who may close it.
@@ -4418,6 +4481,8 @@ fn duplicate_work_send_warns_on_open_same_subject() {
         "same want",
         "--body",
         "note: x",
+        "--question",
+        "why",
     ]);
     assert_success(&dup);
     assert!(
@@ -4432,8 +4497,22 @@ fn graph_ready_prints_counts_and_filters_by_kind() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
-    send_work(project.path(), "task", "cto", "a task", "done_when: x");
-    send_work(project.path(), "need", "cto", "a need", "done_when: y");
+    send_work_with(
+        project.path(),
+        "task",
+        "cto",
+        "a task",
+        "",
+        &["--done-when", "x"],
+    );
+    send_work_with(
+        project.path(),
+        "need",
+        "cto",
+        "a need",
+        "",
+        &["--done-when", "y"],
+    );
 
     let ready = stdout(&vivi(["graph", "ready", "backlog", "--project", project_s]));
     assert!(ready.contains("counts   ready="), "{ready}");

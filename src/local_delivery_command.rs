@@ -3,6 +3,7 @@ use std::process::Command as ProcessCommand;
 use serde::{Deserialize, Serialize};
 use vivi::VivariumError;
 use vivi::cli::DeliveryCommand;
+use vivi::letter::work::NeedFront;
 use vivi::mailspace::{Mailspace, SendRequest};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -291,8 +292,15 @@ fn file_delivery(
     to: &str,
     delivery: DeliveryNeed,
 ) -> Result<(), VivariumError> {
-    let body = serde_json::to_string_pretty(&delivery)
+    let json = serde_json::to_string_pretty(&delivery)
         .map_err(|error| VivariumError::Other(format!("failed to encode delivery: {error}")))?;
+    let front = NeedFront::new(vec![format!(
+        "branch {} at {} is merged into {}",
+        delivery.branch, delivery.tip, delivery.base
+    )]);
+    let body = vivi::letter::render(&front, &json).map_err(|error| {
+        VivariumError::Message(format!("failed to render delivery need: {error}"))
+    })?;
     let result = mailspace.send(SendRequest {
         from: from.into(),
         to: vec![to.into()],
@@ -303,7 +311,6 @@ fn file_delivery(
         role: "needs".into(),
         kind: Some("need".into()),
         reply_to: None,
-        depends_on: Vec::new(),
     })?;
     let handle = result
         .delivered
@@ -359,9 +366,10 @@ fn require_delivery(mailspace: &Mailspace, handle: &str) -> Result<(), VivariumE
     let body = parsed
         .body_text(0)
         .ok_or_else(|| VivariumError::Message("delivery item has no structured body".into()))?;
-    let delivery: DeliveryNeed = serde_json::from_str(&body).map_err(|_| {
-        VivariumError::Message(format!("{handle} is not a structured delivery need"))
-    })?;
+    let not_delivery =
+        || VivariumError::Message(format!("{handle} is not a structured delivery need"));
+    let (_, prose) = vivi::letter::split(&body).map_err(|_| not_delivery())?;
+    let delivery: DeliveryNeed = serde_json::from_str(prose).map_err(|_| not_delivery())?;
     if delivery.schema != 1 {
         return Err(VivariumError::Message(format!(
             "unsupported delivery schema {}",

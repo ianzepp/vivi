@@ -89,31 +89,17 @@ fn not_served(pool: &str, band: u8, bands: &PoolBands) -> VivariumError {
     ))
 }
 
-/// The first `band:` line of a task body, with the same trimming and
-/// list-dash rules as `from:` (see [`super::job::body_refs`]): surrounding
-/// whitespace and a leading list dash are ignored, a value holding spaces is
-/// skipped, and the first value wins.
+/// The `band` key of a task's front matter.
 ///
 /// # Errors
-/// Returns an error naming the value when a `band:` line does not parse as a
-/// band.
+/// Returns an error naming the value when `band` does not parse as a band.
 pub fn body_band(body: &str) -> Result<Option<u8>, VivariumError> {
-    for line in body.lines() {
-        let line = line.trim().trim_start_matches(['-', '*']).trim();
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        if value.is_empty() || value.contains(char::is_whitespace) {
-            continue;
-        }
-        if key.trim().to_ascii_lowercase() == "band" {
-            return parse_band(value)
-                .map(Some)
-                .ok_or_else(|| bad_band_value(value));
-        }
+    match super::job::task_front(body).band {
+        Some(value) => parse_band(&value)
+            .map(Some)
+            .ok_or_else(|| bad_band_value(&value)),
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 fn bad_band_value(value: &str) -> VivariumError {

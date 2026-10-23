@@ -1,7 +1,7 @@
 //! Posts a landed research analysis on its want.
 //!
 //! The landing terminal can neither read the need body that holds the
-//! `for: <want>` line nor see the job store, so the post is a tick phase over
+//! `explores` front-matter key nor see the job store, so the post is a tick phase over
 //! `done` research runs. The pump.db `applied_actions` set is the durable
 //! done-marker: the key is written only after the reply succeeded, so a failed
 //! reply is tried again on the next tick. One run that fails does not stop the
@@ -104,8 +104,13 @@ fn post_run<S: JobStore, M: FlowMail>(
     run: &RunRow,
 ) -> Result<(), VivariumError> {
     let need = &run.need;
-    let Some(want) = for_want(&mail.task_body(need)?) else {
+    let Some(stored) = for_want(&mail.task_body(need)?) else {
         return Ok(());
+    };
+    let Some(want) = mail.resolve_want(&stored)? else {
+        return Err(VivariumError::Message(format!(
+            "want {stored} is not in this mailspace"
+        )));
     };
     let steps = store.steps_of(need, run.run)?;
     let Some(step) = steps.iter().find(|step| step.node == RESEARCH_NODE) else {

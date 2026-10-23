@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use super::tick_with;
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::mailspace::RoleUpdate;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::guard::FOREIGN_CLOSE;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
-use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
@@ -80,14 +80,14 @@ fn rig() -> Result<Rig, VivariumError> {
         PUMP,
         "mind",
         "r1 sentinel",
-        &format!("{SENTINEL_MARKER} {need} r1"),
+        &sentinel_body(&need, 1, ""),
         &[],
     )?;
     let step = port.send_step(
         PUMP,
         "mind",
         "r1 plan",
-        &format!("{STEP_MARKER} {need} r1 plan"),
+        &step_body(&need, 1, "plan", ""),
         &[],
     )?;
     port.bind(&need, &[sentinel.clone(), step.clone()])?;

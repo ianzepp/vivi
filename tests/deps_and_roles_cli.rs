@@ -5,6 +5,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use vivi::letter::render;
+use vivi::letter::work::{NeedFront, TaskFront, WantFront};
 use vivi::mailspace::Mailspace;
 use vivi::storage::MessageIngestRequest;
 
@@ -50,14 +52,40 @@ fn address(project: &Path, role: &str) -> String {
         .to_string()
 }
 
+/// The format header and body of a letter of `kind`: a need, want or task
+/// carries its dependencies in front matter; any other kind is plain text.
+fn letter_parts(subject: &str, kind: &str, deps: &[&str]) -> (&'static str, String) {
+    let depends_on: Vec<String> = deps.iter().map(ToString::to_string).collect();
+    let body = match kind {
+        "need" => {
+            let mut front = NeedFront::new(vec![subject.to_string()]);
+            front.depends_on = depends_on;
+            render(&front, "").unwrap()
+        }
+        "want" => {
+            let front = WantFront {
+                question: subject.to_string(),
+                depends_on,
+            };
+            render(&front, "").unwrap()
+        }
+        "task" => {
+            let front = TaskFront {
+                done_when: vec![subject.to_string()],
+                depends_on,
+                ..TaskFront::default()
+            };
+            render(&front, "").unwrap()
+        }
+        _ => return ("", subject.to_string()),
+    };
+    ("X-Vivi-Format: 1\r\n", body)
+}
+
 fn deliver(project: &Path, folder: &str, subject: &str, kind: &str, deps: &[&str]) {
-    let mut headers = String::new();
-    for dep in deps {
-        headers.push_str(&format!("X-Vivi-Depends-On: {dep}\r\n"));
-    }
+    let (format, body) = letter_parts(subject, kind, deps);
     let eml = format!(
-        "From: {}\r\nTo: {}\r\nSubject: {subject}\r\nX-Vivi-Kind: {kind}\r\n{headers}\r\n\
-         done_when: {subject}\r\n",
+        "From: {}\r\nTo: {}\r\nSubject: {subject}\r\nX-Vivi-Kind: {kind}\r\n{format}\r\n{body}",
         address(project, "mind"),
         address(project, "hand"),
     );
@@ -102,7 +130,7 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
             "--subject",
             "seed",
             "--body",
-            "done_when: seed",
+            "seed",
         ],
     );
     deliver(p, "needs", "first", "need", &[]);
@@ -210,14 +238,11 @@ fn ingest(
     kind: &str,
     deps: &[&str],
 ) -> String {
-    let headers: String = deps
-        .iter()
-        .map(|dep| format!("X-Vivi-Depends-On: {dep}\r\n"))
-        .collect();
+    let (format, body) = letter_parts(subject, kind, deps);
     let letter = format!(
         "From: mind@{domain}\r\nTo: {account}@{domain}\r\nSubject: {subject}\r\n\
-         Message-ID: <{subject}@x.test>\r\nX-Vivi-Kind: {kind}\r\n{headers}\
-         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\ndone_when: {subject}\r\n",
+         Message-ID: <{subject}@x.test>\r\nX-Vivi-Kind: {kind}\r\n{format}\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{body}",
         domain = mailspace.address_domain()
     );
     let mut storage = mailspace.storage().unwrap();

@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use crate::letter::fixture::{body_for, task_body};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout, wire_id};
@@ -17,8 +18,6 @@ use crate::sync::transport::{Envelope, Transport};
 
 #[path = "property_bind_test.rs"]
 mod property_bind_test;
-
-pub(super) const BODY: &str = "done_when: it works\n";
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])
@@ -47,11 +46,10 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: BODY.into(),
+            body: task_body("it works\n"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result
@@ -134,11 +132,10 @@ fn send_work(from: &Checkout, role: &str, kind: &str, to: &[String], subject: &s
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: BODY.into(),
+            body: body_for(kind, "it works\n"),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

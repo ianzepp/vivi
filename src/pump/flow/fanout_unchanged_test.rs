@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::start;
@@ -72,7 +73,7 @@ impl Rig {
     }
 
     fn step(&mut self, node: &str, state: StepState) -> Result<String, VivariumError> {
-        let body = format!("pump-step: {NEED} r1 {node}");
+        let body = step_body(NEED, 1, node, "");
         let task = self.mail.send_step("mind", "mind", node, &body, &[])?;
         self.store.insert_step(
             NEED,

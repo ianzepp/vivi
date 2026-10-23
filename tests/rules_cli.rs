@@ -360,8 +360,10 @@ fn send_need(root: &str) -> String {
         "cto",
         "--subject",
         "a real need",
+        "--done-when",
+        "it exists",
         "--body",
-        "done_when: it exists",
+        "it exists",
     ]);
     assert_success(&output);
     handle_after(&stdout(&output), "created cto ")

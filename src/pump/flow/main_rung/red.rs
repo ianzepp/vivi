@@ -228,10 +228,7 @@ fn write_body(
     fs::create_dir_all(&dir)
         .map_err(|e| VivariumError::Message(format!("cannot create {}: {e}", dir.display())))?;
     let path = dir.join(format!("repair-{safe}-{short}.txt"));
-    let body = format!(
-        "target: {target}\ntested: {tip}\n\n{}",
-        body_tail(failing, tail)
-    );
+    let body = format!("tested: {tip}\n\n{}", body_tail(failing, tail));
     fs::write(&path, body)
         .map_err(|e| VivariumError::Message(format!("cannot write {}: {e}", path.display())))?;
     Ok((short, path))
@@ -256,11 +253,13 @@ fn file_need(
     let (short, path) = write_body(ctx, target, tip, failing, tail)?;
     let subject = format!("pump: main rung red on {target} at {short}");
     let args = format!(
-        "need send --from {} --to {} --subject {} --body-file {} --mark repair",
+        "need send --from {} --to {} --subject {} --body-file {} --mark repair --target {} --done-when {}",
         ctx.cfg.reply_from,
         ctx.cfg.reply_to(),
         shell_quote(&subject),
         shell_quote(&path.display().to_string()),
+        shell_quote(target),
+        shell_quote(&format!("the main rung on {target} passes")),
     );
     store.set_main_state(&key(SENDING, target), tip)?;
     let out = ctx.vivi(&args, 60);
