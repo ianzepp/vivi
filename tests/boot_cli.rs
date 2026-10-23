@@ -493,6 +493,7 @@ fn boot_pump_full_and_own_and_none() {
     let root = project.path();
     let pool = tempfile::tempdir().unwrap();
     rosters(root);
+    append_pump_and_pool(root, pool.path());
     assert_success(&vivi([
         "role",
         "set",
@@ -502,7 +503,6 @@ fn boot_pump_full_and_own_and_none() {
         "--project",
         path_str(root),
     ]));
-    append_pump_and_pool(root, pool.path());
     write_boot_pump(root);
     write_claimed_slot(pool.path(), &mailspace_key(root));
 

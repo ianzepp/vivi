@@ -333,7 +333,8 @@ name = "bot"
 email = "bot@example.com"
 "#;
 
-const CHARTER: &str = "Audit faithfully.\nReport every finding.\n";
+const CHARTER: &str =
+    "Audit faithfully.\nReport every finding.\nReply inside a v20 envelope:\n+++\n";
 
 /// A rig with roles: `auditor` (kind auditor, band P1, a charter) and
 /// `helper` (kind hand, no band), a bands table and a `{reasoning}` harness,
