@@ -55,7 +55,6 @@ fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter
         of: "item".into(),
         prev: prev.iter().map(ToString::to_string).collect(),
         from_domain: "a.local".into(),
-        date,
         at: date * 1_000_000,
     }
 }
