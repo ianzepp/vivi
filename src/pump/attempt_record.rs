@@ -17,6 +17,7 @@
 use crate::pump::collect::{local_branch_exists, receipt_full, tail};
 use crate::pump::dispatch::dispatch_base;
 use crate::pump::host::{CmdOutput, Ctx, shell_quote};
+use crate::pump::jobs::PoolJob;
 use crate::pump::record::{reply_on, send_reply};
 use crate::pump::state::State;
 
@@ -338,7 +339,13 @@ pub fn post(ctx: &Ctx, st: &mut State, uid: &str, ending: &Ending) {
 /// it. `facts_text` is the task receipt; the ending's own receipt wins when
 /// it has one. Returns whether the reply went out; a failure is logged and
 /// never blocks the caller.
-pub fn post_on_task(ctx: &Ctx, task: &str, ending: &Ending, facts_text: &str) -> bool {
+pub fn post_on_task(
+    ctx: &Ctx,
+    task: &str,
+    job: &PoolJob,
+    ending: &Ending,
+    facts_text: &str,
+) -> bool {
     let receipt = ending.receipt.as_deref().unwrap_or(facts_text);
     let facts = Facts {
         need: task.to_owned(),
@@ -353,11 +360,15 @@ pub fn post_on_task(ctx: &Ctx, task: &str, ending: &Ending, facts_text: &str) ->
         agent_secs: agent_secs(receipt),
         delivered_at: None,
         uid: task.to_owned(),
-        attempt: 0,
-        model: "None".to_owned(),
-        pool: "?".to_owned(),
-        target: String::new(),
-        branch: None,
+        attempt: job
+            .payload
+            .get("attempt")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX)),
+        model: job.model.clone().unwrap_or_else(|| "None".to_owned()),
+        pool: job.pool.clone().unwrap_or_else(|| "?".to_owned()),
+        target: job.target.clone().unwrap_or_default(),
+        branch: job.branch.clone(),
         base: String::new(),
         shape: Branch::Absent,
         label: ending.label.clone(),
