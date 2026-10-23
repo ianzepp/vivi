@@ -97,3 +97,31 @@ fn a_broken_conditional_rule_is_invalid() {
     );
     assert_eq!(err.to_string(), "answer \"bad\" is not allowed");
 }
+
+#[test]
+fn a_table_below_the_closing_fence_is_refused_with_its_line() {
+    let text = "+++\nanswer = \"ok\"\n+++\nprose\n\n  [[check]]\ncmd = \"x\"\n";
+    let err = parse::<Probe>(text).unwrap_err();
+    assert_eq!(
+        err,
+        EnvelopeError::TableBelowFence {
+            line: 6,
+            table: "[[check]]".to_string()
+        }
+    );
+    assert!(err.to_string().starts_with("line 6:"), "{err}");
+    let follow = "+++\nanswer = \"ok\"\n+++\n[[follow_up]]\n";
+    assert!(matches!(
+        parse::<Probe>(follow),
+        Err(EnvelopeError::TableBelowFence { line: 4, .. })
+    ));
+}
+
+#[test]
+fn the_same_tables_inside_the_front_matter_are_not_refused_for_position() {
+    let text = "+++\nanswer = \"ok\"\n[[check]]\ncmd = \"x\"\n+++\nprose\n";
+    let err = parse::<Probe>(text).unwrap_err();
+    // Probe has no `check` key, so this is the generic unknown-key refusal,
+    // not the below-fence one.
+    assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
+}
