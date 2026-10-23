@@ -22,25 +22,24 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::{FollowUp, Hand, RoleKind};
-use crate::pump::flow::advance::route::{self, JoinInput};
+use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, guard, terminal};
 use crate::pump::flow::answer;
-use crate::pump::flow::collect::{self, Collected};
-use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, FlowNode, NodeClass};
+use crate::pump::flow::collect_step::RunCx;
+use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
-use crate::pump::flow::outcome::{Outcome, StartAction, StartCx};
+use crate::pump::flow::outcome::{StartAction, StartCx};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
 use crate::pump::flow::slice_dispatch::{self, AttemptResult, DEVIATIONS_MARKER, Retried};
 use crate::pump::flow::validate::validate;
-use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -126,7 +125,7 @@ where
     for run in store.live_runs()? {
         let unit = format!("{} r{}", run.need, run.run);
         let result = def_of(&run).and_then(|def| {
-            Tick {
+            RunCx {
                 ctx,
                 st: &mut *st,
                 store,
@@ -248,19 +247,7 @@ fn unapplied_step_jobs<S: JobStore>(
     Ok(found)
 }
 
-/// One live run's tick.
-struct Tick<'a, S, M> {
-    ctx: &'a Ctx,
-    st: &'a mut S,
-    store: &'a PumpStore,
-    mail: &'a mut M,
-    registry: &'a Registry<S, M>,
-    decide: route::Decide<'a>,
-    def: FlowDef,
-    run: RunRow,
-}
-
-impl<S, M> Tick<'_, S, M>
+impl<S, M> RunCx<'_, S, M>
 where
     S: JobStore,
     M: FlowMail,
@@ -310,209 +297,21 @@ where
             if is_slice_row(&step) {
                 self.slice_job(&job, row, &step)?;
             } else if let Some(class) = self.class_of(&step.node) {
-                self.step_job(&job, row, &step, &class)?;
+                let registry = self.registry;
+                let kind = self.def.kind;
+                let Some(collector) = registry.collector_for(kind, &class) else {
+                    return Err(VivariumError::Parse(format!(
+                        "no collector for node {} ({}) of the {} flow",
+                        step.node,
+                        class.name(),
+                        kind.name()
+                    )));
+                };
+                collector.collect(self, &job, row, &step, &class)?;
             }
         }
         jobs::mark_applied(self.st, id, self.ctx.now());
         Ok(())
-    }
-
-    fn class_of(&self, node: &str) -> Option<NodeClass> {
-        self.def
-            .nodes
-            .iter()
-            .find(|n| n.id == node)
-            .map(|n| n.class.clone())
-    }
-
-    fn advance_word(
-        &mut self,
-        step: &StepRow,
-        word: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), VivariumError> {
-        let outcome = Outcome {
-            need: self.run.need.clone(),
-            run: self.run.run,
-            node: step.node.clone(),
-            task: step.task.clone(),
-            word: word.to_owned(),
-            payload,
-        };
-        let advanced = advance::advance(
-            self.ctx,
-            self.store,
-            self.mail,
-            &self.def,
-            &outcome,
-            self.decide,
-        )?;
-        if let Some(reason) = advanced.routed.rejected {
-            self.ctx.exception(WORD_REJECTED, &step.task, &reason);
-        }
-        Ok(())
-    }
-
-    /// A finished job of a flow node: a role, a rung or a merge.
-    fn step_job(
-        &mut self,
-        job: &PoolJob,
-        row: &StepJobRow,
-        step: &StepRow,
-        class: &NodeClass,
-    ) -> Result<(), VivariumError> {
-        match class {
-            NodeClass::MergeMain => match crate::pump::jobs::merge_main::classify(job) {
-                Some(crate::pump::jobs::merge_main::MergeMainResult::Merged(sha)) => {
-                    self.advance_word(step, "merged", merged_payload(&sha))
-                }
-                Some(crate::pump::jobs::merge_main::MergeMainResult::Conflict) => {
-                    self.advance_word(step, "conflict", serde_json::json!({}))
-                }
-                _ => self.verify_step(job, step),
-            },
-            NodeClass::RungNeed
-            | NodeClass::RungMain
-            | NodeClass::RungRelease
-            | NodeClass::RungRaised => {
-                let result = crate::pump::jobs::rung_result::parse(job);
-                let word = match (result.pass, result.exit) {
-                    (true, _) => "pass",
-                    (false, Some(_)) => "fail",
-                    (false, None) => FAILED,
-                };
-                self.advance_word(
-                    step,
-                    word,
-                    serde_json::json!({"exit": result.exit, "tail": result.tail}),
-                )
-            }
-            _ => self.role_job(job, row, step, class),
-        }
-    }
-
-    fn role_job(
-        &mut self,
-        job: &PoolJob,
-        row: &StepJobRow,
-        step: &StepRow,
-        class: &NodeClass,
-    ) -> Result<(), VivariumError> {
-        let expected = job.publish_ref.clone().unwrap_or_default();
-        let collected = collect::collect(self.ctx, self.mail, job, row, class, &expected);
-        match collected {
-            Collected::Outcome(word, payload) => self.advance_word(step, &word, payload),
-            Collected::Failed => {
-                self.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
-            }
-            Collected::Verify => self.verify_step(job, step),
-            Collected::Retry if job.kind == correct::KIND => {
-                self.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
-            }
-            Collected::Retry => self.rerun(job, row, step),
-            Collected::Correct { error } => {
-                let kind = RoleKind::from_class(class).ok_or_else(|| {
-                    VivariumError::Parse(format!("node {} has no role kind", step.node))
-                })?;
-                self.correct(job, row, kind, &error)
-            }
-        }
-    }
-
-    /// Queue a correction job for the broken reply of `job`.
-    fn correct(
-        &mut self,
-        job: &PoolJob,
-        row: &StepJobRow,
-        kind: RoleKind,
-        error: &crate::pump::envelope::EnvelopeError,
-    ) -> Result<(), VivariumError> {
-        let n = correct::correction_n(&job.id) + 1;
-        let spec = correct::spec(&self.run.need, row, &job.role, kind, job, error, n);
-        correct::enqueue(self.st, self.store, &self.run.need, row, spec)
-    }
-
-    /// Run a role step's job again as the next attempt.
-    fn rerun(
-        &mut self,
-        job: &PoolJob,
-        row: &StepJobRow,
-        step: &StepRow,
-    ) -> Result<(), VivariumError> {
-        let attempt = row.attempt + 1;
-        let id = format!("{}-a{attempt}", correct::base_id(&job.id));
-        let mut spec = JobSpec::new(
-            id.clone(),
-            &job.kind,
-            &job.role,
-            job.subject.clone(),
-            job.body.clone(),
-        );
-        spec.task.clone_from(&job.task);
-        spec.target.clone_from(&job.target);
-        spec.from_ref.clone_from(&job.from_ref);
-        spec.branch.clone_from(&job.branch);
-        spec.publish_ref.clone_from(&job.publish_ref);
-        spec.pool_candidates.clone_from(&job.pool_candidates);
-        spec.local_only = job.local_only;
-        spec.read_only = job.read_only;
-        spec.budget = job.budget;
-        spec.payload = job.payload.clone();
-        jobs::enqueue(self.st, spec)?;
-        self.store.insert_step_job(
-            &self.run.need,
-            &StepJobRow {
-                job: id,
-                run: row.run,
-                node: row.node.clone(),
-                task: row.task.clone(),
-                attempt,
-            },
-        )?;
-        self.store
-            .set_step_state(&step.task, StepState::Running, None)
-    }
-
-    /// A side-effect step with no decisive receipt: git decides.
-    fn verify_step(&mut self, job: &PoolJob, step: &StepRow) -> Result<(), VivariumError> {
-        let receipt = job
-            .outcome
-            .as_ref()
-            .and_then(|outcome| outcome.runner_publish())
-            .filter(|publish| publish.succeeded())
-            .map(|publish| RunnerPublishReceipt {
-                sha: publish.remote_sha,
-            });
-        let remote_ref = job.publish_ref.clone().unwrap_or_default();
-        let req = VerifyReq {
-            target: job.target.clone().unwrap_or_default(),
-            remote_ref: remote_ref.clone(),
-            before: job.from_ref.clone(),
-            must_contain: job
-                .publish_contains
-                .clone()
-                .or_else(|| job.publish_expect.clone())
-                .unwrap_or_default(),
-            receipt,
-        };
-        match verify::check(self.ctx, &req) {
-            SideEffect::Verified { sha } => self.advance_word(step, "merged", merged_payload(&sha)),
-            SideEffect::Absent => {
-                self.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
-            }
-            SideEffect::Unclear { reason } => {
-                self.ctx.exception(
-                    SIDE_EFFECT_UNCLEAR,
-                    &step.task,
-                    &format!(
-                        "step {} task {} job {} ref {remote_ref}: {reason}; answer with `vivi pump answer`",
-                        step.node, step.task, job.id
-                    ),
-                );
-                self.store
-                    .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))
-            }
-        }
     }
 
     // ---- slices ------------------------------------------------------------
@@ -889,10 +688,6 @@ where
 /// replies sort in the order they were written.
 fn marked_reply_text(marker: &str, body: &str) -> String {
     crate::mailspace::marked_line(marker, body)
-}
-
-fn merged_payload(sha: &str) -> serde_json::Value {
-    serde_json::json!({"sha": sha, "commit": sha})
 }
 
 #[cfg(test)]

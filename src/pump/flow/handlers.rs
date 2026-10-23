@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use crate::error::VivariumError;
 use crate::pump::flow::advance::restart;
 use crate::pump::flow::advance::route::JoinInput;
+use crate::pump::flow::collect_step::{self, StepCollector};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::SliceEdges;
 use crate::pump::flow::mail::{MailWriter, OpenRecords};
@@ -50,6 +51,7 @@ type DecideFn = dyn Fn(&PumpStore, &FlowNode, &[JoinInput]) -> Result<String, Vi
 pub(crate) struct Registry<S, M> {
     classes: BTreeMap<(FlowKind, NodeClass), Box<dyn StepHandler>>,
     nodes: BTreeMap<(FlowKind, String), Box<dyn StepHandler>>,
+    collectors: BTreeMap<(FlowKind, NodeClass), Box<dyn StepCollector<S, M>>>,
     decide: Box<DecideFn>,
     phases: Vec<Box<dyn TickPhase<S, M>>>,
 }
@@ -59,6 +61,7 @@ impl<S, M> Registry<S, M> {
         Self {
             classes: BTreeMap::new(),
             nodes: BTreeMap::new(),
+            collectors: BTreeMap::new(),
             decide: Box::new(no_decision_rule),
             phases: Vec::new(),
         }
@@ -80,6 +83,17 @@ impl<S, M> Registry<S, M> {
             .get(&(kind, node.id.clone()))
             .or_else(|| self.classes.get(&(kind, node.class.clone())))
             .map(Box::as_ref)
+    }
+
+    /// Register the result collector of every node of `class` in `kind`; a
+    /// later registration replaces an earlier one.
+    pub(crate) fn collector(
+        &mut self,
+        kind: FlowKind,
+        class: NodeClass,
+        c: Box<dyn StepCollector<S, M>>,
+    ) {
+        self.collectors.insert((kind, class), c);
     }
 
     /// Replace the decide slot.
@@ -113,6 +127,22 @@ impl<S, M> Registry<S, M> {
     }
 }
 
+impl<S: JobStore, M: FlowMail> Registry<S, M> {
+    /// The result collector for steps of `class` in `kind`: the registered
+    /// one, else the class's default (a registry built by hand with
+    /// [`Registry::new`] still collects every step class).
+    pub(crate) fn collector_for(
+        &self,
+        kind: FlowKind,
+        class: &NodeClass,
+    ) -> Option<&dyn StepCollector<S, M>> {
+        self.collectors
+            .get(&(kind, class.clone()))
+            .map(Box::as_ref)
+            .or_else(|| collect_step::default_for(class))
+    }
+}
+
 /// No code decision has a rule yet: a join or raise check that routing reaches
 /// is an error held on its run.
 fn no_decision_rule(
@@ -129,6 +159,7 @@ fn no_decision_rule(
 /// The registry the pump ships.
 pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     let mut registry = Registry::new();
+    collect_step::register_defaults(&mut registry);
     restart::register(&mut registry);
     intake::register(&mut registry);
     need_branch::register(&mut registry);
