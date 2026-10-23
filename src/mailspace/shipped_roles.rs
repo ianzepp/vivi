@@ -52,7 +52,9 @@ impl Mailspace {
     }
 
     fn ensure_role_with(&mut self, name: &str, update: RoleUpdate) -> Result<(), VivariumError> {
-        let existing = find_role(&self.config, name)
+        let existing = self
+            .config
+            .role_named(name)
             .map(|role| (role.name.clone(), role.name.eq_ignore_ascii_case(name)));
         let canonical = match existing {
             Some((owner, false)) => {
@@ -75,23 +77,12 @@ impl Mailspace {
     }
 }
 
-/// The role a name or alias denotes, ignoring case.
-fn find_role<'a>(config: &'a MailspaceConfig, name: &str) -> Option<&'a LocalIdentity> {
-    config.identities.iter().find(|role| {
-        role.name.eq_ignore_ascii_case(name)
-            || role
-                .aliases
-                .iter()
-                .any(|alias| alias.eq_ignore_ascii_case(name))
-    })
-}
-
 /// The pool of the pump's hand role, else the first local pool.
 fn flow_pool(config: &MailspaceConfig) -> Option<String> {
     let hand_pool = config
         .pump
         .as_ref()
-        .and_then(|pump| find_role(config, &pump.to))
+        .and_then(|pump| config.role_named(&pump.to))
         .and_then(|role| role.pool.clone());
     hand_pool.or_else(|| {
         config

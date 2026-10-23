@@ -192,3 +192,17 @@ fn ensure_pump_planner_role_fills_a_blank_charter_and_leaves_the_planner_seat_al
         "Report to the Mind.\n"
     );
 }
+
+#[test]
+fn role_named_matches_name_and_alias_ignoring_case() {
+    let config: crate::mailspace::MailspaceConfig =
+        toml::from_str("name = 'test'\n[[identities]]\nname = 'Slicer'\naliases = ['cutter']\n")
+            .unwrap();
+    for name in ["slicer", "SLICER", "Cutter"] {
+        assert_eq!(
+            config.role_named(name).map(|role| role.name.as_str()),
+            Some("Slicer")
+        );
+    }
+    assert!(config.role_named("unknown").is_none());
+}
