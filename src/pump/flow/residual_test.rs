@@ -1,13 +1,24 @@
 //! Tests for residual and requirement-gap need filing.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::file;
+use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::review::{
     Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus,
 };
+use crate::pump::flow::advance::start::start;
+use crate::pump::flow::def::{FlowKind, NodeClass};
+use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::handlers::{self, Registry};
+use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
+use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 fn context(root: &std::path::Path) -> (Ctx, Arc<FakeHost>) {
     let (ctx, host) = test_ctx(root, PumpConfig::default());
@@ -133,4 +144,97 @@ fn repeat_with_same_keys_files_nothing_new() {
     let handles = file(&ctx, "n1", 1, "audit-task", &auditor).unwrap();
     assert_eq!(handles, vec![String::from("h0"), String::from("h1")]);
     assert_eq!(send_commands(&host).len(), before);
+}
+
+// ---- the build auditor collector ------------------------------------------------
+
+#[derive(Default)]
+struct Jobs {
+    jobs: BTreeMap<String, PoolJob>,
+}
+
+impl JobStore for Jobs {
+    fn jobs(&self) -> &BTreeMap<String, PoolJob> {
+        &self.jobs
+    }
+
+    fn jobs_mut(&mut self) -> &mut BTreeMap<String, PoolJob> {
+        &mut self.jobs
+    }
+}
+
+const RESIDUAL: &str = "+++\nanswer = \"residual\"\n\n[[finding]]\nid = \"F1\"\n\
+                        content = 'a defect'\npaths = [\"src/a.rs\"]\n\
+                        recheck_trigger = 'recheck a.rs'\n+++\nthe audit";
+
+#[test]
+fn the_shipped_registry_files_residual_needs_from_a_build_audit() -> Result<(), VivariumError> {
+    let dir = tempfile::tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    let (ctx, host) = context(dir.path());
+    let registry: Registry<Jobs, FakeMail> = handlers::shipped(&ctx);
+    assert!(
+        registry
+            .collector_for(FlowKind::Build, &NodeClass::Auditor)
+            .is_some()
+    );
+    assert!(
+        registry
+            .collector_for(FlowKind::Research, &NodeClass::Auditor)
+            .is_some()
+    );
+
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let mut mail = FakeMail::new("mind");
+    MailWriter::open_record(&mut mail, "n1", "kind: build")?;
+    start(&ctx, &store, &mut mail, "n1", Some("plan"))?;
+    let task = mail.send_step("mind", "mind", "audit", "pump-step: n1 r1 audit1", &[])?;
+    store.insert_step(
+        "n1",
+        &StepRow {
+            run: 1,
+            node: "audit1".into(),
+            task: task.clone(),
+            state: StepState::Running,
+            verdict: None,
+        },
+    )?;
+    let mut jobs = Jobs::default();
+    let mut spec = JobSpec::new("audit-j1", "auditor", "auditor", "s", "b");
+    spec.task = Some(task.clone());
+    jobs::enqueue(&mut jobs, spec)?;
+    store.insert_step_job(
+        "n1",
+        &StepJobRow {
+            job: "audit-j1".into(),
+            run: 1,
+            node: "audit1".into(),
+            task: task.clone(),
+            attempt: 1,
+        },
+    )?;
+    let job = jobs.jobs.get_mut("audit-j1").expect("job");
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: format!(
+            "pool result audit-j1: finished\npool p  slot s1  model m\nfrom main  default\n\
+             push: \nagent exit 0 in 12s, job 20s, started from 1234567890\n\n\
+             --- receipt\n{RESIDUAL}\n\n--- stderr tail\n\n\n--- runner log tail\nlog line"
+        ),
+        at: 0,
+    });
+
+    tick_with(&ctx, &mut jobs, &store, &mut mail, &registry)?;
+
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(send_commands(&host).len(), 1, "exceptions: {exceptions}");
+    let audit = store
+        .steps_of("n1", 1)?
+        .into_iter()
+        .find(|row| row.node == "audit1")
+        .expect("audit step");
+    assert_eq!(audit.state, StepState::Done);
+    assert_eq!(audit.verdict.as_deref(), Some("residual"));
+    Ok(())
 }
