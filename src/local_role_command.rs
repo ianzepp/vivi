@@ -1,5 +1,6 @@
 use vivi::VivariumError;
 use vivi::cli::{RoleCharterCommand, RoleCommand};
+use vivi::mailspace::config_edit::{self, GuardedWrite};
 use vivi::mailspace::{Mailspace, RoleUpdate, RoleView, read_body_input};
 use vivi::role_status;
 
@@ -216,8 +217,12 @@ fn show_role(
 fn add_role(args: &AddRoleArgs<'_>) -> Result<(), VivariumError> {
     let mut mailspace = Mailspace::discover(args.project)?;
     let update = build_add_update(args);
-    let address = mailspace.add_role(args.name, update)?;
+    let root = mailspace.root.clone();
+    let config = mailspace.config_path();
+    let (address, write) =
+        config_edit::guard_file(&root, &config, || mailspace.add_role(args.name, update))?;
     println!("added {address}");
+    print_notes(&write);
     let role = mailspace.resolve_identity(args.name)?;
     report_adopted(&mailspace, &role)
 }
@@ -265,9 +270,60 @@ fn set_role(
         ));
     }
     let mut mailspace = Mailspace::discover(project)?;
-    let view = mailspace.set_role(name, update)?;
+    let view = if runtime_only(&update) {
+        mailspace.set_role(name, update)?
+    } else {
+        let root = mailspace.root.clone();
+        let config = mailspace.config_path();
+        let (view, write) =
+            config_edit::guard_file(&root, &config, || mailspace.set_role(name, update))?;
+        println!("updated {} ({})", view.name, view.address);
+        print_notes(&write);
+        return Ok(());
+    };
     println!("updated {} ({})", view.name, view.address);
     Ok(())
+}
+
+/// True when an update only records a live seat's `pid` and/or `host`: runtime
+/// state, not configuration, so it needs no guard and works while the pump runs.
+fn runtime_only(update: &RoleUpdate) -> bool {
+    let RoleUpdate {
+        kind,
+        status,
+        harness,
+        provider,
+        model,
+        thinking,
+        pid,
+        host,
+        cadence,
+        add_labels,
+        clear_labels,
+        pool,
+        read_only,
+        models,
+    } = update;
+    let other = kind.is_some()
+        || status.is_some()
+        || harness.is_some()
+        || provider.is_some()
+        || model.is_some()
+        || thinking.is_some()
+        || cadence.is_some()
+        || !add_labels.is_empty()
+        || !clear_labels.is_empty()
+        || pool.is_some()
+        || read_only.is_some()
+        || models.is_some();
+    !other && (pid.is_some() || host.is_some())
+}
+
+/// Print a guarded write's backup and still-invalid lines on stderr.
+fn print_notes(write: &GuardedWrite) {
+    for note in write.notes() {
+        eprintln!("{note}");
+    }
 }
 
 fn rename_role(
@@ -328,8 +384,13 @@ fn handle_charter(command: &RoleCharterCommand) -> Result<(), VivariumError> {
                 .map(std::path::PathBuf::as_path);
             let charter = read_body_input(body.as_deref(), path)?;
             let mut mailspace = Mailspace::discover(project.as_deref())?;
-            mailspace.set_charter(name, &charter)?;
+            let canonical = mailspace.resolve_identity(name)?;
+            let root = mailspace.root.clone();
+            let file = mailspace.charter_path(&canonical);
+            let ((), write) =
+                config_edit::guard_file(&root, &file, || mailspace.set_charter(name, &charter))?;
             println!("charter set for {name} ({} bytes)", charter.len());
+            print_notes(&write);
             Ok(())
         }
     }

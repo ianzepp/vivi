@@ -632,7 +632,9 @@ impl Mailspace {
         super::inherit::charter_file(&self.dir, name)
     }
 
-    fn charter_path(&self, name: &str) -> PathBuf {
+    /// The project's charter file for a canonical role name.
+    #[must_use]
+    pub fn charter_path(&self, name: &str) -> PathBuf {
         self.dir.join("charters").join(format!("{name}.md"))
     }
 
