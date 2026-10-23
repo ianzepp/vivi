@@ -351,6 +351,8 @@ fn fresh_initialised_project() -> tempfile::TempDir {
     space.ensure_merge_role().unwrap();
     space.ensure_pump_planner_role().unwrap();
     space.ensure_starter_pump().unwrap();
+    crate::pump::control::set_project_mode(dir.path(), crate::pump::control::PumpMode::Running)
+        .unwrap();
     dir
 }
 

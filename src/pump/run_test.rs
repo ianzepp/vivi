@@ -534,10 +534,11 @@ fn a_second_instance_is_refused_by_the_lock() {
 
 #[test]
 fn a_missing_default_roster_role_holds_the_pump_and_names_the_fix_command() {
-    // `to` is the default `hand`: a role a fresh project does not have yet.
     let missing_hand =
         PUMP_TOML_IDENTITIES.replace("[[identities]]\nname = \"hand\"\nkind = \"hand\"\n\n", "");
     let dir = mailspace_project(&format!("{PUMP_TOML}{missing_hand}"));
+    crate::pump::control::set_project_mode(dir.path(), crate::pump::control::PumpMode::Running)
+        .unwrap();
     run(dir.path(), true).expect("a missing role is not ready, not an error");
     let status = fs::read_to_string(dir.path().join(".vivi/pump/status.txt")).unwrap();
     assert!(status.contains("not ready:"), "{status}");
@@ -602,19 +603,19 @@ fn status_reads_the_status_file_or_says_no_status_yet() {
     let shown = status(with_file.path()).unwrap();
     assert!(
         shown.starts_with(
-            "1970-01-12T13:46:40Z\nunits \ncontrol  running\nwriter   not running\nage "
+            "1970-01-12T13:46:40Z\nunits \ncontrol  stopped\nwriter   not running\nage "
         ),
         "{shown}"
     );
     let without_file = mailspace_project("name = \"s\"\n\n[pump]\nhome = \"pump-home\"\n");
     assert_eq!(
         status(without_file.path()).unwrap(),
-        "no status yet\ncontrol  running\nwriter   not running\nage      never\n"
+        "no status yet\ncontrol  stopped\nwriter   not running\nage      never\n"
     );
     let no_mailspace = tempdir().unwrap();
     assert_eq!(
         status(no_mailspace.path()).unwrap(),
-        "no status yet\ncontrol  running\nwriter   not running\nage      never\n"
+        "no status yet\ncontrol  stopped\nwriter   not running\nage      never\n"
     );
 }
 

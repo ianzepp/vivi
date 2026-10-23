@@ -94,3 +94,26 @@ fn stopping_a_live_current_pump_writes_control_and_legacy_signal() {
     let store = PumpStore::open_read_only(&path).unwrap().unwrap();
     assert_eq!(store.control_mode().unwrap().as_deref(), Some("stopped"));
 }
+
+#[test]
+fn a_new_database_initializes_stopped_and_a_marker_still_wins() {
+    let dir = tempdir().unwrap();
+    assert_eq!(inspect(dir.path()).unwrap().mode, PumpMode::Stopped);
+    assert_eq!(initialize(dir.path()).unwrap().mode, PumpMode::Stopped);
+
+    let paused = tempdir().unwrap();
+    fs::write(paused.path().join("PAUSE"), "").unwrap();
+    assert_eq!(initialize(paused.path()).unwrap().mode, PumpMode::Paused);
+}
+
+#[test]
+fn an_upgraded_database_without_a_control_row_keeps_running() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("DELETE FROM pump_control", []).unwrap();
+    drop(conn);
+
+    assert_eq!(initialize(dir.path()).unwrap().mode, PumpMode::Running);
+}
