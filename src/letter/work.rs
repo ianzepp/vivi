@@ -117,6 +117,9 @@ pub struct TaskFront {
     /// The pump step this task belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<StepFront>,
+    /// The pump job a brief task carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobFront>,
 }
 
 impl TaskFront {
@@ -160,7 +163,29 @@ impl Validate for TaskFront {
         check_opt("branch", self.branch.as_deref())?;
         check_list("with", &self.with)?;
         check_opt("band", self.band.as_deref())?;
-        self.step.as_ref().map_or(Ok(()), Validate::validate)
+        self.step.as_ref().map_or(Ok(()), Validate::validate)?;
+        self.job.as_ref().map_or(Ok(()), Validate::validate)
+    }
+}
+
+/// The `[job]` table of a task or brief note: the pump job it carries.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobFront {
+    /// The pool job id. Required.
+    pub id: String,
+    /// The job kind. Required.
+    pub kind: String,
+    /// The built-in role the job runs, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin_role: Option<String>,
+}
+
+impl Validate for JobFront {
+    fn validate(&self) -> Result<(), String> {
+        check_text("job.id", &self.id)?;
+        check_text("job.kind", &self.kind)?;
+        check_opt("job.builtin_role", self.builtin_role.as_deref())
     }
 }
 

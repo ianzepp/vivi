@@ -1,6 +1,7 @@
 //! The one entry point readers call to get the typed front of a stored need,
 //! want or task letter body.
 
+use crate::letter::records::RecordFront;
 use crate::letter::work::{NeedFront, StepFront, TaskFront, WantFront};
 use crate::letter::{Envelope, FENCE, LetterError, parse_letter};
 
@@ -57,6 +58,22 @@ pub fn task_of(handle: &str, body: &str) -> Result<Envelope<TaskFront>, LetterEr
     Err(LetterError::Legacy {
         handle: handle.to_string(),
         kind: "task".to_string(),
+    })
+}
+
+/// The typed front of a pump record body.
+///
+/// # Errors
+///
+/// Returns the `LetterError` when the front matter does not parse or validate,
+/// and `LetterError::Legacy` naming `handle` for a body with no front matter.
+pub fn record_of(handle: &str, body: &str) -> Result<Envelope<RecordFront>, LetterError> {
+    if has_front(body) {
+        return parse_letter(body);
+    }
+    Err(LetterError::Legacy {
+        handle: handle.to_string(),
+        kind: "pump".to_string(),
     })
 }
 

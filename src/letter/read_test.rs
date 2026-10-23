@@ -1,7 +1,9 @@
 use super::*;
 use crate::letter::fixture::{
-    need_body, need_body_with, sentinel_body, step_body, task_body, want_body,
+    need_body, need_body_with, record_body, record_with_need, repair_record_body, sentinel_body,
+    step_body, task_body, want_body,
 };
+use crate::letter::records::RecordKind;
 
 #[test]
 fn front_matter_need_want_task_parse() {
@@ -80,4 +82,32 @@ fn legacy_prose_bodies_are_refused_naming_the_handle() {
             .contains("letter n9")
     );
     assert_eq!(step_of("pump-step: n1 r2 plan"), None);
+}
+
+#[test]
+fn record_of_reads_front_legacy_and_invalid() {
+    let record = record_of("r1", &record_body("n1", "research")).unwrap();
+    assert_eq!(record.front.need, "n1");
+    assert_eq!(record.front.kind, Some(RecordKind::Research));
+    let repair = record_of("r2", &repair_record_body("n1", "vivi", Some("abc"), "p")).unwrap();
+    assert_eq!(repair.front.tested.as_deref(), Some("abc"));
+    assert_eq!(repair.body, "p");
+    assert_eq!(
+        record_of("r3", "need: n1\n").err(),
+        Some(LetterError::Legacy {
+            handle: "r3".to_string(),
+            kind: "pump".to_string(),
+        })
+    );
+    assert!(matches!(
+        record_of("r4", "+++\nneed = \" \"\n+++\n"),
+        Err(LetterError::Invalid(_))
+    ));
+}
+
+#[test]
+fn record_with_need_inserts_the_need_after_the_fence() {
+    let body = record_with_need(&record_body("old", ""), "n1");
+    assert!(body.starts_with("+++\nneed = \"n1\"\n"));
+    assert_eq!(record_with_need("plain prose", "n"), "plain prose");
 }
