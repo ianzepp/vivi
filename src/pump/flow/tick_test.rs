@@ -16,9 +16,9 @@ use super::{
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
-use crate::pump::flow::outcome::StepHandlers;
 use crate::pump::flow::run::{SENTINEL_NODE, start};
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
@@ -130,7 +130,7 @@ impl Rig {
             &mut self.jobs,
             &self.store,
             &mut self.mail,
-            &StepHandlers::new(),
+            &Registry::new(),
         )
     }
 
