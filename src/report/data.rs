@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::VivariumError;
-use crate::pump::attempt_read::{AttemptFields, AttemptStatusEvent};
+use crate::pump::attempt_read::AttemptFields;
 use crate::storage::Storage;
 
 use super::model::{AttemptRecord, NeedWindow, ReportData};
@@ -14,18 +14,13 @@ pub fn read(project: &Path) -> Result<ReportData, VivariumError> {
     let storage = Storage::open_mailspace_read_only(&dir)?;
     let messages = storage.list_messages()?;
     let mut attempts: BTreeMap<String, AttemptFields> = BTreeMap::new();
-    let mut status_events: Vec<AttemptStatusEvent> = Vec::new();
     for message in messages {
         let bytes = storage.read_message(&message.message_id)?;
         let body = text_body(&bytes);
         if let Some(attempt) = crate::pump::attempt_read::parse_record(&body) {
             keep_newest(&mut attempts, attempt);
         }
-        if let Some(status) = crate::pump::attempt_read::parse_status_event(&body) {
-            status_events.push(status);
-        }
     }
-    apply_status_events(&mut attempts, &status_events);
     let attempts: Vec<AttemptFields> = attempts.into_values().collect();
     let needs = need_windows(&storage, &attempts)?;
     Ok(ReportData {
@@ -47,17 +42,6 @@ fn keep_newest(attempts: &mut BTreeMap<String, AttemptFields>, next: AttemptFiel
         .is_none_or(|current| next.end.unwrap_or_default() > current.end.unwrap_or_default());
     if replace {
         attempts.insert(next.attempt.clone(), next);
-    }
-}
-
-fn apply_status_events(
-    attempts: &mut BTreeMap<String, AttemptFields>,
-    events: &[AttemptStatusEvent],
-) {
-    for event in events {
-        if let Some(attempt) = attempts.get_mut(&event.attempt) {
-            attempt.apply_status_event(event);
-        }
     }
 }
 
