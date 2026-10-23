@@ -855,7 +855,9 @@ fn a_preset_task_job_posts_one_brief_before_it_dispatches() {
     assert!(reply < dispatch, "{commands:?}");
     assert!(commands[reply].contains("t1"), "{commands:?}");
     let brief = brief.expect("brief file written");
-    assert!(brief.starts_with("pump-brief: h1\n"), "{brief}");
+    let first = brief.lines().next().unwrap();
+    assert!(first.starts_with("pump-brief: t="), "{brief}");
+    assert!(first.ends_with(" h1"), "{brief}");
     assert!(brief.contains("WRITE SCOPE: a.rs"), "{brief}");
 }
 
@@ -865,7 +867,7 @@ fn a_task_that_already_has_this_jobs_brief_gets_no_second_one() {
         host.reply(
             "mail thread",
             0,
-            "From: pump\n\npump-brief: h1\nWRITE SCOPE\n",
+            "From: pump\n\npump-brief: t=1761100000123456 h1\nWRITE SCOPE\n",
         );
     });
     assert_eq!(replies_in(&commands), 0, "{commands:?}");
