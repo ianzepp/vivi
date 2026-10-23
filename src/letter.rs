@@ -10,6 +10,7 @@ pub mod message;
 pub mod plain;
 pub mod read;
 pub mod records;
+pub mod sugar;
 pub mod work;
 
 pub use kinds::{Front, Letter, LetterKind, parse_kind};
