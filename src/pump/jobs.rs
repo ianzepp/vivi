@@ -20,9 +20,9 @@ mod receipts;
 mod recovery;
 pub mod rung;
 pub mod rung_result;
-#[cfg(test)]
-use dispatcher::{FixMarks, dispatch_order, pool_command, send_task};
 pub use dispatcher::{candidate_pools, dispatch_pending};
+#[cfg(test)]
+use dispatcher::{dispatch_order, pool_command, send_task};
 pub use gate_sources::{
     mark_gate_attempted, mark_gated, mark_integration_failed, mark_merged,
     sources_need_gate_attempt, sources_waiting_for_gate,
@@ -286,13 +286,6 @@ impl From<JobSpec> for PoolJob {
 pub trait JobStore {
     fn jobs(&self) -> &BTreeMap<String, PoolJob>;
     fn jobs_mut(&mut self) -> &mut BTreeMap<String, PoolJob>;
-
-    /// Ids of pump-created gate-fix needs and their units, which dispatch
-    /// ranks as fix work beside the `fix_prefix` spelling. A store without a
-    /// pump state has none.
-    fn fix_ids(&self) -> std::collections::BTreeSet<String> {
-        std::collections::BTreeSet::new()
-    }
 }
 
 /// Add a durable pending job. A stable ID makes repeated scheduler ticks safe.
