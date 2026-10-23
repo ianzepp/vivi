@@ -7,10 +7,10 @@ use std::fs;
 
 use super::{ACTION_REFUSED, has_active_run, register};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::mailspace::{PumpActionKind, PumpActionRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
-use crate::pump::flow::def::STEP_MARKER;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
@@ -63,7 +63,7 @@ fn rig() -> Result<Rig, VivariumError> {
         "pump",
         "pump",
         "build1",
-        &format!("{STEP_MARKER} {need} r1 build1"),
+        &step_body(&need, 1, "build1", ""),
         &[],
     )?;
     mail.bind(&need, std::slice::from_ref(&step))?;

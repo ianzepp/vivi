@@ -10,10 +10,11 @@ use tempfile::{TempDir, tempdir};
 
 use super::{ABANDONED_MARKER, RESTART_STUCK, prune_dead_jobs, register, restart};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::mailspace::marked_payload;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
-use crate::pump::flow::def::{STEP_MARKER, VERDICT_SUPERSEDED};
+use crate::pump::flow::def::VERDICT_SUPERSEDED;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout::SLICE_NODE_PREFIX;
 use crate::pump::flow::handlers::Registry;
@@ -65,13 +66,7 @@ fn rig() -> Result<Rig, VivariumError> {
     MailWriter::open_record(&mut mail, NEED, "record")?;
     start(&ctx, &store, &mut mail, NEED, None)?;
     for node in ["build1", &format!("{SLICE_NODE_PREFIX}a")] {
-        let task = mail.send_step(
-            "pump",
-            "pump",
-            node,
-            &format!("{STEP_MARKER} {NEED} r1 {node}"),
-            &[],
-        )?;
+        let task = mail.send_step("pump", "pump", node, &step_body(NEED, 1, node, ""), &[])?;
         mail.bind(NEED, std::slice::from_ref(&task))?;
         store.insert_step(
             NEED,

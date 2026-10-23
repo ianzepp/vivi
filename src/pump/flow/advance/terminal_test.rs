@@ -6,12 +6,13 @@ use tempfile::{TempDir, tempdir};
 
 use super::{resume, withdraw};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::letter::work::StepFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::terminal::Finished;
 use crate::pump::flow::advance::{Advanced, advance};
-use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, SENTINEL_MARKER, STEP_MARKER};
+use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -39,13 +40,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     store.insert_run(&run_row())?;
     let mut mail = FakeMail::new("pump");
-    let sentinel = mail.send_step(
-        "pump",
-        "pump",
-        "run",
-        &format!("{SENTINEL_MARKER} {NEED} r1"),
-        &[],
-    )?;
+    let sentinel = mail.send_step("pump", "pump", "run", &sentinel_body(NEED, 1, ""), &[])?;
     mail.bind(NEED, std::slice::from_ref(&sentinel))?;
     store.insert_step(
         NEED,
@@ -83,13 +78,9 @@ fn run_row() -> RunRow {
 impl Rig {
     /// An open step of `node` in the run, already bound.
     fn step(&mut self, node: &str, word: &str) -> Result<Outcome, VivariumError> {
-        let task = self.mail.send_step(
-            "pump",
-            "pump",
-            node,
-            &format!("{STEP_MARKER} {NEED} r1 {node}"),
-            &[],
-        )?;
+        let task = self
+            .mail
+            .send_step("pump", "pump", node, &step_body(NEED, 1, node, ""), &[])?;
         self.mail.bind(NEED, std::slice::from_ref(&task))?;
         self.store.insert_step(
             NEED,
