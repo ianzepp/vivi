@@ -59,7 +59,7 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
     revive_new_records(ctx, st, &open);
     let applied: BTreeSet<String> = st.board.actions.keys().cloned().collect();
     let actions = match mailspace.pump_pending_actions(&applied) {
-        Ok(actions) => actions,
+        Ok(actions) => without_answers(actions),
         Err(error) => {
             ctx.log(&format!("pump actions unreadable: {error}"));
             return;
@@ -72,6 +72,14 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
         }
     }
     settle_owed(ctx, st, &mailspace);
+}
+
+/// Answers belong to the flow engine, which keeps its own applied set.
+fn without_answers(actions: Vec<PumpAction>) -> Vec<PumpAction> {
+    actions
+        .into_iter()
+        .filter(|action| action.request.kind != PumpActionKind::Answer)
+        .collect()
 }
 
 /// Apply `actions` (oldest first) to `st` and mark each applied. An action
@@ -105,6 +113,7 @@ fn apply_one(ctx: &Ctx, st: &mut State, action: &PumpAction) -> Option<ActionMar
     let need = action.need.as_str();
     let (owes, detail) = match action.request.kind {
         PumpActionKind::Requeue => (String::new(), String::new()),
+        PumpActionKind::Answer => return None,
         PumpActionKind::Recover => {
             let (target, reason) = (action.request.target.as_deref(), &action.request.reason);
             crate::pump::recover::apply_one(ctx, st, need, target, reason);

@@ -46,6 +46,19 @@ pub enum PumpSubcommand {
     Replan(PumpReplanCommand),
     /// Release a need branch held `unverified`: adopt the remote tip the pump refused and let merging resume; applied at the pump's next tick
     Recover(PumpRecoverCommand),
+    /// Answer a flow step by hand: posts the word on the need's open pump record; the pump routes it at its next tick
+    Answer {
+        /// The step task handle (see `vivi step` or `vivi pump status`)
+        step: String,
+        /// The answer word (one of the step's words, `failed` included)
+        word: String,
+        /// Free text recorded with the answer
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+        /// Project root that owns .vivi/ (also accepted globally)
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// File a pump record: one dispatch of one need, addressed to the pump
     Send(PumpSendCommand),
     /// Open a pump record for every need the pump has in flight and no record for (the vivi 19 upgrade step)

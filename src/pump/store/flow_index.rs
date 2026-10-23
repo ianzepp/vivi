@@ -4,6 +4,8 @@
 //! of the `State` save, so `save()` and `clear()` never touch them. The schema
 //! version is not bumped here.
 
+use std::collections::BTreeSet;
+
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{PumpStore, db_err};
@@ -67,6 +69,10 @@ CREATE TABLE IF NOT EXISTS rung_runs (
     finished_at INTEGER,
     rc INTEGER,
     PRIMARY KEY (task, rung, started_at)
+);
+CREATE TABLE IF NOT EXISTS applied_actions (
+    letter_id TEXT NOT NULL PRIMARY KEY,
+    at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS main_state (
     key TEXT NOT NULL PRIMARY KEY,
@@ -511,6 +517,40 @@ impl PumpStore {
             return Err(no_scope(task));
         }
         Ok(())
+    }
+}
+
+impl PumpStore {
+    /// The ids of the operator action letters the flow engine has applied.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the ids cannot be read.
+    pub fn applied_action_ids(&self) -> Result<BTreeSet<String>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT letter_id FROM applied_actions")
+            .map_err(db_err("read applied actions"))?;
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(db_err("read applied actions"))?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(db_err("read applied actions"))
+    }
+
+    /// Record an action letter as applied at `at` (unix seconds). Returns
+    /// false when it was already recorded.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written.
+    pub fn mark_action_applied(&self, letter_id: &str, at: u64) -> Result<bool, VivariumError> {
+        let at = i64::try_from(at).unwrap_or(i64::MAX);
+        let changed = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO applied_actions (letter_id, at) VALUES (?1, ?2)",
+                params![letter_id, at],
+            )
+            .map_err(db_err("mark action applied"))?;
+        Ok(changed > 0)
     }
 }
 
