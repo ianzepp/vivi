@@ -176,6 +176,32 @@ fn body_tail(failing: &BTreeSet<String>, tail: &str) -> String {
     text
 }
 
+/// Write the repair need's body file; returns the short tip and the path.
+fn write_body(
+    ctx: &Ctx,
+    target: &str,
+    tip: &str,
+    failing: &BTreeSet<String>,
+    tail: &str,
+) -> Result<(String, std::path::PathBuf), VivariumError> {
+    let short: String = tip.chars().take(8).collect();
+    let safe: String = target
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = ctx.home.join("repair");
+    fs::create_dir_all(&dir)
+        .map_err(|e| VivariumError::Message(format!("cannot create {}: {e}", dir.display())))?;
+    let path = dir.join(format!("repair-{safe}-{short}.txt"));
+    let body = format!(
+        "target: {target}\ntested: {tip}\n\n{}",
+        body_tail(failing, tail)
+    );
+    fs::write(&path, body)
+        .map_err(|e| VivariumError::Message(format!("cannot write {}: {e}", path.display())))?;
+    Ok((short, path))
+}
+
 /// Send the repair need (marked `repair`) and return its handle. The sending
 /// marker is written first and the handle is recorded as soon as it parses.
 /// `None` means the send may have landed with an unknown handle: the alarm is
@@ -192,21 +218,7 @@ fn file_need(
         alarm_unknown(ctx, target, &sent_tip, "an earlier send left no handle");
         return Ok(None);
     }
-    let short: String = tip.chars().take(8).collect();
-    let safe: String = target
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let dir = ctx.home.join("repair");
-    fs::create_dir_all(&dir)
-        .map_err(|e| VivariumError::Message(format!("cannot create {}: {e}", dir.display())))?;
-    let path = dir.join(format!("repair-{safe}-{short}.txt"));
-    let body = format!(
-        "target: {target}\ntested: {tip}\n\n{}",
-        body_tail(failing, tail)
-    );
-    fs::write(&path, body)
-        .map_err(|e| VivariumError::Message(format!("cannot write {}: {e}", path.display())))?;
+    let (short, path) = write_body(ctx, target, tip, failing, tail)?;
     let subject = format!("pump: main rung red on {target} at {short}");
     let args = format!(
         "need send --from {} --to {} --subject {} --body-file {} --mark repair",
@@ -222,18 +234,25 @@ fn file_need(
         alarm_unknown(ctx, target, tip, &format!("the send timed out: {last}"));
         return Ok(None);
     }
+    if let Some(need) = need_handle(&out.text) {
+        if out.code != 0 {
+            ctx.log(&format!(
+                "repair need send exited {} but created {need}; keeping it",
+                out.code
+            ));
+        }
+        store.set_main_state(&key(FILED, target), &need)?;
+        return Ok(Some(need));
+    }
     if out.code != 0 {
         store.clear_main_state(&key(SENDING, target))?;
         return Err(VivariumError::Message(format!(
-            "repair need send failed: {last}"
+            "repair need send failed: expected a created need handle; actual: exit {}: {last}",
+            out.code
         )));
     }
-    let Some(need) = need_handle(&out.text) else {
-        alarm_unknown(ctx, target, tip, &format!("unparsed send output: {last}"));
-        return Ok(None);
-    };
-    store.set_main_state(&key(FILED, target), &need)?;
-    Ok(Some(need))
+    alarm_unknown(ctx, target, tip, &format!("unparsed send output: {last}"));
+    Ok(None)
 }
 
 /// The handle from `need send` output: the third token of the first
