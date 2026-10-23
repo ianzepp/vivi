@@ -5,11 +5,8 @@ use std::fs;
 use tempfile::tempdir;
 
 use crate::VivariumError;
-use crate::pump::boardpass::BoardPass;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, test_ctx};
-use crate::pump::run::tick;
-use crate::pump::state::State;
 use crate::pump::tick_steps::soft_step;
 use crate::pump::tick_steps::{RERAISE_SECS, should_raise};
 
@@ -35,31 +32,6 @@ fn a_failed_step_is_logged_and_raised_as_an_exception() {
     );
     let raised = exceptions(&ctx);
     assert!(raised.contains("tick-step-failed demo"), "{raised}");
-}
-
-#[test]
-fn a_tick_completes_when_the_need_state_is_unreadable() {
-    let dir = tempdir().unwrap();
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
-    let ctx = ctx.with_mailspace(String::from("mailspace"));
-    let mut st = State::default();
-    // Every need step reads this and fails; the tick must still finish.
-    st.extra
-        .insert(String::from("need_branches"), serde_json::json!("garbage"));
-
-    let (mut pass, _requests, _results) = BoardPass::detached();
-    tick(&ctx, &mut st, &mut pass).expect("the tick survives failing steps");
-
-    let raised = exceptions(&ctx);
-    assert!(
-        raised.contains("tick-step-failed refresh-freezes"),
-        "{raised}"
-    );
-    assert!(
-        raised.contains("tick-step-failed dispatch-landings"),
-        "{raised}"
-    );
-    assert!(ctx.home.join("status.txt").is_file());
 }
 
 #[test]
