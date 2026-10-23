@@ -51,7 +51,7 @@ where
     let known = runs.iter().map(|row| row.run as usize).max().unwrap_or(0);
     let run = u32::try_from(sent.max(known) + 1)
         .map_err(|_| VivariumError::Message(format!("need {need}: run number out of range")))?;
-    let kind = run_kind(ctx, mail, need)?;
+    let kind = run_kind(mail, need)?;
     let def = load(kind)?;
     let entry = resolve_entry(&def, kind, entry)?;
     let row = RunRow {
@@ -209,23 +209,14 @@ fn resolve_entry(
     }
 }
 
-/// The run's kind: see [`kind::of`]. A record word that names no kind raises
-/// `flow-kind-unknown` and the marks decide.
-fn run_kind<M>(ctx: &Ctx, mail: &M, need: &str) -> Result<FlowKind, VivariumError>
+/// The run's kind: see [`kind::of`].
+fn run_kind<M>(mail: &M, need: &str) -> Result<FlowKind, VivariumError>
 where
     M: MailWriter + MailReader,
 {
     let body = MailReader::open_record(mail, need)?.map(|(_, body)| body);
     let marks = mail.need_marks(need)?;
-    let (kind, unknown) = kind::of(body.as_deref(), &marks);
-    if let Some(word) = unknown {
-        ctx.exception(
-            "flow-kind-unknown",
-            need,
-            &format!("record body names kind `{word}`; using the marks"),
-        );
-    }
-    Ok(kind)
+    Ok(kind::of(body.as_deref(), &marks))
 }
 
 #[cfg(test)]
