@@ -35,7 +35,7 @@ flowchart TD
     j1 -->|raised| raise1
     raise1 --> rr1{rung 1}
   end
-  b1 -->|failed| cto
+  b1 -->|failed, unchanged| cto
   j1 -->|verified| merge
   j1 -->|block| rework1
   j1 -->|failed| cto
@@ -61,7 +61,7 @@ flowchart TD
     j2 -->|raised| raise2
     raise2 --> rr2{rung 2}
   end
-  b2 -->|failed| cto
+  b2 -->|failed, unchanged| cto
   j2 -->|verified| merge
   j2 -->|block, failed| cto
   jq2 -->|block, failed| cto

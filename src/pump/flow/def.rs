@@ -178,7 +178,7 @@ impl NodeClass {
             Self::Judge => &["block", "residual", FAILED],
             Self::Cto => &["research", "plan", "slice", "rework", "lock", FAILED],
             Self::Merge | Self::MergeMain => &["merged", "conflict", FAILED],
-            Self::Fanout => &["built", FAILED],
+            Self::Fanout => &["built", "unchanged", FAILED],
             Self::RungNeed | Self::RungMain | Self::RungRelease | Self::RungRaised => {
                 &["pass", "fail", FAILED]
             }
