@@ -17,7 +17,7 @@ use crate::pump::flow::fanout::SliceEdges;
 use crate::pump::flow::mail::{MailWriter, OpenRecords};
 use crate::pump::flow::outcome::StepHandler;
 use crate::pump::flow::slice_dispatch::SliceMail;
-use crate::pump::flow::{intake, need_branch, prune, rung_step};
+use crate::pump::flow::{build_front, intake, need_branch, prune, rung_step};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
@@ -183,6 +183,7 @@ pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     need_branch::register(&mut registry);
     prune::register(&mut registry);
     rung_step::register(&mut registry);
+    build_front::register(&mut registry);
     registry
 }
 
