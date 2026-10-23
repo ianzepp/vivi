@@ -84,3 +84,63 @@ fn flow_roles_with_a_pool_meet_the_requirement() {
         );
     }
 }
+
+#[test]
+fn a_missing_admitter_or_slicer_stays_a_warning() {
+    let config = config(&[("hand", "pool = \"p\"")]);
+    for role in ["admitter", "slicer"] {
+        let issues = check_of(&config, role).issues;
+        assert_eq!(issues.len(), 1, "{role}: {issues:?}");
+        assert_eq!(issues[0].severity, Severity::Warning, "{role}");
+    }
+}
+
+#[test]
+fn an_admitter_or_slicer_without_a_pool_stays_a_warning() {
+    let config = config(&[("admitter", ""), ("slicer", "")]);
+    for role in ["admitter", "slicer"] {
+        let issues = check_of(&config, role).issues;
+        assert_eq!(issues.len(), 1, "{role}: {issues:?}");
+        assert_eq!(issues[0].severity, Severity::Warning, "{role}");
+        assert!(issues[0].message.contains("must name a pool"), "{role}");
+    }
+}
+
+fn config_with_kind(name: &str, kind: &str, extra: &str) -> MailspaceConfig {
+    let text = format!(
+        "name = \"t\"\n[[identities]]\nname = \"{name}\"\nkind = \"{kind}\"\npool = \"p\"\n{extra}\n\
+         [pools.p]\nprovider = \"local\"\nslots = 2\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
+    );
+    toml::from_str(&text).expect("mailspace toml")
+}
+
+#[test]
+fn a_slicer_with_kind_hand_is_an_error() {
+    let issues = check_of(&config_with_kind("slicer", "hand", ""), "slicer").issues;
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.severity == Severity::Error && issue.message.contains("kind")),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn a_writable_admitter_or_slicer_is_an_error() {
+    for role in ["admitter", "slicer"] {
+        let config = config_with_kind(role, role, "read_only = false");
+        let issues = check_of(&config, role).issues;
+        assert!(
+            issues.iter().any(|issue| {
+                issue.severity == Severity::Error && issue.message.contains("read-only")
+            }),
+            "{role}: {issues:?}"
+        );
+    }
+}
+
+#[test]
+fn the_researcher_has_no_kind_requirement_yet() {
+    let issues = check_of(&config_with_kind("researcher", "hand", ""), "researcher").issues;
+    assert!(issues.is_empty(), "{issues:?}");
+}
