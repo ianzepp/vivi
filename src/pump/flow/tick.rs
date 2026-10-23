@@ -518,41 +518,22 @@ where
         if spec.task.is_none() {
             spec.task = Some(step.task.clone());
         }
-        let mut payload = match std::mem::take(&mut spec.payload) {
-            serde_json::Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        for (key, value) in [
-            ("need", serde_json::json!(self.run.need)),
-            ("run", serde_json::json!(self.run.run)),
-            ("node", serde_json::json!(step.node)),
-            ("task", serde_json::json!(step.task)),
-            ("attempt", serde_json::json!(1)),
-            ("kind", serde_json::json!(self.run.kind)),
-            (
-                "class",
+        let id = spec.id.clone();
+        let row = step.job(&id, self.store.next_attempt(&step.task)?);
+        row.stamp(&self.run.need, &mut spec.payload);
+        if let Some(map) = spec.payload.as_object_mut() {
+            map.insert("kind".to_owned(), serde_json::json!(self.run.kind));
+            map.insert(
+                "class".to_owned(),
                 serde_json::json!(
                     self.class_of(&step.node)
                         .map(|class| class.name())
                         .unwrap_or_default()
                 ),
-            ),
-        ] {
-            payload.insert(key.to_owned(), value);
+            );
         }
-        spec.payload = serde_json::Value::Object(payload);
-        let id = spec.id.clone();
         jobs::enqueue(self.st, spec)?;
-        self.store.insert_step_job(
-            &self.run.need,
-            &StepJobRow {
-                job: id,
-                run: self.run.run,
-                node: step.node.clone(),
-                task: step.task.clone(),
-                attempt: 1,
-            },
-        )?;
+        self.store.insert_step_job(&self.run.need, &row)?;
         self.store
             .set_step_state(&step.task, StepState::Running, None)
     }
