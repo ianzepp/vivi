@@ -102,7 +102,7 @@ fn ordinary_at_merge() -> Result<Rig, VivariumError> {
     rig.git("main", MAIN);
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     rig.project.host.reply(
@@ -226,9 +226,9 @@ fn second_ordinary_at_merge(rig: &mut Rig) -> Result<PoolJob, VivariumError> {
     rig.git(&format!("refs/heads/vivi/need/{need}"), TIP);
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"},
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")},
         {"handle": need, "message_id": "m2", "from": "operator@local",
-         "subject": "Need", "body": "Build another thing"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build another thing")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     finish(rig, "rework1", &agent_receipt(0, SLICED))?;
