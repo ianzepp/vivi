@@ -401,3 +401,49 @@ fn an_environment_failure_on_the_last_attempt_does_not_exhaust_the_slice() -> R 
     assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
     Ok(())
 }
+
+#[test]
+fn a_retry_that_fails_once_posts_the_reply_once_and_queues_attempt_two_once() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, RED, 1)?;
+    let with_hand = (*rig.ctx.routing).clone();
+    let mut without_hand = with_hand.clone();
+    without_hand.roles.retain(|role| role.name != "hand");
+    rig.ctx = rig.ctx.with_routing(without_hand);
+    rig.apply()?;
+    assert!(
+        rig.merge_job(1).applied_at.is_none(),
+        "a failed retry leaves the job unapplied"
+    );
+    assert_eq!(rig.replies().len(), 1);
+    rig.ctx = rig.ctx.with_routing(with_hand);
+    rig.apply()?;
+    assert!(rig.merge_job(1).applied_at.is_some());
+    assert_eq!(rig.replies().len(), 1, "{:?}", rig.replies());
+    let queued = rig
+        .jobs
+        .jobs
+        .keys()
+        .filter(|id| id.as_str() == format!("slice-{}-a2", slice.task))
+        .count();
+    assert_eq!(queued, 1);
+    Ok(())
+}
+
+#[test]
+fn a_payload_attempt_that_is_not_a_number_is_a_parse_error_and_posts_nothing() -> R {
+    let mut rig = rig()?;
+    rig.slice(JobStatus::Finished, RED, 1)?;
+    let hands = rig.hand_jobs();
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-merge-1") {
+        job.payload["attempt"] = serde_json::json!("x");
+    }
+    rig.apply()?;
+    assert!(rig.replies().is_empty());
+    assert_eq!(rig.hand_jobs(), hands);
+    assert!(rig.merge_job(1).applied_at.is_none());
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(raised.contains("hand-merge-1"), "{raised}");
+    assert!(raised.contains("attempt"), "{raised}");
+    Ok(())
+}
