@@ -205,8 +205,10 @@ fn only_the_newest_brief_is_the_body_with_attempts_after_it() {
         ),
     );
     let body = space.pool_task(&handle).unwrap().body;
-    assert!(body.starts_with("pump-brief: t="), "{body}");
-    assert!(body.lines().next().unwrap().ends_with("job-b"), "{body}");
+    assert!(!body.contains("pump-brief:"), "{body}");
+    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
+    assert!(envelope.body.starts_with("WRITE SCOPE"), "{body}");
     assert!(!body.contains("OLD BRIEF"), "{body}");
     assert!(!body.contains("do it"), "task body not repeated: {body}");
     let heading = body.find("## Earlier attempts").expect("heading");
@@ -283,8 +285,33 @@ fn the_shared_markers_read_back_as_attempt_and_brief() {
         &format!("{}\nATTEMPT BODY", marked_line(ATTEMPT_MARKER, "first")),
     );
     let body = space.pool_task(&handle).unwrap().body;
-    assert!(body.starts_with(BRIEF_MARKER), "{body}");
+    assert!(!body.contains(BRIEF_MARKER), "{body}");
     assert!(body.contains("BRIEF BODY"), "{body}");
     assert!(body.contains("## Earlier attempts"), "{body}");
     assert!(body.contains("ATTEMPT BODY"), "{body}");
+}
+
+#[test]
+fn a_brief_becomes_the_prose_of_the_task_letter() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nBRIEF BODY", marked_line(BRIEF_MARKER, "job-a")),
+    );
+    let body = space.pool_task(&handle).unwrap().body;
+    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    assert_eq!(envelope.front.from.as_deref(), Some("main"));
+    assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
+    assert_eq!(envelope.body.trim(), "BRIEF BODY");
+    assert!(!body.contains("do it"), "{body}");
+}
+
+#[test]
+fn a_task_without_a_brief_keeps_its_body() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    let body = space.pool_task(&handle).unwrap().body;
+    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
+    assert_eq!(envelope.body.trim(), "do it");
 }
