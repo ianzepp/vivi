@@ -2533,6 +2533,12 @@ vivi pump priority clear <need>
 vivi pump priority list
 vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--reason TEXT] [--dry-run]
 vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
+vivi pump requeue --job <job-id>    # release a held pool job
+vivi pump target list
+vivi pump target add <id> --path <path> [--remote-url <url>] [--remote <name>] [--main <branch>] [--github-repo <owner/name>] [--rung NAME=CMD]... [--merge KEY=VALUE]...
+vivi pump target remove <id>
+vivi pump rungs show [--target <id>]
+vivi pump rungs set <task|need|main|release> <command> [--target <id>]
 vivi pump replan <need> [--force]
 vivi pump withdraw <need>... --reason TEXT
 vivi pump send --need <need> [--from <id>] [--body TEXT]
@@ -2543,6 +2549,11 @@ vivi pump done <record> [--note TEXT]
 vivi pump reopen <record>
 vivi pump history <need> [--json]
 ```
+
+A fresh **pump.db** starts stopped: run **vivi pump start** to enable the
+pump (the service starts it when registered). **pump target add|remove** and
+**pump rungs set** are config writes: they are refused while the pump runs
+(**vivi pump pause** first) and keep a **mailspace.toml.bak.&lt;stamp&gt;** backup.
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
 addressed to the pump's own identity (**[pump] reply_from**, default
@@ -2638,9 +2649,14 @@ exits. It does not cancel or drain pool jobs. Those continue in their pools
 and are reattached on the next startup.
 
 The pump reloads configuration between ticks. Valid routing, pool, dispatch,
-merge, gate, budget, and check changes apply on the next tick. The pump home
-and repository target checkout paths cannot change while the lock is held;
-restart after changing them.
+merge, gate, budget, check, and new-target changes apply on the next tick. A
+change the running pump cannot apply (the pump home, or a running target's
+integration path) keeps the old value, the rest of the reload still applies,
+and one **config-reload-refused** exception names what needs a restart.
+
+A job the pool refuses 3 times is held, with one **job-dispatch-refused**
+exception. Release it with **vivi pump requeue &lt;step-task&gt;** or **vivi pump
+requeue --job &lt;job-id&gt;**, or withdraw the need.
 
 ### Role jobs and pool routing
 
@@ -2656,7 +2672,7 @@ targets must exist, and cycles are configuration errors.
 | Gate | **gate** role | Gate role pool and fallback chain. Read-only. (`[pump.gate]` is retired: an old table parses and is ignored.) |
 | Gate audit | **auditor** role | Auditor role pool and fallback chain, followed by gate-pool candidates; without an auditor role, a built-in read-only auditor uses gate pools. |
 | Need acceptance audit | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
-| Investigation | Configured **auditor** role | Auditor pool and fallback chain. Read-only. |
+| Research | **researcher** role | That role's pool and fallback chain. Read-only. |
 | Promotion | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. |
 | Cadence and digest | The scheduled role | That role's pool and fallback chain. |
 | Reclaim | **reclaim**, or the hand role | Local-provider pools only. |
@@ -2670,6 +2686,10 @@ but its pool list is ignored. Without a hand pool, configured kinds and
 Whole-need planning, need amendments, and split planning all use durable jobs
 for the active pump-planner role and its charter. The worker returns the complete
 plan JSON between **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** in its receipt.
+A pump-role charter that asks for the PUMP-PLAN markers or lacks the v20 reply
+envelope is flagged by **vivi config validate** and replaced by **vivi config
+migrate --write**; flow role replies use the envelope in
+[the envelope reference](references/envelope.md).
 The pump writes it under **plans/** and applies the existing validator. The
 old **[pump.planner].run** and **charter** keys are not executed. Keep
 **split_hard_cap** and **planners_max** for split job limits.
@@ -2837,12 +2857,10 @@ outbound signal. A due role with a charter and room under the open-work caps
 gets a durable role job. The board shows **next_due_at** and the latest result;
 pump status shows cadence schedules and run results.
 
-Head-ceo investigation needs must carry the **investigate** mark and a body
-line **for: &lt;want-handle&gt;**. The referenced want must be open. The pump sends
-a read-only job to the configured auditor role. The need closes only after a
-recent auditor reply appears on the want thread addressed to head-ceo. The
-default cap is two rounds per want; the head-ceo charter can set
-**investigation-rounds: N**.
+Head-ceo research needs are filed with **vivi need send --mark research
+--explores &lt;want&gt; --done-when "..."**. The research flow hands the researcher
+the need thread and the want that the need's front matter **explores** names.
+Head-ceo files at most two research needs for one want.
 
 ### Config
 
@@ -2933,7 +2951,7 @@ be empty or name an unknown kind. A configured kind's **max** and
 hand role has no pool, configure kinds and **default_kind** to route unit
 tasks. Configure **[pools.&lt;name&gt;] fallback = "&lt;pool&gt;"** to add
 dispatch candidates. **vivi config validate** requires an active pump-planner role
-with a pool, an active auditor role with a pool, a merge role of kind merge and a hand role of kind hand, and validates role and pool references. Configure a merge role
+with a pool, an active auditor role with a pool, a merge role of kind merge and a hand role of kind hand, and validates role and pool references. A target with no task, need, or main rung is not ready (exit 3), and a pump-role charter that predates the v20 envelope is an error (**vivi config migrate --write** replaces it). Configure a merge role
 with a pool for the live merge pipeline; legacy merge-lane settings do not run
 the live merges.
 
@@ -3287,7 +3305,7 @@ resync` rebuilds it.
 from `vivi sync directory`:
 
 ```sh
-vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ...
+vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ... --done-when "..."
 ```
 
 A remote recipient gets no local delivered copy. The letter is held as a sent
@@ -3421,7 +3439,7 @@ asks the server for letters by the 8 hex characters of their id (100 per
 request; a handle that names nothing visible is reported as missing, not an
 error) and files them through the same checks as a pull, without moving the
 cursor or the floor. `vivi sync pull --refs [--depth N]` follows references
-after a pull: an `X-Vivi-Depends-On` value, or a whole-word 8-hex token in the
+after a pull: a front matter `depends_on` value, or a whole-word 8-hex token in the
 subject or body, that names a letter this mailspace does not hold is looked up
 and filed. Each extra hop (`--depth`, 1 to 3, default 1) scans only what the
 previous hop filed; one invocation looks up at most 500 handles. A token that
@@ -3449,30 +3467,30 @@ visible only to its sender and the addressed mailspace; work items and mail to
 
 ### MCP bridge
 
-`vivi mcp` is a thin stdio bridge to the project server's MCP endpoint
-(`POST /v1/projects/{id}/mcp`). It speaks MCP on stdin/stdout
+`vivi mcp` is a thin stdio bridge to the server's MCP endpoint
+(`POST <server>/v1/mcp`; the project id is not in the URL). It speaks MCP on stdin/stdout
 (newline-delimited JSON-RPC 2.0, the standard stdio transport) and forwards
 each message to that endpoint unchanged. It is a pass-through: it does not
 know the tool list, so `tools/list` and `tools/call` go to the server as they
 are, and new server tools need no new bridge. Nothing but protocol messages is
 written to stdout; diagnostics go to stderr; a notification gets no reply. A
-pool slot needs only the binary, a server URL, a project id, and a credential:
-no local mailspace, no sync, and the bridge never creates `.vivi/`. When the
-server refuses a request after the one allowed renewal (or at once for an API
-key), the bridge answers that request with a JSON-RPC error (code `-32000`,
+pool slot needs only the binary, a server URL, and an API key (a project id
+is optional): no local mailspace, no sync, and the bridge never creates
+`.vivi/`. The bridge sends the project id as the `project` argument of the
+tools that declare one, filling it into a call that leaves it out. There is no
+renewal: when the server refuses a request, a 401 is final, and the bridge
+answers that request with a JSON-RPC error (code `-32000`,
 `data.http_status`) instead of hanging, and keeps serving.
 
-The server's Project MCP tools: `overview`, `list`, `show`, `thread`, `send`,
-`reply`, `done`, `reopen`, `memo`, `graph`. Writes share the server's
-30-per-minute-per-identity send budget; a tool failure is a result with
-`isError: true`.
+`vivi mcp tools` prints the server's live tool set. A tool failure is a result
+with `isError: true`.
 
 **One-shot calls: `vivi mcp tools` and `vivi mcp call`.** An MCP client such
 as Claude Code caches the tool list when its session starts, so a tool a server
 upgrade adds stays invisible until the client restarts. These two subcommands
 need no MCP client: each runs the `initialize` handshake, sends one request,
 prints the answer, and exits. They take the same flags, variables, and
-credentials as the bridge (the flags may come before or after the subcommand);
+credential as the bridge (the flags may come before or after the subcommand);
 bare `vivi mcp` is still the stdio bridge.
 
 ```sh
@@ -3491,39 +3509,22 @@ transport, authentication, HTTP, or JSON-RPC error (the message names the HTTP
 status or the JSON-RPC code and message), or `ARGS_JSON` that is not a JSON
 object, which is refused before any request. Credentials are never printed.
 
-**Flags and environment.** `--server <URL>`, `--project-id <ID>`,
-`--name <NAME>`, and `--key-file <PATH>`, each with a variable:
-`VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`, `VIVI_MCP_NAME`, `VIVI_MCP_KEY_FILE`.
-A flag beats its variable, a variable beats the `[sync]` table. The global
-`--project <ROOT>` still names a mailspace root (used only to find a `[sync]`
-table); it is not the server project id. `VIVI_MCP_API_KEY` is read from the
-environment only — there is no flag — so it does not show in a process list.
+**Flags and environment.** `--server <URL>` and `--project-id <ID>`, each
+with a variable: `VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`. A flag beats its
+variable, a variable beats the `[sync]` table (`server`, `project`). The
+global `--project <ROOT>` names a mailspace root (used only to find a `[sync]`
+table); it is not the server project id.
 
-**Credentials** (either one):
-
-1. A member name and a key file: `--name`/`VIVI_MCP_NAME` plus
-   `--key-file`/`VIVI_MCP_KEY_FILE`, the 32-byte seed file a mailspace keeps
-   at `.vivi/chat/identity.ed25519`. The bridge mints the identity token by
-   the challenge, sign, token route (as `vivi sync` does), renews it once
-   when the server refuses it (401), and renews ahead of time when
-   `token_expires_at` is within 30 seconds.
-2. A project API key in `VIVI_MCP_API_KEY`: sent as the bearer as it is; no
-   minting, no renewal, a 401 is final.
-
-Giving both is an error. With neither, inside a mailspace that has a `[sync]`
-table, `vivi mcp` with no flags uses the `[sync]` server, project, and name
-and the mailspace's own key, so a person can try it.
+**Credential.** A project API key in `VIVI_MCP_API_KEY`, read from the
+environment only (there is no flag, so it does not show in a process list). It
+is sent as the bearer as it is. Mint one with `vivi sync api-key mint`; without
+it the command is refused before any request. There is no member credential
+and no mailspace-key fallback.
 
 **Client configuration.** Claude Code takes a JSON file via `--mcp-config`:
 
 ```json
 {"mcpServers":{"vivi":{"command":"vivi","args":["mcp"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>","VIVI_MCP_API_KEY":"<key from vivi sync api-key mint>"}}}}
-```
-
-The member-name variant:
-
-```json
-{"mcpServers":{"vivi":{"command":"vivi","args":["mcp","--name","<name>","--key-file","<path>"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>"}}}}
 ```
 
 pi connects to stdio MCP servers through its `mcp.json`; the same `command`,
