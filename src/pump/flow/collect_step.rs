@@ -9,14 +9,16 @@ use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::{self, route};
 use crate::pump::flow::collect::{self, Collected};
+use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::flow::rung_step::RungCollector;
-use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, WORD_REJECTED};
+use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, WORD_REJECTED, raise_once};
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
+use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
@@ -143,6 +145,17 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
         step: &StepRow,
         class: &NodeClass,
     ) -> Result<(), VivariumError> {
+        if *class != NodeClass::Merge {
+            let original = if correct::correction_n(&job.id) > 0 {
+                cx.st.jobs().get(correct::base_id(&job.id)).cloned()
+            } else {
+                None
+            };
+            let facts = original.as_ref().unwrap_or(job);
+            if let Some(env) = runner_env_failure(facts) {
+                return cx.hold_role_env(facts, step, &env);
+            }
+        }
         let expected = job.publish_ref.clone().unwrap_or_default();
         let collected = collect::collect(cx.ctx, cx.mail, job, row, class, &expected);
         match collected {
@@ -205,6 +218,38 @@ where
                 .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
         }
         Ok(())
+    }
+
+    /// The worker could not run the agent of a role step: alarm once and hold
+    /// the step for the operator. No word, rerun, correction or attempt.
+    pub(crate) fn hold_role_env(
+        &mut self,
+        job: &PoolJob,
+        step: &StepRow,
+        env: &EnvFailure,
+    ) -> Result<(), VivariumError> {
+        let class = self
+            .class_of(&step.node)
+            .map_or_else(|| "none".to_owned(), |class| class.name());
+        raise_once(
+            self.ctx,
+            ENV_FAILURE,
+            &job.id,
+            &format!(
+                "{class} job {} for step {} task {} on worker {}: expected the agent to run; \
+                 actual: {:?}, tool {}: {}; answer with vivi pump answer {} <word>",
+                job.id,
+                step.node,
+                step.task,
+                job.pool.as_deref().unwrap_or("none"),
+                env.kind,
+                env.tool.as_deref().unwrap_or("none"),
+                env.evidence,
+                step.task
+            ),
+        );
+        self.store
+            .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
 
     /// Queue a correction job for the broken reply of `job`.
