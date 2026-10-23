@@ -1,4 +1,5 @@
 use super::*;
+use crate::letter::fixture::body_with_deps;
 use crate::mailspace::SendRequest;
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
@@ -17,11 +18,11 @@ fn send_work(mailspace: &Mailspace, kind: &str, subject: &str, deps: &[String]) 
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: done".into(),
+            body: body_with_deps(kind, "", deps),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: deps.to_vec(),
+            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
