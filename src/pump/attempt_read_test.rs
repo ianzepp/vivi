@@ -159,6 +159,17 @@ fn a_merged_status_event_enriches_only_its_attempt() {
 }
 
 #[test]
+fn a_wrapped_status_event_is_read_from_its_prose() {
+    let event = parse_status_event(
+        "+++\n+++\n\npump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged\nat: 7",
+    )
+    .expect("wrapped status event parses");
+    assert_eq!(event.attempt, "n1-1-a2");
+    assert_eq!(event.status, "merged");
+    assert_eq!(event.at, Some(7));
+}
+
+#[test]
 fn a_status_event_without_a_timestamp_stays_unavailable() {
     let event = parse_status_event(
         "pump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged",

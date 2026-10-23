@@ -332,3 +332,20 @@ fn a_long_multi_line_message_still_yields_one_short_single_line_requirement() {
     assert!(!requirements[0].text.contains('\n'));
     assert!(requirements[0].text.len() < 200);
 }
+
+#[test]
+fn a_blank_wrapped_prose_message_gets_no_requirement() {
+    let f = fixture();
+    let ctx = &f.ctx;
+    let messages = vec![
+        serde_json::json!({"handle": "need-5", "message_id": "m1", "from": "operator@local",
+            "subject": "Need", "body": "+++\n+++\n\n"}),
+        serde_json::json!({"handle": "need-5-a", "message_id": "m2", "from": "operator@local",
+            "subject": "Need", "body": "+++\n+++\n\nAlso rename the rows."}),
+    ];
+
+    let requirements = whole_message_requirements(ctx, "need-5", &messages);
+
+    assert_eq!(requirements.len(), 1, "{requirements:?}");
+    assert_eq!(requirements[0].id, "need-5-a-r0");
+}

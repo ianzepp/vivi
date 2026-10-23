@@ -127,8 +127,8 @@ pub fn whole_message_requirements(
         })
         .filter_map(|(_, message)| {
             let handle = message["handle"].as_str().filter(|h| !h.is_empty())?;
-            let body = message["body"].as_str().unwrap_or("").trim();
-            if body.is_empty() {
+            let body = message["body"].as_str().unwrap_or("");
+            if crate::letter::prose_of(body).trim().is_empty() {
                 return None;
             }
             Some(NeedAuditRequirement {

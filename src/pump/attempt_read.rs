@@ -201,7 +201,7 @@ pub struct AttemptStatusEvent {
 /// Parse a synced attempt status event. Missing timestamps remain unavailable.
 #[must_use]
 pub fn parse_status_event(body: &str) -> Option<AttemptStatusEvent> {
-    let mut lines = body.lines();
+    let mut lines = crate::letter::prose_of(body).lines();
     if lines.next()?.trim_end() != STATUS_HEADER {
         return None;
     }
