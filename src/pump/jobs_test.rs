@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    FixMarks, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
+    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
     branch_sources_pending, candidate_pools, dispatch_order, dispatch_pending, enqueue,
     enqueue_promotion, integration_error, mark_applied, mark_gated, mark_merged, pool_command,
     recover_dispatched, send_task,
@@ -53,25 +53,7 @@ fn enqueue_rejects_path_unsafe_job_ids() {
 }
 
 #[test]
-fn recovery_and_fix_jobs_dispatch_before_ordinary_cadence_jobs() {
-    let mut gate = PoolJob::from(JobSpec::new("gate", "gate", "gate", "gate", "run gate"));
-    gate.queued_at = 20;
-    let mut fix_planner = PoolJob::from(JobSpec::new(
-        "plan-pumpfix-g1",
-        "planner:board",
-        "planner",
-        "fix plan",
-        "plan",
-    ));
-    fix_planner.payload = serde_json::json!({"need":"pumpfix-g1"});
-    let mut fix_merge = PoolJob::from(JobSpec::new(
-        "merge-fix",
-        "merge",
-        "merge",
-        "fix merge",
-        "merge",
-    ));
-    fix_merge.units = vec![String::from("pumpfix-g1-1")];
+fn non_flow_jobs_rank_by_priority_then_age() {
     let mut priority_plan = PoolJob::from(JobSpec::new(
         "plan-hot",
         "planner:board",
@@ -80,62 +62,29 @@ fn recovery_and_fix_jobs_dispatch_before_ordinary_cadence_jobs() {
         "plan",
     ));
     priority_plan.payload = serde_json::json!({"need":"hot"});
-    let cadence = PoolJob::from(JobSpec::new(
+    priority_plan.queued_at = 30;
+    let mut old = PoolJob::from(JobSpec::new(
         "cadence-a",
         "cadence",
         "cadence",
-        "routine run",
+        "old",
         "run",
     ));
-    let mut jobs = vec![cadence, priority_plan, fix_merge, fix_planner, gate];
+    old.queued_at = 10;
+    let mut young = PoolJob::from(JobSpec::new(
+        "cadence-b",
+        "cadence",
+        "cadence",
+        "new",
+        "run",
+    ));
+    young.queued_at = 20;
+    let mut jobs = vec![young, old, priority_plan];
     let priorities = BTreeMap::from([(String::from("hot"), 3)]);
-    let fix = FixMarks {
-        prefix: "pumpfix",
-        ids: BTreeSet::new(),
-    };
-    jobs.sort_by_key(|job| dispatch_order(job, &fix, &priorities));
+    jobs.sort_by_key(|job| dispatch_order(job, &priorities));
 
     let ids: Vec<&str> = jobs.iter().map(|job| job.id.as_str()).collect();
-    assert_eq!(ids[0], "gate");
-    assert!(ids[1..3].contains(&"plan-pumpfix-g1"));
-    assert!(ids[1..3].contains(&"merge-fix"));
-    assert_eq!(ids[3], "plan-hot");
-    assert_eq!(ids[4], "cadence-a");
-}
-
-#[test]
-fn dispatch_order_ranks_jobs_of_pump_created_gate_fix_needs_as_fix_work() {
-    let mut by_need = PoolJob::from(JobSpec::new("need-merge-a", "merge", "merge", "s", "b"));
-    by_need.payload = serde_json::json!({"need": "8c4329ff"});
-    let mut by_unit = PoolJob::from(JobSpec::new("merge-b", "merge", "merge", "s", "b"));
-    by_unit.units = vec![String::from("3c89e015-1")];
-    let mut by_payload_unit = PoolJob::from(JobSpec::new("merge-c", "merge", "merge", "s", "b"));
-    by_payload_unit.payload = serde_json::json!({"units": ["4b2d1c9e-1"]});
-    let mut plain = PoolJob::from(JobSpec::new("merge-plain", "merge", "merge", "s", "b"));
-    plain.payload = serde_json::json!({"need": "hot"});
-    let fix = FixMarks {
-        prefix: "pumpfix",
-        ids: BTreeSet::from([
-            String::from("8c4329ff"),
-            String::from("3c89e015-1"),
-            String::from("4b2d1c9e-1"),
-        ]),
-    };
-    let priorities = BTreeMap::from([(String::from("hot"), 3)]);
-
-    let class = |job: &PoolJob| dispatch_order(job, &fix, &priorities).0;
-
-    assert_eq!(class(&by_need), 1);
-    assert_eq!(class(&by_unit), 1);
-    assert_eq!(class(&by_payload_unit), 1);
-    assert_eq!(class(&plain), 2);
-    // The legacy prefix still marks fix work with no gate-fix ids at all.
-    let legacy = FixMarks {
-        prefix: "pumpfix",
-        ids: BTreeSet::new(),
-    };
-    by_need.payload = serde_json::json!({"need": "pumpfix-g1"});
-    assert_eq!(dispatch_order(&by_need, &legacy, &priorities).0, 1);
+    assert_eq!(ids, ["plan-hot", "cadence-a", "cadence-b"]);
 }
 
 fn flow_job(id: &str, kind: &str, class: &str, need: &str, queued_at: u64) -> PoolJob {
@@ -148,31 +97,29 @@ fn flow_job(id: &str, kind: &str, class: &str, need: &str, queued_at: u64) -> Po
 #[test]
 fn flow_jobs_rank_repair_then_cto_then_priority_then_age() {
     let priorities = BTreeMap::from([(String::from("hot"), 3)]);
-    let fix = FixMarks {
-        prefix: "pumpfix",
-        ids: BTreeSet::new(),
-    };
     let mut jobs = vec![
         flow_job("old-plain", "build", "hand", "cold", 1),
         flow_job("hot-build", "build", "hand", "hot", 9),
         flow_job("cto", "build", "cto", "cold", 5),
         flow_job("repair", "repair", "hand", "cold", 7),
     ];
-    jobs.sort_by_key(|job| dispatch_order(job, &fix, &priorities));
+    jobs.sort_by_key(|job| dispatch_order(job, &priorities));
     let ids: Vec<&str> = jobs.iter().map(|job| job.id.as_str()).collect();
     assert_eq!(ids, ["repair", "cto", "hot-build", "old-plain"]);
 }
 
 #[test]
-fn an_old_pipeline_gate_fix_job_keeps_its_old_rank() {
-    let fix = FixMarks {
-        prefix: "pumpfix",
-        ids: BTreeSet::new(),
-    };
-    let mut old_fix = PoolJob::from(JobSpec::new("merge-old", "merge", "merge", "s", "b"));
-    old_fix.payload = serde_json::json!({"need": "pumpfix-g1"});
-    let key = dispatch_order(&old_fix, &fix, &BTreeMap::new());
-    assert_eq!(key.0, 1);
+fn a_non_flow_job_ranks_behind_repair_and_cto_flow_jobs() {
+    let other = PoolJob::from(JobSpec::new("merge-old", "merge", "merge", "s", "b"));
+    let priorities = BTreeMap::new();
+    let mut jobs = vec![
+        other,
+        flow_job("cto", "build", "cto", "cold", 99),
+        flow_job("repair", "repair", "hand", "cold", 99),
+    ];
+    jobs.sort_by_key(|job| dispatch_order(job, &priorities));
+    let ids: Vec<&str> = jobs.iter().map(|job| job.id.as_str()).collect();
+    assert_eq!(ids, ["repair", "cto", "merge-old"]);
 }
 
 #[test]
@@ -204,34 +151,6 @@ fn one_merge_main_per_target_is_offered_while_another_is_in_flight() {
         vec![String::from("mm-u")]
     );
     assert_eq!(store.jobs["mm-t"].status, JobStatus::Pending);
-}
-
-#[test]
-fn a_state_store_reports_gate_fix_need_and_unit_ids_for_job_dispatch() {
-    let mut st = crate::pump::state::State::default();
-    st.red
-        .insert(String::from("gate::x"), String::from("8c4329ff"));
-    st.units.insert(
-        String::from("8c4329ff-1"),
-        crate::pump::state::Unit {
-            need: String::from("8c4329ff"),
-            ..crate::pump::state::Unit::default()
-        },
-    );
-    st.units.insert(
-        String::from("other-1"),
-        crate::pump::state::Unit {
-            need: String::from("other"),
-            ..crate::pump::state::Unit::default()
-        },
-    );
-
-    let ids = JobStore::fix_ids(&st);
-
-    assert_eq!(
-        ids,
-        BTreeSet::from([String::from("8c4329ff"), String::from("8c4329ff-1")])
-    );
 }
 
 #[test]

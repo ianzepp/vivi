@@ -35,11 +35,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
         .filter(|(_, job)| job.status == JobStatus::Pending)
         .map(|(_, job)| job.clone())
         .collect();
-    let fix = FixMarks {
-        prefix: &ctx.cfg.fix_prefix,
-        ids: st.fix_ids(),
-    };
-    pending.sort_by_key(|job| dispatch_order(job, &fix, &priorities));
+    pending.sort_by_key(|job| dispatch_order(job, &priorities));
     let pending = rank::single_flight(pending, st.jobs());
     let mut started = Vec::new();
     let width = (ctx.cfg.dispatch.parallel as usize).max(1);
@@ -160,61 +156,12 @@ fn plan_wave(active: &mut [Attempt], free: &BTreeMap<String, u32>) -> Vec<(usize
     wave
 }
 
-/// What marks a name as fix work: the legacy `fix_prefix` spelling, or the id
-/// of a pump-created gate-fix need or one of its units.
-pub(super) struct FixMarks<'a> {
-    pub(super) prefix: &'a str,
-    pub(super) ids: BTreeSet<String>,
-}
-
-impl FixMarks<'_> {
-    fn marks(&self, name: &str) -> bool {
-        (!self.prefix.is_empty() && name.starts_with(self.prefix)) || self.ids.contains(name)
-    }
-
-    fn any_mark(&self) -> bool {
-        !self.prefix.is_empty() || !self.ids.is_empty()
-    }
-}
-
-pub(super) fn dispatch_order(
-    job: &PoolJob,
-    fix_marks: &FixMarks<'_>,
-    priorities: &BTreeMap<String, i64>,
-) -> RankKey {
+pub(super) fn dispatch_order(job: &PoolJob, priorities: &BTreeMap<String, i64>) -> RankKey {
     if let Some(key) = rank::flow_key(job, priorities) {
         return key;
     }
-    let recovery = matches!(job.kind.as_str(), "audit" | "gate" | "promote");
-    let fix = job.kind.contains("fix")
-        || (fix_marks.any_mark()
-            && (fix_marks.marks(&job.id)
-                || job.units.iter().any(|unit| fix_marks.marks(unit))
-                || payload_has_fix(&job.payload, fix_marks)));
-    let class = if recovery {
-        0
-    } else if fix {
-        1
-    } else {
-        2
-    };
     let priority = payload_priority(&job.payload, priorities);
-    (class, Reverse(priority), job.queued_at, job.id.clone())
-}
-
-fn payload_has_fix(value: &serde_json::Value, fix: &FixMarks<'_>) -> bool {
-    match value {
-        serde_json::Value::String(value) => fix.marks(value),
-        serde_json::Value::Array(values) => values.iter().any(|value| payload_has_fix(value, fix)),
-        serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
-            matches!(
-                key.as_str(),
-                "id" | "need" | "need_id" | "owner_need" | "unit_id"
-            ) && payload_has_fix(value, fix)
-                || matches!(key.as_str(), "unit_sources" | "units") && payload_has_fix(value, fix)
-        }),
-        _ => false,
-    }
+    (2, Reverse(priority), job.queued_at, job.id.clone())
 }
 
 fn payload_priority(value: &serde_json::Value, priorities: &BTreeMap<String, i64>) -> i64 {
