@@ -1,8 +1,8 @@
 //! One-shot MCP client over the bridge's own transport: `vivi mcp tools`
 //! and `vivi mcp call`.
 //!
-//! A [`Client`] reuses the bridge [`Session`]: the same bearer minting and
-//! the one 401 renewal, the same JSON and SSE reply handling. On top of it
+//! A [`Client`] reuses the bridge [`Session`]: the same API key bearer and
+//! the same JSON and SSE reply handling. On top of it
 //! sits the little MCP handshake (`initialize`, then the `initialized`
 //! notification) and a typed request: the `result` of the reply, or a
 //! [`ClientError`] naming the transport failure or the JSON-RPC error.
@@ -16,7 +16,7 @@ use std::io::{self, Sink};
 
 use serde_json::{Value, json};
 
-use super::{Credential, Outcome, Session, Upstream};
+use super::{Outcome, Session, Upstream};
 
 /// The protocol revision offered in `initialize`; the server may answer
 /// with an earlier one it supports.
@@ -64,12 +64,9 @@ impl<'a> Client<'a> {
     /// # Errors
     /// Returns the failure of `initialize` or of the `initialized`
     /// notification.
-    pub fn connect(
-        upstream: &'a dyn Upstream,
-        credential: &'a Credential,
-    ) -> Result<Self, ClientError> {
+    pub fn connect(upstream: &'a dyn Upstream, api_key: &'a str) -> Result<Self, ClientError> {
         let mut client = Self {
-            session: Session::new(upstream, credential, io::sink(), io::sink()),
+            session: Session::new(upstream, api_key, io::sink(), io::sink()),
             next_id: 1,
         };
         client.request(

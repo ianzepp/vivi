@@ -13,8 +13,7 @@ use vivi::cli::{McpCommand, McpSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::mcp::client::{self, Client};
 use vivi::mcp::resolve::{self, MailspaceSource, McpFlags};
-use vivi::mcp::{BridgeConfig, Credential, HttpUpstream, serve};
-use vivi::sync::{SendFilter, SyncSettings};
+use vivi::mcp::{BridgeConfig, HttpUpstream, serve};
 
 /// Exit status for a tool that reports `isError: true`.
 const EXIT_TOOL_ERROR: i32 = 1;
@@ -53,12 +52,8 @@ fn run_one_shot(command: &McpCommand, one_shot: &McpSubcommand) -> Result<i32, S
         } => Some(read_arguments(args_json.as_deref(), args_file.as_deref())?),
     };
     let config = bridge_config(command).map_err(|error| error.to_string())?;
-    let identity = match &config.credential {
-        Credential::Member(identity) => Some(identity),
-        Credential::ApiKey(_) => None,
-    };
-    let upstream = HttpUpstream::new(&config.settings, identity);
-    let mut mcp = Client::connect(&upstream, &config.credential).map_err(|e| e.to_string())?;
+    let upstream = HttpUpstream::new(&config.server);
+    let mut mcp = Client::connect(&upstream, &config.api_key).map_err(|e| e.to_string())?;
     match (one_shot, arguments) {
         (McpSubcommand::Tools { json }, _) => {
             let tools = mcp.tools().map_err(|error| error.to_string())?;
@@ -140,14 +135,8 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
     let mailspace_lookup = || mailspace_source(command.project.as_deref());
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
     Ok(BridgeConfig {
-        settings: SyncSettings {
-            server: resolved.server,
-            project: resolved.project.unwrap_or_default(),
-            name: String::new(),
-            send: SendFilter::All,
-            mailspace_id: String::new(),
-        },
-        credential: Credential::ApiKey(resolved.api_key),
+        server: resolved.server,
+        api_key: resolved.api_key,
     })
 }
 
