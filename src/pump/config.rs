@@ -9,9 +9,11 @@ use self::config_workspace::PumpWorkspace;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
 mod planner;
+mod rungs;
 mod validate;
 
 pub use planner::PlannerConfig;
+pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
 pub use validate::{Findings, Missing};
 
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
@@ -93,6 +95,9 @@ pub struct PumpConfig {
     pub alarm: AlarmConfig,
     /// Need-acceptance settings (the `[pump.need]` table).
     pub need: NeedConfig,
+    /// Rung settings (the `[pump.rungs]` table).
+    #[serde(skip_serializing_if = "RungsConfig::is_empty")]
+    pub rungs: RungsConfig,
 }
 
 impl Default for PumpConfig {
@@ -127,6 +132,7 @@ impl Default for PumpConfig {
             gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
             need: NeedConfig::default(),
+            rungs: RungsConfig::default(),
         }
     }
 }
@@ -177,6 +183,16 @@ impl PumpConfig {
             .get(target)
             .and_then(|target| target.merge.as_ref())
             .map_or_else(Vec::new, MergeConfig::generated_paths)
+    }
+
+    /// The command of rung `name` for `target`: the target's own rung wins
+    /// over the workspace-level `[pump.rungs]` one. None when neither sets it.
+    #[must_use]
+    pub fn rung(&self, target: &str, name: &str) -> Option<&str> {
+        self.targets
+            .get(target)
+            .and_then(|target| target.rungs.command(name))
+            .or_else(|| self.rungs.command(name))
     }
 
     /// The workspace-relative source repository path for a named target.
@@ -284,6 +300,10 @@ pub struct PumpTarget {
     /// Target-specific gate behavior. Omitted fields inherit the legacy
     /// workspace-level gate settings when loaded through `target_configs`.
     pub gate: Option<GateConfig>,
+    /// Target-specific rung commands. A rung set here wins over the
+    /// workspace-level `[pump.rungs]` one.
+    #[serde(skip_serializing_if = "RungsConfig::is_empty")]
+    pub rungs: RungsConfig,
 }
 
 impl Default for PumpTarget {
@@ -299,6 +319,7 @@ impl Default for PumpTarget {
             integration_repo: None,
             merge: None,
             gate: None,
+            rungs: RungsConfig::default(),
         }
     }
 }

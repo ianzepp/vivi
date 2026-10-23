@@ -38,6 +38,11 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpGateCommand,
     },
+    /// Show or set the proof rung commands (`[pump.rungs]`)
+    Rungs {
+        #[command(subcommand)]
+        command: PumpRungsCommand,
+    },
     /// Requeue one or more units: posts an action on the need's open pump record, applied at the pump's next tick
     Requeue(PumpRequeueCommand),
     /// Withdraw every unfinished unit of one or more needs and close their pump record `withdrawn`; applied at the pump's next tick
@@ -116,6 +121,38 @@ pub enum PumpGateCommand {
 pub struct PumpGateSetCommand {
     /// Shell command the gate runs; must not be blank
     pub command: String,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PumpRungsCommand {
+    /// Print the four rung commands, the timeout and the pools
+    Show(PumpRungsShowCommand),
+    /// Set one rung command in this project's mailspace.toml
+    Set(PumpRungsSetCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PumpRungsShowCommand {
+    /// Show the effective rungs of this target
+    #[arg(long)]
+    pub target: Option<String>,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpRungsSetCommand {
+    /// Rung name: task, need, main or release
+    pub rung: String,
+    /// Shell command the rung runs; must not be blank
+    pub command: String,
+    /// Write the target's own override instead of the workspace rung
+    #[arg(long)]
+    pub target: Option<String>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

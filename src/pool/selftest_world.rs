@@ -312,6 +312,7 @@ impl<'a> World<'a> {
             allow_default_branch: true,
             read_only: false,
             reasoning: None,
+            command: None,
         }
     }
 

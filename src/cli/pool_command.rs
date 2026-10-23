@@ -175,6 +175,12 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub budget: Option<u64>,
 
+    /// Run this shell command as the harness instead of a model: no model is
+    /// chosen, no role prompt or bridge grant is made, and the command's exit
+    /// code is the job's result
+    #[arg(long, value_name = "CMD", conflicts_with = "model")]
+    pub command: Option<String>,
+
     /// Allow pushing to the repository's default branch (refused otherwise)
     #[arg(long)]
     pub allow_default_branch: bool,
