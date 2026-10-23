@@ -451,6 +451,7 @@ fn role_facts(space: &Mailspace, task: &PoolTask, named: Option<&str>) -> Option
             name: view.name,
             kind: view.kind,
             band: view.model,
+            thinking: view.thinking,
             charter: view.charter,
             read_only: view.read_only,
         }),

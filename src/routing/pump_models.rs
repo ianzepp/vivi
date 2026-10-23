@@ -53,8 +53,9 @@ pub(super) fn check_role_runs(
             "role {} has no model on pool {pool_name}, so its pump jobs would stay pending: \
              {error}; fix: add [pools.{pool_name}.bands] entries (`vivi pool bands set \
              {pool_name} {band} <model> <reasoning>`) and give the role a band they serve \
-             (`vivi role set {} --model {band}`)",
-            role.name, role.name
+             (`vivi role set {} --model {band}`), or give it a model slug from the pool \
+             harness models (`vivi role set {} --model <slug>`)",
+            role.name, role.name, role.name
         )));
     }
 }
@@ -70,6 +71,7 @@ fn resolve_like_dispatch(
         name: role.name.clone(),
         kind: role.kind.clone(),
         band: role.model.clone(),
+        thinking: None,
         charter: String::new(),
         read_only: role.read_only,
     };

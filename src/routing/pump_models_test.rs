@@ -121,3 +121,9 @@ fn a_role_without_a_gate_is_not_checked_for_one() {
     text.identities.retain(|role| role.name != "gate");
     assert!(model_failures(&text).is_empty());
 }
+
+#[test]
+fn roles_with_a_model_slug_in_the_harness_models_pass() {
+    let found = model_failures(&config("model = \"m/ok\"", HARNESS));
+    assert!(found.is_empty(), "{found:?}");
+}
