@@ -37,6 +37,10 @@ const START_STUCK_SECS: u64 = 600;
 /// Exception kind: a need has an open pump record the flow cannot act on.
 pub const RECORD_UNUSABLE: &str = "flow-record-unusable";
 
+/// Exception kind: a pump record, a need root letter or an operator action
+/// letter is a legacy or invalid letter. The pump starts no run on it.
+pub const LETTER_INVALID: &str = "flow-letter-invalid";
+
 /// Registry hook: the intake phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     registry.phase(Box::new(Intake));
@@ -182,6 +186,12 @@ fn candidates<M: FlowMail>(
 ) -> Result<Vec<Candidate>, VivariumError> {
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
+    for (handle, text) in mail.unreadable_records()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    for (handle, text) in mail.unreadable_actions()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
     for (need, date) in mail.open_record_needs()? {
         if has_run_in_flight(store, &need)? {
             continue;
@@ -198,6 +208,10 @@ fn candidates<M: FlowMail>(
                      an open need; close the record with `vivi pump done {handle}`"
                 ),
             );
+            continue;
+        }
+        if let Some(text) = mail.need_letter_error(&need)? {
+            raise_once(ctx, LETTER_INVALID, &need, &text);
             continue;
         }
         let marks = mail.need_marks(&need)?;

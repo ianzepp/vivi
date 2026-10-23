@@ -109,6 +109,28 @@ pub trait OpenRecords {
     /// # Errors
     /// Returns an error when the records cannot be read.
     fn open_record_needs(&self) -> Result<Vec<(String, String)>, VivariumError>;
+
+    /// The open records whose letter does not parse, as (record handle,
+    /// error text). They name no need and are not in `open_record_needs`.
+    ///
+    /// # Errors
+    /// Returns an error when the records cannot be read.
+    fn unreadable_records(&self) -> Result<Vec<(String, String)>, VivariumError>;
+
+    /// The error text when the root letter of `need` is a legacy or invalid
+    /// letter; `None` when it parses.
+    ///
+    /// # Errors
+    /// Returns an error when the need cannot be read.
+    fn need_letter_error(&self, need: &str) -> Result<Option<String>, VivariumError>;
+
+    /// The posted operator action letters on open records that do not parse,
+    /// as (action handle, error text). Each is listed until it is applied,
+    /// which an unreadable letter never is.
+    ///
+    /// # Errors
+    /// Returns an error when the action letters cannot be read.
+    fn unreadable_actions(&self) -> Result<Vec<(String, String)>, VivariumError>;
 }
 
 impl MailWriter for MailspacePort {

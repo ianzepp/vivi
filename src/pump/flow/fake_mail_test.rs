@@ -104,6 +104,8 @@ pub(crate) struct FakeMail {
     close_notes: BTreeMap<String, String>,
     records: BTreeMap<String, FakeRecord>,
     prerequisites: BTreeMap<String, Vec<String>>,
+    need_letter_errors: BTreeMap<String, String>,
+    unreadable_actions: Vec<(String, String)>,
     next: u32,
     opened_count: u32,
     /// Fail the write that would be recorded as call `n` (0-based), once.
@@ -124,6 +126,34 @@ impl FakeMail {
             need.to_string(),
             marks.iter().map(|m| (*m).to_string()).collect(),
         );
+    }
+
+    /// Store a pump record body verbatim, as an old pump left it (no letter
+    /// check, no rewrite). It is open and listed after the existing ones.
+    pub fn raw_record(&mut self, need: &str, body: &str) {
+        self.next += 1;
+        self.opened_count += 1;
+        self.records.insert(
+            need.to_string(),
+            FakeRecord {
+                handle: format!("r{:04}", self.next),
+                body: body.to_string(),
+                outcome: None,
+                opened: self.opened_count,
+            },
+        );
+    }
+
+    /// Make the root letter of `need` read as a legacy or invalid letter.
+    pub fn set_need_letter_error(&mut self, need: &str, text: &str) {
+        self.need_letter_errors
+            .insert(need.to_string(), text.to_string());
+    }
+
+    /// Post an operator action letter that does not parse.
+    pub fn add_unreadable_action(&mut self, handle: &str, text: &str) {
+        self.unreadable_actions
+            .push((handle.to_string(), text.to_string()));
     }
 
     /// Set the handles a need depends on.
@@ -184,7 +214,7 @@ impl FakeMail {
         let mut open: Vec<(&String, u32)> = self
             .records
             .iter()
-            .filter(|(_, r)| r.outcome.is_none())
+            .filter(|(_, r)| r.outcome.is_none() && record_of(&r.handle, &r.body).is_ok())
             .map(|(need, r)| (need, r.opened))
             .collect();
         open.sort_by_key(|(_, opened)| *opened);
@@ -515,6 +545,31 @@ impl MailReader for FakeMail {
 impl OpenRecords for FakeMail {
     fn open_record_needs(&self) -> Result<Vec<(String, String)>, VivariumError> {
         Ok(FakeMail::open_record_needs(self))
+    }
+
+    fn unreadable_records(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        let mut open: Vec<&FakeRecord> = self
+            .records
+            .values()
+            .filter(|r| r.outcome.is_none())
+            .collect();
+        open.sort_by_key(|r| r.opened);
+        Ok(open
+            .into_iter()
+            .filter_map(|r| {
+                record_of(&r.handle, &r.body)
+                    .err()
+                    .map(|error| (r.handle.clone(), error.to_string()))
+            })
+            .collect())
+    }
+
+    fn need_letter_error(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        Ok(self.need_letter_errors.get(need).cloned())
+    }
+
+    fn unreadable_actions(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        Ok(self.unreadable_actions.clone())
     }
 }
 
