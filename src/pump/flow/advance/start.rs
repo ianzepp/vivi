@@ -4,7 +4,9 @@
 
 use crate::error::VivariumError;
 use crate::letter::read::step_of;
-use crate::pump::flow::def::{FlowDef, FlowKind, SENTINEL_MARKER, STEP_MARKER};
+use crate::letter::render;
+use crate::letter::work::TaskFront;
+use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepRow, StepState, run_state};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
@@ -91,7 +93,7 @@ where
         &rows,
         (run, SENTINEL_NODE),
         (
-            format!("{SENTINEL_MARKER} {need} r{number}"),
+            letter_body(&TaskFront::sentinel(need, number))?,
             StepState::Running,
         ),
     )?;
@@ -102,7 +104,7 @@ where
         &rows,
         (run, entry),
         (
-            format!("{STEP_MARKER} {need} r{number} {entry}"),
+            letter_body(&TaskFront::step(need, number, entry))?,
             StepState::Pending,
         ),
     )?;
@@ -181,6 +183,11 @@ fn send_missing<M: MailWriter + MailReader>(
     };
     store.insert_run_step(run, &run.step(node, &task, state))?;
     Ok(task)
+}
+
+/// A step or sentinel task body: front matter with a `[step]` table, no prose.
+fn letter_body(front: &TaskFront) -> Result<String, VivariumError> {
+    render(front, "").map_err(|e| VivariumError::Message(e.to_string()))
 }
 
 fn resolve_entry(

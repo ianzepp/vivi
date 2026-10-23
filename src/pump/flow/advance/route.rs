@@ -9,7 +9,9 @@ use std::collections::BTreeSet;
 
 use crate::error::VivariumError;
 use crate::letter::read::step_of;
-use crate::pump::flow::def::{FlowDef, FlowEdge, FlowNode, NodeClass, STEP_MARKER};
+use crate::letter::render;
+use crate::letter::work::TaskFront;
+use crate::pump::flow::def::{FlowDef, FlowEdge, FlowNode, NodeClass};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
@@ -315,10 +317,8 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
         }
         // The run row first: a missing run must not leave a sent task behind.
         let run = self.store.run_row(&o.need, o.run)?;
-        let body = format!(
-            "{STEP_MARKER} {} r{} {}\n\n{}",
-            o.need, o.run, node.id, node.label
-        );
+        let body = render(&TaskFront::step(&o.need, o.run, &node.id), &node.label)
+            .map_err(|e| VivariumError::Message(e.to_string()))?;
         let subject = format!("{} ({} r{})", node.label, o.need, o.run);
         // A task sent before a crash but never indexed is adopted, not sent twice.
         let key = step_of(&body).ok_or_else(|| {

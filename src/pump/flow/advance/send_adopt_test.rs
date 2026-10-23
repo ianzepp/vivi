@@ -6,10 +6,12 @@ use tempfile::tempdir;
 
 use super::{SENTINEL_NODE, resume, start};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
+use crate::letter::read::step_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
 use crate::pump::flow::advance::route::{JoinInput, route};
-use crate::pump::flow::def::{FlowKind, FlowNode, SENTINEL_MARKER, STEP_MARKER};
+use crate::pump::flow::def::{FlowKind, FlowNode};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -23,10 +25,12 @@ type R = Result<(), VivariumError>;
 
 const NEED: &str = "need1";
 
-fn with_first_line(mail: &FakeMail, line: &str) -> usize {
+/// How many tasks carry the step key of `body`.
+fn with_step_of(mail: &FakeMail, body: &str) -> usize {
+    let key = step_of(body);
     mail.tasks
         .values()
-        .filter(|t| t.body.lines().next() == Some(line))
+        .filter(|t| step_of(&t.body) == key)
         .count()
 }
 
@@ -55,14 +59,14 @@ fn hand_send_start(mail: &mut FakeMail) -> Result<(String, String), VivariumErro
         "pump",
         "pump",
         &format!("{NEED} r1 {SENTINEL_NODE}"),
-        &format!("{SENTINEL_MARKER} {NEED} r1"),
+        &sentinel_body(NEED, 1, ""),
         &[],
     )?;
     let entry = mail.send_step(
         "pump",
         "pump",
         &format!("{NEED} r1 plan"),
-        &format!("{STEP_MARKER} {NEED} r1 plan"),
+        &step_body(NEED, 1, "plan", ""),
         &[],
     )?;
     mail.calls.clear();
@@ -71,10 +75,8 @@ fn hand_send_start(mail: &mut FakeMail) -> Result<(String, String), VivariumErro
 
 fn assert_adopted(store: &PumpStore, mail: &FakeMail, hand: &(String, String)) -> R {
     assert_eq!(sends(mail), 0, "nothing was sent a second time");
-    let sentinel_line = format!("{SENTINEL_MARKER} {NEED} r1");
-    assert_eq!(with_first_line(mail, &sentinel_line), 1);
-    let entry_line = format!("{STEP_MARKER} {NEED} r1 plan");
-    assert_eq!(with_first_line(mail, &entry_line), 1);
+    assert_eq!(with_step_of(mail, &sentinel_body(NEED, 1, "")), 1);
+    assert_eq!(with_step_of(mail, &step_body(NEED, 1, "plan", "")), 1);
     let rows = store.steps_of(NEED, 1)?;
     let task_of = |node: &str| rows.iter().find(|r| r.node == node).map(|r| r.task.clone());
     assert_eq!(task_of(SENTINEL_NODE), Some(hand.0.clone()));
@@ -123,7 +125,7 @@ fn step_task(
         "pump",
         "pump",
         &format!("{label} ({NEED} r1)"),
-        &format!("{STEP_MARKER} {NEED} r1 {node}\n\n{label}"),
+        &step_body(NEED, 1, node, label),
         &[],
     )?;
     if indexed {
@@ -156,13 +158,7 @@ fn route_adopts_a_successor_sent_without_a_step_row() -> R {
             .unwrap_or_default()
     };
     let mut mail = FakeMail::new("pump");
-    let sentinel = mail.send_step(
-        "pump",
-        "pump",
-        "run",
-        &format!("{SENTINEL_MARKER} {NEED} r1"),
-        &[],
-    )?;
+    let sentinel = mail.send_step("pump", "pump", "run", &sentinel_body(NEED, 1, ""), &[])?;
     store.insert_step(
         NEED,
         &StepRow {
@@ -192,8 +188,7 @@ fn route_adopts_a_successor_sent_without_a_step_row() -> R {
     let audit: Vec<_> = routed.sent.iter().filter(|s| s.node == "audit1").collect();
     assert_eq!(audit.len(), 1);
     assert_eq!(audit[0].task, hand, "the hand-sent task is used");
-    let audit_line = format!("{STEP_MARKER} {NEED} r1 audit1");
-    assert_eq!(with_first_line(&mail, &audit_line), 1);
+    assert_eq!(with_step_of(&mail, &step_body(NEED, 1, "audit1", "")), 1);
     assert_eq!(
         store.step_by_task(&hand)?.map(|r| (r.node, r.state)),
         Some(("audit1".to_string(), StepState::Pending))
