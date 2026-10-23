@@ -372,52 +372,6 @@ pub struct NeedRecord {
     pub waits_on: Vec<String>,
 }
 
-/// The gate currently or last running (`last_gate`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GateRun {
-    /// Epoch seconds the gate started.
-    #[serde(default)]
-    pub at: u64,
-    /// Merge counter when it started.
-    #[serde(default)]
-    pub merges: u64,
-    /// Vivi task handle, when the gate runs as a task.
-    #[serde(default)]
-    pub task: Option<String>,
-    /// Durable job ID while the gate is queued or running.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String>,
-    /// Role jobs whose merged tips this gate is responsible for proving.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_jobs: Vec<String>,
-    /// Integration branch tip at start.
-    #[serde(default)]
-    pub tip: Option<String>,
-    /// Pool the gate task went to.
-    #[serde(default)]
-    pub pool: Option<String>,
-}
-
-/// A finished gate (`gates` entry).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GateRecord {
-    /// Integration branch tip tested.
-    #[serde(default)]
-    pub tip: String,
-    /// Epoch seconds the gate finished.
-    #[serde(default)]
-    pub at: u64,
-    /// Merge counter at finish.
-    #[serde(default)]
-    pub merges: u64,
-    /// Failing test names, or null when unreadable.
-    #[serde(default)]
-    pub names: Option<Vec<String>>,
-    /// Failing names new since the last gate (absent on the baseline gate).
-    #[serde(default)]
-    pub new: Option<Vec<String>>,
-}
-
 /// One pool's environment-failure bookkeeping (`env_pauses` entry).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -502,21 +456,6 @@ pub struct ActionMark {
     pub detail: String,
 }
 
-/// One promoted integration tip (`promotions` entry).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Promotion {
-    /// The tip promoted.
-    #[serde(default)]
-    pub tip: String,
-    /// Epoch seconds of the promotion.
-    #[serde(default)]
-    pub at: u64,
-    /// The failing test names (after `ignore_file` filtering) main carried at
-    /// this tip; `None` for a promotion made before they were recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failing: Option<Vec<String>>,
-}
-
 /// The whole pump state: `state.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)] // field names are the state.json keys
@@ -533,36 +472,15 @@ pub struct State {
     /// How many unit merges have landed.
     #[serde(default)]
     pub merges: u64,
-    /// The gate currently or last running.
-    #[serde(default)]
-    pub last_gate: GateRun,
-    /// Failing test names of the baseline gate, until then null.
-    #[serde(default)]
-    pub baseline: Option<Vec<String>>,
     /// Need handles closed.
     #[serde(default)]
     pub closed_needs: Vec<String>,
-    /// Finished gates, oldest first.
-    #[serde(default)]
-    pub gates: Vec<GateRecord>,
     /// Plan file names already ingested (`"<need>.json"`).
     #[serde(default)]
     pub plans_seen: Vec<String>,
     /// Planner board state.
     #[serde(default)]
     pub board: Board,
-    /// Failing test name -> unit handling it.
-    #[serde(default)]
-    pub red: BTreeMap<String, String>,
-    /// Red names already reported to the board.
-    #[serde(default)]
-    pub red_reported: Vec<String>,
-    /// Gate, baseline and promotion state for named repository targets.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub target_states: BTreeMap<String, TargetState>,
-    /// Promoted tips, oldest first.
-    #[serde(default)]
-    pub promotions: Vec<Promotion>,
     /// Pool -> host-class failure bookkeeping and dispatch pause.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env_pauses: BTreeMap<String, EnvPause>,
@@ -586,213 +504,6 @@ impl crate::pump::jobs::JobStore for State {
     fn jobs_mut(&mut self) -> &mut BTreeMap<String, crate::pump::jobs::PoolJob> {
         &mut self.jobs
     }
-}
-
-/// Gate state isolated to one named repository target.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct TargetState {
-    #[serde(default)]
-    pub merges: u64,
-    #[serde(default)]
-    pub baseline: Option<Vec<String>>,
-    #[serde(default)]
-    pub last_gate: GateRun,
-    #[serde(default)]
-    pub gates: Vec<GateRecord>,
-    #[serde(default)]
-    pub promotions: Vec<Promotion>,
-    #[serde(default)]
-    pub red: BTreeMap<String, String>,
-    #[serde(default)]
-    pub red_reported: Vec<String>,
-    /// Gate-fix counters and external-gate wait state for this target.
-    #[serde(default)]
-    pub extra: BTreeMap<String, serde_json::Value>,
-}
-
-/// Run one target's gate logic against its own state while preserving the
-/// workspace-level unit and need graph in the surrounding `State`.
-pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut State) -> T) -> T {
-    if target == "default" {
-        return run(st);
-    }
-    // Read need ownership before swapping global lifecycle metadata for the
-    // target's gate-only extra fields.
-    let integrated = integrated_unit_count(st, target);
-    let previous = st.target_states.remove(target).unwrap_or_default();
-    let mut saved = TargetState {
-        merges: st.merges,
-        baseline: std::mem::replace(&mut st.baseline, previous.baseline),
-        last_gate: std::mem::replace(&mut st.last_gate, previous.last_gate),
-        gates: std::mem::replace(&mut st.gates, previous.gates),
-        promotions: std::mem::replace(&mut st.promotions, previous.promotions),
-        red: std::mem::replace(&mut st.red, previous.red),
-        red_reported: std::mem::replace(&mut st.red_reported, previous.red_reported),
-        extra: std::mem::replace(&mut st.extra, previous.extra),
-    };
-    move_need_metadata(&mut saved.extra, &mut st.extra);
-    st.merges = integrated.max(previous.merges);
-    let result = run(st);
-    let mut updated = TargetState {
-        merges: st.merges,
-        baseline: st.baseline.take(),
-        last_gate: std::mem::take(&mut st.last_gate),
-        gates: std::mem::take(&mut st.gates),
-        promotions: std::mem::take(&mut st.promotions),
-        red: std::mem::take(&mut st.red),
-        red_reported: std::mem::take(&mut st.red_reported),
-        extra: std::mem::take(&mut st.extra),
-    };
-    move_need_metadata(&mut updated.extra, &mut saved.extra);
-    st.merges = saved.merges;
-    st.baseline = saved.baseline;
-    st.last_gate = saved.last_gate;
-    st.gates = saved.gates;
-    st.promotions = saved.promotions;
-    st.red = saved.red;
-    st.red_reported = saved.red_reported;
-    st.extra = saved.extra;
-    st.target_states.insert(target.to_string(), updated);
-    result
-}
-
-/// Need lifecycle and acceptance belong to the workspace even inside gate context.
-fn move_need_metadata(
-    from: &mut BTreeMap<String, serde_json::Value>,
-    into: &mut BTreeMap<String, serde_json::Value>,
-) {
-    for key in ["need_branches", "need_verdicts"] {
-        if let Some(value) = from.remove(key) {
-            into.insert(key.to_owned(), value);
-        }
-    }
-}
-
-/// Count published units, excluding work that only reached a need branch.
-fn integrated_unit_count(st: &State, target: &str) -> u64 {
-    st.units
-        .values()
-        .filter(|unit| unit.target_id() == target && unit.status == Status::Merged)
-        .filter(
-            |unit| match crate::pump::need::get(st, target, &unit.need) {
-                Ok(None) => true,
-                Ok(Some(record)) => record.landing_receipt.is_some(),
-                Err(_) => false,
-            },
-        )
-        .count() as u64
-}
-
-impl State {
-    /// Whether any target currently owns an open gate job or task.
-    #[must_use]
-    pub fn has_active_gate(&self) -> bool {
-        self.last_gate.task.is_some()
-            || self.last_gate.job_id.is_some()
-            || self
-                .target_states
-                .values()
-                .any(|target| target.last_gate.task.is_some() || target.last_gate.job_id.is_some())
-    }
-
-    /// Target ID whose gate job or task is open, if any.
-    #[must_use]
-    pub fn active_gate_target(&self) -> Option<String> {
-        if self.last_gate.task.is_some() || self.last_gate.job_id.is_some() {
-            return Some(String::from("default"));
-        }
-        self.target_states
-            .iter()
-            .find(|(_, target)| {
-                target.last_gate.task.is_some() || target.last_gate.job_id.is_some()
-            })
-            .map(|(id, _)| id.clone())
-    }
-}
-
-/// One unit handed to the merge thread.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct MergeJob {
-    /// Unit handle.
-    #[serde(default)]
-    pub uid: String,
-    /// Repository target whose integration clone owns the branch.
-    #[serde(default = "default_target")]
-    pub target: String,
-    /// Work branch to merge.
-    #[serde(default)]
-    pub branch: String,
-    /// One-line title (commit message subject).
-    #[serde(default)]
-    pub title: String,
-    /// Owning need handle.
-    #[serde(default)]
-    pub need: String,
-    /// Proof commands to run on the integration branch.
-    #[serde(default)]
-    pub proof: Vec<String>,
-    /// The unit's kind (`[pump.dispatch.kinds.<name>]`); empty means
-    /// `default_kind`.
-    #[serde(default)]
-    pub tools: String,
-    /// Files this unit may write.
-    #[serde(default)]
-    pub write_scope: Vec<String>,
-    /// The local repository the branch lives in for a `local` worktree pool
-    /// (single-target pumps); `None` means the target's remote.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<PathBuf>,
-}
-
-/// What the merge thread reports back for one job.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct MergeResult {
-    /// Unit handle.
-    #[serde(default)]
-    pub uid: String,
-    /// Merged, failed, or unknown (null).
-    #[serde(default)]
-    pub ok: Option<bool>,
-    /// Integration tip after the merge, when it landed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tip: Option<String>,
-    /// Files touched outside the write scope.
-    #[serde(default)]
-    pub outside: Vec<String>,
-    /// Wall seconds the merge took.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secs: Option<u64>,
-    /// Short failure reason, when it failed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
-    /// Failure detail (proof output, ...).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    /// Set (with `ok=null`, `why="quarantined"`) when the unit merged into a
-    /// batch whose shared check failed: the batch was pushed aside.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quarantine: Option<Quarantine>,
-}
-
-/// A batch set aside after a failed shared check; every merged unit of the
-/// batch gets the same value in its result.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Quarantine {
-    /// The quarantine id; the batch sits on `vivi/quarantine/<id>`.
-    #[serde(default)]
-    pub id: String,
-    /// The shared check that failed.
-    #[serde(default)]
-    pub cmd: String,
-    /// Its exit code.
-    #[serde(default)]
-    pub code: i32,
-    /// Its distilled failure text.
-    #[serde(default)]
-    pub text: String,
-    /// Every unit of the batch that merged cleanly and is set aside.
-    #[serde(default)]
-    pub units: Vec<String>,
 }
 
 impl State {

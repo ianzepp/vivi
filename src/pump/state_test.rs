@@ -7,9 +7,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use crate::pump::jobs::{JobSpec, JobStatus};
-use crate::pump::state::{
-    Board, MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
-};
+use crate::pump::state::{Board, NeedRecord, State, Status, Unit};
 
 #[test]
 fn restart_keeps_merging_units_owned_by_dispatched_merge_jobs_only() {
@@ -200,29 +198,14 @@ fn a_state_written_by_pump_py_loads() {
     assert_eq!(need.verdict, "units");
     assert_eq!(need.units, vec!["c8c37615-1", "c8c37615-2"]);
     assert_eq!(st.merges, 371);
-    assert_eq!(st.baseline, None);
-    assert_eq!(st.last_gate.task, None);
-    assert_eq!(st.last_gate.pool.as_deref(), Some("flyfull"));
-    assert_eq!(st.last_gate.merges, 371);
-    assert_eq!(st.gates.len(), 2);
-    assert!(st.gates[0].names.is_none());
-    assert!(st.gates[1].new.is_none());
-    assert_eq!(
-        st.gates[1].names,
-        Some(vec![
-            "radix-module codegen::ts::tests::delimited_positions_drop_only_redundant_parentheses"
-                .to_owned()
-        ])
-    );
+    for retired in ["baseline", "last_gate", "gates", "red"] {
+        assert!(st.extra.contains_key(retired), "{retired} falls into extra");
+    }
+    assert_eq!(st.extra["last_gate"]["pool"], json!("flyfull"));
     assert!(st.board.planning.is_empty());
     assert_eq!(st.board.replied[0], "f9d8a611:planned");
-    assert_eq!(
-        st.red["radix-module codegen::ts::tests::delimited_positions_drop_only_redundant_parentheses"],
-        "pumpfix-g448d8115"
-    );
     assert_eq!(st.closed_needs, vec!["b9ae0618", "e03fba11"]);
     assert_eq!(st.plans_seen, vec!["84eaff6a.json", "9fec06b7.json"]);
-    assert!(st.promotions.is_empty());
     assert_eq!(st.extra.get("rr"), Some(&json!(17)));
 }
 
@@ -259,14 +242,7 @@ fn a_missing_file_loads_as_the_empty_state() {
     assert!(st.order.is_empty());
     assert!(st.needs.is_empty());
     assert_eq!(st.merges, 0);
-    assert_eq!(st.baseline, None);
-    assert_eq!(st.last_gate.at, 0);
-    assert_eq!(st.last_gate.task, None);
-    assert_eq!(st.last_gate.tip, None);
-    assert!(st.gates.is_empty());
     assert!(st.plans_seen.is_empty());
-    assert!(st.red.is_empty());
-    assert!(st.promotions.is_empty());
     assert!(st.extra.is_empty());
 }
 
@@ -316,12 +292,6 @@ fn save_then_load_round_trips_and_leaves_no_tmp_file() {
     );
     st.order.push("2aab941d-1".to_owned());
     st.merges = 371;
-    st.baseline = Some(vec!["old failing test".to_owned()]);
-    st.promotions.push(Promotion {
-        tip: "448d8115989e37402ab1606fa0331806e646fcb1".to_owned(),
-        at: 1_791_982_970,
-        failing: None,
-    });
     st.extra.insert("rr".to_owned(), json!(18));
 
     st.save(&path).unwrap();
@@ -334,50 +304,12 @@ fn save_then_load_round_trips_and_leaves_no_tmp_file() {
     assert_eq!(unit.since, 1_791_939_851);
     assert_eq!(back.order, vec!["2aab941d-1"]);
     assert_eq!(back.merges, 371);
-    assert_eq!(back.baseline, Some(vec!["old failing test".to_owned()]));
-    assert_eq!(back.promotions[0].at, 1_791_982_970);
     assert_eq!(back.extra.get("rr"), Some(&json!(18)));
 
     let text = fs::read_to_string(&path).unwrap();
     assert!(
         text.starts_with("{\n \"units\": {\n  \"2aab941d-1\": {"),
         "one-space indent: {text:.40}"
-    );
-}
-
-#[test]
-fn target_gate_state_isolated_from_workspace_default_and_persists() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("state.json");
-    let mut state = State::default();
-    state.baseline = Some(vec![String::from("default failure")]);
-    with_target_state(&mut state, "tela", |target| {
-        target.baseline = Some(vec![String::from("tela failure")]);
-        target.merges = 7;
-        target
-            .extra
-            .insert(String::from("replans"), json!({"failure": 1}));
-    });
-    assert_eq!(state.baseline, Some(vec![String::from("default failure")]));
-    assert_eq!(
-        state.target_states["tela"].baseline,
-        Some(vec![String::from("tela failure")])
-    );
-    assert_eq!(state.target_states["tela"].merges, 7);
-    assert!(state.extra.is_empty());
-    assert_eq!(
-        state.target_states["tela"].extra["replans"],
-        json!({"failure": 1})
-    );
-    state.save(&path).unwrap();
-    let loaded = State::load(&path).unwrap();
-    assert_eq!(
-        loaded.target_states["tela"].baseline,
-        Some(vec![String::from("tela failure")])
-    );
-    assert_eq!(
-        loaded.target_states["tela"].extra["replans"],
-        json!({"failure": 1})
     );
 }
 
@@ -464,54 +396,6 @@ fn counts_groups_units_by_status_name() {
     assert_eq!(counts.get("no-defect"), Some(&1));
     assert_eq!(counts.get("merged"), None);
     assert_eq!(counts.len(), 3);
-}
-
-#[test]
-fn a_merge_result_serialises_without_its_empty_optionals() {
-    let landed = MergeResult {
-        uid: "2aab941d-1".to_owned(),
-        ok: Some(true),
-        tip: Some("448d8115989e37402ab1606fa0331806e646fcb1".to_owned()),
-        secs: Some(91),
-        ..MergeResult::default()
-    };
-    assert_eq!(
-        serde_json::to_value(&landed).unwrap(),
-        json!({
-            "uid": "2aab941d-1",
-            "ok": true,
-            "outside": [],
-            "tip": "448d8115989e37402ab1606fa0331806e646fcb1",
-            "secs": 91
-        })
-    );
-
-    let failed = MergeResult {
-        uid: "d381ae56-4".to_owned(),
-        ok: Some(false),
-        why: Some("proof-failed".to_owned()),
-        detail: Some("exit 101\ncargo test -p radix-module --lib".to_owned()),
-        ..MergeResult::default()
-    };
-    assert_eq!(
-        serde_json::to_value(&failed).unwrap(),
-        json!({
-            "uid": "d381ae56-4",
-            "ok": false,
-            "outside": [],
-            "why": "proof-failed",
-            "detail": "exit 101\ncargo test -p radix-module --lib"
-        })
-    );
-
-    let unknown = MergeResult {
-        uid: "84e6122f-10.1".to_owned(),
-        ..MergeResult::default()
-    };
-    assert_eq!(
-        serde_json::to_value(&unknown).unwrap(),
-        json!({"uid": "84e6122f-10.1", "ok": null, "outside": []})
-    );
 }
 
 /// A trimmed copy of the live pump state (1325 units cut to 19, one or two
@@ -686,58 +570,4 @@ fn a_withdrawn_or_unknown_unit_does_not_satisfy_after() {
         },
     );
     assert!(!satisfied(&st, "r-1", 0));
-}
-
-#[test]
-fn target_merge_count_excludes_unaccepted_need_branches_before_extra_swap() {
-    let mut state = State::default();
-    let unit = Unit {
-        need: "n1".into(),
-        target: "tela".into(),
-        status: Status::Merged,
-        ..Unit::default()
-    };
-    state.units.insert("u1".into(), unit);
-    crate::pump::need::reserve(&mut state, "tela", "n1", 1, &"a".repeat(40)).unwrap();
-    state.units.insert(
-        "legacy".into(),
-        Unit {
-            need: "legacy".into(),
-            target: "tela".into(),
-            status: Status::Merged,
-            ..Unit::default()
-        },
-    );
-    with_target_state(&mut state, "tela", |scoped| {
-        assert_eq!(scoped.merges, 1);
-        assert!(
-            crate::pump::need::get(scoped, "tela", "n1")
-                .unwrap()
-                .is_some()
-        );
-        scoped.extra.get_mut("need_branches").unwrap()["tela"]["n1"]["error"] =
-            json!("observed while scoped");
-    });
-    assert_eq!(
-        crate::pump::need::get(&state, "tela", "n1")
-            .unwrap()
-            .unwrap()
-            .error
-            .as_deref(),
-        Some("observed while scoped")
-    );
-    assert!(
-        !state.target_states["tela"]
-            .extra
-            .contains_key("need_branches")
-    );
-    assert!(
-        crate::pump::need::get(&state, "tela", "n1")
-            .unwrap()
-            .is_some()
-    );
-    state
-        .extra
-        .insert("need_branches".into(), json!({"tela": {"n1": "corrupt"}}));
-    with_target_state(&mut state, "tela", |scoped| assert_eq!(scoped.merges, 1));
 }

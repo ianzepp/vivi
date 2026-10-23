@@ -20,18 +20,17 @@ pub mod flow_links;
 mod main_state;
 mod need_branch;
 mod priority;
-mod promotions;
 mod schema;
 mod snapshot;
 mod state_rows;
 pub mod step_payload;
 mod unit_extra;
-pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
+pub(super) use codec::{db_err, from_json, from_u32, from_u64, json, json_or_null};
 pub use need_branch::NeedBranchRow;
 use schema::{drop_request_queues, newer_schema, schema_version, take_migration_lock};
 use state_rows::{
-    clear, load_gates, load_meta, load_needs, load_order, load_red, load_strings, load_units,
-    write_gates, write_lists, write_meta, write_needs, write_units,
+    clear, load_meta, load_needs, load_order, load_strings, load_units, write_lists, write_meta,
+    write_needs, write_units,
 };
 
 use super::state::State;
@@ -361,12 +360,8 @@ impl PumpStore {
             needs: load_needs(&self.conn)?,
             units: load_units(&self.conn)?,
             order: load_order(&self.conn)?,
-            gates: load_gates(&self.conn)?,
             closed_needs: load_strings(&self.conn, "closed_needs", "need")?,
             plans_seen: load_strings(&self.conn, "plans_seen", "name")?,
-            promotions: promotions::load(&self.conn)?,
-            red: load_red(&self.conn)?,
-            red_reported: load_strings(&self.conn, "red_reported", "value")?,
             ..State::default()
         };
         load_meta(&self.conn, &mut st)?;
@@ -389,7 +384,6 @@ impl PumpStore {
         write_meta(&tx, st)?;
         write_units(&tx, st)?;
         write_needs(&tx, st)?;
-        write_gates(&tx, st)?;
         write_lists(&tx, st)?;
         tx.commit().map_err(db_err("commit"))?;
         Ok(())
@@ -497,7 +491,6 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     flow_index::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
-    promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
     }
