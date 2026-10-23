@@ -141,7 +141,6 @@ fn cadence_run_receipts_are_available_to_the_board() {
         RoleRun {
             job: String::from("cadence-digest-1"),
             task: String::from("abcd1234"),
-            read_only: true,
             started_at: 100,
             ended_at: Some(200),
             outcome: Some(String::from("success")),
