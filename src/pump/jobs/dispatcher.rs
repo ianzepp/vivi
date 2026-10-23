@@ -450,6 +450,9 @@ pub(super) fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     for extra in &job.with {
         args.push(format!("--with {}", shell_quote(extra)));
     }
+    if !job.role.is_empty() {
+        args.push(format!("--role {}", shell_quote(&job.role)));
+    }
     if let Some(model) = &job.model {
         args.push(format!("--model {}", shell_quote(model)));
     }

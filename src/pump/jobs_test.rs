@@ -462,6 +462,15 @@ fn pool_command_carries_repository_and_write_context() {
 }
 
 #[test]
+fn pool_command_names_the_job_role_only_when_it_has_one() {
+    let mut job = PoolJob::from(spec("merge-2"));
+    job.role = String::from("merge");
+    assert!(pool_command(&job, "local", "a1b2c3d4").contains("--role merge"));
+    job.role = String::new();
+    assert!(!pool_command(&job, "local", "a1b2c3d4").contains("--role"));
+}
+
+#[test]
 fn promotion_job_binds_an_exact_green_candidate_to_main_on_a_scratch_branch() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = PumpConfig::default();
