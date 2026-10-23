@@ -103,7 +103,6 @@ pub(super) fn tools_list() -> Value {
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "Project name: one safe path segment" },
-                "gate": { "type": "string", "description": "Pump gate command ([pump.gate] command)" },
                 "branch": { "type": "string", "default": "main", "description": "Integration branch and the repository's default branch" },
                 "pool": { "type": "string", "description": "Pool whose remote_url is set to the git URL; overrides the host default" },
                 "initial_commit": { "type": "boolean", "default": false, "description": "Create an empty first commit on the branch" },
@@ -185,7 +184,6 @@ fn build_request(host: &HostConfig, arguments: &Value) -> Result<ProjectCreate, 
     request.pool = opt_str(arguments, "pool")?
         .map(str::to_owned)
         .or_else(|| host.default_pool.clone());
-    request.gate = opt_str(arguments, "gate")?.map(str::to_owned);
     if let Some(branch) = opt_str(arguments, "branch")? {
         request.branch = branch.to_owned();
     }

@@ -157,7 +157,7 @@ async fn the_operator_token_lists_and_initializes() {
 async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it() {
     let fx = fixture("create", Some(TOKEN), true);
     let (errored, made) = fx
-        .create(json!({"name": "fresh", "initial_commit": true, "gate": "true"}))
+        .create(json!({"name": "fresh", "initial_commit": true}))
         .await;
     assert!(!errored, "{made}");
 
@@ -181,9 +181,9 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
     assert_eq!(made["operator_key"]["identity"], "operator");
 
     // Served without a restart or a watcher: the project endpoint answers,
-    // and the minted key is the operator's (pump_gate needs one).
+    // and the minted key is the operator's (pump_list needs one).
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "pump_gate", "arguments": {"action": "show"}}});
+        "params": {"name": "pump_list", "arguments": {}}});
     let (status, value) = fx
         .post(
             &made["mcp_path"].as_str().unwrap().to_owned(),
@@ -194,10 +194,7 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_ne!(value["result"]["isError"], true, "{value}");
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(text).unwrap()["command"],
-        "true"
-    );
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap()["total"], 0);
 }
 
 #[tokio::test]
