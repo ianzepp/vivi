@@ -3,6 +3,7 @@
 use tempfile::{TempDir, tempdir};
 
 use super::NeedBranchRow;
+use crate::pump::flow::index::RunRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 fn row(need: &str) -> NeedBranchRow {
@@ -71,4 +72,67 @@ fn unknown_need_reads_none() {
         .set_need_branch_status("ghost", "live")
         .expect("no-op");
     assert_eq!(store.need_branch("ghost").expect("read"), None);
+}
+
+fn raw_insert(dir: &TempDir, need: &str, record: Option<&str>) {
+    let conn = rusqlite::Connection::open(dir.path().join(DB_FILENAME)).expect("raw open");
+    conn.execute(
+        "INSERT INTO need_branches (need, branch, base, status, record_json)
+         VALUES (?1, 'b', NULL, 'live', ?2)",
+        rusqlite::params![need, record],
+    )
+    .expect("raw insert");
+}
+
+#[test]
+fn null_record_is_an_error_naming_the_need() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    raw_insert(&dir, "n9", None);
+    let err = store
+        .need_branch("n9")
+        .expect_err("null record")
+        .to_string();
+    assert!(err.contains("need branch n9"), "{err}");
+    assert!(
+        err.contains("expected a record with run and target"),
+        "{err}"
+    );
+}
+
+#[test]
+fn partial_record_is_an_error_naming_the_need() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    raw_insert(&dir, "n8", Some("{}"));
+    let err = store
+        .need_branch("n8")
+        .expect_err("empty record")
+        .to_string();
+    assert!(err.contains("need branch n8"), "{err}");
+    raw_insert(&dir, "n7", Some(r#"{"run":1}"#));
+    let err = store.need_branch("n7").expect_err("no target").to_string();
+    assert!(
+        err.contains("need branch n7") && err.contains("target"),
+        "{err}"
+    );
+}
+
+#[test]
+fn for_run_copies_need_and_run() {
+    let run = RunRow {
+        need: "n5".into(),
+        run: 4,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    let got = NeedBranchRow::for_run(&run, "b".into(), None, "fresh", "vivi", vec!["p".into()]);
+    assert_eq!(got.need, "n5");
+    assert_eq!(got.run, 4);
+    assert_eq!(got.status, "fresh");
+    assert_eq!(got.target, "vivi");
+    assert_eq!(got.priors, vec!["p".to_string()]);
 }
