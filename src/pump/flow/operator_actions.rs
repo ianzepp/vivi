@@ -13,7 +13,6 @@
 //!   open (a done step is reopened by advance, never here). A Pending job held
 //!   after repeated pool refusals is released in place instead: its hold and
 //!   refusal count clear and the next dispatch offers it to a pool again;
-//! - `recover` is refused: it has no meaning for a flow run;
 //! - `answer` and `unlock` are left alone: other phases apply them.
 //!
 //! Every letter is applied or refused exactly once: its id goes into
@@ -108,10 +107,9 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
 /// The active run a flow-owned action applies to; None leaves the letter alone.
 fn run_for(store: &PumpStore, action: &PumpAction) -> Result<Option<RunRow>, VivariumError> {
     match action.request.kind {
-        PumpActionKind::Replan
-        | PumpActionKind::Withdraw
-        | PumpActionKind::Requeue
-        | PumpActionKind::Recover => active_run(store, &action.need),
+        PumpActionKind::Replan | PumpActionKind::Withdraw | PumpActionKind::Requeue => {
+            active_run(store, &action.need)
+        }
         PumpActionKind::Answer | PumpActionKind::Unlock => Ok(None),
     }
 }
@@ -147,10 +145,6 @@ fn apply_one<M: MailWriter + MailReader>(
         }
         PumpActionKind::Withdraw => mail.close_record(&action.need, "withdrawn"),
         PumpActionKind::Requeue => requeue(st, store, run, action.request.unit.as_deref()),
-        PumpActionKind::Recover => Err(VivariumError::Message(format!(
-            "recover has no meaning for a flow run (need {} run r{})",
-            action.need, run.run
-        ))),
         PumpActionKind::Answer | PumpActionKind::Unlock => Err(VivariumError::Message(format!(
             "{} is applied by another phase",
             action.request.kind.as_str()
