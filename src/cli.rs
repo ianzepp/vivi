@@ -9,6 +9,7 @@ use crate::boot::PumpView;
 mod board_command;
 mod config_command;
 mod doctor_command;
+mod flow_command;
 mod mailspace_command;
 mod mcp_command;
 mod monitor_command;
@@ -25,6 +26,7 @@ mod update_command;
 pub use board_command::BoardCommand;
 pub use config_command::ConfigCommand;
 pub use doctor_command::DoctorCommand;
+pub use flow_command::FlowCommand;
 pub use mailspace_command::{
     AbsorbCommand, CycleCommand, DependCommand, GoalCommand, GraphActivateCommand,
     GraphApplyCommand, GraphAuditCommand, GraphBlockedCommand, GraphCommand, GraphCompleteCommand,
@@ -223,6 +225,12 @@ pub enum Command {
 
     /// Trace the cross-role communication tree around a handle
     Trace(TraceCommand),
+
+    /// List and show the shipped flows, and a need's flow runs (read-only)
+    Flow {
+        #[command(subcommand)]
+        command: FlowCommand,
+    },
 
     /// Import and inspect executable work graphs
     Graph {
