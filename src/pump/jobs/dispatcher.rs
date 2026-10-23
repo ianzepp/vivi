@@ -411,6 +411,9 @@ pub(super) fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     if let Some(model) = &job.model {
         args.push(format!("--model {}", shell_quote(model)));
     }
+    if let Some(command) = &job.command {
+        args.push(format!("--command {}", shell_quote(command)));
+    }
     if let Some(branch) = &job.branch {
         args.push(format!("--branch {}", shell_quote(branch)));
     }

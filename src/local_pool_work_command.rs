@@ -104,7 +104,8 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     if handle.config.provider == "local" {
         vivi::pool::clean::guard_before_dispatch(&space, &id.pool)?;
     }
-    mint_bridge_grant(config, &space, &id.pool, &job_id, &mut plan, &progress)?;
+    let bridged = command.command.is_none() && config.bridge.enabled;
+    mint_bridge_grant(bridged, &space, &id.pool, &job_id, &mut plan, &progress)?;
     claim_note(provider, &id.pool, &progress);
     let made = submit_job(
         &space,
@@ -305,6 +306,9 @@ fn resolve_dispatch(
     task: &PoolTask,
     pool_rules: String,
 ) -> Result<(DispatchFlags, String, String), VivariumError> {
+    if command.command.is_some() {
+        return resolve_command_dispatch(command, space, task, pool_rules);
+    }
     if let Some(slug) = &command.model {
         if let Some(harness) = &config.harness {
             job::check_model(slug, &harness.models)?;
@@ -340,6 +344,22 @@ fn resolve_dispatch(
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
     let flags = DispatchFlags {
         model: resolved.model,
+        read_only: resolved.read_only,
+        reasoning: resolved.reasoning,
+        ..base_flags(command, need, kind)
+    };
+    Ok((flags, rules, role_line))
+}
+
+/// The flags every dispatch shares, as the command line gave them; the model,
+/// the reasoning level and the read-only mode are the caller's to fill in.
+fn base_flags(
+    command: &PoolDispatchCommand,
+    need: Option<String>,
+    kind: Option<String>,
+) -> DispatchFlags {
+    DispatchFlags {
+        model: String::new(),
         need,
         kind,
         from: command.from.clone(),
@@ -352,10 +372,30 @@ fn resolve_dispatch(
         with: command.with.clone(),
         budget: command.budget,
         allow_default_branch: command.allow_default_branch,
-        read_only: resolved.read_only,
-        reasoning: resolved.reasoning,
-    };
-    Ok((flags, rules, role_line))
+        read_only: command.read_only,
+        reasoning: None,
+        command: command.command.clone(),
+    }
+}
+
+/// The flags of a no-model dispatch (`--command`): no role resolution, no
+/// standing prompt and no model. `validate_publish` still runs so a
+/// merge-role task can publish.
+fn resolve_command_dispatch(
+    command: &PoolDispatchCommand,
+    space: &Mailspace,
+    task: &PoolTask,
+    pool_rules: String,
+) -> Result<(DispatchFlags, String, String), VivariumError> {
+    let role = role_facts(space, task);
+    role_dispatch::validate_publish(
+        role.as_ref(),
+        command.publish_ref.as_deref(),
+        command.publish_expect.as_deref(),
+    )?;
+    let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
+    let flags = base_flags(command, need, kind);
+    Ok((flags, pool_rules, String::new()))
 }
 
 /// Resolve the need and kind carried by one dispatch command.
@@ -455,14 +495,14 @@ fn role_line(
 /// [`undo_bridge_grant`]). The grant rides in the plan, is delivered only
 /// inside the job archive, and only its key id is ever named.
 fn mint_bridge_grant(
-    config: &PoolConfig,
+    enabled: bool,
     space: &Mailspace,
     pool: &str,
     job: &str,
     plan: &mut job::JobPlan,
     progress: &Progress,
 ) -> Result<(), VivariumError> {
-    if !config.bridge.enabled {
+    if !enabled {
         return Ok(());
     }
     progress.say(&format!(

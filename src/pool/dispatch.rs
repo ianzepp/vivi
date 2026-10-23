@@ -64,6 +64,10 @@ pub struct DispatchFlags {
     /// Chosen by band at dispatch time (unit B4b); `None` refuses a template
     /// that needs one.
     pub reasoning: Option<String>,
+    /// A no-model job: this shell command runs as the harness, so no model is
+    /// checked and no reasoning level is chosen. Its exit code is the result's
+    /// `agent_rc`.
+    pub command: Option<String>,
 }
 
 /// A fresh job id: twelve hex digits.
@@ -100,8 +104,14 @@ pub fn plan_job(
             "[pools.{pool}.committer] (name, email) is required to dispatch"
         ))
     })?;
-    let reasoning = plan_reasoning(pool, &harness.run, flags)?;
-    job::check_model(&flags.model, &harness.models)?;
+    let reasoning = match flags.command {
+        Some(_) => None,
+        None => {
+            let reasoning = plan_reasoning(pool, &harness.run, flags)?;
+            job::check_model(&flags.model, &harness.models)?;
+            reasoning
+        }
+    };
     validate_publish_flags(flags)?;
     let refs = plan_refs(flags, body)?;
     let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
@@ -180,7 +190,9 @@ fn assemble_job_plan(
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
-        harness_cmd: job::render_harness(&harness.run, &flags.model, reasoning.as_deref()),
+        harness_cmd: flags.command.clone().unwrap_or_else(|| {
+            job::render_harness(&harness.run, &flags.model, reasoning.as_deref())
+        }),
         env_names: harness.env.clone(),
         committer,
         read_only: flags.read_only,
