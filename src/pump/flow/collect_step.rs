@@ -199,7 +199,10 @@ where
             self.decide,
         )?;
         if let Some(reason) = advanced.routed.rejected {
-            self.ctx.exception(WORD_REJECTED, &step.task, &reason);
+            let held = format!("{reason}; held for vivi pump answer {} <word>", step.task);
+            self.ctx.exception(WORD_REJECTED, &step.task, &held);
+            self.store
+                .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
         }
         Ok(())
     }
@@ -224,6 +227,17 @@ where
         row: &StepJobRow,
         step: &StepRow,
     ) -> Result<(), VivariumError> {
+        self.rerun_with(job, row, step, |_| {})
+    }
+
+    /// [`Self::rerun`], with `edit` applied to the new job's spec before it is queued.
+    pub(crate) fn rerun_with(
+        &mut self,
+        job: &PoolJob,
+        row: &StepJobRow,
+        step: &StepRow,
+        edit: impl FnOnce(&mut JobSpec),
+    ) -> Result<(), VivariumError> {
         let attempt = row.attempt + 1;
         let id = format!("{}-a{attempt}", correct::base_id(&job.id));
         let mut spec = JobSpec::new(
@@ -243,6 +257,7 @@ where
         spec.read_only = job.read_only;
         spec.budget = job.budget;
         spec.payload = job.payload.clone();
+        edit(&mut spec);
         jobs::enqueue(self.st, spec)?;
         self.store.insert_step_job(
             &self.run.need,
@@ -287,7 +302,15 @@ where
         match verify::check(self.ctx, &req) {
             SideEffect::Verified { sha } => self.advance_word(step, "merged", merged_payload(&sha)),
             SideEffect::Absent => {
-                self.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
+                let reason = format!(
+                    "expected {remote_ref} to contain {}; actual: git says it does not",
+                    req.must_contain
+                );
+                self.advance_word(
+                    step,
+                    FAILED,
+                    serde_json::json!({"job": job.id, "reason": reason}),
+                )
             }
             SideEffect::Unclear { reason } => {
                 self.ctx.exception(
@@ -308,3 +331,7 @@ where
 pub(crate) fn merged_payload(sha: &str) -> serde_json::Value {
     serde_json::json!({"sha": sha, "commit": sha})
 }
+
+#[cfg(test)]
+#[path = "collect_step_test.rs"]
+mod tests;
