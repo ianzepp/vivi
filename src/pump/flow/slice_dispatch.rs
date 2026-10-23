@@ -236,8 +236,11 @@ impl MailspacePort {
         Ok(thread
             .into_iter()
             .filter(|message| message.event.is_none() && message.message_id != id)
-            .filter(|message| message.body.trim_start().starts_with(marker))
-            .map(|message| (message.date, message.body.trim().to_owned()))
+            .filter(|message| crate::letter::prose_of(&message.body).starts_with(marker))
+            .map(|message| {
+                let prose = crate::letter::prose_of(&message.body).to_owned();
+                (message.date, prose)
+            })
             .collect())
     }
 

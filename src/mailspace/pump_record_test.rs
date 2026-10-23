@@ -576,23 +576,36 @@ fn a_full_front_matter_body_is_accepted_and_a_need_mismatch_refused() {
 fn a_record_in_the_old_form_lists_with_no_need_and_a_letter_error_naming_it() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
-    let extras = [("X-Vivi-Need".to_string(), need.clone())];
-    let sent = mailspace
-        .send_with_extras(
-            SendRequest {
-                from: "operator".into(),
-                to: vec!["mind".into()],
-                cc: Vec::new(),
-                bcc: Vec::new(),
-                subject: "pump old".into(),
-                body: "Dispatch of an old record.".into(),
-                role: "pumps".into(),
-                kind: Some("pump".into()),
-                reply_to: None,
-            },
-            &extras,
-        )
+    let raw = format!(
+        "From: {}\r\nTo: {}\r\nSubject: pump old\r\nMessage-ID: <pump-old@x.test>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: pump\r\nX-Vivi-Need: {need}\r\n\
+         \r\nDispatch of an old record.\r\n",
+        mailspace.address_for("operator"),
+        mailspace.address_for("mind"),
+    );
+    let sent = mailspace.deliver_raw(raw.as_bytes(), "pumps").unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage
+        .resolve_message_token(&sent.delivered[0].handle)
         .unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    storage
+        .append_mailspace_event(&crate::storage::MailspaceEventInput {
+            command: "pump send".into(),
+            event_type: "delivered".into(),
+            actor_identity: Some("operator".into()),
+            account: "mind".into(),
+            message_id: view.message_id.clone(),
+            content_id: view.content_id.clone(),
+            from_role: None,
+            to_role: Some("pumps".into()),
+            from_identity: Some("operator".into()),
+            to_identity: Some("mind".into()),
+            subject: view.subject.clone(),
+            note: None,
+        })
+        .unwrap();
+    drop(storage);
     let listed = mailspace.pump_list(None, None).unwrap();
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0].need, "");
