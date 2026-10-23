@@ -17,7 +17,7 @@ use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 use crate::pump::run::{
     actor_string, ensure_repo, refresh_config, run, run_with, tick as run_tick, write_status,
 };
-use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
+use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// The fake clock's start (1970-01-12T13:46:40Z).
@@ -126,146 +126,37 @@ fn first_at(commands: &[String], fragment: &str) -> usize {
 }
 
 #[test]
-fn write_status_writes_counts_then_the_delivered_line() {
+fn write_status_writes_the_stamp_and_no_unit_plan_or_planner_line() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Pending, None));
-    put(&mut st, "a-2", unit(Status::Pending, None));
     put(&mut st, "a-3", unit(Status::Merged, Some("9d98468e")));
-    for handle in ["n1", "n2"] {
-        st.needs.insert(
-            handle.to_owned(),
-            NeedRecord {
-                verdict: String::from("closed"),
-                ..NeedRecord::default()
-            },
-        );
-    }
     st.needs.insert(
-        String::from("n3"),
+        String::from("n1"),
         NeedRecord {
-            verdict: String::from("units"),
+            verdict: String::from("closed"),
             ..NeedRecord::default()
         },
     );
     st.merges = 3;
-    st.closed_needs = vec![String::from("n1"), String::from("n2")];
-    write_status(&ctx, &st);
-    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 5, "{text}");
-    assert_eq!(lines[0], "1970-01-12T13:46:40Z");
-    assert_eq!(lines[1], "units merged=1 pending=2");
-    assert_eq!(lines[2], "plans closed=2 units=1");
-    assert_eq!(lines[3], "merges 3  needs-ready 2");
-    assert_eq!(lines[4], "delivered waiting 0, oldest none");
-}
-
-#[test]
-fn write_status_lists_top_blockers_after_the_stall_lines() {
-    let (dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.needs.insert(
-        String::from("r"),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: vec![String::from("r-1")],
-            ..NeedRecord::default()
-        },
-    );
-    st.units.insert(
-        String::from("r-1"),
-        Unit {
-            need: String::from("r"),
-            status: Status::Stuck,
-            since: T0 - 30 * 60,
-            ..Unit::default()
-        },
-    );
-    let mut pairs: Vec<serde_json::Value> = Vec::new();
-    for index in 1..=12 {
-        let need = format!("m{index}");
-        st.needs.insert(
-            need.clone(),
-            NeedRecord {
-                verdict: String::from("units"),
-                ..NeedRecord::default()
-            },
-        );
-        st.units.insert(
-            format!("{need}-1"),
-            Unit {
-                need: need.clone(),
-                status: Status::Pending,
-                since: T0 - 600,
-                ..Unit::default()
-            },
-        );
-        pairs.push(serde_json::json!({"source_id": need, "blocked_by": ["r"]}));
-    }
-    host.reply(
-        "graph blocked",
-        0,
-        &serde_json::Value::Array(pairs).to_string(),
-    );
-    host.set_now(T0);
-    write_status(&ctx, &st);
-    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert!(
-        text.contains("blocker r stuck age 30m held 13"),
-        "no blocker line in {text}"
-    );
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|line| line.starts_with("blocker "))
-            .count(),
-        1
-    );
-    let blocker = lines
-        .iter()
-        .position(|line| line.starts_with("blocker "))
-        .unwrap();
-    let stall = lines
-        .iter()
-        .position(|line| line.starts_with("delivered waiting "))
-        .unwrap();
-    assert!(blocker > stall, "blocker follows stall status: {text}");
-}
-
-#[test]
-fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
-    let (dir, ctx, _host) = setup();
-    let mut st = State::default();
-    let now = ctx.now();
-    st.jobs.insert(
-        "plan1".into(),
-        planner_job("plan1", JobStatus::Dispatched, now - 310, Some(now - 310)),
-    );
-    st.jobs.insert(
-        "plan2".into(),
-        planner_job("plan2", JobStatus::Pending, now, None),
-    );
     st.board.planner_fails.insert(String::from("n7"), 2);
     write_status(&ctx, &st);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert!(
-        text.contains("planner-job plan1 in-flight pool=here task=task-plan1 age=310s"),
-        "no n1 planner line in {text}"
-    );
-    assert!(
-        text.contains("planner-job plan2 queued pool=here task=pending age=0s"),
-        "no n2 planner line in {text}"
-    );
-    assert!(
-        text.contains("planner-failures n7=2"),
-        "no failure line in {text}"
-    );
-    assert!(
-        !text.contains("planner-parked"),
-        "the parked line is gone in {text}"
-    );
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines, ["1970-01-12T13:46:40Z"], "{text}");
+    for retired in [
+        "units ",
+        "plans ",
+        "merges ",
+        "delivered ",
+        "blocker ",
+        "planner",
+    ] {
+        assert!(
+            !lines.iter().any(|line| line.starts_with(retired)),
+            "retired status line {retired:?} in {text}"
+        );
+    }
 }
 
 fn planner_job(id: &str, status: JobStatus, queued: u64, dispatched: Option<u64>) -> PoolJob {
@@ -285,20 +176,6 @@ fn planner_job(id: &str, status: JobStatus, queued: u64, dispatched: Option<u64>
     job.dispatched_at = dispatched;
     job.status = status;
     job
-}
-
-#[test]
-fn write_status_adds_no_planner_lines_when_idle() {
-    let (dir, ctx, _host) = setup();
-    let st = State::default();
-    write_status(&ctx, &st);
-    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    assert!(lines.iter().any(|line| line.starts_with("merges ")));
-    assert!(
-        !text.contains("planner"),
-        "idle board wrote planner lines in {text}"
-    );
 }
 
 #[test]
@@ -342,117 +219,6 @@ fn a_tick_logs_the_collect_duration() {
     );
 }
 
-/// The `graph blocked --kind need --json` answer: twenty needs waiting on
-/// the stuck root `r`.
-fn twenty_dependents_on_r() -> String {
-    let rows: Vec<serde_json::Value> = (1..=20)
-        .map(|index| {
-            serde_json::json!({
-                "source_id": format!("m{index}"),
-                "kind": "need",
-                "label": format!("M{index}"),
-                "blocked_by": ["r"],
-            })
-        })
-        .collect();
-    serde_json::Value::Array(rows).to_string()
-}
-
-/// A state with `r-1` stuck at its attempt cap after a timeout and twenty
-/// pending units of the needs that wait on `r`.
-fn stuck_root_with_twenty_dependents() -> State {
-    let mut st = State::default();
-    st.needs.insert(
-        String::from("r"),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: vec![String::from("r-1")],
-            ..NeedRecord::default()
-        },
-    );
-    put(
-        &mut st,
-        "r-1",
-        Unit {
-            need: String::from("r"),
-            status: Status::Stuck,
-            attempts: 3,
-            since: T0 - 3600,
-            history: vec![Attempt {
-                attempt: 3,
-                why: String::from("timeout"),
-                detail: String::from("killed by budget"),
-                at: T0 - 3600,
-                ..Attempt::default()
-            }],
-            ..Unit::default()
-        },
-    );
-    for index in 1..=20 {
-        let need = format!("m{index}");
-        st.needs.insert(
-            need.clone(),
-            NeedRecord {
-                verdict: String::from("units"),
-                units: vec![format!("{need}-1")],
-                ..NeedRecord::default()
-            },
-        );
-        put(
-            &mut st,
-            &format!("{need}-1"),
-            Unit {
-                need,
-                status: Status::Pending,
-                write_scope: vec![format!("src/m{index}/x.rs")],
-                since: T0,
-                ..Unit::default()
-            },
-        );
-    }
-    st
-}
-
-#[test]
-fn a_stuck_root_with_twenty_dependents_alarms_bumps_and_requeues_in_one_tick() {
-    let (dir, ctx, host) = setup();
-    host.set_now(T0);
-    host.reply("graph blocked", 0, &twenty_dependents_on_r());
-    let mut st = stuck_root_with_twenty_dependents();
-    tick(&ctx, &mut st);
-
-    let exceptions = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
-    assert!(
-        exceptions.contains("blocking-stuck r-1"),
-        "no blocking-stuck alarm in {exceptions}"
-    );
-    assert!(
-        exceptions.contains("holds 21 units"),
-        "the alarm does not count r-1 plus its dependents: {exceptions}"
-    );
-
-    let root = &st.units["r-1"];
-    assert_eq!(
-        root.status,
-        Status::Pending,
-        "the stuck root was not requeued"
-    );
-    assert!(root.requeued, "the requeue was not recorded on r-1");
-
-    let levels = crate::pump::priority::list(&ctx.home).unwrap();
-    assert!(levels.contains(&(String::from("r"), 1)), "{levels:?}");
-
-    let status = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    let line = status
-        .lines()
-        .find(|line| line.starts_with("blocker r "))
-        .unwrap_or_default();
-    assert!(
-        line.contains("held 21"),
-        "no 21-unit blocker line in {status}"
-    );
-}
-
 #[test]
 fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     let (dir, ctx, host) = setup();
@@ -466,11 +232,7 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(text.starts_with("1970-01-12T13:46:40Z\n"), "{text}");
     assert!(
-        text.lines().any(|line| line.starts_with("units ")),
-        "{text}"
-    );
-    assert!(
-        text.lines().any(|line| line.starts_with("merges ")),
+        !text.lines().any(|line| line.starts_with("units ")),
         "{text}"
     );
 }

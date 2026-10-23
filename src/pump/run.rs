@@ -1,6 +1,5 @@
 //! Pump tick, status, and the run/once entry points.
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::io::Write;
@@ -16,7 +15,6 @@ use crate::pump::boardpass::BoardPass;
 use crate::pump::collect;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, RealHost, shell_quote};
-use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::tick_steps;
@@ -24,18 +22,13 @@ use crate::pump::tick_steps;
 mod reload;
 pub(super) use reload::refresh_config;
 
-/// One pump tick: fold board results, ingest and collect, apply job receipts,
-/// dispatch ready work, request the periodic board pass, and write status.
-/// Operator actions on pump records (requeue, withdraw, replan) apply after
-/// the first ingest, so a requeued unit can dispatch in the same tick. The
-/// board pass is bookkeeping; durable execution runs through dispatched pool jobs.
+/// One pump tick: fold board results, collect, run the flow tick, apply job
+/// receipts, dispatch ready work, request the periodic board pass, and write
+/// status. The board pass is bookkeeping; durable execution runs through
+/// dispatched pool jobs.
 pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
     write_status(ctx, st);
     boardpass.apply(ctx, st);
-    plan::ingest(ctx, st);
-    if !ctx.mailspace.is_empty() {
-        crate::pump::action::apply_pending(ctx, st);
-    }
     collect_phase(ctx, st)?;
     tick_steps::soft_step(ctx, "flow", crate::pump::flow::tick::tick(ctx, st));
     save(ctx, st)?;
@@ -71,7 +64,6 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 }
 
 fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
-    reconcile_closed_board_needs(ctx, st);
     let t_collect = Instant::now();
     collect::collect(ctx, st);
     ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
@@ -80,73 +72,23 @@ fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// Withdraw unfinished units of needs closed on the board outside the pump.
-fn reconcile_closed_board_needs(ctx: &Ctx, st: &mut State) {
-    if ctx.mailspace.is_empty() {
-        return;
-    }
-    if crate::pump::board::reconcile_done_needs(ctx, st).is_none() {
-        ctx.log("closed-need reconcile skipped: done-need list unreadable");
-    }
-}
-
 /// The periodic board pass, shared by the paused branch and the normal path:
-/// request a board pass on the worker thread, ingest plans, raise the stall
-/// and blocking alarms, then run the blocking-stuck automatic response before
-/// the state is saved. The pass's results land on the tick that follows it.
+/// request a board pass on the worker thread, then save the state. The pass's
+/// results land on the tick that follows it.
 fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
     boardpass.request(ctx, st);
-    plan::ingest(ctx, st);
-    crate::pump::alarm::check(ctx, st);
-    crate::pump::blockers::check(ctx, st);
     save(ctx, st)
 }
 
-/// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit
-/// counts, plan verdict counts, the merge counter, the stall lines from
-/// [`crate::pump::alarm::status_lines`], the blocker lines from
-/// [`crate::pump::blockers::status_lines`], the in-flight planner lines, then
-/// the cadence lines. An idle board adds no planner lines. A write failure is
-/// logged, never fatal.
+/// Write the status lines to `<home>/status.txt`: a UTC timestamp, then the
+/// cadence lines. A write failure is logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State) {
-    let mut verdicts: BTreeMap<String, usize> = BTreeMap::new();
-    for need in st.needs.values() {
-        *verdicts.entry(need.verdict.clone()).or_default() += 1;
-    }
-    let mut lines = vec![
-        utc_stamp(ctx.now()),
-        counts_line("units", &st.counts()),
-        counts_line("plans", &verdicts),
-        format!(
-            "merges {}  needs-ready {}",
-            st.merges,
-            st.closed_needs.len()
-        ),
-    ];
-    lines.extend(crate::pump::alarm::status_lines(ctx, st));
-    lines.extend(crate::pump::blockers::status_lines(ctx, st));
-    lines.extend(planner_lines(ctx, st));
+    let mut lines = vec![utc_stamp(ctx.now())];
     lines.extend(crate::pump::cadence::status_lines(ctx, st));
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));
     }
-}
-
-/// The lines `status.txt` carries for durable planner jobs, their failure
-/// counts. Empty when the board has nothing to report.
-fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
-    let mut lines = crate::pump::planner_jobs::status_lines(ctx, st);
-    if !st.board.planner_fails.is_empty() {
-        let counts: Vec<String> = st
-            .board
-            .planner_fails
-            .iter()
-            .map(|(handle, count)| format!("{handle}={count}"))
-            .collect();
-        lines.push(format!("planner-failures {}", counts.join(" ")));
-    }
-    lines
 }
 
 /// Run the pump over `project`: load the mailspace's `[pump]` table, take
@@ -291,8 +233,6 @@ fn run_with_lock_policy(
     if !ctx.mailspace.is_empty() {
         crate::pump::jobs::recover_dispatched(ctx, &mut st)?;
     }
-    reconcile_closed_board_needs(ctx, &mut st);
-    plan::ingest(ctx, &mut st);
     store.save(&st)?;
     let mut boardpass = BoardPass::start(&run_ctx);
     drive(&mut run_ctx, &mut st, &mut boardpass, once)
@@ -629,17 +569,6 @@ fn save(ctx: &Ctx, st: &State) -> Result<(), VivariumError> {
             ctx.log(&message);
             VivariumError::Message(message)
         })
-}
-
-/// `"label k=v k=v"` from sorted counts, joined with single spaces
-/// (an empty map leaves the trailing space).
-fn counts_line(label: &str, counts: &BTreeMap<String, usize>) -> String {
-    let joined = counts
-        .iter()
-        .map(|(name, count)| format!("{name}={count}"))
-        .collect::<Vec<String>>()
-        .join(" ");
-    format!("{label} {joined}")
 }
 
 /// `%Y-%m-%dT%H:%M:%SZ` in UTC for epoch seconds.

@@ -16,25 +16,21 @@ use vivi::pump::store::{DB_FILENAME, PumpStore};
 fn once_runs_one_tick_and_writes_db_status_and_log() {
     let project = temp_mailspace();
     let home = pump_home(&project);
-    // One verdict-only plan: ingest logs it (the tick's log event) without
-    // minting units, so nothing is dispatched or merged.
-    fs::create_dir_all(home.join("plans")).unwrap();
-    fs::write(
-        home.join("plans").join("need-1.json"),
-        "{\"need\":\"need-1\",\"verdict\":\"hold\"}",
-    )
-    .unwrap();
     assert_success(&vivi(["pump", "once", "--project", root(&project)]));
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
     assert!(home.join("pump.db").is_file(), "no pump.db");
     assert!(home.join("log.txt").is_file(), "no log.txt");
     let lines: Vec<&str> = status.lines().collect();
-    assert_eq!(lines.len(), 5, "status.txt must be 5 lines: {status}");
     assert_eq!(
-        lines[4], "delivered waiting 0, oldest none",
-        "line 5: {status}"
+        lines.len(),
+        1,
+        "status.txt must be the stamp line: {status}"
     );
-    assert!(lines[1].starts_with("units"), "line 2: {status}");
+    assert!(lines[0].ends_with('Z'), "line 1: {status}");
+    assert!(
+        !status.lines().any(|line| line.starts_with("units")),
+        "no unit line: {status}"
+    );
 }
 
 #[test]
@@ -303,7 +299,14 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
     );
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
     assert!(
-        status.lines().any(|line| line.starts_with("merges ")),
+        status
+            .lines()
+            .next()
+            .is_some_and(|line| line.ends_with('Z')),
+        "{status}"
+    );
+    assert!(
+        !status.lines().any(|line| line.starts_with("merges ")),
         "{status}"
     );
 }

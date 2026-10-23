@@ -19,7 +19,6 @@ use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
-    ("planner-board", "planner:board", "pump-planner"),
     ("cadence-survival", "cadence", "mind"),
     ("digest-survival", "digest", "digest"),
     ("hand-survival", "hand", "hand"),
@@ -36,9 +35,6 @@ kind=$(sed -n 's/^kind = "\(.*\)"$/\1/p' "$brief" | head -n 1)
 printf '%s %s\n' "$kind" "$id" > "$VIVI_TEST_MARKERS/$id.started"
 while [ ! -f "$VIVI_TEST_MARKERS/release-workers" ]; do sleep 0.1; done
 case "$kind" in
-  planner:board)
-    printf '%s\n' 'PUMP-PLAN-BEGIN' '{"need":"planner-survival","verdict":"hold","reason":"recovered once"}' 'PUMP-PLAN-END'
-    ;;
   cadence)
     printf 'cadence survived\n'
     ;;
@@ -151,24 +147,11 @@ fn local_pool_jobs_survive_sigkill_and_apply_once() {
     stop_pump(&rig, &mut restarted);
 
     let final_state = load_state(&rig);
-    assert_eq!(
-        fs::read_to_string(rig.home.join("plans/survival-plan.json")).unwrap(),
-        "{\"need\":\"planner-survival\",\"verdict\":\"hold\",\"reason\":\"recovered once\"}"
-    );
-    assert_eq!(
-        fs::read_to_string(rig.home.join("plans/survival.out"))
-            .unwrap()
-            .matches("PUMP-PLAN-BEGIN")
-            .count(),
-        1,
-        "planner receipt was materialized more than once"
-    );
     for (id, _, _) in WORKERS {
         let job = &final_state.jobs[*id];
         assert_eq!(job.status, JobStatus::Finished, "{id}");
         let receipt = &job.outcome.as_ref().unwrap().receipt;
         let marker = match job.kind.as_str() {
-            "planner:board" => "PUMP-PLAN-BEGIN",
             "cadence" => "cadence survived",
             "digest" => "digest survived",
             "hand" => "hand survived",
@@ -543,17 +526,9 @@ fn seed_state(rig: &Rig) {
         spec.from_ref = Some(String::from("next"));
         spec.model = Some(String::from("standin"));
         spec.budget = 60;
-        spec.read_only = matches!(*kind, "planner:board" | "cadence" | "digest");
+        spec.read_only = matches!(*kind, "cadence" | "digest");
         if *kind == "hand" {
             spec.branch = Some(String::from("vivi/unit/hand-survival-a1"));
-        }
-        if *kind == "planner:board" {
-            spec.payload = serde_json::json!({
-                "planner_output": {
-                    "out": "plans/survival.out",
-                    "plan": "plans/survival-plan.json",
-                }
-            });
         }
         jobs::enqueue(&mut st, spec).unwrap();
     }
@@ -630,7 +605,7 @@ fn dispatched(rig: &Rig) -> bool {
 /// real mailspace by the e2e_gate_* tests; it still proves survival here:
 /// dispatched, handle saved, receipt collected once.
 fn pump_applies(kind: &str) -> bool {
-    matches!(kind, "planner:board" | "cadence" | "digest")
+    matches!(kind, "cadence" | "digest")
 }
 
 fn applied(rig: &Rig) -> bool {
@@ -640,7 +615,7 @@ fn applied(rig: &Rig) -> bool {
             job.status == JobStatus::Finished
                 && (!pump_applies(&job.kind) || job.applied_at.is_some())
         })
-    }) && rig.home.join("plans/survival-plan.json").is_file()
+    })
 }
 
 fn load_state(rig: &Rig) -> State {
@@ -665,7 +640,7 @@ fn startup_diagnostics(rig: &Rig) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let mut tasks = Vec::new();
-    for role in ["hand", "pump-planner", "merge", "mind", "digest"] {
+    for role in ["hand", "merge", "mind", "digest"] {
         tasks.push(command_report([
             "task",
             "list",
