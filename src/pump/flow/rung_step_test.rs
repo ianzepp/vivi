@@ -193,6 +193,20 @@ fn a_lost_job_runs_again_then_answers_failed() -> R {
     assert_eq!(again.from_ref.as_deref(), Some(BASE));
     assert_eq!(again.payload["attempt"], serde_json::json!(2));
     assert_eq!(rig.store.attempts_of(&task)?, 2);
+    let stored = rig
+        .store
+        .step_job(&a2)?
+        .ok_or_else(|| VivariumError::Message("no step_jobs row for a2".into()))?;
+    let old = rig
+        .store
+        .step_job(&a1)?
+        .ok_or_else(|| VivariumError::Message("no step_jobs row for a1".into()))?;
+    assert_eq!(stored.attempt, old.attempt + 1);
+    assert_eq!(again.payload["attempt"], serde_json::json!(stored.attempt));
+    assert_eq!(again.payload["run"], serde_json::json!(stored.run));
+    assert_eq!(again.payload["node"], serde_json::json!(stored.node));
+    assert_eq!(again.payload["task"], serde_json::json!(stored.task));
+    assert_eq!(again.task.as_deref(), Some(stored.task.as_str()));
 
     rig.finish(&a2, JobStatus::Timeout, "")?;
     rig.tick()?;

@@ -303,17 +303,10 @@ where
         spec.budget = job.budget;
         spec.payload = job.payload.clone();
         edit(&mut spec);
+        let new_row = row.next(&id);
+        new_row.stamp(&self.run.need, &mut spec.payload);
         jobs::enqueue(self.st, spec)?;
-        self.store.insert_step_job(
-            &self.run.need,
-            &StepJobRow {
-                job: id,
-                run: row.run,
-                node: row.node.clone(),
-                task: row.task.clone(),
-                attempt,
-            },
-        )?;
+        self.store.insert_step_job(&self.run.need, &new_row)?;
         self.store
             .set_step_state(&step.task, StepState::Running, None)
     }

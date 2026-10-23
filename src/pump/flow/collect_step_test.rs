@@ -146,7 +146,12 @@ fn rerun_with_applies_the_edit_and_inserts_the_next_attempt() -> R {
 
     let queued = &rig.jobs.jobs["plan-j1-a2"];
     assert_eq!(queued.branch.as_deref(), Some("vivi/repair/x-t2"));
-    assert_eq!(rig.store.step_job("plan-j1-a2")?.unwrap().attempt, 2);
+    let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(stored.attempt, row.attempt + 1);
+    assert_eq!(queued.payload["attempt"], serde_json::json!(stored.attempt));
+    assert_eq!(queued.payload["run"], serde_json::json!(stored.run));
+    assert_eq!(queued.payload["node"], serde_json::json!(stored.node));
+    assert_eq!(queued.payload["task"], serde_json::json!(stored.task));
     assert_eq!(rig.plan_step()?.state, StepState::Running);
     Ok(())
 }
