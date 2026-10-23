@@ -7,6 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::ReadySlices;
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::TickPhase;
@@ -108,8 +110,12 @@ impl Rig {
             "pump",
             "pump",
             &format!("slice {id}"),
-            &format!(
-                "pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"
+            &task_body_with(
+                &TaskFront {
+                    target: Some("default".into()),
+                    ..TaskFront::step(NEED, 1, &format!("slice:{id}"))
+                },
+                &format!("title {id}\n\nbrief {id}"),
             ),
             &[],
         )?;
