@@ -184,3 +184,55 @@ fn an_existing_bad_charter_is_restored_to_the_shipped_bytes() {
     assert!(err.contains("rolled back"), "{err}");
     assert_eq!(fs::read(&charter).unwrap(), shipped);
 }
+
+/// A config that does not load (a string where a number belongs) with an
+/// error that only shows once it loads.
+fn unloadable(config: &Path) {
+    append(
+        config,
+        "tick = \"x\"\n\n[pump.dispatch]\nmax_attempts = 0\n",
+    );
+    assert!(Mailspace::open_root(config.parent().unwrap().parent().unwrap().into()).is_err());
+}
+
+#[test]
+fn a_write_that_repairs_a_load_error_is_kept_and_reports_the_errors_it_exposed() {
+    let (tmp, config) = project();
+    unloadable(&config);
+    let outcome = guarded(tmp.path(), |doc| {
+        doc["pump"]["tick"] = value(5);
+        Ok(())
+    })
+    .unwrap();
+    assert!(fs::read_to_string(&config).unwrap().contains("tick = 5"));
+    assert_eq!(outcome.still.len(), 1, "{:?}", outcome.still);
+    assert!(
+        outcome.still[0].contains("max_attempts"),
+        "{:?}",
+        outcome.still
+    );
+    assert!(
+        outcome
+            .notes()
+            .iter()
+            .any(|n| n.starts_with("still invalid: ") && n.contains("max_attempts")),
+        "{:?}",
+        outcome.notes()
+    );
+}
+
+#[test]
+fn a_write_that_leaves_the_load_error_is_rolled_back() {
+    let (tmp, config) = project();
+    unloadable(&config);
+    let before = fs::read(&config).unwrap();
+    let err = guarded(tmp.path(), |doc| {
+        doc["pump"]["max_attempts_note"] = value(1);
+        Ok(())
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(err.contains("does not load"), "{err}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+}

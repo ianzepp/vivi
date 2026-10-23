@@ -5,6 +5,12 @@
 //! after the write that it did not have before. Errors that were already there
 //! are reported (not blamed on the write); not-ready items and warnings never
 //! count.
+//!
+//! A config that does not load is one error (the load error's text). A write
+//! that makes it load again is kept, and the errors the failed load was hiding
+//! are reported as still invalid, not blamed on the write. A write that leaves
+//! it failing with the same load error is rolled back; a different load error
+//! is kept (a step of repair that reached the next error).
 #![allow(clippy::missing_errors_doc)]
 
 use std::fs;
@@ -70,29 +76,59 @@ pub fn guard_file<T>(
     };
     let value = write()?;
     let (after, _) = snapshot_state(root);
-    let new: Vec<String> = after
-        .iter()
-        .filter(|message| !before.contains(message))
-        .cloned()
-        .collect();
-    if !new.is_empty() {
+    if let Some(reason) = blame(&before, &after) {
         restore(file, snapshot.as_deref())?;
         return Err(VivariumError::Config(format!(
-            "the write was rolled back: it adds new errors: {}",
-            new.join("; ")
+            "the write was rolled back: {reason}"
         )));
     }
     Ok((
         value,
         GuardedWrite {
             backup,
-            still: after,
+            still: after.messages(),
         },
     ))
 }
 
-/// The error messages of the project as it stands, and the pump home.
-fn snapshot_state(root: &Path) -> (Vec<String>, PathBuf) {
+/// The project's configuration as the guard sees it.
+enum State {
+    /// The config loads; these are its readiness errors.
+    Loaded(Vec<String>),
+    /// The config does not load; this is the load error.
+    Broken(String),
+}
+
+impl State {
+    fn messages(self) -> Vec<String> {
+        match self {
+            State::Loaded(errors) => errors,
+            State::Broken(error) => vec![error],
+        }
+    }
+}
+
+/// Why the write must be rolled back, or `None` when it may stay.
+fn blame(before: &State, after: &State) -> Option<String> {
+    match (before, after) {
+        (State::Loaded(old), State::Loaded(now)) => {
+            let new: Vec<&str> = now
+                .iter()
+                .filter(|message| !old.contains(message))
+                .map(String::as_str)
+                .collect();
+            (!new.is_empty()).then(|| format!("it adds new errors: {}", new.join("; ")))
+        }
+        (State::Loaded(_), State::Broken(error)) => Some(format!("it adds new errors: {error}")),
+        (State::Broken(old), State::Broken(now)) if old == now => {
+            Some(format!("the config still does not load: {now}"))
+        }
+        (State::Broken(_), _) => None,
+    }
+}
+
+/// The state of the project as it stands, and the pump home.
+fn snapshot_state(root: &Path) -> (State, PathBuf) {
     let default_home = root.join(MAILSPACE_DIR).join("pump");
     match Mailspace::open_root(root.to_path_buf()) {
         Ok(mailspace) => {
@@ -106,9 +142,9 @@ fn snapshot_state(root: &Path) -> (Vec<String>, PathBuf) {
                 .pump
                 .as_ref()
                 .map_or_else(PathBuf::new, |cfg| cfg.home_dir(root));
-            (errors, home)
+            (State::Loaded(errors), home)
         }
-        Err(err) => (vec![err.to_string()], default_home),
+        Err(err) => (State::Broken(err.to_string()), default_home),
     }
 }
 

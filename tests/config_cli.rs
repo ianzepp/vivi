@@ -625,6 +625,32 @@ fn config_set_reports_errors_that_were_already_there() {
 }
 
 #[test]
+fn config_set_repairs_a_config_that_does_not_load() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let path = config_file(&dir);
+    let text = fs::read_to_string(&path).unwrap();
+    let broken = text.replace("[pump]\n", "[pump]\ntick = \"x\"\n");
+    fs::write(
+        &path,
+        format!("{broken}\n[pump.dispatch]\nmax_attempts = 0\n"),
+    )
+    .unwrap();
+    let out = vivi(&["config", "set", "pump.tick", "5", "--project", root]);
+    assert_success(&out);
+    assert!(
+        stderr(&out).contains("still invalid: [pump.dispatch] max_attempts must be >= 1"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        fs::read_to_string(&path).unwrap().contains("tick = 5"),
+        "{}",
+        fs::read_to_string(&path).unwrap()
+    );
+}
+
+#[test]
 fn config_unset_removes_a_key_and_a_second_unset_fails() {
     let dir = init_project();
     let root = dir.path().to_str().unwrap();
