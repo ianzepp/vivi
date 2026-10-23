@@ -21,7 +21,7 @@ pub const AUDITOR_ANSWERS: &[&str] = &["clean_pass", "residual", "block_range", 
 /// The judge answer words.
 pub const JUDGE_ANSWERS: &[&str] = &["block", "residual"];
 /// The head-cto answer words.
-pub const CTO_ANSWERS: &[&str] = &["research", "plan", "slice", "repair", "lock"];
+pub const CTO_ANSWERS: &[&str] = &["research", "plan", "slice", "rework", "lock"];
 /// The merge answer words.
 pub const MERGE_ANSWERS: &[&str] = &["merged", "conflict"];
 /// The head-ceo answer words.
@@ -206,8 +206,8 @@ pub enum CtoAnswer {
     Plan,
     #[serde(rename = "slice")]
     Slice,
-    #[serde(rename = "repair")]
-    Repair,
+    #[serde(rename = "rework")]
+    Rework,
     #[serde(rename = "lock")]
     Lock,
 }

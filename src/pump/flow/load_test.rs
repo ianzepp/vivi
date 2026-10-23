@@ -27,7 +27,7 @@ fn build_flow_has_the_plan_counts() {
     let def = load(FlowKind::Build).unwrap();
     assert_eq!(def.nodes.len(), 51);
     assert_eq!(def.edges.len(), 84);
-    assert_eq!(def.entries, ["plan", "research", "slice", "repair1"]);
+    assert_eq!(def.entries, ["plan", "research", "slice", "rework1"]);
 }
 
 #[test]

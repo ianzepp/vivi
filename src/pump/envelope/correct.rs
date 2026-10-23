@@ -147,14 +147,14 @@ fn fields(kind: RoleKind) -> &'static str {
             "admitter: answer = \"admitted\" | \"revise\" | \"escalate\"; required_changes (list, non-empty for revise); findings (list); reason (string, required for escalate)"
         }
         RoleKind::Slicer => {
-            "slicer: answer = \"sliced\" | \"escalate\"; mode = \"slice\" | \"repair\" | \"split\"; [[slice]] {id, title, brief, target, write_scope (list), deps (list)}, at least one for sliced and none for escalate; reason (string, required for escalate)"
+            "slicer: answer = \"sliced\" | \"escalate\"; mode = \"slice\" | \"rework\" | \"split\"; [[slice]] {id, title, brief, target, write_scope (list), deps (list)}, at least one for sliced and none for escalate; reason (string, required for escalate)"
         }
         RoleKind::Auditor => {
             "auditor: answer = \"clean_pass\" | \"residual\" | \"block_range\" | \"block_ship\"; raise_rung = \"need\" | \"main\" | \"release\" (optional); [[requirement]] {id, text, status = SATISFIED | PARTIAL | MISSING | UNVERIFIED | NOT_APPLICABLE, evidence (list)}; [[finding]] {id, content, paths (list), recheck_trigger}"
         }
         RoleKind::Judge => "judge: answer = \"block\" | \"residual\"; reason (string, required)",
         RoleKind::Cto => {
-            "head-cto: answer = \"research\" | \"plan\" | \"slice\" | \"repair\" | \"lock\"; reason (string, required); new_fact (string, required for a non-lock answer from run 3 on)"
+            "head-cto: answer = \"research\" | \"plan\" | \"slice\" | \"rework\" | \"lock\"; reason (string, required); new_fact (string, required for a non-lock answer from run 3 on)"
         }
         RoleKind::Merge => {
             "merge: answer = \"merged\" | \"conflict\"; conflicts (list of paths); design_change (bool); [[check]] {cmd, result = pass | fail | skipped, seconds}. No sha, ref, commit or exit code."

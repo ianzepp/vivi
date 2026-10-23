@@ -11,7 +11,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     FINISHING_STUCK, FOLLOW_UP, FOLLOW_UP_MARKER, KIND_CHANGED, OPERATOR_HOLD, RUN_ERROR,
-    SCOPE_REPAIR, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, tick_with,
+    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, tick_with,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -431,17 +431,17 @@ fn blocked_scope_held_by_a_slice_waits_then_redispatches_after_it_merges() -> R 
     assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Clear));
 
     // The request that ended in the wait still counts: the next block after
-    // it is the second, so it goes to scope repair and nothing is re-queued.
+    // it is the second, so it goes to scope rework and nothing is re-queued.
     rig.finish(&again, &blocked_receipt());
     rig.tick()?;
-    assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Repair));
-    assert_eq!(rig.count(SCOPE_REPAIR), 1);
+    assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Rework));
+    assert_eq!(rig.count(SCOPE_REWORK), 1);
     assert_eq!(rig.jobs.jobs.len(), 2, "no third job");
     Ok(())
 }
 
 #[test]
-fn a_second_blocked_request_goes_to_scope_repair() -> R {
+fn a_second_blocked_request_goes_to_scope_rework() -> R {
     let mut rig = rig()?;
     rig.start("plan")?;
     let a = rig.slice("a", &["src/a.rs"])?;
@@ -453,8 +453,8 @@ fn a_second_blocked_request_goes_to_scope_repair() -> R {
 
     rig.tick()?;
 
-    assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Repair));
-    assert_eq!(rig.count(SCOPE_REPAIR), 1);
+    assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Rework));
+    assert_eq!(rig.count(SCOPE_REWORK), 1);
     assert_eq!(rig.jobs.jobs.len(), 2, "no third job");
     Ok(())
 }

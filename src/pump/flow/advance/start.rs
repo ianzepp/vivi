@@ -21,7 +21,7 @@ const ALARM_RUN: u32 = 4;
 const RUN_LIVE_STATE: &str = "live";
 
 /// The flow version recorded in a run row.
-const FLOW_VERSION_NUMBER: u32 = 1;
+const FLOW_VERSION_NUMBER: u32 = 2;
 
 /// Start a new run on `need` at `entry` (the flow's first entry when `None`).
 ///

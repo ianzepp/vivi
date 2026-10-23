@@ -77,7 +77,7 @@ fn split_words(label: Option<&str>) -> Vec<String> {
 
 fn entries(kind: FlowKind) -> Vec<String> {
     let names: &[&str] = match kind {
-        FlowKind::Build => &["plan", "research", "slice", "repair1"],
+        FlowKind::Build => &["plan", "research", "slice", "rework1"],
         FlowKind::Research => &["research"],
         FlowKind::Release => &["wait"],
     };

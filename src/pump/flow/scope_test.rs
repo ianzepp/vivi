@@ -130,7 +130,7 @@ fn a_closed_slice_does_not_hold() {
 }
 
 #[test]
-fn a_second_request_goes_to_repair() {
+fn a_second_request_goes_to_rework() {
     let mut f = fixture();
     let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
     assert!(matches!(
@@ -139,7 +139,7 @@ fn a_second_request_goes_to_repair() {
     ));
     assert!(matches!(
         f.resolve(1, &a, &["src/c.rs"], false),
-        Resolution::Repair(_)
+        Resolution::Rework(_)
     ));
     assert_eq!(
         f.store.slice_scope(&a).expect("scope"),
@@ -148,13 +148,13 @@ fn a_second_request_goes_to_repair() {
 }
 
 #[test]
-fn six_paths_go_to_repair_and_five_do_not() {
+fn six_paths_go_to_rework_and_five_do_not() {
     let mut f = fixture();
     let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
     let six = ["x/1", "x/2", "x/3", "x/4", "x/5", "x/6"];
     assert!(matches!(
         f.resolve(1, &a, &six, false),
-        Resolution::Repair(_)
+        Resolution::Rework(_)
     ));
     let b = f.slice("n1", 1, &["src/b.rs"], StepState::Running);
     assert!(matches!(
@@ -164,12 +164,12 @@ fn six_paths_go_to_repair_and_five_do_not() {
 }
 
 #[test]
-fn the_design_flag_goes_to_repair() {
+fn the_design_flag_goes_to_rework() {
     let mut f = fixture();
     let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
     assert!(matches!(
         f.resolve(1, &a, &["src/b.rs"], true),
-        Resolution::Repair(_)
+        Resolution::Rework(_)
     ));
 }
 
@@ -190,11 +190,11 @@ fn scope_rows_round_trip() {
     assert_eq!(f.store.bump_scope_requests(&a).expect("bump"), 1);
     assert_eq!(f.store.bump_scope_requests(&a).expect("bump"), 2);
     f.store
-        .set_scope_state(&a, ScopeState::Repair)
+        .set_scope_state(&a, ScopeState::Rework)
         .expect("set");
     assert_eq!(
         f.store.scope_state(&a).expect("get"),
-        Some(ScopeState::Repair)
+        Some(ScopeState::Rework)
     );
     assert_eq!(f.store.scope_state("nope").expect("get"), None);
     assert!(f.store.bump_scope_requests("nope").is_err());
@@ -219,6 +219,6 @@ fn granting_the_held_paths_widens_the_scope_and_the_next_request_is_the_second()
     // second and goes to the slicer.
     assert!(matches!(
         f.resolve(1, &a, &["src/d.rs"], false),
-        Resolution::Repair(_)
+        Resolution::Rework(_)
     ));
 }
