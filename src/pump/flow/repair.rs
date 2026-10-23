@@ -1,8 +1,10 @@
 //! Repair flow helpers: attempts, branch names, the repair record lines, attempt facts.
 
 use crate::error::VivariumError;
+use crate::letter::LetterError;
+use crate::letter::read::record_of;
 use crate::mailspace::marked_payload;
-use crate::pump::flow::main_rung::record_target;
+use crate::pump::flow::main_rung::target_line;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::store::PumpStore;
 
@@ -60,9 +62,31 @@ pub(crate) struct RepairRecord {
 /// Read a repair need's open record body.
 ///
 /// # Errors
-/// Returns [`VivariumError::Parse`] when the body has no `target:` line.
+/// Returns [`VivariumError::Parse`] when the front matter does not parse or
+/// names no `target`, or when a body with no front matter has no `target:` line.
 pub(crate) fn record(body: &str) -> Result<RepairRecord, VivariumError> {
-    let target = record_target(body).ok_or_else(|| {
+    match record_of("", body) {
+        Ok(envelope) => {
+            let target = envelope.front.target.ok_or_else(|| {
+                VivariumError::Parse(
+                    "repair record: expected `target` in the record front matter".to_owned(),
+                )
+            })?;
+            Ok(RepairRecord {
+                target,
+                tested: envelope.front.tested,
+                tail: envelope.body.trim().to_owned(),
+            })
+        }
+        Err(LetterError::Legacy { .. }) => legacy_record(body),
+        Err(error) => Err(VivariumError::Parse(format!("repair record: {error}"))),
+    }
+}
+
+/// TRANSITIONAL (W3-B3): a record with no front matter keeps its `kind:`,
+/// `target:` and `tested:` lines.
+fn legacy_record(body: &str) -> Result<RepairRecord, VivariumError> {
+    let target = target_line(body).ok_or_else(|| {
         let head: String = body.chars().take(80).collect();
         VivariumError::Parse(format!(
             "repair record: expected a `target:` line; actual: none in {head}"
