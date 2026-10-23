@@ -1,4 +1,4 @@
-//! `vivi config`: show, validate, and migrate mailspace routing.
+//! `vivi config`: show, validate, migrate, set, and unset mailspace config.
 
 use std::path::PathBuf;
 
@@ -43,6 +43,33 @@ pub enum ConfigCommand {
         /// Write the converted file (default is a dry-run diff)
         #[arg(long)]
         write: bool,
+
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Set one key of this project's mailspace.toml (a dotted TOML key; the
+    /// value is parsed as TOML, a bare word is a string); refused while the
+    /// pump is running
+    Set {
+        /// Dotted key, e.g. pump.tick
+        key: String,
+
+        /// New value, parsed as TOML; a bare word is a string
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Remove one key from this project's mailspace.toml; refused while the
+    /// pump is running
+    Unset {
+        /// Dotted key, e.g. pump.tick
+        key: String,
 
         /// Project root that owns .vivi/
         #[arg(long)]

@@ -235,7 +235,9 @@ slots = 2
         "{}",
         stderr(&refused)
     );
-    assert_success(&vivi(&[
+    let config = dir.path().join(".vivi/mailspace.toml");
+    let before = fs::read_to_string(&config).unwrap();
+    let forced = vivi(&[
         "pool",
         "remove",
         "glm",
@@ -243,9 +245,49 @@ slots = 2
         "--force",
         "--project",
         root,
+    ]);
+    assert!(!forced.status.success());
+    let err = stderr(&forced);
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(err.contains("names unknown pool `glm`"), "{err}");
+    let raw = fs::read_to_string(&config).unwrap();
+    assert!(raw.contains("[pools.glm]"), "{raw}");
+    assert_eq!(raw, before);
+    fs::write(&config, before.replace("pool = \"glm\"\n", "")).unwrap();
+    assert_success(&vivi(&[
+        "pool",
+        "remove",
+        "glm",
+        "--yes",
+        "--project",
+        root,
     ]));
-    let raw = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    let raw = fs::read_to_string(&config).unwrap();
     assert!(!raw.contains("[pools.glm]"), "{raw}");
+}
+
+#[test]
+fn pool_set_of_a_value_that_breaks_loading_is_rolled_back() {
+    let dir = project_with(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[pools.glm]
+provider = "local"
+slots = 2
+"#,
+    );
+    let root = dir.path().to_str().unwrap();
+    let config = dir.path().join(".vivi/mailspace.toml");
+    let before = fs::read_to_string(&config).unwrap();
+    let out = vivi(&["pool", "set", "glm", "slots", "many", "--project", root]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(stderr(&out).contains("rolled back"), "{}", stderr(&out));
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
 }
 
 #[test]
@@ -513,4 +555,171 @@ pools = ["glm"]
     assert!(text.contains("- pump.rungs.task:"), "{text}");
     assert!(!text.contains("- pump.rungs.need:"), "{text}");
     assert!(!text.contains("- pump.rungs.main:"), "{text}");
+}
+
+fn config_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    dir.path().join(".vivi/mailspace.toml")
+}
+
+#[test]
+fn config_set_writes_a_typed_value_and_a_backup() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "set", "pump.tick", "30", "--project", root]);
+    assert_success(&out);
+    assert_eq!(stdout(&out).trim(), "set pump.tick = 30 (integer)");
+    let text = fs::read_to_string(config_file(&dir)).unwrap();
+    assert!(text.contains("tick = 30"), "{text}");
+    let err = stderr(&out);
+    let backup = err
+        .lines()
+        .find_map(|line| line.strip_prefix("backup "))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(backup.contains("mailspace.toml.bak."), "{backup}");
+    assert!(std::path::Path::new(backup).exists(), "{backup}");
+}
+
+#[test]
+fn config_set_stores_a_bare_word_as_a_string() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "set", "pump.main", "develop", "--project", root]);
+    assert_success(&out);
+    assert!(stdout(&out).contains("(string)"), "{}", stdout(&out));
+    let text = fs::read_to_string(config_file(&dir)).unwrap();
+    assert!(text.contains("main = \"develop\""), "{text}");
+}
+
+#[test]
+fn config_set_rolls_back_a_write_that_adds_an_error() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let before = fs::read(config_file(&dir)).unwrap();
+    let out = vivi(&["config", "set", "pump.tick", "0", "--project", root]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    let err = stderr(&out);
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(err.contains("tick must be >= 1"), "{err}");
+    assert_eq!(fs::read(config_file(&dir)).unwrap(), before);
+}
+
+#[test]
+fn config_set_reports_errors_that_were_already_there() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let path = config_file(&dir);
+    let text = fs::read_to_string(&path).unwrap();
+    let broken = text.replace("[pump]\n", "[pump]\ntick = 0\n");
+    fs::write(
+        &path,
+        format!("{broken}\n[pump.dispatch]\nmax_attempts = 0\n"),
+    )
+    .unwrap();
+    let out = vivi(&["config", "set", "pump.tick", "5", "--project", root]);
+    assert_success(&out);
+    assert!(
+        stderr(&out).contains("still invalid: [pump.dispatch] max_attempts must be >= 1"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn config_set_repairs_a_config_that_does_not_load() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let path = config_file(&dir);
+    let text = fs::read_to_string(&path).unwrap();
+    let broken = text.replace("[pump]\n", "[pump]\ntick = \"x\"\n");
+    fs::write(
+        &path,
+        format!("{broken}\n[pump.dispatch]\nmax_attempts = 0\n"),
+    )
+    .unwrap();
+    let out = vivi(&["config", "set", "pump.tick", "5", "--project", root]);
+    assert_success(&out);
+    assert!(
+        stderr(&out).contains("still invalid: [pump.dispatch] max_attempts must be >= 1"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        fs::read_to_string(&path).unwrap().contains("tick = 5"),
+        "{}",
+        fs::read_to_string(&path).unwrap()
+    );
+}
+
+#[test]
+fn config_unset_removes_a_key_and_a_second_unset_fails() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&[
+        "config",
+        "set",
+        "pump.tick",
+        "30",
+        "--project",
+        root,
+    ]));
+    let out = vivi(&["config", "unset", "pump.tick", "--project", root]);
+    assert_success(&out);
+    assert_eq!(stdout(&out).trim(), "unset pump.tick");
+    let text = fs::read_to_string(config_file(&dir)).unwrap();
+    assert!(!text.contains("tick = 30"), "{text}");
+    let again = vivi(&["config", "unset", "pump.tick", "--project", root]);
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("is not set"), "{}", stderr(&again));
+}
+
+#[test]
+fn config_set_refuses_the_role_roster() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "set", "identities.x", "1", "--project", root]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("vivi role"), "{}", stderr(&out));
+}
+
+#[test]
+fn config_set_is_refused_only_while_the_pump_is_running() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&["pump", "pause", "--project", root]));
+    let lock_path = dir.path().join(".vivi/pump/lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    lock.try_lock().unwrap();
+    assert_success(&vivi(&[
+        "config",
+        "set",
+        "pump.tick",
+        "30",
+        "--project",
+        root,
+    ]));
+    drop(lock);
+
+    assert_success(&vivi(&["pump", "resume", "--project", root]));
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    lock.try_lock().unwrap();
+    let before = fs::read(config_file(&dir)).unwrap();
+    let out = vivi(&["config", "set", "pump.tick", "31", "--project", root]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("the pump is running: run vivi pump pause first"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fs::read(config_file(&dir)).unwrap(), before);
+    drop(lock);
 }

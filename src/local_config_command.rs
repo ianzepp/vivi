@@ -1,9 +1,9 @@
-//! `vivi config show | validate | migrate`.
+//! `vivi config show | validate | migrate | set | unset`.
 #![allow(clippy::missing_errors_doc)]
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use vivi::VivariumError;
@@ -26,6 +26,52 @@ pub(crate) fn handle_config_command(command: &ConfigCommand) -> Result<(), Vivar
         } => show(*resolved, *json, *porcelain, project.as_deref()),
         ConfigCommand::Validate { json, project } => validate_cmd(*json, project.as_deref()),
         ConfigCommand::Migrate { write, project } => migrate(*write, project.as_deref()),
+        ConfigCommand::Set {
+            key,
+            value,
+            project,
+        } => set(key, value, project.as_deref()),
+        ConfigCommand::Unset { key, project } => unset(key, project.as_deref()),
+    }
+}
+
+fn set(key: &str, value: &str, project: Option<&Path>) -> Result<(), VivariumError> {
+    let root = project_root(project)?;
+    let done = config_edit::set_key(&root, key, value)?;
+    println!("set {key} = {} ({})", done.value, done.kind);
+    for line in done.write.notes() {
+        eprintln!("{line}");
+    }
+    Ok(())
+}
+
+fn unset(key: &str, project: Option<&Path>) -> Result<(), VivariumError> {
+    let root = project_root(project)?;
+    let write = config_edit::unset_key(&root, key)?;
+    println!("unset {key}");
+    for line in write.notes() {
+        eprintln!("{line}");
+    }
+    Ok(())
+}
+
+/// The project root for a writer: `--project`, or the nearest ancestor of the
+/// current directory holding a config. The config is not loaded, so a config
+/// that does not load can still be repaired through the guard.
+fn project_root(project: Option<&Path>) -> Result<PathBuf, VivariumError> {
+    if let Some(project) = project {
+        return Ok(project.to_path_buf());
+    }
+    let cwd = std::env::current_dir()?;
+    match cwd
+        .ancestors()
+        .find(|path| path.join(".vivi").join("mailspace.toml").is_file())
+    {
+        Some(root) => Ok(root.to_path_buf()),
+        None => Err(VivariumError::Message(format!(
+            "No Vivi mailspace found.\ncwd: {}\ninit: vivi mailspace init",
+            cwd.display()
+        ))),
     }
 }
 

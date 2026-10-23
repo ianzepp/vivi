@@ -282,7 +282,7 @@ fn a_config_an_older_binary_rewrote_without_the_id_gets_the_same_id_back() {
     let restored = std::fs::read_to_string(&config).unwrap();
     assert_eq!(restored, format!("id = \"{id}\"\n{dropped}"));
     // Quiet once restored, and a rewriting command keeps it.
-    let quiet = run(path, &["role", "add", "hand"]);
+    let quiet = run(path, &["mailspace", "identity", "add", "hand"]);
     ok(&quiet);
     assert!(
         quiet.stderr.is_empty(),

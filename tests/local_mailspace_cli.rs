@@ -2790,6 +2790,7 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
     set_state(&mut pump_state, &cadence);
     let mut pump_store = PumpStore::open(&pump_home.join(DB_FILENAME)).unwrap();
     pump_store.save(&pump_state).unwrap();
+    drop(pump_store);
 
     let status = vivi(["role", "status", "head-ceo", "--json", "--project", p]);
     assert_success(&status);

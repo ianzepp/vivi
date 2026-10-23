@@ -43,7 +43,7 @@ fn project() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     ok(tmp.path(), &["mailspace", "init"]);
     ok(tmp.path(), &["role", "add", "mind"]);
-    ok(tmp.path(), &["role", "add", "hand"]);
+    ok(tmp.path(), &["role", "add", "hand", "--kind", "hand"]);
     tmp
 }
 

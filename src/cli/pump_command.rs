@@ -38,6 +38,11 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpRungsCommand,
     },
+    /// List, add or remove repository targets (`[pump.targets.<id>]`); writes are refused while the pump is running
+    Target {
+        #[command(subcommand)]
+        command: PumpTargetCommand,
+    },
     /// Requeue one or more units: posts an action on the need's open pump record, applied at the pump's next tick
     Requeue(PumpRequeueCommand),
     /// Withdraw every unfinished unit of one or more needs and close their pump record `withdrawn`; applied at the pump's next tick
@@ -156,6 +161,62 @@ pub struct PumpRungsSetCommand {
     /// Write the target's own override instead of the workspace rung
     #[arg(long)]
     pub target: Option<String>,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PumpTargetCommand {
+    /// List the configured targets
+    List(PumpTargetListCommand),
+    /// Add a target, with its rungs and merge settings
+    Add(PumpTargetAddCommand),
+    /// Remove a target
+    Remove(PumpTargetRemoveCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PumpTargetListCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpTargetAddCommand {
+    /// Target id (the `[pump.targets.<id>]` key)
+    pub id: String,
+    /// Repository path, relative to the project root or absolute
+    #[arg(long)]
+    pub path: String,
+    /// Remote URL used to clone or fetch the target
+    #[arg(long)]
+    pub remote_url: Option<String>,
+    /// Remote name
+    #[arg(long)]
+    pub remote: Option<String>,
+    /// Main branch name
+    #[arg(long)]
+    pub main: Option<String>,
+    /// GitHub repository, as owner/name
+    #[arg(long)]
+    pub github_repo: Option<String>,
+    /// Rung command for this target; repeatable (rung name: task, need, main or release)
+    #[arg(long = "rung", value_name = "NAME=CMD")]
+    pub rungs: Vec<String>,
+    /// Merge setting; repeatable (format, repair_budget or remote_limit; the value is read as TOML)
+    #[arg(long = "merge", value_name = "KEY=VALUE")]
+    pub merge: Vec<String>,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpTargetRemoveCommand {
+    /// Target id to remove
+    pub id: String,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

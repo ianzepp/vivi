@@ -11,6 +11,7 @@ pub mod config_workspace;
 mod flow;
 mod planner;
 mod rungs;
+pub mod targets;
 mod validate;
 
 pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
