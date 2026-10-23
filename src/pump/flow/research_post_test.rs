@@ -13,6 +13,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -233,5 +234,68 @@ fn a_bad_run_does_not_stop_the_runs_after_it() -> R {
     assert!(rig.marked()?);
     let applied = rig.store.applied_action_ids()?;
     assert!(!applied.contains("research-post:a-missing:r1"));
+    Ok(())
+}
+
+impl Rig {
+    /// A `done` research run whose step answered `failed`: no envelope.
+    fn land_failed(&mut self) -> R {
+        self.land("research", "not an envelope")?;
+        self.jobs.jobs.clear();
+        self.store
+            .set_step_state(STEP_TASK, StepState::Done, Some("failed"))?;
+        self.store.record_step_payload(&StepPayloadRow {
+            need: self.need.clone(),
+            run: 1,
+            node: "research".into(),
+            class: "role:researcher".into(),
+            task: STEP_TASK.into(),
+            payload: serde_json::json!({"job": "job-9"}),
+        })
+    }
+
+    fn exceptions(&self, kind: &str) -> usize {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(kind))
+            .count()
+    }
+}
+
+#[test]
+fn a_failed_research_run_tells_the_want_and_alarms_once() -> R {
+    let mut rig = rig("for: {want}")?;
+    rig.land_failed()?;
+    rig.tick()?;
+    rig.tick()?;
+    let replies = rig.replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].0, rig.want);
+    assert!(replies[0].1.contains("failed"), "{}", replies[0].1);
+    assert!(replies[0].1.contains("step verdict failed"));
+    assert!(replies[0].1.contains("job job-9"));
+    assert!(rig.marked()?);
+    assert_eq!(rig.exceptions("flow-research-failed"), 1);
+    Ok(())
+}
+
+#[test]
+fn a_reply_that_keeps_failing_is_given_up_on_the_third_tick() -> R {
+    let mut rig = rig("for: {want}")?;
+    rig.land("research", ENVELOPE)?;
+    for _ in 0..2 {
+        rig.mail.fail_at = Some(rig.mail.calls.len());
+        assert!(rig.tick().is_err());
+        assert!(!rig.marked()?);
+        assert_eq!(rig.exceptions("flow-research-post-failed"), 0);
+    }
+    rig.mail.fail_at = Some(rig.mail.calls.len());
+    rig.tick()?;
+    assert!(rig.marked()?);
+    assert_eq!(rig.exceptions("flow-research-post-failed"), 1);
+    rig.tick()?;
+    assert!(rig.replies().is_empty());
+    assert_eq!(rig.exceptions("flow-research-post-failed"), 1);
     Ok(())
 }
