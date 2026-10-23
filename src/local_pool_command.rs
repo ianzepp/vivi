@@ -9,6 +9,7 @@ use vivi::cli::{
 };
 use vivi::mailspace::Mailspace;
 use vivi::pool::bridge;
+use vivi::pool::clean;
 use vivi::pool::github::{self, Secret};
 use vivi::pool::local_branch;
 use vivi::pool::local_git::Repo;
@@ -82,10 +83,10 @@ pub(crate) fn create_into(
         return Err(no_resting_slots(&id.pool, &config.provider));
     }
     let worktree = config.worktree_source();
-    let source = match &worktree {
-        Some(_) => None,
-        None if config.has_source() => Some(config.require_source(&id.pool, "create slots")?),
-        None => None,
+    let source = if worktree.is_none() && config.has_source() {
+        Some(config.require_source(&id.pool, "create slots")?)
+    } else {
+        None
     };
     progress.say(&format!("{}: preparing the pool's home", id.pool));
     let ready = run::prepare_home(provider, config)?;
@@ -104,10 +105,15 @@ pub(crate) fn create_into(
     }
     let report = run::create_slots(provider, config, id, options, progress, || {
         let (token, base) = seed_start(worktree.as_deref(), source, seed, &id.pool, progress)?;
-        progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));
+        progress.say(&format!("seeding at {}", short_sha(&base)));
         Ok((token, base))
     })?;
-    let _ignored = vivi::pool::clean::record_pool_baselines(handle);
+    if let Err(e) = clean::record_pool_baselines(handle) {
+        eprintln!(
+            "warning: pool {}: could not record the seed build baselines: {e}",
+            id.pool
+        );
+    }
     print_created(seed.porcelain, &id.pool, &report);
     let failed = report.created.iter().filter(|o| !o.seeded()).count();
     if failed > 0 {
@@ -118,6 +124,11 @@ pub(crate) fn create_into(
         )));
     }
     Ok(report)
+}
+
+/// The first twelve characters of a commit id (all of a shorter one).
+fn short_sha(sha: &str) -> &str {
+    &sha[..12.min(sha.len())]
 }
 
 /// The fetch token and base commit new slots seed at: from the worktree
@@ -246,20 +257,18 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
             print_slots(handle, &slots);
         }
     }
-    match report.failures.is_empty() {
-        true => Ok(()),
-        false => {
-            let said: Vec<String> = report
-                .failures
-                .iter()
-                .map(|(pool, e)| format!("pool {pool}: {e}"))
-                .collect();
-            Err(VivariumError::Message(format!(
-                "cannot list: {}",
-                said.join("; ")
-            )))
-        }
+    if report.failures.is_empty() {
+        return Ok(());
     }
+    let said: Vec<String> = report
+        .failures
+        .iter()
+        .map(|(pool, e)| format!("pool {pool}: {e}"))
+        .collect();
+    Err(VivariumError::Message(format!(
+        "cannot list: {}",
+        said.join("; ")
+    )))
 }
 
 /// One `slot` line per slot, then one `capacity` line per listed pool whose
@@ -290,8 +299,8 @@ fn print_porcelain(handles: &[PoolHandle], report: &run::StatusReport) {
 
 fn status_base_text(slot: &SlotStatus) -> String {
     match (slot.base_ref.as_deref(), slot.base.as_deref()) {
-        (Some(name), Some(sha)) => format!("{name}@{}", &sha[..12.min(sha.len())]),
-        (_, Some(sha)) => sha[..12.min(sha.len())].to_string(),
+        (Some(name), Some(sha)) => format!("{name}@{}", short_sha(sha)),
+        (_, Some(sha)) => short_sha(sha).to_string(),
         (Some(name), None) => name.to_string(),
         _ => "unknown".into(),
     }
@@ -386,12 +395,12 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
 /// merged into the merge lane (not main).
 fn clean(command: &PoolCleanCommand) -> Result<(), VivariumError> {
     let report = if let Some(request) = command.after_merged_request.as_deref() {
-        vivi::pool::clean::after_merged_request(request, command.project.as_deref())?
+        clean::after_merged_request(request, command.project.as_deref())?
     } else {
         let space = Mailspace::discover(command.project.as_deref())?;
-        vivi::pool::clean::clean_mailspace(
+        clean::clean_mailspace(
             &space,
-            &vivi::pool::clean::CleanOptions {
+            &clean::CleanOptions {
                 dry_run: command.dry_run,
                 pool: command.pool.clone(),
                 base: command.base.clone(),
@@ -491,7 +500,7 @@ fn say_reset_ok(
         handle.id.pool,
         slot.name,
         out.base_ref,
-        &out.sha[..12.min(out.sha.len())],
+        short_sha(&out.sha),
         out.why
     );
 }
@@ -513,7 +522,7 @@ fn say_reset_skip(
     eprintln!("WARN pool {}  {}  {}", handle.id.pool, slot.name, reason);
 }
 
-fn print_clean(porcelain: bool, dry_run: bool, report: &vivi::pool::clean::CleanReport) {
+fn print_clean(porcelain: bool, dry_run: bool, report: &clean::CleanReport) {
     if porcelain {
         for action in &report.actions {
             println!("{}", porcelain::cleaned(dry_run, action));
@@ -533,7 +542,7 @@ fn print_clean(porcelain: bool, dry_run: bool, report: &vivi::pool::clean::Clean
     print_clean_human(dry_run, report);
 }
 
-fn print_clean_human(dry_run: bool, report: &vivi::pool::clean::CleanReport) {
+fn print_clean_human(dry_run: bool, report: &clean::CleanReport) {
     let verb = if dry_run {
         "would reclaim"
     } else {
@@ -548,7 +557,7 @@ fn print_clean_human(dry_run: bool, report: &vivi::pool::clean::CleanReport) {
             action.pool,
             action.slot,
             action.kind.word(),
-            vivi::pool::clean::rule::format_bytes(action.bytes),
+            clean::rule::format_bytes(action.bytes),
             action.path,
             action.note
         );
@@ -565,14 +574,14 @@ fn print_clean_human(dry_run: bool, report: &vivi::pool::clean::CleanReport) {
     if let Some(free) = report.free_bytes {
         println!(
             "volume {} free (reclaim under {} GiB, refuse under {} GiB)",
-            vivi::pool::clean::rule::format_bytes(free),
-            vivi::pool::clean::rule::DISK_RECLAIM_GIB,
-            vivi::pool::clean::rule::DISK_REFUSE_GIB
+            clean::rule::format_bytes(free),
+            clean::rule::DISK_RECLAIM_GIB,
+            clean::rule::DISK_REFUSE_GIB
         );
     }
     println!(
         "{verb} {} in {} action(s); skipped {}",
-        vivi::pool::clean::rule::format_bytes(report.bytes()),
+        clean::rule::format_bytes(report.bytes()),
         report.actions.len(),
         report.skips.len()
     );
