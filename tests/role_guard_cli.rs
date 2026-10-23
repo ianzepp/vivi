@@ -155,3 +155,38 @@ fn a_pid_only_role_set_skips_the_guard_while_the_pump_runs() {
     ));
     assert!(err.contains("the pump is running"), "{err}");
 }
+
+fn role_kind(project: &Path, name: &str) -> serde_json::Value {
+    let shown = ok(&run(project, &["role", "show", name, "--json"]));
+    let view: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    view["kind"].clone()
+}
+
+#[test]
+fn role_add_of_the_pump_hand_role_defaults_to_kind_hand() {
+    let project = project();
+    let root = project.path();
+    ok(&run(root, &["role", "add", "hand"]));
+    assert_eq!(role_kind(root, "hand"), "hand");
+}
+
+#[test]
+fn an_explicit_kind_beats_the_hand_default() {
+    let project = project();
+    let root = project.path();
+    // `auditor` for the pump's hand role fails validation, so the guard rolls
+    // the write back; the message naming kind auditor shows `--kind` won.
+    let before = fs::read(config_path(root)).unwrap();
+    let err = refused(&run(root, &["role", "add", "hand", "--kind", "auditor"]));
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(err.contains("pump role hand has kind auditor"), "{err}");
+    assert_eq!(fs::read(config_path(root)).unwrap(), before);
+}
+
+#[test]
+fn role_add_of_another_name_gets_no_default_kind() {
+    let project = project();
+    let root = project.path();
+    ok(&run(root, &["role", "add", "mind"]));
+    assert!(role_kind(root, "mind").is_null());
+}
