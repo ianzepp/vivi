@@ -333,6 +333,14 @@ impl MailReader for Flaky {
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
         self.inner.sentinel_count(need)
     }
+
+    fn need_prerequisites(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        self.inner.need_prerequisites(need)
+    }
+
+    fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        self.inner.last_closed_record(need)
+    }
 }
 
 #[test]

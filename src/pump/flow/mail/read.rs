@@ -100,6 +100,25 @@ impl MailReader for MailspacePort {
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
         sentinel_count_of(&self.mailspace, need)
     }
+
+    fn need_prerequisites(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        Ok(self
+            .mailspace
+            .backlog_dependencies(need)?
+            .into_iter()
+            .map(|dep| dep.handle)
+            .collect())
+    }
+
+    fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        Ok(self
+            .mailspace
+            .pump_history(need)?
+            .into_iter()
+            .rev()
+            .find(|record| record.status == PumpState::Done)
+            .map(|record| record.outcome.unwrap_or_default()))
+    }
 }
 
 impl OpenRecords for MailspacePort {
