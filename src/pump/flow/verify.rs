@@ -185,6 +185,13 @@ fn fetch(ctx: &Ctx, remote: &str, remote_ref: &str) -> Result<(), String> {
     }
 }
 
+/// Whether the commit exists in the local object store.
+fn commit_present(ctx: &Ctx, sha: &str) -> bool {
+    ctx.git(&format!("cat-file -e {sha}^{{commit}}"), QUERY_SECS)
+        .code
+        == 0
+}
+
 /// `git merge-base --is-ancestor`: 0 yes, 1 no, anything else is an error.
 fn is_ancestor(ctx: &Ctx, ancestor: &str, descendant: &str) -> Result<bool, String> {
     let out = ctx.git(
@@ -198,6 +205,42 @@ fn is_ancestor(ctx: &Ctx, ancestor: &str, descendant: &str) -> Result<bool, Stri
     }
 }
 
+/// The remote ref's tip when it already contains `sha`: `Ok(Some(tip))` when
+/// `sha` is the tip or an ancestor of it, `Ok(None)` when the ref is absent or
+/// does not contain `sha`. Unlike `check`, a moved ref without the commit is a
+/// plain "no", not Unclear.
+pub(crate) fn ref_contains(
+    ctx: &Ctx,
+    target: &str,
+    remote_ref: &str,
+    sha: &str,
+) -> Result<Option<String>, String> {
+    let Some(tctx) = ctx.for_target(target) else {
+        return Err(format!("unknown target {target}"));
+    };
+    if !valid_sha(sha) {
+        return Err(String::from("sha is not a commit SHA"));
+    }
+    let remote = tctx.cfg.remote.clone();
+    let Some(tip) = remote_tip(&tctx, &remote, remote_ref)? else {
+        return Ok(None);
+    };
+    if tip == sha {
+        return Ok(Some(tip));
+    }
+    fetch(&tctx, &remote, remote_ref)?;
+    // The fetch brings every ancestor of the tip, so a commit still absent
+    // afterwards is not contained (and merge-base would exit 128).
+    if !commit_present(&tctx, sha) {
+        return Ok(None);
+    }
+    Ok(is_ancestor(&tctx, sha, &tip)?.then_some(tip))
+}
+
 #[cfg(test)]
 #[path = "verify_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "verify_contains_test.rs"]
+mod contains_tests;
