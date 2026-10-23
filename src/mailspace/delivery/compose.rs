@@ -6,7 +6,7 @@ use super::super::Mailspace;
 use super::super::serves::canonical_wants;
 use crate::error::VivariumError;
 use crate::letter::sugar::opens_with_fence;
-use crate::letter::{Front, Letter, LetterKind, parse_kind, render};
+use crate::letter::{Front, Letter, LetterError, LetterKind, of_message, parse_kind, render};
 
 /// A validated work letter body and what it declares.
 pub(super) struct WorkLetter {
@@ -57,6 +57,19 @@ pub(super) fn work_letter(
         depends_on,
         letter,
     }))
+}
+
+/// Check a raw imported letter. A letter with no `X-Vivi-Format` header is
+/// history and imports as is; one that claims a format must parse.
+///
+/// # Errors
+/// Returns the `LetterError` text when the letter claims format 1 (or an
+/// unknown format) and fails the parser.
+pub(super) fn raw_letter(data: &[u8]) -> Result<(), VivariumError> {
+    match of_message(data, "") {
+        Ok(_) | Err(LetterError::Legacy { .. }) => Ok(()),
+        Err(error) => Err(VivariumError::Message(format!("letter format: {error}"))),
+    }
 }
 
 fn no_front(kind: &LetterKind) -> &'static str {

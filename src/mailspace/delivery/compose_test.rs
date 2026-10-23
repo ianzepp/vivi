@@ -151,3 +151,49 @@ fn a_prose_task_is_refused_and_nothing_is_stored() {
     assert!(err.contains("task letter has no front matter"), "{err}");
     nothing_stored(&mailspace);
 }
+
+fn raw(kind: &str, format: Option<&str>, body: &str) -> Vec<u8> {
+    let format = format.map_or(String::new(), |f| format!("X-Vivi-Format: {f}\r\n"));
+    format!(
+        "From: mind@local\r\nTo: hand@local\r\nSubject: raw\r\nMessage-ID: <raw-{kind}@audit.local>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: {kind}\r\n{format}\r\n{body}\r\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_raw_legacy_letter_still_imports() {
+    let (_tmp, mailspace) = space();
+    let data = raw("need", None, "done_when: x\n");
+    mailspace.deliver_raw(&data, "inbox").unwrap();
+}
+
+#[test]
+fn a_raw_format_1_need_with_valid_front_matter_imports() {
+    let (_tmp, mailspace) = space();
+    let data = raw("need", Some("1"), &need_body(&["done"], "prose"));
+    mailspace.deliver_raw(&data, "inbox").unwrap();
+}
+
+#[test]
+fn a_raw_format_1_need_without_done_when_is_refused_and_nothing_is_stored() {
+    let (_tmp, mailspace) = space();
+    let body = crate::letter::render(&NeedFront::default(), "prose").unwrap();
+    let err = mailspace
+        .deliver_raw(&raw("need", Some("1"), &body), "inbox")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("letter format:"), "{err}");
+    nothing_stored(&mailspace);
+    assert!(mailspace.list("hand", "inbox").unwrap().is_empty());
+}
+
+#[test]
+fn a_raw_letter_with_an_unknown_format_is_refused() {
+    let (_tmp, mailspace) = space();
+    let err = mailspace
+        .deliver_raw(&raw("need", Some("9"), "x"), "inbox")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("letter format:"), "{err}");
+}
