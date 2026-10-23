@@ -1,9 +1,11 @@
 //! Reading half of the mailspace port: task, need and record state, marks,
 //! bound units and the run count derived from bound sentinels.
 
+use std::collections::BTreeSet;
+
 use super::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskState, TaskStatus};
 use crate::error::VivariumError;
-use crate::letter::read::step_of;
+use crate::letter::read::{need_of, step_of};
 use crate::letter::work::StepFront;
 use crate::mailspace::{Mailspace, PumpState, held_item, is_done, newest_move, sorted_marks};
 use crate::storage::{Storage, StoredMessageView};
@@ -140,7 +142,33 @@ impl OpenRecords for MailspacePort {
         records.sort_by(|a, b| a.date.cmp(&b.date));
         Ok(records
             .into_iter()
+            .filter(|record| record.letter_error.is_none())
             .map(|record| (record.need, record.date))
+            .collect())
+    }
+
+    fn unreadable_records(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        let mut records = self.mailspace.pump_list(None, Some(PumpState::Open))?;
+        records.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(records
+            .into_iter()
+            .filter_map(|record| record.letter_error.map(|error| (record.handle, error)))
+            .collect())
+    }
+
+    fn need_letter_error(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        let storage = self.mailspace.storage()?;
+        let message_id = storage.resolve_message_token(need)?;
+        let body = crate::extract::extract_text(&storage.read_message(&message_id)?)?;
+        Ok(need_of(need, &body).err().map(|error| error.to_string()))
+    }
+
+    fn unreadable_actions(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        Ok(self
+            .mailspace
+            .pump_unreadable_actions(&BTreeSet::new())?
+            .into_iter()
+            .map(|action| (action.handle, action.error))
             .collect())
     }
 }

@@ -1,12 +1,15 @@
 //! Reader tests on a real mailspace.
 
 use super::{run_count, sentinel_count_of};
-use crate::letter::fixture::{need_body_with, sentinel_body, step_body, task_body_with};
+use crate::letter::fixture::{
+    need_body_with, record_body, sentinel_body, step_body, task_body_with,
+};
 use crate::letter::work::{NeedFront, StepFront, TaskFront};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::project;
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskStatus};
 use crate::pump::flow::slice_dispatch::SliceMail;
+use crate::storage::MailspaceEventInput;
 
 /// A task from `mind` to `elsewhere`; the handle `elsewhere` holds.
 fn send_task(mailspace: &Mailspace, subject: &str, body: &str) -> String {
@@ -106,7 +109,7 @@ fn need_state_marks_and_open_record_are_read() {
 
     let record = port
         .mailspace
-        .pump_send(None, &need, Some("kind: release"))
+        .pump_send(None, &need, Some(&record_body(&need, "release")))
         .unwrap();
     let (handle, body) = port.open_record(&need).unwrap().expect("an open record");
     assert_eq!(handle, record.handle);
@@ -158,7 +161,8 @@ fn prerequisites_and_last_closed_record_are_read() {
     assert!(port.need_prerequisites(&second).unwrap().is_empty());
 
     assert_eq!(port.last_closed_record(&second).unwrap(), None);
-    port.open_pump_record(&second, "kind: release").unwrap();
+    port.open_pump_record(&second, &record_body(&second, "release"))
+        .unwrap();
     assert_eq!(port.last_closed_record(&second).unwrap(), None);
     port.close_pump_record(&second, "landed").unwrap();
     assert_eq!(
@@ -254,4 +258,135 @@ fn task_body_and_replies_have_no_cr_for_a_multi_line_body() {
         "{:?}",
         replies[0].1
     );
+}
+
+/// Send `body` with `kind` and `role` from the operator to the mind; the
+/// handle the mind holds.
+fn send_as(mailspace: &Mailspace, kind: &str, role: &str, body: &str, reply_to: Option<&str>) {
+    mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "old".into(),
+            body: body.into(),
+            role: role.into(),
+            kind: Some(kind.into()),
+            reply_to: reply_to.map(ToString::to_string),
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_legacy_record_letter_is_unreadable_and_not_an_open_record_need() {
+    let project = project();
+    let good = project.need("good need");
+    project
+        .mailspace
+        .pump_send(None, &good, Some(&record_body(&good, "build")))
+        .unwrap();
+    send_as(
+        &project.mailspace,
+        "pump",
+        "pumps",
+        "Dispatch of an old record.",
+        None,
+    );
+    let port = MailspacePort {
+        mailspace: project.mailspace,
+        pump_identity: "mind".into(),
+    };
+
+    let unreadable = port.unreadable_records().unwrap();
+    let needs = port.open_record_needs().unwrap();
+
+    assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+    assert!(unreadable[0].1.contains(&unreadable[0].0), "{unreadable:?}");
+    assert_eq!(needs.len(), 1, "{needs:?}");
+    assert_eq!(needs[0].0, good);
+}
+
+#[test]
+fn a_legacy_need_gives_a_letter_error_and_a_front_matter_need_none() {
+    let project = project();
+    let good = project.need("good need");
+    let raw = format!(
+        "From: operator@a1b2c3d4.local\r\nTo: {}\r\nSubject: old need\r\n\
+         Message-ID: <old-need@a1b2c3d4.local>\r\nX-Vivi-Kind: need\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\ndone_when: it works\r\n",
+        project.mailspace.address_for("mind"),
+    );
+    let old = project
+        .mailspace
+        .deliver_raw(raw.as_bytes(), "needs")
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let port = MailspacePort {
+        mailspace: project.mailspace,
+        pump_identity: "mind".into(),
+    };
+
+    assert_eq!(port.need_letter_error(&good).unwrap(), None);
+    let error = port
+        .need_letter_error(&old)
+        .unwrap()
+        .expect("a letter error");
+    assert!(error.contains(&old), "{error}");
+}
+
+#[test]
+fn a_header_only_action_letter_is_unreadable_until_it_is_applied() {
+    let project = project();
+    let need = project.need("good need");
+    let record = project
+        .mailspace
+        .pump_send(None, &need, Some(&record_body(&need, "build")))
+        .unwrap();
+    send_as(
+        &project.mailspace,
+        "mail",
+        "inbox",
+        "stop it",
+        Some(&record.handle),
+    );
+    let storage = project.mailspace.storage().unwrap();
+    let thread = project
+        .mailspace
+        .thread(&record.handle, false, usize::MAX, usize::MAX)
+        .unwrap();
+    let letter = thread
+        .iter()
+        .find(|row| row.handle != record.handle)
+        .expect("the reply");
+    let id = storage.resolve_message_token(&letter.handle).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    storage
+        .append_mailspace_event(&MailspaceEventInput {
+            command: "pump action".into(),
+            event_type: "posted".into(),
+            actor_identity: Some("operator".into()),
+            account: "operator".into(),
+            message_id: view.message_id.clone(),
+            content_id: view.content_id.clone(),
+            from_role: None,
+            to_role: Some("inbox".into()),
+            from_identity: Some("operator".into()),
+            to_identity: None,
+            subject: view.subject.clone(),
+            note: Some(record.handle.clone()),
+        })
+        .unwrap();
+    drop(storage);
+    let port = MailspacePort {
+        mailspace: project.mailspace,
+        pump_identity: "mind".into(),
+    };
+
+    let unreadable = port.unreadable_actions().unwrap();
+
+    assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+    assert!(unreadable[0].1.contains(&unreadable[0].0), "{unreadable:?}");
 }

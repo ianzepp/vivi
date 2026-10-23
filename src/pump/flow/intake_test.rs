@@ -5,13 +5,14 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{Candidate, RECORD_UNUSABLE, register, select};
+use super::{Candidate, LETTER_INVALID, RECORD_UNUSABLE, register, select};
 use crate::error::VivariumError;
+use crate::letter::fixture::{record_body, repair_record_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter, OpenRecords};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobStore, PoolJob};
@@ -67,6 +68,10 @@ impl Rig {
         MailWriter::open_record(&mut self.mail, need, body).map(|_| ())
     }
 
+    fn open_kind(&mut self, need: &str, kind: &str) -> R {
+        self.open(need, &record_body(need, kind))
+    }
+
     fn tick(&mut self) -> R {
         tick_with(
             &self.ctx,
@@ -115,7 +120,7 @@ fn cand(need: &str, repair: bool, target: &str, priority: i64, age: u64) -> Cand
 #[test]
 fn a_need_with_an_open_record_and_no_run_gets_run_one_at_plan() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: build")?;
+    rig.open_kind("n1", "build")?;
     rig.tick()?;
     assert_eq!(rig.runs("n1")?, [(1, "plan".into(), "live".into())]);
     Ok(())
@@ -124,7 +129,7 @@ fn a_need_with_an_open_record_and_no_run_gets_run_one_at_plan() -> R {
 #[test]
 fn a_need_with_a_live_run_gets_nothing_more() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: build")?;
+    rig.open_kind("n1", "build")?;
     start(&rig.ctx, &rig.store, &mut rig.mail, "n1", None)?;
     let calls = rig.mail.calls.len();
     rig.tick()?;
@@ -136,7 +141,7 @@ fn a_need_with_a_live_run_gets_nothing_more() -> R {
 #[test]
 fn a_need_marked_investigate_starts_a_build_run_like_any_other() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: build")?;
+    rig.open_kind("n1", "build")?;
     rig.mail.set_marks("n1", &["investigate"]);
     rig.tick()?;
     assert_eq!(rig.runs("n1")?, [(1, "plan".into(), "live".into())]);
@@ -149,7 +154,7 @@ fn a_repair_need_starts_a_run_at_fix1() -> R {
     let tested = "a".repeat(40);
     rig.open(
         "n1",
-        &format!("kind: repair\ntarget: default\ntested: {tested}"),
+        &repair_record_body("n1", "default", Some(&tested), ""),
     )?;
     rig.tick()?;
     let runs = rig.runs("n1")?;
@@ -168,7 +173,7 @@ fn a_repair_need_starts_a_run_at_fix1() -> R {
 fn the_cap_leaves_the_lowest_ranked_need_waiting() -> R {
     let mut rig = rig(Some(3))?;
     for (need, level) in [("n1", 4), ("n2", 3), ("n3", 2), ("n4", 1)] {
-        rig.open(need, "kind: build")?;
+        rig.open_kind(need, "build")?;
         rig.store.set_need_priority(need, level, 1)?;
     }
     rig.tick()?;
@@ -185,7 +190,7 @@ fn the_cap_leaves_the_lowest_ranked_need_waiting() -> R {
 #[test]
 fn a_run_left_starting_by_a_failed_start_becomes_live() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: build")?;
+    rig.open_kind("n1", "build")?;
     rig.mail.fail_at = Some(rig.mail.calls.len());
     start(&rig.ctx, &rig.store, &mut rig.mail, "n1", None).unwrap_err();
     assert_eq!(rig.runs("n1")?[0].2, "starting");
@@ -268,7 +273,7 @@ fn select_repair_picks_do_not_count_toward_the_cap() {
 #[test]
 fn a_closed_need_with_an_open_record_raises_once_and_starts_nothing() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: build")?;
+    rig.open_kind("n1", "build")?;
     rig.mail.close_need_by("n1", "operator");
     rig.tick()?;
     rig.tick()?;
@@ -286,7 +291,7 @@ fn a_closed_need_with_an_open_record_raises_once_and_starts_nothing() -> R {
 #[test]
 fn a_repair_record_without_a_target_raises_once_and_starts_nothing() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: repair")?;
+    rig.open_kind("n1", "repair")?;
     rig.tick()?;
     rig.tick()?;
     assert!(rig.runs("n1")?.is_empty());
@@ -300,7 +305,7 @@ fn a_repair_record_without_a_target_raises_once_and_starts_nothing() -> R {
 #[test]
 fn a_repair_record_with_an_unknown_target_raises_once_and_starts_nothing() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: repair\ntarget: nowhere")?;
+    rig.open("n1", &repair_record_body("n1", "nowhere", None, ""))?;
     rig.tick()?;
     rig.tick()?;
     assert!(rig.runs("n1")?.is_empty());
@@ -314,7 +319,7 @@ fn a_repair_record_with_an_unknown_target_raises_once_and_starts_nothing() -> R 
 #[test]
 fn a_repair_record_with_a_known_target_still_starts() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: repair\ntarget: default")?;
+    rig.open("n1", &repair_record_body("n1", "default", None, ""))?;
     rig.tick()?;
     assert_eq!(rig.runs("n1")?.len(), 1);
     assert_eq!(rig.exceptions(RECORD_UNUSABLE), 0);
@@ -324,9 +329,58 @@ fn a_repair_record_with_a_known_target_still_starts() -> R {
 #[test]
 fn a_need_addressed_to_a_third_role_with_an_open_record_starts() -> R {
     let mut rig = rig(None)?;
-    rig.open("n1", "kind: build")?;
+    rig.open_kind("n1", "build")?;
     rig.mail.set_marks("n1", &["addressed-to-hand"]);
     rig.tick()?;
     assert_eq!(rig.runs("n1")?, [(1, "plan".into(), "live".into())]);
+    Ok(())
+}
+
+#[test]
+fn a_legacy_pump_record_raises_once_starts_nothing_and_stays_open() -> R {
+    let mut rig = rig(None)?;
+    rig.mail.raw_record("n1", "kind: build");
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.runs("n1")?.is_empty());
+    assert_eq!(rig.exceptions(LETTER_INVALID), 1);
+    assert_eq!(rig.mail.unreadable_records()?.len(), 1);
+    assert!(MailReader::open_record(&rig.mail, "n1")?.is_some());
+    Ok(())
+}
+
+#[test]
+fn a_legacy_need_raises_once_starts_nothing_and_leaves_the_record_open() -> R {
+    let mut rig = rig(None)?;
+    rig.open_kind("n1", "build")?;
+    rig.mail
+        .set_need_letter_error("n1", "n1 is a legacy need letter");
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.runs("n1")?.is_empty());
+    assert_eq!(rig.exceptions(LETTER_INVALID), 1);
+    let text = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt"))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    assert!(text.contains("n1 is a legacy need letter"), "{text}");
+    assert!(MailReader::open_record(&rig.mail, "n1")?.is_some());
+    Ok(())
+}
+
+#[test]
+fn an_unreadable_action_letter_raises_once_per_handle_and_applies_nothing() -> R {
+    let mut rig = rig(None)?;
+    rig.open_kind("n1", "build")?;
+    rig.mail
+        .add_unreadable_action("a1", "action letter a1: bad");
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.exceptions(LETTER_INVALID), 1);
+    rig.mail
+        .add_unreadable_action("a2", "action letter a2: bad");
+    rig.tick()?;
+    assert_eq!(rig.exceptions(LETTER_INVALID), 2);
+    // The valid record is not blocked by the bad letters.
+    assert_eq!(rig.runs("n1")?.len(), 1);
+    assert_eq!(rig.mail.unreadable_actions()?.len(), 2);
     Ok(())
 }
