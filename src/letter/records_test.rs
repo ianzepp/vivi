@@ -316,44 +316,39 @@ fn brief_note_carries_a_job() {
 }
 
 #[test]
-fn record_letter_lifts_the_prose_lines_into_the_front() {
-    let (front, prose) = record_letter(
-        "n1",
-        "Fix it.\nkind: repair\ntarget: alpha\ntested: abc\nmore",
-    )
-    .unwrap();
+fn record_letter_takes_a_prose_body_as_the_prose() {
+    let (front, prose) = record_letter("n1", "  Fix it.\nmore  ").unwrap();
     assert_eq!(
         front,
         RecordFront {
             need: "n1".to_string(),
-            kind: Some(RecordKind::Repair),
-            target: Some("alpha".to_string()),
-            tested: Some("abc".to_string()),
+            kind: None,
+            target: None,
+            tested: None,
         }
     );
     assert_eq!(prose, "Fix it.\nmore");
 }
 
 #[test]
-fn record_letter_refuses_an_unknown_kind_and_tested_without_repair() {
-    match record_letter("n1", "kind: frobnicate") {
-        Err(LetterError::Invalid(reason)) => {
-            assert!(
-                reason.contains("build, research, release, repair"),
-                "{reason}"
-            );
-            assert!(reason.contains("actual: frobnicate"), "{reason}");
+fn record_letter_refuses_a_prose_fact_line() {
+    for body in [
+        "kind: repair",
+        "Fix it.\n  target: alpha\nmore",
+        "tested: abc",
+        "kind:\nbody",
+    ] {
+        match record_letter("n1", body) {
+            Err(LetterError::Invalid(reason)) => {
+                assert!(
+                    reason.contains("pump record facts go in front matter, not prose lines"),
+                    "{reason}"
+                );
+                assert!(reason.contains("between +++ fences"), "{reason}");
+            }
+            other => panic!("expected Invalid for {body:?}, got {other:?}"),
         }
-        other => panic!("expected Invalid, got {other:?}"),
     }
-    assert!(matches!(
-        record_letter("n1", "kind: build\ntested: abc"),
-        Err(LetterError::Invalid(_))
-    ));
-    assert!(matches!(
-        record_letter("n1", "tested: abc"),
-        Err(LetterError::Invalid(_))
-    ));
 }
 
 #[test]
@@ -373,12 +368,4 @@ fn record_letter_takes_a_front_matter_body_as_written() {
     assert_eq!(front.kind, Some(RecordKind::Research));
     assert_eq!(prose, "prose");
     assert!(record_letter("n1", "+++\nneed = \"x\"\nbogus = 1\n+++\n").is_err());
-}
-
-#[test]
-fn record_letter_empty_lines_are_absent() {
-    let (front, prose) = record_letter("n1", "kind:\ntarget:\nbody").unwrap();
-    assert_eq!(front.kind, None);
-    assert_eq!(front.target, None);
-    assert_eq!(prose, "body");
 }

@@ -406,21 +406,31 @@ fn send_refuses_a_closed_need() {
     mailspace
         .move_item_outcome("mind", &need, "done", Some("finished"), "need done", None)
         .unwrap();
-    let error = refused(&mailspace, &need, "kind: build");
+    let error = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::record_body(&need, "build"),
+    );
     assert!(error.contains("is done"), "{error}");
     assert!(error.contains("needs an open need"), "{error}");
 }
 
+fn front_body(need: &str, lines: &str) -> String {
+    format!("+++\nneed = \"{need}\"\n{lines}+++\n")
+}
+
 #[test]
-fn send_refuses_a_kind_line_naming_no_flow_kind() {
+fn send_refuses_a_front_matter_kind_naming_no_flow_kind() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
-    let error = refused(&mailspace, &need, "kind: frobnicate");
-    assert!(
-        error.contains("build, research, release, repair"),
-        "{error}"
+    let error = refused(
+        &mailspace,
+        &need,
+        &front_body(&need, "kind = \"frobnicate\"\n"),
     );
-    assert!(error.contains("actual: frobnicate"), "{error}");
+    assert!(error.contains("front matter line 3"), "{error}");
+    assert!(error.contains("unknown variant `frobnicate`"), "{error}");
+    assert!(error.contains("`build`, `research`"), "{error}");
 }
 
 #[test]
@@ -428,13 +438,38 @@ fn send_refuses_a_repair_record_without_a_known_target() {
     let (mut mailspace, _tmp) = roster();
     pump_with_targets(&mut mailspace, &["alpha", "beta"]);
     let need = send_need(&mailspace, "fix auth");
-    let none = refused(&mailspace, &need, "kind: repair");
+    let none = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::record_body(&need, "repair"),
+    );
     assert!(none.contains("alpha, beta"), "{none}");
     assert!(none.contains("actual: none"), "{none}");
-    let empty = refused(&mailspace, &need, "kind: repair\ntarget:");
-    assert!(empty.contains("actual: none"), "{empty}");
-    let unknown = refused(&mailspace, &need, "kind: repair\ntarget: gamma");
+    let empty = refused(
+        &mailspace,
+        &need,
+        &front_body(&need, "kind = \"repair\"\ntarget = \"\"\n"),
+    );
+    assert!(empty.contains("target"), "{empty}");
+    let unknown = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::repair_record_body(&need, "gamma", None, ""),
+    );
     assert!(unknown.contains("actual: gamma"), "{unknown}");
+}
+
+#[test]
+fn send_refuses_a_prose_fact_line() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    for body in ["kind: repair", "Fix it.\ntarget: alpha", "tested: abc"] {
+        let error = refused(&mailspace, &need, body);
+        assert!(
+            error.contains("pump record facts go in front matter, not prose lines"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -447,9 +482,8 @@ fn a_repair_mark_makes_the_record_a_repair_record() {
         .unwrap();
     let error = refused(&mailspace, &need, "no kind line here");
     assert!(error.contains("actual: none"), "{error}");
-    mailspace
-        .pump_send(None, &need, Some("target: alpha"))
-        .unwrap();
+    let body = front_body(&need, "target = \"alpha\"\n");
+    mailspace.pump_send(None, &need, Some(&body)).unwrap();
 }
 
 #[test]
@@ -457,25 +491,26 @@ fn send_accepts_valid_build_and_repair_records() {
     let (mut mailspace, _tmp) = roster();
     pump_with_targets(&mut mailspace, &["alpha"]);
     let build = send_need(&mailspace, "build it");
-    mailspace
-        .pump_send(None, &build, Some("kind: build"))
-        .unwrap();
+    let body = crate::letter::fixture::record_body(&build, "build");
+    mailspace.pump_send(None, &build, Some(&body)).unwrap();
     let repair = send_need(&mailspace, "repair it");
-    mailspace
-        .pump_send(None, &repair, Some("kind: repair\ntarget: alpha"))
-        .unwrap();
+    let body = crate::letter::fixture::repair_record_body(&repair, "alpha", None, "");
+    mailspace.pump_send(None, &repair, Some(&body)).unwrap();
     assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 2);
 }
 
 #[test]
-fn without_pump_config_a_repair_record_needs_a_target_line_but_any_name() {
+fn without_pump_config_a_repair_record_needs_a_target_but_any_name() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "repair it");
-    let error = refused(&mailspace, &need, "kind: repair");
+    let error = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::record_body(&need, "repair"),
+    );
     assert!(error.contains("actual: none"), "{error}");
-    mailspace
-        .pump_send(None, &need, Some("kind: repair\ntarget: anything"))
-        .unwrap();
+    let body = crate::letter::fixture::repair_record_body(&need, "anything", None, "");
+    mailspace.pump_send(None, &need, Some(&body)).unwrap();
 }
 
 #[test]
