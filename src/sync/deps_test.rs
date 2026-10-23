@@ -2,23 +2,38 @@
 //! route files a letter, the receiver's graph, `step` and
 //! `task list --blocked` agree.
 
+use crate::letter::fixture::{body_with_deps, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::mailspace::{GraphNodeView, RoleUpdate, SourceTaskRequest};
 use crate::sync::fake_server::{LETTER_DATE, World, wire_id};
 use crate::sync::fetch::fetch_handles;
 use crate::sync::pull::{PullPlan, pull_with};
 use crate::sync::refs::follow_refs;
 
+/// A need or task that declares `it is done`, so `step` can dispatch it.
+fn body(kind: &str, deps: &[String]) -> String {
+    match kind {
+        "task" => task_body_with(
+            &TaskFront {
+                done_when: vec!["it is done".into()],
+                depends_on: deps.to_vec(),
+                ..TaskFront::default()
+            },
+            "it is done\n",
+        ),
+        _ => body_with_deps(kind, "it is done\n", deps),
+    }
+}
+
 fn put(w: &World, n: u64, kind: &str, to: &str, subject: &str, deps: &[u64]) -> String {
-    let headers: String = deps
-        .iter()
-        .map(|dep| format!("X-Vivi-Depends-On: {dep:08x}\r\n"))
-        .collect();
+    let deps: Vec<String> = deps.iter().map(|dep| format!("{dep:08x}")).collect();
+    let headers = format!("X-Vivi-Kind: {kind}\r\nX-Vivi-Format: 1\r\n");
     w.put_full(
         &wire_id(n, 0),
         kind,
         to,
         subject,
-        "done_when: it is done\r\n",
+        &body(kind, &deps),
         LETTER_DATE,
         &headers,
     )

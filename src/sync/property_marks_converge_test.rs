@@ -8,6 +8,7 @@
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
+use crate::letter::fixture::need_body;
 use crate::mailspace::{RoleUpdate, SendRequest};
 use crate::sync::pull::PullReport;
 
@@ -66,7 +67,7 @@ fn trio() -> Trio {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "travel policy".into(),
-            body: "travel policy body\n".into(),
+            body: need_body(&["done"], "travel policy body\n"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
