@@ -18,7 +18,7 @@ use crate::pump::flow::rung_step::RungCollector;
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, WORD_REJECTED, raise_once};
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
-use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
+use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
@@ -145,16 +145,22 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
         step: &StepRow,
         class: &NodeClass,
     ) -> Result<(), VivariumError> {
-        if *class != NodeClass::Merge {
-            let original = if correct::correction_n(&job.id) > 0 {
-                cx.st.jobs().get(correct::base_id(&job.id)).cloned()
-            } else {
-                None
-            };
-            let facts = original.as_ref().unwrap_or(job);
-            if let Some(env) = runner_env_failure(facts) {
-                return cx.hold_role_env(facts, step, &env);
-            }
+        let original = if correct::correction_n(&job.id) > 0 {
+            cx.st.jobs().get(correct::base_id(&job.id)).cloned()
+        } else {
+            None
+        };
+        let facts = original.as_ref().unwrap_or(job);
+        // A sync merge job has no publish to read when its agent cannot run:
+        // it takes merge-main's rule (any environment failure), not the
+        // runner-only rule of the other roles.
+        let env = if *class == NodeClass::Merge {
+            rung_result::env_failure(facts)
+        } else {
+            runner_env_failure(facts)
+        };
+        if let Some(env) = env {
+            return cx.hold_role_env(facts, step, &env);
         }
         let expected = job.publish_ref.clone().unwrap_or_default();
         let collected = collect::collect(cx.ctx, cx.mail, job, row, class, &expected);

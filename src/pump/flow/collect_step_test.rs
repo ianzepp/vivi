@@ -338,3 +338,46 @@ fn a_correction_job_of_an_exit_127_original_holds() -> R {
     assert!(!rig.jobs.jobs.contains_key("plan-j1-c2"));
     Ok(())
 }
+
+#[test]
+fn a_sync_merge_job_with_agent_exit_127_holds_the_step_and_raises_one_env_line() -> R {
+    let mut rig = rig()?;
+    finished_job(
+        &mut rig,
+        "sync-j1",
+        "merge",
+        "task-sync1",
+        receipt(127, "", ""),
+    )?;
+    let held = collect_role(&mut rig, "sync-j1", "sync1")?;
+    assert_eq!(held.state, StepState::Waiting);
+    assert_eq!(held.verdict.as_deref(), Some(OPERATOR_HOLD));
+    let lines = env_lines(&rig);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("merge job sync-j1"), "{lines:?}");
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_sync_merge_job_that_ran_and_published_nothing_still_answers_conflict() -> R {
+    let mut rig = rig()?;
+    // The conflict word routes onward, so the step's task must exist in the mail.
+    let handle = MailWriter::send_step(&mut rig.mail, "mind", "mind", "sync1", "body", &[])?;
+    let task = rig.mail.tasks.remove(&handle);
+    rig.mail
+        .tasks
+        .extend(task.map(|t| ("task-sync1".to_owned(), t)));
+    finished_job(
+        &mut rig,
+        "sync-j1",
+        "merge",
+        "task-sync1",
+        receipt(0, "", ""),
+    )?;
+    let step = collect_role(&mut rig, "sync-j1", "sync1")?;
+    assert!(env_lines(&rig).is_empty());
+    assert_ne!(step.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(step.verdict.as_deref(), Some("conflict"));
+    Ok(())
+}
