@@ -130,7 +130,7 @@ fn first_at(commands: &[String], fragment: &str) -> usize {
 }
 
 #[test]
-fn write_status_writes_counts_then_stall_lines() {
+fn write_status_writes_counts_then_the_delivered_line() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Pending, None));
@@ -157,15 +157,12 @@ fn write_status_writes_counts_then_stall_lines() {
     write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 8, "{text}");
+    assert_eq!(lines.len(), 5, "{text}");
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
     assert_eq!(lines[3], "merges 3  needs-ready 2");
-    assert_eq!(lines[4], "last promote never");
-    assert_eq!(lines[5], "last green never");
-    assert_eq!(lines[6], "oldest waiting fix none");
-    assert_eq!(lines[7], "delivered waiting 0, oldest none");
+    assert_eq!(lines[4], "delivered waiting 0, oldest none");
 }
 
 #[test]
