@@ -658,7 +658,6 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_otherwise() {
         host.logs()
             .contains(&"sync pull rc=0 pulled 3 messages".to_string())
     );
-    assert!(st.board.planning.is_empty());
     assert!(st.jobs.is_empty(), "the board pass plans nothing");
     assert!(!host.spawned().iter().any(|cmd| cmd.contains("sync push")));
 }

@@ -394,27 +394,18 @@ pub struct Board {
     /// Epoch seconds of the last board cycle.
     #[serde(default)]
     pub at: u64,
-    /// Handle -> epoch seconds the plan task started.
-    #[serde(default)]
-    pub planning: BTreeMap<String, u64>,
     /// `"<need>:<verdict>"` replies already recorded.
     #[serde(default)]
     pub replied: Vec<String>,
     /// Need handle -> epoch seconds a revision planner started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub revision_planning: BTreeMap<String, u64>,
-    /// Handle -> pid of the board planner currently running.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub planner_pids: BTreeMap<String, u32>,
     /// Handle -> consecutive planner exits without a plan.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub planner_fails: BTreeMap<String, u32>,
     /// Handle -> earliest epoch seconds the planner may relaunch.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub planner_retry_at: BTreeMap<String, u64>,
-    /// Handles parked after exhausting planner retries.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub planner_failed: Vec<String>,
     /// Need handle -> the findings of the plan the pump just rejected. They
     /// go into the next planner prompt (a first plan or a revision) and are
     /// dropped when a plan is accepted.

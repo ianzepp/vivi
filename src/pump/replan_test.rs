@@ -59,12 +59,10 @@ fn replan_apply_supersedes_the_plan_and_forgets_the_need() {
     need(&mut st, "n1", "invalid", &[]);
     st.plans_seen.push(String::from("n1.json"));
     st.board.replied = vec![String::from("n1:planned"), String::from("n1:merged")];
-    st.board.planner_failed.push(String::from("n1"));
     st.board.planner_fails.insert(String::from("n1"), 3);
     st.board
         .planner_retry_at
         .insert(String::from("n1"), T0 + 30);
-    st.board.planner_pids.insert(String::from("n1"), 42);
     st.board.revision_planning.insert(String::from("n1"), T0);
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/n1.json"), "old plan").unwrap();
@@ -80,10 +78,8 @@ fn replan_apply_supersedes_the_plan_and_forgets_the_need() {
     assert!(!st.plans_seen.contains(&String::from("n1.json")));
     assert!(!st.needs.contains_key("n1"));
     assert!(!st.board.replied.iter().any(|key| key.starts_with("n1:")));
-    assert!(!st.board.planner_failed.contains(&String::from("n1")));
     assert!(!st.board.planner_fails.contains_key("n1"));
     assert!(!st.board.planner_retry_at.contains_key("n1"));
-    assert!(!st.board.planner_pids.contains_key("n1"));
     assert!(!st.board.revision_planning.contains_key("n1"));
 }
 
@@ -129,12 +125,10 @@ fn replaying_an_applied_replan_is_harmless() {
 fn a_need_with_no_plan_still_has_its_parked_planner_cleared() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
-    st.board.planner_failed.push(String::from("n2"));
     st.board.planner_fails.insert(String::from("n2"), 3);
 
     assert_eq!(replan(&ctx, &mut st, "n2", false), Outcome::Superseded);
 
-    assert!(st.board.planner_failed.is_empty());
     assert!(st.board.planner_fails.is_empty());
     assert!(
         host.logs()
@@ -203,21 +197,6 @@ fn replan_refus_live_unit_without_force_changes_nothing() {
         exception.contains("use vivi pump replan n1 --force"),
         "{exception}"
     );
-}
-
-#[test]
-fn replan_refus_while_planner_runs() {
-    let (_dir, ctx, _host) = setup();
-    let mut st = State::default();
-    need(&mut st, "n1", "invalid", &[]);
-    st.board.planning.insert(String::from("n1"), T0);
-
-    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Refused);
-
-    assert!(st.needs.contains_key("n1"));
-    assert!(st.board.planning.contains_key("n1"));
-    let exception = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
-    assert!(exception.contains("a planner is already running for this need"));
 }
 
 #[test]
@@ -323,24 +302,15 @@ fn run_replan_without_an_open_record_is_refused_and_says_how_to_open_one() {
 }
 
 #[test]
-fn run_replan_accepts_an_invalid_verdict_and_a_parked_planner() {
+fn run_replan_accepts_an_invalid_verdict() {
     let project = project();
     let need = project.need("fix auth");
-    let parked = project.need("fix billing");
     project.mailspace.pump_send(None, &need, None).unwrap();
-    project.mailspace.pump_send(None, &parked, None).unwrap();
     seed_need(&project, &need, "invalid", None);
-    let mut st = saved(&project);
-    st.board.planner_failed.push(parked.clone());
-    PumpStore::open(&project.home().join(DB_FILENAME))
-        .unwrap()
-        .save(&st)
-        .unwrap();
 
     run(project.root(), &command(&need, false)).unwrap();
-    run(project.root(), &command(&parked, false)).unwrap();
 
-    assert_eq!(posted(&project).len(), 2);
+    assert_eq!(posted(&project).len(), 1);
 }
 
 #[test]
