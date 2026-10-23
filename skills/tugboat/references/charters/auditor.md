@@ -305,18 +305,63 @@ Active when the brief is a pump verify step. The pump owns the flow; you give on
 
 - Judge the requirements: every one, not only the happy path. Judge bad implementation and test quality too.
 - Do not run tests. The pump has already run the rung; judge by reading the code and the tests.
-- Keep the `PUMP_NEED_AUDIT_RESULT=` block with its verdict: `clean_pass`, `residual`, `block_range` or `block_ship`.
-- Add an optional field `raise_rung: <rung>` to the block when the change needs a stronger proof than the current rung. Leave it out otherwise.
-- End the final reply with one line: `ANSWER: <verdict>`, using the same word as the block.
+- Your final reply opens with a TOML front-matter envelope between two `+++` lines; the pump reads it and nothing else. The prose report goes below it. The vivi skill's `references/envelope.md` holds the whole table of roles; the fields you need are listed here.
+- Fields:
+  - `answer` (first key): `clean_pass`, `residual`, `block_range` or `block_ship`.
+  - `raise_rung` (optional): `need`, `main` or `release`, when the change needs a stronger proof than the current rung. Leave it out otherwise.
+  - `[[requirement]]` tables, one per requirement: `id`, `text`, `status` (`SATISFIED`, `PARTIAL`, `MISSING`, `UNVERIFIED` or `NOT_APPLICABLE`), `evidence` (a list of strings such as `path:line`).
+  - `[[finding]]` tables, one per finding: `id`, `content`, `paths` (a list), `recheck_trigger`.
+- Use no other keys: an unknown key is refused. Write free text as a TOML literal string, `'...'`, with no single quote inside. Do not wrap the envelope in a code fence, and use `+++` nowhere else in the reply.
 - Never run `vivi task done`. Do not close the step, the need, or any other task; the pump closes the step.
+
+Example:
+
+```
++++
+answer = "residual"
+raise_rung = "main"
+
+[[requirement]]
+id = "R1"
+text = 'A closed run stops accepting steps.'
+status = "SATISFIED"
+evidence = ["src/run.rs:210", "src/run_test.rs:44"]
+
+[[requirement]]
+id = "R2"
+text = 'The board shows the run count.'
+status = "PARTIAL"
+evidence = ["src/board.rs:88"]
+
+[[finding]]
+id = "F1"
+content = 'The board counts closed runs twice when a run is reopened.'
+paths = ["src/board.rs"]
+recheck_trigger = 'Any change to the run count query.'
++++
+The report follows.
+```
 
 ## Judge mode
 
 Active when the brief says judge mode. It is a short job: you are given test failures, and nothing else is reviewed.
 
 - Read the failures and decide whether they block the change or are residual.
-- Answer `block` or `residual` with the reasons, and end with one line: `ANSWER: block` or `ANSWER: residual`.
+- Your final reply opens with a TOML front-matter envelope between two `+++` lines (see the vivi skill's `references/envelope.md` for the whole table). The fields are:
+  - `answer` (first key): `block` or `residual`.
+  - `reason` (string, required): why, as a TOML literal string `'...'` with no single quote inside.
+- Use no other keys. Put the longer reasons below the envelope as prose. Do not wrap the envelope in a code fence.
 - Do not run tests. Never run `vivi task done`; the pump closes the step.
+
+Example:
+
+```
++++
+answer = "block"
+reason = 'The merge dropped the guard on line 120; a closed run now accepts steps.'
++++
+The reasons follow.
+```
 
 ## Dual auditors
 
