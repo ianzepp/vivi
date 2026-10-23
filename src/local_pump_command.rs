@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use vivi::VivariumError;
 use vivi::cli::{
-    PumpGateCommand, PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpRungsCommand,
-    PumpServiceCommand, PumpSubcommand,
+    PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpRungsCommand, PumpServiceCommand,
+    PumpSubcommand,
 };
 use vivi::pump::config::RungsConfig;
 use vivi::pump::control::PumpMode;
@@ -53,7 +53,6 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             }
             PumpPriorityCommand::List(cmd) => priority::run_list(&project_root(&cmd.project)),
         },
-        PumpSubcommand::Gate { command } => pump_gate(command),
         PumpSubcommand::Rungs { command } => pump_rungs(command),
         PumpSubcommand::Requeue(cmd) => vivi::pump::requeue::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Withdraw(cmd) => {
@@ -139,24 +138,6 @@ fn pump_health(cmd: &PumpHealthCommand) -> Result<(), VivariumError> {
         print!("{}", health::render(&report));
     }
     Ok(())
-}
-
-fn pump_gate(command: &PumpGateCommand) -> Result<(), VivariumError> {
-    match command {
-        PumpGateCommand::Show(cmd) => {
-            match vivi::pump::gate_config::command(&project_root(&cmd.project))? {
-                Some(text) => println!("{text}"),
-                None => println!("no gate command set"),
-            }
-            Ok(())
-        }
-        PumpGateCommand::Set(cmd) => {
-            let root = project_root(&cmd.project);
-            vivi::pump::gate_config::set_command(&root, &cmd.command)?;
-            println!("gate command set for {}", root.display());
-            Ok(())
-        }
-    }
 }
 
 fn pump_rungs(command: &PumpRungsCommand) -> Result<(), VivariumError> {

@@ -109,7 +109,7 @@ project sets only what is its own.
   `unset = ["pools.studio.size_gib", "identities.reviewer"]` (dotted paths;
   quote a segment that contains a dot: `pools."a.b".x`).
 - **Charters** fall back to the nearest base's `charters/<role>.md`.
-- **Writers** (`vivi pool set`, `vivi role ...`, `vivi pump gate set`) edit
+- **Writers** (`vivi pool set`, `vivi role ...`) edit
   only the project's own file, never a base. A role or pool defined only in a
   base cannot be changed from the project with the CLI yet; override it by
   editing the project's file.
@@ -127,8 +127,7 @@ project's own values, and a host-registry entry (pump and serve on unless
 - `--pool <p>` writes `[pools.<p>] remote_url = <U><name>.git` in the
   project's file; the pool itself must come from a base mailspace above `P`
   (`base = true`).
-- `--gate <cmd>` sets `[pump.gate] command`; `--branch` sets `[pump] branch`
-  (default `main`).
+- `--branch` sets `[pump] branch` (default `main`).
 - `--initial-commit` makes one empty commit on the branch; without it the repo
   stays empty until the first push.
 - Any failing step undoes every earlier step this call made. The result
@@ -2421,8 +2420,6 @@ vivi pump pause
 vivi pump resume
 vivi pump stop
 vivi pump start
-vivi pump gate show
-vivi pump gate set "<command>"
 vivi pump closeout [--close <handle> --for <identity>]
 vivi pump export --json <path>
 vivi pump priority set <need> <level>
@@ -2440,12 +2437,6 @@ vivi pump done <record> [--note TEXT]
 vivi pump reopen <record>
 vivi pump history <need> [--json]
 ```
-
-**pump gate set** writes `[pump.gate] command` in the project's own
-`mailspace.toml` (a format-preserving edit under the config lock; a blank
-command is refused) and **pump gate show** prints it, or `no gate command set`
-(a blank value counts as unset). The library pair is
-`vivi::pump::gate_config::{set_command, command}`.
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
 addressed to the pump's own identity (**[pump] reply_from**, default
