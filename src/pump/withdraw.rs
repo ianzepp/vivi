@@ -23,7 +23,8 @@ use std::path::Path;
 
 use crate::VivariumError;
 use crate::cli::PumpWithdrawCommand;
-use crate::mailspace::{Mailspace, PumpActionRequest, held_item, is_done};
+use crate::mailspace::want_state::need_closed;
+use crate::mailspace::{Mailspace, PumpActionRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::control::project_home;
 use crate::pump::host::Ctx;
@@ -127,9 +128,11 @@ fn close_withdrawn(
     reason: &str,
     verdict: &BTreeMap<String, String>,
 ) -> Result<bool, VivariumError> {
+    // Closed by the rule a want's state uses: a folder `done` alone can be an
+    // assignee's report that nobody accepted, and that is still open.
     let already_closed = {
         let storage = mailspace.storage()?;
-        is_done(&held_item(&storage, need)?)
+        need_closed(&storage, need)?
     };
     if already_closed {
         return Ok(false);

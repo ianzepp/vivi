@@ -10,7 +10,7 @@ use tempfile::{TempDir, tempdir};
 use crate::cli::PumpWithdrawCommand;
 use crate::letter::fixture::{need_body_with, want_body};
 use crate::letter::work::NeedFront;
-use crate::mailspace::{Mailspace, SendRequest, WantState, held_item, is_done};
+use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, WantState, held_item, is_done};
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -291,4 +291,63 @@ fn run_withdraw_refuses_a_blank_reason_and_a_missing_database() {
     assert!(run(project.root(), &command(&["n1"], "  ")).is_err());
     let error = run(project.root(), &command(&["n1"], "why")).unwrap_err();
     assert!(error.to_string().contains("no pump.db"));
+}
+
+#[test]
+fn run_withdraw_closes_a_need_an_assignee_reported_done_but_nobody_accepted() {
+    let mut project = project();
+    project
+        .mailspace
+        .set_role(
+            "elsewhere",
+            RoleUpdate {
+                kind: Some(Some("hand".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let want = send_work(&project.mailspace, "want", want_body("q", "p"));
+    let mut front = NeedFront::new(vec!["done".to_string()]);
+    front.serves = Some(want.clone());
+    let need = project
+        .mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["elsewhere".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "need subject".into(),
+            body: need_body_with(&front, "prose"),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    project.mailspace.pump_send(None, &need, None).unwrap();
+    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
+    store.save(&State::default()).unwrap();
+    let outcome = project
+        .mailspace
+        .move_item_outcome("elsewhere", &need, "done", None, "need done", None)
+        .unwrap();
+    assert!(outcome.reported, "{outcome:?}");
+    assert!(is_closed(&project.mailspace, &need), "the folder says done");
+    assert_eq!(
+        project.mailspace.want_state(&want).unwrap().state,
+        WantState::Open,
+        "an unaccepted report leaves the want open"
+    );
+
+    run(project.root(), &command(&[&need], "stale")).unwrap();
+
+    assert_eq!(
+        verdict_of(&project.mailspace, &need).as_deref(),
+        Some("withdrawn")
+    );
+    let report = project.mailspace.want_state(&want).unwrap();
+    assert_eq!(report.state, WantState::Done);
+    assert_eq!(report.serving[0].verdict.as_deref(), Some("withdrawn"));
 }

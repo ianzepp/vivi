@@ -173,6 +173,21 @@ fn is_closed(
     Ok(!tracked)
 }
 
+/// Whether vivi treats the need `handle` names as closed: the same rule that
+/// decides a serving need's `done` in a want's state.
+pub(crate) fn need_closed(storage: &Storage, handle: &str) -> Result<bool, VivariumError> {
+    let item = held_item(storage, handle)?;
+    let Some(first) = item.rows.first() else {
+        return Ok(false);
+    };
+    let nodes = match storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? {
+        Some(graph) => storage.work_graph_nodes(&graph.handle)?,
+        None => Vec::new(),
+    };
+    let canonical = canonical_content_handle(storage, &first.message_id)?;
+    is_closed(storage, &nodes, &item, &canonical)
+}
+
 /// The computed state of every want in `wants`, keyed by content id.
 pub(crate) fn want_states(
     storage: &Storage,
