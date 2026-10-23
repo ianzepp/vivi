@@ -4,20 +4,20 @@
 use std::collections::BTreeMap;
 
 use crate::mailspace::MailspaceConfig;
-use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
+use crate::mailspace::shipped::{ADMITTER_ROLE, PUMP_PLANNER_ROLE, RESEARCHER_ROLE, SLICER_ROLE};
 use crate::pool::config::PoolConfig;
 use crate::pump::config::PumpConfig;
 
-use super::model::{RoleRouting, from_mailspace};
+use super::model::{RoleRouting, RoutedRole, from_mailspace};
 use super::pump_models::check_role_runs;
 use super::validate::Issue;
 
 /// The findings for one requirement of the pump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpRoleCheck {
-    /// What the requirement is about: `pump-planner`, `merge`, `merge kind`,
-    /// `auditor`, `hand kind`, or a role's `<role> model` (the role's pool
-    /// can run its jobs).
+    /// What the requirement is about: `pump-planner`, `researcher`,
+    /// `admitter`, `slicer`, `merge`, `merge kind`, `auditor`, `hand kind`, or
+    /// a role's `<role> model` (the role's pool can run its jobs).
     pub name: &'static str,
     /// Empty when the requirement is met. An issue is an error, or a
     /// not-ready item for something the project has not set up yet.
@@ -41,6 +41,15 @@ pub(super) fn pump_role_checks_of(
 ) -> Vec<PumpRoleCheck> {
     vec![
         collect("pump-planner", |issues| check_planner(routing, issues)),
+        collect("researcher", |issues| {
+            check_flow_role(routing, RESEARCHER_ROLE, issues);
+        }),
+        collect("admitter", |issues| {
+            check_flow_role(routing, ADMITTER_ROLE, issues);
+        }),
+        collect("slicer", |issues| {
+            check_flow_role(routing, SLICER_ROLE, issues);
+        }),
         collect("merge", |issues| check_merge(routing, issues)),
         collect("merge kind", |issues| check_merge_kind(routing, issues)),
         collect("auditor", |issues| check_auditor(routing, issues)),
@@ -49,6 +58,15 @@ pub(super) fn pump_role_checks_of(
         // from the pool's caps, so a hand needs no band.
         collect("pump-planner model", |issues| {
             check_role_runs(routing.pump_planner(), pools, issues);
+        }),
+        collect("researcher model", |issues| {
+            check_flow_role_runs(routing.lookup(RESEARCHER_ROLE), pools, issues);
+        }),
+        collect("admitter model", |issues| {
+            check_flow_role_runs(routing.lookup(ADMITTER_ROLE), pools, issues);
+        }),
+        collect("slicer model", |issues| {
+            check_flow_role_runs(routing.lookup(SLICER_ROLE), pools, issues);
         }),
         collect("merge model", |issues| {
             check_role_runs(routing.merge(), pools, issues);
@@ -95,6 +113,49 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
             ),
         ));
     }
+}
+
+/// The flow roles (researcher, admitter, slicer) will run durable jobs like
+/// the planner: each needs an active role assigned to a pool. Until the flow
+/// engine dispatches role steps, a missing role or pool is only a warning;
+/// the pump holds for them once it really uses them.
+fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.lookup(name) else {
+        issues.push(Issue::warning(format!(
+            "the pump flows need an active {name} role assigned to a pool for durable jobs \
+             (required once the flow engine dispatches role steps): run `vivi config migrate`"
+        )));
+        return;
+    };
+    if role.status != "active" {
+        issues.push(Issue::error(format!(
+            "role {} must be active to receive durable {name} jobs",
+            role.name
+        )));
+    }
+    if role.pool.is_none() {
+        issues.push(Issue::warning(format!(
+            "role {} must name a pool for durable {name} jobs (required once the flow engine \
+             dispatches role steps): run `vivi config migrate` or `vivi role pool {} <pool>`",
+            role.name, role.name
+        )));
+    }
+}
+
+/// A flow role's `<role> model` findings, as warnings for the same reason.
+fn check_flow_role_runs(
+    role: Option<&RoutedRole>,
+    pools: &BTreeMap<String, PoolConfig>,
+    issues: &mut Vec<Issue>,
+) {
+    let mut found = Vec::new();
+    check_role_runs(role, pools, &mut found);
+    issues.extend(found.into_iter().map(|issue| {
+        Issue::warning(format!(
+            "{} (required once the flow engine dispatches role steps)",
+            issue.message
+        ))
+    }));
 }
 
 fn check_merge(routing: &RoleRouting, issues: &mut Vec<Issue>) {
@@ -178,3 +239,7 @@ fn check_hand_kind(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Is
 fn has_kind(kind: Option<&str>, expected: &str) -> bool {
     kind.is_some_and(|kind| kind.trim().eq_ignore_ascii_case(expected))
 }
+
+#[cfg(test)]
+#[path = "pump_roles_test.rs"]
+mod tests;

@@ -51,7 +51,7 @@ You are **not** a second CTO, not a strategist, not a merger, not a GO stamp.
 5. Run risk-based validation; distinguish baseline failures.
 6. Challenge each candidate finding; after the first blocker, sweep for the same root-cause class beyond the immediate site; finish the coverage ledger.
 7. Derive the verdict from severity, coverage, validation, and blind spots.
-8. **Report first** To mind; then close the audit assignment with an evidence note.
+8. **Report first** To mind; then, outside pump mode, close the audit assignment with an evidence note. In pump mode never close it (see Pump verify mode).
 
 ### 1. Freeze
 
@@ -273,6 +273,8 @@ Empty findings still require coverage, validation, blind spots, and `not_claimed
 
 ## Report and close (Vivi)
 
+This section applies outside pump mode. In pump mode, never run `vivi task done`: the pump closes the step.
+
 The reply on the assignment handle is a **doorbell**: the verdict, the frozen
 range, and the mail handle of the full report when the body is long. Put the
 report on the handle when it fits; otherwise send it as mail to the Mind that
@@ -296,6 +298,70 @@ If report delivery fails, **do not** close the task. A `block_range` or
 `block_ship` still closes the **audit assignment** after successful delivery; the
 Mind owns product residuals. Report on the handle and close it with `vivi task
 done`: that is completion. Chat-only is not durable completion.
+
+## Pump verify mode
+
+Active when the brief is a pump verify step. The pump owns the flow; you give one verdict.
+
+- Judge the requirements: every one, not only the happy path. Judge bad implementation and test quality too.
+- Do not run tests. The pump has already run the rung; judge by reading the code and the tests.
+- Your final reply opens with a TOML front-matter envelope between two `+++` lines; the pump reads it and nothing else. The prose report goes below it. The vivi skill's `references/envelope.md` holds the whole table of roles; the fields you need are listed here.
+- Fields:
+  - `answer` (first key): `clean_pass`, `residual`, `block_range` or `block_ship`.
+  - `raise_rung` (optional): `need`, `main` or `release`, when the change needs a stronger proof than the current rung. Leave it out otherwise.
+  - `[[requirement]]` tables, one per requirement: `id`, `text`, `status` (`SATISFIED`, `PARTIAL`, `MISSING`, `UNVERIFIED` or `NOT_APPLICABLE`), `evidence` (a list of strings such as `path:line`).
+  - `[[finding]]` tables, one per finding: `id`, `content`, `paths` (a list), `recheck_trigger`.
+- Use no other keys: an unknown key is refused. Write free text as a TOML literal string, `'...'`, with no single quote inside. Do not wrap the envelope in a code fence, and use `+++` nowhere else in the reply.
+- Never run `vivi task done`. Do not close the step, the need, or any other task; the pump closes the step.
+
+Example:
+
+```
++++
+answer = "residual"
+raise_rung = "main"
+
+[[requirement]]
+id = "R1"
+text = 'A closed run stops accepting steps.'
+status = "SATISFIED"
+evidence = ["src/run.rs:210", "src/run_test.rs:44"]
+
+[[requirement]]
+id = "R2"
+text = 'The board shows the run count.'
+status = "PARTIAL"
+evidence = ["src/board.rs:88"]
+
+[[finding]]
+id = "F1"
+content = 'The board counts closed runs twice when a run is reopened.'
+paths = ["src/board.rs"]
+recheck_trigger = 'Any change to the run count query.'
++++
+The report follows.
+```
+
+## Judge mode
+
+Active when the brief says judge mode. It is a short job: you are given test failures, and nothing else is reviewed.
+
+- Read the failures and decide whether they block the change or are residual.
+- Your final reply opens with a TOML front-matter envelope between two `+++` lines (see the vivi skill's `references/envelope.md` for the whole table). The fields are:
+  - `answer` (first key): `block` or `residual`.
+  - `reason` (string, required): why, as a TOML literal string `'...'` with no single quote inside.
+- Use no other keys. Put the longer reasons below the envelope as prose. Do not wrap the envelope in a code fence.
+- Do not run tests. Never run `vivi task done`; the pump closes the step.
+
+Example:
+
+```
++++
+answer = "block"
+reason = 'The merge dropped the guard on line 120; a closed run now accepts steps.'
++++
+The reasons follow.
+```
 
 ## Dual auditors
 

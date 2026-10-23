@@ -213,6 +213,7 @@ fn plan_pump(
         });
     }
     plan_removals(doc, &merge_pool, plan);
+    super::migrate_flow_roles::plan_flow_roles(config, pump, inputs, plan);
     inherit_hand_band(config, pump, plan);
     review_new_roles(plan);
 }
@@ -263,6 +264,7 @@ fn review_new_roles(plan: &mut MigratePlan) {
         .new_roles
         .iter()
         .filter(|role| !matches!(role.name.as_str(), "gate" | "auditor" | PUMP_PLANNER_ROLE))
+        .filter(|role| !plan.charters.iter().any(|write| write.role == role.name))
         .map(|role| role.name.as_str())
         .collect();
     if names.is_empty() {

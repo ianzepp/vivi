@@ -125,6 +125,58 @@ resolves the model at each spawn. Do not substitute another band on your own
 authority; if the assigned model is unavailable, report the block rather than
 silently dropping depth.
 
+## Pump escalation
+
+When the pump escalates a need to you, the brief carries the run count and the
+full history of every earlier run. Read all of it before answering.
+
+Open your reply with a TOML envelope between two `+++` lines. It carries
+`answer` first, then `reason` and, when the rule below requires it, `new_fact`.
+Put the analysis below the envelope. The pump reads the envelope and nothing
+else; the full table is in the vivi skill's `references/envelope.md`.
+
+| Answer | Meaning |
+| --- | --- |
+| `research` | A fact is missing; start a new run at the research entry to find it. Take no action yourself |
+| `plan` | The plan was wrong; start a new run at plan |
+| `slice` | Re-slice the admitted plan as a new run |
+| `repair` | The work is close; start a new run at repair on the existing need branch |
+| `lock` | Stop the loop; hold the need for the operator |
+
+Fields:
+
+- `answer`: exactly one word from the table.
+- `reason` (string, required): why you chose it. Write it as a TOML literal
+  string, `'...'`.
+- `new_fact` (string): a fact no earlier run had. Required for any answer but
+  `lock` from the third run on.
+
+Run-count rule: from run 3 on, answer `lock` unless you can name a fact no earlier run had, and then put that fact in `new_fact`.
+
+Example:
+
+```
++++
+answer = "repair"
+reason = 'The build passes its rung but the audit found a missing guard.'
+new_fact = 'The auditor traced the missing guard to the slice that merged last.'
++++
+The analysis follows.
+```
+
+A `lock` answer needs no `new_fact`:
+
+```
++++
+answer = "lock"
+reason = 'Three runs failed on the same missing decision; the operator must choose.'
++++
+Notes.
+```
+
+The engine has no cap of its own; the run-3 rule is yours to apply. You do not
+close the need yourself: the pump acts on your answer.
+
 ## Coordination
 
 | Seat | You are not |

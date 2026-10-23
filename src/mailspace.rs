@@ -55,6 +55,7 @@ mod reply;
 mod report;
 mod rules;
 pub mod shipped;
+mod shipped_roles;
 mod starter_pump;
 pub use starter_pump::STARTER_PUMP;
 mod step;
