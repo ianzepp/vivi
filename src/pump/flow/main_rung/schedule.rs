@@ -5,7 +5,7 @@
 //! the target's long-lived main rung task. The job is not a flow step, so it
 //! has no `step_jobs` row.
 
-use super::{PAYLOAD_KEY, STARTED, TASK, TESTED, key};
+use super::{ENV_FAILED, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::error::VivariumError;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::verify;
@@ -24,7 +24,7 @@ const SHORT_TIP: usize = 12;
 ///
 /// Returns `Ok(None)` when no main rung is configured, a main rung job is
 /// still queued or running, the interval has not passed, main has no tip, or
-/// the tip was already tested.
+/// the tip was already tested or failed on the environment.
 ///
 /// # Errors
 /// A store, mail or git-config failure, or an unknown target.
@@ -60,8 +60,10 @@ pub(crate) fn schedule<S: JobStore, M: FlowMail>(
     else {
         return Ok(None);
     };
-    if store.main_state(&key(TESTED, target))?.as_deref() == Some(tip.as_str()) {
-        return Ok(None);
+    for name in [TESTED, ENV_FAILED] {
+        if store.main_state(&key(name, target))?.as_deref() == Some(tip.as_str()) {
+            return Ok(None);
+        }
     }
     let task = task_for(ctx, store, mail, target)?;
     let short = &tip[..tip.len().min(SHORT_TIP)];

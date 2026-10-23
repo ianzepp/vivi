@@ -14,7 +14,9 @@ use crate::pump::flow::index::{StepJobRow, StepRow};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::flow::rung_step::{self, RungCollector};
-use crate::pump::jobs::{JobStatus, JobStore, PoolJob, merge_main};
+use crate::pump::jobs::{JobStatus, JobStore, PoolJob, merge_main, rung_result};
+
+mod merge;
 
 /// The rung a repair rung step runs.
 const MAIN_RUNG: &str = "main";
@@ -45,7 +47,14 @@ fn inputs(cx: &StartCx<'_>, step: &StepRow) -> Result<(String, AttemptFacts), Vi
         cx.run.run,
         attempt,
     )?
-    .ok_or_else(|| VivariumError::Other("no published repair attempt".to_owned()))?;
+    .ok_or_else(|| {
+        VivariumError::Other(format!(
+            "repair step {} of need {need} r{}: expected a published attempt {attempt} \
+             (a pump-repair-attempt: reply on fix{attempt}); actual: none; \
+             no published repair attempt",
+            step.node, cx.run.run
+        ))
+    })?;
     Ok((rec.target, facts))
 }
 
@@ -76,7 +85,12 @@ impl StepHandler for RepairMerge {
             cx.run.run,
             attempt,
         )?
-        .ok_or_else(|| VivariumError::Other(format!("no tested commit for merge{attempt}")))?;
+        .ok_or_else(|| {
+            VivariumError::Other(format!(
+                "expected a tested commit for merge{attempt} (a pump-repair-rung: reply on \
+                 rung{attempt}); actual: none; no tested commit for merge{attempt}"
+            ))
+        })?;
         let spec = merge_main::spec(
             cx.ctx,
             &target,
@@ -85,12 +99,16 @@ impl StepHandler for RepairMerge {
             &facts.base,
             &step.task,
         )
-        .ok_or_else(|| VivariumError::Config("no merge role".to_owned()))?;
+        .ok_or_else(|| {
+            VivariumError::Config("expected a merge role in the routing; actual: none".to_owned())
+        })?;
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
 
 /// Posts the rung verdict for the next attempt, then collects like any rung.
+/// An environment failure posts no verdict: the rung holds and says nothing
+/// about the code.
 struct RepairRungCollector;
 
 impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairRungCollector {
@@ -102,7 +120,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairRungCollector {
         step: &StepRow,
         class: &NodeClass,
     ) -> Result<(), VivariumError> {
-        if job.status == JobStatus::Finished {
+        if job.status == JobStatus::Finished && rung_result::env_failure(job).is_none() {
             let tip = job.payload.get("tip").and_then(Value::as_str);
             let text = verdict_text(tip, &rung_step::answer(job).1);
             cx.mail
@@ -151,6 +169,11 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
         FlowKind::Repair,
         NodeClass::RungMain,
         Box::new(RepairRungCollector),
+    );
+    registry.collector(
+        FlowKind::Repair,
+        NodeClass::MergeMain,
+        Box::new(merge::RepairMergeMain),
     );
 }
 

@@ -9,6 +9,7 @@ use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::Ctx;
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const NEED: &str = "need1";
@@ -118,6 +119,43 @@ fn the_fourth_run_raises_the_alarm_and_the_third_does_not() {
     let fourth = start(&ctx, &store, &mut mail, NEED, None).unwrap();
     assert_eq!(fourth.run, 4);
     assert!(exceptions(&ctx).contains("flow-run-4"));
+}
+
+fn cto_payload(store: &PumpStore, run: u32, body: serde_json::Value) {
+    store
+        .record_step_payload(&StepPayloadRow {
+            need: NEED.into(),
+            run,
+            node: "cto".into(),
+            class: "cto".into(),
+            task: format!("t-cto-r{run}"),
+            payload: body,
+        })
+        .unwrap();
+}
+
+#[test]
+fn the_run_4_alarm_names_each_earlier_cto_answer_and_new_fact() {
+    let (_project, ctx, store, mut mail) = setup();
+    for _ in 0..3 {
+        start(&ctx, &store, &mut mail, NEED, None).unwrap();
+    }
+    cto_payload(
+        &store,
+        2,
+        serde_json::json!({"front": {"answer": "rework", "new_fact": "F2"}}),
+    );
+    cto_payload(&store, 3, serde_json::json!({"note": "no front"}));
+    start(&ctx, &store, &mut mail, NEED, None).unwrap();
+    let text = exceptions(&ctx);
+    let line = text
+        .lines()
+        .find(|line| line.contains("flow-run-4"))
+        .unwrap();
+    assert!(line.contains("run 4"), "{line}");
+    assert!(line.contains("r1 no CTO answer"), "{line}");
+    assert!(line.contains("r2 rework (F2)"), "{line}");
+    assert!(line.contains("r3 failed (no new fact)"), "{line}");
 }
 
 #[test]

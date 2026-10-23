@@ -84,6 +84,17 @@ pub trait MailReader {
     fn bound_units(&self, need: &str) -> Result<Vec<String>, VivariumError>;
     /// How many run sentinels the need has.
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError>;
+    /// The handles of the items `need` depends on, in backlog order.
+    ///
+    /// # Errors
+    /// Returns an error when the dependency graph cannot be read.
+    fn need_prerequisites(&self, need: &str) -> Result<Vec<String>, VivariumError>;
+    /// The outcome note of the newest done pump record of `need` (empty when
+    /// it has none); `None` when the need has no done record.
+    ///
+    /// # Errors
+    /// Returns an error when the pump records cannot be read.
+    fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError>;
     /// An OPEN task the pump identity sent with exactly this subject whose
     /// body starts with this line; the newest when several match.
     fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError>;

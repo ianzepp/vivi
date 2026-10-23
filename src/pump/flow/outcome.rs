@@ -29,6 +29,11 @@ pub enum StartAction {
     OpenAndWait,
     /// Code decides at once with this word.
     Decide { word: String },
+    /// Code answers at once with this word and payload.
+    Answer {
+        word: String,
+        payload: serde_json::Value,
+    },
     /// Expand the slicer's slices as slice tasks; the fanout step runs until
     /// they all settle.
     Fanout {

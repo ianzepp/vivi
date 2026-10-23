@@ -11,18 +11,25 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     FINISHING_STUCK, FOLLOW_UP, FOLLOW_UP_MARKER, KIND_CHANGED, OPERATOR_HOLD, RUN_ERROR,
-    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, tick_with,
+    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fanout::{self, VERDICT_NO_DEFECT, slice_node};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
 use crate::pump::flow::need_branch;
+use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::registry;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
+use crate::pump::flow::validate::validate;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -582,6 +589,45 @@ fn a_kind_change_alarms_once_and_changes_nothing() -> R {
 }
 
 #[test]
+fn the_landing_tick_of_a_record_kind_run_raises_no_kind_alarm() -> R {
+    let mut rig = rig_with("kind: research")?;
+    rig.start("research")?;
+    rig.role_job(
+        "research",
+        "research-j1",
+        "+++\nanswer = \"READY\"\n+++\nanalysis",
+    )?;
+    rig.tick()?;
+    assert_eq!(rig.run_state()?, "done");
+    assert_eq!(rig.count(KIND_CHANGED), 0);
+    Ok(())
+}
+
+#[test]
+fn a_real_kind_change_on_a_live_record_kind_run_still_alarms_once() -> R {
+    let mut rig = rig_with("a record without a kind line")?;
+    rig.mail.set_marks(NEED, &["research"]);
+    rig.start("research")?;
+    assert_eq!(rig.store.runs_of(NEED)?[0].kind, "research");
+    rig.mail.set_marks(NEED, &["repair"]);
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.count(KIND_CHANGED), 1);
+    assert_eq!(rig.run_state()?, "live");
+    Ok(())
+}
+
+#[test]
+fn a_record_closed_without_landing_raises_no_kind_alarm() -> R {
+    let mut rig = rig_with("kind: research")?;
+    rig.start("research")?;
+    rig.mail.close_need_by(NEED, "operator");
+    rig.tick()?;
+    assert_eq!(rig.count(KIND_CHANGED), 0);
+    Ok(())
+}
+
+#[test]
 fn an_error_in_one_run_does_not_stop_another_run() -> R {
     let mut rig = rig()?;
     rig.start("plan")?;
@@ -655,5 +701,121 @@ fn a_run_that_keeps_failing_to_finish_raises_the_stuck_alarm_once() -> R {
             .iter()
             .all(|s| s.node != SENTINEL_NODE)
     );
+    Ok(())
+}
+
+// ---- start answers and startup validation ---------------------------------------
+
+struct AnswersAtStart;
+
+impl StepHandler for AnswersAtStart {
+    fn start(&self, _cx: &StartCx<'_>, _step: &StepRow) -> Result<StartAction, VivariumError> {
+        Ok(StartAction::Answer {
+            word: "planned".into(),
+            payload: serde_json::json!({"reason": "r"}),
+        })
+    }
+}
+
+#[test]
+fn a_start_answer_advances_the_step_and_records_its_payload() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    let mut registry = Registry::new();
+    registry.node_handler(FlowKind::Build, "plan", Box::new(AnswersAtStart));
+
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )?;
+
+    let plan = rig.step("plan")?;
+    assert_eq!(plan.state, StepState::Done);
+    assert_eq!(plan.verdict.as_deref(), Some("planned"));
+    let stored = rig.store.step_payload(&plan.task)?.expect("payload row");
+    assert_eq!(stored.payload, serde_json::json!({"reason": "r"}));
+    Ok(())
+}
+
+#[test]
+fn every_shipped_flow_is_validated_at_startup() -> R {
+    let kinds = [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ];
+    for kind in kinds {
+        assert!(registry::shipped(kind).is_some(), "{} ships", kind.name());
+        assert!(VALIDATED.contains(&kind), "{} is validated", kind.name());
+        let def = load(kind)?;
+        validate(&def).map_err(|problems| VivariumError::Parse(problems.join("; ")))?;
+    }
+    assert_eq!(VALIDATED.len(), kinds.len());
+    Ok(())
+}
+
+/// Expand two slices under `fanout_task` and close both no-defect.
+fn unchanged_fanout(rig: &mut Rig, fanout_task: &str) -> R {
+    rig.store.set_open_fanout(NEED, 1, fanout_task)?;
+    let run = rig
+        .store
+        .live_runs()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| VivariumError::Message("no live run".into()))?;
+    let slicer = rig.step("slice")?;
+    let slices = ["a", "b"].map(|id| Slice {
+        id: id.into(),
+        title: format!("title {id}"),
+        brief: format!("brief {id}"),
+        target: "default".into(),
+        write_scope: vec![format!("src/{id}.rs")],
+        deps: Vec::new(),
+    });
+    fanout::expand(&rig.ctx, &rig.store, &mut rig.mail, &run, &slicer, &slices)?;
+    for id in ["a", "b"] {
+        let task = rig.step(&slice_node(id))?.task;
+        fanout::close_slice(&rig.store, &mut rig.mail, &task, VERDICT_NO_DEFECT)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unchanged_fanout_payload_says_why() -> R {
+    let mut rig = rig()?;
+    rig.start("slice")?;
+    let slicer = rig.step("slice")?;
+    rig.store
+        .set_step_state(&slicer.task, StepState::Done, Some("sliced"))?;
+    let task = rig.mail.send_step(
+        "mind",
+        "mind",
+        "build1",
+        &format!("pump-step: {NEED} r1 build1"),
+        &[],
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: "build1".into(),
+            task: task.clone(),
+            state: StepState::Running,
+            verdict: None,
+        },
+    )?;
+    unchanged_fanout(&mut rig, &task)?;
+    rig.tick()?;
+    let row = rig.step("build1")?;
+    assert_eq!(row.verdict.as_deref(), Some(fanout::UNCHANGED));
+    let stored = rig.store.step_payload(&task)?.expect("payload row");
+    assert_eq!(stored.payload["source"], "fanout");
+    let reason = stored.payload["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("expected a change"), "{reason}");
+    assert!(reason.contains("0 merged"), "{reason}");
     Ok(())
 }

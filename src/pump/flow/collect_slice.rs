@@ -46,7 +46,7 @@ const ENV_MARKER: &str = "pump-slice-env:";
 /// failure the runner classified from its own facts, or the agent binary
 /// itself exiting 126 or 127. A missing tool the hand's own test run printed
 /// to stderr is the hand's judgment and does not count.
-fn runner_env_failure(job: &PoolJob) -> Option<EnvFailure> {
+pub(crate) fn runner_env_failure(job: &PoolJob) -> Option<EnvFailure> {
     let env = rung_result::env_failure(job)?;
     let agent_missing = matches!(rung_result::parse(job).exit, Some(126 | 127));
     let host = job

@@ -18,7 +18,7 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::tick::{OPERATOR_HOLD, tick_with};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, merge_main};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
@@ -273,6 +273,59 @@ fn a_lost_job_whose_merge_main_already_holds_answers_merged() -> R {
     let step = rig.step()?;
     assert_eq!(step.state, StepState::Done);
     assert_eq!(step.verdict.as_deref(), Some("merged"));
+    Ok(())
+}
+
+#[test]
+fn a_lost_job_whose_need_tip_is_the_run_base_answers_failed_never_merged() -> R {
+    let mut rig = rig(1)?;
+    rig.store.upsert_need_branch(&NeedBranchRow {
+        need: NEED.into(),
+        branch: format!("vivi/need/{NEED}"),
+        base: Some(NEED_TIP.into()),
+        status: "live".into(),
+        run: 1,
+        target: "default".into(),
+        priors: Vec::new(),
+    })?;
+    // The host would say main holds the tip: it is the base, so it always does.
+    rig.main_is(MAIN_B);
+    rig.host.reply("cat-file", 0, "");
+    rig.host.reply("merge-base", 0, "");
+    rig.finish(1, JobStatus::Lost, "")?;
+    rig.tick()?;
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    let step = rig.step()?;
+    assert_eq!(step.verdict.as_deref(), Some("failed"));
+    let stored = rig.store.step_payload(&rig.task)?.expect("payload row");
+    let reason = stored.payload["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains(NEED_TIP) && reason.contains("nothing to merge"));
+    Ok(())
+}
+
+#[test]
+fn a_failed_job_payload_names_expected_and_actual() -> R {
+    let mut rig = rig(1)?;
+    rig.finish(
+        1,
+        JobStatus::Finished,
+        "fatal: bad ref\nagent exit 128 in 1s",
+    )?;
+    rig.tick()?;
+    let stored = rig.store.step_payload(&rig.task)?.expect("payload row");
+    let payload = &stored.payload;
+    assert_eq!(payload["job"], serde_json::json!(rig.job_id(1)));
+    assert_eq!(payload["need_tip"], serde_json::json!(NEED_TIP));
+    assert_eq!(payload["main_tip"], serde_json::json!(MAIN_A));
+    let reason = payload["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains(&format!("expected main to take {NEED_TIP}")),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("actual: merge-main finished with publish none"),
+        "{reason}"
+    );
     Ok(())
 }
 

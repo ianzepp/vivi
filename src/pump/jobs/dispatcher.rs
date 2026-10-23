@@ -309,7 +309,7 @@ fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError>
     let dir = ctx.home.join("job-briefs");
     fs::create_dir_all(&dir)?;
     let body = fit_brief(ctx, job, &dir, format!("{first}\n{}", job.body))?;
-    if crate::pump::record::reply_on(ctx, task, &job.id, "brief", &body) {
+    if crate::pump::record::reply_on_task(ctx, task, &job.id, "brief", &body) {
         Ok(())
     } else {
         Err(VivariumError::Message(format!(

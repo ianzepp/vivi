@@ -456,3 +456,52 @@ fn a_payload_attempt_that_is_not_a_number_is_a_parse_error_and_posts_nothing() -
     assert!(raised.contains("attempt"), "{raised}");
     Ok(())
 }
+
+#[test]
+fn a_merge_job_that_cannot_apply_three_ticks_running_holds_the_slice() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, RED, 1)?;
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-merge-1") {
+        job.payload["attempt"] = serde_json::json!("x");
+    }
+    rig.apply()?;
+    rig.apply()?;
+    assert!(rig.merge_job(1).applied_at.is_none());
+    assert_eq!(rig.row(&slice)?.state, StepState::Running);
+    rig.apply()?;
+    assert!(rig.merge_job(1).applied_at.is_some());
+    let row = rig.row(&slice)?;
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(
+        raised.matches("flow-step-error-held").count(),
+        1,
+        "{raised}"
+    );
+    assert!(raised.contains("3 ticks in a row"), "{raised}");
+    Ok(())
+}
+
+#[test]
+fn an_absent_result_names_the_hand_sha_the_tip_and_before() -> R {
+    let mut rig = rig()?;
+    rig.slice(JobStatus::Lost, "", 1)?;
+    rig.host.reply(
+        "ls-remote",
+        0,
+        &format!("{BEFORE}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+    rig.apply()?;
+    let replies = rig.replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].contains(&format!("expected {HAND} on")),
+        "{replies:?}"
+    );
+    assert!(
+        replies[0].contains(&format!("ref tip {BEFORE}, before {BEFORE}")),
+        "{replies:?}"
+    );
+    Ok(())
+}

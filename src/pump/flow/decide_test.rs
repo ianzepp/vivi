@@ -3,14 +3,14 @@
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
-use super::decide;
+use super::{decide, sticky_raise};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::def::{FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{self, Registry};
-use crate::pump::flow::index::{StepRow, StepState};
+use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::host::test_ctx;
 use crate::pump::state::State;
 use crate::pump::store::step_payload::StepPayloadRow;
@@ -220,15 +220,15 @@ fn raise_word(store: &PumpStore, task: &str) -> Result<String, VivariumError> {
 }
 
 #[test]
-fn raisecheck_reads_the_newest_audit_of_the_run() -> Result<(), VivariumError> {
+fn raisecheck_treats_a_raise_as_sticky_within_the_run() -> Result<(), VivariumError> {
     let (_dir, store) = open()?;
     judge_step(&store, "t-judge", 1)?;
     audit_payload(&store, "t-audit", 1, Some("main"))?;
     assert_eq!(raise_word(&store, "t-judge")?, "raised");
 
-    // A later audit of the same run without a raise rung wins.
+    // A later audit of the same run without a raise rung does not clear it: the raise is sticky.
     audit_payload(&store, "t-audit2", 1, None)?;
-    assert_eq!(raise_word(&store, "t-judge")?, "none");
+    assert_eq!(raise_word(&store, "t-judge")?, "raised");
     Ok(())
 }
 
@@ -284,5 +284,59 @@ fn shipped_registry_decides_a_join() -> Result<(), VivariumError> {
         ],
     )?;
     assert_eq!(word, "verified");
+    Ok(())
+}
+
+#[test]
+fn a_clean_second_audit_still_joins_as_raised_after_a_pass_one_raise() -> Result<(), VivariumError>
+{
+    let (_dir, store) = open()?;
+    audit_payload(&store, "t-audit1", 1, Some("main"))?;
+    audit_payload(&store, "t-audit2", 1, None)?;
+    let word = decide(
+        &store,
+        &node("join2", NodeClass::Join),
+        &[
+            input("audit2", "t-audit2", "clean_pass"),
+            input("test2", "t-rung", "pass"),
+        ],
+    )?;
+    assert_eq!(word, "raised");
+    Ok(())
+}
+
+fn run_row(run: u32, entry: &str) -> RunRow {
+    RunRow {
+        need: "n1".into(),
+        run,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: entry.into(),
+        state: "live".into(),
+    }
+}
+
+#[test]
+fn a_rework_entry_run_sees_the_raise_of_the_run_before_it() -> Result<(), VivariumError> {
+    let (_dir, store) = open()?;
+    store.insert_run(&run_row(1, "slice"))?;
+    store.insert_run(&run_row(2, "rework1"))?;
+    audit_payload(&store, "t-audit1", 1, Some("main"))?;
+    assert_eq!(sticky_raise(&store, "n1", 2)?.as_deref(), Some("main"));
+    // The run's own raise wins over the earlier one.
+    audit_payload(&store, "t-audit2", 2, Some("need"))?;
+    assert_eq!(sticky_raise(&store, "n1", 2)?.as_deref(), Some("need"));
+    Ok(())
+}
+
+#[test]
+fn a_plan_entry_run_does_not_see_the_raise_of_the_run_before_it() -> Result<(), VivariumError> {
+    let (_dir, store) = open()?;
+    store.insert_run(&run_row(1, "slice"))?;
+    store.insert_run(&run_row(2, "plan"))?;
+    audit_payload(&store, "t-audit1", 1, Some("main"))?;
+    assert_eq!(sticky_raise(&store, "n1", 2)?, None);
+    assert_eq!(sticky_raise(&store, "n1", 1)?.as_deref(), Some("main"));
     Ok(())
 }

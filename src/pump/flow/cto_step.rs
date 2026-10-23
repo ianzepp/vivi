@@ -10,7 +10,9 @@ use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
+use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
+use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 
 /// Classes whose stored reply the CTO reads as a key reply.
@@ -131,20 +133,45 @@ fn why_reached(cx: &StartCx<'_>) -> Result<String, VivariumError> {
 
 /// The expected-against-actual line of a fanout that merged nothing.
 fn unchanged_line(cx: &StartCx<'_>, row: &StepRow) -> Result<String, VivariumError> {
-    let need = &cx.run.need;
-    let slices = cx
-        .store
-        .slice_links_of_run(need, cx.run.run)?
+    let text = unchanged_text(
+        cx.ctx,
+        cx.store,
+        &cx.run.need,
+        cx.run.run,
+        &row.node,
+        &row.task,
+    )?;
+    Ok(format!("{text}\n"))
+}
+
+/// The expected-against-actual text of a fanout that merged nothing, without
+/// the trailing newline. It states the real relation of the two tips.
+pub(crate) fn unchanged_text(
+    ctx: &Ctx,
+    store: &PumpStore,
+    need: &str,
+    run: u32,
+    fanout_node: &str,
+    fanout_task: &str,
+) -> Result<String, VivariumError> {
+    let slices = store
+        .slice_links_of_run(need, run)?
         .iter()
-        .filter(|link| link.fanout.as_deref() == Some(row.task.as_str()))
+        .filter(|link| link.fanout.as_deref() == Some(fanout_task))
         .count();
-    let current = need_branch::tip(cx.ctx, cx.store, need)?;
-    let start = cx.store.fanout_start(&row.task)?.flatten();
+    let current = need_branch::tip(ctx, store, need)?;
+    let start = store.fanout_start(fanout_task)?.flatten();
+    let actual = match (current.as_deref(), start.as_deref()) {
+        (Some(t), Some(s)) if t == s => format!("need tip {t} == fanout start {s}"),
+        (Some(t), Some(s)) => {
+            format!("need tip {t} != fanout start {s} (the branch moved with no merged slice)")
+        }
+        (Some(t), None) => format!("need tip {t}, no fanout start recorded"),
+        (None, Some(s)) => format!("need tip none, fanout start {s}"),
+        (None, None) => "no need branch yet (need tip none, fanout start none)".to_owned(),
+    };
     Ok(format!(
-        "expected a change on vivi/need/{need} in fanout {} ({slices} slices); actual: 0 merged, need tip {} == fanout start {}\n",
-        row.node,
-        current.as_deref().unwrap_or("none"),
-        start.as_deref().unwrap_or("none")
+        "expected a change on vivi/need/{need} in fanout {fanout_node} ({slices} slices); actual: 0 merged, {actual}"
     ))
 }
 

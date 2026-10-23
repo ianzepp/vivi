@@ -325,9 +325,46 @@ fn an_unchanged_first_fanout_with_no_tips_says_none() {
     let spec = start(&f, &run);
     assert!(
         spec.body.contains(&format!(
-            "expected a change on vivi/need/{NEED} in fanout build1 (2 slices); actual: 0 merged, need tip none == fanout start none"
+            "expected a change on vivi/need/{NEED} in fanout build1 (2 slices); actual: 0 merged, no need branch yet (need tip none, fanout start none)"
         )),
         "{}",
         spec.body
     );
+}
+
+#[test]
+fn an_unchanged_fanout_whose_branch_moved_says_the_tips_differ() {
+    let f = fixture();
+    let run = run_row(1, "plan", "live");
+    f.store.insert_run(&run).unwrap();
+    add_step(&f, 1, "sentinel", StepState::Running, None);
+    add_step(&f, 1, "build2", StepState::Done, Some("unchanged"));
+    slice_link(&f, "t-s1", "t-build2-r1");
+    let start_tip = "a".repeat(40);
+    let now_tip = "b".repeat(40);
+    f.store
+        .set_fanout_start("t-build2-r1", Some(&start_tip))
+        .unwrap();
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            need: NEED.into(),
+            branch: format!("vivi/need/{NEED}"),
+            base: None,
+            status: "live".into(),
+            run: 1,
+            target: "default".into(),
+            priors: Vec::new(),
+        })
+        .unwrap();
+    f.host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{now_tip}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+    let spec = start(&f, &run);
+    let line = format!(
+        "actual: 0 merged, need tip {now_tip} != fanout start {start_tip} (the branch moved with no merged slice)"
+    );
+    assert!(spec.body.contains(&line), "{}", spec.body);
+    assert!(!spec.body.contains("=="), "{}", spec.body);
 }

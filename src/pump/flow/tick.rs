@@ -23,6 +23,7 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, guard, terminal};
 use crate::pump::flow::answer;
 use crate::pump::flow::collect_step::RunCx;
+use crate::pump::flow::cto_step::unchanged_text;
 use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
@@ -31,6 +32,7 @@ use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx};
+use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::validate::validate;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
@@ -137,13 +139,21 @@ where
     Ok(())
 }
 
+/// The flows checked at startup.
+pub(crate) const VALIDATED: [FlowKind; 4] = [
+    FlowKind::Build,
+    FlowKind::Research,
+    FlowKind::Release,
+    FlowKind::Repair,
+];
+
 /// The shipped flows validate once per process; a failure is an exception.
 fn validate_once(ctx: &Ctx) {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::SeqCst) {
         return;
     }
-    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+    for kind in VALIDATED {
         let verdict = load(kind)
             .map_err(|error| vec![error.to_string()])
             .and_then(|def| validate(&def));
@@ -261,16 +271,65 @@ where
         }
         let rows = self.store.steps_of(&need, self.run.run)?;
         for (id, row) in unapplied {
-            if rows.iter().any(|step| step.task == row.task) {
-                self.apply_job(id, row)?;
+            if let Some(step) = rows.iter().find(|step| step.task == row.task) {
+                let result = self.apply_job(id, row);
+                self.step_unit(&row.task, &step.node, "collect", Some(id), result);
             }
         }
         self.release_scope_waits()?;
         self.settle_fanouts()?;
         self.start_steps()?;
         self.poll_waiting()?;
+        if !self.still_live()? {
+            return Ok(());
+        }
         self.check_kind()?;
         self.check_overdue()
+    }
+
+    /// Whether this run is still `live` after the step work: a job applied
+    /// this tick may have landed, restarted or withdrawn it, and an ended run
+    /// has no kind left to check and no overdue job to report.
+    fn still_live(&self) -> Result<bool, VivariumError> {
+        const RUN_LIVE: &str = "live";
+        let rows = self.store.runs_of(&self.run.need)?;
+        Ok(rows
+            .iter()
+            .any(|row| row.run == self.run.run && row.state == RUN_LIVE))
+    }
+
+    /// Per-step error boundary: a failing unit never ends the run's tick.
+    /// Failures below [`STEP_ERROR_LIMIT`] ticks in a row go to the run
+    /// boundary; at the limit the step is held for the operator, its job (if
+    /// any) is marked applied, and one alarm is raised.
+    fn step_unit(
+        &mut self,
+        task: &str,
+        node: &str,
+        phase: &str,
+        job: Option<&str>,
+        result: Result<(), VivariumError>,
+    ) {
+        let unit = format!("{} r{}", self.run.need, self.run.run);
+        let key = format!("{unit} {task}");
+        let error = match result {
+            Ok(()) => return step_error::note_success(self.ctx, &key),
+            Err(error) => error,
+        };
+        let n = step_error::note_failure(self.ctx, &key);
+        if n < STEP_ERROR_LIMIT {
+            return boundary(self.ctx, &format!("{unit} {node}"), Err::<(), _>(error));
+        }
+        if let Some(id) = job {
+            jobs::mark_applied(self.st, id, self.ctx.now());
+        }
+        let text = format!(
+            "step {node} task {task} of need {} r{}: expected the {phase} to succeed; actual: {error} on {n} ticks in a row; held for `vivi pump answer {task} <word>`",
+            self.run.need, self.run.run
+        );
+        if let Err(held) = step_error::hold(self.ctx, self.store, task, &text) {
+            boundary(self.ctx, &format!("{unit} {node}"), Err::<(), _>(held));
+        }
     }
 
     // ---- finished jobs -----------------------------------------------------
@@ -314,10 +373,31 @@ where
         };
         for step in self.open_rows()? {
             if self.class_of(&step.node) == Some(NodeClass::Fanout) {
-                self.advance_word(&step, word, serde_json::json!({"source": "fanout"}))?;
+                let payload = self.fanout_payload(&step, word)?;
+                self.advance_word(&step, word, payload)?;
             }
         }
         Ok(())
+    }
+
+    /// The step payload of a settled fanout: an `unchanged` word says why.
+    fn fanout_payload(
+        &self,
+        step: &StepRow,
+        word: &str,
+    ) -> Result<serde_json::Value, VivariumError> {
+        if word != fanout::UNCHANGED {
+            return Ok(serde_json::json!({"source": "fanout"}));
+        }
+        let reason = unchanged_text(
+            self.ctx,
+            self.store,
+            &self.run.need,
+            self.run.run,
+            &step.node,
+            &step.task,
+        )?;
+        Ok(serde_json::json!({"source": "fanout", "reason": reason}))
     }
 
     /// Open step rows (not sentinel, not slices) in index order.
@@ -336,50 +416,57 @@ where
             if step.state != StepState::Pending {
                 continue;
             }
-            let registry = self.registry;
-            let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-                continue;
-            };
-            let Some(handler) = registry.handler_for(self.def.kind, node) else {
-                continue;
-            };
-            let action = {
-                let cx = StartCx {
-                    ctx: self.ctx,
-                    store: self.store,
-                    mail: &*self.mail,
-                    run: &self.run,
-                    def: &self.def,
-                };
-                handler.start(&cx, &step)?
-            };
-            match action {
-                StartAction::Job(spec) => self.enqueue_job(&step, *spec)?,
-                StartAction::OpenAndWait => {
-                    self.store
-                        .set_step_state(&step.task, StepState::Waiting, None)?;
-                }
-                StartAction::Decide { word } => {
-                    self.advance_word(&step, &word, serde_json::json!({"source": "code"}))?;
-                }
-                StartAction::Fanout {
-                    slicer_step,
-                    slices,
-                } => {
-                    fanout::expand(
-                        self.ctx,
-                        self.store,
-                        self.mail,
-                        &self.run,
-                        &slicer_step,
-                        &slices,
-                    )?;
-                    self.store
-                        .set_step_state(&step.task, StepState::Running, None)?;
-                }
-            }
+            let result = self.start_one(&step);
+            self.step_unit(&step.task, &step.node, "start", None, result);
         }
         Ok(())
+    }
+
+    /// Start one pending step through its registered handler.
+    fn start_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let registry = self.registry;
+        let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
+            return Ok(());
+        };
+        let Some(handler) = registry.handler_for(self.def.kind, node) else {
+            return Ok(());
+        };
+        let action = {
+            let cx = StartCx {
+                ctx: self.ctx,
+                store: self.store,
+                mail: &*self.mail,
+                run: &self.run,
+                def: &self.def,
+            };
+            handler.start(&cx, step)?
+        };
+        match action {
+            StartAction::Job(spec) => self.enqueue_job(step, *spec),
+            StartAction::OpenAndWait => {
+                self.store
+                    .set_step_state(&step.task, StepState::Waiting, None)
+            }
+            StartAction::Decide { word } => {
+                self.advance_word(step, &word, serde_json::json!({"source": "code"}))
+            }
+            StartAction::Answer { word, payload } => self.advance_word(step, &word, payload),
+            StartAction::Fanout {
+                slicer_step,
+                slices,
+            } => {
+                fanout::expand(
+                    self.ctx,
+                    self.store,
+                    self.mail,
+                    &self.run,
+                    &slicer_step,
+                    &slices,
+                )?;
+                self.store
+                    .set_step_state(&step.task, StepState::Running, None)
+            }
+        }
     }
 
     /// Ask each waiting step's handler for an answer. Lock, park and
@@ -395,28 +482,35 @@ where
             {
                 continue;
             }
-            let registry = self.registry;
-            let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-                continue;
-            };
-            let Some(handler) = registry.handler_for(self.def.kind, node) else {
-                continue;
-            };
-            let word = {
-                let cx = StartCx {
-                    ctx: self.ctx,
-                    store: self.store,
-                    mail: &*self.mail,
-                    run: &self.run,
-                    def: &self.def,
-                };
-                handler.poll(&cx, &step)?
-            };
-            if let Some(word) = word {
-                self.advance_word(&step, &word, serde_json::json!({"source": "poll"}))?;
-            }
+            let result = self.poll_one(&step);
+            self.step_unit(&step.task, &step.node, "poll", None, result);
         }
         Ok(())
+    }
+
+    /// Poll one waiting step's handler; an answer advances the step.
+    fn poll_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let registry = self.registry;
+        let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
+            return Ok(());
+        };
+        let Some(handler) = registry.handler_for(self.def.kind, node) else {
+            return Ok(());
+        };
+        let word = {
+            let cx = StartCx {
+                ctx: self.ctx,
+                store: self.store,
+                mail: &*self.mail,
+                run: &self.run,
+                def: &self.def,
+            };
+            handler.poll(&cx, step)?
+        };
+        match word {
+            Some(word) => self.advance_word(step, &word, serde_json::json!({"source": "poll"})),
+            None => Ok(()),
+        }
     }
 
     /// Enqueue a handler's first job for a step and mark the step running.
@@ -466,9 +560,13 @@ where
     /// Raise once when the need's marks no longer name the run's kind.
     fn check_kind(&mut self) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
-        let body = MailReader::open_record(&*self.mail, &need)?.map(|(_, body)| body);
+        // No open record means no kind source (the run was landed or its need
+        // closed): the next tick withdraws it, so say nothing here.
+        let Some((_, body)) = MailReader::open_record(&*self.mail, &need)? else {
+            return Ok(());
+        };
         let marks = self.mail.need_marks(&need)?;
-        let (now_kind, _) = kind::of(body.as_deref(), &marks);
+        let (now_kind, _) = kind::of(Some(&body), &marks);
         if now_kind.name() != self.run.kind {
             raise_once(
                 self.ctx,
@@ -540,3 +638,7 @@ mod guard_tests;
 #[cfg(test)]
 #[path = "tick_registry_test.rs"]
 mod registry_tests;
+
+#[cfg(test)]
+#[path = "tick_step_error_test.rs"]
+mod step_error_tests;

@@ -372,3 +372,60 @@ fn an_amendment_opens_a_record_only_when_the_need_has_none() {
     assert_eq!(records[0].outcome.as_deref(), Some("landed"));
     assert_eq!(records[1].status, PumpState::Open);
 }
+
+/// The `mail reply` commands the fake host saw for `target`.
+fn reply_commands(world: &World, target: &str) -> Vec<String> {
+    let needle = format!("mail reply {target} ");
+    world
+        .host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains(&needle))
+        .collect()
+}
+
+#[test]
+fn a_reply_on_a_pump_to_pump_task_always_names_the_pump_identity() {
+    let world = world();
+
+    assert!(reply_on_task(&world.ctx, "t1", "t1", "brief", "body"));
+
+    let sent = reply_commands(&world, "t1");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("--from mind --to mind"), "{}", sent[0]);
+}
+
+#[test]
+fn a_reply_on_a_pump_to_pump_task_ignores_board_reply_to() {
+    let mut cfg = PumpConfig::default();
+    cfg.board.reply_to = Some(String::from("operator"));
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+
+    assert!(reply_on_task(&ctx, "t1", "t1", "brief", "body"));
+    assert!(reply_on(&ctx, "t2", "t2", "brief", "body"));
+
+    let commands = host.commands();
+    let task = commands
+        .iter()
+        .find(|cmd| cmd.contains("mail reply t1 "))
+        .unwrap();
+    assert!(task.contains("--to mind"), "{task}");
+    assert!(!task.contains("operator"), "{task}");
+    let record = commands
+        .iter()
+        .find(|cmd| cmd.contains("mail reply t2 "))
+        .unwrap();
+    assert!(record.contains("--to operator"), "{record}");
+}
+
+#[test]
+fn a_reply_on_a_record_keeps_leaving_the_recipient_to_the_thread() {
+    let world = world();
+
+    assert!(reply_on(&world.ctx, "p1", "n1", "planned", "body"));
+
+    let sent = reply_commands(&world, "p1");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(!sent[0].contains("--to"), "{}", sent[0]);
+}

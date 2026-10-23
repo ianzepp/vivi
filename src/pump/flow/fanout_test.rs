@@ -275,17 +275,20 @@ fn expand_refuses_unknown_and_duplicate_ids() -> R {
 #[test]
 fn check_batch_refuses_each_graph_error_and_names_it() -> R {
     let r = rig()?;
-    let check = |slices: &[Slice]| check_batch(&r.store, &r.run, slices);
-    let dup = check(&[slice("A", &[]), slice("A", &[])]).unwrap_err();
+    let check = |slices: &[Slice]| -> Result<String, VivariumError> {
+        check_batch(&r.store, &r.run, slices)?
+            .ok_or_else(|| VivariumError::Other("batch was accepted".into()))
+    };
+    let dup = check(&[slice("A", &[]), slice("A", &[])])?;
     assert!(dup.contains("`A`") && dup.contains("twice"), "{dup}");
-    let unknown = check(&[slice("A", &["Z"])]).unwrap_err();
+    let unknown = check(&[slice("A", &["Z"])])?;
     assert!(
         unknown.contains("`A`") && unknown.contains("`Z`"),
         "{unknown}"
     );
-    let own = check(&[slice("A", &["A"])]).unwrap_err();
+    let own = check(&[slice("A", &["A"])])?;
     assert!(own.contains("`A`") && own.contains("itself"), "{own}");
-    let cycle = check(&[slice("C", &[]), slice("A", &["B"]), slice("B", &["A"])]).unwrap_err();
+    let cycle = check(&[slice("C", &[]), slice("A", &["B"]), slice("B", &["A"])])?;
     assert!(
         cycle.contains("cycle") && cycle.contains("`A`") && cycle.contains("`B`"),
         "{cycle}"
@@ -298,14 +301,22 @@ fn check_batch_refuses_each_graph_error_and_names_it() -> R {
 fn check_batch_accepts_a_valid_batch_and_an_earlier_slice_dep() -> R {
     let mut r = rig()?;
     assert_eq!(
-        check_batch(&r.store, &r.run, &[slice("A", &[]), slice("B", &["A"])]),
-        Ok(())
+        check_batch(&r.store, &r.run, &[slice("A", &[]), slice("B", &["A"])])?,
+        None
     );
     r.expand(&[slice("A", &[])])?;
-    assert_eq!(
-        check_batch(&r.store, &r.run, &[slice("R1", &["A"])]),
-        Ok(())
-    );
+    assert_eq!(check_batch(&r.store, &r.run, &[slice("R1", &["A"])])?, None);
+    Ok(())
+}
+
+#[test]
+fn check_batch_keeps_a_store_read_error_as_an_error() -> R {
+    let r = rig()?;
+    rusqlite::Connection::open(r._dir.path().join(DB_FILENAME))
+        .and_then(|conn| conn.execute_batch("DROP TABLE flow_steps"))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    let checked = check_batch(&r.store, &r.run, &[slice("A", &[])]);
+    assert!(checked.is_err(), "{checked:?}");
     Ok(())
 }
 

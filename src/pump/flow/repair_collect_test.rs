@@ -72,7 +72,7 @@ fn rig() -> Result<Rig, VivariumError> {
         jobs: Jobs::default(),
         registry,
     };
-    rig.fix_job()?;
+    rig.fix_job("fix1", "fix-j1")?;
     Ok(rig)
 }
 
@@ -86,9 +86,9 @@ impl Rig {
             .ok_or_else(|| VivariumError::Message(format!("no step {node}")))
     }
 
-    fn fix_job(&mut self) -> R {
-        let step = self.step("fix1")?;
-        let mut spec = JobSpec::new("fix-j1", "repairer", "repairer", "s", "b");
+    fn fix_job(&mut self, node: &str, id: &str) -> R {
+        let step = self.step(node)?;
+        let mut spec = JobSpec::new(id, "repairer", "repairer", "s", "b");
         spec.task = Some(step.task.clone());
         spec.from_ref = Some(BASE.into());
         spec.publish_ref = Some(format!("refs/heads/{BRANCH}"));
@@ -96,9 +96,9 @@ impl Rig {
         self.store.insert_step_job(
             NEED,
             &StepJobRow {
-                job: "fix-j1".into(),
+                job: id.into(),
                 run: 1,
-                node: "fix1".into(),
+                node: node.into(),
                 task: step.task.clone(),
                 attempt: 1,
             },
@@ -108,7 +108,11 @@ impl Rig {
     }
 
     fn end(&mut self, status: JobStatus, receipt: Option<String>) {
-        let job = self.jobs.jobs.get_mut("fix-j1").unwrap();
+        self.end_job("fix-j1", status, receipt);
+    }
+
+    fn end_job(&mut self, id: &str, status: JobStatus, receipt: Option<String>) {
+        let job = self.jobs.jobs.get_mut(id).unwrap();
         job.status = status;
         job.outcome = receipt.map(|receipt| JobOutcome {
             state: "finished".into(),
@@ -116,6 +120,14 @@ impl Rig {
             receipt,
             at: 0,
         });
+    }
+
+    fn host_lines(&self) -> Vec<String> {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn tick(&mut self) -> R {
@@ -217,5 +229,150 @@ fn a_failed_envelope_routes_to_the_second_attempt() -> R {
     rig.tick()?;
     assert_eq!(rig.step("fix1")?.verdict.as_deref(), Some("failed"));
     assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    Ok(())
+}
+
+fn no_changes() -> String {
+    "push: no_changes".into()
+}
+
+#[test]
+fn an_empty_attempt_answers_unchanged_and_routes_to_the_second_attempt() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(receipt(&no_changes(), BUILT)));
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.state, StepState::Done);
+    assert_eq!(fix.verdict.as_deref(), Some("unchanged"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+    let reason = payload["reason"].as_str().unwrap();
+    assert!(reason.contains("no_changes"), "{reason}");
+    assert!(reason.contains(BASE), "{reason}");
+    assert!(reason.contains(BRANCH), "{reason}");
+    assert_eq!(payload["job"], "fix-j1");
+    Ok(())
+}
+
+#[test]
+fn an_empty_second_attempt_routes_to_unrepaired() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(receipt("", FAILED)));
+    rig.tick()?;
+    rig.fix_job("fix2", "fix-j2")?;
+    rig.end_job(
+        "fix-j2",
+        JobStatus::Finished,
+        Some(receipt(&no_changes(), BUILT)),
+    );
+    rig.tick()?;
+    assert_eq!(rig.step("fix2")?.verdict.as_deref(), Some("unchanged"));
+    assert_eq!(rig.step("unrepaired")?.node, "unrepaired");
+    Ok(())
+}
+
+#[test]
+fn a_refused_push_answers_failed_naming_it() -> R {
+    let mut rig = rig()?;
+    let refused =
+        format!("push: push_refused\nrunner publish: failed refs/heads/{BRANCH} {CAND} {CAND}");
+    rig.end(JobStatus::Finished, Some(receipt(&refused, BUILT)));
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+    let reason = payload["reason"].as_str().unwrap();
+    assert!(reason.contains("push_refused"), "{reason}");
+    assert!(reason.contains(BRANCH), "{reason}");
+    Ok(())
+}
+
+fn exit_receipt(code: i32, stderr: &str) -> String {
+    format!(
+        "pool result j1: finished\npool p  slot s1  model m\nfrom main  default\n\
+         agent exit {code} in 12s, job 20s, started from 1234567890\n\n\
+         --- receipt\nnothing\n\n--- stderr tail\n{stderr}\n\n--- runner log tail\nlog line"
+    )
+}
+
+#[test]
+fn a_lost_job_reruns_on_a_fresh_branch_and_publish_ref() -> R {
+    let mut rig = rig()?;
+    rig.jobs.jobs.get_mut("fix-j1").unwrap().branch = Some(BRANCH.into());
+    rig.end(JobStatus::Lost, None);
+    rig.tick()?;
+    let first = rig.jobs.jobs["fix-j1"].publish_ref.clone().unwrap();
+    let second = &rig.jobs.jobs["fix-j1-a2"];
+    let fresh = second.publish_ref.clone().unwrap();
+    assert!(fresh.ends_with("-t2"), "{fresh}");
+    assert_ne!(fresh, first);
+    assert_eq!(second.branch.as_deref(), Some(&format!("{BRANCH}-t2")[..]));
+    assert_eq!(fresh, format!("refs/heads/{BRANCH}-t2"));
+    Ok(())
+}
+
+#[test]
+fn an_agent_exit_127_holds_the_step_with_one_env_alarm() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(exit_receipt(127, "")));
+    rig.tick()?;
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.state, StepState::Waiting);
+    assert_eq!(fix.verdict.as_deref(), Some("operator-hold"));
+    assert!(rig.step("fix2").is_err(), "no fix2 row");
+    assert_eq!(rig.jobs.jobs.len(), 1, "no rerun job");
+    let env = rig
+        .host_lines()
+        .into_iter()
+        .filter(|line| line.contains("flow-env-failure"))
+        .count();
+    assert_eq!(env, 1);
+    Ok(())
+}
+
+#[test]
+fn a_command_not_found_in_the_stderr_tail_alone_is_not_held() -> R {
+    let mut rig = rig()?;
+    rig.end(
+        JobStatus::Finished,
+        Some(exit_receipt(1, "sh: foo: command not found")),
+    );
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_ne!(fix.verdict.as_deref(), Some("operator-hold"));
+    assert_eq!(fix.state, StepState::Running, "collected as an empty reply");
+    assert_eq!(rig.jobs.jobs.len(), 2, "retried as today");
+    assert!(
+        !rig.host_lines()
+            .iter()
+            .any(|line| line.contains("flow-env-failure"))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_shell_marker_host_fact_alone_is_not_held() -> R {
+    let mut rig = rig()?;
+    let stderr = "sh: foo: command not found";
+    let text = exit_receipt(1, stderr);
+    let job = &mut rig.jobs.jobs.get_mut("fix-j1").unwrap();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: text,
+        at: 0,
+    });
+    let host = job.outcome.as_ref().unwrap().host_failure().unwrap();
+    assert_eq!(host.class, "shell_marker");
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_ne!(fix.verdict.as_deref(), Some("operator-hold"));
+    assert!(
+        !rig.host_lines()
+            .iter()
+            .any(|line| line.contains("flow-env-failure"))
+    );
     Ok(())
 }

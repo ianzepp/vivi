@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use super::{LockWait, UNLOCK_REFUSED, apply_pending};
+use super::{LockWait, NEED_LOCKED, UNLOCK_REFUSED, apply_pending};
 use crate::error::VivariumError;
 use crate::mailspace::PumpActionRequest;
 use crate::pump::fixture::{Project, project};
@@ -190,5 +190,38 @@ fn the_lock_handler_opens_and_waits_and_a_poll_never_answers() -> R {
 
     assert_eq!(LockWait.start(&cx, &step)?, StartAction::OpenAndWait);
     assert_eq!(LockWait.poll(&cx, &step)?, None);
+    Ok(())
+}
+
+#[test]
+fn an_unlock_still_releases_the_lock_after_the_alarm_was_raised() -> R {
+    let mut rig = rig(true)?;
+    let def = load(FlowKind::Build)?;
+    let run = rig.runs()?.remove(0);
+    let step = rig.row(1, "locked")?;
+    {
+        let cx = StartCx {
+            ctx: &rig.ctx,
+            store: &rig.store,
+            mail: &rig.mail,
+            run: &run,
+            def: &def,
+        };
+        assert_eq!(LockWait.poll(&cx, &step)?, None);
+        assert_eq!(LockWait.poll(&cx, &step)?, None);
+    }
+    let log = rig.exceptions();
+    assert_eq!(log.matches(NEED_LOCKED).count(), 1, "{log}");
+    assert!(log.contains("reached without a CTO answer"), "{log}");
+    assert!(log.contains(&rig.need), "{log}");
+
+    rig.post(None)?;
+    apply_pending(&rig.ctx, &rig.store, &mut rig.mail)?;
+
+    assert_eq!(rig.row(1, "locked")?.state, StepState::Done);
+    assert_eq!(rig.row(1, "locked")?.verdict.as_deref(), Some("unlocked"));
+    assert_eq!(rig.runs()?.len(), 2);
+    assert_eq!(rig.runs()?[1].state, "live");
+    assert!(!rig.exceptions().contains(UNLOCK_REFUSED));
     Ok(())
 }

@@ -20,6 +20,7 @@ use crate::routing::{RoleRouting, RoutedRole};
 const NEED: &str = "n1";
 const MAIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
+const OLD_BASE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 struct Rig {
     _dir: TempDir,
@@ -112,7 +113,12 @@ fn start(rig: &Rig, handler: &dyn StepHandler, node: &str) -> Result<JobSpec, Vi
 
 #[test]
 fn merge_main_merges_the_need_tip_into_the_main_tip() {
-    let rig = rig(Some(BASE)).unwrap();
+    let rig = rig(Some(OLD_BASE)).unwrap();
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/n1",
+        0,
+        &format!("{BASE}\trefs/heads/vivi/need/n1\n"),
+    );
     let spec = start(&rig, &MergeMainStart, "merge").unwrap();
     assert_eq!(spec.id, format!("merge-main-t-merge-{}-a1", &MAIN[..12]));
     assert_eq!(spec.role, "merge");
@@ -122,6 +128,28 @@ fn merge_main_merges_the_need_tip_into_the_main_tip() {
     assert_eq!(spec.publish_contains.as_deref(), Some(BASE));
     assert_eq!(spec.task.as_deref(), Some("t-merge"));
     assert!(rig.host.commands().iter().any(|c| c.contains("ls-remote")));
+}
+
+#[test]
+fn merge_main_answers_failed_when_the_need_tip_is_the_run_base() {
+    let rig = rig(Some(BASE)).unwrap();
+    let def = load(FlowKind::Build).unwrap();
+    let run = run_row();
+    let cx = StartCx {
+        ctx: &rig.ctx,
+        store: &rig.store,
+        mail: &rig.mail,
+        run: &run,
+        def: &def,
+    };
+    let action = MergeMainStart.start(&cx, &step("merge")).unwrap();
+    let StartAction::Answer { word, payload } = action else {
+        panic!("not an answer: {action:?}");
+    };
+    assert_eq!(word, "failed");
+    let reason = payload["reason"].as_str().unwrap();
+    assert_eq!(reason.matches(BASE).count(), 2, "{reason}");
+    assert!(reason.contains("nothing to merge"), "{reason}");
 }
 
 #[test]

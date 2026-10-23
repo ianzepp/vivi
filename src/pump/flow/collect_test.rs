@@ -301,3 +301,62 @@ fn a_broken_merge_envelope_with_a_decisive_receipt_gets_no_correction() {
     });
     assert!(replied, "{:?}", f.mail.calls);
 }
+
+fn cto_run(f: &mut Fixture, id: &str, run_number: u32, front: &str) -> Collected {
+    let receipt = format!("+++\n{front}+++\nThe view.");
+    let job = job(id, JobStatus::Finished, &receipt);
+    let mut row = step(f, &job.id, 1);
+    row.run = run_number;
+    collect(&f.ctx, &mut f.mail, &job, &row, &NodeClass::Cto, REF)
+}
+
+fn correct_error(got: &Collected) -> String {
+    let Collected::Correct { error } = got else {
+        panic!("expected a correction, got {got:?}");
+    };
+    error.to_string()
+}
+
+#[test]
+fn run_three_rework_without_new_fact_is_corrected() {
+    let mut f = fixture();
+    let got = cto_run(&mut f, "j1", 3, "answer = \"rework\"\nreason = 'r'\n");
+    assert!(correct_error(&got).contains("new_fact"), "{got:?}");
+}
+
+#[test]
+fn run_three_rework_with_blank_new_fact_is_corrected() {
+    let mut f = fixture();
+    let front = "answer = \"rework\"\nreason = 'r'\nnew_fact = '  '\n";
+    let got = cto_run(&mut f, "j1", 3, front);
+    assert!(correct_error(&got).contains("new_fact"), "{got:?}");
+}
+
+#[test]
+fn run_three_rework_with_new_fact_is_the_outcome() {
+    let mut f = fixture();
+    let front = "answer = \"rework\"\nreason = 'r'\nnew_fact = 'X'\n";
+    let got = cto_run(&mut f, "j1", 3, front);
+    assert!(matches!(got, Collected::Outcome(word, _) if word == "rework"));
+}
+
+#[test]
+fn run_three_lock_needs_no_new_fact() {
+    let mut f = fixture();
+    let got = cto_run(&mut f, "j1", 3, "answer = \"lock\"\nreason = 'r'\n");
+    assert!(matches!(got, Collected::Outcome(word, _) if word == "lock"));
+}
+
+#[test]
+fn run_two_plan_needs_no_new_fact() {
+    let mut f = fixture();
+    let got = cto_run(&mut f, "j1", 2, "answer = \"plan\"\nreason = 'r'\n");
+    assert!(matches!(got, Collected::Outcome(word, _) if word == "plan"));
+}
+
+#[test]
+fn run_three_without_new_fact_after_two_corrections_is_failed() {
+    let mut f = fixture();
+    let got = cto_run(&mut f, "j1-c2", 3, "answer = \"slice\"\nreason = 'r'\n");
+    assert_eq!(got, Collected::Failed);
+}

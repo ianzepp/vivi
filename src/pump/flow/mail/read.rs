@@ -101,6 +101,25 @@ impl MailReader for MailspacePort {
         sentinel_count_of(&self.mailspace, need)
     }
 
+    fn need_prerequisites(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        Ok(self
+            .mailspace
+            .backlog_dependencies(need)?
+            .into_iter()
+            .map(|dep| dep.handle)
+            .collect())
+    }
+
+    fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        Ok(self
+            .mailspace
+            .pump_history(need)?
+            .into_iter()
+            .rev()
+            .find(|record| record.status == PumpState::Done)
+            .map(|record| record.outcome.unwrap_or_default()))
+    }
+
     fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
         let sent = self
             .mailspace

@@ -45,6 +45,7 @@ pub mod rung_step;
 pub mod scope;
 pub mod slice_dispatch;
 pub mod slice_merge;
+pub mod step_error;
 pub mod step_inputs;
 pub mod step_pending;
 pub mod thread_change;
@@ -69,3 +70,31 @@ mod raise_flow_test;
 #[cfg(test)]
 #[path = "flow/cto_flow_test.rs"]
 mod cto_flow_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_rig_test.rs"]
+pub(crate) mod e2e_rig;
+
+#[cfg(test)]
+#[path = "flow/e2e_research_test.rs"]
+mod e2e_research_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_release_test.rs"]
+mod e2e_release_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_repair_fix_test.rs"]
+mod e2e_repair_fix_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_repair_land_test.rs"]
+mod e2e_repair_land_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_repair_green_test.rs"]
+mod e2e_repair_green_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_build_test.rs"]
+mod e2e_build_test;

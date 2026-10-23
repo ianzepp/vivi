@@ -81,8 +81,10 @@ pub(crate) fn route<M: MailWriter + MailReader>(
     if !allows(&node.class, &outcome.word) {
         return Ok(Routed {
             rejected: Some(format!(
-                "word `{}` is not an answer of node `{}`",
-                outcome.word, node.id
+                "word `{}` is not an answer of node `{}`; allowed: {}",
+                outcome.word,
+                node.id,
+                node.class.words().join(", ")
             )),
             ..Routed::default()
         });
@@ -114,10 +116,11 @@ pub(crate) fn route<M: MailWriter + MailReader>(
     walk.expand(node, &outcome.word)?;
     if walk.routed.is_empty() {
         return Err(VivariumError::Parse(format!(
-            "{} flow: node `{}` has no edge for word `{}`",
+            "{} flow: node `{}` has no edge for word `{}`; {}",
             def.kind.name(),
             node.id,
-            outcome.word
+            outcome.word,
+            expected_labels(def, node)
         )));
     }
     walk.bind()?;
@@ -130,6 +133,40 @@ fn find_node<'d>(def: &'d FlowDef, id: &str) -> Result<&'d FlowNode, VivariumErr
         .iter()
         .find(|n| n.id == id)
         .ok_or_else(|| VivariumError::Parse(format!("{} flow: no node `{id}`", def.kind.name())))
+}
+
+/// The edge labels that leave `node`, following edges into decisions the
+/// way `Walk::expand` does; `no outgoing edges` when there are none.
+fn expected_labels(def: &FlowDef, node: &FlowNode) -> String {
+    let mut labels: Vec<String> = Vec::new();
+    let mut pending = vec![node.id.as_str()];
+    let mut visited: BTreeSet<&str> = BTreeSet::new();
+    while let Some(from) = pending.pop() {
+        if !visited.insert(from) {
+            continue;
+        }
+        for edge in def.edges.iter().filter(|e| e.from == from) {
+            if edge.words.is_empty() {
+                labels.push("(any word)".to_string());
+            } else {
+                labels.extend(edge.words.iter().cloned());
+            }
+            let feeds_decision = def
+                .nodes
+                .iter()
+                .any(|n| n.id == edge.to && n.class == NodeClass::Decision);
+            if feeds_decision {
+                pending.push(edge.to.as_str());
+            }
+        }
+    }
+    labels.sort();
+    labels.dedup();
+    if labels.is_empty() {
+        "no outgoing edges".to_string()
+    } else {
+        format!("expected one of: {}", labels.join(", "))
+    }
 }
 
 /// A class with no fixed word set takes any word.

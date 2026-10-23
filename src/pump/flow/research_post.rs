@@ -13,6 +13,8 @@ use crate::pump::envelope::roles::{RoleKind, parse_for};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::research::for_want;
+use crate::pump::flow::step_error::{STEP_ERROR_LIMIT, note_failure, note_success};
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
@@ -23,6 +25,10 @@ const RUN_DONE: &str = "done";
 const KIND_RESEARCH: &str = "research";
 /// Node id of the researcher step.
 const RESEARCH_NODE: &str = "research";
+/// Exception kind raised once when a research run ended without an envelope.
+pub(crate) const RESEARCH_FAILED: &str = "flow-research-failed";
+/// Exception kind raised once when the research post is given up.
+pub(crate) const RESEARCH_POST_FAILED: &str = "flow-research-post-failed";
 
 struct ResearchPost;
 
@@ -50,6 +56,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for ResearchPost {
             }
             match post_run(ctx, st, store, mail, &run) {
                 Ok(()) => {
+                    note_success(ctx, &key);
                     store.mark_action_applied(&key, ctx.now())?;
                 }
                 Err(error) => {
@@ -57,12 +64,35 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for ResearchPost {
                         "research-post: {} r{} failed: {error}",
                         run.need, run.run
                     ));
-                    first_error.get_or_insert(error);
+                    let n = note_failure(ctx, &key);
+                    if n >= STEP_ERROR_LIMIT {
+                        give_up(ctx, mail, &run, &error, n);
+                        store.mark_action_applied(&key, ctx.now())?;
+                    } else {
+                        first_error.get_or_insert(error);
+                    }
                 }
             }
         }
         first_error.map_or(Ok(()), Err)
     }
+}
+
+/// Raise the give-up alarm for a research post that failed `n` ticks in a row.
+fn give_up<M: FlowMail>(ctx: &Ctx, mail: &M, run: &RunRow, error: &VivariumError, n: u32) {
+    let want = match mail.task_body(&run.need) {
+        Ok(body) => for_want(&body).unwrap_or_default(),
+        Err(read) => format!("(unreadable: {read})"),
+    };
+    raise_once(
+        ctx,
+        RESEARCH_POST_FAILED,
+        &run.need,
+        &format!(
+            "research post for {} r{} to want {want}: expected the reply to send; actual: {error} on {n} ticks; given up",
+            run.need, run.run
+        ),
+    );
 }
 
 /// Post the analysis of one landed research run. `Ok` means the key may be
@@ -91,13 +121,41 @@ fn post_run<S: JobStore, M: FlowMail>(
             "research-post: no researcher envelope found for {need} r{}",
             run.run
         ));
-        return Ok(());
+        return post_failure(ctx, store, mail, run, step, &want);
     };
     let text = format!(
         "pump: research analysis for need {need} r{} (answer {word})\n\n{body}",
         run.run
     );
     mail.reply(&want, &text)
+}
+
+/// A run that ended with no researcher envelope tells its want and alarms once.
+fn post_failure<M: FlowMail>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &mut M,
+    run: &RunRow,
+    step: &StepRow,
+    want: &str,
+) -> Result<(), VivariumError> {
+    let verdict = step.verdict.as_deref().unwrap_or("none");
+    let job = store
+        .step_payload(&step.task)?
+        .and_then(|row| {
+            row.payload
+                .get("job")
+                .and_then(|v| v.as_str().map(str::to_owned))
+        })
+        .map(|id| format!(", job {id} from the step payload"))
+        .unwrap_or_default();
+    let text = format!(
+        "pump: research for need {} r{} failed: expected a researcher envelope on task {}; actual: step verdict {verdict}{job}",
+        run.need, run.run, step.task
+    );
+    mail.reply(want, &text)?;
+    raise_once(ctx, RESEARCH_FAILED, &run.need, &text);
+    Ok(())
 }
 
 /// The newest finished job of the step whose reply is a researcher envelope:

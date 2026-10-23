@@ -99,6 +99,7 @@ pub(crate) struct FakeMail {
     closed_needs: BTreeMap<String, NeedClose>,
     close_notes: BTreeMap<String, String>,
     records: BTreeMap<String, FakeRecord>,
+    prerequisites: BTreeMap<String, Vec<String>>,
     next: u32,
     opened_count: u32,
     /// Fail the write that would be recorded as call `n` (0-based), once.
@@ -118,6 +119,14 @@ impl FakeMail {
         self.marks.insert(
             need.to_string(),
             marks.iter().map(|m| (*m).to_string()).collect(),
+        );
+    }
+
+    /// Set the handles a need depends on.
+    pub fn set_prerequisites(&mut self, need: &str, prereqs: &[&str]) {
+        self.prerequisites.insert(
+            need.to_string(),
+            prereqs.iter().map(|p| (*p).to_string()).collect(),
         );
     }
 
@@ -467,6 +476,14 @@ impl MailReader for FakeMail {
             .unwrap_or(0))
     }
 
+    fn need_prerequisites(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        Ok(self.prerequisites.get(need).cloned().unwrap_or_default())
+    }
+
+    fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        Ok(self.records.get(need).and_then(|r| r.outcome.clone()))
+    }
+
     fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
         Ok(self
             .tasks
@@ -618,6 +635,21 @@ fn open_record_needs_lists_open_records_oldest_first() -> R {
         mail.open_record_needs(),
         vec![("n1".to_string(), "00000002".to_string())]
     );
+    Ok(())
+}
+
+#[test]
+fn prerequisites_round_trip_and_last_closed_record_follows_the_record() -> R {
+    let mut mail = FakeMail::new("pump");
+    assert!(mail.need_prerequisites("n1")?.is_empty());
+    mail.set_prerequisites("n1", &["a", "b"]);
+    assert_eq!(mail.need_prerequisites("n1")?, vec!["a", "b"]);
+
+    assert_eq!(mail.last_closed_record("n1")?, None);
+    MailWriter::open_record(&mut mail, "n1", "x")?;
+    assert_eq!(mail.last_closed_record("n1")?, None);
+    mail.close_record("n1", "landed")?;
+    assert_eq!(mail.last_closed_record("n1")?, Some("landed".to_string()));
     Ok(())
 }
 

@@ -229,3 +229,38 @@ fn a_closed_recorded_need_files_a_new_one() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn a_send_that_created_the_need_and_exited_nonzero_keeps_the_handle() -> R {
+    let mut rig = rig()?;
+    let created = format!("created need {}\n", rig.need);
+    rig.host.reply("need send", 1, &created);
+    rig.red("default", &["a::t1"])?;
+    assert_eq!(
+        rig.store.main_state("main-repair-need:default")?,
+        Some(rig.need.clone())
+    );
+    rig.red("default", &["a::t1", "b::t9"])?;
+    assert_eq!(rig.sends().len(), 1);
+    let replies = rig.replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].0, rig.need);
+    Ok(())
+}
+
+#[test]
+fn a_nonzero_send_without_a_handle_names_the_expectation() -> R {
+    let mut rig = rig()?;
+    rig.host.reply("need send", 1, "boom\n");
+    let err = rig
+        .red("default", &["a::t1"])
+        .err()
+        .ok_or_else(|| VivariumError::Message("expected an error".into()))?;
+    let text = err.to_string();
+    assert!(
+        text.contains("expected a created need handle; actual: exit 1: boom"),
+        "{text}"
+    );
+    assert_eq!(rig.store.main_state("main-repair-sending:default")?, None);
+    Ok(())
+}
