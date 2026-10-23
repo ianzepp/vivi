@@ -16,6 +16,7 @@ use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fanout::slice_node;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
@@ -36,6 +37,10 @@ const SLICED: &str = "+++\nanswer = \"sliced\"\nmode = \"rework\"\n\n[[slice]]\n
                       title = 'Fix it'\nbrief = 'fix the finding'\ntarget = \"default\"\n\
                       write_scope = [\"src/a.rs\"]\n+++\ncut one rework slice";
 const BLOCK_RANGE: &str = "+++\nanswer = \"block_range\"\n+++\nthe range is still broken";
+const BLOCK_WITH_FINDING: &str = "+++\nanswer = \"block_range\"\n\n[[finding]]\nid = \"F-1\"\n\
+                                  content = 'the range is still broken'\npaths = [\"src/a.rs\"]\n\
+                                  recheck_trigger = 'a.rs changes'\n+++\nthe range is still broken";
+const FAILING_TEST: &str = "pump::x::y";
 
 #[derive(Default)]
 struct Jobs {
@@ -178,7 +183,12 @@ impl Rig {
 
     /// The not yet finished job of `node` in run 1.
     fn open_job(&self, node: &str) -> Option<PoolJob> {
-        let task = self.row(1, node)?.task;
+        self.open_job_of(1, node)
+    }
+
+    /// The not yet finished job of `node` in `run`.
+    fn open_job_of(&self, run: u32, node: &str) -> Option<PoolJob> {
+        let task = self.row(run, node)?.task;
         self.jobs
             .jobs
             .values()
@@ -186,10 +196,15 @@ impl Rig {
             .cloned()
     }
 
-    /// Finish the open job of `node` with `receipt`.
+    /// Finish the open job of `node` in run 1 with `receipt`.
     fn finish(&mut self, node: &str, receipt: &str) -> R {
+        self.finish_in(1, node, receipt)
+    }
+
+    /// Finish the open job of `node` in `run` with `receipt`.
+    fn finish_in(&mut self, run: u32, node: &str, receipt: &str) -> R {
         let id = self
-            .open_job(node)
+            .open_job_of(run, node)
             .ok_or_else(|| VivariumError::Message(format!("no open job for {node}")))?
             .id;
         let job = self
@@ -210,6 +225,11 @@ impl Rig {
     /// Drive run 1 from `rework1` through a blocked second pass to the point
     /// where the cto job is enqueued.
     fn to_cto(&mut self) -> R {
+        self.to_cto_with(BLOCK_RANGE, &receipt(0, "all tests passed"))
+    }
+
+    /// Like `to_cto`, with the audit2 and test2 receipts given.
+    fn to_cto_with(&mut self, audit: &str, test: &str) -> R {
         self.tick_until("the rework1 job", |rig| rig.open_job("rework1").is_some())?;
         self.finish("rework1", &receipt(0, SLICED))?;
         self.tick_until("the audit2 and test2 jobs", |rig| {
@@ -223,13 +243,18 @@ impl Rig {
             self.row(1, "build2").map(|row| row.verdict),
             Some(Some("built".to_string()))
         );
-        self.finish("audit2", &receipt(0, BLOCK_RANGE))?;
-        self.finish("test2", &receipt(0, "all tests passed"))?;
+        self.finish("audit2", &receipt(0, audit))?;
+        self.finish("test2", test)?;
         self.tick_until("the cto job", |rig| rig.open_job("cto").is_some())
     }
 
     fn answer_cto(&mut self, word: &str) -> R {
-        let envelope = format!("+++\nanswer = \"{word}\"\nreason = 'the ruling'\n+++\nruled");
+        self.answer_cto_with(word, "the ruling", None)
+    }
+
+    fn answer_cto_with(&mut self, word: &str, reason: &str, new_fact: Option<&str>) -> R {
+        let fact = new_fact.map_or_else(String::new, |fact| format!("new_fact = '{fact}'\n"));
+        let envelope = format!("+++\nanswer = \"{word}\"\nreason = '{reason}'\n{fact}+++\nruled");
         self.finish("cto", &receipt(0, &envelope))
     }
 }
@@ -341,5 +366,64 @@ fn a_cto_lock_word_opens_the_locked_step_and_it_stays_waiting() -> R {
     assert_eq!(rig.runs()?.len(), 1);
     assert_eq!(rig.runs()?[0].state, "live");
     assert_eq!(rig.exceptions(), "");
+    Ok(())
+}
+
+#[test]
+fn a_cto_rework_restart_briefs_rework1_and_audit2_from_run_one() -> R {
+    let mut rig = rig("rework1")?;
+    // A merged slice of run 1, as the first pass left it.
+    let slice_task = rig.mail.send_step(
+        "mind",
+        "mind",
+        "pump-step: n1 r1 slice:a",
+        "pump-step: n1 r1 slice:a",
+        &[],
+    )?;
+    rig.mail.close_task(&slice_task, "merged", None, None)?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: slice_node("a"),
+            task: slice_task,
+            state: StepState::Done,
+            verdict: Some("merged".into()),
+        },
+    )?;
+    let failing = receipt(1, &format!("test {FAILING_TEST} ... FAILED"));
+    rig.to_cto_with(BLOCK_WITH_FINDING, &failing)?;
+    rig.answer_cto_with("rework", "R-why", Some("X-fact"))?;
+    rig.tick_until("run 2's rework1 job", |rig| {
+        rig.open_job_of(2, "rework1").is_some()
+    })?;
+
+    let job = rig
+        .open_job_of(2, "rework1")
+        .ok_or_else(|| VivariumError::Message("no run 2 rework1 job".into()))?;
+    for needle in [
+        "F-1",
+        FAILING_TEST,
+        &slice_node("a"),
+        "R-why",
+        "X-fact",
+        "context: run 1",
+    ] {
+        assert!(job.body.contains(needle), "{needle} missing: {}", job.body);
+    }
+
+    rig.finish_in(2, "rework1", &receipt(0, SLICED))?;
+    rig.tick_until("run 2's audit2 job", |rig| {
+        rig.open_job_of(2, "audit2").is_some()
+    })?;
+    let audit = rig
+        .open_job_of(2, "audit2")
+        .ok_or_else(|| VivariumError::Message("no run 2 audit2 job".into()))?;
+    assert!(
+        audit.body.contains("## Second pass: prior audit"),
+        "{}",
+        audit.body
+    );
+    assert!(audit.body.contains("F-1"), "{}", audit.body);
     Ok(())
 }
