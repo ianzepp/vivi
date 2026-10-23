@@ -126,12 +126,12 @@ fn a_need_with_a_live_run_gets_nothing_more() -> R {
 }
 
 #[test]
-fn an_investigate_need_is_skipped() -> R {
+fn a_need_marked_investigate_starts_a_build_run_like_any_other() -> R {
     let mut rig = rig(None)?;
     rig.open("n1", "kind: build")?;
     rig.mail.set_marks("n1", &["investigate"]);
     rig.tick()?;
-    assert!(rig.runs("n1")?.is_empty());
+    assert_eq!(rig.runs("n1")?, [(1, "plan".into(), "live".into())]);
     Ok(())
 }
 
