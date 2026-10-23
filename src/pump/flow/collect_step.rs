@@ -124,7 +124,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for MergeMainCollector {
     ) -> Result<(), VivariumError> {
         match jobs::merge_main::classify(job) {
             Some(jobs::merge_main::MergeMainResult::Merged(sha)) => {
-                cx.advance_word(step, "merged", merged_payload(&sha))
+                cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &sha))
             }
             Some(jobs::merge_main::MergeMainResult::Conflict) => {
                 cx.advance_word(step, "conflict", serde_json::json!({}))
@@ -300,7 +300,9 @@ where
             receipt,
         };
         match verify::check(self.ctx, &req) {
-            SideEffect::Verified { sha } => self.advance_word(step, "merged", merged_payload(&sha)),
+            SideEffect::Verified { sha } => {
+                self.advance_word(step, "merged", merged_payload(self.ctx, job, &sha))
+            }
             SideEffect::Absent => {
                 let reason = format!(
                     "expected {remote_ref} to contain {}; actual: git says it does not",
@@ -328,8 +330,21 @@ where
     }
 }
 
-pub(crate) fn merged_payload(sha: &str) -> serde_json::Value {
-    serde_json::json!({"sha": sha, "commit": sha})
+/// The payload of a merged answer: the commit `job` published and the branch
+/// it published to (the job's publish ref without `refs/heads/`; the target's
+/// configured main ref when the job names none). The step's close records both.
+pub(crate) fn merged_payload(ctx: &Ctx, job: &PoolJob, sha: &str) -> serde_json::Value {
+    let configured = job
+        .target
+        .as_deref()
+        .and_then(|target| ctx.for_target(target))
+        .map_or_else(|| ctx.cfg.main.clone(), |tctx| tctx.cfg.main.clone());
+    let published = job.publish_ref.clone().unwrap_or(configured);
+    let branch = published
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&published)
+        .to_owned();
+    serde_json::json!({"sha": sha, "commit": sha, "branch": branch})
 }
 
 #[cfg(test)]

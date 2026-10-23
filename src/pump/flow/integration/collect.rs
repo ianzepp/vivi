@@ -39,7 +39,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for BuildMergeMain {
         match merge_main::classify(job) {
             None => Ok(()),
             Some(MergeMainResult::Merged(sha)) => {
-                cx.advance_word(step, "merged", merged_payload(&sha))
+                cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &sha))
             }
             Some(MergeMainResult::Conflict) if merge_main::main_moved(job) => {
                 if row.attempt <= MOVED_RETRIES {
@@ -149,7 +149,7 @@ fn settle_lost<S: JobStore, M: FlowMail>(
     // The push is fast-forward only: a main that moved without the need tip
     // means the merge did not land.
     match verify::ref_contains(cx.ctx, &target, &remote_ref, need_tip) {
-        Ok(Some(tip)) => cx.advance_word(step, "merged", merged_payload(&tip)),
+        Ok(Some(tip)) => cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &tip)),
         Ok(None) if row.attempt <= MOVED_RETRIES => requeue(cx, job, row, step),
         Ok(None) => failed(cx, job, step),
         Err(reason) => {
