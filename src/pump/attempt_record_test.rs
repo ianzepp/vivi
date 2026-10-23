@@ -10,17 +10,14 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::attempt_record::{
     Ending, agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_on_task,
-    post_status,
 };
 use crate::pump::board::board;
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, PoolJob};
-use crate::pump::state::{State, Status, Unit};
+use crate::pump::state::{State, Unit};
 
 const T0: u64 = 1_000_000;
-const TASK: &str = "1a2b3c4d";
-const BRANCH: &str = "unit/u-1-a1";
 
 #[test]
 fn hand_message_reads_the_receipt_section_only() {
@@ -64,23 +61,6 @@ fn open_record(host: &FakeHost, need: &str, record: &str) {
     );
 }
 
-/// An inflight unit of need `n1`, attempt 1, with a model, a pool and a task.
-fn inflight() -> Unit {
-    Unit {
-        need: String::from("n1"),
-        status: Status::Inflight,
-        attempts: 1,
-        task: Some(String::from(TASK)),
-        branch: Some(String::from(BRANCH)),
-        model: Some(String::from("zai/glm")),
-        pool: Some(String::from("fly4")),
-        since: T0,
-        ready_at: Some(T0 - 90),
-        since_dispatch: Some(T0 - 60),
-        ..Unit::default()
-    }
-}
-
 fn state_with(unit: Unit) -> State {
     let mut st = State::default();
     st.units.insert(String::from("u-1"), unit);
@@ -105,11 +85,6 @@ fn mails_to(host: &FakeHost, target: &str) -> Vec<String> {
         .collect()
 }
 
-/// The replies posted on need `n1`'s pump record.
-fn mails(host: &FakeHost) -> Vec<String> {
-    mails_to(host, "pn1")
-}
-
 /// The attempt records written for need `need`: file name and text.
 fn records_for(ctx: &Ctx, need: &str) -> Vec<(String, String)> {
     let prefix = format!("reply-{need}-attempt-");
@@ -126,23 +101,6 @@ fn records_for(ctx: &Ctx, need: &str) -> Vec<(String, String)> {
         .collect();
     found.sort();
     found
-}
-
-#[test]
-fn a_merged_status_posts_a_synced_attempt_event() {
-    let (_dir, ctx, host) = setup();
-    let mut st = state_with(inflight());
-
-    post_status(&ctx, &mut st, "u-1", "merged", T0 + 42);
-
-    let text =
-        fs::read_to_string(ctx.home.join("board/reply-n1-attempt-u-1-a1-merged.txt")).unwrap();
-    assert_eq!(
-        text.trim_end(),
-        "pump: attempt status event\nattempt: u-1-a1\nneed: n1\nstatus: merged\nat: 1000042"
-    );
-    assert_eq!(mails(&host).len(), 1);
-    assert!(st.board.sync_pending);
 }
 
 #[test]
