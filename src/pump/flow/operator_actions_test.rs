@@ -1,6 +1,6 @@
 //! Tests for the operator-actions phase: replan, withdraw and requeue on a
-//! need with an active run go to the flow, once each; a need without a run is
-//! left for the old pump.
+//! need with an active run go to the flow, once each; recover is refused; a
+//! need without a run, and answer and unlock letters, are left alone.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,7 +16,7 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobSpec, JobStore, PoolJob, enqueue};
+use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, enqueue};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -72,7 +72,7 @@ fn rig() -> Result<Rig, VivariumError> {
             run: 1,
             node: "build1".into(),
             task: step.clone(),
-            state: StepState::Failed,
+            state: StepState::Running,
             verdict: None,
         },
     )?;
@@ -81,6 +81,9 @@ fn rig() -> Result<Rig, VivariumError> {
     spec.task = Some(step.clone());
     spec.budget = 77;
     enqueue(&mut jobs, spec)?;
+    if let Some(job) = jobs.jobs.get_mut("hand-a2") {
+        job.status = JobStatus::Finished;
+    }
     store.insert_step_job(
         &need,
         &StepJobRow {
@@ -195,6 +198,9 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     assert_eq!(state, Some(StepState::Running));
     assert!(rig.applied(&id)?);
 
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-a2-q1") {
+        job.status = JobStatus::Finished;
+    }
     let again = rig.post(&PumpActionRequest::requeue(
         &step, None, false, false, "twice",
     ))?;
@@ -231,5 +237,64 @@ fn an_action_on_a_need_without_a_run_is_left_for_the_old_pump() -> R {
 
     assert!(!rig.applied(&id)?);
     assert_eq!(rig.store.runs_of(&rig.need)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_recover_on_a_need_with_a_live_run_is_refused_once_and_spent() -> R {
+    let mut rig = rig()?;
+    let id = rig.post(&PumpActionRequest::recover(None, "adopt"))?;
+    rig.phase()?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    let text = rig.exceptions();
+    assert_eq!(text.matches(ACTION_REFUSED).count(), 1);
+    assert!(text.contains(&rig.need));
+    assert_eq!(rig.store.runs_of(&rig.need)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_requeue_of_a_dispatched_job_is_refused_and_queues_nothing() -> R {
+    let mut rig = rig()?;
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-a2") {
+        job.status = JobStatus::Dispatched;
+    }
+    let step = rig.step.clone();
+    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "x"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(rig.exceptions().contains(ACTION_REFUSED));
+    assert_eq!(rig.jobs.jobs().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_requeue_on_a_done_step_is_refused_and_queues_nothing() -> R {
+    let mut rig = rig()?;
+    rig.store
+        .set_step_state(&rig.step, StepState::Done, Some("built"))?;
+    let step = rig.step.clone();
+    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "x"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(rig.exceptions().contains(ACTION_REFUSED));
+    assert_eq!(rig.jobs.jobs().len(), 1);
+    let state = rig.store.step_by_task(&step)?.map(|s| s.state);
+    assert_eq!(state, Some(StepState::Done));
+    Ok(())
+}
+
+#[test]
+fn an_unlock_letter_is_left_unapplied_by_this_phase() -> R {
+    let mut rig = rig()?;
+    let id = rig.post(&PumpActionRequest::unlock(None, "go"))?;
+    rig.phase()?;
+
+    assert!(!rig.applied(&id)?);
+    assert!(!rig.exceptions().contains(ACTION_REFUSED));
     Ok(())
 }
