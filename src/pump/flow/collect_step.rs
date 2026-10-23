@@ -1,4 +1,4 @@
-//! Default result collectors for flow steps (roles, rungs, merge-main).
+//! Default result collectors for flow steps (roles and merge-main; rungs are in `rung_step`).
 //!
 //! A finished step job reaches its [`StepCollector`] through the registry,
 //! keyed by `(FlowKind, NodeClass)`. [`RunCx`] is the per-run context the
@@ -13,6 +13,7 @@ use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::outcome::Outcome;
+use crate::pump::flow::rung_step::RungCollector;
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, WORD_REJECTED};
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
@@ -50,9 +51,6 @@ pub(crate) trait StepCollector<S, M> {
 /// Roles, merge and fanout steps: the reply is parsed for its envelope.
 pub(crate) struct RoleCollector;
 
-/// Rung steps: the exit status decides `pass` or `fail`.
-pub(crate) struct RungCollector;
-
 /// Merge-main steps: the runner's publish receipt decides.
 pub(crate) struct MergeMainCollector;
 
@@ -87,7 +85,9 @@ pub(crate) fn default_for<'a, S: JobStore + 'a, M: FlowMail + 'a>(
     }
 }
 
-/// Register the default collector of every step class of every flow kind.
+/// Register the default collector of every role and merge-main class of
+/// every flow kind. Rung classes are registered by `rung_step::register`; the
+/// default lookup still reaches its collector for a hand-built registry.
 pub(crate) fn register_defaults<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     for kind in [
         FlowKind::Build,
@@ -107,14 +107,6 @@ pub(crate) fn register_defaults<S: JobStore, M: FlowMail>(registry: &mut Registr
             NodeClass::Fanout,
         ] {
             registry.collector(kind, class, Box::new(RoleCollector));
-        }
-        for class in [
-            NodeClass::RungNeed,
-            NodeClass::RungMain,
-            NodeClass::RungRelease,
-            NodeClass::RungRaised,
-        ] {
-            registry.collector(kind, class, Box::new(RungCollector));
         }
         registry.collector(kind, NodeClass::MergeMain, Box::new(MergeMainCollector));
     }
@@ -138,29 +130,6 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for MergeMainCollector {
             }
             _ => cx.verify_step(job, step),
         }
-    }
-}
-
-impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RungCollector {
-    fn collect(
-        &self,
-        cx: &mut RunCx<'_, S, M>,
-        job: &PoolJob,
-        _row: &StepJobRow,
-        step: &StepRow,
-        _class: &NodeClass,
-    ) -> Result<(), VivariumError> {
-        let result = jobs::rung_result::parse(job);
-        let word = match (result.pass, result.exit) {
-            (true, _) => "pass",
-            (false, Some(_)) => "fail",
-            (false, None) => FAILED,
-        };
-        cx.advance_word(
-            step,
-            word,
-            serde_json::json!({"exit": result.exit, "tail": result.tail}),
-        )
     }
 }
 
