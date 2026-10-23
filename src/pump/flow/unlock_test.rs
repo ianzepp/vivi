@@ -6,10 +6,11 @@ use std::fs;
 
 use super::{LockWait, NEED_LOCKED, UNLOCK_REFUSED, apply_pending};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::mailspace::PumpActionRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
-use crate::pump::flow::def::{FlowKind, STEP_MARKER};
+use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -44,7 +45,7 @@ fn rig(locked: bool) -> Result<Rig, VivariumError> {
             "pump",
             "pump",
             "locked",
-            &format!("{STEP_MARKER} {need} r1 locked"),
+            &step_body(&need, 1, "locked", ""),
             &[],
         )?;
         mail.bind(&need, std::slice::from_ref(&task))?;
