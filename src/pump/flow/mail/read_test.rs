@@ -125,3 +125,43 @@ fn need_state_marks_and_open_record_are_read() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].0, need);
 }
+
+#[test]
+fn sent_step_finds_the_open_task_not_the_closed_one() {
+    let project = project();
+    let port = MailspacePort {
+        mailspace: project.mailspace,
+        pump_identity: "mind".into(),
+    };
+    let one = port
+        .send_step("mind", "elsewhere", "step", "pump-step: n r1 plan", &[])
+        .unwrap();
+    let two = port
+        .send_step("mind", "elsewhere", "step", "pump-step: n r1 slice", &[])
+        .unwrap();
+    assert_eq!(
+        port.sent_step("step", "pump-step: n r1 plan").unwrap(),
+        Some(one.clone())
+    );
+    assert_eq!(
+        port.sent_step("step", "pump-step: n r1 slice").unwrap(),
+        Some(two.clone())
+    );
+    port.close_task(&one, "withdrawn", None, None).unwrap();
+    assert_eq!(
+        port.sent_step("step", "pump-step: n r1 plan").unwrap(),
+        None
+    );
+    assert_eq!(
+        port.sent_step("step", "pump-step: n r1 slice").unwrap(),
+        Some(two)
+    );
+    assert_eq!(
+        port.sent_step("step", "pump-step: n r1 nope").unwrap(),
+        None
+    );
+    assert_eq!(
+        port.sent_step("other", "pump-step: n r1 slice").unwrap(),
+        None
+    );
+}
