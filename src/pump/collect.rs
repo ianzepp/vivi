@@ -5,14 +5,13 @@
 //! planners, and returns the gate task's receipt when the gate finished; the
 //! caller hands that receipt to the gate module.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
 
-use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote, shell_split};
@@ -38,9 +37,6 @@ use split_expiry::expire_splits;
 const RECONCILE_GRACE: u64 = 90;
 /// Receipt marker of a worker that found nothing to fix.
 const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
-/// Seconds a gate task may stay unreported before it is finished from its
-/// receipt.
-const GATE_GRACE: u64 = 2400;
 /// Split-planner exits without a plan before the unit is parked stuck.
 pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 /// Seconds a deferred split launch waits before it retries.
@@ -598,20 +594,16 @@ pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &st
     true
 }
 
-/// Reconcile the pool against in-flight units and the gate task.
-/// Returns the gate task's receipt when the gate finished
-/// (reported so, or unreported for more than 2400 s since it started); the
-/// caller passes that receipt to the gate module.
-pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
+/// Reconcile the pool against in-flight units and dispatched jobs.
+pub fn collect(ctx: &Ctx, st: &mut State) {
     let inflight: BTreeMap<String, String> = st
         .units
         .iter()
         .filter(|(_, unit)| unit.status == Status::Inflight)
         .filter_map(|(uid, unit)| unit.task.as_ref().map(|task| (task.clone(), uid.clone())))
         .collect();
-    let gate_task = st.last_gate.task.clone();
     let reconcile_jobs = crate::pump::jobs::has_dispatched(st);
-    let (out, reconcile_ok) = if inflight.is_empty() && gate_task.is_none() && !reconcile_jobs {
+    let (out, reconcile_ok) = if inflight.is_empty() && !reconcile_jobs {
         (String::new(), true)
     } else {
         let output = ctx.vivi("pool reconcile --porcelain", 300);
@@ -629,98 +621,6 @@ pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
     }
     crate::pump::planner_jobs::apply_completions(ctx, st);
     expire_splits(ctx, st);
-    gate_receipt(ctx, st, &seen, gate_task.as_deref())
-}
-
-/// Recover a worker result pushed before its pump state was saved.
-///
-/// # Errors
-/// Returns an error when the configured remote cannot be queried.
-pub fn recover_pushed_pending(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
-    let mut pending: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
-    for (uid, unit) in &st.units {
-        if unit.status == Status::Pending {
-            pending
-                .entry(unit.target_id().to_string())
-                .or_default()
-                .push((uid.clone(), unit.attempts.saturating_add(1)));
-        }
-    }
-    for (target, units) in pending {
-        recover_target_branches(ctx, st, &target, &units)?;
-    }
-    Ok(())
-}
-
-fn recover_target_branches(
-    ctx: &Ctx,
-    st: &mut State,
-    target: &str,
-    units: &[(String, u32)],
-) -> Result<(), VivariumError> {
-    let target_ctx = ctx.for_target(target).ok_or_else(|| {
-        VivariumError::Config(format!(
-            "cannot recover branches for unknown target {target:?}"
-        ))
-    })?;
-    let command = format!(
-        "ls-remote --heads {} {}",
-        shell_quote(&target_ctx.cfg.remote),
-        shell_quote(&format!(
-            "refs/heads/{}*",
-            crate::pump::need::unit_namespace_prefix()
-        ))
-    );
-    let output = target_ctx.git(&command, 60);
-    if output.code != 0 {
-        return Err(VivariumError::Message(format!(
-            "could not recover pushed unit branches for target {target}: {}",
-            output.text.trim()
-        )));
-    }
-    let branches = remote_unit_branches(&output.text);
-    for (uid, attempt) in units {
-        recover_one_pushed_branch(ctx, st, uid, *attempt, &branches);
-    }
-    Ok(())
-}
-
-fn remote_unit_branches(output: &str) -> BTreeSet<String> {
-    output
-        .lines()
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .filter_map(|reference| reference.strip_prefix("refs/heads/"))
-        .filter(|branch| branch.starts_with(crate::pump::need::unit_namespace_prefix()))
-        .map(str::to_owned)
-        .collect()
-}
-
-fn recover_one_pushed_branch(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    attempt: u32,
-    branches: &BTreeSet<String>,
-) {
-    let branch = crate::pump::need::unit_branch(uid, attempt);
-    if !branches.contains(&branch) {
-        return;
-    }
-    let Some(unit) = st.units.get_mut(uid) else {
-        return;
-    };
-    if unit.status != Status::Pending || unit.attempts.saturating_add(1) != attempt {
-        return;
-    }
-    unit.status = Status::Delivered;
-    unit.attempts = attempt;
-    unit.task = None;
-    unit.branch = Some(branch.clone());
-    unit.since = ctx.now();
-    unit.since_dispatch = Some(ctx.now());
-    ctx.log(&format!(
-        "recovered pushed unit {uid} attempt={attempt} branch={branch}"
-    ));
 }
 
 /// Classify one in-flight unit in a strict order.
@@ -872,22 +772,6 @@ fn fail_from_receipt(
         return;
     }
     fail_with(ctx, st, uid, &why, &text, Some(&full));
-}
-
-/// The gate task's receipt when the gate finished; `None`
-/// leaves it running for the next tick.
-fn gate_receipt(
-    ctx: &Ctx,
-    st: &State,
-    seen: &BTreeMap<String, (String, String)>,
-    gate_task: Option<&str>,
-) -> Option<String> {
-    let gate_task = gate_task?;
-    let state = seen.get(gate_task).map(|(s, _)| s.as_str());
-    let reported = matches!(state, Some("finished" | "timeout" | "lost" | "error"));
-    let unreported_too_long =
-        state.is_none() && ctx.now().saturating_sub(st.last_gate.at) > GATE_GRACE;
-    (reported || unreported_too_long).then(|| receipt(ctx, gate_task))
 }
 
 /// True while the task still holds a pool slot (`" <task> "` appears in

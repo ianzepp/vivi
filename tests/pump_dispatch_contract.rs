@@ -49,8 +49,6 @@ const FORBIDDEN_EXECUTION: &[(&str, &str)] = &[
 fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
     let run = include_str!("../src/pump/run.rs");
     let collect = include_str!("../src/pump/collect.rs");
-    let steps = include_str!("../src/pump/tick_steps.rs");
-    assert!(steps.contains("merge::dispatch_pool(ctx, st)"), "{steps}");
     assert!(run.contains("jobs::dispatch_pending(ctx, st)"), "{run}");
     assert!(run.contains("collect::collect("), "{run}");
     assert!(
@@ -61,9 +59,6 @@ fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
         collect.contains("planner_jobs::apply_completions(ctx, st)"),
         "{collect}"
     );
-    assert!(run.contains("merge::apply_dispatched(ctx, st)"), "{run}");
-    assert!(run.contains("gate::collect_completed(ctx, st)"), "{run}");
-    assert!(run.contains("audit::collect_completed(ctx, st)"), "{run}");
     assert!(
         !run.contains("Merger::start"),
         "legacy merger started in run.rs"

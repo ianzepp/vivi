@@ -11,7 +11,7 @@ use tempfile::tempdir;
 use crate::pump::collect::*;
 use crate::pump::config::{PlannerConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{Attempt, GateRun, State, Status, Unit};
+use crate::pump::state::{Attempt, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The fake clock's start; units are created "now".
@@ -123,53 +123,6 @@ fn parse_reconcile_reads_reconciled_and_collected_lines() {
 }
 
 #[test]
-fn startup_recovery_adopts_a_pushed_branch_for_the_next_attempt() {
-    let (_dir, ctx, host) = setup();
-    host.reply(
-        "ls-remote --heads",
-        0,
-        concat!(
-            "abc123\trefs/heads/vivi/unit/orphan-a1\n",
-            "def456\trefs/heads/unit/retry-a1\n",
-            "ghi789\trefs/heads/vivi/unit/retry-next-a2\n",
-            "jkl012\trefs/heads/unit/legacy-a1\n",
-        ),
-    );
-    let mut st = State::default();
-    put(&mut st, "orphan", unit(Status::Pending, None, None));
-    put(&mut st, "legacy", unit(Status::Pending, None, None));
-    let mut retried = unit(Status::Pending, None, Some("unit/retry-a1"));
-    retried.attempts = 1;
-    put(&mut st, "retry", retried);
-    let mut retried_next = unit(Status::Pending, None, None);
-    retried_next.attempts = 1;
-    put(&mut st, "retry-next", retried_next);
-
-    recover_pushed_pending(&ctx, &mut st).unwrap();
-
-    let orphan = &st.units["orphan"];
-    assert_eq!(orphan.status, Status::Delivered);
-    assert_eq!(orphan.attempts, 1);
-    assert_eq!(orphan.branch.as_deref(), Some("vivi/unit/orphan-a1"));
-    assert_eq!(st.units["legacy"].status, Status::Pending);
-    assert_eq!(st.units["retry"].status, Status::Pending);
-    let retry_next = &st.units["retry-next"];
-    assert_eq!(retry_next.status, Status::Delivered);
-    assert_eq!(retry_next.attempts, 2);
-    assert_eq!(
-        retry_next.branch.as_deref(),
-        Some("vivi/unit/retry-next-a2")
-    );
-    assert_eq!(
-        host.commands()
-            .iter()
-            .filter(|command| command.contains("ls-remote --heads"))
-            .count(),
-        1
-    );
-}
-
-#[test]
 fn a_running_unit_stays_inflight() {
     let (_dir, ctx, host) = setup();
     host.reply(
@@ -183,7 +136,7 @@ fn a_running_unit_stays_inflight() {
         "u-1",
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Inflight);
     assert_eq!(
         st.units.get("u-1").unwrap().task.as_deref(),
@@ -206,7 +159,7 @@ fn a_running_unit_past_budget_plus_grace_is_split() {
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
     host.advance(600 + 900 + 1);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
     assert_eq!(u.task, None);
@@ -241,7 +194,7 @@ fn a_timeout_state_requests_a_split_and_writes_the_resplit_files() {
         "u-1",
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
     assert_eq!(u.task, None);
@@ -311,7 +264,7 @@ fn a_due_split_retry_defers_when_the_planner_cap_is_full() {
     u2.split_retry_at = Some(T0);
     put(&mut st, "u-2", u2);
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     assert!(host.spawned().is_empty());
     let u = st.units.get("u-2").unwrap();
@@ -346,7 +299,7 @@ fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
     u.pool = Some(String::from("fly4"));
     u.since_dispatch = Some(T0 - 500);
     put(&mut st, "u-1", u);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Delivered);
     assert_eq!(u.since, T0);
@@ -383,7 +336,7 @@ fn a_local_pool_branch_is_delivered_from_its_worktree_repository() {
     u.pool = Some(String::from("glm"));
     u.since_dispatch = Some(T0 - 500);
     put(&mut st, "u-1", u);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Delivered);
     assert!(
@@ -445,7 +398,7 @@ fn a_finished_unit_with_exit_124_in_the_receipt_is_split_even_with_a_branch() {
         "u-1",
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
     assert_eq!(u.task, None);
@@ -614,7 +567,7 @@ fn a_finished_unit_without_a_branch_and_with_the_no_defect_marker_becomes_no_def
         "u-1",
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::NoDefect);
     assert_eq!(
@@ -640,7 +593,7 @@ fn a_finished_unit_without_a_branch_fails_and_goes_back_to_pending_with_a_histor
         "u-1",
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Pending);
     assert_eq!(u.task, None);
@@ -665,7 +618,7 @@ fn the_third_failed_attempt_makes_the_unit_stuck_and_raises_an_exception() {
     let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
     u.attempts = 3;
     put(&mut st, "u-1", u);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Stuck);
     assert_eq!(u.task, None);
@@ -685,7 +638,7 @@ fn a_transient_failure_retries_without_sticking() {
     let mut u = unit(Status::Inflight, Some("t1"), Some("unit/x-a5"));
     u.attempts = 5;
     put(&mut st, "u-1", u);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Pending, "transient never sticks");
     assert_eq!(u.transient_retries, 1);
@@ -714,7 +667,7 @@ fn transient_retries_escalate_at_the_cap() {
     u.attempts = 5;
     u.transient_retries = ctx.cfg.dispatch.transient_max;
     put(&mut st, "u-1", u);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Stuck);
     assert_eq!(u.transient_retries, ctx.cfg.dispatch.transient_max);
@@ -741,7 +694,7 @@ fn a_real_failure_still_sticks() {
     let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
     u.attempts = 3;
     put(&mut st, "u-1", u);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Stuck);
     assert_eq!(u.transient_retries, 0);
@@ -762,7 +715,7 @@ fn a_unit_unreported_for_under_90_seconds_is_left_alone() {
         "u-1",
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Inflight);
     assert!(!host.commands().iter().any(|c| c.contains("pool status")));
     assert!(!host.commands().iter().any(|c| c.contains("ls-remote")));
@@ -783,7 +736,7 @@ fn an_unreported_unit_still_listed_by_pool_status_is_left_alone() {
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
     );
     host.advance(91);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Inflight);
     assert!(host.commands().iter().any(|c| c.contains("pool status")));
     assert!(!host.commands().iter().any(|c| c.contains("ls-remote")));
@@ -810,7 +763,7 @@ fn a_silent_failure_past_grace_renders_an_empty_reason_not_none() {
         unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/u-1-a1")),
     );
     host.advance(91);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Pending);
     let why = &u.history.last().unwrap().why;
@@ -824,7 +777,7 @@ fn a_receipt_less_splitting_unit_is_stuck_at_the_hard_cap() {
     let mut st = State::default();
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
     host.advance(5401);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(host.commands().is_empty());
     assert!(
@@ -840,7 +793,7 @@ fn a_live_split_planner_past_split_timeout_is_not_stuck() {
     let mut st = State::default();
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
     host.advance(2250);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Splitting);
     assert!(!exceptions(&ctx).contains("split-no-answer"));
     assert!(!exceptions(&ctx).contains("split-planner-failed"));
@@ -860,7 +813,7 @@ fn a_splitting_unit_with_a_written_plan_is_left_to_ingest() {
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/u-1.split.json"), "{}").unwrap();
     host.advance(1501);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Splitting);
     assert!(!exceptions(&ctx).contains("split-no-answer"));
 }
@@ -873,7 +826,7 @@ fn a_dead_split_planner_is_reported_and_retried() {
     fs::create_dir_all(ctx.home.join("resplit")).unwrap();
     fs::write(ctx.home.join("resplit/u-1.out.rc"), "127\n").unwrap();
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
@@ -890,7 +843,7 @@ fn a_dead_split_planner_is_reported_and_retried() {
     assert!(host.spawned().is_empty());
 
     host.advance(61);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
@@ -923,7 +876,7 @@ fn a_rate_limited_split_planner_keeps_its_retry_budget() {
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
     rate_limited_receipt(&ctx, "u-1");
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
@@ -946,7 +899,7 @@ fn a_rate_limited_split_planner_keeps_its_retry_budget() {
     );
 
     host.advance(135);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let retry_id = crate::pump::planner_jobs::job_id("split", "u-1", ctx.now());
     assert_eq!(
@@ -965,7 +918,7 @@ fn repeated_rate_limits_back_off_without_parking() {
     let mut last: Option<u64> = None;
     for round in 0..3 {
         rate_limited_receipt(&ctx, "u-1");
-        assert_eq!(collect(&ctx, &mut st), None);
+        collect(&ctx, &mut st);
         let u = st.units.get("u-1").unwrap();
         assert_eq!(u.status, Status::Splitting, "round {round}");
         assert_eq!(u.split_fails, 0, "round {round}");
@@ -993,7 +946,7 @@ fn a_split_rate_limit_burst_raises_one_exception_per_window() {
         rate_limited_receipt(&ctx, uid);
     }
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(
         exceptions(&ctx)
             .lines()
@@ -1005,7 +958,7 @@ fn a_split_rate_limit_burst_raises_one_exception_per_window() {
         rate_limited_receipt(&ctx, uid);
     }
     host.advance(100);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(
         exceptions(&ctx)
             .lines()
@@ -1017,7 +970,7 @@ fn a_split_rate_limit_burst_raises_one_exception_per_window() {
         rate_limited_receipt(&ctx, uid);
     }
     host.advance(RATE_LIMIT_EXCEPTION_WINDOW - 100 + 1);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(
         exceptions(&ctx)
             .lines()
@@ -1037,7 +990,7 @@ fn the_third_split_planner_failure_makes_the_unit_stuck() {
     fs::create_dir_all(ctx.home.join("resplit")).unwrap();
     fs::write(ctx.home.join("resplit/u-1.out.rc"), "1\n").unwrap();
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(
@@ -1143,7 +1096,7 @@ fn a_split_planner_that_died_host_class_returns_the_unit_pending() {
     write_planner_out(&ctx, "u-1", "bash: line 1: pi: command not found\n");
     host.advance(60);
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let stuck = st.units.get("u-1").unwrap();
     assert_eq!(stuck.status, Status::Pending);
@@ -1176,7 +1129,7 @@ fn a_silent_split_planner_still_goes_stuck() {
     write_planner_out(&ctx, "u-1", "thinking...\n");
 
     host.advance(1501);
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(
         exceptions(&ctx).contains(
@@ -1185,26 +1138,6 @@ fn a_silent_split_planner_still_goes_stuck() {
         "{:?}",
         exceptions(&ctx)
     );
-}
-
-#[test]
-fn a_finished_gate_task_returns_its_receipt_text() {
-    let (_dir, ctx, host) = setup();
-    host.reply(
-        "pool reconcile",
-        0,
-        "collected gate9 bridge slot-2 finished \"gate done\"",
-    );
-    host.reply("task show", 0, "GATE RECEIPT");
-    let mut st = State {
-        last_gate: GateRun {
-            at: T0,
-            task: Some(String::from("gate9")),
-            ..GateRun::default()
-        },
-        ..State::default()
-    };
-    assert_eq!(collect(&ctx, &mut st), Some(String::from("GATE RECEIPT")));
 }
 
 #[test]
@@ -1231,7 +1164,7 @@ fn an_agent_exit_127_with_a_branch_is_a_host_failure_not_an_attempt() {
     u.pool = Some(String::from("here"));
     put(&mut st, "u-1", u);
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Pending);
@@ -1284,7 +1217,7 @@ fn a_checkout_failed_result_is_a_host_failure_that_restores_the_attempt() {
     u.pool = Some(String::from("here"));
     put(&mut st, "u-1", u);
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Pending);
@@ -1323,7 +1256,7 @@ fn two_host_failures_pause_the_pool_with_one_environment_exception() {
     put(&mut st, "u-1", u1);
     put(&mut st, "u-2", u2);
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     assert!(st.units.values().all(|u| u.status == Status::Pending));
     let pause = &st.env_pauses["here"];
@@ -1372,7 +1305,7 @@ fn connection_error_receipts_restore_the_attempt_and_pause_the_pool_once() {
     put(&mut st, "u-1", u1);
     put(&mut st, "u-2", u2);
 
-    assert_eq!(collect(&ctx, &mut st), None);
+    collect(&ctx, &mut st);
 
     assert!(st.units.values().all(|u| u.status == Status::Pending));
     for (uid, u) in &st.units {

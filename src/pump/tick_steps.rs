@@ -5,7 +5,6 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::VivariumError;
 use crate::pump::host::Ctx;
-use crate::pump::state::State;
 
 /// A step that keeps failing re-raises its exception at most this often while
 /// the error text stays the same; a changed error is raised at once.
@@ -47,49 +46,4 @@ pub(crate) fn should_raise(key: &str, text: &str, now: u64) -> bool {
         last.insert(key.to_owned(), (text.to_owned(), now));
     }
     fresh
-}
-
-/// Queue the need pipeline's landing and merge jobs.
-pub(super) fn need_dispatch_phase(ctx: &Ctx, st: &mut State) {
-    soft_step(
-        ctx,
-        "dispatch-landings",
-        crate::pump::need_landing::dispatch(ctx, st),
-    );
-    soft_step(
-        ctx,
-        "dispatch-merges",
-        crate::pump::merge::dispatch_pool(ctx, st),
-    );
-}
-
-/// Fold finished need landings and freezes back into the state.
-pub(super) fn need_collect_phase(ctx: &Ctx, st: &mut State) {
-    soft_step(
-        ctx,
-        "refresh-freezes",
-        crate::pump::merge::refresh_need_freezes(ctx, st),
-    );
-    soft_step(
-        ctx,
-        "collect-landings",
-        crate::pump::need_landing::collect_completed(ctx, st),
-    );
-    soft_step(ctx, "refresh-default-merges", refresh_default_merges(st));
-}
-
-/// Default-target unit counters advance only after verified need publication.
-fn refresh_default_merges(st: &mut State) -> Result<(), VivariumError> {
-    let mut integrated = 0u64;
-    for unit in st.units.values().filter(|unit| {
-        unit.target_id() == "default" && unit.status == crate::pump::state::Status::Merged
-    }) {
-        let published = crate::pump::need::get(st, "default", &unit.need)?
-            .is_none_or(|record| record.landing_receipt.is_some());
-        if published {
-            integrated += 1;
-        }
-    }
-    st.merges = st.merges.max(integrated);
-    Ok(())
 }

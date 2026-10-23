@@ -38,7 +38,7 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
     assert!(home.join("pump.db").is_file(), "no pump.db");
     assert!(home.join("log.txt").is_file(), "no log.txt");
     let lines: Vec<&str> = status.lines().collect();
-    assert_eq!(lines.len(), 9, "status.txt must be 9 lines: {status}");
+    assert_eq!(lines.len(), 8, "status.txt must be 8 lines: {status}");
     assert_eq!(lines[4], "last promote never", "line 5: {status}");
     assert!(lines[1].starts_with("units"), "line 2: {status}");
     let shown = vivi(["pump", "status", "--project", root(&project)]);
@@ -482,9 +482,7 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
     );
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
     assert!(
-        status
-            .lines()
-            .any(|line| line.starts_with("shared-check timeout counts unavailable")),
+        status.lines().any(|line| line.starts_with("merges ")),
         "{status}"
     );
 }
