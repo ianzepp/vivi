@@ -2780,7 +2780,6 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
         RoleRun {
             job: String::from("cadence-head-ceo-1"),
             task: String::from("abcd1234"),
-            read_only: true,
             started_at: 1_792_425_600,
             ended_at: Some(1_792_425_700),
             outcome: Some(String::from("success")),

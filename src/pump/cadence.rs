@@ -67,8 +67,6 @@ pub struct RoleRun {
     #[serde(default)]
     pub task: String,
     #[serde(default)]
-    pub read_only: bool,
-    #[serde(default)]
     pub started_at: u64,
     #[serde(default)]
     pub ended_at: Option<u64>,
@@ -114,9 +112,8 @@ pub fn backoff_secs(attempt: u32) -> u64 {
 
 /// Whether a role snapshot is ready for a cadence dispatch.
 ///
-/// Role kind does not restrict cadence. The role's configured kind and
-/// read-only override are carried to normal pool dispatch, where they decide
-/// what the job can change.
+/// Role kind does not restrict cadence. Every cadence job is dispatched
+/// read-only, whatever the role's configured kind or read-only override.
 #[must_use]
 pub fn launchable(role: &RoleScan, previous: Option<&RoleRun>, now: u64) -> bool {
     let Some(cadence) = role.cadence.as_deref() else {
@@ -306,7 +303,6 @@ fn enqueue_due(
     let attempt = next_attempt(cadence.runs.get(&scan.name));
     let spec = job_spec(ctx, st, &role, scan, attempt, now);
     let job_id = spec.id.clone();
-    let read_only = spec.read_only;
     if let Err(error) = jobs::enqueue(st, spec) {
         ctx.log(&format!("cadence enqueue {} failed: {error}", scan.name));
         return;
@@ -321,7 +317,6 @@ fn enqueue_due(
         RoleRun {
             job: job_id,
             task,
-            read_only,
             started_at: now,
             ended_at: None,
             outcome: None,
