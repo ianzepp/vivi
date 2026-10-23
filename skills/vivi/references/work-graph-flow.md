@@ -6,11 +6,13 @@ task-dependency graph and `vivi step`. It is a workflow guide. The command
 reference is the parent `SKILL.md`; flags change, so run `vivi <command>
 --help` before relying on an exact spelling.
 
-The graph, step, and lifecycle material (sections 1 to 3 and 5, and the
-non-pool parts of 4, 6 and 7) was checked against Vivi 10.0.0 source
-(`src/mailspace/backlog.rs`, `backlog_audit.rs`, `step.rs`, `graph.rs`,
-`graph_mutate.rs`) and the installed binary's help text. The lane and pool
-material (2b, the pool forks in 4, the two-pool example in 6, and the pool
+The letter rules below (front matter for `done_when`, `write_scope` and
+`depends_on`, the `step` reasons, the audit's edge reading) match Vivi 21
+(`src/letter/`, `src/mailspace/step.rs`, `dependencies.rs`, `backlog_audit.rs`).
+The rest of the graph and lifecycle material (the non-pool parts of sections 1
+to 7) was checked against Vivi 10.0.0 source (`src/mailspace/backlog.rs`,
+`graph.rs`, `graph_mutate.rs`) and the installed binary's help text. The lane
+and pool material (2b, the pool forks in 4, the two-pool example in 6, and the pool
 gaps in 7) was checked against the parent skill's pool section and `src/pool`
 as of Vivi 10.2.0.
 
@@ -48,8 +50,11 @@ of any kind. An unknown handle (or a mail/memo handle) fails the send before
 anything is created. Each valid citation becomes one solid edge from the cited
 item to the new one. If the cited item has no node yet, one is minted for it.
 Citing something already done adds an edge that is satisfied at once, so the new
-node is ready immediately. `X-Vivi-Depends-On` headers stay on the message as
-evidence, but the graph is what readiness uses.
+node is ready immediately. The citations are stored in the letter's front
+matter `depends_on` list (the flag builds it; there is no header), and the
+graph is what readiness uses. A citation to something this mailspace does not
+hold yet is kept as a pending reference and its edge is made when that letter
+arrives.
 
 **A Hand's `done` is a report, not an acceptance.** `task done` by a role that
 is neither the item's author (or `sent`-copy holder) nor of kind `mind` moves
@@ -63,9 +68,10 @@ at git.
 **Blocked work is not hidden.** `task list --for <role>` lists every open task
 and shows no dependency information. The graph view (`graph ready`,
 `board --graph`, the boot verdict `blocked`) is authoritative for blocked-ness.
-`task list --blocked` / `--blocking <handle>` read the dependency headers and
-check only whether the cited task is in the done folder; they do not consult the
-graph.
+`task list --blocked` / `--blocking <handle>` read the front matter
+`depends_on` list and do not consult the graph. A dependency counts as met only
+when this mailspace holds it and it is done, so a reference that is not held
+yet still blocks.
 
 ## 2. "On main" is a task: the merge-task gate
 
@@ -114,33 +120,53 @@ stacking); the base branch is never moved, reset or forced. Rules for using it:
 A host-spawned seat in a lane from any other lane tool follows the same
 rules if that tool can start a lane at another lane's branch tip.
 
-## 3. Brief body format that `vivi step` accepts
+## 3. The unit letter that `vivi step` accepts
 
-`step` reads the first matching lines of the body text. Write each field on its
-own line, label first:
+Every need, want and task is a letter: TOML front matter between `+++` lines,
+then Markdown prose. `step` reads `done_when` and `write_scope` from the front
+matter only. Lines such as `done_when: ...` in the prose are free text that
+nothing reads. Build the front matter with flags:
+
+```sh
+vivi task send --project $ROOT --from mind --to hand \
+  --subject 'unit IB-2: reject malformed input' \
+  --body-file ib-2.md \
+  --done-when 'the validate test target passes' \
+  --done-when 'malformed input is rejected with the expected error' \
+  --write-scope crates/parser/src/validate.rs \
+  --write-scope crates/parser/tests/validate.rs
+```
+
+or write the whole letter in the body file. A body whose first non-blank line is
+`+++` is taken as the whole letter, and a front matter flag beside it is
+refused:
 
 ```text
++++
+done_when = ["the validate test target passes", "malformed input is rejected with the expected error"]
+write_scope = ["crates/parser/src/validate.rs", "crates/parser/tests/validate.rs"]
++++
+
 unit: IB-2
 repo: <repo name>
-write_scope: crates/foo/src/a.rs, crates/foo/src/b.rs
 edit: <file + seam + what changes>
-done_when: <one falsifiable oracle command or observable>
 sanity: <one cheap check>
 do_not: <fences>
 ```
 
-Matching rules, from `step.rs`:
+The prose fields (`unit`, `repo`, `edit`, `sanity`, `do_not`) are for the Hand
+who reads the letter; vivi does not parse them. The rules:
 
-- A clause is a line that, after leading whitespace is ignored and case is
-  ignored, begins exactly with `done_when:` (or `write_scope:` for the scope
-  flag). Several `done_when:` lines are several clauses; each counts.
-- A bullet (`- done_when: ...`), bold (`**done_when**:`), a space before the
-  colon, or a label that is not first on its line does not match. The compressed
-  one-line form `write_scope / edit / done_when / sanity / do_not: ...` does not
-  match either, because the line does not begin with `done_when:`.
-- `task send` and `need send` print `note: body declares no 'done_when:'
-  clause` to stderr when none is found. Treat that note as a defect to fix
-  before dispatch.
+- A clause is one entry of the `done_when` list. Write each as one falsifiable
+  oracle command or observable. `write_scope` is a list of paths.
+- A need without `done_when` is refused at send and nothing is stored
+  ("need has no done_when: pass --done-when or add done_when = [...] to the
+  front matter"). A task may send without one; `step` then reports
+  `no_done_when`.
+- A letter with no front matter is history. `show` and `list` read it, `step`
+  reports it as `letter_invalid`, and it cannot be executed: send a new letter.
+- A task's `from`, `branch`, `with` and `band` have no flags; put them in a
+  whole-letter body.
 
 What `step` does with each **ready** backlog node (it never looks at blocked or
 active ones, except reported work, below), checked in this order:
@@ -149,11 +175,13 @@ active ones, except reported work, below), checked in this order:
 |---|---|
 | exception `item_missing` | no message resolves for the node's id |
 | exception `want_requires_promotion` | the item sits in the wants folder (decided by folder, not by the node's kind); wants never dispatch before `want promote` |
+| exception `letter_invalid` | the letter is in the old format (no front matter) or its front matter is invalid; the detail carries the reader's error |
+| exception `pump_owned` | a task with a `[step]` front matter table: the pump runs and closes it, so `step` never dispatches it |
 | exception `lowered_awaiting_units` | units are bound to this node with `need bind`; its completion comes from them |
-| exception `no_done_when` | the body has no `done_when:` line |
-| **dispatch** | none of the above. The row carries the node, item handle, kind, subject, the count of `done_when:` clauses, and `write_scope: true/false` |
+| exception `no_done_when` | the front matter `done_when` list is empty (in practice a task; a need cannot be stored without one) |
+| **dispatch** | none of the above. The row carries the node, item handle, kind, subject, the count of `done_when` entries, and `write_scope: true/false` (true when the front matter `write_scope` list is non-empty) |
 
-`write_scope:` is reported, not required, for a dispatch. A project that
+`write_scope` is reported, not required, for a dispatch. A project that
 requires it enforces that itself.
 
 Reported work is not a dispatch candidate: an open or active node that reads
@@ -176,8 +204,8 @@ Two more exceptions come only from `step --apply <handle>`:
 
 For each unit, in this order:
 
-1. **File** the unit task with `--depends-on` for every real prerequisite and a
-   body in the format above. Remember that a prerequisite that must be on main
+1. **File** the unit task with `--depends-on` for every real prerequisite and
+   its `--done-when` / `--write-scope` flags (or a whole-letter body, section 3). Remember that a prerequisite that must be on main
    is the merge task, not the unit. File prerequisites first: you need their
    handles. Capture the handle from the `created` line:
    `H=$(vivi task send ... | awk '/^created /{print $3}')`.
@@ -283,7 +311,7 @@ backlog graph was created against the graph. It reports:
 - `node_state`: the node and the folder disagree on done versus not done. A
   report awaiting acceptance (done folder, open or active node, no accepting
   `done`) is not a disagreement and is never reported or repaired.
-- `missing_edge`: a held open work letter's `X-Vivi-Depends-On` header names
+- `missing_edge`: a held open work letter's front matter `depends_on` names
   held work the graph has no edge from (a dependency that arrived after the
   dependent, or a letter filed by a route that did not link it).
 - `foreign_held`: a node still open or active for work held under another
@@ -303,8 +331,9 @@ event letter it already holds (`event_state`), and never touches wants'
 promotion state.
 
 - `missing_node`: creates the node (label = subject, kind taken from the
-  folder/header) and one solid edge per `X-Vivi-Depends-On` header that still
-  resolves. Unresolvable dependency citations are dropped silently. If the
+  folder/letter) and one solid edge per front matter `depends_on` entry that
+  resolves to held work. A dependency not held yet is kept as a pending
+  reference, not dropped, and its edge is made when that letter arrives. If the
   item is in the done folder and is not a report awaiting acceptance, the new
   node is then completed with `via=repair`, which can unlock its successors.
   It also completes the node's siblings and join parent the same way a normal
@@ -318,7 +347,7 @@ promotion state.
   join parent. That reverses an earlier manual `graph complete` and re-blocks
   dependents that were not yet activated. The exception is a need whose bound units are all done: then it
   settles the need's mailbox copies from `needs` to `done` instead (`via=repair`).
-- `missing_edge`: makes the edges the header names, the way an arriving letter
+- `missing_edge`: makes the edges the front matter names, the way an arriving letter
   would. Dependencies not yet held stay remembered until they arrive.
 - `foreign_held`: completes the node (`via=repair`); the letter stays held.
 - `event_state`: re-applies the latest event letter: the item's folders move to
@@ -345,16 +374,16 @@ are independent of one another.
 # 1. merge task for IB-1: depends on the unit, goes to the merge seat
 M1=$(vivi task send --project $R --from mind --to merge \
   --subject 'merge: IB-1 into main' --depends-on $IB1 \
+  --done-when 'git -C <repo> merge-base --is-ancestor <ib1 tip> main exits 0' \
   --body-file m1.md | awk '/^created /{print $3}')
-#   m1.md carries, at line starts:
-#     write_scope: (none; merge)
-#     done_when: git -C <repo> merge-base --is-ancestor <ib1 tip> main exits 0
+#   a merge changes no files, so it takes no --write-scope
 
 # 2. the three dependents each cite only the merge task
 for U in IB-2 IB-3 IB-4; do
   vivi task send --project $R --from mind --to hand \
     --subject "$U: <short title>" --depends-on $M1 \
-    --body-file "$U.md"      # bodies have done_when: and write_scope: lines
+    --done-when "$(cat "$U.oracle")" --write-scope "$(cat "$U.path")" \
+    --body-file "$U.md"      # the flags build the front matter; $U.md is prose only
 done                         # note each created handle: $IB2 $IB3 $IB4
 
 # 3. lower the need so it completes when all of it has landed
@@ -387,15 +416,16 @@ earlier unit's merge task.
 
 ```sh
 V2=$(vivi task send --project $R --from mind --to hand --subject 'VG-2: ...' \
-  --body-file vg2.md | awk '/^created /{print $3}')
+  --done-when '<oracle for VG-2>' --write-scope <path> --body-file vg2.md | awk '/^created /{print $3}')
 MV2=$(vivi task send --project $R --from mind --to merge \
   --subject 'merge: VG-2 into main' --depends-on $V2 \
-  --body-file mv2.md | awk '/^created /{print $3}')
+  --done-when '<VG-2 tip is an ancestor of main>' --body-file mv2.md | awk '/^created /{print $3}')
 V3=$(vivi task send --project $R --from mind --to hand --subject 'VG-3: ...' \
-  --depends-on $MV2 --body-file vg3.md | awk '/^created /{print $3}')
+  --depends-on $MV2 --done-when '<oracle for VG-3>' --write-scope <path> \
+  --body-file vg3.md | awk '/^created /{print $3}')
 MV3=$(vivi task send --project $R --from mind --to merge \
   --subject 'merge: VG-3 into main' --depends-on $V3 \
-  --body-file mv3.md | awk '/^created /{print $3}')
+  --done-when '<VG-3 tip is an ancestor of main>' --body-file mv3.md | awk '/^created /{print $3}')
 vivi need bind --project $R $NEED $V2 $MV2 $V3 $MV3
 ```
 
