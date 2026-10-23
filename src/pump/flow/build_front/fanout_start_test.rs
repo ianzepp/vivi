@@ -244,6 +244,41 @@ fn a_correction_newer_than_a_broken_reply_is_used() -> R {
 }
 
 #[test]
+fn a_store_read_error_is_an_error_not_a_slices_invalid_failure() -> R {
+    let mut rig = rig()?;
+    let one = slice("S1", "default", "\"src/a.rs\"");
+    seat(&mut rig, "slice", "build1", &[envelope(&one)])?;
+    let conn = rusqlite::Connection::open(rig.dir.path().join(DB_FILENAME))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    conn.execute_batch("DROP TABLE flow_steps")
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+
+    let action = start(&rig, "build1");
+    assert!(action.is_err(), "{action:?}");
+
+    // The batch check itself keeps the read error: it is not a problem.
+    let cx = StartCx {
+        ctx: &rig.ctx,
+        store: &rig.store,
+        mail: &rig.mail,
+        run: &rig.run,
+        def: &rig.def,
+    };
+    let slices = vec![crate::pump::envelope::roles::Slice {
+        id: "S1".into(),
+        title: "t".into(),
+        brief: "b".into(),
+        target: "default".into(),
+        write_scope: vec!["src/a.rs".into()],
+        deps: Vec::new(),
+    }];
+    let found = super::problems(&cx, &slices);
+    assert!(found.is_err(), "{found:?}");
+    assert!(!exceptions(&rig).contains("flow-slices-invalid"));
+    Ok(())
+}
+
+#[test]
 fn a_missing_slicer_step_is_an_error_naming_the_node() -> R {
     let rig = rig()?;
     let err = start(&rig, "build1").unwrap_err();

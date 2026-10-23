@@ -277,7 +277,7 @@ fn collect_one<S: JobStore, M: FlowMail>(
         jobs::mark_applied(st, &job.id, ctx.now());
         return Ok(());
     }
-    let reply = reply_of(ctx, store, &run, job, mode);
+    let reply = reply_of(ctx, store, &run, job, mode)?;
     let word = reslice_apply::apply(ctx, store, mail, &run, &row, slice, mode, reply.as_ref())?;
     mail.close_task(&row.task, word, None, None)?;
     store.set_step_state(&row.task, StepState::Done, Some(word))?;
@@ -287,18 +287,19 @@ fn collect_one<S: JobStore, M: FlowMail>(
 
 /// The slicer envelope of a finished job whose mode matches the request; any
 /// other outcome raises [`RESLICE_FAILED`] and gives `None`, and slices that
-/// fail [`check_batch`] raise [`SLICES_INVALID`] and give `None`.
+/// fail [`check_batch`] raise [`SLICES_INVALID`] and give `None`. A store read
+/// error from [`check_batch`] is an Err.
 fn reply_of(
     ctx: &Ctx,
     store: &PumpStore,
     run: &RunRow,
     job: &PoolJob,
     mode: Mode,
-) -> Option<Slicer> {
+) -> Result<Option<Slicer>, VivariumError> {
     let fail = |why: String| {
         let text = format!("reslice job {}: {why}", job.id);
         raise_once(ctx, RESLICE_FAILED, &job.id, &text);
-        None
+        Ok(None)
     };
     if job.status != JobStatus::Finished {
         return fail(format!("pool job ended {:?}", job.status));
@@ -319,12 +320,12 @@ fn reply_of(
     if slicer.mode != wanted {
         return fail(format!("reply mode {:?} is not {wanted:?}", slicer.mode));
     }
-    if let Err(reason) = check_batch(store, run, &slicer.slice) {
+    if let Some(reason) = check_batch(store, run, &slicer.slice)? {
         let text = format!("reslice job {}: {reason}", job.id);
         raise_once(ctx, SLICES_INVALID, &job.id, &text);
-        return None;
+        return Ok(None);
     }
-    Some(slicer)
+    Ok(Some(slicer))
 }
 
 #[cfg(test)]

@@ -288,14 +288,20 @@ fn earlier_task(rows: &[StepRow], dep: &str) -> Result<String, VivariumError> {
 /// This is the same check [`expand`] runs, so a batch that passes here
 /// expands (mail and store failures aside).
 ///
+/// `Ok(None)` means the batch is valid. `Ok(Some(reason))` names the graph
+/// problem: the duplicated id, the unknown dependency or the slices of the
+/// cycle.
+///
 /// # Errors
-/// Returns the reason, naming the duplicated id, the unknown dependency or
-/// the slices of the cycle.
-pub fn check_batch(store: &PumpStore, run: &RunRow, slices: &[Slice]) -> Result<(), String> {
-    let rows = store
-        .steps_of(&run.need, run.run)
-        .map_err(|err| err.to_string())?;
-    topological_order(slices, &rows).map(|_| ())
+/// Returns the store error when the run's step rows cannot be read; that is
+/// a pump fault, not a problem with the batch.
+pub fn check_batch(
+    store: &PumpStore,
+    run: &RunRow,
+    slices: &[Slice],
+) -> Result<Option<String>, VivariumError> {
+    let rows = store.steps_of(&run.need, run.run)?;
+    Ok(topological_order(slices, &rows).err())
 }
 
 /// The batch in an order where every in-batch prerequisite comes first,
