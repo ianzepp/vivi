@@ -112,3 +112,31 @@ assignment in the task body. Do not list the class board.
 - For an ordinary Vivi handle, report evidence and remaining uncertainty
   through the handle. Do not close it unless the assignment explicitly grants
   that authority.
+
+## Sync mode
+
+Use this mode only when the assignment's `pump-job-kind` is `sync`, or when
+it asks you to merge the current integration target (`main`) into a need
+branch. It brings a need branch up to date with its target before a merge
+that could not apply cleanly.
+
+- Merge the supplied target ref into the supplied need branch. Merge it once,
+  at the tip the assignment names. Do not rewrite the need branch and do not
+  merge any other source.
+- Resolve conflict hunks only. For each conflicted file, keep the need's
+  intent and the target's intent side by side, and change nothing outside the
+  conflict markers.
+- If a resolution needs a design change (a behavior choice, a changed
+  signature, a moved responsibility, or a rewrite beyond the hunk), do not
+  make it. Leave the branch unchanged, report the affected paths and the
+  reason, and answer `conflict`. A `conflict` answer goes to the CTO.
+- Make no unrelated product change, and run no check the assignment does not
+  name. If it names required checks, run them after the merge and report each
+  outcome.
+- Report the starting tip, the resulting tip, and every resolved path with
+  its resolution.
+- Do not push. The privileged runner publishes. Do not close the handle or
+  the need yourself: no self-close.
+- End the final reply with one line: `ANSWER: merged` when the target merged
+  and every conflict hunk was resolved without a design change, or
+  `ANSWER: conflict` when it did not.
