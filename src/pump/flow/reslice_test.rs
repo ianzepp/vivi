@@ -143,7 +143,10 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
 
     assert_eq!(sends(&rig), before + 1);
     let body = rig.mail.tasks[&task].body.clone();
-    assert!(body.starts_with("pump-step: n1 r1 reslice:a-1\nmode: split\nslice: "));
+    let step = crate::letter::read::step_of(&body).expect("step");
+    assert_eq!((step.need.as_str(), step.run), (NEED, 1));
+    assert_eq!(step.node.as_deref(), Some("reslice:a-1"));
+    assert!(body.contains("\n\nmode: split\nslice: "), "{body}");
     assert!(body.ends_with("\n\ntoo big"), "{body}");
     let row = rig.store.step_by_task(&task)?.expect("row");
     assert_eq!(row.node, "reslice:a-1");
