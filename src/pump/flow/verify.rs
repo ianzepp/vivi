@@ -198,6 +198,37 @@ fn is_ancestor(ctx: &Ctx, ancestor: &str, descendant: &str) -> Result<bool, Stri
     }
 }
 
+/// The remote ref's tip when it already contains `sha`: `Ok(Some(tip))` when
+/// `sha` is the tip or an ancestor of it, `Ok(None)` when the ref is absent or
+/// does not contain `sha`. Unlike `check`, a moved ref without the commit is a
+/// plain "no", not Unclear.
+pub(crate) fn ref_contains(
+    ctx: &Ctx,
+    target: &str,
+    remote_ref: &str,
+    sha: &str,
+) -> Result<Option<String>, String> {
+    let Some(tctx) = ctx.for_target(target) else {
+        return Err(format!("unknown target {target}"));
+    };
+    if !valid_sha(sha) {
+        return Err(String::from("sha is not a commit SHA"));
+    }
+    let remote = tctx.cfg.remote.clone();
+    let Some(tip) = remote_tip(&tctx, &remote, remote_ref)? else {
+        return Ok(None);
+    };
+    if tip == sha {
+        return Ok(Some(tip));
+    }
+    fetch(&tctx, &remote, remote_ref)?;
+    Ok(is_ancestor(&tctx, sha, &tip)?.then_some(tip))
+}
+
 #[cfg(test)]
 #[path = "verify_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "verify_contains_test.rs"]
+mod contains_tests;
