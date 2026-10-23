@@ -266,13 +266,19 @@ where
 {
     fn run(&mut self, unapplied: &[(String, StepJobRow)]) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
-        let closed = self.mail.need_state(&need)? == NeedStatus::Done
-            || MailReader::open_record(&*self.mail, &need)?.is_none();
-        if closed {
+        let pump = self.ctx.cfg.reply_from.clone();
+        // A closed need is a withdrawal, unless a join closed it: a foreign
+        // close of the sentinel and the last open step leaves every unit
+        // done. The guard tells the two apart (it reopens only when no run
+        // task is still open), so it runs first while the pump record is
+        // open, and the need state is read after it.
+        let record_open = MailReader::open_record(&*self.mail, &need)?.is_some();
+        if record_open {
+            guard::pass(self.ctx, self.store, self.mail, &self.run, &pump)?;
+        }
+        if !record_open || self.mail.need_state(&need)? == NeedStatus::Done {
             return advance::withdraw(self.store, self.mail, &self.run);
         }
-        let pump = self.ctx.cfg.reply_from.clone();
-        guard::pass(self.ctx, self.store, self.mail, &self.run, &pump)?;
         let rows = self.store.steps_of(&need, self.run.run)?;
         for (id, row) in unapplied {
             if rows.iter().any(|step| step.task == row.task) {
@@ -839,3 +845,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tick_e2e_test.rs"]
 mod e2e;
+
+#[cfg(test)]
+#[path = "tick_guard_test.rs"]
+mod guard_tests;
