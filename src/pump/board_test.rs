@@ -298,17 +298,14 @@ fn candidates_come_from_held_and_addressed_lists_and_are_deduplicated() {
 }
 
 #[test]
-fn a_record_whose_need_is_not_addressed_to_the_pump_is_logged_not_planned() {
+fn a_record_whose_need_is_not_addressed_to_the_pump_gives_no_rows_and_no_log() {
     let (_dir, ctx, host) = setup();
     open_records(&host, &["elsewhere"]);
     host.reply("--held", 0, "[]");
     host.reply("--json --to mind", 0, "[]");
     assert!(candidate_rows(&ctx).is_empty());
     let logs = host.logs().join("\n");
-    assert!(
-        logs.contains("the pump record for need elsewhere names no open need addressed to mind"),
-        "logs: {logs}"
-    );
+    assert!(!logs.contains("not planned"), "logs: {logs}");
 }
 
 #[test]

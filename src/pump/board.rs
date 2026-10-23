@@ -74,8 +74,7 @@ fn row_from(value: &Value) -> NeedRow {
 /// The board's candidate rows: the open needs that have an open pump record
 /// (`vivi pump send --need <handle>`), read from the held list and from the
 /// list addressed to `reply_from`. A need without an open record is never
-/// planned, whatever its sender, date or marks; a record whose need is not
-/// in either list is logged and left for the operator to fix.
+/// planned, whatever its sender, date or marks.
 #[must_use]
 pub fn candidate_rows(ctx: &Ctx) -> Vec<NeedRow> {
     candidate_rows_except(ctx, &BTreeSet::new())
@@ -113,12 +112,6 @@ pub fn candidate_rows_except(ctx: &Ctx, own: &BTreeSet<String>) -> Vec<NeedRow> 
                 rows.push(row);
             }
         }
-    }
-    for handle in wanted.difference(&seen) {
-        ctx.log(&format!(
-            "board: the pump record for need {handle} names no open need addressed to {}; not planned",
-            ctx.cfg.reply_from
-        ));
     }
     rows
 }
