@@ -835,3 +835,7 @@ fn merged_payload(sha: &str) -> serde_json::Value {
 #[cfg(test)]
 #[path = "tick_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tick_e2e_test.rs"]
+mod e2e;
