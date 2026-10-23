@@ -1,6 +1,7 @@
 //! `vivi pool list | show | add | set | unset | remove | bands`.
 #![allow(clippy::missing_errors_doc)]
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
@@ -82,16 +83,12 @@ fn print_show(entry: &PoolRow, pool: &PoolConfig) {
     if !pool.caps.is_empty() {
         println!("  caps: {:?}", pool.caps);
     }
-    if !pool.bands.is_empty() {
-        println!(
-            "  bands: {}",
-            pool.bands
-                .entries
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+    for (key, choices) in &entry.bands {
+        let shown: Vec<String> = choices
+            .iter()
+            .map(|c| format!("{} ({})", c.model, c.reasoning))
+            .collect();
+        println!("  {key}: {}", shown.join(", "));
     }
 }
 
@@ -228,6 +225,14 @@ struct PoolRow {
     provider: String,
     slots: u32,
     free: Option<u32>,
+    bands: BTreeMap<String, Vec<BandRow>>,
+    harness_models: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct BandRow {
+    model: String,
+    reasoning: String,
 }
 
 fn row(name: &str, pool: &PoolConfig, free: Option<u32>) -> PoolRow {
@@ -236,6 +241,25 @@ fn row(name: &str, pool: &PoolConfig, free: Option<u32>) -> PoolRow {
         provider: pool.provider.clone(),
         slots: pool.slots,
         free,
+        bands: pool
+            .bands
+            .entries
+            .iter()
+            .map(|(key, choices)| {
+                let rows = choices
+                    .iter()
+                    .map(|c| BandRow {
+                        model: c.model.clone(),
+                        reasoning: c.reasoning.clone(),
+                    })
+                    .collect();
+                (key.clone(), rows)
+            })
+            .collect(),
+        harness_models: pool
+            .harness
+            .as_ref()
+            .map_or_else(Vec::new, |h| h.models.clone()),
     }
 }
 
