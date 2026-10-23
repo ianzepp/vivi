@@ -77,6 +77,10 @@ impl fmt::Display for LetterError {
                 f,
                 "letter {handle} is in the old format (no front matter); it is history and cannot be executed: send a new {kind} with front matter"
             ),
+            Self::UnknownKind(kind) if kind.is_empty() => write!(
+                f,
+                "letter has no `X-Vivi-Kind` header: a format-1 letter names its kind (need, want, task, memo, rule, pump, mail or chat)"
+            ),
             Self::UnknownKind(kind) => write!(
                 f,
                 "unknown letter kind `{kind}`: expected need, want, task, memo, rule, pump, mail or chat"
@@ -160,10 +164,34 @@ fn table_below_fence(pieces: &Pieces<'_>) -> Option<LetterError> {
     })
 }
 
-/// Parse a reply into a typed envelope and run its conditional rules.
+/// Parse a role reply into a typed envelope and run its conditional rules.
+/// A `[[follow_up]]` or `[[check]]` table below the closing fence is refused.
+///
+/// # Errors
+///
+/// Returns the `LetterError` naming what to fix.
 pub fn parse<T: DeserializeOwned + Validate>(text: &str) -> Result<Envelope<T>, LetterError> {
+    parse_with(text, true)
+}
+
+/// Parse a stored letter into a typed envelope and run its conditional rules.
+/// The body is prose: a table line in it is not refused.
+///
+/// # Errors
+///
+/// Returns the `LetterError` naming what to fix.
+pub fn parse_letter<T: DeserializeOwned + Validate>(
+    text: &str,
+) -> Result<Envelope<T>, LetterError> {
+    parse_with(text, false)
+}
+
+fn parse_with<T: DeserializeOwned + Validate>(
+    text: &str,
+    tables: bool,
+) -> Result<Envelope<T>, LetterError> {
     let pieces = split_pieces(text)?;
-    if let Some(err) = table_below_fence(&pieces) {
+    if tables && let Some(err) = table_below_fence(&pieces) {
         return Err(err);
     }
     let front: T = toml::from_str(pieces.front).map_err(|err| {
