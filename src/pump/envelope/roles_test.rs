@@ -1,0 +1,203 @@
+//! Tests for the typed role envelopes.
+
+use super::{RoleKind, parse_for};
+use crate::pump::envelope::EnvelopeError;
+use crate::pump::flow::def::NodeClass;
+
+fn hand(front: &str) -> String {
+    format!("+++\n{front}+++\nreport\n")
+}
+
+#[test]
+fn from_class_maps_role_nodes_only() {
+    assert_eq!(
+        RoleKind::from_class(&NodeClass::Slicer),
+        Some(RoleKind::Slicer)
+    );
+    assert_eq!(RoleKind::from_class(&NodeClass::Cto), Some(RoleKind::Cto));
+    assert_eq!(
+        RoleKind::from_class(&NodeClass::Merge),
+        Some(RoleKind::Merge)
+    );
+    assert_eq!(RoleKind::from_class(&NodeClass::RungNeed), None);
+    assert_eq!(RoleKind::from_class(&NodeClass::Fanout), None);
+    assert_eq!(RoleKind::from_class(&NodeClass::Decision), None);
+}
+
+#[test]
+fn a_valid_hand_envelope_parses() {
+    let text = hand(
+        "answer = \"built\"\nchange = [\"src/a.rs\"]\ndeviations = ['moved a call']\n\
+         remaining = []\n\n[[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\nseconds = 94\n\n\
+         [[follow_up]]\npaths = [\"src/b.rs\"]\nneed = 'fix b'\n",
+    );
+    let parsed = parse_for(RoleKind::Hand, &text).unwrap();
+    assert_eq!(parsed.answer, "built");
+    assert_eq!(parsed.body, "report");
+    assert_eq!(parsed.front["change"][0], "src/a.rs");
+    assert_eq!(parsed.front["check"][0]["seconds"], 94);
+    assert_eq!(parsed.front["check"][0]["result"], "pass");
+    assert_eq!(parsed.front["follow_up"][0]["need"], "fix b");
+}
+
+#[test]
+fn an_empty_change_list_is_a_valid_built() {
+    let parsed = parse_for(RoleKind::Hand, &hand("answer = \"built\"\n")).unwrap();
+    assert_eq!(parsed.front["change"], serde_json::json!([]));
+    assert_eq!(parsed.front["scope_design"], false);
+}
+
+#[test]
+fn a_hand_unknown_key_is_refused() {
+    let err = parse_for(RoleKind::Hand, &hand("answer = \"built\"\nproof = 1\n")).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Toml { line: 3, .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_hand_wrong_type_is_refused_with_its_line() {
+    let err = parse_for(
+        RoleKind::Hand,
+        &hand("answer = \"built\"\nchange = \"src/a.rs\"\n"),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Toml { line: 3, .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_bad_check_result_is_refused() {
+    let text =
+        hand("answer = \"built\"\n[[check]]\ncmd = \"x\"\nresult = \"timeout\"\nseconds = 1\n");
+    assert!(matches!(
+        parse_for(RoleKind::Hand, &text),
+        Err(EnvelopeError::Toml { .. })
+    ));
+}
+
+#[test]
+fn blocked_scope_needs_paths_and_a_reason() {
+    let no_paths = hand("answer = \"blocked-scope\"\nscope_reason = 'needs a re-export'\n");
+    let err = parse_for(RoleKind::Hand, &no_paths).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_paths")),
+        "{err:?}"
+    );
+
+    let no_reason = hand("answer = \"blocked-scope\"\nscope_paths = [\"src/m.rs\"]\n");
+    let err = parse_for(RoleKind::Hand, &no_reason).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_reason")),
+        "{err:?}"
+    );
+
+    let ok = hand(
+        "answer = \"blocked-scope\"\nscope_paths = [\"src/m.rs\"]\n\
+         scope_reason = 'needs a re-export'\nscope_design = true\n",
+    );
+    let parsed = parse_for(RoleKind::Hand, &ok).unwrap();
+    assert_eq!(parsed.answer, "blocked-scope");
+    assert_eq!(parsed.front["scope_design"], true);
+}
+
+#[test]
+fn a_valid_planner_parses_and_reason_is_conditional() {
+    let planned = parse_for(RoleKind::Planner, &hand("answer = \"planned\"\n")).unwrap();
+    assert_eq!(planned.answer, "planned");
+
+    let err = parse_for(RoleKind::Planner, &hand("answer = \"hold\"\n")).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Invalid(_)), "{err:?}");
+
+    let held = parse_for(
+        RoleKind::Planner,
+        &hand("answer = \"hold\"\nreason = 'waiting'\n"),
+    )
+    .unwrap();
+    assert_eq!(held.front["reason"], "waiting");
+
+    let err = parse_for(RoleKind::Planner, &hand("answer = \"maybe\"\n")).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
+}
+
+const SLICE: &str = "[[slice]]\nid = \"S1\"\ntitle = \"t\"\nbrief = 'b'\ntarget = \"src\"\n\
+                     write_scope = [\"src/a.rs\"]\ndeps = []\n";
+
+#[test]
+fn a_valid_slicer_parses() {
+    let parsed = parse_for(
+        RoleKind::Slicer,
+        &hand(&format!("answer = \"sliced\"\n{SLICE}")),
+    )
+    .unwrap();
+    assert_eq!(parsed.answer, "sliced");
+    assert_eq!(parsed.front["mode"], "slice");
+    assert_eq!(parsed.front["slice"][0]["write_scope"][0], "src/a.rs");
+}
+
+#[test]
+fn a_slicer_proof_key_is_refused() {
+    let text = hand(&format!(
+        "answer = \"sliced\"\n{SLICE}proof = \"cargo test\"\n"
+    ));
+    let err = parse_for(RoleKind::Slicer, &text).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
+}
+
+#[test]
+fn slicer_rules_by_answer() {
+    let err = parse_for(RoleKind::Slicer, &hand("answer = \"sliced\"\n")).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Invalid(_)), "{err:?}");
+
+    let err = parse_for(RoleKind::Slicer, &hand("answer = \"escalate\"\n")).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Invalid(_)), "{err:?}");
+
+    let err = parse_for(
+        RoleKind::Slicer,
+        &hand(&format!("answer = \"escalate\"\nreason = 'x'\n{SLICE}")),
+    )
+    .unwrap_err();
+    assert!(matches!(err, EnvelopeError::Invalid(_)), "{err:?}");
+
+    let ok = parse_for(
+        RoleKind::Slicer,
+        &hand("answer = \"escalate\"\nreason = 'too big'\n"),
+    )
+    .unwrap();
+    assert_eq!(ok.answer, "escalate");
+}
+
+#[test]
+fn split_mode_needs_two_to_four_numbered_ids() {
+    let two = |a: &str, b: &str| {
+        hand(&format!(
+            "answer = \"sliced\"\nmode = \"split\"\n{}{}",
+            SLICE.replace("S1", a),
+            SLICE.replace("S1", b)
+        ))
+    };
+    assert!(parse_for(RoleKind::Slicer, &two("S1.1", "S1.2")).is_ok());
+    assert!(parse_for(RoleKind::Slicer, &two("S1.1", "S2")).is_err());
+
+    let one = hand(&format!(
+        "answer = \"sliced\"\nmode = \"split\"\n{}",
+        SLICE.replace("S1", "S1.1")
+    ));
+    assert!(parse_for(RoleKind::Slicer, &one).is_err());
+}
+
+#[test]
+fn other_roles_are_not_wired_yet() {
+    for kind in [
+        RoleKind::Researcher,
+        RoleKind::Auditor,
+        RoleKind::Merge,
+        RoleKind::HeadCeo,
+    ] {
+        let err = parse_for(kind, &hand("answer = \"x\"\n")).unwrap_err();
+        assert_eq!(err, EnvelopeError::Invalid("role not wired".to_string()));
+    }
+}
