@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use crate::error::VivariumError;
 use crate::pump::flow::advance::restart;
 use crate::pump::flow::advance::route::JoinInput;
+use crate::pump::flow::collect_slice::{self, BuiltHook, PostBuiltNotes};
 use crate::pump::flow::collect_step::{self, StepCollector};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::SliceEdges;
@@ -52,6 +53,7 @@ pub(crate) struct Registry<S, M> {
     classes: BTreeMap<(FlowKind, NodeClass), Box<dyn StepHandler>>,
     nodes: BTreeMap<(FlowKind, String), Box<dyn StepHandler>>,
     collectors: BTreeMap<(FlowKind, NodeClass), Box<dyn StepCollector<S, M>>>,
+    built_hooks: Vec<Box<dyn BuiltHook<S, M>>>,
     decide: Box<DecideFn>,
     phases: Vec<Box<dyn TickPhase<S, M>>>,
 }
@@ -62,6 +64,7 @@ impl<S, M> Registry<S, M> {
             classes: BTreeMap::new(),
             nodes: BTreeMap::new(),
             collectors: BTreeMap::new(),
+            built_hooks: Vec::new(),
             decide: Box::new(no_decision_rule),
             phases: Vec::new(),
         }
@@ -94,6 +97,11 @@ impl<S, M> Registry<S, M> {
         c: Box<dyn StepCollector<S, M>>,
     ) {
         self.collectors.insert((kind, class), c);
+    }
+
+    /// Add a built-slice hook; hooks run in registration order.
+    pub(crate) fn built_hook(&mut self, h: Box<dyn BuiltHook<S, M>>) {
+        self.built_hooks.push(h);
     }
 
     /// Replace the decide slot.
@@ -141,6 +149,15 @@ impl<S: JobStore, M: FlowMail> Registry<S, M> {
             .map(Box::as_ref)
             .or_else(|| collect_step::default_for(class))
     }
+
+    /// The hooks to run on a built slice, in registration order; a registry
+    /// built by hand with [`Registry::new`] runs the default notes hook.
+    pub(crate) fn built_hooks(&self) -> Vec<&dyn BuiltHook<S, M>> {
+        if self.built_hooks.is_empty() {
+            return vec![&PostBuiltNotes];
+        }
+        self.built_hooks.iter().map(Box::as_ref).collect()
+    }
 }
 
 /// No code decision has a rule yet: a join or raise check that routing reaches
@@ -160,6 +177,7 @@ fn no_decision_rule(
 pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     let mut registry = Registry::new();
     collect_step::register_defaults(&mut registry);
+    collect_slice::register_defaults(&mut registry);
     restart::register(&mut registry);
     intake::register(&mut registry);
     need_branch::register(&mut registry);
