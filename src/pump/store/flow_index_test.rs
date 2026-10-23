@@ -144,3 +144,55 @@ fn save_leaves_flow_rows_alone() {
     assert_eq!(store.runs_of("n1").expect("runs").len(), 1);
     assert_eq!(store.steps_of("n1", 1).expect("steps").len(), 1);
 }
+
+#[test]
+fn a_finishing_run_is_listed_by_finishing_runs_and_not_by_live_runs() {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    store.insert_run(&run("n1", 1, RUN_LIVE)).expect("run 1");
+    store.insert_run(&run("n2", 1, RUN_LIVE)).expect("run 2");
+    assert!(store.finishing_runs().expect("finishing").is_empty());
+
+    store
+        .set_run_state("n1", 1, "finishing")
+        .expect("set finishing");
+    let finishing: Vec<_> = store
+        .finishing_runs()
+        .expect("finishing")
+        .into_iter()
+        .map(|r| (r.need, r.run))
+        .collect();
+    assert_eq!(finishing, vec![("n1".to_string(), 1)]);
+    let live: Vec<_> = store
+        .live_runs()
+        .expect("live")
+        .into_iter()
+        .map(|r| r.need)
+        .collect();
+    assert_eq!(live, ["n2"]);
+    assert_eq!(store.runs_in_state("finishing").expect("state").len(), 1);
+
+    store.set_run_state("n1", 1, "done").expect("set done");
+    assert!(store.finishing_runs().expect("finishing").is_empty());
+}
+
+#[test]
+fn state_at_updates_on_each_state_change() {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    store.insert_run(&run("n1", 1, RUN_LIVE)).expect("run");
+    assert!(store.run_state_at("n1", 9).expect("at").is_none());
+    assert!(store.run_state_at("n1", 1).expect("at").expect("some") > 0);
+
+    for state in ["finishing", "done"] {
+        store
+            .conn
+            .execute("UPDATE flow_runs SET state_at = 1", [])
+            .expect("age the row");
+        store.set_run_state("n1", 1, state).expect("set");
+        assert!(
+            store.run_state_at("n1", 1).expect("at").expect("some") > 1,
+            "state {state} stamps the time"
+        );
+    }
+}
