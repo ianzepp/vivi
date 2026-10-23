@@ -12,9 +12,9 @@ use vivi::VivariumError;
 use vivi::cli::{McpCommand, McpSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::mcp::client::{self, Client};
-use vivi::mcp::resolve::{self, MailspaceSource, McpFlags, PendingCredential};
+use vivi::mcp::resolve::{self, MailspaceSource, McpFlags};
 use vivi::mcp::{BridgeConfig, Credential, HttpUpstream, serve};
-use vivi::sync::identity::SyncIdentity;
+use vivi::sync::{SendFilter, SyncSettings};
 
 /// Exit status for a tool that reports `isError: true`.
 const EXIT_TOOL_ERROR: i32 = 1;
@@ -125,14 +125,12 @@ fn read_arguments(inline: Option<&str>, file: Option<&str>) -> Result<Value, Str
     client::parse_arguments(&text)
 }
 
-/// Resolve flags, environment, and the mailspace fallback into a loaded
+/// Resolve flags, environment, and the mailspace fallback into the API key
 /// credential and the server settings.
 fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
     let flags = McpFlags {
         server: command.server.clone(),
         project_id: command.project_id.clone(),
-        name: command.name.clone(),
-        key_file: command.key_file.clone(),
         project: command.project.clone(),
     };
     let env_lookup = |name: &str| match std::env::var(name) {
@@ -142,8 +140,14 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
     let mailspace_lookup = || mailspace_source(command.project.as_deref());
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
     Ok(BridgeConfig {
-        settings: resolved.settings,
-        credential: load_credential(resolved.credential)?,
+        settings: SyncSettings {
+            server: resolved.server,
+            project: resolved.project.unwrap_or_default(),
+            name: String::new(),
+            send: SendFilter::All,
+            mailspace_id: String::new(),
+        },
+        credential: Credential::ApiKey(resolved.api_key),
     })
 }
 
@@ -165,27 +169,6 @@ fn serve_quietly(config: &BridgeConfig) -> Result<(), VivariumError> {
     }
 }
 
-/// Turn the pending credential into a live one. A missing mailspace key is
-/// never minted here; the error says what to run instead.
-fn load_credential(pending: PendingCredential) -> Result<Credential, VivariumError> {
-    match pending {
-        PendingCredential::ApiKey(key) => Ok(Credential::ApiKey(key)),
-        PendingCredential::KeyFile(path) => {
-            Ok(Credential::Member(SyncIdentity::from_key_file(&path)?))
-        }
-        PendingCredential::MailspaceKey(path) => {
-            if !path.is_file() {
-                return Err(VivariumError::Message(format!(
-                    "no mailspace key at {}; run vivi sync key to mint one, or set \
-                     VIVI_MCP_API_KEY, or give --name and --key-file",
-                    path.display()
-                )));
-            }
-            Ok(Credential::Member(SyncIdentity::from_key_file(&path)?))
-        }
-    }
-}
-
 /// What the mailspace named by `--project` (or the nearest ancestor of the
 /// current directory holding `.vivi/mailspace.toml`) offers. An absent
 /// mailspace is `None`, not an error: the bridge may run with no mailspace
@@ -203,8 +186,6 @@ fn mailspace_source(project: Option<&Path>) -> Result<Option<MailspaceSource>, V
     Ok(Some(MailspaceSource {
         server: sync.server,
         project: sync.project,
-        name: sync.name,
-        vivi_dir: mailspace.dir,
     }))
 }
 
