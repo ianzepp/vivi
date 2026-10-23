@@ -47,12 +47,17 @@ impl Rig {
 
     /// A live build run of the prerequisite with one waiting step.
     fn waiting_at(&self, node: &str, verdict: Option<&str>) -> R {
+        self.waiting_kind("build", node, verdict)
+    }
+
+    /// A live run of `kind` of the prerequisite with one waiting step.
+    fn waiting_kind(&self, kind: &str, node: &str, verdict: Option<&str>) -> R {
         self.store.insert_run(&RunRow {
             need: DEP.into(),
             run: 1,
-            flow: "build".into(),
+            flow: kind.into(),
             flow_version: 2,
-            kind: "build".into(),
+            kind: kind.into(),
             entry: "plan".into(),
             state: "live".into(),
         })?;
@@ -115,5 +120,16 @@ fn an_open_need_with_a_run_waiting_at_locked_is_held() -> R {
 fn an_open_need_with_no_run_is_open() -> R {
     let rig = rig()?;
     assert_eq!(rig.state()?, PrereqState::Open);
+    Ok(())
+}
+
+#[test]
+fn a_live_run_of_an_unknown_kind_is_an_error_not_open() -> R {
+    let rig = rig()?;
+    rig.waiting_kind("bogus", "locked", None)?;
+    let err = rig.classify().err().map(|e| e.to_string());
+    let text = err.ok_or_else(|| VivariumError::Message("expected an error".into()))?;
+    assert!(text.contains("prerequisite dep1 r1"), "{text}");
+    assert!(text.contains("bogus"), "{text}");
     Ok(())
 }
