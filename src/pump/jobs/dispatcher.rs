@@ -8,7 +8,6 @@ use std::path::Path;
 
 use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
 use crate::error::VivariumError;
-use crate::pump::dispatch;
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
@@ -27,7 +26,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
     {
         return Ok(Vec::new());
     }
-    let mut free = dispatch::slots(ctx);
+    let mut free = super::slots(ctx);
     let priorities = crate::pump::priority::levels(ctx);
     let mut pending: Vec<PoolJob> = st
         .jobs()
@@ -355,7 +354,7 @@ pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, Viva
             tail(&output.text, 240)
         ));
     }
-    Ok(dispatch::parse_created_handle(&output.text))
+    Ok(super::parse_created_handle(&output.text))
 }
 
 /// Keep the brief under the letter cap: the full text is saved beside it, the

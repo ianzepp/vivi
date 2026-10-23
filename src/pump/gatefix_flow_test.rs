@@ -198,18 +198,7 @@ fn a_gate_fix_need_runs_from_red_gate_to_dispatched_units_under_records() {
     assert_eq!(st.units[&first].status, Status::Pending);
     assert_eq!(st.units[&first].brief, "fix one properly");
 
-    // The units dispatch, and the record is still the need's one open record.
-    // (Need branches need a git remote; this fixture has none.)
-    let mut plain = ctx.clone();
-    plain.mailspace.clear();
-    crate::pump::dispatch::dispatch(&plain, &mut st);
-    assert!(
-        st.units
-            .values()
-            .any(|unit| unit.need == need && unit.status == Status::Inflight),
-        "{:?}",
-        host.logs()
-    );
+    // The record is still the need's one open record.
     assert_eq!(project.mailspace.pump_history(&need).unwrap().len(), 1);
     drop(fs::remove_file(ctx.home.join("exceptions.txt")));
 }

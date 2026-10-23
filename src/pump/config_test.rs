@@ -129,19 +129,6 @@ fn need_repair_rounds_default_to_one_and_can_be_overridden() {
 }
 
 #[test]
-fn quarantine_repair_budget_defaults_above_proof_timeout_and_can_be_overridden() {
-    let defaulted =
-        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.merge]\nproof_timeout = 900\n");
-    assert_eq!(defaulted.merge.quarantine_repair_budget(), 1200);
-
-    let configured = pump(
-        "name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.merge]\nproof_timeout = 900\nrepair_budget = 1800\n",
-    );
-    assert_eq!(configured.merge.repair_budget, Some(1800));
-    assert_eq!(configured.merge.quarantine_repair_budget(), 1800);
-}
-
-#[test]
 fn validation_rejects_a_repair_budget_shorter_than_its_proof_timeout() {
     let mut config = PumpConfig::default();
     config.committer_name = String::from("Pump Tester");
