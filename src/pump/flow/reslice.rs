@@ -2,14 +2,17 @@
 
 use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
+use crate::pump::envelope::roles::{Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{NodeClass, STEP_MARKER};
-use crate::pump::flow::fanout::SLICE_NODE_PREFIX;
-use crate::pump::flow::handlers::{FlowMail, Registry};
+use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, parse_reply};
+use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_inputs::{read_only_job, targets};
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{self, JobSpec, JobStore};
+use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 use crate::pump::store::flow_links::SliceLink;
 
@@ -18,6 +21,12 @@ pub const RESLICE_NODE_PREFIX: &str = "reslice:";
 
 /// Job kind of a reslice slicer job.
 pub const KIND: &str = "reslice";
+
+/// Exception kind of a reslice job that gave no usable slicer reply.
+pub const RESLICE_FAILED: &str = "flow-reslice-failed";
+
+/// Run state of a live run.
+const RUN_LIVE: &str = "live";
 
 /// What a reslice job asks the slicer to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +43,17 @@ impl Mode {
         match self {
             Self::Split => "split",
             Self::Rework | Self::FollowUp => "rework",
+        }
+    }
+
+    /// The mode named `name` (the inverse of [`Mode::name`]).
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "split" => Some(Self::Split),
+            "rework" => Some(Self::Rework),
+            "follow-up" => Some(Self::FollowUp),
+            _ => None,
         }
     }
 
@@ -171,8 +191,115 @@ fn brief<M: FlowMail>(
     ))
 }
 
-/// Registry hook (filled by a later N4 slice).
-pub(crate) fn register<S: JobStore, M: FlowMail>(_registry: &mut Registry<S, M>) {}
+/// Registry hook: the reslices phase.
+pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
+    registry.phase(Box::new(Reslices));
+}
+
+/// Collect finished reslice jobs and apply their result to the run.
+struct Reslices;
+
+impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Reslices {
+    fn name(&self) -> &'static str {
+        "reslices"
+    }
+
+    fn run(
+        &self,
+        ctx: &Ctx,
+        st: &mut S,
+        store: &PumpStore,
+        mail: &mut M,
+    ) -> Result<(), VivariumError> {
+        let ready: Vec<PoolJob> = st
+            .jobs()
+            .values()
+            .filter(|job| job.kind == KIND && job.status.is_terminal() && job.applied_at.is_none())
+            .cloned()
+            .collect();
+        let mut first_error = None;
+        for job in &ready {
+            if let Err(error) = collect_one(ctx, st, store, mail, job) {
+                ctx.log(&format!("reslice job {} failed: {error}", job.id));
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+/// Apply one terminal reslice job, or drop it when its run is closed.
+fn collect_one<S: JobStore, M: FlowMail>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    mail: &mut M,
+    job: &PoolJob,
+) -> Result<(), VivariumError> {
+    let text = |key: &str| job.payload.get(key).and_then(|v| v.as_str());
+    let (Some(need), Some(task), Some(slice), Some(mode)) = (
+        text("need"),
+        text("task"),
+        text("slice"),
+        text("mode").and_then(Mode::from_name),
+    ) else {
+        jobs::mark_applied(st, &job.id, ctx.now());
+        return Err(VivariumError::Parse(format!(
+            "reslice job {}: payload lacks need, task, slice or mode",
+            job.id
+        )));
+    };
+    let number = job.payload.get("run").and_then(serde_json::Value::as_u64);
+    let live = store
+        .runs_of(need)?
+        .into_iter()
+        .find(|r| Some(u64::from(r.run)) == number && r.state == RUN_LIVE);
+    let row = store.step_by_task(task)?;
+    let (Some(run), Some(row)) = (live, row) else {
+        jobs::mark_applied(st, &job.id, ctx.now());
+        return Ok(());
+    };
+    if matches!(row.state, StepState::Done | StepState::Failed) {
+        jobs::mark_applied(st, &job.id, ctx.now());
+        return Ok(());
+    }
+    let reply = reply_of(ctx, job, mode);
+    let word = reslice_apply::apply(ctx, store, mail, &run, &row, slice, mode, reply.as_ref())?;
+    mail.close_task(&row.task, word, None, None)?;
+    store.set_step_state(&row.task, StepState::Done, Some(word))?;
+    jobs::mark_applied(st, &job.id, ctx.now());
+    Ok(())
+}
+
+/// The slicer envelope of a finished job whose mode matches the request; any
+/// other outcome raises [`RESLICE_FAILED`] and gives `None`.
+fn reply_of(ctx: &Ctx, job: &PoolJob, mode: Mode) -> Option<Slicer> {
+    let fail = |why: String| {
+        let text = format!("reslice job {}: {why}", job.id);
+        raise_once(ctx, RESLICE_FAILED, &job.id, &text);
+        None
+    };
+    if job.status != JobStatus::Finished {
+        return fail(format!("pool job ended {:?}", job.status));
+    }
+    let Some(outcome) = &job.outcome else {
+        return fail("no outcome saved".to_owned());
+    };
+    let message = crate::pump::attempt_record::hand_message(&outcome.receipt);
+    let slicer = match parse_reply(&message) {
+        Ok(slicer) => slicer,
+        Err(error) => return fail(format!("unusable reply: {error}")),
+    };
+    let wanted = if mode == Mode::Split {
+        SlicerMode::Split
+    } else {
+        SlicerMode::Rework
+    };
+    if slicer.mode != wanted {
+        return fail(format!("reply mode {:?} is not {wanted:?}", slicer.mode));
+    }
+    Some(slicer)
+}
 
 #[cfg(test)]
 #[path = "reslice_test.rs"]
