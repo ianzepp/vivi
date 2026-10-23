@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -373,9 +372,9 @@ impl Mailspace {
     /// Open a mailspace at an explicit root path.
     ///
     /// The config is the project's file merged over any base configs above
-    /// it (see [`inherit`]). A config without an id gets one minted and persisted here, under the
-    /// config lock, so the mailspace's addresses are stable from the first
-    /// open.
+    /// it (see [`inherit`]). A config without an id gets one minted and
+    /// persisted here, under the config lock, so the mailspace's addresses are
+    /// stable from the first open.
     ///
     /// # Errors
     /// Returns an error if the config file cannot be read or parsed, its id
@@ -449,15 +448,7 @@ impl Mailspace {
     /// Returns an error if the config cannot be written.
     pub fn set_description(&mut self, description: Option<String>) -> Result<(), VivariumError> {
         self.config.description.clone_from(&description);
-        config_edit::apply(&self.config_path(), |doc| {
-            match &description {
-                Some(text) => doc["description"] = toml_edit::value(text.as_str()),
-                None => {
-                    doc.as_table_mut().remove("description");
-                }
-            }
-            Ok(())
-        })
+        self.set_config_string("description", description.as_deref())
     }
 
     /// Set or clear the historical archive git repository path.
@@ -472,11 +463,16 @@ impl Mailspace {
             archive::validate_archive_repo(&archive::resolve_archive_path(&self.root, raw)?)?;
         }
         self.config.archive.clone_from(&archive);
+        self.set_config_string("archive", archive.as_deref())
+    }
+
+    /// Persist one top-level string key of `mailspace.toml`, or remove it.
+    fn set_config_string(&self, key: &str, value: Option<&str>) -> Result<(), VivariumError> {
         config_edit::apply(&self.config_path(), |doc| {
-            match &archive {
-                Some(text) => doc["archive"] = toml_edit::value(text.as_str()),
+            match value {
+                Some(text) => doc[key] = toml_edit::value(text),
                 None => {
-                    doc.as_table_mut().remove("archive");
+                    doc.as_table_mut().remove(key);
                 }
             }
             Ok(())
@@ -632,18 +628,18 @@ fn find_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn missing_mailspace_error(cwd: &Path) -> VivariumError {
-    let mut message = format!("No Vivi mailspace found.\ncwd: {}", cwd.display());
-    if let Some(git) = nearest_git_root(cwd) {
-        let _ = write!(
-            message,
+    let hint = match nearest_git_root(cwd) {
+        Some(root) => format!(
             "\nnearest git root: {}\ninit: vivi mailspace init --project {}",
-            git.display(),
-            git.display()
-        );
-    } else {
-        message.push_str("\ninit: vivi mailspace init");
-    }
-    VivariumError::Message(message)
+            root.display(),
+            root.display()
+        ),
+        None => "\ninit: vivi mailspace init".to_string(),
+    };
+    VivariumError::Message(format!(
+        "No Vivi mailspace found.\ncwd: {}{hint}",
+        cwd.display()
+    ))
 }
 
 fn nearest_git_root(start: &Path) -> Option<PathBuf> {
