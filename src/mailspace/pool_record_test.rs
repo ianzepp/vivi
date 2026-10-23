@@ -156,3 +156,32 @@ fn the_attempt_section_is_capped() {
     assert!(!body.contains("OLDEST"), "oldest dropped");
     assert!(body.len() < 8 * 1024 + 512, "{}", body.len());
 }
+
+#[test]
+fn only_the_newest_brief_is_the_body_with_attempts_after_it() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(&space, &handle, "pump-brief: job-a\nOLD BRIEF");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    reply_on_task(&space, &handle, "pump-attempt: first\nattempt body");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    reply_on_task(
+        &space,
+        &handle,
+        "pump-brief: job-b\nWRITE SCOPE and envelope",
+    );
+    let body = space.pool_task(&handle).unwrap().body;
+    assert!(body.starts_with("pump-brief: job-b"), "{body}");
+    assert!(!body.contains("OLD BRIEF"), "{body}");
+    assert!(!body.contains("do it"), "task body not repeated: {body}");
+    let heading = body.find("## Earlier attempts").expect("heading");
+    assert!(body.find("WRITE SCOPE").unwrap() < heading, "{body}");
+    assert!(body.contains("attempt body"), "{body}");
+}
+
+#[test]
+fn a_task_with_no_brief_reply_keeps_its_body() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(&space, &handle, "not a pump-brief: reply");
+    let body = space.pool_task(&handle).unwrap().body;
+    assert!(body.starts_with("do it"), "{body}");
+}

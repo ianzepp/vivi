@@ -798,3 +798,84 @@ fn a_spec_without_a_task_still_matches_its_dispatched_job() {
     store.jobs.get_mut("plan-board-2").unwrap().task = Some(String::from("a1b2c3d4"));
     enqueue(&mut store, job).unwrap();
 }
+
+/// Dispatch one `merge` job (with `task` preset or not) through a fake host
+/// whose `pool status` shows one free slot. Returns the commands it ran and
+/// the text of the brief reply file, when one was written.
+fn dispatch_brief_job(
+    task: Option<&str>,
+    configure: impl FnOnce(&FakeHost),
+) -> (Vec<String>, Option<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched t bridge slot-1 model/default unit/task\n",
+    );
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    configure(&host);
+    let mut store = Store::default();
+    let mut spec = JobSpec::new(
+        "h1",
+        "merge",
+        "merge",
+        "unit",
+        "WRITE SCOPE: a.rs\nenvelope",
+    );
+    spec.task = task.map(str::to_owned);
+    enqueue(&mut store, spec).unwrap();
+    dispatch_pending(&ctx, &mut store).unwrap();
+    assert_eq!(store.jobs["h1"].status, JobStatus::Dispatched);
+    let brief = std::fs::read_to_string(ctx.home.join("board/reply-h1-brief.txt")).ok();
+    (host.commands(), brief)
+}
+
+fn replies_in(commands: &[String]) -> usize {
+    commands
+        .iter()
+        .filter(|command| command.contains("mail reply"))
+        .count()
+}
+
+#[test]
+fn a_preset_task_job_posts_one_brief_before_it_dispatches() {
+    let (commands, brief) = dispatch_brief_job(Some("t1"), |_| {});
+    assert_eq!(replies_in(&commands), 1, "{commands:?}");
+    let reply = commands
+        .iter()
+        .position(|command| command.contains("mail reply"))
+        .unwrap();
+    let dispatch = commands
+        .iter()
+        .position(|command| command.contains("pool dispatch"))
+        .unwrap();
+    assert!(reply < dispatch, "{commands:?}");
+    assert!(commands[reply].contains("t1"), "{commands:?}");
+    let brief = brief.expect("brief file written");
+    assert!(brief.starts_with("pump-brief: h1\n"), "{brief}");
+    assert!(brief.contains("WRITE SCOPE: a.rs"), "{brief}");
+}
+
+#[test]
+fn a_task_that_already_has_this_jobs_brief_gets_no_second_one() {
+    let (commands, _) = dispatch_brief_job(Some("t1"), |host| {
+        host.reply(
+            "mail thread",
+            0,
+            "From: pump\n\npump-brief: h1\nWRITE SCOPE\n",
+        );
+    });
+    assert_eq!(replies_in(&commands), 0, "{commands:?}");
+    assert!(commands.iter().any(|c| c.contains("pool dispatch")));
+}
+
+#[test]
+fn a_job_without_a_preset_task_posts_no_brief_reply() {
+    let (commands, brief) = dispatch_brief_job(None, |_| {});
+    assert_eq!(replies_in(&commands), 0, "{commands:?}");
+    assert!(brief.is_none());
+    assert!(commands.iter().any(|c| c.contains("task send")));
+}
