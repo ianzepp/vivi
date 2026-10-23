@@ -14,15 +14,18 @@ fn stdout(output: &Output) -> String {
 }
 
 #[test]
-fn list_shows_the_three_shipped_kinds() {
+fn list_shows_the_four_shipped_kinds() {
     let out = vivi(&["flow", "list"]);
     assert!(out.status.success(), "{out:?}");
     let lines: Vec<String> = stdout(&out).lines().map(str::to_string).collect();
-    assert_eq!(lines, ["build", "research", "release"]);
+    assert_eq!(lines, ["build", "research", "release", "repair"]);
 
     let json = vivi(&["flow", "list", "--json"]);
     let value: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
-    assert_eq!(value, serde_json::json!(["build", "research", "release"]));
+    assert_eq!(
+        value,
+        serde_json::json!(["build", "research", "release", "repair"])
+    );
 }
 
 #[test]
