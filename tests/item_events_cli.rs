@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-const BODY: &str = "done_when: it works";
+const BODY: &str = "the body";
 
 fn vivi(project: &Path, args: &[&str]) -> Output {
     let mut full: Vec<&str> = args.to_vec();
@@ -49,21 +49,22 @@ fn send(p: &Path, kind: &str, subject: &str) -> (String, String) {
 }
 
 fn send_between(p: &Path, kind: &str, from: &str, to: &str, subject: &str) -> (String, String) {
-    let out = ok(
-        p,
-        &[
-            kind,
-            "send",
-            "--from",
-            from,
-            "--to",
-            to,
-            "--subject",
-            subject,
-            "--body",
-            BODY,
-        ],
-    );
+    let mut args = vec![
+        kind,
+        "send",
+        "--from",
+        from,
+        "--to",
+        to,
+        "--subject",
+        subject,
+        "--body",
+        BODY,
+    ];
+    if kind == "need" {
+        args.extend(["--done-when", "it works"]);
+    }
+    let out = ok(p, &args);
     let after = |prefix: &str| {
         out.lines()
             .find_map(|line| line.strip_prefix(prefix))
@@ -329,6 +330,8 @@ fn a_self_addressed_need_closes_and_reopens_by_its_own_letters() {
             "mine",
             "--body",
             BODY,
+            "--done-when",
+            "it works",
         ],
     );
     let need = out

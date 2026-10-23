@@ -48,6 +48,8 @@ fn send_need(p: &Path, subject: &str) -> String {
             subject,
             "--body",
             "need body",
+            "--done-when",
+            "done",
         ],
     );
     out.lines()

@@ -50,6 +50,8 @@ fn send_need(p: &Path, subject: &str) -> String {
             subject,
             "--body",
             "need body",
+            "--done-when",
+            "done",
         ],
     );
     out.lines()
@@ -173,6 +175,8 @@ fn attempts_json_reports_the_named_anchor_for_sent_and_delivered_copies() {
             "N the anchor need",
             "--body",
             "need body",
+            "--done-when",
+            "done",
         ],
     );
     let delivered = out
