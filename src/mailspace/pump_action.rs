@@ -1,28 +1,33 @@
 //! Operator actions on a pump record.
 //!
 //! Requeue, withdraw, replan, answer and unlock are things an operator asks of one dispatch,
-//! so each is a structured reply on the need's open pump record. The letter
-//! carries its action in headers and its free text (the reason) in the body:
+//! so each is a structured reply on the need's open pump record. The letter is a `mail`
+//! letter whose body opens with `ActionFront` front matter and whose prose is the reason:
 //!
-//! | header | value |
+//! | key | value |
 //! | --- | --- |
-//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw`, `replan`, `answer` or `unlock` (`recover` is retired: still read, changes nothing) |
-//! | `X-Vivi-Pump-Record` | the record the action was posted on |
-//! | `X-Vivi-Need` | the need that record covers |
-//! | `X-Vivi-Pump-Unit` | requeue: the unit to requeue |
-//! | `X-Vivi-Pump-Attempts` | requeue: set the attempt counter to N |
-//! | `X-Vivi-Pump-Fresh` | requeue: `1` resets the attempt counter |
-//! | `X-Vivi-Pump-Refund` | requeue: `1` refunds transient failures |
-//! | `X-Vivi-Pump-Force` | replan: `1` replans past live work |
-//! | `X-Vivi-Pump-Target` | recover (retired): carried, never read |
-//! | `X-Vivi-Pump-Step` | answer: the flow step task being answered |
-//! | `X-Vivi-Pump-Word` | answer: the answer word; the note is the body; unlock: the entry to restart at |
+//! | `action` | `requeue`, `withdraw`, `replan`, `answer` or `unlock` (`recover` is retired: it cannot be posted) |
+//! | `need` | the need the record covers |
+//! | `unit` | requeue: the unit to requeue |
+//! | `attempts` | requeue: set the attempt counter to N |
+//! | `fresh` | requeue: `true` resets the attempt counter |
+//! | `refund` | requeue: `true` refunds transient failures |
+//! | `force` | replan: `true` replans past live work |
+//! | `step` | answer: the flow step task being answered |
+//! | `word` | answer: the answer word; unlock: the entry to restart at |
+//!
+//! The record the action was posted on is the letter's reply target and the note of its
+//! `pump action` / `posted` event; it is never read from the letter.
 //!
 //! Posting writes the letter and one `pump action` / `posted` event in one
 //! store transaction. The pump finds unapplied actions from those events
 //! alone, with no thread reads, and applies each exactly once (the pump keeps
 //! the applied letters' ids with its state). An action posted on a record
 //! that is closed is never applied: the need has no open dispatch to act on.
+//! An action letter that does not parse (an old-format letter with no front
+//! matter, or invalid front matter) is never applied and is not returned by
+//! `pump_pending_actions`; `pump_unreadable_actions` lists it so the pump can
+//! raise one alarm per letter.
 //!
 //! Everything here is library code and prints nothing, so a CLI or a hosted
 //! server can post the same actions.
@@ -31,23 +36,12 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use super::pump_record::{PumpState, header_value, in_write_batch};
+use super::pump_record::{PumpState, in_write_batch};
 use super::{Mailspace, SendRequest};
 use crate::error::VivariumError;
+use crate::letter::records::{ActionFront, ActionWord};
+use crate::letter::{FENCE, LetterError, parse_letter};
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
-
-/// The header naming the action.
-pub const PUMP_ACTION_HEADER: &str = "X-Vivi-Pump-Action";
-/// The header naming the record the action was posted on.
-pub const PUMP_RECORD_HEADER: &str = "X-Vivi-Pump-Record";
-const UNIT_HEADER: &str = "X-Vivi-Pump-Unit";
-const ATTEMPTS_HEADER: &str = "X-Vivi-Pump-Attempts";
-const FRESH_HEADER: &str = "X-Vivi-Pump-Fresh";
-const REFUND_HEADER: &str = "X-Vivi-Pump-Refund";
-const FORCE_HEADER: &str = "X-Vivi-Pump-Force";
-const TARGET_HEADER: &str = "X-Vivi-Pump-Target";
-const STEP_HEADER: &str = "X-Vivi-Pump-Step";
-const WORD_HEADER: &str = "X-Vivi-Pump-Word";
 
 /// The event command and type every posted action logs.
 const EVENT_COMMAND: &str = "pump action";
@@ -63,7 +57,7 @@ pub enum PumpActionKind {
     Withdraw,
     /// Throw the plan away and plan the need again on a fresh record.
     Replan,
-    /// Retired: a letter of this kind is read and settled, and changes nothing.
+    /// Retired: it cannot be posted.
     Recover,
     /// Answer a flow step by hand; applied by the flow engine, not the old pump.
     Answer,
@@ -72,7 +66,7 @@ pub enum PumpActionKind {
 }
 
 impl PumpActionKind {
-    /// The header value and the word the CLI prints.
+    /// The word the CLI prints.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -85,15 +79,25 @@ impl PumpActionKind {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "requeue" => Some(Self::Requeue),
-            "withdraw" => Some(Self::Withdraw),
-            "replan" => Some(Self::Replan),
-            "recover" => Some(Self::Recover),
-            "answer" => Some(Self::Answer),
-            "unlock" => Some(Self::Unlock),
-            _ => None,
+    /// The front matter word for this kind; `Recover` has none.
+    fn word(self) -> Option<ActionWord> {
+        match self {
+            Self::Requeue => Some(ActionWord::Requeue),
+            Self::Withdraw => Some(ActionWord::Withdraw),
+            Self::Replan => Some(ActionWord::Replan),
+            Self::Answer => Some(ActionWord::Answer),
+            Self::Unlock => Some(ActionWord::Unlock),
+            Self::Recover => None,
+        }
+    }
+
+    fn of_word(word: ActionWord) -> Self {
+        match word {
+            ActionWord::Requeue => Self::Requeue,
+            ActionWord::Withdraw => Self::Withdraw,
+            ActionWord::Replan => Self::Replan,
+            ActionWord::Answer => Self::Answer,
+            ActionWord::Unlock => Self::Unlock,
         }
     }
 }
@@ -112,8 +116,6 @@ pub struct PumpActionRequest {
     pub refund: bool,
     /// Replan: replan even while units are live or a planner runs.
     pub force: bool,
-    /// Recover (retired): carried in the header, never read.
-    pub target: Option<String>,
     /// Answer: the flow step task.
     pub step: Option<String>,
     /// Answer: the answer word. Unlock: the entry to restart at.
@@ -131,7 +133,6 @@ impl PumpActionRequest {
             fresh: false,
             refund: false,
             force: false,
-            target: None,
             step: None,
             word: None,
             reason: reason.trim().to_string(),
@@ -193,60 +194,35 @@ impl PumpActionRequest {
         }
     }
 
-    /// The headers the letter carries, besides the record and need headers.
-    fn headers(&self) -> Vec<(String, String)> {
-        let mut headers = vec![(PUMP_ACTION_HEADER.to_string(), self.kind.as_str().into())];
-        if let Some(unit) = &self.unit {
-            headers.push((UNIT_HEADER.into(), unit.clone()));
-        }
-        if let Some(attempts) = self.attempts {
-            headers.push((ATTEMPTS_HEADER.into(), attempts.to_string()));
-        }
-        if let Some(target) = &self.target {
-            headers.push((TARGET_HEADER.into(), target.clone()));
-        }
-        if let Some(step) = &self.step {
-            headers.push((STEP_HEADER.into(), step.clone()));
-        }
-        if let Some(word) = &self.word {
-            headers.push((WORD_HEADER.into(), word.clone()));
-        }
-        for (name, set) in [
-            (FRESH_HEADER, self.fresh),
-            (REFUND_HEADER, self.refund),
-            (FORCE_HEADER, self.force),
-        ] {
-            if set {
-                headers.push((name.into(), "1".into()));
-            }
-        }
-        headers
-    }
-
-    /// The request a letter's headers and body describe.
-    fn from_letter(data: &[u8], body: &str) -> Option<Self> {
-        let kind = PumpActionKind::parse(&header_value(data, PUMP_ACTION_HEADER)?)?;
-        let flag = |name: &str| header_value(data, name).is_some_and(|value| value == "1");
-        Some(Self {
-            kind,
-            unit: header_value(data, UNIT_HEADER).filter(|unit| !unit.is_empty()),
-            attempts: header_value(data, ATTEMPTS_HEADER).and_then(parse_attempts),
-            fresh: flag(FRESH_HEADER),
-            refund: flag(REFUND_HEADER),
-            force: flag(FORCE_HEADER),
-            target: header_value(data, TARGET_HEADER).filter(|target| !target.is_empty()),
-            step: header_value(data, STEP_HEADER).filter(|step| !step.is_empty()),
-            word: header_value(data, WORD_HEADER).filter(|word| !word.is_empty()),
-            reason: body.trim().to_string(),
+    /// The front matter this request writes; `None` for a retired kind.
+    fn front(&self, need: &str) -> Option<ActionFront> {
+        let text = |value: &Option<String>| value.clone().filter(|text| !text.trim().is_empty());
+        Some(ActionFront {
+            action: self.kind.word()?,
+            need: need.to_string(),
+            unit: text(&self.unit),
+            attempts: self.attempts,
+            fresh: self.fresh,
+            refund: self.refund,
+            force: self.force,
+            step: text(&self.step),
+            word: text(&self.word),
         })
     }
-}
 
-/// The attempt count a header carries, `None` when it is not a number.
-fn parse_attempts(value: String) -> Option<u32> {
-    match value.trim().parse() {
-        Ok(attempts) => Some(attempts),
-        Err(_) => None,
+    /// The request a letter's front matter and prose describe.
+    fn from_front(front: ActionFront, prose: &str) -> Self {
+        Self {
+            kind: PumpActionKind::of_word(front.action),
+            unit: front.unit,
+            attempts: front.attempts,
+            fresh: front.fresh,
+            refund: front.refund,
+            force: front.force,
+            step: front.step,
+            word: front.word,
+            reason: prose.trim().to_string(),
+        }
     }
 }
 
@@ -263,6 +239,25 @@ pub struct PumpAction {
     /// When it was posted.
     pub date: String,
     pub request: PumpActionRequest,
+}
+
+/// An action letter that was posted on an open record but does not parse.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnreadableAction {
+    /// The action letter's content id, as `PumpAction::id`.
+    pub id: String,
+    /// The letter's display handle.
+    pub handle: String,
+    /// The pump record it was posted on.
+    pub record: String,
+    /// Why it does not parse; names the handle.
+    pub error: String,
+}
+
+/// One posted action letter: readable or not.
+enum Posted {
+    Action(PumpAction),
+    Unreadable(UnreadableAction),
 }
 
 /// What one action letter is made of.
@@ -337,6 +332,11 @@ impl Mailspace {
         need: &str,
         request: &PumpActionRequest,
     ) -> Result<PumpAction, VivariumError> {
+        if request.kind == PumpActionKind::Recover {
+            return Err(VivariumError::Message(
+                "recover is retired: there is no recover action letter".into(),
+            ));
+        }
         if request.kind == PumpActionKind::Requeue && request.unit.is_none() {
             return Err(VivariumError::Message(
                 "a requeue action names the unit to requeue".into(),
@@ -377,31 +377,27 @@ impl Mailspace {
         letter: &ActionLetter<'_>,
     ) -> Result<StoredMessageView, VivariumError> {
         let request = letter.request;
-        let mut extras = request.headers();
-        extras.push((PUMP_RECORD_HEADER.into(), letter.record.to_string()));
-        extras.push((
-            super::pump_record::PUMP_NEED_HEADER.into(),
-            letter.need.to_string(),
-        ));
-        let body = if request.reason.is_empty() {
+        let front = request.front(letter.need).ok_or_else(|| {
+            VivariumError::Message("recover is retired: there is no recover action letter".into())
+        })?;
+        let prose = if request.reason.is_empty() {
             format!("{} {}", request.kind.as_str(), letter.need)
         } else {
             request.reason.clone()
         };
-        let result = self.send_with_extras(
-            SendRequest {
-                from: letter.from.to_string(),
-                to: vec![letter.to.to_string()],
-                cc: Vec::new(),
-                bcc: Vec::new(),
-                subject: format!("pump {}: {} action", letter.need, request.kind.as_str()),
-                body,
-                role: "inbox".into(),
-                kind: Some("mail".into()),
-                reply_to: Some(letter.record.to_string()),
-            },
-            &extras,
-        )?;
+        let body = crate::letter::render(&front, &prose)
+            .map_err(|error| VivariumError::Message(error.to_string()))?;
+        let result = self.send(SendRequest {
+            from: letter.from.to_string(),
+            to: vec![letter.to.to_string()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: format!("pump {}: {} action", letter.need, request.kind.as_str()),
+            body,
+            role: "inbox".into(),
+            kind: Some("mail".into()),
+            reply_to: Some(letter.record.to_string()),
+        })?;
         let message_id = storage.resolve_message_token(&result.sent)?;
         let view = storage.message_by_id(&message_id)?.ok_or_else(|| {
             VivariumError::Message("the posted action is missing from the store".into())
@@ -425,8 +421,9 @@ impl Mailspace {
 
     /// The actions posted on a record that is still open and whose id is not
     /// in `applied`, oldest first. Closed records are skipped: an action on a
-    /// finished dispatch has nothing left to act on. A posted letter that no
-    /// longer parses as an action is skipped.
+    /// finished dispatch has nothing left to act on. A posted letter that does
+    /// not parse as an action is not returned here and is never applied; see
+    /// [`Mailspace::pump_unreadable_actions`].
     ///
     /// # Errors
     /// Returns an error if the event log or a letter cannot be read.
@@ -434,6 +431,36 @@ impl Mailspace {
         &self,
         applied: &BTreeSet<String>,
     ) -> Result<Vec<PumpAction>, VivariumError> {
+        let mut pending = Vec::new();
+        for posted in self.posted_actions(applied)? {
+            if let Posted::Action(action) = posted {
+                pending.push(action);
+            }
+        }
+        Ok(pending)
+    }
+
+    /// The action letters posted on a record that is still open, not in
+    /// `applied`, that do not parse as an action, oldest first. They are never
+    /// applied; the pump raises one alarm per letter.
+    ///
+    /// # Errors
+    /// Returns an error if the event log or a letter cannot be read.
+    pub fn pump_unreadable_actions(
+        &self,
+        applied: &BTreeSet<String>,
+    ) -> Result<Vec<UnreadableAction>, VivariumError> {
+        let mut unreadable = Vec::new();
+        for posted in self.posted_actions(applied)? {
+            if let Posted::Unreadable(letter) = posted {
+                unreadable.push(letter);
+            }
+        }
+        Ok(unreadable)
+    }
+
+    /// Every posted action letter on an open record that is not applied.
+    fn posted_actions(&self, applied: &BTreeSet<String>) -> Result<Vec<Posted>, VivariumError> {
         let storage = self.storage()?;
         let events = storage.list_mailspace_events_for_command(EVENT_COMMAND, EVENT_TYPE)?;
         if events
@@ -447,25 +474,26 @@ impl Mailspace {
             .into_iter()
             .map(|record| record.handle)
             .collect();
-        let mut pending = Vec::new();
+        let mut posted = Vec::new();
         for event in &events {
             if applied.contains(&event.content_id) {
                 continue;
             }
-            if let Some(action) = self.action_of(&storage, event, &open)? {
-                pending.push(action);
+            if let Some(found) = self.action_of(&storage, event, &open)? {
+                posted.push(found);
             }
         }
-        Ok(pending)
+        Ok(posted)
     }
 
-    /// One posted action, when its record is open and its letter parses.
+    /// One posted action, when its record is open: the action when its letter
+    /// parses, the unreadable letter when it does not.
     fn action_of(
         &self,
         storage: &Storage,
         event: &MailspaceEvent,
         open: &BTreeSet<String>,
-    ) -> Result<Option<PumpAction>, VivariumError> {
+    ) -> Result<Option<Posted>, VivariumError> {
         let Some(record) = event
             .note
             .as_deref()
@@ -475,17 +503,46 @@ impl Mailspace {
         };
         let data = storage.read_message(&event.message_id)?;
         let body = crate::extract::extract_text(&data)?;
-        let Some(request) = PumpActionRequest::from_letter(&data, &body) else {
-            return Ok(None);
-        };
-        Ok(Some(PumpAction {
-            id: event.content_id.clone(),
-            record: record.to_string(),
-            need: header_value(&data, super::pump_record::PUMP_NEED_HEADER).unwrap_or_default(),
-            date: event.occurred_at.clone(),
-            request,
-        }))
+        let handle = storage.display_handle(&event.message_id)?;
+        match read_front(&handle, &body) {
+            Ok(envelope) => {
+                let need = envelope.front.need.clone();
+                Ok(Some(Posted::Action(PumpAction {
+                    id: event.content_id.clone(),
+                    record: record.to_string(),
+                    need,
+                    date: event.occurred_at.clone(),
+                    request: PumpActionRequest::from_front(envelope.front, &envelope.body),
+                })))
+            }
+            Err(error) => Ok(Some(Posted::Unreadable(UnreadableAction {
+                id: event.content_id.clone(),
+                handle,
+                record: record.to_string(),
+                error: error.to_string(),
+            }))),
+        }
     }
+}
+
+/// An action letter's front matter. A body with no front matter is a legacy
+/// letter; invalid front matter names the letter in its error.
+fn read_front(
+    handle: &str,
+    body: &str,
+) -> Result<crate::letter::Envelope<ActionFront>, LetterError> {
+    let opens = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim() == FENCE);
+    if !opens {
+        return Err(LetterError::Legacy {
+            handle: handle.to_string(),
+            kind: "mail".to_string(),
+        });
+    }
+    parse_letter(body)
+        .map_err(|error| LetterError::Invalid(format!("action letter {handle}: {error}")))
 }
 
 /// The need a pump step task or run sentinel belongs to, read from its
