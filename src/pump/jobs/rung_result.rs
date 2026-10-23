@@ -131,7 +131,8 @@ pub fn env_failure(job: &PoolJob) -> Option<EnvFailure> {
     stderr.map(|(tool, line)| env(EnvKind::ToolMissing, tool, &line))
 }
 
-fn env(kind: EnvKind, tool: Option<String>, evidence: &str) -> EnvFailure {
+/// An [`EnvFailure`] of `kind` with the first line of `evidence`, capped.
+pub(crate) fn env(kind: EnvKind, tool: Option<String>, evidence: &str) -> EnvFailure {
     let line = evidence.lines().next().unwrap_or_default().trim();
     EnvFailure {
         kind,

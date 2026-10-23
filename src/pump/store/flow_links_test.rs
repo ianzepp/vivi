@@ -3,6 +3,7 @@
 use tempfile::{TempDir, tempdir};
 
 use super::SliceLink;
+use crate::pump::flow::index::RunRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 fn open(dir: &TempDir) -> PumpStore {
@@ -137,4 +138,23 @@ fn fanout_start_keeps_the_first_tip_and_tells_none_from_unset() {
         store.fanout_start("t-b").expect("read"),
         Some(Some("abc".into()))
     );
+}
+
+#[test]
+fn for_run_copies_need_and_run() {
+    let run = RunRow {
+        need: "n7".into(),
+        run: 3,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    let link = SliceLink::for_run(&run, "t-x", Some("f-1".into()), vec!["t-y".into()]);
+    assert_eq!(link.need, "n7");
+    assert_eq!(link.run, 3);
+    assert_eq!(link.task, "t-x");
+    assert_eq!(link.fanout.as_deref(), Some("f-1"));
+    assert_eq!(link.deps, vec!["t-y".to_string()]);
 }

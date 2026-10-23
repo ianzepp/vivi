@@ -11,6 +11,7 @@ use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
 use crate::pump::envelope::roles::{RoleKind, parse_for};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::research::for_want;
 use crate::pump::flow::step_error::{STEP_ERROR_LIMIT, note_failure, note_success};
@@ -19,8 +20,6 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
-/// Run state of a landed run.
-const RUN_DONE: &str = "done";
 /// Flow kind of a research run.
 const KIND_RESEARCH: &str = "research";
 /// Node id of the researcher step.
@@ -46,7 +45,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for ResearchPost {
     ) -> Result<(), VivariumError> {
         let applied = store.applied_action_ids()?;
         let mut first_error = None;
-        for run in store.runs_in_state(RUN_DONE)? {
+        for run in store.runs_in_state(run_state::DONE)? {
             if run.kind != KIND_RESEARCH {
                 continue;
             }

@@ -21,6 +21,7 @@ use crate::pump::envelope::review::Finding;
 use crate::pump::envelope::roles::{RoleKind, parse_for};
 use crate::pump::flow::fanout::VERDICT_MERGED;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
@@ -34,9 +35,6 @@ pub const REPAIR_AUDIT_FAILED: &str = "flow-repair-audit-failed";
 
 /// Exception kind of a finding given up after repeated failing ticks.
 pub const REPAIR_AUDIT_GAVE_UP: &str = "flow-repair-audit-gave-up";
-
-/// Run state of a landed run.
-const RUN_DONE: &str = "done";
 
 /// Kind of a landed repair run.
 const REPAIR_KIND: &str = "repair";
@@ -76,7 +74,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for RepairAudit {
     ) -> Result<(), VivariumError> {
         let applied = store.applied_action_ids()?;
         let mut first_error = None;
-        for run in store.runs_in_state(RUN_DONE)? {
+        for run in store.runs_in_state(run_state::DONE)? {
             if run.kind != REPAIR_KIND || applied.contains(&run_key(&run.need, run.run)) {
                 continue;
             }

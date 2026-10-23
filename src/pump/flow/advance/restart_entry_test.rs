@@ -3,11 +3,12 @@
 
 use tempfile::tempdir;
 
-use super::{RUN_RESTARTING, restart, resume};
+use super::{restart, resume};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::test_ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -25,7 +26,7 @@ fn a_restart_with_no_newer_run_resumes_at_the_recorded_entry() -> Result<(), Viv
 
     // The state a failed read leaves: entry recorded, run restarting, no newer run.
     store.set_restart_entry(NEED, old.run, "plan")?;
-    store.set_run_state(NEED, old.run, RUN_RESTARTING)?;
+    store.set_run_state(NEED, old.run, run_state::RESTARTING)?;
     assert_eq!(store.runs_of(NEED)?.len(), 1);
 
     resume(&ctx, &store, &mut mail, &old)?;
@@ -64,7 +65,7 @@ fn a_restart_with_no_entry_and_no_newer_run_still_errors() -> Result<(), Vivariu
     let mut mail = FakeMail::new("pump");
     MailWriter::open_record(&mut mail, NEED, "record")?;
     let old = start(&ctx, &store, &mut mail, NEED, None)?;
-    store.set_run_state(NEED, old.run, RUN_RESTARTING)?;
+    store.set_run_state(NEED, old.run, run_state::RESTARTING)?;
     assert!(resume(&ctx, &store, &mut mail, &old).is_err());
     Ok(())
 }

@@ -4,25 +4,18 @@
 
 use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowDef, FlowKind, SENTINEL_MARKER, STEP_MARKER};
-use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepRow, StepState, run_state};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
-use crate::pump::store::{PumpStore, RUN_LIVE};
+use crate::pump::store::PumpStore;
 
 /// The step-row node name of a run's sentinel task.
 pub const SENTINEL_NODE: &str = "sentinel";
 
 /// The run number at which the alarm fires (an alarm, not a limit).
 const ALARM_RUN: u32 = 4;
-
-/// The run state of a run whose tasks are still being sent: [`resume`]
-/// finishes it.
-pub const RUN_STARTING: &str = "starting";
-
-/// The flow version recorded in a run row.
-const FLOW_VERSION_NUMBER: u32 = 2;
 
 /// Start a new run on `need` at `entry` (the flow's first entry when `None`).
 ///
@@ -48,7 +41,7 @@ where
     M: MailWriter + MailReader,
 {
     let runs = store.runs_of(need)?;
-    if let Some(row) = runs.iter().find(|row| row.state == RUN_STARTING) {
+    if let Some(row) = runs.iter().find(|row| row.state == run_state::STARTING) {
         return resume(ctx, store, mail, row);
     }
     let sent = mail.sentinel_count(need)?;
@@ -65,7 +58,7 @@ where
         flow_version: FLOW_VERSION_NUMBER,
         kind: kind.name().to_string(),
         entry,
-        state: RUN_STARTING.to_string(),
+        state: run_state::STARTING.to_string(),
     };
     store.insert_run(&row)?;
     resume(ctx, store, mail, &row)
@@ -95,7 +88,7 @@ where
         store,
         mail,
         &rows,
-        (need, number, SENTINEL_NODE),
+        (run, SENTINEL_NODE),
         (
             format!("{SENTINEL_MARKER} {need} r{number}"),
             StepState::Running,
@@ -106,7 +99,7 @@ where
         store,
         mail,
         &rows,
-        (need, number, entry),
+        (run, entry),
         (
             format!("{STEP_MARKER} {need} r{number} {entry}"),
             StepState::Pending,
@@ -120,13 +113,13 @@ where
         need,
         &format!("pump: run r{number} started ({}, entry {entry})", run.kind),
     )?;
-    store.set_run_state(need, number, RUN_LIVE)?;
+    store.set_run_state(need, number, run_state::LIVE)?;
 
     if number >= ALARM_RUN {
         ctx.exception("flow-run-4", need, &run4_text(store, need, number)?);
     }
     Ok(RunRow {
-        state: RUN_LIVE.to_string(),
+        state: run_state::LIVE.to_string(),
         ..run.clone()
     })
 }
@@ -170,20 +163,20 @@ fn send_missing<M: MailWriter + MailReader>(
     store: &PumpStore,
     mail: &mut M,
     rows: &[StepRow],
-    (need, run, node): (&str, u32, &str),
+    (run, node): (&RunRow, &str),
     (body, state): (String, StepState),
 ) -> Result<String, VivariumError> {
     if let Some(row) = rows.iter().find(|r| r.node == node) {
         return Ok(row.task.clone());
     }
     let from = ctx.cfg.reply_from.as_str();
-    let subject = format!("{need} r{run} {node}");
+    let subject = format!("{} r{} {node}", run.need, run.run);
     // A task sent before a crash but never indexed is adopted, not sent twice.
     let task = match mail.sent_step(&subject, &body)? {
         Some(task) => task,
         None => mail.send_step(from, from, &subject, &body, &[])?,
     };
-    store.insert_step(need, &step_row(run, node, &task, state))?;
+    store.insert_run_step(run, &run.step(node, &task, state))?;
     Ok(task)
 }
 
@@ -203,16 +196,6 @@ fn resolve_entry(
                 VivariumError::Message(format!("{} flow has no entries", kind.name()))
             })
         }
-    }
-}
-
-fn step_row(run: u32, node: &str, task: &str, state: StepState) -> StepRow {
-    StepRow {
-        run,
-        node: node.to_string(),
-        task: task.to_string(),
-        state,
-        verdict: None,
     }
 }
 

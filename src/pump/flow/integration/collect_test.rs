@@ -231,6 +231,15 @@ fn a_moved_main_on_attempt_one_queues_attempt_two_at_the_new_tip() -> R {
     assert_eq!(again.payload["class"], serde_json::json!("merge-main"));
     assert_eq!(rig.step()?.state, StepState::Running);
     assert_eq!(rig.store.attempts_of(&rig.task)?, 2);
+    let stored = rig
+        .store
+        .step_job(&id)?
+        .ok_or_else(|| VivariumError::Message("no step_jobs row".into()))?;
+    assert_eq!(stored.attempt, 2);
+    assert_eq!(again.payload["attempt"], serde_json::json!(stored.attempt));
+    assert_eq!(again.payload["run"], serde_json::json!(stored.run));
+    assert_eq!(again.payload["node"], serde_json::json!(stored.node));
+    assert_eq!(again.payload["task"], serde_json::json!(stored.task));
     Ok(())
 }
 

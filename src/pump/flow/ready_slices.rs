@@ -13,9 +13,14 @@ use crate::pump::flow::mail::{MailReader, TaskStatus};
 use crate::pump::flow::need_branch::{DELETING, LIVE, RENAMING};
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::slice_dispatch;
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+
+/// Exception kind: a dependency closed without building, so the slice waits
+/// for an operator decision.
+pub(crate) const SLICE_BLOCKED: &str = "flow-slice-blocked";
 
 /// Registry hook: the ready-slices phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
@@ -94,7 +99,7 @@ fn start_if_ready<S: JobStore, M: FlowMail>(
     if matches!(
         store.scope_state(&row.task)?,
         Some(ScopeState::Wait | ScopeState::Rework)
-    ) || !deps_built(store, mail, &row.task)?
+    ) || !deps_built(ctx, store, mail, &row.task)?
     {
         return Ok(());
     }
@@ -103,8 +108,10 @@ fn start_if_ready<S: JobStore, M: FlowMail>(
 }
 
 /// Every dependency of `task` is closed merged or no-defect. No link means no
-/// dependencies.
+/// dependencies. A dependency closed with any other verdict never changes, so
+/// it raises [`SLICE_BLOCKED`] once; an open dependency is the expected wait.
 fn deps_built<M: MailReader>(
+    ctx: &Ctx,
     store: &PumpStore,
     mail: &M,
     task: &str,
@@ -112,18 +119,27 @@ fn deps_built<M: MailReader>(
     let Some(link) = store.slice_link(task)? else {
         return Ok(true);
     };
+    let mut all_built = true;
     for dep in &link.deps {
         let state = mail.task_state(dep)?;
-        let built = state.status == TaskStatus::Done
-            && matches!(
-                state.verdict.as_deref(),
-                Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
+        if state.status != TaskStatus::Done {
+            all_built = false;
+            continue;
+        }
+        let verdict = state.verdict.as_deref().unwrap_or("none");
+        if !matches!(verdict, VERDICT_MERGED | VERDICT_NO_DEFECT) {
+            all_built = false;
+            raise_once(
+                ctx,
+                SLICE_BLOCKED,
+                task,
+                &format!(
+                    "slice {task}: expected dependency {dep} closed {VERDICT_MERGED} or {VERDICT_NO_DEFECT}; actual: closed {verdict}"
+                ),
             );
-        if !built {
-            return Ok(false);
         }
     }
-    Ok(true)
+    Ok(all_built)
 }
 
 #[cfg(test)]

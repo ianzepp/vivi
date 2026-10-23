@@ -27,7 +27,6 @@ mod state_rows;
 pub mod step_payload;
 mod unit_extra;
 pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
-pub use flow_index::RUN_LIVE;
 pub use need_branch::NeedBranchRow;
 use schema::{drop_request_queues, newer_schema, schema_version, take_migration_lock};
 use state_rows::{

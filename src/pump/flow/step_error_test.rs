@@ -24,6 +24,18 @@ fn counts_go_up_and_reset_on_success() {
 }
 
 #[test]
+fn count_restarts_after_the_limit() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    assert_eq!(note_failure(&ctx, "a"), 1);
+    assert_eq!(note_failure(&ctx, "a"), 2);
+    assert_eq!(note_failure(&ctx, "a"), 3);
+    assert_eq!(note_failure(&ctx, "a"), 1);
+    note_success(&ctx, "a");
+    assert_eq!(note_failure(&ctx, "a"), 1);
+}
+
+#[test]
 fn keys_count_apart() {
     let dir = tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());

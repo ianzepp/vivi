@@ -47,7 +47,7 @@ fn run_row(number: u32, entry: &str, state: &str) -> RunRow {
         need: NEED.into(),
         run: number,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: entry.into(),
         state: state.into(),

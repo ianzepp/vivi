@@ -2,8 +2,7 @@
 
 use tempfile::tempdir;
 
-use super::RUN_LIVE;
-use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
@@ -22,7 +21,7 @@ fn run(need: &str, n: u32, state: &str) -> RunRow {
         need: need.into(),
         run: n,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "admit".into(),
         state: state.into(),
@@ -56,8 +55,12 @@ fn runs_steps_and_jobs_round_trip() {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
 
     store.insert_run(&run("n1", 1, "done")).expect("run 1");
-    store.insert_run(&run("n1", 2, RUN_LIVE)).expect("run 2");
-    store.insert_run(&run("n2", 1, RUN_LIVE)).expect("n2 run");
+    store
+        .insert_run(&run("n1", 2, run_state::LIVE))
+        .expect("run 2");
+    store
+        .insert_run(&run("n2", 1, run_state::LIVE))
+        .expect("n2 run");
     assert_eq!(store.runs_of("n1").expect("runs").len(), 2);
     let live: Vec<_> = store
         .live_runs()
@@ -66,7 +69,9 @@ fn runs_steps_and_jobs_round_trip() {
         .map(|r| (r.need, r.run))
         .collect();
     assert_eq!(live, vec![("n1".into(), 2), ("n2".into(), 1)]);
-    store.set_run_state("n1", 2, "lock").expect("set");
+    store
+        .set_run_state("n1", 2, run_state::SUPERSEDED)
+        .expect("set");
     assert_eq!(store.live_runs().expect("live").len(), 1);
 
     store
@@ -103,8 +108,10 @@ fn runs_steps_and_jobs_round_trip() {
         };
         store.insert_step_job("n1", &row).expect("job");
     }
-    assert_eq!(store.attempts_of("t1").expect("attempts"), 2);
-    assert_eq!(store.attempts_of("t2").expect("attempts"), 0);
+    assert_eq!(store.last_attempt("t1").expect("attempts"), 2);
+    assert_eq!(store.next_attempt("t1").expect("attempts"), 3);
+    assert_eq!(store.last_attempt("t2").expect("attempts"), 0);
+    assert_eq!(store.next_attempt("t2").expect("attempts"), 1);
     assert_eq!(store.step_job("j2").expect("job").expect("some").attempt, 2);
     assert!(store.step_job("j9").expect("job").is_none());
 }
@@ -135,7 +142,9 @@ fn a_v8_database_keeps_its_version_and_gains_the_tables() {
 fn save_leaves_flow_rows_alone() {
     let dir = tempdir().expect("tempdir");
     let mut store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
-    store.insert_run(&run("n1", 1, RUN_LIVE)).expect("run");
+    store
+        .insert_run(&run("n1", 1, run_state::LIVE))
+        .expect("run");
     store
         .insert_step("n1", &step(1, "admit", "t1"))
         .expect("step");
@@ -149,8 +158,12 @@ fn save_leaves_flow_rows_alone() {
 fn a_finishing_run_is_listed_by_finishing_runs_and_not_by_live_runs() {
     let dir = tempdir().expect("tempdir");
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
-    store.insert_run(&run("n1", 1, RUN_LIVE)).expect("run 1");
-    store.insert_run(&run("n2", 1, RUN_LIVE)).expect("run 2");
+    store
+        .insert_run(&run("n1", 1, run_state::LIVE))
+        .expect("run 1");
+    store
+        .insert_run(&run("n2", 1, run_state::LIVE))
+        .expect("run 2");
     assert!(store.finishing_runs().expect("finishing").is_empty());
 
     store
@@ -180,7 +193,9 @@ fn a_finishing_run_is_listed_by_finishing_runs_and_not_by_live_runs() {
 fn state_at_updates_on_each_state_change() {
     let dir = tempdir().expect("tempdir");
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
-    store.insert_run(&run("n1", 1, RUN_LIVE)).expect("run");
+    store
+        .insert_run(&run("n1", 1, run_state::LIVE))
+        .expect("run");
     assert!(store.run_state_at("n1", 9).expect("at").is_none());
     assert!(store.run_state_at("n1", 1).expect("at").expect("some") > 0);
 
@@ -195,4 +210,83 @@ fn state_at_updates_on_each_state_change() {
             "state {state} stamps the time"
         );
     }
+}
+
+#[test]
+fn insert_run_step_checks_the_run_and_run_row_names_a_missing_run() {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    store
+        .insert_run(&run("n1", 2, run_state::LIVE))
+        .expect("run");
+    let row = store.run_row("n1", 2).expect("run row");
+    assert_eq!((row.need.as_str(), row.run), ("n1", 2));
+
+    let err = store
+        .insert_run_step(&row, &step(1, "admit", "t1"))
+        .expect_err("mismatched run");
+    assert_eq!(
+        err.to_string(),
+        "step t1: expected run r2; actual: row run r1"
+    );
+    assert!(store.steps_of("n1", 1).expect("steps").is_empty());
+
+    store
+        .insert_run_step(&row, &step(2, "admit", "t2"))
+        .expect("matching run");
+    assert_eq!(store.steps_of("n1", 2).expect("steps").len(), 1);
+
+    let err = store.run_row("n1", 9).expect_err("missing run");
+    assert_eq!(
+        err.to_string(),
+        "need n1: expected run r9; actual: no such run"
+    );
+}
+
+#[test]
+fn a_correction_does_not_inflate_the_next_attempt() {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    store
+        .insert_run(&run("n1", 1, run_state::LIVE))
+        .expect("run");
+    assert_eq!(store.last_attempt("t1").expect("last"), 0);
+    assert_eq!(store.next_attempt("t1").expect("next"), 1);
+    for (job, attempt) in [("j1", 1), ("j1-c1", 1), ("j2", 2)] {
+        let row = StepJobRow {
+            job: job.into(),
+            run: 1,
+            node: "admit".into(),
+            task: "t1".into(),
+            attempt,
+        };
+        store.insert_step_job("n1", &row).expect("job");
+    }
+    assert_eq!(store.last_attempt("t1").expect("last"), 2);
+    assert_eq!(store.next_attempt("t1").expect("next"), 3);
+}
+
+#[test]
+fn run_states_outside_the_vocabulary_are_refused() {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    let err = store
+        .insert_run(&run("n1", 1, "lock"))
+        .expect_err("insert unknown state");
+    assert!(err.to_string().contains("actual: lock"), "{err}");
+
+    store
+        .insert_run(&run("n1", 1, run_state::LIVE))
+        .expect("run");
+    let err = store
+        .set_run_state("n1", 1, "lock")
+        .expect_err("set unknown state");
+    assert!(err.to_string().contains("actual: lock"), "{err}");
+
+    store
+        .conn
+        .execute("UPDATE flow_runs SET state = 'lock' WHERE need = 'n1'", [])
+        .expect("corrupt");
+    let err = store.runs_of("n1").expect_err("read unknown state");
+    assert!(err.to_string().contains("actual: lock"), "{err}");
 }

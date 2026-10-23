@@ -207,24 +207,14 @@ fn requeue<S: JobStore, M: FlowMail>(
     .ok_or_else(|| VivariumError::Config(String::from("no merge role for the main merge")))?;
     let mut spec = merge_main::with_attempt(spec, target, attempt);
     spec.task.clone_from(&old.task);
-    let mut payload = old.payload.clone();
-    if let Some(map) = payload.as_object_mut() {
-        map.insert("attempt".to_owned(), serde_json::json!(attempt));
+    spec.payload = old.payload.clone();
+    if let Some(map) = spec.payload.as_object_mut() {
         map.insert("main_tip".to_owned(), serde_json::json!(main_tip));
     }
-    spec.payload = payload;
-    let id = spec.id.clone();
+    let new_row = row.next(&spec.id);
+    new_row.stamp(&cx.run.need, &mut spec.payload);
     jobs::enqueue(cx.st, spec)?;
-    cx.store.insert_step_job(
-        &cx.run.need,
-        &StepJobRow {
-            job: id,
-            run: row.run,
-            node: row.node.clone(),
-            task: row.task.clone(),
-            attempt,
-        },
-    )?;
+    cx.store.insert_step_job(&cx.run.need, &new_row)?;
     cx.store
         .set_step_state(&step.task, StepState::Running, None)
 }

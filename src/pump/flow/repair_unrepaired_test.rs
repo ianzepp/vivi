@@ -58,7 +58,7 @@ fn run() -> RunRow {
         need: NEED.into(),
         run: 1,
         flow: "repair".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "repair".into(),
         entry: "fix1".into(),
         state: "live".into(),

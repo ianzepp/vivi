@@ -10,6 +10,7 @@ use crate::pump::flow::collect_step::{RunCx, StepCollector, merged_payload};
 use crate::pump::flow::def::{FAILED, NodeClass};
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
+use crate::pump::flow::main_rung;
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
 use crate::pump::flow::verify;
 use crate::pump::jobs::merge_main::{self, MergeMainResult};
@@ -33,9 +34,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairMergeMain {
         }
         match merge_main::classify(job) {
             None => Ok(()),
-            Some(MergeMainResult::Merged(sha)) => {
-                cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &sha))
-            }
+            Some(MergeMainResult::Merged(sha)) => land(cx, job, step, &sha),
             Some(MergeMainResult::Conflict) => {
                 let reason = if merge_main::main_moved(job) {
                     "main moved"
@@ -47,6 +46,22 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairMergeMain {
             Some(MergeMainResult::Failed) => settle(cx, job, step),
         }
     }
+}
+
+/// Record the landed repair merge for its target, then answer merged.
+fn land<S: JobStore, M: FlowMail>(
+    cx: &mut RunCx<'_, S, M>,
+    job: &PoolJob,
+    step: &StepRow,
+    sha: &str,
+) -> Result<(), VivariumError> {
+    let target = job
+        .target
+        .as_deref()
+        .ok_or_else(|| VivariumError::Parse(format!("merge-main job {} has no target", job.id)))?;
+    cx.store
+        .set_main_state(&main_rung::key(main_rung::REPAIRED, target), sha)?;
+    cx.advance_word(step, "merged", merged_payload(cx.ctx, job, sha))
 }
 
 /// The worker could not run git: the job says nothing about main. Alarm once
@@ -117,7 +132,7 @@ fn settle<S: JobStore, M: FlowMail>(
     let need_tip = payload_str(job, "need_tip")?;
     let base = payload_str(job, "main_tip")?;
     match verify::ref_contains(cx.ctx, &target, &publish_ref, need_tip) {
-        Ok(Some(tip)) => cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &tip)),
+        Ok(Some(tip)) => land(cx, job, step, &tip),
         Ok(None) => match main_now(cx, &target) {
             Ok(now) if now != base => {
                 let reason = format!("main moved from {base} to {now} without {need_tip}");

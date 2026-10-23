@@ -14,11 +14,10 @@ use std::collections::BTreeMap;
 use chrono::DateTime;
 
 use crate::error::VivariumError;
-use crate::pump::flow::advance::restart::RUN_RESTARTING;
-use crate::pump::flow::advance::start::{RUN_STARTING, resume, start};
-use crate::pump::flow::advance::terminal::RUN_FINISHING;
+use crate::pump::flow::advance::start::{resume, start};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
@@ -27,7 +26,7 @@ use crate::pump::flow::rank::need_key;
 use crate::pump::flow::tick::{FLOW_INVALID, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
-use crate::pump::store::{PumpStore, RUN_LIVE};
+use crate::pump::store::PumpStore;
 
 /// Exception kind: a run stayed `starting` too long.
 pub const START_STUCK: &str = "flow-run-start-stuck";
@@ -123,7 +122,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Intake {
 
 /// Resume every `starting` run; past the stuck limit raise the alarm once.
 fn resume_starting<M: FlowMail>(ctx: &Ctx, store: &PumpStore, mail: &mut M) {
-    let runs = match store.runs_in_state(RUN_STARTING) {
+    let runs = match store.runs_in_state(run_state::STARTING) {
         Ok(runs) => runs,
         Err(error) => {
             ctx.log(&format!("flow intake: cannot list starting runs: {error}"));
@@ -162,7 +161,7 @@ fn in_flight<M: FlowMail>(
 ) -> Result<(usize, Vec<String>), VivariumError> {
     let mut active = 0;
     let mut busy = Vec::new();
-    for state in [RUN_STARTING, RUN_LIVE, RUN_RESTARTING] {
+    for state in [run_state::STARTING, run_state::LIVE, run_state::RESTARTING] {
         for run in store.runs_in_state(state)? {
             if run.kind == FlowKind::Repair.name() {
                 busy.push(target_of(mail, &run.need)?);
@@ -250,7 +249,7 @@ fn has_run_in_flight(store: &PumpStore, need: &str) -> Result<bool, VivariumErro
     Ok(store.runs_of(need)?.iter().any(|run| {
         matches!(
             run.state.as_str(),
-            RUN_STARTING | RUN_LIVE | RUN_FINISHING | RUN_RESTARTING
+            run_state::STARTING | run_state::LIVE | run_state::FINISHING | run_state::RESTARTING
         )
     }))
 }

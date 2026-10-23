@@ -25,7 +25,7 @@ use crate::pump::flow::slice_dispatch::{self, AttemptResult, DEVIATIONS_MARKER, 
 use crate::pump::flow::tick::{
     FOLLOW_UP, FOLLOW_UP_MARKER, OPERATOR_HOLD, SCOPE_REWORK, raise_once,
 };
-use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure};
+use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure, EnvKind};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 
 /// Characters of a timed-out hand's receipt passed to the split job.
@@ -42,19 +42,33 @@ fn tail_of(text: &str, max: usize) -> &str {
 /// Marker of the reply that records a hand job's environment failure.
 const ENV_MARKER: &str = "pump-slice-env:";
 
-/// The runner-level environment failure of a hand job, if it has one: a host
-/// failure the runner classified from its own facts, or the agent binary
-/// itself exiting 126 or 127. A missing tool the hand's own test run printed
-/// to stderr is the hand's judgment and does not count.
+/// The runner-level environment failure of a hand job, if it has one. Only
+/// runner facts count: the agent binary itself exiting 126 or 127, or a host
+/// failure the runner classified (`push_outcome`, `agent_exit`, `facts_exit`,
+/// `endpoint`, `provider`). A successful agent exit never counts. A stderr
+/// marker the hand's own test run printed (the `shell_marker` class, or no
+/// host failure at all) is the hand's judgment and is never read.
 pub(crate) fn runner_env_failure(job: &PoolJob) -> Option<EnvFailure> {
-    let env = rung_result::env_failure(job)?;
-    let agent_missing = matches!(rung_result::parse(job).exit, Some(126 | 127));
-    let host = job
-        .outcome
-        .as_ref()
-        .and_then(|outcome| outcome.host_failure())
-        .is_some_and(|host| host.class != "shell_marker");
-    (agent_missing || host).then_some(env)
+    let outcome = job.outcome.as_ref()?;
+    if outcome.agent_success() == Some(true) {
+        return None;
+    }
+    let host = outcome.host_failure();
+    if let Some(code @ (126 | 127)) = rung_result::parse(job).exit {
+        let tool = host.and_then(|host| host.command);
+        return Some(rung_result::env(
+            EnvKind::ToolMissing,
+            tool,
+            &format!("agent exit {code}"),
+        ));
+    }
+    let host = host?;
+    let kind = match host.class.as_str() {
+        "agent_exit" | "facts_exit" => EnvKind::ToolMissing,
+        "push_outcome" | "endpoint" | "provider" => EnvKind::HostSetup,
+        _ => return None,
+    };
+    Some(rung_result::env(kind, host.command, &host.detail))
 }
 
 /// Something done for a slice whose hand job built.
@@ -298,42 +312,50 @@ where
         .map(|_| ())
     }
 
-    /// A `scope-wait` slice whose holders all closed goes out again.
-    pub(crate) fn release_scope_waits(&mut self) -> Result<(), VivariumError> {
+    /// The slice rows of this run that wait on holders (`ScopeState::Wait`).
+    pub(crate) fn scope_wait_rows(&self) -> Result<Vec<StepRow>, VivariumError> {
+        let mut rows = Vec::new();
         for step in self.store.steps_of(&self.run.need, self.run.run)? {
-            if !is_slice_row(&step) || self.store.scope_state(&step.task)? != Some(ScopeState::Wait)
+            if is_slice_row(&step) && self.store.scope_state(&step.task)? == Some(ScopeState::Wait)
             {
-                continue;
+                rows.push(step);
             }
-            let mut all_closed = true;
-            for holder in wait_holders(self.store, &step.task)? {
-                let state = self.mail.task_state(&holder)?;
-                let landed = matches!(
-                    state.verdict.as_deref(),
-                    Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
-                );
-                all_closed &= state.status == TaskStatus::Done && landed;
-            }
-            if all_closed {
-                grant_held(self.store, &step.task)?;
-                let attempt = self.current_attempt(&step.task);
-                self.redispatch(&step, attempt)?;
-                finish_grant(self.store, &step.task)?;
-            }
+        }
+        Ok(rows)
+    }
+
+    /// A `scope-wait` slice whose holders all closed goes out again.
+    pub(crate) fn release_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let mut all_closed = true;
+        for holder in wait_holders(self.store, &step.task)? {
+            let state = self.mail.task_state(&holder)?;
+            let landed = matches!(
+                state.verdict.as_deref(),
+                Some(VERDICT_MERGED | VERDICT_NO_DEFECT)
+            );
+            all_closed &= state.status == TaskStatus::Done && landed;
+        }
+        if all_closed {
+            grant_held(self.store, &step.task)?;
+            let attempt = self.current_attempt(&step.task)?;
+            self.redispatch(step, attempt)?;
+            finish_grant(self.store, &step.task)?;
         }
         Ok(())
     }
 
-    /// The attempt of the newest hand job on `task` (1 when none is known).
-    pub(crate) fn current_attempt(&self, task: &str) -> u32 {
-        self.st
-            .jobs()
-            .values()
-            .filter(|job| job.task.as_deref() == Some(task) && job.kind == slice_dispatch::KIND)
-            .filter_map(|job| job.payload.get("attempt")?.as_u64())
-            .map(|attempt| u32::try_from(attempt).unwrap_or(u32::MAX))
-            .max()
-            .unwrap_or(1)
+    /// The attempt of the newest job row of the slice `task`, from step_jobs.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the attempt cannot be read, or when the
+    /// task has no step_jobs row.
+    pub(crate) fn current_attempt(&self, task: &str) -> Result<u32, VivariumError> {
+        match self.store.last_attempt(task)? {
+            0 => Err(VivariumError::Message(format!(
+                "slice {task}: expected a step_jobs row; actual: none"
+            ))),
+            attempt => Ok(attempt),
+        }
     }
 }
 

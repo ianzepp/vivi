@@ -21,13 +21,14 @@ use crate::mailspace::{Mailspace, MailspaceThreadMessage, Recipient};
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::record::open_mailspace;
-use crate::pump::store::{PumpStore, RUN_LIVE};
+use crate::pump::store::PumpStore;
 
 /// Exception kind: a reply arrived on a run that is too far along to restart.
 pub const THREAD_CHANGED: &str = "flow-thread-changed";
@@ -57,7 +58,7 @@ impl<S, M: FlowMail> TickPhase<S, M> for ThreadChange {
         mail: &mut M,
     ) -> Result<(), VivariumError> {
         let runs: Vec<RunRow> = store
-            .runs_in_state(RUN_LIVE)?
+            .runs_in_state(run_state::LIVE)?
             .into_iter()
             .filter(|run| run.kind == FlowKind::Build.name())
             .collect();

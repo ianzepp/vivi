@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 
-use super::{FAILING, key, record_target};
+use super::{FAILING, REPAIRED, key, record_target};
 use crate::error::VivariumError;
 use crate::mailspace::marked_line;
 use crate::pump::flow::def::FlowKind;
@@ -15,6 +15,7 @@ use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::kind;
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus};
 use crate::pump::flow::tick::raise_once;
+use crate::pump::flow::verify;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
 
@@ -66,6 +67,9 @@ pub(crate) fn report_red<M: FlowMail>(
     failing: &BTreeSet<String>,
     tail: &str,
 ) -> Result<(), VivariumError> {
+    if predates_repair(ctx, store, target, tip)? {
+        return Ok(());
+    }
     let state_key = key(FAILING, target);
     let previous: BTreeSet<String> = match store.main_state(&state_key)? {
         Some(json) => serde_json::from_str(&json)
@@ -94,6 +98,37 @@ pub(crate) fn report_red<M: FlowMail>(
         }
     }
     store_failing(store, &state_key, failing)
+}
+
+/// Whether the tested `tip` predates the newest landed repair merge of
+/// `target`: a red on such a tip says nothing about the repair and is ignored.
+/// Ancestry decides; an error keeps the job unapplied.
+fn predates_repair(
+    ctx: &Ctx,
+    store: &PumpStore,
+    target: &str,
+    tip: &str,
+) -> Result<bool, VivariumError> {
+    let Some(merge) = store.main_state(&key(REPAIRED, target))? else {
+        return Ok(false);
+    };
+    let Some(tctx) = ctx.for_target(target) else {
+        return Err(VivariumError::Message(format!(
+            "main rung red at {tip}: unknown target {target}"
+        )));
+    };
+    match verify::commit_contains(ctx, target, &tctx.cfg.main, tip, &merge) {
+        Ok(true) => Ok(false),
+        Ok(false) => {
+            ctx.log(&format!(
+                "main rung red at {tip} on {target} predates repair merge {merge}; ignored"
+            ));
+            Ok(true)
+        }
+        Err(reason) => Err(VivariumError::Message(format!(
+            "main rung red at {tip} on {target}: cannot tell if it holds repair merge {merge}: {reason}"
+        ))),
+    }
 }
 
 /// Remember the failing set this target last reported.
