@@ -118,13 +118,7 @@ pub fn expand<M: MailWriter + MailReader>(
                         .cloned(),
                 );
                 let task = adopt_or_send(ctx, store, mail, run, slice, &depends_on, &fanout)?;
-                let link = SliceLink {
-                    task: task.clone(),
-                    need: run.need.clone(),
-                    run: run.run,
-                    fanout: fanout.clone(),
-                    deps: dep_tasks,
-                };
+                let link = SliceLink::for_run(run, &task, fanout.clone(), dep_tasks);
                 record_slice(store, run, slice, &link)?;
                 task
             }
@@ -230,16 +224,8 @@ fn record_slice(
     link: &SliceLink,
 ) -> Result<(), VivariumError> {
     if store.step_by_task(&link.task)?.is_none() {
-        store.insert_step(
-            &run.need,
-            &StepRow {
-                run: run.run,
-                node: slice_node(&slice.id),
-                task: link.task.clone(),
-                state: StepState::Pending,
-                verdict: None,
-            },
-        )?;
+        let row = run.step(&slice_node(&slice.id), &link.task, StepState::Pending);
+        store.insert_run_step(run, &row)?;
     }
     if store.slice_scope(&link.task)?.is_none() {
         store.insert_slice_scope(&link.task, run.run, &slice.write_scope)?;

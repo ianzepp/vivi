@@ -117,22 +117,10 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
         &[],
     )?;
     mail.bind(&run.need, &[sentinel, task.clone()])?;
-    let row = StepRow {
-        run: run.run,
-        node,
-        task: task.clone(),
-        state: StepState::Running,
-        verdict: None,
-    };
-    store.insert_step(&run.need, &row)?;
+    let row = run.step(&node, &task, StepState::Running);
+    store.insert_run_step(run, &row)?;
     let fanout = store.slice_link(&slice.task)?.and_then(|link| link.fanout);
-    store.link_slice(&SliceLink {
-        task: task.clone(),
-        need: run.need.clone(),
-        run: run.run,
-        fanout,
-        deps: Vec::new(),
-    })?;
+    store.link_slice(&SliceLink::for_run(run, &task, fanout, Vec::new()))?;
     let brief = brief(ctx, mail, slice, mode, input)?;
     let spec = job(ctx, run, &row, slice, mode, &brief)?;
     jobs::enqueue(st, spec)?;
