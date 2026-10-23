@@ -110,8 +110,8 @@ fn polling_twice_raises_one_alarm_and_never_answers() -> R {
     assert_eq!(log.matches(MAIN_UNREPAIRED).count(), 1, "{log}");
     assert!(log.contains("vivi"), "{log}");
     assert!(log.contains(TESTED), "{log}");
-    assert!(log.contains("vivi/repair/abcd1234-a1"), "{log}");
-    assert!(log.contains("vivi/repair/abcd1234-a2"), "{log}");
+    assert!(log.contains("vivi/repair/abcd1234-r1-a1"), "{log}");
+    assert!(log.contains("vivi/repair/abcd1234-r1-a2"), "{log}");
     assert!(log.contains("vivi pump unlock abcd1234"), "{log}");
     assert!(
         MailReader::open_record(&rig.mail, NEED)?.is_some(),
@@ -126,6 +126,6 @@ fn an_unreadable_record_still_raises() -> R {
     assert_eq!(poll(&rig)?, None);
     let log = exceptions(&rig);
     assert_eq!(log.matches(MAIN_UNREPAIRED).count(), 1, "{log}");
-    assert!(log.contains("vivi/repair/abcd1234-a2"), "{log}");
+    assert!(log.contains("vivi/repair/abcd1234-r1-a2"), "{log}");
     Ok(())
 }

@@ -146,7 +146,7 @@ fn the_jobs_name_exactly_the_needs_refs() -> Result<(), VivariumError> {
         "vivi/unit/T10-a1",
         "vivi/unit/T2-a1",
         "vivi/unit/T1-a1/nested",
-        "vivi/repair/n1-a1",
+        "vivi/repair/n1-r1-a1",
         "pump/merge-main/default-merge-main-M1-0123456789ab",
         "pump/merge-main/default-merge-main-M2-0123456789ab",
     ]);
@@ -184,10 +184,10 @@ fn the_jobs_name_exactly_the_needs_refs() -> Result<(), VivariumError> {
 fn a_repair_run_also_prunes_its_repair_branches() -> Result<(), VivariumError> {
     let mut rig = rig()?;
     rig.land("repair")?;
-    rig.remote_has(&["vivi/repair/n1-a1", "vivi/repair/n2-a1"]);
+    rig.remote_has(&["vivi/repair/n1-r1-a1", "vivi/repair/n2-r1-a1"]);
     rig.tick()?;
     let ids: Vec<&str> = rig.jobs.jobs.keys().map(String::as_str).collect();
-    assert_eq!(ids, ["prune-n1-vivi-repair-n1-a1"]);
+    assert_eq!(ids, ["prune-n1-vivi-repair-n1-r1-a1"]);
     Ok(())
 }
 

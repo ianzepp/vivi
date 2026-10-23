@@ -123,10 +123,10 @@ fn attempt_one_cuts_a_repair_branch_from_the_main_tip() -> R {
     assert_eq!(spec.task.as_deref(), Some("t1"));
     assert_eq!(spec.target.as_deref(), Some("default"));
     assert_eq!(spec.from_ref.as_deref(), Some(MAIN_A));
-    assert_eq!(spec.branch.as_deref(), Some("vivi/repair/abcd1234-a1"));
+    assert_eq!(spec.branch.as_deref(), Some("vivi/repair/abcd1234-r1-a1"));
     assert_eq!(
         spec.publish_ref.as_deref(),
-        Some("refs/heads/vivi/repair/abcd1234-a1")
+        Some("refs/heads/vivi/repair/abcd1234-r1-a1")
     );
     assert!(!spec.read_only);
     assert_eq!(spec.budget, 1800);
@@ -152,7 +152,7 @@ fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
     rig.store
         .insert_step(NEED, &step("rung1", &rung, StepState::Done, Some("fail")))?;
     let facts = AttemptFacts {
-        branch: repair::branch(NEED, 1),
+        branch: repair::branch(NEED, 1, 1),
         commit: "c".repeat(40),
         base: MAIN_A.into(),
     };
@@ -167,7 +167,7 @@ fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
     main_tip(&rig.host, MAIN_B);
     let spec = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
     assert_eq!(spec.from_ref.as_deref(), Some(MAIN_B));
-    assert_eq!(spec.branch.as_deref(), Some("vivi/repair/abcd1234-a2"));
+    assert_eq!(spec.branch.as_deref(), Some("vivi/repair/abcd1234-r1-a2"));
     assert!(spec.body.contains("Prior attempt"));
     assert!(
         spec.body.contains("- rung1: Done, verdict fail"),

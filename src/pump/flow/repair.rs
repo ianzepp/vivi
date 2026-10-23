@@ -37,10 +37,11 @@ pub(crate) fn rung_node(attempt: u32) -> String {
     format!("rung{attempt}")
 }
 
-/// The branch an attempt publishes to: `vivi/repair/<need>-a<N>`, the one
-/// segment a repairer may publish.
-pub(crate) fn branch(need: &str, attempt: u32) -> String {
-    format!("vivi/repair/{need}-a{attempt}")
+/// The branch an attempt publishes to: `vivi/repair/<need>-r<run>-a<N>`, the
+/// one segment a repairer may publish. The run number keeps a restarted run
+/// off the refs an earlier run already pushed.
+pub(crate) fn branch(need: &str, run: u32, attempt: u32) -> String {
+    format!("vivi/repair/{need}-r{run}-a{attempt}")
 }
 
 /// What the open pump record of a repair need says.

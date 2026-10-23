@@ -19,7 +19,7 @@ const NEED: &str = "abcd1234";
 
 fn facts(commit: &str) -> AttemptFacts {
     AttemptFacts {
-        branch: branch(NEED, 1),
+        branch: branch(NEED, 1, 1),
         commit: commit.into(),
         base: "b".repeat(40),
     }
@@ -48,8 +48,8 @@ fn attempts_come_from_the_node_name() {
 
 #[test]
 fn the_branch_is_one_segment_after_the_prefix() {
-    let name = branch(NEED, 2);
-    assert_eq!(name, "vivi/repair/abcd1234-a2");
+    let name = branch(NEED, 1, 2);
+    assert_eq!(name, "vivi/repair/abcd1234-r1-a2");
     assert!(!name.strip_prefix("vivi/repair/").unwrap().contains('/'));
 }
 
@@ -82,7 +82,7 @@ fn facts_round_trip_through_a_marked_line() {
     assert_eq!(
         text,
         format!(
-            "branch=vivi/repair/{NEED}-a1 commit={} base={}",
+            "branch=vivi/repair/{NEED}-r1-a1 commit={} base={}",
             "c".repeat(40),
             "b".repeat(40)
         )

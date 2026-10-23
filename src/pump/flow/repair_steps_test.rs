@@ -111,7 +111,7 @@ impl Rig {
     /// The fix1 task carries the attempt facts reply.
     fn post_facts(&mut self) -> R {
         let facts = AttemptFacts {
-            branch: repair::branch(NEED, 1),
+            branch: repair::branch(NEED, 1, 1),
             commit: COMMIT.into(),
             base: BASE.into(),
         };

@@ -113,7 +113,7 @@ fn owned_refs(
         }
     }
     if repair {
-        prefixes.push(format!("vivi/repair/{need}-a"));
+        prefixes.push(format!("vivi/repair/{need}-r"));
     }
     let listed = list_remote(ctx, &row.target)?;
     Ok(listed
