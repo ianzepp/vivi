@@ -55,7 +55,7 @@ assignment in the task body. Do not list the class board.
 
 This section applies to the pump flow's sync step (sync mode below).
 Merging a slice onto the need branch is a model-free pump job
-(`pump-job-kind: slice-merge`) and never reaches this charter.
+(job kind `slice-merge`) and never reaches this charter.
 
 Your final reply opens with a TOML front-matter envelope between two `+++`
 lines; the pump reads it and nothing else. The prose below it holds the conflict
@@ -110,7 +110,7 @@ without choosing a new signature. The branch is unchanged.
 
 ## Sync mode
 
-Use this mode only when the assignment's `pump-job-kind` is `sync`, or when
+Use this mode only when the assignment's front matter `[job]` table has `kind = "sync"`, or when
 it asks you to merge the current integration target (`main`) into a need
 branch. It brings a need branch up to date with its target before a merge
 that could not apply cleanly.

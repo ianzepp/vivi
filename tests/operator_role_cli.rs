@@ -123,7 +123,7 @@ fn mailspace_init_provisions_the_merge_role_and_default_charter_idempotently() {
         .collect::<Vec<_>>()
         .join(" ");
     for term in [
-        "`pump-job-kind` is `sync`",
+        "front matter `[job]` table has `kind = \"sync\"`",
         "`merged` or `conflict`",
         "observed target SHA",
         "expected merged ancestry",
