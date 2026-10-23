@@ -1,8 +1,9 @@
-//! Typed envelopes per role. Hand, slicer and planner are wired; the other
-//! roles return `Invalid("role not wired")` until the review-role task.
+//! Typed envelopes per role. Hand, slicer and planner live here; the other
+//! roles are in `review.rs`.
 
 use serde::{Deserialize, Serialize};
 
+use super::review::{Admitter, Auditor, Cto, HeadCeo, Judge, Merge, Researcher};
 use super::{EnvelopeError, Validate, parse};
 use crate::pump::flow::def::NodeClass;
 
@@ -53,7 +54,13 @@ pub fn parse_for(kind: RoleKind, text: &str) -> Result<Parsed, EnvelopeError> {
         RoleKind::Hand => parsed::<Hand>(text),
         RoleKind::Slicer => parsed::<Slicer>(text),
         RoleKind::Planner => parsed::<Planner>(text),
-        _ => Err(EnvelopeError::Invalid("role not wired".to_string())),
+        RoleKind::Researcher => parsed::<Researcher>(text),
+        RoleKind::Admitter => parsed::<Admitter>(text),
+        RoleKind::Auditor => parsed::<Auditor>(text),
+        RoleKind::Judge => parsed::<Judge>(text),
+        RoleKind::Cto => parsed::<Cto>(text),
+        RoleKind::Merge => parsed::<Merge>(text),
+        RoleKind::HeadCeo => parsed::<HeadCeo>(text),
     }
 }
 

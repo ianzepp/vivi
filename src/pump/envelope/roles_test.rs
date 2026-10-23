@@ -188,16 +188,3 @@ fn split_mode_needs_two_to_four_numbered_ids() {
     ));
     assert!(parse_for(RoleKind::Slicer, &one).is_err());
 }
-
-#[test]
-fn other_roles_are_not_wired_yet() {
-    for kind in [
-        RoleKind::Researcher,
-        RoleKind::Auditor,
-        RoleKind::Merge,
-        RoleKind::HeadCeo,
-    ] {
-        let err = parse_for(kind, &hand("answer = \"x\"\n")).unwrap_err();
-        assert_eq!(err, EnvelopeError::Invalid("role not wired".to_string()));
-    }
-}
