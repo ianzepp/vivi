@@ -7,7 +7,6 @@ pub mod amend;
 pub mod apfssweep;
 pub mod attempt_read;
 pub mod attempt_record;
-pub mod audit;
 pub mod blockers;
 pub mod board;
 pub mod boardpass;
@@ -18,39 +17,27 @@ pub mod collect;
 pub mod config;
 pub mod control;
 pub(crate) mod cycle;
-pub mod dispatch;
 pub mod envelope;
 pub mod envfail;
 pub mod flow;
-pub mod gate;
-pub mod gate_config;
-pub mod gatefix;
 pub mod health;
 pub mod hold;
 pub mod host;
 pub mod jobs;
 pub mod logview;
-pub(crate) mod marked_result;
-pub mod merge;
 pub mod need;
-pub mod need_audit;
-pub mod need_landing;
-pub mod need_verdict;
 pub mod oversight;
 pub(crate) mod par;
 pub mod plan;
 pub(crate) mod plan_check;
 pub mod planner_jobs;
 pub mod priority;
-pub mod progress;
 pub mod proof;
 pub mod quarantine;
 pub mod ramsweep;
 pub mod readiness;
 pub mod ready;
-pub mod reclaim;
 pub mod record;
-pub mod recover;
 pub mod replan;
 pub mod report;
 pub mod requeue;
@@ -136,26 +123,6 @@ mod host_test;
 mod collect_test;
 
 #[cfg(test)]
-#[path = "pump/dispatch_test.rs"]
-mod dispatch_test;
-
-#[cfg(test)]
-#[path = "pump/gate_test.rs"]
-mod gate_test;
-
-#[cfg(test)]
-#[path = "pump/gatefix_test.rs"]
-mod gatefix_test;
-
-#[cfg(test)]
-#[path = "pump/gatefix_flow_test.rs"]
-mod gatefix_flow_test;
-
-#[cfg(test)]
-#[path = "pump/gate_promote_test.rs"]
-mod gate_promote_test;
-
-#[cfg(test)]
 #[path = "pump/board_test.rs"]
 mod board_test;
 
@@ -188,10 +155,6 @@ mod quarantine_test;
 mod requeue_test;
 
 #[cfg(test)]
-#[path = "pump/recover_test.rs"]
-mod recover_test;
-
-#[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]
 mod attempt_record_test;
 
@@ -208,17 +171,5 @@ mod envfail_test;
 mod proof_test;
 
 #[cfg(test)]
-#[path = "pump/audit_test.rs"]
-mod audit_test;
-
-#[cfg(test)]
 #[path = "pump/ramsweep_test.rs"]
 mod ramsweep_test;
-
-#[cfg(test)]
-#[path = "pump/need_audit_test.rs"]
-mod need_audit_test;
-
-#[cfg(test)]
-#[path = "pump/need_verdict_test.rs"]
-mod need_verdict_test;

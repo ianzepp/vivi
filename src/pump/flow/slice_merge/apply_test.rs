@@ -305,6 +305,38 @@ fn a_job_of_a_superseded_run_is_only_marked_applied() -> R {
     rig.apply()?;
     assert_eq!(rig.closes(), 0);
     assert!(rig.merge_job(1).applied_at.is_some());
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!raised.contains("flow-job-stale"), "{raised}");
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_withdrawn_run_is_applied_with_no_alarm() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, &published(), 1)?;
+    rig.store.set_run_state(NEED, 1, "withdrawn")?;
+    rig.apply()?;
+    assert_eq!(rig.closes(), 0);
+    assert!(rig.merge_job(1).applied_at.is_some());
+    assert_eq!(rig.row(&slice)?.state, StepState::Running);
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!raised.contains("flow-job-stale"), "{raised}");
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_done_run_raises_stale_once_and_applies() -> R {
+    let mut rig = rig()?;
+    rig.slice(JobStatus::Finished, &published(), 1)?;
+    rig.store.set_run_state(NEED, 1, "done")?;
+    rig.apply()?;
+    rig.apply()?;
+    assert_eq!(rig.closes(), 0);
+    assert!(rig.merge_job(1).applied_at.is_some());
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(raised.matches("flow-job-stale").count(), 1, "{raised}");
+    assert!(raised.contains("hand-merge-1"), "{raised}");
+    assert!(raised.contains("is done"), "{raised}");
     Ok(())
 }
 

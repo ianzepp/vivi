@@ -96,7 +96,6 @@ fn fail_at(step: Step) -> impl Fn(Step) -> Result<(), VivariumError> {
 fn creates_repo_mailspace_values_and_registration() {
     let host = Host::new();
     let mut request = host.request("app");
-    request.gate = Some("cargo test".into());
     request.branch = "trunk".into();
     let created = create_at(&request, &host.registry).unwrap();
 
@@ -120,8 +119,10 @@ fn creates_repo_mailspace_values_and_registration() {
     }
 
     let text = config_text(&host.project("app"));
-    assert!(text.contains("branch = \"trunk\""), "{text}");
-    assert!(text.contains("command = \"cargo test\""), "{text}");
+    assert!(
+        !text.contains("branch ="),
+        "no [pump] branch key is written: {text}"
+    );
     assert!(!created.mailspace_id.is_empty());
     assert!(text.contains(&created.mailspace_id), "{text}");
 
@@ -232,9 +233,6 @@ fn bad_inputs_are_refused_before_anything_is_made() {
     let mut request = host.request("app");
     request.branch = "bad..branch".into();
     cases.push(("branch", request));
-    let mut request = host.request("app");
-    request.gate = Some("  ".into());
-    cases.push(("gate", request));
     let mut request = host.request("app");
     request.pool = Some("Bad Pool".into());
     cases.push(("pool", request));

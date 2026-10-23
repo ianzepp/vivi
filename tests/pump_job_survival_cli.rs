@@ -8,54 +8,31 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vivi::pump::audit::AuditRun;
+use vivi::mailspace::{Mailspace, SendRequest};
+use vivi::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
+use vivi::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepState, run_state};
+use vivi::pump::flow::mail::{MailWriter, MailspacePort};
+use vivi::pump::flow::need_branch;
 use vivi::pump::jobs::{self, JobSpec, JobStatus};
-use vivi::pump::state::{GateRun, State, Status, Unit};
-use vivi::pump::store::{DB_FILENAME, PumpStore};
+use vivi::pump::state::State;
+use vivi::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
     ("planner-board", "planner:board", "pump-planner"),
-    ("merge-default-1", "merge", "merge"),
-    ("gate-survival", "gate", "gate"),
-    ("audit-survival", "audit", "auditor"),
-    ("promote-survival", "promote", "release"),
     ("cadence-survival", "cadence", "mind"),
     ("digest-survival", "digest", "digest"),
-    ("reclaim-survival", "reclaim", "hand"),
-    ("need-audit-survival", "need-audit", "auditor"),
-    ("need-merge-survival", "need-merge", "merge"),
+    ("hand-survival", "hand", "hand"),
 ];
-const UNIT: &str = "hand-survival";
 const TEST_HARNESS: &str = r#"#!/bin/sh
 set -eu
 brief="$1"
 id=$(sed -n 's/^pump-job-id: //p' "$brief" | head -n 1)
 kind=$(sed -n 's/^pump-job-kind: //p' "$brief" | head -n 1)
-if [ -z "$id" ]; then
-  id="$VIVI_TEST_UNIT_ID"
-  kind=hand
-fi
 printf '%s %s\n' "$kind" "$id" > "$VIVI_TEST_MARKERS/$id.started"
 while [ ! -f "$VIVI_TEST_MARKERS/release-workers" ]; do sleep 0.1; done
 case "$kind" in
   planner:board)
     printf '%s\n' 'PUMP-PLAN-BEGIN' '{"need":"planner-survival","verdict":"hold","reason":"recovered once"}' 'PUMP-PLAN-END'
-    ;;
-  merge)
-    printf 'survived merge\n' > .survival-merge.txt
-    git add .survival-merge.txt
-    git -c user.name='Survival Test' -c user.email=survival@localhost commit -q -m 'survival merge candidate'
-    candidate=$(git rev-parse HEAD)
-    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$candidate\",\"sources\":[]}"
-    ;;
-  gate)
-    printf '%s\n' 'FAILING-BEGIN' 'FAILING-END'
-    ;;
-  audit)
-    printf '%s\n' 'AUDIT-BEGIN' '[{"root_cause":"survived audit","brief":"record the recovered audit","tests":["survival::audit"],"write_scope":["audit.txt"],"proof":["true"]}]' 'AUDIT-END'
-    ;;
-  promote)
-    printf '%s\n' "PUMP_PROMOTE_RESULT={\"status\":\"ready\",\"tip\":\"$VIVI_TEST_TIP\"}"
     ;;
   cadence)
     printf 'cadence survived\n'
@@ -63,21 +40,8 @@ case "$kind" in
   digest)
     printf 'digest survived\n'
     ;;
-  reclaim)
-    printf 'reclaim survived\n'
-    ;;
-  need-audit)
-    printf '%s\n' 'PUMP_NEED_AUDIT_RESULT={"version":1,"verdict":"clean_pass"}'
-    ;;
-  need-merge)
-    printf 'survived need landing\n' > .survival-landing.txt
-    git add .survival-landing.txt
-    git -c user.name='Survival Test' -c user.email=survival@localhost commit -q -m 'survival need landing'
-    candidate=$(git rev-parse HEAD)
-    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$candidate\",\"sources\":[]}"
-    ;;
   hand)
-    printf '%s\n' 'VERDICT: no-defect'
+    printf '%s\n' '+++' 'answer = "built"' 'change = []' 'deviations = []' 'remaining = []' '+++' 'hand survived'
     ;;
   *)
     printf 'unexpected worker kind: %s\n' "$kind" >&2
@@ -94,6 +58,8 @@ struct Rig {
     marker_dir: PathBuf,
     child_log: PathBuf,
     tip: String,
+    bare: PathBuf,
+    seed: PathBuf,
 }
 
 struct PumpChild {
@@ -126,16 +92,12 @@ impl Drop for PumpChild {
 }
 
 #[test]
-fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
+fn local_pool_jobs_survive_sigkill_and_apply_once() {
     let rig = scaffold();
     seed_state(&rig);
 
     let mut first = pump_child(&rig);
-    let expected: Vec<String> = WORKERS
-        .iter()
-        .map(|(id, _, _)| (*id).to_owned())
-        .chain(std::iter::once(UNIT.to_owned()))
-        .collect();
+    let expected: Vec<String> = WORKERS.iter().map(|(id, _, _)| (*id).to_owned()).collect();
     let workers_started = wait_until(Duration::from_secs(30), || {
         expected
             .iter()
@@ -174,7 +136,6 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
         assert_eq!(job.status, JobStatus::Dispatched, "{id}");
         assert!(job.task.is_some(), "{id} did not save its task handle");
     }
-    assert_eq!(stopped_state.units[UNIT].status, Status::Inflight);
 
     let mut restarted = pump_child(&rig);
     assert!(
@@ -185,27 +146,6 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
     stop_pump(&rig, &mut restarted);
 
     let final_state = load_state(&rig);
-    assert_eq!(final_state.units[UNIT].status, Status::NoDefect);
-    assert!(
-        final_state.units[UNIT]
-            .verdict_text
-            .as_deref()
-            .is_some_and(|text| text.contains("VERDICT: no-defect"))
-    );
-    assert_eq!(final_state.gates.len(), 1, "gate receipt must apply once");
-    assert_eq!(
-        final_state.promotions.len(),
-        1,
-        "promotion receipt must apply once"
-    );
-    assert!(
-        !final_state.extra.contains_key("audit"),
-        "audit run remains open"
-    );
-    assert!(
-        final_state.units.contains_key("audit-survival-1"),
-        "audit report was not applied"
-    );
     assert_eq!(
         fs::read_to_string(rig.home.join("plans/survival-plan.json")).unwrap(),
         "{\"need\":\"planner-survival\",\"verdict\":\"hold\",\"reason\":\"recovered once\"}"
@@ -224,36 +164,17 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
         let receipt = &job.outcome.as_ref().unwrap().receipt;
         let marker = match job.kind.as_str() {
             "planner:board" => "PUMP-PLAN-BEGIN",
-            "merge" | "need-merge" => "PUMP_MERGE_RESULT=",
-            "gate" => "FAILING-BEGIN",
-            "audit" => "AUDIT-BEGIN",
-            "promote" => "PUMP_PROMOTE_RESULT=",
             "cadence" => "cadence survived",
             "digest" => "digest survived",
-            "reclaim" => "reclaim survived",
-            "need-audit" => "PUMP_NEED_AUDIT_RESULT=",
+            "hand" => "hand survived",
             other => panic!("unexpected seeded job kind {other}"),
         };
         assert!(
             receipt.contains(marker),
             "{id} has the wrong saved receipt: {receipt}"
         );
-        if job.kind != "need-audit" {
+        if pump_applies(&job.kind) {
             assert!(job.applied_at.is_some(), "{id} receipt was not applied");
-        }
-        if matches!(job.kind.as_str(), "merge" | "promote") {
-            let publication = job.outcome.as_ref().unwrap().runner_publish().unwrap();
-            assert!(publication.succeeded(), "{id}: {publication:?}");
-            assert_eq!(
-                publication.reference,
-                if job.kind == "merge" {
-                    "refs/heads/next"
-                } else {
-                    "refs/heads/main"
-                },
-                "{id} published the wrong integration ref"
-            );
-            assert_eq!(publication.candidate, publication.remote_sha);
         }
         assert_eq!(
             task_occurrences(&rig.project, &format!("[pump-job:{id}]"), role_for(id)),
@@ -261,7 +182,247 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
             "restart sent a duplicate task for {id}"
         );
     }
-    assert_eq!(task_occurrences(&rig.project, UNIT, "hand"), 1);
+}
+
+/// A publish-bearing flow job outlives its pump. A build run waits at the
+/// `merge` step; the pump starts the no-model merge-main job and is killed
+/// once the pool holds it. The restarted pump collects the finished job: main
+/// moves by exactly one merge commit and the flow step advances once.
+#[test]
+fn flow_merge_main_job_survives_sigkill_and_applies_once() {
+    let rig = scaffold();
+    let seeded = seed_merge_run(&rig);
+    let main_before = git_output(&rig.seed, &["rev-parse", "main"]);
+
+    let mut first = pump_child(&rig);
+    let held = wait_until(Duration::from_secs(30), || {
+        merge_job(&rig).is_some_and(|job| job.status == JobStatus::Dispatched && job.task.is_some())
+    });
+    if !held {
+        let details = startup_diagnostics(&rig);
+        let _ = first.kill();
+        let _ = first.wait();
+        let saved = rig._dir.keep();
+        panic!(
+            "merge-main job was not dispatched; fixture={}\n{details}",
+            saved.display()
+        );
+    }
+    first.kill().unwrap();
+    let _ = first.wait().unwrap();
+
+    let stopped = merge_job(&rig).expect("merge-main job after the kill");
+    assert_eq!(stopped.status, JobStatus::Dispatched, "{}", stopped.id);
+    assert!(
+        stopped.task.is_some(),
+        "{} lost its task handle",
+        stopped.id
+    );
+    assert_eq!(
+        stopped.publish_ref.as_deref(),
+        Some("refs/heads/main"),
+        "the job is not publish-bearing"
+    );
+    assert_eq!(step_state(&rig, &seeded.step_task), StepState::Running);
+
+    let mut restarted = pump_child(&rig);
+    let landed = wait_until(Duration::from_secs(40), || {
+        open_store(&rig)
+            .run_row(&seeded.need, 1)
+            .is_ok_and(|run| run.state == run_state::DONE)
+    });
+    if !landed {
+        let details = startup_diagnostics(&rig);
+        let _ = restarted.kill();
+        let _ = restarted.wait();
+        let saved = rig._dir.keep();
+        panic!(
+            "restart did not land the run; fixture={}\n{details}",
+            saved.display()
+        );
+    }
+    stop_pump(&rig, &mut restarted);
+
+    // The publish applied once: one merge commit joins the old main and the
+    // need tip, and nothing else moved main.
+    git(
+        &rig.seed,
+        &[
+            "fetch",
+            "-q",
+            path(&rig.bare),
+            "main:refs/remotes/bare/main",
+        ],
+    );
+    let range = format!("{main_before}..bare/main");
+    assert_eq!(
+        git_output(&rig.seed, &["rev-list", "--count", &range]),
+        "2",
+        "main gained something other than the need commit and one merge"
+    );
+    assert_eq!(
+        git_output(&rig.seed, &["rev-list", "--count", "--merges", &range]),
+        "1"
+    );
+    let parents = git_output(&rig.seed, &["rev-parse", "bare/main^1", "bare/main^2"]);
+    assert_eq!(parents, format!("{main_before}\n{}", seeded.need_tip));
+
+    // The flow step advanced once: one merge row, done, one task, one job.
+    let store = open_store(&rig);
+    let merge_rows: Vec<_> = store
+        .steps_of(&seeded.need, 1)
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.node == "merge")
+        .collect();
+    assert_eq!(merge_rows.len(), 1, "{merge_rows:?}");
+    assert_eq!(merge_rows[0].state, StepState::Done);
+    assert_eq!(merge_rows[0].verdict.as_deref(), Some("merged"));
+    assert_eq!(store.last_attempt(&seeded.step_task).unwrap(), 1);
+    assert_eq!(
+        task_occurrences(&rig.project, &format!("{} r1 merge", seeded.need), "mind"),
+        1,
+        "restart sent a duplicate merge step"
+    );
+    let finished = merge_job(&rig).unwrap();
+    assert_eq!(finished.status, JobStatus::Finished, "{}", finished.id);
+    assert_eq!(
+        finished
+            .outcome
+            .as_ref()
+            .unwrap()
+            .receipt
+            .matches("runner publish: ")
+            .count(),
+        1
+    );
+}
+
+struct SeededMerge {
+    need: String,
+    step_task: String,
+    need_tip: String,
+}
+
+/// A need with an open pump record and a live build run whose `merge` step
+/// is pending, over a need branch one commit ahead of main on the remote.
+fn seed_merge_run(rig: &Rig) -> SeededMerge {
+    let mailspace = Mailspace::discover(Some(&rig.project)).unwrap();
+    let need = mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "merge survival".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let mut port = MailspacePort {
+        mailspace,
+        pump_identity: String::from("mind"),
+    };
+    MailWriter::open_record(&mut port, &need, "kind: build").unwrap();
+
+    let branch = need_branch::branch(&need);
+    git(&rig.seed, &["checkout", "-q", "-B", "need-work", "main"]);
+    let base = git_output(&rig.seed, &["rev-parse", "HEAD"]);
+    fs::write(rig.seed.join("need.txt"), "the finished work\n").unwrap();
+    git(&rig.seed, &["add", "need.txt"]);
+    git(&rig.seed, &["commit", "-q", "-m", "finished work"]);
+    let need_tip = git_output(&rig.seed, &["rev-parse", "HEAD"]);
+    git(
+        &rig.seed,
+        &[
+            "push",
+            "-q",
+            path(&rig.bare),
+            &format!("HEAD:refs/heads/{branch}"),
+        ],
+    );
+    git(&rig.seed, &["checkout", "-q", "main"]);
+    // The pool resolves the tip in the pump's checkout.
+    git(&rig.home.join("repo"), &["fetch", "-q", "origin"]);
+
+    let store = PumpStore::open(&rig.home.join(DB_FILENAME)).unwrap();
+    // A live build run: the sentinel, and the pending `merge` step where the
+    // verified build would have routed. (Run start is crate-private.)
+    let run = RunRow {
+        need: need.clone(),
+        run: 1,
+        flow: String::from("build"),
+        flow_version: FLOW_VERSION_NUMBER,
+        kind: String::from("build"),
+        entry: String::from("rework1"),
+        state: String::from(run_state::STARTING),
+    };
+    store.insert_run(&run).unwrap();
+    let sentinel = port
+        .send_step(
+            "mind",
+            "mind",
+            &format!("{need} r1 sentinel"),
+            &format!("{SENTINEL_MARKER} {need} r1"),
+            &[],
+        )
+        .unwrap();
+    store
+        .insert_run_step(&run, &run.step("sentinel", &sentinel, StepState::Running))
+        .unwrap();
+    let step_task = port
+        .send_step(
+            "mind",
+            "mind",
+            &format!("{need} r1 merge"),
+            &format!("{STEP_MARKER} {need} r1 merge"),
+            &[],
+        )
+        .unwrap();
+    store
+        .insert_run_step(&run, &run.step("merge", &step_task, StepState::Pending))
+        .unwrap();
+    port.bind(&need, &[sentinel, step_task.clone()]).unwrap();
+    store.set_run_state(&need, 1, run_state::LIVE).unwrap();
+    store
+        .upsert_need_branch(&NeedBranchRow {
+            need: need.clone(),
+            branch,
+            base: Some(base),
+            status: String::from("live"),
+            run: 1,
+            target: String::from("default"),
+            priors: Vec::new(),
+        })
+        .unwrap();
+    SeededMerge {
+        need,
+        step_task,
+        need_tip,
+    }
+}
+
+fn open_store(rig: &Rig) -> PumpStore {
+    PumpStore::open_read_only(&rig.home.join(DB_FILENAME))
+        .unwrap()
+        .expect("pump.db")
+}
+
+fn merge_job(rig: &Rig) -> Option<jobs::PoolJob> {
+    load_state(rig)
+        .jobs
+        .into_values()
+        .find(|job| job.id.starts_with("merge-main-"))
+}
+
+fn step_state(rig: &Rig, task: &str) -> StepState {
+    open_store(rig).step_by_task(task).unwrap().unwrap().state
 }
 
 fn scaffold() -> Rig {
@@ -302,7 +463,7 @@ fn scaffold() -> Rig {
     // `mailspace init` writes a starter [pump]; this test supplies its own.
     parsed.as_table_mut().unwrap().remove("pump");
     let additions = format!(
-        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
+        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nfrom = []\npull = false\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
         toml_string(&project.join(".vivi/pump-home")),
         toml_string(&repo),
         toml_string(&bare),
@@ -315,9 +476,8 @@ fn scaffold() -> Rig {
         ("hand", "hand"),
         ("pump-planner", "planner"),
         ("merge", "merge"),
-        ("gate", "auditor"),
+        // Pump readiness requires an active auditor role on a pool.
         ("auditor", "auditor"),
-        ("release", "merge"),
         ("digest", "digest"),
     ] {
         ensure_role(&mut parsed, role, kind, "p", "P2");
@@ -334,6 +494,8 @@ fn scaffold() -> Rig {
         marker_dir: markers,
         child_log,
         tip,
+        bare,
+        seed,
     }
 }
 
@@ -362,34 +524,6 @@ fn ensure_role(config: &mut toml::Value, name: &str, kind: &str, pool: &str, mod
 
 fn seed_state(rig: &Rig) {
     let mut st = State::default();
-    st.baseline = Some(Vec::new());
-    st.last_gate = GateRun {
-        merges: 0,
-        job_id: Some(String::from("gate-survival")),
-        tip: Some(rig.tip.clone()),
-        ..GateRun::default()
-    };
-    st.extra.insert(
-        String::from("audit"),
-        serde_json::to_value(AuditRun {
-            need: String::from("audit-survival"),
-            tip: rig.tip.clone(),
-            job_id: Some(String::from("audit-survival")),
-            ..AuditRun::default()
-        })
-        .unwrap(),
-    );
-    let unit = Unit {
-        need: String::new(),
-        title: String::from("survive pump restart"),
-        brief: String::from("Return VERDICT: no-defect after the process restart."),
-        write_scope: vec![String::from("survival.txt")],
-        status: Status::Pending,
-        ..Unit::default()
-    };
-    st.units.insert(UNIT.to_owned(), unit);
-    st.order.push(UNIT.to_owned());
-
     for (id, kind, role) in WORKERS {
         let mut spec = JobSpec::new(
             *id,
@@ -401,39 +535,12 @@ fn seed_state(rig: &Rig) {
         spec.pool_candidates = vec![String::from("p")];
         spec.local_only = true;
         spec.target = Some(String::from("default"));
-        spec.from_ref = Some(if *kind == "promote" {
-            String::from("main")
-        } else {
-            String::from("next")
-        });
+        spec.from_ref = Some(String::from("next"));
         spec.model = Some(String::from("standin"));
         spec.budget = 60;
-        spec.read_only = matches!(
-            *kind,
-            "planner:board" | "gate" | "audit" | "cadence" | "digest" | "reclaim" | "need-audit"
-        );
-        if *kind == "merge" {
-            spec.branch = Some(String::from("pump/merge/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/next"));
-        }
-        if *kind == "promote" {
-            spec.branch = Some(String::from("pump/promotion/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/main"));
-            spec.publish_expect = Some(rig.tip.clone());
-            spec.payload = serde_json::json!({
-                "target": "default",
-                "branch": "main",
-                "remote": "origin",
-                "tip": rig.tip.clone(),
-                "failing": [],
-            });
-        }
-        if *kind == "merge" {
-            spec.payload = serde_json::json!({
-                "version": 1,
-                "target": "default",
-                "integration_branch": "next",
-            });
+        spec.read_only = matches!(*kind, "planner:board" | "cadence" | "digest");
+        if *kind == "hand" {
+            spec.branch = Some(String::from("vivi/unit/hand-survival-a1"));
         }
         if *kind == "planner:board" {
             spec.payload = serde_json::json!({
@@ -442,10 +549,6 @@ fn seed_state(rig: &Rig) {
                     "plan": "plans/survival-plan.json",
                 }
             });
-        }
-        if *kind == "need-merge" {
-            spec.branch = Some(String::from("pump/need-merge/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/vivi/need/survival"));
         }
         jobs::enqueue(&mut st, spec).unwrap();
     }
@@ -487,7 +590,6 @@ fn pump_child(rig: &Rig) -> PumpChild {
             path(&rig.project),
         ])
         .env("VIVI_TEST_MARKERS", &rig.marker_dir)
-        .env("VIVI_TEST_UNIT_ID", UNIT)
         .env("VIVI_TEST_TIP", &rig.tip)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -515,30 +617,25 @@ fn dispatched(rig: &Rig) -> bool {
             .jobs
             .get(*id)
             .is_some_and(|job| job.status == JobStatus::Dispatched && job.task.is_some())
-    }) && state
-        .units
-        .get(UNIT)
-        .is_some_and(|unit| unit.status == Status::Inflight && unit.task.is_some())
+    })
+}
+
+/// Whether the bare pump still applies this kind's receipt. A hand job is a
+/// flow slice job whose application to a flow step is proved tick-level on a
+/// real mailspace by the e2e_gate_* tests; it still proves survival here:
+/// dispatched, handle saved, receipt collected once.
+fn pump_applies(kind: &str) -> bool {
+    matches!(kind, "planner:board" | "cadence" | "digest")
 }
 
 fn applied(rig: &Rig) -> bool {
     let state = load_state(rig);
-    WORKERS.iter().all(|(id, kind, _)| {
+    WORKERS.iter().all(|(id, _, _)| {
         state.jobs.get(*id).is_some_and(|job| {
-            job.status == JobStatus::Finished && (*kind == "need-audit" || job.applied_at.is_some())
+            job.status == JobStatus::Finished
+                && (!pump_applies(&job.kind) || job.applied_at.is_some())
         })
-    }) && state
-        .units
-        .get(UNIT)
-        .is_some_and(|unit| unit.status == Status::NoDefect)
-        && state.gates.len() == 1
-        && state
-            .promotions
-            .iter()
-            .any(|promotion| promotion.tip == rig.tip)
-        && !state.extra.contains_key("audit")
-        && state.units.contains_key("audit-survival-1")
-        && rig.home.join("plans/survival-plan.json").is_file()
+    }) && rig.home.join("plans/survival-plan.json").is_file()
 }
 
 fn load_state(rig: &Rig) -> State {
@@ -563,16 +660,7 @@ fn startup_diagnostics(rig: &Rig) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let mut tasks = Vec::new();
-    for role in [
-        "hand",
-        "pump-planner",
-        "merge",
-        "gate",
-        "auditor",
-        "release",
-        "mind",
-        "digest",
-    ] {
+    for role in ["hand", "pump-planner", "merge", "mind", "digest"] {
         tasks.push(command_report([
             "task",
             "list",

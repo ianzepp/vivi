@@ -39,8 +39,6 @@ pub struct FlowOverview {
     pub merge_lanes: u32,
     pub gate_role: String,
     pub gate_pool: String,
-    pub promote: bool,
-    pub branch: String,
     pub main: String,
 }
 
@@ -118,10 +116,7 @@ fn legacy_pool(
         return (Some(pool.clone()), "pump.dispatch.kinds".into());
     }
     if role.name.eq_ignore_ascii_case("merge") || kind_is(role, "merge") {
-        return (Some("(host)".into()), "pump.merge.lanes".into());
-    }
-    if role.name.eq_ignore_ascii_case("gate") || kind_is(role, "gate") {
-        return (pump.gate.pools.first().cloned(), "pump.gate.pools".into());
+        return (Some("(host)".into()), "merge role".into());
     }
     (None, "legacy".into())
 }
@@ -155,8 +150,6 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
             merge_lanes: 0,
             gate_role: "-".into(),
             gate_pool: "-".into(),
-            promote: false,
-            branch: "-".into(),
             main: "-".into(),
         };
     };
@@ -167,14 +160,11 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
         merge_pool: merge
             .and_then(|role| role.pool.clone())
             .unwrap_or_else(|| "(host)".into()),
-        merge_lanes: merge_lane_count(routing, pump),
+        merge_lanes: merge_lane_count(routing),
         gate_role: gate.map_or_else(|| "gate".into(), |role| role.name.clone()),
         gate_pool: gate
             .and_then(|role| role.pool.clone())
-            .or_else(|| pump.gate.pools.first().cloned())
             .unwrap_or_else(|| "-".into()),
-        promote: pump.promote,
-        branch: pump.branch.clone(),
         main: pump.main.clone(),
     }
 }
@@ -208,14 +198,12 @@ pub fn render_text(overview: &ConfigOverview) -> String {
 
 fn flow_text(flow: &FlowOverview) -> String {
     format!(
-        "flow: {} @ {} ({} lanes) → shared checks → {} @ {} → {} {} → {}",
+        "flow: {} @ {} ({} lanes) → shared checks → {} @ {} → {}",
         flow.merge_role,
         flow.merge_pool,
         flow.merge_lanes,
         flow.gate_role,
         flow.gate_pool,
-        flow.branch,
-        if flow.promote { "promote" } else { "hold" },
         flow.main
     )
 }

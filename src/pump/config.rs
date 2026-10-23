@@ -28,7 +28,7 @@ pub struct PumpConfig {
     /// The integration clone; cloned from `remote_url` at startup when
     /// absent. Default `<home>/repo`.
     pub repo: Option<String>,
-    /// Git remote (name) the integration branch and main live on.
+    /// Git remote (name) main lives on.
     pub remote: String,
     /// URL or path the integration clone is created from when `repo` is
     /// missing at startup; the clone's remote is named `remote`. With none
@@ -44,13 +44,8 @@ pub struct PumpConfig {
     /// Git author and committer email of every commit and merge the pump
     /// makes. Required: `validate` rejects an empty one.
     pub committer_email: String,
-    /// The integration branch. Required: `validate` rejects an empty one.
-    pub branch: String,
-    /// Main branch merged into the integration branch each batch; empty
-    /// disables merging main in and promotion.
+    /// The main branch units start from and merge into.
     pub main: String,
-    /// A clean gate fast-forwards main to the gated tip.
-    pub promote: bool,
     /// Seconds between ticks.
     pub tick: u64,
     /// Shell fragment prepended to every command line.
@@ -91,12 +86,8 @@ pub struct PumpConfig {
     pub merge: MergeConfig,
     /// Lane RAM disk settings (the `[pump.workspace]` table).
     pub workspace: PumpWorkspace,
-    /// Gate settings (the `[pump.gate]` table).
-    pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
     pub alarm: AlarmConfig,
-    /// Need-acceptance settings (the `[pump.need]` table).
-    pub need: NeedConfig,
     /// Rung settings (the `[pump.rungs]` table).
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
@@ -118,9 +109,7 @@ impl Default for PumpConfig {
             targets: BTreeMap::new(),
             committer_name: String::new(),
             committer_email: String::new(),
-            branch: String::new(),
             main: "main".into(),
-            promote: true,
             tick: 20,
             shell_prefix: String::new(),
             hand_rules: None,
@@ -137,9 +126,7 @@ impl Default for PumpConfig {
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             workspace: PumpWorkspace::default(),
-            gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
-            need: NeedConfig::default(),
             rungs: RungsConfig::default(),
             flow: FlowConfig::default(),
             slice: SliceConfig::default(),
@@ -149,7 +136,7 @@ impl Default for PumpConfig {
 
 impl PumpConfig {
     /// Effective repository targets. Legacy single-repository fields become
-    /// one `default` target; explicit targets inherit only shared merge/gate
+    /// one `default` target; explicit targets inherit only shared merge
     /// defaults.
     #[must_use]
     pub fn target_configs(&self) -> BTreeMap<String, PumpTarget> {
@@ -160,12 +147,9 @@ impl PumpConfig {
                     path: String::from("."),
                     remote_url: self.remote_url.clone(),
                     remote: self.remote.clone(),
-                    branch: self.branch.clone(),
                     main: self.main.clone(),
-                    promote: self.promote,
                     integration_repo: self.repo.clone(),
                     merge: Some(self.merge.clone()),
-                    gate: Some(self.gate.clone()),
                     ..PumpTarget::default()
                 },
             )]);
@@ -175,7 +159,6 @@ impl PumpConfig {
             .map(|(id, target)| {
                 let mut target = target.clone();
                 target.merge.get_or_insert_with(|| self.merge.clone());
-                target.gate.get_or_insert_with(|| self.gate.clone());
                 (id.clone(), target)
             })
             .collect()
@@ -238,11 +221,8 @@ impl PumpConfig {
         config.repo = target.integration_repo;
         config.remote_url = target.remote_url;
         config.remote = target.remote;
-        config.branch = target.branch;
         config.main = target.main;
-        config.promote = target.promote;
         config.merge = target.merge.unwrap_or_default();
-        config.gate = target.gate.unwrap_or_default();
         Some(config)
     }
 
@@ -296,20 +276,13 @@ pub struct PumpTarget {
     pub remote_url: Option<String>,
     /// Git remote name in the target checkout.
     pub remote: String,
-    /// Integration branch for this target.
-    pub branch: String,
-    /// Main branch merged into the target integration branch.
+    /// Main branch of this target.
     pub main: String,
-    /// Whether a clean target gate promotes its branch to main.
-    pub promote: bool,
     /// Optional target-specific integration checkout under the pump home.
     pub integration_repo: Option<String>,
     /// Target-specific merge behavior. Omitted fields inherit the legacy
     /// workspace-level merge settings when loaded through `target_configs`.
     pub merge: Option<MergeConfig>,
-    /// Target-specific gate behavior. Omitted fields inherit the legacy
-    /// workspace-level gate settings when loaded through `target_configs`.
-    pub gate: Option<GateConfig>,
     /// Target-specific rung commands. A rung set here wins over the
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
@@ -323,12 +296,9 @@ impl Default for PumpTarget {
             github_repo: None,
             remote_url: None,
             remote: String::from("origin"),
-            branch: String::new(),
             main: String::from("main"),
-            promote: true,
             integration_repo: None,
             merge: None,
-            gate: None,
             rungs: RungsConfig::default(),
         }
     }
@@ -482,7 +452,7 @@ pub struct DispatchConfig {
     /// tick, for both unit starts and durable role jobs. 1 starts them one
     /// after another.
     pub parallel: u32,
-    /// `--from` of a unit dispatch; absent means `branch`.
+    /// `--from` of a unit dispatch; absent means `main`.
     pub from: Option<String>,
     /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
     /// names its kind. Without an assigned hand-role pool, the kind names the
@@ -529,57 +499,16 @@ impl Default for DispatchConfig {
     }
 }
 
-/// Need-acceptance settings (the `[pump.need]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct NeedConfig {
-    /// How many `block_range` repair units a finding may receive before the
-    /// pump holds the branch and escalates. Default 1 preserves the previous
-    /// one-repair-then-hold behavior.
-    pub repair_rounds: u32,
-}
-
-impl Default for NeedConfig {
-    fn default() -> Self {
-        Self { repair_rounds: 1 }
-    }
-}
-
 /// Merge settings (the `[pump.merge]` table).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct MergeConfig {
-    /// Jobs merged together at most.
-    pub batch: u32,
-    /// Independent merge lanes per repository target, each with its own
-    /// checkout and build directory. A lane takes the top-ranked delivered
-    /// units when it is idle, so a red lane never blocks the others.
-    pub lanes: u32,
-    /// Most need-merge jobs (the per-need unit merges that run the shared
-    /// checks) active at once per repository target. Waiting need groups
-    /// start in priority order as slots free.
-    pub need_parallel: u32,
     /// Format command run after merging.
     pub format: String,
-    /// Shared checks run after every merge, before the units' own proof.
-    /// `validate` rejects an empty list while promotion is enabled.
-    pub shared_checks: Vec<String>,
-    /// Extra checks for units whose write scope overlaps a glob. Each key is
-    /// a write-scope glob matched like a unit's write scope (`overlaps`),
-    /// each value the commands run after the shared checks and before the
-    /// units' own proof, only for a batch or solo merge with an overlapping
-    /// unit. A failure decides exactly like a shared check.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub checks_for: BTreeMap<String, Vec<String>>,
-    /// Seconds per check command.
-    pub proof_timeout: u64,
-    /// Optional wall-clock budget for quarantine repair units. When absent,
-    /// the effective budget is `proof_timeout` plus repair headroom.
+    /// Optional wall-clock budget for quarantine repair units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_budget: Option<u64>,
-    /// Seconds a remote merger has to claim a batch before this host merges.
-    pub remote_wait: u64,
-    /// Seconds a claimed batch may take.
+    /// Seconds a claimed merge may take.
     pub remote_limit: u64,
     /// Files the merge lane regenerates instead of resolving by hand.
     pub generated: Vec<Generated>,
@@ -588,15 +517,8 @@ pub struct MergeConfig {
 impl Default for MergeConfig {
     fn default() -> Self {
         Self {
-            batch: 8,
-            lanes: 1,
-            need_parallel: 4,
             format: String::new(),
-            shared_checks: Vec::new(),
-            checks_for: BTreeMap::new(),
-            proof_timeout: 300,
             repair_budget: None,
-            remote_wait: 90,
             remote_limit: 1800,
             generated: Vec::new(),
         }
@@ -604,13 +526,6 @@ impl Default for MergeConfig {
 }
 
 impl MergeConfig {
-    /// Budget for a quarantine repair, with headroom above its failing proof.
-    #[must_use]
-    pub fn quarantine_repair_budget(&self) -> u64 {
-        self.repair_budget
-            .unwrap_or_else(|| self.proof_timeout.saturating_add(300))
-    }
-
     /// Every declared generated path, in declaration order, across all
     /// entries.
     #[must_use]
@@ -648,65 +563,6 @@ impl Default for Generated {
     }
 }
 
-/// Gate settings (the `[pump.gate]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct GateConfig {
-    /// Gate command run by a read-only gate worker. Required: `validate`
-    /// rejects an empty one.
-    pub command: String,
-    /// Retired: accepted and ignored. A gate is due after every merge batch
-    /// that lands (need e90b0221).
-    pub every_merges: u32,
-    /// Retired: accepted and ignored. A gate is due after every merge batch
-    /// that lands (need e90b0221).
-    pub every_seconds: u64,
-    /// Ordered gate fallback pools after the assigned gate role's pool and its
-    /// configured fallback chain; each must name a `[pools.*]` table.
-    pub pools: Vec<String>,
-    /// Gate worker model.
-    pub model: String,
-    /// Gate worker budget, in seconds.
-    pub budget: u64,
-    /// Directory an external runner drops `<tip>.json` gate results in;
-    /// relative paths join the project root. Absent means pool gates only.
-    pub results_dir: Option<String>,
-    /// Seconds a due gate waits for an external result; >= 1 with results_dir.
-    pub results_wait_seconds: u64,
-    /// Seconds without a consumed external result after which a due gate stops
-    /// waiting; `0` disables the rule. A runner that has produced nothing for
-    /// this long is not running, so the pool gate goes out at once.
-    pub results_idle_seconds: u64,
-    /// Gate-ignored test names, one per line; `#` comments; relative paths resolve from project.
-    pub ignore_file: Option<String>,
-    /// Replans per name after owner units settle but the name still fails; 0 disables.
-    pub max_replans: u32,
-    /// Write HOLD-MERGE while owned reds remain unfixed.
-    pub hold_on_red: bool,
-    /// Need priority floor for bypassing HOLD-MERGE.
-    pub hold_priority_floor: i64,
-}
-
-impl Default for GateConfig {
-    fn default() -> Self {
-        Self {
-            command: String::new(),
-            every_merges: 8,
-            every_seconds: 1800,
-            pools: Vec::new(),
-            model: String::new(),
-            budget: 1800,
-            results_dir: None,
-            results_wait_seconds: 0,
-            results_idle_seconds: 0,
-            ignore_file: None,
-            max_replans: 2,
-            hold_on_red: false,
-            hold_priority_floor: 0,
-        }
-    }
-}
-
 impl PumpConfig {
     /// The pump home: `home` (relative paths join `project`) or
     /// `<project>/.vivi/pump`.
@@ -728,24 +584,6 @@ impl PumpConfig {
         }
     }
 
-    /// The external gate results directory, when configured.
-    #[must_use]
-    pub fn results_dir(&self, project: &Path) -> Option<PathBuf> {
-        self.gate
-            .results_dir
-            .as_deref()
-            .map(|dir| resolve(project, dir))
-    }
-
-    /// The gate ignore file, when configured.
-    #[must_use]
-    pub fn ignore_file(&self, project: &Path) -> Option<PathBuf> {
-        self.gate
-            .ignore_file
-            .as_deref()
-            .map(|file| resolve(project, file))
-    }
-
     /// The hand-rules file: `hand_rules` (relative paths join `project`), or
     /// `None` when unset.
     #[must_use]
@@ -762,10 +600,10 @@ impl PumpConfig {
         resolve(&self.home_dir(project), &self.reserved_file)
     }
 
-    /// `--from` of a unit dispatch: `dispatch.from`, else `branch`.
+    /// `--from` of a unit dispatch: `dispatch.from`, else `main`.
     #[must_use]
     pub fn dispatch_from(&self) -> &str {
-        self.dispatch.from.as_deref().unwrap_or(&self.branch)
+        self.dispatch.from.as_deref().unwrap_or(&self.main)
     }
 
     /// `--to` of thread replies: `board.reply_to`, else the first of

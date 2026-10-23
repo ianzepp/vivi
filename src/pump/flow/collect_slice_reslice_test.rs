@@ -18,7 +18,7 @@ use crate::pump::flow::need_branch;
 use crate::pump::flow::reslice;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::slice_dispatch;
-use crate::pump::flow::tick::tick_with;
+use crate::pump::flow::tick::{OPERATOR_HOLD, tick_with};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -237,5 +237,52 @@ fn a_plain_failure_still_queues_the_second_attempt() -> R {
     assert!(jobs_of(&rig, reslice::KIND).is_empty());
     let hands = jobs_of(&rig, slice_dispatch::KIND);
     assert!(hands.iter().any(|job| attempt(job) == Some(2)), "{hands:?}");
+    Ok(())
+}
+
+/// A dispatched slice in scope-wait whose every holder is closed (it has none
+/// recorded), held for the operator.
+fn held_scope_wait(rig: &mut Rig) -> Result<StepRow, VivariumError> {
+    start(&rig.ctx, &rig.store, &mut rig.mail, NEED, Some("plan"))?;
+    let slice = add_slice(rig, "a", "src/a.rs")?;
+    slice_dispatch::dispatch(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &rig.mail,
+        NEED,
+        &slice,
+        1,
+    )?;
+    rig.store.set_scope_state(&slice.task, ScopeState::Wait)?;
+    rig.store
+        .set_step_state(&slice.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
+    Ok(slice)
+}
+
+#[test]
+fn a_held_scope_wait_slice_stays_held_until_the_hold_is_lifted() -> R {
+    let mut rig = rig()?;
+    let slice = held_scope_wait(&mut rig)?;
+    let before = rig.jobs.jobs.len();
+
+    tick(&mut rig)?;
+    tick(&mut rig)?;
+
+    let row = rig.store.step_by_task(&slice.task)?;
+    let row = row.ok_or_else(|| VivariumError::Message("no step row".into()))?;
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(rig.jobs.jobs.len(), before, "{:?}", rig.jobs.jobs.keys());
+    assert_eq!(rig.store.scope_state(&slice.task)?, Some(ScopeState::Wait));
+
+    rig.store
+        .set_step_state(&slice.task, StepState::Waiting, None)?;
+    tick(&mut rig)?;
+
+    let row = rig.store.step_by_task(&slice.task)?;
+    let row = row.ok_or_else(|| VivariumError::Message("no step row".into()))?;
+    assert_eq!(row.state, StepState::Running);
+    assert!(rig.jobs.jobs.len() > before, "{:?}", rig.jobs.jobs.keys());
     Ok(())
 }

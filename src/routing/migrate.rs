@@ -13,7 +13,9 @@ use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
-use super::migrate_keys::{apply_removals, apply_roots, plan_pool_roots, plan_removals};
+use super::migrate_keys::{
+    apply_removals, apply_roots, plan_pool_roots, plan_removals, raw_merge_lanes,
+};
 
 /// The flow roles take no band from the hand role.
 const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
@@ -201,11 +203,11 @@ fn plan_pump(
 ) {
     let dispatch = dispatch_pool(pump);
     assign_hand(config, pump, dispatch.as_deref(), plan);
-    let merge_pool = assign_merge(config, pump, plan);
+    let lanes = raw_merge_lanes(doc);
+    let merge_pool = assign_merge(config, pump, lanes, plan);
     plan_pump_planner(config, pump, inputs, plan);
     plan_auditor(config, pump, inputs, plan);
     plan_hand_kind(config, pump, plan);
-    assign_gate(config, pump, dispatch.as_deref(), plan);
     assign_slug_roles(config, plan);
     fold_caps(config, pump, dispatch.as_deref(), plan);
     if pump.planner.split_timeout_present {
@@ -216,7 +218,7 @@ fn plan_pump(
             note: "split_timeout is deprecated; split_hard_cap wins when both are set".into(),
         });
     }
-    plan_removals(doc, &merge_pool, plan);
+    plan_removals(doc, config, &merge_pool, plan);
     super::migrate_flow_roles::plan_flow_roles(config, pump, inputs, plan);
     inherit_hand_band(config, pump, plan);
     review_new_roles(plan);
@@ -329,9 +331,14 @@ fn assign_hand(
 
 /// Give the merge role a pool and the `merge` kind, adding the role when the
 /// mailspace has none. Returns the pool the merge role ends up with.
-fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) -> String {
+fn assign_merge(
+    config: &MailspaceConfig,
+    pump: &PumpConfig,
+    lanes: Option<u32>,
+    plan: &mut MigratePlan,
+) -> String {
     let Some(role) = find_role(config, "merge") else {
-        let pool = choose_merge_pool(config, pump, plan);
+        let pool = choose_merge_pool(config, pump, lanes, plan);
         plan.new_roles.push(NewRole {
             name: "merge".into(),
             kind: "merge".into(),
@@ -346,17 +353,17 @@ fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigrateP
             role: role.name.clone(),
             from: role.kind.clone(),
             to: "merge".into(),
-            reason: "only a merge-kind role may publish to the integration branch".into(),
+            reason: "only a merge-kind role may publish to main".into(),
         });
     }
     if let Some(pool) = &role.pool {
         return pool.clone();
     }
-    let pool = choose_merge_pool(config, pump, plan);
+    let pool = choose_merge_pool(config, pump, lanes, plan);
     plan.assignments.push(Assignment {
         role: role.name.clone(),
         pool: pool.clone(),
-        reason: "[pump.merge] lanes".into(),
+        reason: "the merge role needs a pool".into(),
     });
     pool
 }
@@ -372,6 +379,7 @@ fn has_kind(role: &LocalIdentity, kind: &str) -> bool {
 fn choose_merge_pool(
     config: &MailspaceConfig,
     pump: &PumpConfig,
+    lanes: Option<u32>,
     plan: &mut MigratePlan,
 ) -> String {
     let name = host_pool_name(config);
@@ -387,8 +395,8 @@ fn choose_merge_pool(
         plan.new_pools.push(NewPool {
             name: name.clone(),
             provider: "local".into(),
-            slots: pump.merge.lanes.max(1),
-            reason: "[pump.merge] lanes (pump-host merge)".into(),
+            slots: lanes.unwrap_or(1).max(1),
+            reason: "pump-host merge".into(),
             copy_from,
         });
         plan.review.push(format!(
@@ -621,35 +629,6 @@ fn host_pool_name(config: &MailspaceConfig) -> String {
         }
     }
     "host".into()
-}
-
-fn assign_gate(
-    config: &MailspaceConfig,
-    pump: &PumpConfig,
-    dispatch: Option<&str>,
-    plan: &mut MigratePlan,
-) {
-    let pool = pump.gate.pools.first().map(String::as_str).or(dispatch);
-    let Some(pool) = pool else {
-        return;
-    };
-    if let Some(role) = find_role(config, "gate") {
-        if role.pool.is_none() {
-            plan.assignments.push(Assignment {
-                role: role.name.clone(),
-                pool: pool.to_string(),
-                reason: "[pump.gate] pools".into(),
-            });
-        }
-        return;
-    }
-    plan.new_roles.push(NewRole {
-        name: "gate".into(),
-        kind: "gate".into(),
-        pool: pool.to_string(),
-        read_only: Some(true),
-        model: None,
-    });
 }
 
 fn assign_slug_roles(config: &MailspaceConfig, plan: &mut MigratePlan) {

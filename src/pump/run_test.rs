@@ -11,16 +11,14 @@ use tempfile::tempdir;
 
 use crate::mailspace::Mailspace;
 use crate::pump::boardpass::BoardPass;
-use crate::pump::config::{
-    BoardConfig, DispatchConfig, GateConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
-};
+use crate::pump::config::{BoardConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
-use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
+use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 use crate::pump::run::{
     actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
     write_status,
 };
-use crate::pump::state::{Attempt, GateRecord, GateRun, NeedRecord, State, Status, Unit};
+use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// The fake clock's start (1970-01-12T13:46:40Z).
@@ -42,9 +40,8 @@ const PUMP_TOML: &str = concat!(
     "[pools.here]\nprovider = \"local\"\nslots = 1\n\n",
     "[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n\n",
     "[pools.here.bands]\nP2 = [{ model = \"m/ok\", reasoning = \"high\" }]\n\n",
-    "[pump]\nbranch = \"next\"\ntick = 1\n",
+    "[pump]\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
-    "[pump.merge]\nshared_checks = [\"true\"]\n\n[pump.gate]\ncommand = \"true\"\n\n",
     "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n\n",
 );
 
@@ -130,7 +127,7 @@ fn first_at(commands: &[String], fragment: &str) -> usize {
 }
 
 #[test]
-fn write_status_writes_counts_then_stall_lines() {
+fn write_status_writes_counts_then_the_delivered_line() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Pending, None));
@@ -154,74 +151,15 @@ fn write_status_writes_counts_then_stall_lines() {
     );
     st.merges = 3;
     st.closed_needs = vec![String::from("n1"), String::from("n2")];
-    st.gates.push(crate::pump::state::GateRecord::default());
     write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 9, "{text}");
+    assert_eq!(lines.len(), 5, "{text}");
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
-    assert_eq!(lines[3], "merges 3  needs-ready 2  gates 1  baseline none");
-    assert_eq!(lines[4], "last promote never");
-    assert_eq!(lines[5], "last green never");
-    assert_eq!(lines[6], "oldest waiting fix none");
-    assert_eq!(lines[7], "delivered waiting 0, oldest none");
-    assert_eq!(
-        lines[8],
-        "shared-check timeout counts unavailable (no terminal merge worker receipts)"
-    );
-}
-
-#[test]
-fn write_status_shows_the_last_green_gate_commit() {
-    let (dir, ctx, _host) = setup();
-    let mut st = State::default();
-    st.baseline = Some(vec![String::from("a")]);
-    st.gates.push(GateRecord {
-        tip: "abcdef0123456789abcdef0123456789abcdef01".to_string(),
-        names: Some(Vec::new()),
-        at: T0 - 3600,
-        ..GateRecord::default()
-    });
-    st.gates.push(GateRecord {
-        tip: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-        names: Some(vec![String::from("x")]),
-        at: T0 - 600,
-        ..GateRecord::default()
-    });
-    write_status(&ctx, &st, &[]);
-    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert!(
-        text.lines()
-            .any(|line| line == "last green 1h00m ago (abcdef0123)"),
-        "status.txt missing last green commit:\n{text}"
-    );
-}
-
-#[test]
-fn write_status_reports_timeout_metrics_from_merge_worker_receipts() {
-    let (dir, ctx, _host) = setup();
-    let mut st = State::default();
-    let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
-    job.status = JobStatus::Finished;
-    job.outcome = Some(JobOutcome {
-        state: String::from("finished"),
-        detail: String::from("done"),
-        receipt: String::from(
-            "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"0123456789012345678901234567890123456789\",\"shared_check_timeouts\":2,\"shared_check_timeout_retries\":1,\"shared_check_recoveries\":[],\"sources\":[]}",
-        ),
-        at: 1,
-    });
-    st.jobs.insert(String::from("merge-1"), job);
-
-    write_status(&ctx, &st, &[]);
-
-    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert!(
-        text.contains("shared-check timeouts 2, timeout retries 1, recovered checks 0"),
-        "{text}"
-    );
+    assert_eq!(lines[3], "merges 3  needs-ready 2");
+    assert_eq!(lines[4], "delivered waiting 0, oldest none");
 }
 
 #[test]
@@ -311,7 +249,6 @@ fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
         planner_job("plan2", JobStatus::Pending, now, None),
     );
     st.board.planner_fails.insert(String::from("n7"), 2);
-    st.board.planner_failed.push(String::from("n8"));
     write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
@@ -327,8 +264,8 @@ fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
         "no failure line in {text}"
     );
     assert!(
-        text.contains("planner-parked n8"),
-        "no parked line in {text}"
+        !text.contains("planner-parked"),
+        "the parked line is gone in {text}"
     );
 }
 
@@ -358,62 +295,10 @@ fn write_status_adds_no_planner_lines_when_idle() {
     write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("shared-check timeout counts unavailable"))
-    );
+    assert!(lines.iter().any(|line| line.starts_with("merges ")));
     assert!(
         !text.contains("planner"),
         "idle board wrote planner lines in {text}"
-    );
-}
-
-#[test]
-fn write_status_lists_red_owners_without_a_plan() {
-    let (dir, ctx, _host) = setup();
-    let mut st = State::default();
-    st.red
-        .insert(String::from("crate::alpha"), String::from("pumpfix-gdead"));
-    st.red
-        .insert(String::from("crate::beta"), String::from("pumpfix-gdead"));
-    let path = dir.path().join("home/status.txt");
-    write_status(&ctx, &st, &[]);
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(
-        text.contains("red owned by pumpfix-gdead: 2 names, plan none"),
-        "no red owner line in {text}"
-    );
-    fs::create_dir_all(ctx.home.join("plans")).unwrap();
-    fs::write(ctx.home.join("plans/pumpfix-gdead.json"), "{}").unwrap();
-    write_status(&ctx, &st, &[]);
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(
-        !text.contains("red owned by pumpfix-gdead"),
-        "red owner line survived the plan in {text}"
-    );
-}
-
-#[test]
-fn write_status_lists_units_with_reported_send_failures() {
-    let (dir, ctx, _host) = setup();
-    let mut st = State::default();
-    put(&mut st, "u1", unit(Status::Pending, None));
-    st.units.get_mut("u1").unwrap().send_reported = true;
-    write_status(&ctx, &st, &[]);
-    let path = dir.path().join("home/status.txt");
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(
-        text.lines().any(|line| line == "send-failed u1"),
-        "no send-failed line in {text}"
-    );
-
-    let clean = State::default();
-    write_status(&ctx, &clean, &[]);
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(
-        !text.contains("send-failed"),
-        "a clean state still wrote a send-failed line in {text}"
     );
 }
 
@@ -426,22 +311,22 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
         "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
     );
     let mut st = State::default();
-    put(&mut st, "a-1", unit(Status::Inflight, Some("1a2b3c4d")));
+    let mut job = planner_job("j-1", JobStatus::Dispatched, ctx.now(), Some(ctx.now()));
+    job.task = Some(String::from("1a2b3c4d"));
+    st.jobs.insert(String::from("j-1"), job);
     tick(&ctx, &mut st);
     let commands = host.commands();
     let sync = first_at(&commands, "sync pull");
     let reconcile = first_at(&commands, "pool reconcile --porcelain");
-    let pool_status = first_at(&commands, "pool status --porcelain");
     assert!(sync < usize::MAX, "no sync pull in {commands:?}");
     assert!(reconcile < usize::MAX, "no pool reconcile in {commands:?}");
-    assert!(pool_status < usize::MAX, "no pool status in {commands:?}");
-    assert!(reconcile < pool_status && pool_status < sync);
+    assert!(reconcile < sync);
 }
 
-/// A tick logs how long its collect and dispatch phases took, so a slow
+/// A tick logs how long its collect phase took, so a slow
 /// main loop shows up in `<home>/log.txt`.
 #[test]
-fn a_tick_logs_dispatch_and_collect_durations() {
+fn a_tick_logs_the_collect_duration() {
     let (_dir, ctx, host) = setup();
     host.reply(
         "pool reconcile",
@@ -454,11 +339,6 @@ fn a_tick_logs_dispatch_and_collect_durations() {
     assert!(
         host.logs().iter().any(|l| l.starts_with("collect took ")),
         "no collect duration in {:?}",
-        host.logs()
-    );
-    assert!(
-        host.logs().iter().any(|l| l.starts_with("dispatch took ")),
-        "no dispatch duration in {:?}",
         host.logs()
     );
 }
@@ -572,15 +452,6 @@ fn a_stuck_root_with_twenty_dependents_alarms_bumps_and_requeues_in_one_tick() {
         line.contains("held 21"),
         "no 21-unit blocker line in {status}"
     );
-
-    assert!(
-        !host
-            .commands()
-            .iter()
-            .any(|command| command.contains("task send") && command.contains("[r-1 ")),
-        "dispatch ran before the requeue, so r-1 must not be sent: {:?}",
-        host.commands()
-    );
 }
 
 #[test]
@@ -651,43 +522,6 @@ fn a_tick_writes_status_before_its_first_save() {
 }
 
 #[test]
-fn a_finished_gate_task_reaches_finish_gate_through_collect() {
-    let (_dir, ctx, host) = setup();
-    host.reply(
-        "pool reconcile",
-        0,
-        "collected g1a2b3c4d bridge slot-1 finished \"gate done\"",
-    );
-    host.reply(
-        "task show g1a2b3c4d",
-        0,
-        "gate reply\nFAILING-BEGIN\ncrate::a::t\nFAILING-END\n",
-    );
-    let mut st = State {
-        baseline: None,
-        last_gate: GateRun {
-            at: T0,
-            merges: 0,
-            task: Some(String::from("g1a2b3c4d")),
-            job_id: None,
-            source_jobs: Vec::new(),
-            tip: Some(String::from("0123456789abcdef0123456789abcdef01234567")),
-            pool: Some(String::from("flygate")),
-        },
-        ..State::default()
-    };
-    tick(&ctx, &mut st);
-    assert_eq!(st.baseline, Some(vec![String::from("crate::a::t")]));
-    assert_eq!(st.gates.len(), 1);
-    assert_eq!(st.last_gate.task, None);
-    assert!(
-        host.commands()
-            .iter()
-            .any(|c| c.contains("task show g1a2b3c4d"))
-    );
-}
-
-#[test]
 fn a_second_instance_is_refused_by_the_lock() {
     let dir = mailspace_project(&format!("{PUMP_TOML}{PUMP_TOML_IDENTITIES}"));
     let home = dir.path().join(".vivi").join("pump");
@@ -727,14 +561,14 @@ fn a_named_roster_role_that_does_not_exist_refuses_to_start() {
 fn once_runs_exactly_one_tick() {
     let (dir, ctx, host) = setup();
     run_with(&ctx, true).unwrap();
-    // With no pending work or due gate, one tick makes one pool-slot probe.
-    // A second tick would make another.
-    let statuses = host
+    // One tick requests one board pass, which pulls once. A second tick
+    // would pull again.
+    let pulls = host
         .commands()
         .iter()
-        .filter(|c| c.contains("pool status --porcelain"))
+        .filter(|c| c.contains("sync pull"))
         .count();
-    assert_eq!(statuses, 1);
+    assert_eq!(pulls, 1);
     assert!(dir.path().join("home").join(DB_FILENAME).is_file());
     let cycles = crate::pump::cycle::read(&dir.path().join("home")).unwrap();
     assert_eq!(cycles.len(), 1);
@@ -830,7 +664,7 @@ fn a_state_file_from_a_previous_run_is_loaded_and_saved_back() {
 }
 
 #[test]
-fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
+fn sqlite_startup_leaves_a_saved_merging_unit_as_it_was() {
     let (_dir, ctx, _host) = setup();
     let path = ctx.home.join(DB_FILENAME);
     let mut st = State::default();
@@ -846,65 +680,14 @@ fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
     );
     drop(store);
 
-    // Hold merging so the durable startup repair can be inspected before
-    // any recovered job is fed to the new merge thread.
-    fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
     run_with(&ctx, true).unwrap();
-    let mut recovered = PumpStore::open(&path).unwrap().load().unwrap();
-    assert_eq!(recovered.units["recover-1"].status, Status::Delivered);
+    let recovered = PumpStore::open(&path).unwrap().load().unwrap();
+    assert_eq!(recovered.units["recover-1"].status, Status::Merging);
     assert_eq!(recovered.units["done-1"].status, Status::Merged);
     assert_eq!(recovered.units["recover-1"].task.as_deref(), Some("task-1"));
     assert_eq!(
         recovered.units["recover-1"].branch,
         st.units["recover-1"].branch
-    );
-
-    fs::remove_file(ctx.home.join("HOLD-MERGE")).unwrap();
-}
-
-#[test]
-fn startup_adopts_a_pushed_branch_for_a_plan_missing_from_the_saved_state() {
-    let (dir, ctx, host) = setup();
-    let plans = ctx.home.join("plans");
-    fs::create_dir_all(&plans).unwrap();
-    fs::write(
-        plans.join("orphan-need.json"),
-        concat!(
-            "{\"need\":\"orphan-need\",\"verdict\":\"units\",",
-            "\"reason\":\"recover pushed work\",\"units\":[{",
-            "\"id\":\"orphan-unit\",\"title\":\"Recovered unit\",",
-            "\"brief\":\"Use the completed pushed branch\",",
-            "\"write_scope\":[\"src/orphan.rs\"],\"proof\":[],",
-            "\"tools\":\"plain\"}]}"
-        ),
-    )
-    .unwrap();
-    fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
-    host.reply(
-        "ls-remote --heads",
-        0,
-        "abc123\trefs/heads/vivi/unit/orphan-unit-a1\n",
-    );
-    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
-    store.initialize_control("paused").unwrap();
-    drop(store);
-
-    run_with(&ctx, true).unwrap();
-
-    let recovered = PumpStore::open(&ctx.home.join(DB_FILENAME))
-        .unwrap()
-        .load()
-        .unwrap();
-    let unit = &recovered.units["orphan-unit"];
-    assert_eq!(unit.status, Status::Delivered);
-    assert_eq!(unit.attempts, 1);
-    assert_eq!(unit.branch.as_deref(), Some("vivi/unit/orphan-unit-a1"));
-    assert!(
-        !host
-            .commands()
-            .iter()
-            .any(|command| command.contains("task send")),
-        "startup recovery must adopt the pushed branch instead of dispatching it again"
     );
 }
 
@@ -945,7 +728,6 @@ fn a_missing_clone_without_a_remote_url_refuses_to_start() {
 fn a_missing_clone_is_cloned_from_the_remote_url() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
-        branch: String::from("next"),
         remote_url: Some(String::from("git@example.com:org/repo.git")),
         ..PumpConfig::default()
     };
@@ -954,7 +736,7 @@ fn a_missing_clone_is_cloned_from_the_remote_url() {
     crate::pump::run::ensure_repo(&ctx).unwrap();
     let clone = host.commands().into_iter().next().unwrap();
     assert!(
-        clone.starts_with("git clone -q -o origin --branch next git@example.com:org/repo.git "),
+        clone.starts_with("git clone -q -o origin --branch main git@example.com:org/repo.git "),
         "{clone}"
     );
     assert!(
@@ -973,7 +755,6 @@ fn named_targets_initialize_separate_integration_clones_under_the_pump_home() {
         String::from("radix"),
         PumpTarget {
             path: String::from("radix"),
-            branch: String::from("next"),
             ..PumpTarget::default()
         },
     );
@@ -987,14 +768,13 @@ fn named_targets_initialize_separate_integration_clones_under_the_pump_home() {
         .unwrap();
     assert!(command.contains(&target_repo.display().to_string()));
     assert!(command.contains(&source.display().to_string()));
-    assert!(command.contains("--branch next"));
+    assert!(command.contains("--branch main"));
 }
 
 #[test]
 fn a_failed_clone_stops_the_start_with_the_git_output() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
-        branch: String::from("next"),
         remote_url: Some(String::from("/nowhere")),
         ..PumpConfig::default()
     };
@@ -1018,7 +798,6 @@ fn an_existing_clone_is_left_alone() {
 fn dispatch_config() -> PumpConfig {
     PumpConfig {
         tick: 1,
-        branch: String::from("next"),
         board: BoardConfig {
             from: Vec::new(),
             pull: true,
@@ -1040,46 +819,8 @@ fn dispatch_config() -> PumpConfig {
             default_kind: String::from("plain"),
             ..DispatchConfig::default()
         },
-        merge: MergeConfig {
-            shared_checks: Vec::new(),
-            ..MergeConfig::default()
-        },
-        gate: GateConfig {
-            pools: vec![String::from("p1")],
-            ..GateConfig::default()
-        },
         ..PumpConfig::default()
     }
-}
-
-/// A pending unit of need `n1` that may write only `src/a.rs`.
-fn ready_unit() -> Unit {
-    Unit {
-        need: String::from("n1"),
-        title: String::from("a unit"),
-        brief: String::from("do the work"),
-        write_scope: vec![String::from("src/a.rs")],
-        proof: Vec::new(),
-        tools: String::from("plain"),
-        since: T0,
-        ..Unit::default()
-    }
-}
-
-/// State with `x-a1` planned for `n1` and ready to dispatch.
-fn ready_state() -> State {
-    let mut st = State::default();
-    st.order.push(String::from("x-a1"));
-    st.units.insert(String::from("x-a1"), ready_unit());
-    st.needs.insert(
-        String::from("n1"),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: vec![String::from("x-a1")],
-            ..NeedRecord::default()
-        },
-    );
-    st
 }
 
 /// A host over the same [`FakeHost`] that parks every `sync pull` until the
@@ -1186,18 +927,19 @@ fn wait_until_arrived(park: &ParkHost) {
 }
 
 #[test]
-fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
+fn a_blocked_board_pass_does_not_block_collect_or_the_tick() {
     let dir = tempdir().unwrap();
     let (base, host) = test_ctx(dir.path(), dispatch_config());
     let (ctx, park) = parked(&base, &host);
-    host.reply("pool status", 0, "slot p1 slot-1 id free x y z\n");
-    host.reply("task send", 0, "created hand 1a2b3c4d\n");
     host.reply(
-        "pool dispatch",
+        "pool reconcile",
         0,
-        "dispatched 1a2b3c4d p1 slot-1 job m1 x y next vivi/unit/x-a1-a1 600 write 0 -\n",
+        "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
     );
-    let mut st = ready_state();
+    let mut st = State::default();
+    let mut job = planner_job("j-1", JobStatus::Dispatched, ctx.now(), Some(ctx.now()));
+    job.task = Some(String::from("1a2b3c4d"));
+    st.jobs.insert(String::from("j-1"), job);
     let mut pass = BoardPass::start(&ctx);
     pass.request(&ctx, &mut st);
     wait_until_arrived(&park);
@@ -1207,8 +949,8 @@ fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
     assert!(
         host.commands()
             .iter()
-            .any(|cmd| cmd.contains("pool dispatch")),
-        "no dispatch while the pass was parked: {:?}",
+            .any(|cmd| cmd.contains("pool reconcile --porcelain")),
+        "no collect while the pass was parked: {:?}",
         host.commands()
     );
     assert!(
@@ -1289,4 +1031,134 @@ fn actor_string_without_a_mailspace_id_is_unknown() {
 fn contexts_built_through_with_parts_carry_an_empty_actor() {
     let (dir, ctx, _host) = setup();
     assert_eq!(ctx.actor, "", "{dir:?}");
+}
+
+/// A running pump on its own thread with a one-second tick and a state that
+/// already holds a pending job. Tests change pump.db through other handles
+/// while the loop waits between ticks.
+struct LiveLoop {
+    home: std::path::PathBuf,
+    done: std::sync::mpsc::Receiver<Result<(), crate::error::VivariumError>>,
+    _thread: thread::JoinHandle<()>,
+}
+
+fn start_loop(ctx: &Ctx, held: &str) -> LiveLoop {
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    let mut st = State::default();
+    let job = planner_job(held, JobStatus::Pending, ctx.now(), None);
+    st.jobs.insert(held.to_owned(), job);
+    store.save(&st).unwrap();
+    store.initialize_control("running").unwrap();
+    drop(store);
+    let (done, outcome) = std::sync::mpsc::channel();
+    let runner = ctx.clone();
+    let thread = thread::spawn(move || {
+        let result = run_with(&runner, false);
+        drop(done.send(result));
+    });
+    LiveLoop {
+        home: ctx.home.clone(),
+        done: outcome,
+        _thread: thread,
+    }
+}
+
+impl LiveLoop {
+    /// Wait until `n` ticks have finished; the loop is then in its between-tick
+    /// wait, which lasts about a second.
+    fn wait_for_ticks(&self, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let cycles = crate::pump::cycle::read(&self.home).unwrap();
+            if cycles.len() >= n && cycles.iter().all(|c| c.is_finished()) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "tick {n} never finished");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn store(&self) -> PumpStore {
+        PumpStore::open(&self.home.join(DB_FILENAME)).unwrap()
+    }
+
+    /// Stop the loop and wait for it to return cleanly.
+    fn stop(&self) {
+        self.store().set_control_mode("stopped").unwrap();
+        let result = self
+            .done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the run loop did not return within 10s of stop");
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    fn job_ids(&self) -> Vec<String> {
+        self.store().load().unwrap().jobs.into_keys().collect()
+    }
+}
+
+fn one_second_tick_ctx(dir: &Path) -> Ctx {
+    let cfg = PumpConfig {
+        tick: 1,
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = test_ctx(dir, cfg);
+    ctx
+}
+
+#[test]
+fn a_change_to_pump_db_between_ticks_is_seen_by_the_next_tick() {
+    let dir = tempdir().unwrap();
+    let ctx = one_second_tick_ctx(dir.path());
+    let pump = start_loop(&ctx, "held-1");
+    pump.wait_for_ticks(1);
+    assert_eq!(pump.job_ids(), vec!["held-1"]);
+
+    // Another handle removes the held job and adds a new one, with no restart.
+    let mut store = pump.store();
+    let mut st = store.load().unwrap();
+    st.jobs.clear();
+    let added = planner_job("added-2", JobStatus::Pending, ctx.now(), None);
+    st.jobs.insert(String::from("added-2"), added);
+    store.save(&st).unwrap();
+    drop(store);
+
+    pump.wait_for_ticks(2);
+    assert_eq!(
+        pump.job_ids(),
+        vec!["added-2"],
+        "the next tick acted on a state older than pump.db"
+    );
+    pump.stop();
+    assert_eq!(pump.job_ids(), vec!["added-2"], "the final save went stale");
+}
+
+#[test]
+fn stop_then_start_between_ticks_does_not_resurrect_removed_state() {
+    let dir = tempdir().unwrap();
+    let ctx = one_second_tick_ctx(dir.path());
+    let pump = start_loop(&ctx, "held-1");
+    pump.wait_for_ticks(1);
+
+    // Faster than the loop's one-second control poll: stop, remove the job,
+    // start again.
+    let mut store = pump.store();
+    store.set_control_mode("stopped").unwrap();
+    let mut st = store.load().unwrap();
+    st.jobs.clear();
+    store.save(&st).unwrap();
+    store.set_control_mode("running").unwrap();
+    drop(store);
+
+    pump.wait_for_ticks(2);
+    assert!(
+        pump.job_ids().is_empty(),
+        "a removed job came back: {:?}",
+        pump.job_ids()
+    );
+    pump.stop();
+    assert!(
+        pump.job_ids().is_empty(),
+        "the final save resurrected a job"
+    );
 }

@@ -1804,9 +1804,7 @@ remote = "origin"
 remote_url = "git@github.com:faberlang/radix.git"
 committer_name = "Ian Zepp"
 committer_email = "ian.zepp@protonmail.com"
-branch = "next"
 main = "main"
-promote = true
 tick = 20
 shell_prefix = ". /Users/ianzepp/work/faberlang/.vivi/pump/pump-env.sh"
 hand_rules = "/Users/ianzepp/work/faberlang/.vivi/pump/hand-rules.md"
@@ -1837,7 +1835,7 @@ max_attempts = 3
 budget = 600
 overdue_grace = 900
 per_tick = 4
-from = "origin/next"
+from = "origin/main"
 default_kind = "plain"
 
 [[pump.dispatch.lanes]]
@@ -1861,30 +1859,8 @@ pools = ["glm"]
 skip_proof = false
 
 [pump.merge]
-batch = 8
-lanes = 4
 format = "cargo fmt --all"
-shared_checks = [
-    "./scripta/test --stage 1",
-    "./scripta/test --stage 2",
-    "cargo test --workspace --no-run --quiet",
-    "cargo build --quiet -p faber && target/debug/faber corpus corpus-suites/full --target runner > /private/tmp/claude-501/pump-merge-runner.jsonl 2>&1",
-]
-proof_timeout = 480
-remote_wait = 90
 remote_limit = 1800
-
-[pump.gate]
-command = "./scripta/test --stage 4b"
-every_merges = 8
-every_seconds = 1800
-pools = ["glm"]
-model = "zai/glm-5.3-flash"
-budget = 1800
-results_dir = "/Users/ianzepp/work/faberlang/.vivi/pump/gate-results"
-results_wait_seconds = 2700
-ignore_file = "/Users/ianzepp/work/faberlang/.vivi/pump/known-red.txt"
-max_replans = 2
 
 [pools.claude]
 provider = "local"

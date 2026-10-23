@@ -23,7 +23,7 @@ use crate::VivariumError;
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace, config_edit};
 use crate::pool::config::check_pool_name;
 use crate::pool::plain_git::check_address;
-use crate::pump::{gate_config, readiness};
+use crate::pump::readiness;
 use crate::registry::{self, Flags};
 use crate::routing::{self, Severity};
 
@@ -50,9 +50,7 @@ pub struct ProjectCreate {
     /// Pool whose `remote_url` is set to the git URL. The pool must come from
     /// a base config above the projects root. `None` skips it.
     pub pool: Option<String>,
-    /// Pump gate command (`[pump.gate] command`). `None` leaves it unset.
-    pub gate: Option<String>,
-    /// Integration branch (`[pump] branch`) and the repo's default branch.
+    /// The new repo's default branch.
     pub branch: String,
     /// Register the project for the pump supervisor.
     pub pump: bool,
@@ -79,7 +77,6 @@ impl ProjectCreate {
             lanes_root: lanes_root.into(),
             git_url_prefix: git_url_prefix.into(),
             pool: None,
-            gate: None,
             branch: DEFAULT_BRANCH.into(),
             pump: true,
             serve: true,
@@ -180,13 +177,6 @@ impl Plan {
         check_branch(&request.branch)?;
         if let Some(pool) = &request.pool {
             check_pool_name(pool)?;
-        }
-        if request
-            .gate
-            .as_deref()
-            .is_some_and(|gate| gate.trim().is_empty())
-        {
-            return Err(config("the gate command must not be empty"));
         }
         let git_url = format!("{}{}.git", request.git_url_prefix, request.name);
         check_address(request.pool.as_deref().unwrap_or("pool"), &git_url)?;
@@ -327,8 +317,7 @@ fn register(
     })
 }
 
-/// Write `[pump] branch`, the pool's `remote_url` and the gate command into
-/// the project's own config file.
+/// Write the pool's `remote_url` into the project's own config file.
 fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumError> {
     let path = plan.root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
     if let Some(pool) = &request.pool {
@@ -342,7 +331,6 @@ fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumErro
         }
     }
     config_edit::apply(&path, |doc| {
-        config_edit::table_at(doc.as_table_mut(), &["pump"])?["branch"] = value(&request.branch);
         if let Some(pool) = &request.pool {
             let table = config_edit::table_at(doc.as_table_mut(), &["pools", pool])?;
             table["remote_url"] = value(&plan.git_url);
@@ -352,9 +340,6 @@ fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumErro
         }
         Ok(())
     })?;
-    if let Some(gate) = &request.gate {
-        gate_config::set_command(&plan.root, gate)?;
-    }
     Ok(())
 }
 

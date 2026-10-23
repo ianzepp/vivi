@@ -46,7 +46,7 @@ pub struct DispatchFlags {
     pub branch: Option<String>,
     /// Remote branch ref the privileged runner publishes after agent success.
     pub publish_ref: Option<String>,
-    /// Exact commit expected for guarded promotion publication.
+    /// Exact commit the candidate must equal before it is published (a need-branch rename).
     pub publish_expect: Option<String>,
     pub publish_contains: Option<String>,
     pub delete_ref: Option<String>,

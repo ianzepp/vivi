@@ -23,10 +23,8 @@ use crate::pump::store::{DB_FILENAME, PumpStore};
 /// What applying one replan did to the state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Live work, or a running planner, refused it without `--force`.
+    /// Live work refused it without `--force`.
     Refused,
-    /// An exhausted audit was rearmed; the plan and the record stand.
-    Rearmed,
     /// The plan is thrown away; the record is owed a `superseded` close.
     Superseded,
 }
@@ -48,9 +46,6 @@ pub fn apply_one(
     need: &str,
     force: bool,
 ) -> Result<Outcome, VivariumError> {
-    if crate::pump::audit::rearm_operator_replan(ctx, st, need) {
-        return Ok(Outcome::Rearmed);
-    }
     let units = st
         .needs
         .get(need)
@@ -76,17 +71,11 @@ pub fn apply_one(
 
 /// Why an ordinary (unforced) replan of `need` is refused, if it is.
 fn refusal(st: &State, need: &str, units: &[String]) -> Option<String> {
-    if let Some((uid, status)) = live_unit(st, units) {
-        return Some(format!(
-            "unit {uid} is {}; replan refused: use vivi pump replan {need} --force",
-            status.as_str()
-        ));
-    }
-    st.board.planning.contains_key(need).then(|| {
-        format!(
-            "a planner is already running for this need; replan refused: use vivi pump replan {need} --force"
-        )
-    })
+    let (uid, status) = live_unit(st, units)?;
+    Some(format!(
+        "unit {uid} is {}; replan refused: use vivi pump replan {need} --force",
+        status.as_str()
+    ))
 }
 
 /// Find the first referenced unit that still has live or unmerged work.
@@ -149,11 +138,8 @@ fn withdraw_unstarted(st: &mut State, units: &[String]) {
 
 /// Clear per-need planner bookkeeping so the board can launch the new plan.
 fn clear_planner_state(st: &mut State, need: &str) {
-    st.board.planner_failed.retain(|failed| failed != need);
     st.board.planner_fails.remove(need);
     st.board.planner_retry_at.remove(need);
-    st.board.planning.remove(need);
-    st.board.planner_pids.remove(need);
     st.board.revision_planning.remove(need);
     st.board.planner_fails.remove(&format!("{need}.revision"));
     st.board
@@ -166,14 +152,11 @@ fn clear_planner_state(st: &mut State, need: &str) {
 }
 
 /// `vivi pump replan <NEED> [--force]`: post a replan action on the need's
-/// open pump record, for the running pump to apply at its next tick. An
-/// exhausted audit may be retried even when the need has no board
-/// `NeedRecord`.
+/// open pump record, for the running pump to apply at its next tick.
 ///
 /// # Errors
 /// Returns an error for an unknown need, live work without `--force`, a
-/// running planner without `--force`, a mailspace without `pump.db`, or a
-/// need with no open pump record.
+/// mailspace without `pump.db`, or a need with no open pump record.
 pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError> {
     let home = project_home(project)?;
     let path = home.join(DB_FILENAME);
@@ -189,15 +172,11 @@ pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError>
 }
 
 /// The refusals the CLI can make from the pump's saved state. A need the
-/// pump has no plan for is known when its planner is running or parked.
+/// pump has no plan for is unknown.
 fn check_command(st: &State, cmd: &PumpReplanCommand) -> Result<(), VivariumError> {
     let need = cmd.need.as_str();
-    if crate::pump::audit::operator_replan_allowed(st, need) {
-        return Ok(());
-    }
     let planned = st.needs.get(need);
-    let parked = st.board.planner_failed.iter().any(|failed| failed == need);
-    if planned.is_none() && !parked && !st.board.planning.contains_key(need) {
+    if planned.is_none() {
         return Err(VivariumError::Message(format!("unknown need: {need}")));
     }
     if cmd.force {
@@ -207,11 +186,6 @@ fn check_command(st: &State, cmd: &PumpReplanCommand) -> Result<(), VivariumErro
         return Err(VivariumError::Message(format!(
             "refused: unit {uid} is {}; use vivi pump replan {need} --force to replan anyway",
             status.as_str()
-        )));
-    }
-    if st.board.planning.contains_key(need) {
-        return Err(VivariumError::Message(String::from(
-            "refused: a planner is already running for this need; use --force to replan anyway",
         )));
     }
     Ok(())

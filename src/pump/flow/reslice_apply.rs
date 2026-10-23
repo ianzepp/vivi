@@ -157,29 +157,12 @@ fn send_need<M: FlowMail>(
             crate::pump::collect::tail(&output.text, 200)
         )));
     }
-    need_handle(&output.text).ok_or_else(|| {
+    crate::pump::flow::residual::parse_need_handle(&output.text).ok_or_else(|| {
         VivariumError::Message(format!(
             "need send gave no handle: {}",
             crate::pump::collect::tail(&output.text, 200)
         ))
     })
-}
-
-/// The handle in `need send` output: the third token of the `created ` line,
-/// else the second token of the `sent ` line.
-fn need_handle(text: &str) -> Option<String> {
-    let created = text
-        .lines()
-        .find(|line| line.starts_with("created "))
-        .and_then(|line| line.split_whitespace().nth(2));
-    created
-        .or_else(|| {
-            text.lines()
-                .find(|line| line.starts_with("sent "))
-                .and_then(|line| line.split_whitespace().nth(1))
-        })
-        .map(str::to_owned)
-        .filter(|handle| !handle.is_empty())
 }
 
 #[cfg(test)]

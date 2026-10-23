@@ -52,10 +52,6 @@ pub struct PumpBoot {
     pub amendments: usize,
     /// Exception rows in the pump database.
     pub exceptions: usize,
-    /// Planners the board currently has in flight.
-    pub planning: usize,
-    /// Handles parked after exhausting planner retries.
-    pub planner_parked: usize,
     /// Durable operator control mode for this pump home.
     pub control: String,
     /// Whether a writer process currently holds the pump lock.
@@ -80,14 +76,10 @@ pub struct PumpSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_wait: Option<String>,
     pub held: Vec<PumpUnitRow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gate_pending: Option<PumpGateRow>,
     pub needs_ready: Vec<String>,
     pub stuck: Vec<PumpUnitRow>,
     pub exceptions: Vec<PumpExceptionRow>,
     pub lanes: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_promote: Option<String>,
     pub pools: Vec<PumpPoolRow>,
 }
 
@@ -125,17 +117,6 @@ pub struct PumpUnitRow {
     pub base_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_sha: Option<String>,
-}
-
-/// An in-progress gate.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct PumpGateRow {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub age: Option<String>,
 }
 
 /// One pump exception.
@@ -320,8 +301,6 @@ fn from_counts(
         stuck: counts.map_or(0, |s| s.stuck),
         amendments: counts.map_or(0, |s| s.amendments),
         exceptions: counts.map_or(0, |s| s.exceptions),
-        planning: counts.map_or(0, |s| s.planning),
-        planner_parked: counts.map_or(0, |s| s.planner_parked),
         control: String::from("unknown"),
         writer: String::from("unknown"),
         status_age: None,

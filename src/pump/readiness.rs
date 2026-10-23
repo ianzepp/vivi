@@ -21,7 +21,23 @@ pub fn assess(mailspace: &Mailspace) -> Vec<Issue> {
         config_issues(mailspace, cfg, &mut issues);
     }
     issues.extend(routing::validate(&mailspace.config));
+    cadence_issues(mailspace, &mut issues);
     dedupe_items(issues)
+}
+
+/// Cadence jobs always run read-only, so a role that has a cadence but would
+/// resolve writable gets one warning: its writes would never happen.
+fn cadence_issues(mailspace: &Mailspace, issues: &mut Vec<Issue>) {
+    for identity in &mailspace.config.identities {
+        if identity.cadence.is_some()
+            && !routing::resolve_read_only(false, identity.read_only, identity.kind.as_deref())
+        {
+            issues.push(Issue::warning(format!(
+                "role {} has a cadence but is writable; cadence runs are read-only",
+                identity.name
+            )));
+        }
+    }
 }
 
 /// Whether the pump has everything it needs: no errors and nothing missing.

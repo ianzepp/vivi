@@ -4,12 +4,9 @@ use std::collections::BTreeMap;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use super::{
-    db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null, promotions,
-    unit_extra,
-};
+use super::{db_err, from_json, from_u32, from_u64, json, json_or_null, unit_extra};
 use crate::error::VivariumError;
-use crate::pump::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
+use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 pub(super) fn clear(tx: &Transaction<'_>) -> Result<(), VivariumError> {
     for table in [
         "needs",
@@ -19,13 +16,8 @@ pub(super) fn clear(tx: &Transaction<'_>) -> Result<(), VivariumError> {
         "unit_events",
         "unit_order",
         "merges",
-        "gates",
-        "gate_failures",
         "closed_needs",
         "plans_seen",
-        "promotions",
-        "red",
-        "red_reported",
         "meta",
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])
@@ -37,12 +29,8 @@ pub(super) fn clear(tx: &Transaction<'_>) -> Result<(), VivariumError> {
 pub(super) fn write_meta(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     put(tx, "initialized", "1")?;
     put(tx, "merges", &st.merges.to_string())?;
-    put(tx, "baseline", &json_or_null(&st.baseline)?)?;
-    put(tx, "last_gate", &json_or_null(&st.last_gate)?)?;
     put(tx, "board", &json_or_null(&st.board)?)?;
     put(tx, "extra", &json_or_null(&st.extra)?)?;
-    put(tx, "target_states", &json_or_null(&st.target_states)?)?;
-    put(tx, "env_pauses", &json_or_null(&st.env_pauses)?)?;
     put(tx, "rate_limited_at", &json_or_null(&st.rate_limited_at)?)?;
     put(tx, "jobs", &json_or_null(&st.jobs)?)?;
     Ok(())
@@ -182,35 +170,6 @@ pub(super) fn write_needs(tx: &Transaction<'_>, st: &State) -> Result<(), Vivari
     Ok(())
 }
 
-pub(super) fn write_gates(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
-    for gate in &st.gates {
-        tx.execute(
-            "INSERT INTO gates (tip, at, merges, names_json, new_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                &gate.tip,
-                i64::try_from(gate.at).unwrap_or(0),
-                i64::try_from(gate.merges).unwrap_or(0),
-                json_or_null(&gate.names)?,
-                json_or_null(&gate.new)?,
-            ],
-        )
-        .map_err(db_err("write gate"))?;
-        let gate_id = tx.last_insert_rowid();
-        for (kind, names) in [("names", &gate.names), ("new", &gate.new)] {
-            for name in names.iter().flatten() {
-                tx.execute(
-                    "INSERT OR IGNORE INTO gate_failures (gate_id, name, kind)
-                     VALUES (?1, ?2, ?3)",
-                    params![gate_id, name, kind],
-                )
-                .map_err(db_err("write gate failure"))?;
-            }
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn write_lists(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     for need in &st.closed_needs {
         tx.execute(
@@ -226,32 +185,13 @@ pub(super) fn write_lists(tx: &Transaction<'_>, st: &State) -> Result<(), Vivari
         )
         .map_err(db_err("write plan seen"))?;
     }
-    promotions::write(tx, &st.promotions)?;
-    for (name, unit) in &st.red {
-        tx.execute(
-            "INSERT OR REPLACE INTO red (name, unit) VALUES (?1, ?2)",
-            params![name, unit],
-        )
-        .map_err(db_err("write red"))?;
-    }
-    for value in &st.red_reported {
-        tx.execute(
-            "INSERT OR IGNORE INTO red_reported (value) VALUES (?1)",
-            params![value],
-        )
-        .map_err(db_err("write red reported"))?;
-    }
     Ok(())
 }
 
 pub(super) fn load_meta(conn: &Connection, st: &mut State) -> Result<(), VivariumError> {
     st.merges = get(conn, "merges")?.map_or(0, |v| v.parse().unwrap_or(0));
-    st.baseline = get_json(conn, "baseline")?;
-    st.last_gate = get_json(conn, "last_gate")?;
     st.board = get_json(conn, "board")?;
     st.extra = get_json(conn, "extra")?;
-    st.target_states = get_json(conn, "target_states")?;
-    st.env_pauses = get_json(conn, "env_pauses")?;
     st.rate_limited_at = get_json(conn, "rate_limited_at")?;
     st.jobs = get_json(conn, "jobs")?;
     Ok(())
@@ -400,40 +340,6 @@ pub(super) fn load_order(conn: &Connection) -> Result<Vec<String>, VivariumError
         .map_err(db_err("read unit order"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(db_err("read unit order"))
-}
-
-pub(super) fn load_gates(conn: &Connection) -> Result<Vec<GateRecord>, VivariumError> {
-    let mut stmt = conn
-        .prepare("SELECT tip, at, merges, names_json, new_json FROM gates ORDER BY gate_id")
-        .map_err(db_err("read gates"))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(GateRecord {
-                tip: row.get(0)?,
-                at: from_u64(row.get(1)?),
-                merges: from_u64(row.get(2)?),
-                names: from_opt_json(row.get(3)?),
-                new: from_opt_json(row.get(4)?),
-            })
-        })
-        .map_err(db_err("read gates"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(db_err("read gates"))
-}
-
-pub(super) fn load_red(conn: &Connection) -> Result<BTreeMap<String, String>, VivariumError> {
-    let mut stmt = conn
-        .prepare("SELECT name, unit FROM red")
-        .map_err(db_err("read red"))?;
-    let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get(1)?)))
-        .map_err(db_err("read red"))?;
-    let mut red = BTreeMap::new();
-    for row in rows {
-        let (name, unit) = row.map_err(db_err("read red"))?;
-        red.insert(name, unit);
-    }
-    Ok(red)
 }
 
 pub(super) fn load_strings(

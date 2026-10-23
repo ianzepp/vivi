@@ -441,11 +441,7 @@ fn write_boot_pump(root: &Path) {
     let mut store =
         vivi::pump::store::PumpStore::open(&home.join(vivi::pump::store::DB_FILENAME)).unwrap();
     store.save(&state).unwrap();
-    fs::write(
-        home.join("status.txt"),
-        "last promote 1h ago (deadbeef)\nlane default/0 idle\n",
-    )
-    .unwrap();
+    fs::write(home.join("status.txt"), "lane default/0 idle\n").unwrap();
 }
 
 fn mailspace_key(root: &Path) -> String {
@@ -526,7 +522,8 @@ fn boot_pump_full_and_own_and_none() {
     assert!(full.contains("queue"), "{full}");
     assert!(full.contains("u-delivered"), "{full}");
     assert!(full.contains("lanes"), "{full}");
-    assert!(full.contains("promote"), "{full}");
+    assert!(!full.contains("promote"), "{full}");
+    assert!(!full.contains("gate"), "{full}");
     assert!(full.contains("view     full"), "{full}");
 
     let own = stdout(&vivi([

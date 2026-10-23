@@ -8,11 +8,6 @@
 //! own state and opens one record for each need the pump has planned (or is
 //! planning) and has not finished, unless it already has one.
 //!
-//! A need the pump created itself (a gate fix need, sent from the pump's own
-//! identity) is adopted the same way, whoever it is addressed to; so
-//! `vivi pump adopt` also repairs a gate fix need an older pump left without
-//! a record.
-//!
 //! It is idempotent: a need that has an open record is left alone, so a
 //! second run opens nothing. It never touches a need the pump finished
 //! (complete, withdrawn or closed), and a need that is not a need in the
@@ -46,11 +41,8 @@ pub struct AdoptReport {
 /// sorted. Finished means complete, withdrawn, or in `closed_needs`.
 #[must_use]
 pub fn in_flight_needs(st: &State) -> Vec<String> {
-    let audits = crate::pump::audit::run_needs(st);
     let mut needs: BTreeSet<&String> = st.needs.keys().collect();
-    needs.extend(st.board.planning.keys());
     needs.extend(st.board.revision_planning.keys());
-    needs.extend(audits.iter());
     needs
         .into_iter()
         .filter(|need| !st.closed_needs.contains(*need))

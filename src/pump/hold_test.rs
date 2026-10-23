@@ -27,7 +27,7 @@ fn pump_once_on_a_not_ready_project_reports_and_returns_ok() {
     run::run(tmp.path(), true).expect("a not-ready project is held, not an error");
     let status = fs::read_to_string(home(tmp.path()).join("status.txt")).unwrap();
     assert!(status.contains("not ready:"), "{status}");
-    assert!(status.contains("pump.gate.command"), "{status}");
+    assert!(status.contains("pump.committer_name"), "{status}");
     assert!(status.contains("nothing is dispatched"), "{status}");
     let log = fs::read_to_string(home(tmp.path()).join("log.txt")).unwrap();
     assert!(log.contains("pump holding: not ready:"), "{log}");
@@ -100,14 +100,11 @@ fn fill_in(root: &Path) {
     let path = root.join(".vivi").join("mailspace.toml");
     let text = fs::read_to_string(&path).unwrap();
     let text = text
-        .replace("branch = \"\"", "branch = \"next\"")
         .replace("committer_name = \"\"", "committer_name = \"T\"")
         .replace(
             "committer_email = \"\"",
             "committer_email = \"t@example.com\"",
-        )
-        .replace("shared_checks = []", "shared_checks = [\"true\"]")
-        .replace("command = \"\"", "command = \"true\"");
+        );
     fs::write(&path, text + POOL).unwrap();
     let mut space = Mailspace::open_root(root.to_path_buf()).unwrap();
     for (name, kind) in [

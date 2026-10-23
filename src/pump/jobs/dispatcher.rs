@@ -8,7 +8,6 @@ use std::path::Path;
 
 use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
 use crate::error::VivariumError;
-use crate::pump::dispatch;
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
@@ -27,7 +26,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
     {
         return Ok(Vec::new());
     }
-    let mut free = dispatch::slots(ctx);
+    let mut free = super::slots(ctx);
     let priorities = crate::pump::priority::levels(ctx);
     let mut pending: Vec<PoolJob> = st
         .jobs()
@@ -35,11 +34,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
         .filter(|(_, job)| job.status == JobStatus::Pending)
         .map(|(_, job)| job.clone())
         .collect();
-    let fix = FixMarks {
-        prefix: &ctx.cfg.fix_prefix,
-        ids: st.fix_ids(),
-    };
-    pending.sort_by_key(|job| dispatch_order(job, &fix, &priorities));
+    pending.sort_by_key(|job| dispatch_order(job, &priorities));
     let pending = rank::single_flight(pending, st.jobs());
     let mut started = Vec::new();
     let width = (ctx.cfg.dispatch.parallel as usize).max(1);
@@ -160,61 +155,12 @@ fn plan_wave(active: &mut [Attempt], free: &BTreeMap<String, u32>) -> Vec<(usize
     wave
 }
 
-/// What marks a name as fix work: the legacy `fix_prefix` spelling, or the id
-/// of a pump-created gate-fix need or one of its units.
-pub(super) struct FixMarks<'a> {
-    pub(super) prefix: &'a str,
-    pub(super) ids: BTreeSet<String>,
-}
-
-impl FixMarks<'_> {
-    fn marks(&self, name: &str) -> bool {
-        (!self.prefix.is_empty() && name.starts_with(self.prefix)) || self.ids.contains(name)
-    }
-
-    fn any_mark(&self) -> bool {
-        !self.prefix.is_empty() || !self.ids.is_empty()
-    }
-}
-
-pub(super) fn dispatch_order(
-    job: &PoolJob,
-    fix_marks: &FixMarks<'_>,
-    priorities: &BTreeMap<String, i64>,
-) -> RankKey {
+pub(super) fn dispatch_order(job: &PoolJob, priorities: &BTreeMap<String, i64>) -> RankKey {
     if let Some(key) = rank::flow_key(job, priorities) {
         return key;
     }
-    let recovery = matches!(job.kind.as_str(), "audit" | "gate" | "promote");
-    let fix = job.kind.contains("fix")
-        || (fix_marks.any_mark()
-            && (fix_marks.marks(&job.id)
-                || job.units.iter().any(|unit| fix_marks.marks(unit))
-                || payload_has_fix(&job.payload, fix_marks)));
-    let class = if recovery {
-        0
-    } else if fix {
-        1
-    } else {
-        2
-    };
     let priority = payload_priority(&job.payload, priorities);
-    (class, Reverse(priority), job.queued_at, job.id.clone())
-}
-
-fn payload_has_fix(value: &serde_json::Value, fix: &FixMarks<'_>) -> bool {
-    match value {
-        serde_json::Value::String(value) => fix.marks(value),
-        serde_json::Value::Array(values) => values.iter().any(|value| payload_has_fix(value, fix)),
-        serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
-            matches!(
-                key.as_str(),
-                "id" | "need" | "need_id" | "owner_need" | "unit_id"
-            ) && payload_has_fix(value, fix)
-                || matches!(key.as_str(), "unit_sources" | "units") && payload_has_fix(value, fix)
-        }),
-        _ => false,
-    }
+    (2, Reverse(priority), job.queued_at, job.id.clone())
 }
 
 fn payload_priority(value: &serde_json::Value, priorities: &BTreeMap<String, i64>) -> i64 {
@@ -285,24 +231,20 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
     }
 }
 
-/// First line of the reply that carries a preset-task job's brief.
-const BRIEF_MARKER: &str = "pump-brief:";
-
 /// Post the job brief on its preset `task` as one `pump-brief: <job id>`
 /// reply from the pump identity, so any pool reads it from mail. A task that
 /// already carries a brief reply for this job id is left alone, so a
 /// deferred dispatch retried on the next tick posts nothing new.
 fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError> {
-    let first = crate::mailspace::marked_line(BRIEF_MARKER, &job.id);
+    let first = crate::mailspace::marked_line(crate::mailspace::BRIEF_MARKER, &job.id);
     let thread = ctx.vivi(
         &format!("mail thread {} --limit 1000", shell_quote(task)),
         60,
     );
     if thread.code == 0
-        && thread
-            .text
-            .lines()
-            .any(|line| crate::mailspace::marked_payload(line, BRIEF_MARKER) == Some(&job.id))
+        && thread.text.lines().any(|line| {
+            crate::mailspace::marked_payload(line, crate::mailspace::BRIEF_MARKER) == Some(&job.id)
+        })
     {
         return Ok(());
     }
@@ -412,7 +354,7 @@ pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, Viva
             tail(&output.text, 240)
         ));
     }
-    Ok(dispatch::parse_created_handle(&output.text))
+    Ok(super::parse_created_handle(&output.text))
 }
 
 /// Keep the brief under the letter cap: the full text is saved beside it, the

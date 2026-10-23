@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::clean_pump::{self, is_done, load_state, merge_lane_ref, unit_for};
+use super::clean_pump::{self, is_done, load_state, main_ref, unit_for};
 use super::clean_rule::{
     DISK_RECLAIM_GIB, DISK_REFUSE_GIB, GIB, MARK_LAST_BRANCH, MARK_LAST_TASK, format_bytes,
     read_mark, volume_free_bytes,
@@ -592,16 +592,16 @@ fn recycle(
                 .map(|u: &Unit| u.target_id().to_string())
         })
         .unwrap_or_else(|| "default".into());
-    let Some(lane) = merge_lane_ref(space, &target) else {
+    let Some(lane) = main_ref(space, &target) else {
         skips.push(CleanSkip {
             pool: handle.id.pool.clone(),
             slot: name.into(),
             kind: ActionKind::Worktree,
-            reason: "no merge-lane ref in [pump]".into(),
+            reason: "no main branch in [pump]".into(),
         });
         return Ok(());
     };
-    let chosen = super::reset::choose_base(space, base, hint, st, super::reset::ResetKind::Recycle);
+    let chosen = super::reset::choose_base(space, base, hint, super::reset::ResetKind::Recycle);
     let (a, s) = clean_work::recycle_lane(
         &handle.id.pool,
         name,
@@ -628,7 +628,7 @@ fn sweep(
     let Some(source) = handle.config.local.worktree_path() else {
         return Ok(());
     };
-    let lane = merge_lane_ref(space, "default");
+    let lane = main_ref(space, "default");
     let pool_root = super::local_git::real_path(root);
     let (a, s) = clean_work::sweep_orphans(
         &handle.id.pool,
@@ -676,7 +676,6 @@ fn reset_remote_requested(
     let chosen = super::reset::choose_base(
         space,
         Some(requested),
-        None,
         None,
         super::reset::ResetKind::Recycle,
     );

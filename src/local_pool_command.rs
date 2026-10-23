@@ -417,7 +417,6 @@ fn reset(command: &PoolResetCommand) -> Result<(), VivariumError> {
         &space,
         command.base.as_deref(),
         None,
-        None,
         vivi::pool::reset::ResetKind::Recycle,
     );
     let machines = handle.provider.list()?;

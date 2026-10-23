@@ -423,3 +423,49 @@ fn a_merge_role_without_a_pool_raises_and_enqueues_nothing() {
     assert!(jobs.0.is_empty());
     assert_eq!(f.store.need_branch(NEED).unwrap().unwrap().status, LIVE);
 }
+
+#[test]
+fn an_unreadable_row_does_not_stop_the_next_needs_restart() {
+    let f = with_merge_role(fixture());
+    const OTHER: &str = "ef567890";
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            need: OTHER.into(),
+            branch: branch(OTHER),
+            priors: Vec::new(),
+            ..live_row(1)
+        })
+        .unwrap();
+    // The first need's stored record no longer decodes.
+    let conn = rusqlite::Connection::open(f._dir.path().join(DB_FILENAME)).unwrap();
+    conn.execute(
+        "UPDATE need_branches SET record_json = 'not json' WHERE need = ?1",
+        [NEED],
+    )
+    .unwrap();
+    for need in [NEED, OTHER] {
+        f.store
+            .insert_run(&RunRow {
+                need: need.into(),
+                run: 2,
+                flow: "build".into(),
+                flow_version: 2,
+                kind: "build".into(),
+                entry: "rework1".into(),
+                state: "live".into(),
+            })
+            .unwrap();
+    }
+    let mut registry = Registry::<Jobs, FakeMail>::new();
+    register(&mut registry);
+    let mut jobs = Jobs::default();
+    let mut mail = FakeMail::new("mind");
+    let results: Vec<_> = registry
+        .phases()
+        .iter()
+        .map(|phase| phase.run(&f.ctx, &mut jobs, &f.store, &mut mail))
+        .collect();
+    assert!(results.iter().any(Result::is_err), "{results:?}");
+    assert_eq!(f.store.need_branch(OTHER).unwrap().unwrap().run, 2);
+}

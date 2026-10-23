@@ -1,12 +1,12 @@
 //! Operator actions on a pump record.
 //!
-//! Requeue, withdraw, replan and recover are things an operator asks of one dispatch,
+//! Requeue, withdraw, replan, answer and unlock are things an operator asks of one dispatch,
 //! so each is a structured reply on the need's open pump record. The letter
 //! carries its action in headers and its free text (the reason) in the body:
 //!
 //! | header | value |
 //! | --- | --- |
-//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw`, `replan`, `recover` or `answer` |
+//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw`, `replan`, `answer` or `unlock` (`recover` is retired: still read, changes nothing) |
 //! | `X-Vivi-Pump-Record` | the record the action was posted on |
 //! | `X-Vivi-Need` | the need that record covers |
 //! | `X-Vivi-Pump-Unit` | requeue: the unit to requeue |
@@ -14,7 +14,7 @@
 //! | `X-Vivi-Pump-Fresh` | requeue: `1` resets the attempt counter |
 //! | `X-Vivi-Pump-Refund` | requeue: `1` refunds transient failures |
 //! | `X-Vivi-Pump-Force` | replan: `1` replans past live work |
-//! | `X-Vivi-Pump-Target` | recover: only this target's branch |
+//! | `X-Vivi-Pump-Target` | recover (retired): carried, never read |
 //! | `X-Vivi-Pump-Step` | answer: the flow step task being answered |
 //! | `X-Vivi-Pump-Word` | answer: the answer word; the note is the body; unlock: the entry to restart at |
 //!
@@ -64,7 +64,7 @@ pub enum PumpActionKind {
     Withdraw,
     /// Throw the plan away and plan the need again on a fresh record.
     Replan,
-    /// Release a need branch held `unverified`, adopting the remote tip.
+    /// Retired: a letter of this kind is read and settled, and changes nothing.
     Recover,
     /// Answer a flow step by hand; applied by the flow engine, not the old pump.
     Answer,
@@ -113,7 +113,7 @@ pub struct PumpActionRequest {
     pub refund: bool,
     /// Replan: replan even while units are live or a planner runs.
     pub force: bool,
-    /// Recover: only this target's need branch; every held target when absent.
+    /// Recover (retired): carried in the header, never read.
     pub target: Option<String>,
     /// Answer: the flow step task.
     pub step: Option<String>,
@@ -171,16 +171,6 @@ impl PumpActionRequest {
         Self {
             force,
             ..Self::new(PumpActionKind::Replan, "operator replan")
-        }
-    }
-
-    /// Recover the need's branch held `unverified`, on `target` only when
-    /// one is named.
-    #[must_use]
-    pub fn recover(target: Option<&str>, reason: &str) -> Self {
-        Self {
-            target: target.map(str::to_string),
-            ..Self::new(PumpActionKind::Recover, reason)
         }
     }
 

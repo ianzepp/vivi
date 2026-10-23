@@ -9,6 +9,7 @@ use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::need_branch;
+use crate::pump::flow::reslice::{RunClass, classify_run};
 use crate::pump::flow::slice_merge::spec::{self, KIND};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::flow::verify;
@@ -33,7 +34,7 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
     mail: &mut M,
 ) -> Result<(), VivariumError> {
     let runs = store.live_runs()?;
-    drop_dead(ctx, st, store, &runs)?;
+    drop_dead(ctx, st, store)?;
     for run in &runs {
         if in_flight(st, &run.need) {
             continue;
@@ -166,60 +167,77 @@ pub(super) fn stale_text(job: &PoolJob, field: &str, expected: &str, found: &str
     )
 }
 
-/// The job's payload identity when its need and run are live; otherwise the
-/// stale-identity text. A missing or unparseable identity field, or a
-/// need/run that names no live run, is stale. The hand `attempt` is not part
-/// of the identity here: it is checked where the retry reads it, and a bad
-/// one is a parse error there, not a stale job.
-pub(super) fn live_identity(job: &PoolJob, runs: &[RunRow]) -> Result<PayloadIdentity, String> {
+/// How a slice merge job's payload names its run.
+pub(super) enum JobRun {
+    /// The identity names a live run.
+    Live(PayloadIdentity),
+    /// The identity names a superseded or withdrawn run: the expected end.
+    Dead(PayloadIdentity, &'static str),
+    /// Missing or unparseable identity, no such run, a `done` or unknown run
+    /// state: the stale-identity text.
+    Stale(String),
+}
+
+/// Classify the job's payload identity against every run of its need. The
+/// hand `attempt` is not part of the identity here: it is checked where the
+/// retry reads it, and a bad one is a parse error there, not a stale job.
+pub(super) fn classify_job(job: &PoolJob, store: &PumpStore) -> Result<JobRun, VivariumError> {
     let mut payload = job.payload.clone();
     if let Some(fields) = payload.as_object_mut() {
         fields.remove("attempt");
     }
-    let identity = PayloadIdentity::of(&payload)
-        .map_err(|found| stale_text(job, "identity", "need, run and task", &found))?;
-    if runs
-        .iter()
-        .any(|run| run.need == identity.need && run.run == identity.run)
-    {
-        return Ok(identity);
-    }
-    let others: Vec<String> = runs
-        .iter()
-        .filter(|run| run.need == identity.need)
-        .map(|run| run.run.to_string())
-        .collect();
-    let found = if others.is_empty() {
-        format!("no live run of {}", identity.need)
-    } else {
-        format!("live runs of {}: {}", identity.need, others.join(", "))
+    let identity = match PayloadIdentity::of(&payload) {
+        Ok(identity) => identity,
+        Err(found) => {
+            return Ok(JobRun::Stale(stale_text(
+                job,
+                "identity",
+                "need, run and task",
+                &found,
+            )));
+        }
     };
-    Err(stale_text(
-        job,
-        "live run",
-        &format!("{} r{}", identity.need, identity.run),
-        &found,
-    ))
+    let runs = store.runs_of(&identity.need)?;
+    Ok(match classify_run(&runs, &identity.need, identity.run) {
+        RunClass::Live(_) => JobRun::Live(identity),
+        RunClass::Dead(state) => JobRun::Dead(identity, state),
+        RunClass::Stale(found) => JobRun::Stale(stale_text(
+            job,
+            "live run",
+            &format!("{} r{}", identity.need, identity.run),
+            &found,
+        )),
+    })
 }
 
 /// Remove Pending slice merge jobs whose slice or run is gone. They have no
-/// step_jobs row, so the restart phase does not see them. A closed slice is
-/// the expected end and drops quietly; a stale identity raises once.
-fn drop_dead<S: JobStore>(
-    ctx: &Ctx,
-    st: &mut S,
-    store: &PumpStore,
-    runs: &[RunRow],
-) -> Result<(), VivariumError> {
+/// step_jobs row, so the restart phase does not see them. A closed slice or a
+/// superseded or withdrawn run is the expected end and drops quietly; a stale
+/// identity raises once.
+fn drop_dead<S: JobStore>(ctx: &Ctx, st: &mut S, store: &PumpStore) -> Result<(), VivariumError> {
     let mut dead = Vec::new();
-    for job in st.jobs().values() {
-        if job.kind != KIND || job.status != JobStatus::Pending {
-            continue;
-        }
-        if let Err(text) = live_identity(job, runs) {
-            raise_once(ctx, JOB_STALE, &job.id, &text);
-            dead.push(job.id.clone());
-            continue;
+    let pending: Vec<PoolJob> = st
+        .jobs()
+        .values()
+        .filter(|job| job.kind == KIND && job.status == JobStatus::Pending)
+        .cloned()
+        .collect();
+    for job in pending {
+        match classify_job(&job, store)? {
+            JobRun::Stale(text) => {
+                raise_once(ctx, JOB_STALE, &job.id, &text);
+                dead.push(job.id.clone());
+                continue;
+            }
+            JobRun::Dead(identity, state) => {
+                ctx.log(&format!(
+                    "slice merge: removed pending job {} of {} r{} ({state})",
+                    job.id, identity.need, identity.run
+                ));
+                dead.push(job.id.clone());
+                continue;
+            }
+            JobRun::Live(_) => {}
         }
         let open = match job.task.as_deref() {
             Some(task) => slice_open(store, task)?,

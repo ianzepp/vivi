@@ -87,14 +87,12 @@ fn print_porcelain(view: &vivi::routing::ConfigOverview, origins: &ConfigOrigins
     }
     let flow = &view.flow;
     println!(
-        "flow {} {} {} {} {} {} {} {}",
+        "flow {} {} {} {} {} {}",
         flow.merge_role,
         flow.merge_pool,
         flow.merge_lanes,
         flow.gate_role,
         flow.gate_pool,
-        flow.branch,
-        if flow.promote { "promote" } else { "hold" },
         flow.main
     );
 }
@@ -128,6 +126,7 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
     let mailspace = Mailspace::discover(project)?;
     let origins = origins_of(&mailspace)?;
     let mut issues = vivi::pump::readiness::assess(&mailspace);
+    issues.extend(retired_key_warnings(&mailspace)?);
     issues.extend(
         origins
             .warnings()
@@ -152,6 +151,22 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
         std::process::exit(NOT_READY_EXIT);
     }
     Ok(())
+}
+
+/// One warning per retired key the project file still carries, from the same
+/// list `config migrate` removes.
+fn retired_key_warnings(mailspace: &Mailspace) -> Result<Vec<vivi::routing::Issue>, VivariumError> {
+    let doc = config_edit::load(&mailspace.config_path())?;
+    let plan = plan_migrate(&mailspace.config, &doc, &MigrateInputs::default());
+    Ok(plan
+        .removals
+        .into_iter()
+        .map(|removal| vivi::routing::Issue {
+            severity: vivi::routing::Severity::Warning,
+            message: format!("[{}] {}: {}", removal.table, removal.key, removal.reason),
+            item: None,
+        })
+        .collect())
 }
 
 fn print_report(issues: &[vivi::routing::Issue]) {

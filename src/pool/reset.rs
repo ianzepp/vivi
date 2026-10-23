@@ -1,14 +1,13 @@
 //! One entry point for resetting a slot onto a freshly fetched origin branch.
 //!
 //! Default base is the configured `[pump] main` (else `main`). The caller
-//! may pass another origin branch (`next`, a prior work branch). Fetch
+//! may pass another origin branch (for example a prior work branch). Fetch
 //! always runs first; a missing origin ref fails the reset and leaves the
 //! slot free and clean — there is no silent fallback.
 
 use std::path::Path;
 
 use super::clean::{ActionKind, CleanAction, CleanSkip};
-use super::clean_pump::{is_done, merge_lane_ref};
 use super::clean_rule::write_mark;
 use super::clean_slot::slot_is_free;
 use super::config::PoolConfig;
@@ -18,7 +17,7 @@ use super::provider::{ExecOutput, PoolProvider};
 use super::slot::META_BASE;
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
-use crate::pump::state::{State, Unit};
+use crate::pump::state::Unit;
 
 /// `marks/base_ref`: origin branch the slot was last reset onto.
 pub const MARK_BASE_REF: &str = "base_ref";
@@ -66,7 +65,6 @@ pub fn choose_base(
     space: &Mailspace,
     requested: Option<&str>,
     unit: Option<&Unit>,
-    st: Option<&State>,
     kind: ResetKind,
 ) -> ChosenBase {
     if let Some(name) = requested.map(strip_origin).filter(|n| !n.is_empty()) {
@@ -77,7 +75,7 @@ pub fn choose_base(
     }
     if kind == ResetKind::Dispatch
         && let Some(unit) = unit
-        && let Some(chosen) = dispatch_override(space, unit, st)
+        && let Some(chosen) = dispatch_override(unit)
     {
         return chosen;
     }
@@ -87,7 +85,7 @@ pub fn choose_base(
     }
 }
 
-fn dispatch_override(space: &Mailspace, unit: &Unit, st: Option<&State>) -> Option<ChosenBase> {
+fn dispatch_override(unit: &Unit) -> Option<ChosenBase> {
     if let Some(name) = unit
         .base
         .as_deref()
@@ -97,13 +95,6 @@ fn dispatch_override(space: &Mailspace, unit: &Unit, st: Option<&State>) -> Opti
         return Some(ChosenBase {
             name,
             why: "unit.base",
-        });
-    }
-    if st.is_some_and(|s| has_unlanded_after(s, unit)) {
-        let name = merge_lane_ref(space, unit.target_id()).unwrap_or_else(|| "next".into());
-        return Some(ChosenBase {
-            name,
-            why: "unlanded-deps",
         });
     }
     if let Some(name) = prior_attempt_branch(unit) {
@@ -121,14 +112,6 @@ fn prior_attempt_branch(unit: &Unit) -> Option<String> {
         .rev()
         .find_map(|a| a.branch.clone())
         .filter(|b| !b.is_empty())
-}
-
-fn has_unlanded_after(st: &State, unit: &Unit) -> bool {
-    unit.after.iter().any(|dep| {
-        st.units
-            .get(dep)
-            .is_some_and(|other| !is_done(other.status))
-    })
 }
 
 fn strip_origin(name: &str) -> String {

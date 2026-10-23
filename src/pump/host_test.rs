@@ -162,7 +162,6 @@ fn pool_sources_travel_to_derived_contexts() {
         String::from("tela"),
         PumpTarget {
             path: String::from("tela"),
-            branch: String::from("main"),
             ..PumpTarget::default()
         },
     );
@@ -176,11 +175,6 @@ fn pool_sources_travel_to_derived_contexts() {
         target.pool_sources.get("glm"),
         Some(&PathBuf::from("/wtree/repo"))
     );
-    let other = ctx.with_repo(PathBuf::from("/other"));
-    assert_eq!(
-        other.pool_sources.get("glm"),
-        Some(&PathBuf::from("/wtree/repo"))
-    );
 }
 
 #[test]
@@ -191,7 +185,6 @@ fn mailspace_travels_to_derived_target_contexts() {
         String::from("tela"),
         PumpTarget {
             path: String::from("tela"),
-            branch: String::from("main"),
             ..PumpTarget::default()
         },
     );

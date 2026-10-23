@@ -11,14 +11,11 @@ use crate::cli::PumpWithdrawCommand;
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::need;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::withdraw::{apply_one, run};
 
 const T0: u64 = 1_000_000;
-const BASE: &str = "1111111111111111111111111111111111111111";
-const TIP: &str = "2222222222222222222222222222222222222222";
 
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
@@ -61,17 +58,6 @@ fn exceptions(ctx: &Ctx) -> String {
 
 fn log(host: &FakeHost) -> String {
     host.logs().join("\n")
-}
-
-/// A need whose units are all merged and whose branch is frozen, so the audit
-/// step would pick it up.
-fn frozen_need(st: &mut State, handle: &str) {
-    add_need(st, handle, &[("f1", Status::Merged)]);
-    need::reserve(st, "default", handle, 1, BASE).unwrap();
-    need::record_create_job(st, "default", handle, "init").unwrap();
-    need::record_created(st, "default", handle, "init", BASE, BASE).unwrap();
-    need::record_tip(st, "default", handle, 1, BASE, TIP).unwrap();
-    need::freeze(st, "default", handle, 1, TIP).unwrap();
 }
 
 #[test]
@@ -131,28 +117,8 @@ fn a_need_the_pump_holds_nothing_for_changes_no_state_but_still_ends_its_dispatc
 }
 
 #[test]
-fn withdrawing_a_frozen_need_drops_its_branch_record() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    frozen_need(&mut st, "pumpfix-q1");
-    assert!(
-        need::binding_for(&st, "default", "pumpfix-q1")
-            .unwrap()
-            .is_some()
-    );
-
-    apply_one(&ctx, &mut st, "pumpfix-q1", "no mail thread");
-
-    assert!(st.jobs.values().all(|job| job.kind != "need-audit"));
-    // The branch record is dropped; the remote branch is left for the operator.
-    assert!(need::get(&st, "default", "pumpfix-q1").unwrap().is_none());
-    assert!(log(&host).contains("left for manual deletion"));
-    assert_eq!(st.closed_needs, vec![String::from("pumpfix-q1")]);
-}
-
-#[test]
 fn applying_the_same_need_twice_closes_it_once() {
-    let (_dir, ctx, host) = setup();
+    let (_dir, ctx, _) = setup();
     let mut st = State::default();
     add_need(&mut st, "n1", &[("u1", Status::Stuck)]);
 

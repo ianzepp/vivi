@@ -49,8 +49,6 @@ const FORBIDDEN_EXECUTION: &[(&str, &str)] = &[
 fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
     let run = include_str!("../src/pump/run.rs");
     let collect = include_str!("../src/pump/collect.rs");
-    let steps = include_str!("../src/pump/tick_steps.rs");
-    assert!(steps.contains("merge::dispatch_pool(ctx, st)"), "{steps}");
     assert!(run.contains("jobs::dispatch_pending(ctx, st)"), "{run}");
     assert!(run.contains("collect::collect("), "{run}");
     assert!(
@@ -61,9 +59,6 @@ fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
         collect.contains("planner_jobs::apply_completions(ctx, st)"),
         "{collect}"
     );
-    assert!(run.contains("merge::apply_dispatched(ctx, st)"), "{run}");
-    assert!(run.contains("gate::collect_completed(ctx, st)"), "{run}");
-    assert!(run.contains("audit::collect_completed(ctx, st)"), "{run}");
     assert!(
         !run.contains("Merger::start"),
         "legacy merger started in run.rs"
@@ -116,15 +111,7 @@ fn pump_does_not_push_git_refs_itself() {
 
 #[test]
 fn hand_planner_and_merge_producers_dispatch_through_pool_jobs() {
-    let unit = include_str!("../src/pump/dispatch.rs");
     let planner = include_str!("../src/pump/planner_jobs.rs");
-    let merge = include_str!("../src/pump/merge/pool_dispatch.rs");
-    assert!(unit.contains("pool dispatch --pool"), "{unit}");
-    assert!(unit.contains("--publish-ref"), "{unit}");
-    assert!(!unit.contains("host.spawn"), "{unit}");
     assert!(planner.contains("jobs::enqueue(st, spec)"), "{planner}");
     assert!(!planner.contains(".spawn("), "{planner}");
-    assert!(merge.contains("jobs::enqueue(st, spec)"), "{merge}");
-    assert!(!merge.contains("Merger::start"), "{merge}");
-    assert!(!merge.contains(".spawn("), "{merge}");
 }

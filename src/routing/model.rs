@@ -176,14 +176,14 @@ fn pool_from(pool: &PoolConfig) -> RoutedPool {
     }
 }
 
-/// Merge lane count: the merge role's pool `slots`, else `[pump.merge] lanes`.
+/// Merge lane count: the merge role's pool `slots`, else one.
 #[must_use]
-pub fn merge_lane_count(routing: &RoleRouting, pump: &PumpConfig) -> u32 {
+pub fn merge_lane_count(routing: &RoleRouting) -> u32 {
     routing
         .merge()
         .and_then(|role| role.pool.as_deref())
         .and_then(|name| routing.pools.get(name))
-        .map_or_else(|| pump.merge.lanes.max(1), |pool| pool.slots.max(1))
+        .map_or(1, |pool| pool.slots.max(1))
 }
 
 /// The lanes that cap models inside `pool`: `[pools.X.caps]` when set,

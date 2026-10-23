@@ -16,36 +16,111 @@ const PLANNER_REASON: &str =
     "retired: planning runs as durable planner jobs on the pump-planner role's pool";
 const INTAKE_REASON: &str = "retired: the pump plans exactly the needs with an open pump record \
      (`vivi pump send --need <handle>`), so no mark or date cutoff applies";
-const GATE_REASON: &str = "ignored: the gate now runs after every merge batch that lands, \
-     not on a merge count or a timer";
+const GATE_REASON: &str = "retired: the pump no longer runs a gate; the whole table is ignored";
+const BRANCH_REASON: &str = "retired: needs merge to main; there is no integration branch";
+const PROMOTE_REASON: &str = "retired: there is no integration branch to promote from";
+const MERGE_CHECKS_REASON: &str = "retired: the merge flow no longer reads a check list here";
+const MERGE_BATCH_REASON: &str = "retired: the merge flow no longer batches or fans out needs";
+const MERGE_TIMER_REASON: &str = "retired: the merge flow has its own step timeouts";
+const NEED_REASON: &str = "retired: no repair-round counter; the whole table is ignored";
 
 /// Keys that are always ignored: `(table, key, reason, behaviour_change)`.
-const RETIRED: [(&str, &str, &str, bool); 7] = [
+/// A key that holds a table retires the whole table.
+const RETIRED: [(&str, &str, &str, bool); 18] = [
     ("pump.planner", "run", PLANNER_REASON, false),
     ("pump.planner", "charter", PLANNER_REASON, false),
     ("pump.board", "mark", INTAKE_REASON, true),
     ("pump.board", "since", INTAKE_REASON, true),
-    ("pump.gate", "every_merges", GATE_REASON, true),
-    ("pump.gate", "every_seconds", GATE_REASON, true),
+    ("pump", "gate", GATE_REASON, true),
+    ("pump", "branch", BRANCH_REASON, true),
+    ("pump", "promote", PROMOTE_REASON, true),
+    ("pump", "need", NEED_REASON, false),
+    ("pump.merge", "batch", MERGE_BATCH_REASON, true),
+    ("pump.merge", "need_parallel", MERGE_BATCH_REASON, true),
+    ("pump.merge", "shared_checks", MERGE_CHECKS_REASON, true),
+    ("pump.merge", "checks_for", MERGE_CHECKS_REASON, true),
+    ("pump.merge", "proof_timeout", MERGE_TIMER_REASON, false),
+    ("pump.merge", "remote_wait", MERGE_TIMER_REASON, false),
     (
         "pump",
         "priority_file",
         "retired: need priority lives in pump.db (`vivi pump priority`)",
         false,
     ),
+    // Retired keys of each `[pump.targets.<id>]`: the table is `pump.targets.*`.
+    ("pump.targets.*", "branch", BRANCH_REASON, true),
+    ("pump.targets.*", "promote", PROMOTE_REASON, true),
+    ("pump.targets.*", "gate", GATE_REASON, true),
 ];
 
 /// Plan the removal of every ignored key the document still holds.
 /// `merge_pool` is the pool the merge role has or is given; merge
 /// concurrency follows its slots, so `[pump.merge] lanes` is ignored too.
-pub(super) fn plan_removals(doc: &DocumentMut, merge_pool: &str, plan: &mut MigratePlan) {
+pub(super) fn plan_removals(
+    doc: &DocumentMut,
+    config: &MailspaceConfig,
+    merge_pool: &str,
+    plan: &mut MigratePlan,
+) {
+    let target_ids: Vec<String> = table_at(doc, "pump.targets")
+        .map(|targets| {
+            targets
+                .iter()
+                .filter(|(_, item)| item.as_table_like().is_some())
+                .map(|(id, _)| id.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
     for (table, key, reason, behaviour_change) in RETIRED {
-        push_removal(doc, table, key, reason, behaviour_change, plan);
+        if let Some(rest) = table.strip_suffix(".*") {
+            for id in &target_ids {
+                let path = format!("{rest}.{id}");
+                push_removal(doc, &path, key, reason, behaviour_change, plan);
+            }
+        } else {
+            push_removal(doc, table, key, reason, behaviour_change, plan);
+        }
     }
-    let reason = format!(
-        "ignored: merge concurrency follows the slots of the merge role's pool `{merge_pool}`"
-    );
-    push_removal(doc, "pump.merge", "lanes", &reason, false, plan);
+    plan_lanes_removal(doc, config, merge_pool, plan);
+}
+
+/// The old `[pump.merge] lanes` value as an integer, when the file sets one.
+pub(super) fn raw_merge_lanes(doc: &DocumentMut) -> Option<u32> {
+    let lanes = table_at(doc, "pump.merge")?.get("lanes")?.as_integer()?;
+    u32::try_from(lanes).ok()
+}
+
+/// Merge concurrency follows the slots of the merge role's pool. A new pool
+/// takes `lanes` as its slots; an existing pool keeps its own, and a pool
+/// with fewer slots than `lanes` is a behaviour change, named with both values.
+fn plan_lanes_removal(
+    doc: &DocumentMut,
+    config: &MailspaceConfig,
+    merge_pool: &str,
+    plan: &mut MigratePlan,
+) {
+    let slots = plan
+        .new_pools
+        .iter()
+        .find(|pool| pool.name == merge_pool)
+        .map(|pool| pool.slots)
+        .or_else(|| config.pools.get(merge_pool).map(|pool| pool.slots));
+    let lanes = raw_merge_lanes(doc);
+    let short = match (lanes, slots) {
+        (Some(lanes), Some(slots)) if lanes > slots => Some((lanes, slots)),
+        _ => None,
+    };
+    let reason = match short {
+        Some((lanes, slots)) => format!(
+            "ignored: merge concurrency follows the slots of the merge role's pool \
+             `{merge_pool}`; lanes was {lanes} but the pool has {slots} slot(s), so raise its \
+             `slots` to keep {lanes} merges at once"
+        ),
+        None => format!(
+            "ignored: merge concurrency follows the slots of the merge role's pool `{merge_pool}`"
+        ),
+    };
+    push_removal(doc, "pump.merge", "lanes", &reason, short.is_some(), plan);
 }
 
 fn push_removal(
@@ -62,10 +137,21 @@ fn push_removal(
     plan.removals.push(KeyRemoval {
         table: table.into(),
         key: key.into(),
-        value: item.to_string().trim().to_string(),
+        value: describe(item),
         reason: reason.into(),
         behaviour_change,
     });
+}
+
+/// A key's value as written, or the key names of a whole table.
+fn describe(item: &Item) -> String {
+    match item.as_table_like() {
+        Some(table) => {
+            let keys: Vec<&str> = table.iter().map(|(key, _)| key).collect();
+            format!("(table: {})", keys.join(", "))
+        }
+        None => item.to_string().trim().to_string(),
+    }
 }
 
 fn table_at<'a>(doc: &'a DocumentMut, path: &str) -> Option<&'a dyn TableLike> {

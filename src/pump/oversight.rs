@@ -1,9 +1,6 @@
 //! Cadence-driven Mind oversight: a compact pump brief, an allowlisted set
 //! of steering actions, recorded interventions, and no tick blockage.
 
-use std::collections::BTreeSet;
-use std::fs;
-
 use serde::{Deserialize, Serialize};
 
 use crate::mailspace::RoleView;
@@ -17,14 +14,7 @@ pub const EXTRA_KEY: &str = "oversight";
 /// Receipt marker the Mind must emit.
 pub const RESULT_MARKER: &str = "PUMP_OVERSIGHT_RESULT=";
 
-const ALLOWED: [&str; 6] = [
-    "hold-merge",
-    "clear-hold-merge",
-    "skip-unit",
-    "unskip-unit",
-    "replan-need",
-    "note",
-];
+const ALLOWED: [&str; 2] = ["replan-need", "note"];
 
 /// One recorded steering attempt, applied or refused.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -61,18 +51,18 @@ struct Action {
 
 /// Cadence job parts for a Mind role: read-only, with a compact pump brief.
 #[must_use]
-pub fn job_parts(ctx: &Ctx, st: &State, role: &RoleView, now: u64) -> (String, String, String) {
+pub fn job_parts(st: &State, role: &RoleView, now: u64) -> (String, String, String) {
     let subject = format!("oversight {} {}", role.name, now);
     let body = format!(
         "You are the Mind on a cadence oversight wake. Do not implement product work.\n\
          Steer only through the allowlisted actions. Unknown ops are refused and recorded;\n\
          they never block the pump tick.\n\
-         Allowlist: hold-merge, clear-hold-merge, skip-unit, unskip-unit, replan-need, note.\n\
+         Allowlist: replan-need, note.\n\
          End with one minified JSON line prefixed exactly `{RESULT_MARKER}`.\n\
          Shape: {{\"version\":1,\"actions\":[{{\"op\":\"<name>\",\"id\":\"<unit-or-need>\",\"text\":\"<note>\"}}]}}.\n\
-         `id` is required for skip-unit, unskip-unit, and replan-need. `text` is the note body.\n\n\
+         `id` is required for replan-need. `text` is the note body.\n\n\
          PUMP-STATE-BEGIN\n{}\nPUMP-STATE-END\n",
-        compact_state(ctx, st)
+        compact_state(st)
     );
     (String::from("cadence"), subject, body)
 }
@@ -100,7 +90,7 @@ pub fn apply(ctx: &Ctx, st: &mut State, job_id: &str) {
     }
 }
 
-fn compact_state(ctx: &Ctx, st: &State) -> String {
+fn compact_state(st: &State) -> String {
     let counts = st
         .counts()
         .iter()
@@ -113,20 +103,13 @@ fn compact_state(ctx: &Ctx, st: &State) -> String {
         .filter(|job| !job.status.is_terminal())
         .map(|job| format!("{}:{}", job.id, job.kind))
         .collect();
-    let skip = crate::pump::board::read_skip(ctx);
-    let skip = if skip.is_empty() {
-        String::from("none")
-    } else {
-        skip.into_iter().collect::<Vec<_>>().join(" ")
-    };
     format!(
-        "units {counts}\njobs {}\nhold-merge {}\nskip {skip}",
+        "units {counts}\njobs {}",
         if jobs.is_empty() {
             String::from("none")
         } else {
             jobs.join(" ")
         },
-        if ctx.flag("HOLD-MERGE") { "yes" } else { "no" },
     )
 }
 
@@ -165,10 +148,6 @@ fn apply_one(ctx: &Ctx, st: &mut State, job_id: &str, action: Action) {
 
 fn perform(ctx: &Ctx, st: &mut State, op: &str, action: &Action) -> String {
     match op {
-        "hold-merge" => write_flag(ctx, true),
-        "clear-hold-merge" => write_flag(ctx, false),
-        "skip-unit" => edit_skip(ctx, &action.id, true),
-        "unskip-unit" => edit_skip(ctx, &action.id, false),
         "replan-need" => request_replan(ctx, st, &action.id),
         "note" => {
             if action.text.trim().is_empty() {
@@ -180,44 +159,6 @@ fn perform(ctx: &Ctx, st: &mut State, op: &str, action: &Action) -> String {
         }
         _ => format!("refused: `{op}` is not on the allowlist"),
     }
-}
-
-fn write_flag(ctx: &Ctx, hold: bool) -> String {
-    let path = ctx.home.join("HOLD-MERGE");
-    let io = if hold {
-        fs::write(&path, "mind-oversight\n")
-    } else if path.exists() {
-        fs::remove_file(&path)
-    } else {
-        Ok(())
-    };
-    match io {
-        Ok(()) => String::from("applied"),
-        Err(error) => format!("error: {error}"),
-    }
-}
-
-fn edit_skip(ctx: &Ctx, id: &str, add: bool) -> String {
-    let id = id.trim();
-    if id.is_empty() {
-        return String::from("refused: id is empty");
-    }
-    let path = ctx.home.join("skip.txt");
-    let mut ids = crate::pump::board::read_skip(ctx);
-    if add {
-        ids.insert(id.to_owned());
-    } else {
-        ids.remove(id);
-    }
-    match write_skip(&path, &ids) {
-        Ok(()) => String::from("applied"),
-        Err(error) => format!("error: {error}"),
-    }
-}
-
-fn write_skip(path: &std::path::Path, ids: &BTreeSet<String>) -> std::io::Result<()> {
-    let text = ids.iter().cloned().collect::<Vec<_>>().join(" ") + "\n";
-    fs::write(path, text)
 }
 
 fn request_replan(ctx: &Ctx, st: &mut State, handle: &str) -> String {

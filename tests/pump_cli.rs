@@ -38,8 +38,11 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
     assert!(home.join("pump.db").is_file(), "no pump.db");
     assert!(home.join("log.txt").is_file(), "no log.txt");
     let lines: Vec<&str> = status.lines().collect();
-    assert_eq!(lines.len(), 9, "status.txt must be 9 lines: {status}");
-    assert_eq!(lines[4], "last promote never", "line 5: {status}");
+    assert_eq!(lines.len(), 5, "status.txt must be 5 lines: {status}");
+    assert_eq!(
+        lines[4], "delivered waiting 0, oldest none",
+        "line 5: {status}"
+    );
     assert!(lines[1].starts_with("units"), "line 2: {status}");
     let shown = vivi(["pump", "status", "--project", root(&project)]);
     assert_success(&shown);
@@ -482,9 +485,7 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
     );
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
     assert!(
-        status
-            .lines()
-            .any(|line| line.starts_with("shared-check timeout counts unavailable")),
+        status.lines().any(|line| line.starts_with("merges ")),
         "{status}"
     );
 }
@@ -592,12 +593,10 @@ fn temp_mailspace() -> tempfile::TempDir {
     let config = project.path().join(".vivi").join("mailspace.toml");
     let root = project.path().to_str().unwrap();
     let table = format!(
-        "\n[pump]\nbranch = \"next\"\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\
+        "\n[pump]\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\
          committer_name = \"Test\"\ncommitter_email = \"test@example.com\"\n\n\
          [pump.board]\nfrom = []\npull = false\n\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
-         [pump.merge]\nshared_checks = [\"true\"]\n\n\
-         [pump.gate]\ncommand = \"true\"\n\n\
          [pools.test]\nprovider = \"local\"\nslots = 1\n\n\
          [pools.test.harness]\nname = \"test\"\nrun = \"test --model {{model}} @{{brief}}\"\n\
          models = [\"test/model\"]\n\n\
@@ -760,7 +759,7 @@ fn pump_once_on_a_freshly_initialised_project_holds_instead_of_failing() {
     assert_success(&status);
     let text = stdout(&status);
     assert!(text.contains("not ready:"), "{text}");
-    assert!(text.contains("pump.gate.command"), "{text}");
+    assert!(text.contains("pump.committer_name"), "{text}");
     let health = vivi(["pump", "health", "--json", "--project", root(&project)]);
     assert_success(&health);
     let body = stdout(&health);

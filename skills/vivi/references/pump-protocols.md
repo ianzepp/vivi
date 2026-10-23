@@ -64,8 +64,7 @@ The supported verdicts are **clean_pass**, **residual**, **block_range**, and
 range. Residual findings become deduplicated ordinary needs with their report,
 path, and recheck-trigger provenance. A block-range receipt creates repair
 units on the same need branch and queues a new audit over only the repair diff.
-**[pump.need].repair_rounds** (default 1) caps how many repairs a finding may
-receive before the branch is held.
+(`[pump.need].repair_rounds` is retired: the table parses and is ignored.)
 A block-ship receipt records a persistent hold and escalation. The Auditor
 charter remains the authority for verification width and repair-round policy.
 Receipt replay is a no-op; changed revision, branch tip, or frozen membership
@@ -105,7 +104,7 @@ An optional external gate runner can provide a result file for a pinned tip unde
 ## Other role jobs
 
 - **Promotion** jobs ask the release role, or merge role when no release role exists, to confirm the exact gated tip. The runner alone can publish it to the configured main ref.
-- **Cadence** and **digest** jobs are addressed to the role whose schedule is due. A writable role branch must pass the shared merge and gate path before its job is settled.
+- **Cadence** and **digest** jobs are addressed to the role whose schedule is due. Cadence and digest jobs always run read-only; their output is mail (wants and needs).
 - **Investigation** jobs are read-only auditor jobs created for head-ceo needs marked **investigate** and containing **for: &lt;want-handle&gt;**. The need closes only after the recent auditor report reply lands on that want for head-ceo.
 - **Reclaim** jobs are local-only cleanup jobs sent to the reclaim role or the hand role. They cannot spill onto remote pools.
 

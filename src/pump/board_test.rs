@@ -3,7 +3,6 @@
 //! skip list, planner expiry and planner launch, driven through
 //! [`FakeHost`] replies.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -28,7 +27,6 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 fn setup_with(board: BoardConfig) -> (TempDir, Ctx, Arc<FakeHost>) {
     let cfg = PumpConfig {
         board,
-        branch: String::from("next"),
         ..PumpConfig::default()
     };
     let dir = tempdir().unwrap();
@@ -86,50 +84,6 @@ fn merged_unit(title: &str, commit: &str) -> Unit {
         commit: Some(String::from(commit)),
         ..Unit::default()
     }
-}
-
-const NEED_BASE: &str = "1111111111111111111111111111111111111111";
-const NEED_TIP: &str = "2222222222222222222222222222222222222222";
-const LANDING_CANDIDATE: &str = "3333333333333333333333333333333333333333";
-const OBSERVED_TARGET: &str = "4444444444444444444444444444444444444444";
-
-fn managed_need_with_settled_units() -> State {
-    let mut st = State::default();
-    st.needs.insert(
-        String::from("n-managed"),
-        NeedRecord {
-            verdict: String::from("plan"),
-            reason: String::from("one unit"),
-            units: vec![String::from("u-managed")],
-            revision: 1,
-            ..NeedRecord::default()
-        },
-    );
-    st.units.insert(
-        String::from("u-managed"),
-        Unit {
-            need: String::from("n-managed"),
-            target: String::from("default"),
-            revision: 1,
-            status: Status::Merged,
-            commit: Some(String::from(NEED_TIP)),
-            ..Unit::default()
-        },
-    );
-    crate::pump::need::reserve(&mut st, "default", "n-managed", 1, NEED_BASE).unwrap();
-    crate::pump::need::record_create_job(&mut st, "default", "n-managed", "init-managed").unwrap();
-    crate::pump::need::record_created(
-        &mut st,
-        "default",
-        "n-managed",
-        "init-managed",
-        NEED_BASE,
-        NEED_BASE,
-    )
-    .unwrap();
-    crate::pump::need::record_tip(&mut st, "default", "n-managed", 1, NEED_BASE, NEED_TIP).unwrap();
-    crate::pump::need::freeze(&mut st, "default", "n-managed", 1, NEED_TIP).unwrap();
-    st
 }
 
 /// Epoch seconds for an RFC 3339 stamp.
@@ -298,17 +252,14 @@ fn candidates_come_from_held_and_addressed_lists_and_are_deduplicated() {
 }
 
 #[test]
-fn a_record_whose_need_is_not_addressed_to_the_pump_is_logged_not_planned() {
+fn a_record_whose_need_is_not_addressed_to_the_pump_gives_no_rows_and_no_log() {
     let (_dir, ctx, host) = setup();
     open_records(&host, &["elsewhere"]);
     host.reply("--held", 0, "[]");
     host.reply("--json --to mind", 0, "[]");
     assert!(candidate_rows(&ctx).is_empty());
     let logs = host.logs().join("\n");
-    assert!(
-        logs.contains("the pump record for need elsewhere names no open need addressed to mind"),
-        "logs: {logs}"
-    );
+    assert!(!logs.contains("not planned"), "logs: {logs}");
 }
 
 #[test]
@@ -345,15 +296,6 @@ fn an_unreadable_need_list_keeps_what_the_other_list_gave() {
         ),
         "logs: {logs}"
     );
-}
-
-#[test]
-fn read_skip_reads_whitespace_separated_handles() {
-    let (_dir, ctx, _host) = setup();
-    assert_eq!(read_skip(&ctx), BTreeSet::new());
-    fs::write(ctx.home.join("skip.txt"), "n1 n2\n  n3\n").unwrap();
-    let want: BTreeSet<String> = ["n1", "n2", "n3"].iter().map(|h| (*h).to_owned()).collect();
-    assert_eq!(read_skip(&ctx), want);
 }
 
 #[test]
@@ -554,92 +496,6 @@ fn post_replies_sends_planned_once_and_merged_once() {
 }
 
 #[test]
-fn managed_need_reports_implementation_before_landing_and_acceptance_after_cleanup() {
-    let (_dir, ctx, host) = setup();
-    reply_record(&host, "n-managed", "p-managed");
-    host.reply("mail reply p-managed", 0, "queued");
-    let mut st = managed_need_with_settled_units();
-    let rows = vec![need_row("n-managed", "2026-10-15", "Managed need")];
-
-    assert!(post_replies(&ctx, &mut st, &rows));
-    let implemented =
-        fs::read_to_string(ctx.home.join("board/reply-n-managed-implemented.txt")).unwrap();
-    assert!(implemented.contains("settled on this managed need's isolated branch"));
-    assert!(implemented.contains("not yet fully verified"));
-    assert!(!implemented.contains("Not reviewed"));
-    assert!(!ctx.home.join("board/reply-n-managed-merged.txt").exists());
-    assert_eq!(
-        st.board.replied,
-        vec![
-            String::from("n-managed:planned"),
-            String::from("n-managed:implemented-r1")
-        ]
-    );
-
-    let binding = crate::pump::need::binding_for(&st, "default", "n-managed")
-        .unwrap()
-        .unwrap();
-    crate::pump::need::reserve_landing(&mut st, "default", "n-managed", &binding, "land-managed")
-        .unwrap();
-    crate::pump::need::record_landing(
-        &mut st,
-        "default",
-        "n-managed",
-        "land-managed",
-        crate::pump::need::NeedLandingReceipt {
-            binding,
-            acceptance_receipt_key: String::from("accept-managed-r1"),
-            acceptance_job_id: String::from("audit-managed-r1"),
-            verdict: String::from("clean_pass"),
-            landing_job_id: String::from("land-managed"),
-            target_ref: String::from("refs/heads/next"),
-            candidate_sha: String::from(LANDING_CANDIDATE),
-            runner_published_sha: String::from(LANDING_CANDIDATE),
-            observed_target_sha: String::from(OBSERVED_TARGET),
-            accepted_tip_in_candidate: true,
-            candidate_in_observed_target: true,
-            merge_report: String::from("verified merge"),
-        },
-    )
-    .unwrap();
-    crate::pump::need::record_cleanup_job(&mut st, "default", "n-managed", "cleanup-managed")
-        .unwrap();
-    crate::pump::need::finish_cleanup(
-        &mut st,
-        "default",
-        "n-managed",
-        "cleanup-managed",
-        crate::pump::need::NeedCleanupReceipt {
-            cleanup_job_id: String::from("cleanup-managed"),
-            branch_ref: String::from("refs/heads/vivi/need/n-managed"),
-            expected_sha: String::from(NEED_TIP),
-            runner_state: String::from("deleted"),
-            before_sha: Some(String::from(NEED_TIP)),
-            verified_absent: true,
-            completed_at: 10,
-        },
-    )
-    .unwrap();
-
-    assert!(post_replies(&ctx, &mut st, &rows));
-    let merged = fs::read_to_string(ctx.home.join("board/reply-n-managed-merged.txt")).unwrap();
-    assert!(merged.contains("accepted and verified on its target integration ref(s)"));
-    assert!(merged.contains("accepted clean_pass (accept-managed-r1)"));
-    assert!(merged.contains("refs/heads/next observed at 4444444444"));
-    assert!(merged.contains("Promotion to main is separate."));
-    assert!(!merged.contains("Not reviewed"));
-    assert_eq!(
-        st.board.replied,
-        vec![
-            String::from("n-managed:planned"),
-            String::from("n-managed:implemented-r1"),
-            String::from("n-managed:managed-merged-r1")
-        ]
-    );
-    assert!(!post_replies(&ctx, &mut st, &rows));
-}
-
-#[test]
 fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
     let board = BoardConfig {
         from: Vec::new(),
@@ -647,7 +503,6 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
     };
     let cfg = PumpConfig {
         board: board.clone(),
-        branch: String::from("next"),
         reply_from: String::from("mind role"),
         ..PumpConfig::default()
     };
@@ -665,7 +520,6 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
             reply_to: Some(String::from("operator role")),
             ..board
         },
-        branch: String::from("next"),
         reply_from: String::from("mind role"),
         ..PumpConfig::default()
     };
@@ -801,7 +655,6 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_otherwise() {
         host.logs()
             .contains(&"sync pull rc=0 pulled 3 messages".to_string())
     );
-    assert!(st.board.planning.is_empty());
     assert!(st.jobs.is_empty(), "the board pass plans nothing");
     assert!(!host.spawned().iter().any(|cmd| cmd.contains("sync push")));
 }
@@ -910,27 +763,5 @@ fn a_progress_reply_for_a_need_without_an_open_record_is_dropped_and_retried() {
     assert!(
         host.logs()
             .contains(&"board reply n5 planned dropped: no open pump record".to_string())
-    );
-}
-
-#[test]
-fn the_record_of_a_pump_created_need_is_neither_planned_nor_reported() {
-    let (_dir, ctx, host) = setup();
-    open_records(&host, &["a", "gatefix"]);
-    host.reply(
-        "--json --to mind",
-        0,
-        &list(&[row("a", "2026-10-15", "A", &[])]),
-    );
-    host.reply("--held", 0, "[]");
-    let own = std::collections::BTreeSet::from([String::from("gatefix")]);
-
-    let rows = candidate_rows_except(&ctx, &own);
-
-    assert_eq!(handles(&rows), vec!["a"]);
-    assert!(
-        host.logs().iter().all(|line| !line.contains("gatefix")),
-        "{:?}",
-        host.logs()
     );
 }

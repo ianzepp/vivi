@@ -230,13 +230,8 @@ fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace, task: &str) -> Op
     let unit = st
         .as_ref()
         .and_then(|s| vivi::pool::clean_pump::unit_for(s, Some(task), None));
-    let chosen = vivi::pool::reset::choose_base(
-        space,
-        None,
-        unit,
-        st.as_ref(),
-        vivi::pool::reset::ResetKind::Dispatch,
-    );
+    let chosen =
+        vivi::pool::reset::choose_base(space, None, unit, vivi::pool::reset::ResetKind::Dispatch);
     Some(chosen.name)
 }
 
@@ -326,6 +321,7 @@ fn resolve_dispatch(
         role.as_ref(),
         command.publish_ref.as_deref(),
         command.publish_expect.as_deref(),
+        &configured_mains(space),
     )?;
     let resolved = role_dispatch::resolve(
         config,
@@ -385,6 +381,17 @@ fn base_flags(
     }
 }
 
+/// The main branch name of every configured pump target; empty with no
+/// `[pump]` table.
+fn configured_mains(space: &Mailspace) -> Vec<String> {
+    space.config.pump.as_ref().map_or_else(Vec::new, |pump| {
+        pump.target_configs()
+            .into_values()
+            .map(|target| target.main)
+            .collect()
+    })
+}
+
 /// The flags of a no-model dispatch (`--command`): no role resolution, no
 /// standing prompt and no model. `validate_publish` still runs so a
 /// merge-role task can publish.
@@ -399,6 +406,7 @@ fn resolve_command_dispatch(
         role.as_ref(),
         command.publish_ref.as_deref(),
         command.publish_expect.as_deref(),
+        &configured_mains(space),
     )?;
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
     let flags = base_flags(command, need, kind);

@@ -252,7 +252,7 @@ fn a_not_ancestor_receipt_answers_conflict_for_a_moved_main() -> R {
 }
 
 #[test]
-fn a_lost_job_whose_main_holds_the_tip_answers_merged() -> R {
+fn a_lost_job_whose_main_holds_the_tip_records_the_repair_commit_not_the_later_main() -> R {
     let mut rig = rig()?;
     rig.main_is(MAIN_B);
     rig.host.reply("cat-file", 0, "");
@@ -263,7 +263,7 @@ fn a_lost_job_whose_main_holds_the_tip_answers_merged() -> R {
     assert_eq!(step.state, StepState::Done);
     assert_eq!(step.verdict.as_deref(), Some("merged"));
     assert_eq!(rig.jobs.jobs.len(), 1);
-    assert_eq!(rig.repaired()?.as_deref(), Some(MAIN_B));
+    assert_eq!(rig.repaired()?.as_deref(), Some(NEED_TIP));
     Ok(())
 }
 

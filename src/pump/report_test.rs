@@ -133,20 +133,6 @@ fn state_summary_counts_complete_stuck_and_inflight() {
 }
 
 #[test]
-fn state_summary_counts_planners() {
-    let mut st = state();
-    st.board.planning.insert(String::from("n1"), 10);
-    st.board.planning.insert(String::from("n2"), 11);
-    st.board.planner_failed.push(String::from("n7"));
-    let summary = ready(st).summary();
-    assert_eq!(summary.planning, 2);
-    assert_eq!(summary.planner_parked, 1);
-    let quiet = ready(State::default()).summary();
-    assert_eq!(quiet.planning, 0);
-    assert_eq!(quiet.planner_parked, 0);
-}
-
-#[test]
 fn cadence_run_receipts_are_available_to_the_board() {
     let mut st = State::default();
     let mut cadence = CadenceState::default();
@@ -155,7 +141,6 @@ fn cadence_run_receipts_are_available_to_the_board() {
         RoleRun {
             job: String::from("cadence-digest-1"),
             task: String::from("abcd1234"),
-            branch: None,
             read_only: true,
             started_at: 100,
             ended_at: Some(200),

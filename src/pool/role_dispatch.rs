@@ -122,12 +122,16 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
 
 /// Require privileged publication to be explicitly addressed to merge/release
 /// roles, to a hand job publishing only its unit-namespace branch, or to a
-/// repairer job publishing only one `vivi/repair/<segment>` branch.
-/// Promotion schedulers bind publication to one expected full commit SHA.
+/// repairer job publishing only one `vivi/repair/<segment>` branch. A merge
+/// role publishes only a configured main (`mains`, one branch name per
+/// target), a `vivi/need/<segment>` or `vivi/need-prior/<segment>` branch, or
+/// a `pump/merge-main/<segment>` scratch branch.
+/// A release role binds publication to one expected full commit SHA.
 pub fn validate_publish(
     role: Option<&RoleFacts>,
     publish_ref: Option<&str>,
     publish_expect: Option<&str>,
+    mains: &[String],
 ) -> Result<(), VivariumError> {
     let Some(reference) = publish_ref else {
         return if publish_expect.is_none() {
@@ -140,7 +144,9 @@ pub fn validate_publish(
     };
     let kind = role.and_then(|role| role.kind.as_deref());
     match kind {
-        Some(kind) if kind.eq_ignore_ascii_case("merge") => Ok(()),
+        Some(kind) if kind.eq_ignore_ascii_case("merge") && merge_publish_ref(reference, mains) => {
+            Ok(())
+        }
         Some(kind) if kind.eq_ignore_ascii_case("release") && publish_expect.is_some() => Ok(()),
         Some(kind) if kind.eq_ignore_ascii_case("release") => Err(VivariumError::Config(
             "release publication requires an exact expected commit SHA".into(),
@@ -154,6 +160,21 @@ pub fn validate_publish(
             role.map_or("(none)", |role| role.name.as_str())
         ))),
     }
+}
+
+fn merge_publish_ref(reference: &str, mains: &[String]) -> bool {
+    one_segment(reference, "refs/heads/vivi/need/")
+        || one_segment(reference, "refs/heads/vivi/need-prior/")
+        || one_segment(reference, "refs/heads/pump/merge-main/")
+        || mains
+            .iter()
+            .any(|main| reference.strip_prefix("refs/heads/") == Some(main.as_str()))
+}
+
+fn one_segment(reference: &str, prefix: &str) -> bool {
+    reference
+        .strip_prefix(prefix)
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
 }
 
 fn unit_publish_ref(reference: &str) -> bool {

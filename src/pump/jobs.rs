@@ -14,21 +14,18 @@ use crate::pump::host::Ctx;
 
 mod brief;
 mod dispatcher;
-mod gate_sources;
 pub mod merge_main;
 mod receipts;
 mod recovery;
 pub mod rung;
 pub mod rung_result;
-#[cfg(test)]
-use dispatcher::{FixMarks, dispatch_order, pool_command, send_task};
+mod slots;
 pub use dispatcher::{candidate_pools, dispatch_pending};
-pub use gate_sources::{
-    mark_gate_attempted, mark_gated, mark_integration_failed, mark_merged,
-    sources_need_gate_attempt, sources_waiting_for_gate,
-};
+#[cfg(test)]
+use dispatcher::{dispatch_order, pool_command, send_task};
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
+pub(crate) use slots::{parse_created_handle, slots};
 
 /// A request to make one durable role-addressed pool task.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +68,8 @@ pub struct JobSpec {
     pub allow_default_branch: bool,
     /// Remote refs the privileged runner may publish after clean worker exit.
     pub publish_ref: Option<String>,
-    /// Exact source commit required for guarded promotion.
+    /// Exact source commit the runner publishes (for example a need-branch
+    /// rename publishes the old tip under the prior name).
     pub publish_expect: Option<String>,
     pub publish_contains: Option<String>,
     pub delete_ref: Option<String>,
@@ -80,12 +78,12 @@ pub struct JobSpec {
     pub budget: u64,
     /// Explicit read-only request; the role can also require this mode.
     pub read_only: bool,
-    /// Unit IDs held by a batch job, used to recover merge state.
+    /// Unit IDs the job carried in the retired batch pipeline; copied into
+    /// the job record, never read by the flow engine.
     pub units: Vec<String>,
-    /// Role jobs whose output branches this merge job integrates.
+    /// Source job ids from the retired merge pipeline; only copied into the
+    /// job record.
     pub source_jobs: Vec<String>,
-    /// This write job must be merged and pass the gate before it is settled.
-    pub integration_required: bool,
     /// Job-specific durable inputs used by its collector.
     pub payload: serde_json::Value,
     /// An existing mailspace task this job runs on; dispatch then skips
@@ -130,7 +128,6 @@ impl JobSpec {
             read_only: false,
             units: Vec::new(),
             source_jobs: Vec::new(),
-            integration_required: false,
             payload: serde_json::Value::Object(serde_json::Map::new()),
             task: None,
         }
@@ -208,8 +205,6 @@ pub struct PoolJob {
     pub units: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_jobs: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub integration_required: bool,
     pub payload: serde_json::Value,
     /// The mailspace task handle; absent until task send succeeds.
     pub task: Option<String>,
@@ -222,18 +217,6 @@ pub struct PoolJob {
     /// When the pump applied the result to its own lifecycle state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_at: Option<u64>,
-    /// Integration branch tip after this job's output was merged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merged_tip: Option<String>,
-    /// Tip that passed the gate covering the merge.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gated_tip: Option<String>,
-    /// Last integration tip checked by a gate, including a red result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gate_attempted_tip: Option<String>,
-    /// A decided merge failure that needs a new role attempt or operator action.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub integration_error: Option<String>,
 }
 
 impl From<JobSpec> for PoolJob {
@@ -266,7 +249,6 @@ impl From<JobSpec> for PoolJob {
             read_only: spec.read_only,
             units: spec.units,
             source_jobs: spec.source_jobs,
-            integration_required: spec.integration_required,
             payload: spec.payload,
             task: spec.task,
             pool: None,
@@ -274,10 +256,6 @@ impl From<JobSpec> for PoolJob {
             status: JobStatus::Pending,
             outcome: None,
             applied_at: None,
-            merged_tip: None,
-            gated_tip: None,
-            gate_attempted_tip: None,
-            integration_error: None,
         }
     }
 }
@@ -286,13 +264,6 @@ impl From<JobSpec> for PoolJob {
 pub trait JobStore {
     fn jobs(&self) -> &BTreeMap<String, PoolJob>;
     fn jobs_mut(&mut self) -> &mut BTreeMap<String, PoolJob>;
-
-    /// Ids of pump-created gate-fix needs and their units, which dispatch
-    /// ranks as fix work beside the `fix_prefix` spelling. A store without a
-    /// pump state has none.
-    fn fix_ids(&self) -> std::collections::BTreeSet<String> {
-        std::collections::BTreeSet::new()
-    }
 }
 
 /// Add a durable pending job. A stable ID makes repeated scheduler ticks safe.
@@ -314,79 +285,6 @@ pub fn enqueue(st: &mut impl JobStore, spec: JobSpec) -> Result<(), VivariumErro
     Ok(())
 }
 
-/// Queue a fast-forward-only promotion on a merge/release pool role.
-pub fn enqueue_promotion(
-    ctx: &Ctx,
-    st: &mut impl JobStore,
-    target: &str,
-    tip: &str,
-    failing: &[String],
-) -> Result<Option<String>, VivariumError> {
-    let can_publish = |role: &&crate::routing::RoutedRole| {
-        role.status == "active" && ctx.routing.pool_of(role).is_some()
-    };
-    let role = ctx
-        .routing
-        .lookup("release")
-        .filter(can_publish)
-        .or_else(|| {
-            ctx.routing
-                .merge()
-                .filter(|role| role.status == "active" && ctx.routing.pool_of(role).is_some())
-        });
-    let Some(role) = role else {
-        ctx.log("promotion queued nowhere: no release or merge role is configured");
-        return Ok(None);
-    };
-    let Some(target_ctx) = ctx.for_target(target) else {
-        return Err(VivariumError::Config(format!(
-            "cannot promote unknown repository target {target:?}"
-        )));
-    };
-    let short: String = tip.chars().take(12).collect();
-    let id = format!("promote-{}-{short}", safe_component(target));
-    let subject = format!("fast-forward {} to {}", target_ctx.cfg.main, &short);
-    let remote = target_ctx.cfg.remote.clone();
-    let runner_branch = format!("pump/promotion/{}/{}", safe_component(target), short);
-    let body = format!(
-        "The green integration tip is `{tip}`. Confirm your checkout HEAD is exactly that commit and the worktree is clean. Do not push or change branches. If HEAD differs, report `blocked`. Otherwise report `ready`; after your clean exit, the privileged pool runner may publish only this exact SHA to `{remote}` `refs/heads/{}`. The controller requires the runner's actual publish receipt and independently verifies the remote ref. End your receipt with one minified JSON line prefixed `PUMP_PROMOTE_RESULT=` and containing `{{\"status\":\"ready|blocked\",\"tip\":\"{tip}\"}}`. The pool runner branch is only scratch output; do not push the promotion result there.\n\nGreen gate failing names at this tip: {}",
-        target_ctx.cfg.main,
-        if failing.is_empty() {
-            "(not recorded)".to_owned()
-        } else {
-            failing.join(", ")
-        },
-    );
-    let mut spec = JobSpec::new(id.clone(), "promote", &role.name, subject, body);
-    spec.target = Some(target.to_owned());
-    spec.from_ref = Some(tip.to_owned());
-    spec.branch = Some(runner_branch);
-    spec.publish_ref = Some(format!("refs/heads/{}", target_ctx.cfg.main));
-    spec.publish_expect = Some(tip.to_owned());
-    spec.budget = target_ctx.cfg.dispatch.budget;
-    spec.payload = serde_json::json!({
-        "target": target,
-        "branch": target_ctx.cfg.main,
-        "remote": target_ctx.cfg.remote,
-        "tip": tip,
-        "failing": failing,
-    });
-    enqueue(st, spec)?;
-    Ok(Some(id))
-}
-
-fn safe_component(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
 /// Whether a reconcile pass has dispatched jobs that need pool polling.
 #[must_use]
 pub fn has_dispatched(st: &impl JobStore) -> bool {
@@ -405,69 +303,10 @@ pub fn has_unsettled_kind_for_target(st: &impl JobStore, kind: &str, target: &st
     })
 }
 
-/// Preserve a `merging` unit only while a dispatched merge job owns it.
-#[must_use]
-pub fn owns_merging_unit(st: &impl JobStore, uid: &str) -> bool {
-    st.jobs().values().any(|job| {
-        job.kind == "merge"
-            && job.units.iter().any(|unit| unit == uid)
-            && matches!(
-                job.status,
-                JobStatus::Pending | JobStatus::Dispatched | JobStatus::Finished
-            )
-    })
-}
-
 /// Read the saved outcome after the collector has transitioned a job.
 #[must_use]
 pub fn completion<'a>(st: &'a impl JobStore, id: &str) -> Option<&'a JobOutcome> {
     st.jobs().get(id)?.outcome.as_ref()
-}
-
-/// Whether a role job's output is clear of the common merge and gate pipeline.
-#[must_use]
-pub fn branch_landed(st: &impl JobStore, id: &str) -> bool {
-    st.jobs()
-        .get(id)
-        .is_some_and(|job| !job.integration_required || job.gated_tip.is_some())
-}
-
-/// Decided branch-integration failure, if one ended the merge pipeline.
-#[must_use]
-pub fn integration_error<'a>(st: &'a impl JobStore, id: &str) -> Option<&'a str> {
-    st.jobs().get(id)?.integration_error.as_deref()
-}
-
-/// A role branch ready to enter the common merge pipeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchSource {
-    pub job_id: String,
-    pub role: String,
-    pub branch: String,
-    pub subject: String,
-}
-
-/// Integration branches from completed write jobs that have not merged yet.
-#[must_use]
-pub fn branch_sources_pending(st: &impl JobStore, target: &str) -> Vec<BranchSource> {
-    st.jobs()
-        .values()
-        .filter(|job| {
-            job.integration_required
-                && job.target.as_deref() == Some(target)
-                && job.branch.is_some()
-                && job.status == JobStatus::Finished
-                && job.outcome.as_ref().and_then(JobOutcome::agent_success) == Some(true)
-                && job.merged_tip.is_none()
-                && job.integration_error.is_none()
-        })
-        .map(|job| BranchSource {
-            job_id: job.id.clone(),
-            role: job.role.clone(),
-            branch: job.branch.clone().unwrap_or_default(),
-            subject: job.subject.clone(),
-        })
-        .collect()
 }
 
 /// Mark a terminal result applied while keeping its receipt available to the
@@ -476,10 +315,7 @@ pub fn mark_applied(st: &mut impl JobStore, id: &str, at: u64) -> bool {
     let Some(job) = st.jobs_mut().get_mut(id) else {
         return false;
     };
-    if !job.status.is_terminal()
-        || job.applied_at.is_some()
-        || (job.integration_required && job.gated_tip.is_none() && job.integration_error.is_none())
-    {
+    if !job.status.is_terminal() || job.applied_at.is_some() {
         return false;
     }
     job.applied_at = Some(at);
@@ -521,25 +357,6 @@ pub fn apply_reconcile(
         if let Some(job) = st.jobs_mut().get_mut(&id) {
             if job.status == JobStatus::Dispatched {
                 job.status = status;
-                if job.integration_required && job.integration_error.is_none() {
-                    if outcome.agent_success() == Some(true) {
-                        // The branch may enter the normal merge pipeline.
-                    } else {
-                        let reason = outcome.host_failure().map_or_else(
-                            || {
-                                if outcome.agent_success().is_none() {
-                                    String::from("worker receipt omitted its exit code")
-                                } else {
-                                    String::from("worker exit was unsuccessful")
-                                }
-                            },
-                            |failure| failure.detail,
-                        );
-                        job.integration_error = Some(format!(
-                            "{reason}; write-role branch is not eligible to merge"
-                        ));
-                    }
-                }
                 job.outcome = Some(outcome);
                 changed.push(id);
             }
@@ -587,7 +404,6 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.read_only == spec.read_only
         && job.units == spec.units
         && job.source_jobs == spec.source_jobs
-        && job.integration_required == spec.integration_required
         && job.payload == spec.payload
         // A spec with no task matches a job whose task dispatch assigned later.
         && (spec.task.is_none() || job.task == spec.task)

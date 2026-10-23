@@ -16,15 +16,6 @@ pub(in crate::pump) fn from_json<T: Default + serde::de::DeserializeOwned>(text:
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-pub(in crate::pump) fn from_opt_json<T: serde::de::DeserializeOwned>(
-    text: Option<String>,
-) -> Option<T> {
-    text.and_then(|text| match serde_json::from_str(&text) {
-        Ok(value) => Some(value),
-        Err(_) => None,
-    })
-}
-
 pub(in crate::pump) fn from_u64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }

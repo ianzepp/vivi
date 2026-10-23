@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use super::proof::{check, usage_failure};
+use super::proof::check;
 
 /// Set the file mode of `path` to `mode`.
 fn set_mode(path: &Path, mode: u32) {
@@ -246,29 +246,4 @@ fn empty_proof_is_rejected() {
     let repo = fixture_repo();
     err_containing("   ", repo.path(), "empty proof command");
     err_containing("", repo.path(), "empty proof command");
-}
-
-#[test]
-fn usage_failure_matches_the_observed_cargo_text() {
-    let text = "error: unexpected argument 'an_event_applied_by_pull' found\n\n\
-                Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n\n\
-                For more information, try '--help'.\n";
-    assert!(usage_failure(text));
-    let argument_form = "error: the argument '--lib' cannot be used multiple times\n\
-                         Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n";
-    assert!(usage_failure(argument_form));
-}
-
-#[test]
-fn usage_failure_ignores_compile_errors_and_test_failures() {
-    let compile = "error[E0308]: mismatched types\n --> src/lib.rs:2:9\n  |\n2 |     x = 1;\n";
-    assert!(!usage_failure(compile));
-    let failed = "test pump::plan::tests::it_works ... FAILED\n\n\
-                  failures:\n    pump::plan::tests::it_works\n\n\
-                  test result: FAILED. 0 passed; 1 failed; 0 ignored\n";
-    assert!(!usage_failure(failed));
-    assert!(!usage_failure(
-        "error: test failed, to rerun pass `--lib`\n"
-    ));
-    assert!(!usage_failure(""));
 }

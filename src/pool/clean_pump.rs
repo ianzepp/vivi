@@ -46,18 +46,18 @@ pub fn unit_for<'a>(st: &'a State, task: Option<&str>, branch: Option<&str>) -> 
     })
 }
 
-/// Integration-branch name for `target`, from `[pump]` / `[pump.targets]`.
+/// Main-branch name for `target`, from `[pump]` / `[pump.targets]`.
 #[must_use]
-pub fn merge_lane_ref(space: &Mailspace, target: &str) -> Option<String> {
+pub fn main_ref(space: &Mailspace, target: &str) -> Option<String> {
     let pump = space.config.pump.as_ref()?;
     let named = pump
         .targets
         .get(target)
-        .map(|t| t.branch.clone())
+        .map(|t| t.main.clone())
         .filter(|b| !b.is_empty());
     named.or_else(|| {
-        let branch = pump.branch.clone();
-        (!branch.is_empty()).then_some(branch)
+        let main = pump.main.clone();
+        (!main.is_empty()).then_some(main)
     })
 }
 

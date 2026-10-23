@@ -303,10 +303,47 @@ fn hold_env<S: JobStore>(
     Ok(())
 }
 
+/// How a job's payload run stands in the flow index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RunClass {
+    /// The run is live: act on the job.
+    Live(RunRow),
+    /// The run was superseded or withdrawn: the expected end of its in-flight
+    /// jobs. Carries the run state word.
+    Dead(&'static str),
+    /// No such run, or a `done` or unknown state: a real stale identity.
+    /// Carries what was found instead.
+    Stale(String),
+}
+
+/// Classify run `run` of `need` among `runs`, the runs of that need.
+pub(crate) fn classify_run(runs: &[RunRow], need: &str, run: u32) -> RunClass {
+    let Some(found) = runs.iter().find(|r| r.need == need && r.run == run) else {
+        let live: Vec<String> = runs
+            .iter()
+            .filter(|r| r.need == need && r.state == run_state::LIVE)
+            .map(|r| r.run.to_string())
+            .collect();
+        return RunClass::Stale(if live.is_empty() {
+            format!("no live run of {need}")
+        } else {
+            format!("live runs of {need}: {}", live.join(", "))
+        });
+    };
+    match found.state.as_str() {
+        run_state::LIVE => RunClass::Live(found.clone()),
+        run_state::SUPERSEDED => RunClass::Dead(run_state::SUPERSEDED),
+        run_state::WITHDRAWN => RunClass::Dead(run_state::WITHDRAWN),
+        other => RunClass::Stale(format!("run r{run} of {need} is {other}")),
+    }
+}
+
 /// The live run and the step row a reslice job names, or `None` when the job
-/// is settled here. A payload identity that is missing, names no live run or
-/// no step row, or disagrees with the step row's run is stale: the job is
-/// marked applied and [`JOB_STALE`] is raised once.
+/// is settled here. A run that was superseded or withdrawn is the expected
+/// end: the job is marked applied with a log line. A payload identity that is
+/// missing, names no run or a `done` one, names no step row, or disagrees with
+/// the step row's run is stale: the job is marked applied and [`JOB_STALE`] is
+/// raised once.
 fn checked_identity<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -323,26 +360,23 @@ fn checked_identity<S: JobStore>(
         Err(error) => return stale(st, format!("reslice job {}: {error}", job.id)),
     };
     let runs = store.runs_of(&identity.need)?;
-    let Some(run) = runs
-        .iter()
-        .find(|r| r.run == identity.run && r.state == run_state::LIVE)
-        .cloned()
-    else {
-        let live: Vec<String> = runs
-            .iter()
-            .filter(|r| r.state == run_state::LIVE)
-            .map(|r| format!("r{}", r.run))
-            .collect();
-        let found = if live.is_empty() {
-            format!("no live run of {}", identity.need)
-        } else {
-            format!("live runs of {}: {}", identity.need, live.join(", "))
-        };
-        let text = format!(
-            "reslice job {}: expected run r{} of {} live; actual: {found}",
-            job.id, identity.run, identity.need
-        );
-        return stale(st, text);
+    let run = match classify_run(&runs, &identity.need, identity.run) {
+        RunClass::Live(run) => run,
+        RunClass::Dead(state) => {
+            ctx.log(&format!(
+                "reslice job {}: run r{} of {} is {state}; result dropped",
+                job.id, identity.run, identity.need
+            ));
+            jobs::mark_applied(st, &job.id, ctx.now());
+            return Ok(None);
+        }
+        RunClass::Stale(found) => {
+            let text = format!(
+                "reslice job {}: expected run r{} of {} live; actual: {found}",
+                job.id, identity.run, identity.need
+            );
+            return stale(st, text);
+        }
     };
     let Some(row) = store.step_by_task(&identity.task)? else {
         let text = format!(

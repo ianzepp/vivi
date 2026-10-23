@@ -387,7 +387,7 @@ fn a_missing_merge_role_is_added_on_the_host_pool() {
         plan.new_pools
             .iter()
             .any(|pool| pool.name == "host" && pool.slots == 3),
-        "{plan:?}"
+        "the old lanes = 3 becomes the pool slots: {plan:?}"
     );
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
     let merge = migrated.identities.iter().find(|r| r.name == "merge");
@@ -526,8 +526,9 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
     for expected in [
         ("pump.planner", "run"),
         ("pump.planner", "charter"),
-        ("pump.gate", "every_merges"),
-        ("pump.gate", "every_seconds"),
+        ("pump", "gate"),
+        ("pump", "branch"),
+        ("pump.merge", "batch"),
         ("pump.merge", "lanes"),
         ("pump", "priority_file"),
     ] {
@@ -535,29 +536,35 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
     }
     assert!(plan.removals.iter().all(|row| !row.reason.is_empty()));
     for row in &plan.removals {
-        assert_eq!(row.behaviour_change, row.table == "pump.gate", "{row:?}");
+        let changes = matches!(
+            (row.table.as_str(), row.key.as_str()),
+            ("pump", "gate" | "branch") | ("pump.merge", "batch")
+        );
+        assert_eq!(row.behaviour_change, changes, "{row:?}");
     }
     for gone in [
         "run = \"pi -p\"",
         "charter =",
+        "[pump.gate]",
         "every_merges",
-        "every_seconds",
+        "command = \"cargo test\"",
+        "branch =",
+        "batch =",
         "lanes =",
         "priority_file",
     ] {
         assert!(!after.contains(gone), "{gone} still in:\n{after}");
     }
-    for kept in [
-        "# keep-me",
-        "split_hard_cap = 1500  # keep-inline",
-        "batch = 4",
-        "command = \"cargo test\"",
-    ] {
+    for kept in ["# keep-me", "split_hard_cap = 1500  # keep-inline"] {
         assert!(after.contains(kept), "{kept} missing from:\n{after}");
     }
     let text = render_plan(&plan);
     assert!(
-        text.contains("!! BEHAVIOUR CHANGE: remove [pump.gate] every_merges = 8"),
+        text.contains("!! BEHAVIOUR CHANGE: remove [pump] gate = (table: command, every_merges"),
+        "{text}"
+    );
+    assert!(
+        text.contains("remove [pump] branch = \"next\"  (retired: needs merge to main"),
         "{text}"
     );
     assert!(text.contains("remove [pump.merge] lanes = 3"), "{text}");
@@ -565,6 +572,109 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
         text.contains("remove [pump.planner] run = \"pi -p\""),
         "{text}"
     );
+}
+
+#[test]
+fn every_retired_pump_key_gets_one_removal_including_each_targets_own() {
+    let raw = format!(
+        "{V15}\n[pump.need]\nrepair_rounds = 2\n\n[pump.targets.other]\nrepo = \"/tmp/other\"\n\
+         branch = \"next\"\npromote = true\ngate = {{ command = \"true\" }}\n"
+    )
+    .replace("branch = \"next\"\nto = \"hand\"", "branch = \"next\"\npromote = true\nto = \"hand\"")
+    .replace(
+        "batch = 4\n",
+        "batch = 4\nneed_parallel = 2\nshared_checks = [\"true\"]\nproof_timeout = 9\nremote_wait = 9\n\
+         [pump.merge.checks_for]\nx = [\"true\"]\n",
+    );
+    let (plan, after) = migrate(&raw);
+    for expected in [
+        ("pump", "branch"),
+        ("pump", "promote"),
+        ("pump", "gate"),
+        ("pump", "need"),
+        ("pump.merge", "batch"),
+        ("pump.merge", "need_parallel"),
+        ("pump.merge", "shared_checks"),
+        ("pump.merge", "checks_for"),
+        ("pump.merge", "proof_timeout"),
+        ("pump.merge", "remote_wait"),
+        ("pump.targets.other", "branch"),
+        ("pump.targets.other", "promote"),
+        ("pump.targets.other", "gate"),
+    ] {
+        let hits = plan
+            .removals
+            .iter()
+            .filter(|row| (row.table.as_str(), row.key.as_str()) == expected)
+            .count();
+        assert_eq!(hits, 1, "{expected:?} in {:?}", plan.removals);
+    }
+    for gone in [
+        "branch =",
+        "promote =",
+        "gate",
+        "repair_rounds",
+        "need_parallel",
+        "shared_checks",
+        "checks_for",
+        "proof_timeout",
+        "remote_wait",
+    ] {
+        assert!(!after.contains(gone), "{gone} still in:\n{after}");
+    }
+    assert!(after.contains("repo = \"/tmp/other\""), "{after}");
+    let again = plan_of(&after);
+    assert!(again.removals.is_empty(), "{:?}", again.removals);
+}
+
+fn host_slots(raw: &str) -> (Option<u32>, MigratePlan) {
+    let raw = raw.replace(
+        "[[identities]]\nname = \"merge\"\nkind = \"hand\"\nlabels = [\"merge\"]\nstatus = \"active\"\nmodel = \"P2-S0\"\n\n",
+        "",
+    );
+    let plan = plan_of(&raw);
+    let slots = plan
+        .new_pools
+        .iter()
+        .find(|pool| pool.name == "host")
+        .map(|pool| pool.slots);
+    (slots, plan)
+}
+
+#[test]
+fn merge_lanes_carry_into_the_new_host_pool_slots() {
+    let (slots, plan) = host_slots(&V15.replace("lanes = 3", "lanes = 2"));
+    assert_eq!(slots, Some(2), "{plan:?}");
+    let lanes = plan
+        .removals
+        .iter()
+        .find(|row| (row.table.as_str(), row.key.as_str()) == ("pump.merge", "lanes"))
+        .expect("lanes removal");
+    assert!(!lanes.behaviour_change, "{lanes:?}");
+    let (slots, _) = host_slots(&V15.replace("lanes = 3\n", ""));
+    assert_eq!(slots, Some(1));
+}
+
+#[test]
+fn lanes_above_an_existing_merge_pools_slots_is_a_named_behaviour_change() {
+    let raw = V15.replace("lanes = 3", "lanes = 12").replacen(
+        "labels = [\"merge\"]\nstatus = \"active\"\nmodel = \"P2-S0\"\n",
+        "labels = [\"merge\"]\nstatus = \"active\"\nmodel = \"P2-S0\"\npool = \"glm\"\n",
+        1,
+    );
+    let plan = plan_of(&raw);
+    assert!(
+        plan.new_pools.iter().all(|pool| pool.name != "host"),
+        "{plan:?}"
+    );
+    let lanes = plan
+        .removals
+        .iter()
+        .find(|row| (row.table.as_str(), row.key.as_str()) == ("pump.merge", "lanes"))
+        .expect("lanes removal");
+    assert!(lanes.behaviour_change, "{lanes:?}");
+    assert!(lanes.reason.contains("lanes was 12"), "{lanes:?}");
+    assert!(lanes.reason.contains("10 slot(s)"), "{lanes:?}");
 }
 
 #[test]
@@ -599,9 +709,6 @@ fn migrated_text_still_parses_as_a_pump_config() {
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
     let pump = migrated.pump.expect("pump");
     assert_eq!(pump.planner.split_hard_cap, 1500);
-    assert_eq!(pump.merge.batch, 4);
-    assert_eq!(pump.merge.lanes, 1);
-    assert_eq!(pump.gate.command, "cargo test");
     let errors: Vec<_> = validate(&toml::from_str::<MailspaceConfig>(&after).unwrap())
         .into_iter()
         .filter(|issue| issue.severity == Severity::Error)
@@ -928,7 +1035,7 @@ fn the_new_host_pool_copies_the_hand_pool_so_it_can_run_jobs() {
     let host = plan.new_pools.iter().find(|pool| pool.name == "host");
     let host = host.unwrap_or_else(|| panic!("{plan:?}"));
     assert_eq!(host.copy_from.as_deref(), Some("glm"));
-    assert_eq!(host.slots, 3, "slots come from [pump.merge] lanes");
+    assert_eq!(host.slots, 3, "the old lanes = 3 becomes the slots");
     let text = render_plan(&plan);
     assert!(text.contains("settings copied from glm"), "{text}");
 

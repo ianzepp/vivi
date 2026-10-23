@@ -41,13 +41,7 @@ fn create_prints_the_result_and_registers_the_project() {
     let (p, l) = (projects.to_str().unwrap(), lanes.to_str().unwrap());
 
     let mut args = create_args(p, l);
-    args.extend([
-        "--gate",
-        "make check",
-        "--initial-commit",
-        "--no-serve",
-        "--json",
-    ]);
+    args.extend(["--initial-commit", "--no-serve", "--json"]);
     let output = vivi(&config, &args);
     assert!(
         output.status.success(),
@@ -66,7 +60,10 @@ fn create_prints_the_result_and_registers_the_project() {
 
     assert!(lanes.join("app.git/HEAD").is_file());
     let text = fs::read_to_string(projects.join("app/.vivi/mailspace.toml")).unwrap();
-    assert!(text.contains("make check"), "{text}");
+    assert!(
+        !text.contains("branch ="),
+        "no [pump] branch key is written: {text}"
+    );
     let registry = fs::read_to_string(config.join("vivi/pump-service.toml")).unwrap();
     assert!(registry.contains("app"), "{registry}");
     assert!(

@@ -36,11 +36,6 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpPriorityCommand,
     },
-    /// Show or set the gate command (`[pump.gate] command`)
-    Gate {
-        #[command(subcommand)]
-        command: PumpGateCommand,
-    },
     /// Show or set the proof rung commands (`[pump.rungs]`)
     Rungs {
         #[command(subcommand)]
@@ -52,8 +47,6 @@ pub enum PumpSubcommand {
     Withdraw(PumpWithdrawCommand),
     /// Supersede a need's plan: closes its pump record `superseded`, opens a fresh one and plans it again
     Replan(PumpReplanCommand),
-    /// Release a need branch held `unverified`: adopt the remote tip the pump refused and let merging resume; applied at the pump's next tick
-    Recover(PumpRecoverCommand),
     /// Answer a flow step by hand: posts the word on the need's open pump record; the pump routes it at its next tick
     Answer {
         /// The step task handle (see `vivi step` or `vivi pump status`)
@@ -157,23 +150,6 @@ pub struct PumpPrioritySetCommand {
 pub struct PumpPriorityClearCommand {
     /// Need handle
     pub need: String,
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum PumpGateCommand {
-    /// Print the current gate command
-    Show(PumpControlCommand),
-    /// Set the gate command in this project's mailspace.toml
-    Set(PumpGateSetCommand),
-}
-
-#[derive(Debug, Args)]
-pub struct PumpGateSetCommand {
-    /// Shell command the gate runs; must not be blank
-    pub command: String,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -421,9 +397,8 @@ pub struct PumpExportCommand {
 /// withdraw action on each need's open pump record; the running pump applies
 /// it at its next tick: every unfinished unit of the need (stuck ones
 /// included) is withdrawn, the need joins the closed set so nothing re-plans
-/// or dispatches it, its need-audit, need-merge and landing steps skip it, and
-/// its pump record is closed `withdrawn`. Refused for a need with no open pump
-/// record.
+/// or dispatches it, and its pump record is closed `withdrawn`. Refused for a
+/// need with no open pump record.
 #[derive(Debug, Args)]
 pub struct PumpWithdrawCommand {
     /// Need handles to withdraw
@@ -432,32 +407,6 @@ pub struct PumpWithdrawCommand {
     /// Why the need is withdrawn; recorded in the pump log and exceptions
     #[arg(long, value_name = "TEXT")]
     pub reason: String,
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
-/// Release need branches held `unverified`. Posts a recover action on each
-/// need's open pump record; the running pump applies it at its next tick: when
-/// the remote `vivi/need/<id>` ref still sits at the tip it refused, that tip
-/// becomes the branch's trusted tip, the hold clears, and the need's delivered
-/// units merge onto it again. A branch in any other status is skipped, and a
-/// ref that moved since the hold is refused. Refused for a need with no open
-/// pump record, or whose branch is not held `unverified`.
-#[derive(Debug, Args)]
-pub struct PumpRecoverCommand {
-    /// Need handles to recover
-    #[arg(value_name = "NEED", required = true)]
-    pub needs: Vec<String>,
-    /// Recover only this target's branch (default: every held target of the need)
-    #[arg(long, value_name = "ID")]
-    pub target: Option<String>,
-    /// Why the tip is adopted; recorded in the pump log and exceptions (default `operator recover`)
-    #[arg(long, value_name = "TEXT")]
-    pub reason: Option<String>,
-    /// Print what would happen without posting an action
-    #[arg(long)]
-    pub dry_run: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

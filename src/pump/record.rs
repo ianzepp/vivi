@@ -422,20 +422,9 @@ pub fn settle_gave_up(ctx: &Ctx, st: &State, needs: &[String]) {
 /// Why the pump will not move `need` any further without an operator, or
 /// `None` while it is still moving, waiting on a planner, or complete.
 #[must_use]
-pub fn gave_up_reason(ctx: &Ctx, st: &State, need: &str) -> Option<String> {
-    if st.board.planner_failed.iter().any(|failed| failed == need) {
-        return Some(String::from(
-            "the planner exited three times without writing a plan",
-        ));
-    }
-    if let Some(reason) = audit_hold(ctx, st, need) {
-        return Some(format!("the need audit holds this need: {reason}"));
-    }
+pub fn gave_up_reason(_ctx: &Ctx, st: &State, need: &str) -> Option<String> {
     let record = st.needs.get(need)?;
-    if record.amendment_pending
-        || st.board.planning.contains_key(need)
-        || st.board.revision_planning.contains_key(need)
-    {
+    if record.amendment_pending || st.board.revision_planning.contains_key(need) {
         return None;
     }
     let stuck = record.units.iter().find(|uid| {
@@ -448,16 +437,6 @@ pub fn gave_up_reason(ctx: &Ctx, st: &State, need: &str) -> Option<String> {
         .iter()
         .any(|uid| !crate::pump::ready::satisfied(st, uid, 0) && can_advance(st, uid, 0));
     (!moving).then(|| format!("unit {stuck} is stuck and no other unit can advance"))
-}
-
-/// The reason a need audit hold stands on `need` for any target.
-fn audit_hold(ctx: &Ctx, st: &State, need: &str) -> Option<String> {
-    ctx.cfg.target_configs().keys().find_map(|target| {
-        match crate::pump::need_verdict::state(st, target, need) {
-            Ok(verdict) => verdict.hold.map(|hold| hold.reason),
-            Err(_) => None,
-        }
-    })
 }
 
 /// Whether a unit can still make progress: it is running, or waiting only on

@@ -8,13 +8,9 @@
 //! ([`crate::pump::action`]):
 //!
 //! - every unfinished unit of the need is withdrawn, stuck ones included;
-//! - the need joins `closed_needs`, so nothing re-plans or dispatches it and
-//!   the need-audit, need-merge and landing steps skip it;
+//! - the need joins `closed_needs`, so nothing re-plans or dispatches it;
 //! - the need record is flagged `withdrawn`, so the amendment scan never
 //!   reopens or revises it on a later thread change;
-//! - its need-branch records are dropped. Branch cleanup jobs require a
-//!   verified landing, which a withdrawn need never has, so the remote
-//!   `vivi/need/<id>` branch is left for manual deletion and the log says so;
 //! - an exception of kind `need-withdrawn` records the act;
 //! - afterwards the pump closes the need's pump record `withdrawn`.
 //!
@@ -31,12 +27,9 @@ use crate::pump::host::Ctx;
 use crate::pump::state::{State, Status};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// Whether the state has anything for `need`: a plan record, a unit or a
-/// need-branch record.
+/// Whether the state has anything for `need`: a plan record or a unit.
 fn known(st: &State, need: &str) -> bool {
-    st.needs.contains_key(need)
-        || st.units.values().any(|unit| unit.need == need)
-        || crate::pump::need::all(st).map_or(true, |records| records.iter().any(|r| r.need == need))
+    st.needs.contains_key(need) || st.units.values().any(|unit| unit.need == need)
 }
 
 /// Withdraw one need in `st` and return the text the pump replies on its
@@ -66,7 +59,6 @@ pub fn apply_one(ctx: &Ctx, st: &mut State, need: &str, reason: &str) -> String 
     if let Some(record) = st.needs.get_mut(need) {
         record.withdrawn = true;
     }
-    forget_branches(ctx, st, need);
     let text = format!("withdrew need {need}: {count} unit(s) ({reason})");
     ctx.log(&text);
     ctx.log(&format!(
@@ -74,23 +66,6 @@ pub fn apply_one(ctx: &Ctx, st: &mut State, need: &str, reason: &str) -> String 
     ));
     ctx.exception("need-withdrawn", need, &text);
     text
-}
-
-/// Drop the need's branch records and say which remote branches stay behind.
-fn forget_branches(ctx: &Ctx, st: &mut State, need: &str) {
-    match crate::pump::need::forget(st, need) {
-        Ok(records) => {
-            for record in records {
-                ctx.log(&format!(
-                    "withdraw {need}: dropped branch record {}/{}; remote branch `{}` is left for manual deletion",
-                    record.target, record.need, record.branch
-                ));
-            }
-        }
-        Err(err) => ctx.log(&format!(
-            "withdraw {need}: cannot drop branch records: {err}"
-        )),
-    }
 }
 
 /// `vivi pump withdraw <NEED>... --reason <TEXT>`: post one withdraw action

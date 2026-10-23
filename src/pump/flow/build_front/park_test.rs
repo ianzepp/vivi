@@ -74,15 +74,19 @@ fn payload(task: &str, node: &str, front: serde_json::Value) -> StepPayloadRow {
     }
 }
 
-fn start(rig: &Rig) -> Result<StartAction, VivariumError> {
-    let cx = StartCx {
+fn cx(rig: &Rig) -> StartCx<'_> {
+    StartCx {
         ctx: &rig.ctx,
         store: &rig.store,
         mail: &rig.mail,
         run: &rig.run,
         def: &rig.def,
-    };
-    ParkStep.start(&cx, &row("parked", "t-park", StepState::Running, None))
+    }
+}
+
+/// The router opens a park row Waiting, so the tick reaches it through `poll`.
+fn poll(rig: &Rig) -> Result<Option<String>, VivariumError> {
+    ParkStep.poll(&cx(rig), &row("parked", "t-park", StepState::Waiting, None))
 }
 
 fn exceptions(rig: &Rig) -> String {
@@ -101,14 +105,14 @@ fn park_after_a_hold_alarms_once_with_the_word_and_reason() -> R {
     rig.store
         .insert_step(NEED, &row("plan", "t-plan", StepState::Done, Some("hold")))?;
     rig.store
-        .insert_step(NEED, &row("parked", "t-park", StepState::Running, None))?;
+        .insert_step(NEED, &row("parked", "t-park", StepState::Waiting, None))?;
     rig.store.record_step_payload(&payload(
         "t-plan",
         "plan",
         serde_json::json!({ "reason": "waiting on the schema decision" }),
     ))?;
-    assert_eq!(start(&rig)?, StartAction::OpenAndWait);
-    assert_eq!(start(&rig)?, StartAction::OpenAndWait);
+    assert_eq!(poll(&rig)?, None);
+    assert_eq!(poll(&rig)?, None);
     let text = exceptions(&rig);
     assert_eq!(count(&text), 1, "{text}");
     for needle in [
@@ -129,16 +133,38 @@ fn park_without_a_reason_says_none_given() -> R {
         NEED,
         &row("plan", "t-plan", StepState::Done, Some("operator")),
     )?;
-    assert_eq!(start(&rig)?, StartAction::OpenAndWait);
+    assert_eq!(poll(&rig)?, None);
     let text = exceptions(&rig);
     assert!(text.contains("actual: operator: none given"), "{text}");
     Ok(())
 }
 
 #[test]
+fn polling_twice_raises_the_alarm_once() -> R {
+    let rig = rig()?;
+    rig.store
+        .insert_step(NEED, &row("plan", "t-plan", StepState::Done, Some("hold")))?;
+    for _ in 0..2 {
+        assert_eq!(poll(&rig)?, None);
+    }
+    let text = exceptions(&rig);
+    assert_eq!(count(&text), 1, "{text}");
+    Ok(())
+}
+
+#[test]
+fn start_opens_the_row_and_waits_without_an_alarm() -> R {
+    let rig = rig()?;
+    let step = row("parked", "t-park", StepState::Pending, None);
+    assert_eq!(ParkStep.start(&cx(&rig), &step)?, StartAction::OpenAndWait);
+    assert_eq!(count(&exceptions(&rig)), 0);
+    Ok(())
+}
+
+#[test]
 fn park_without_a_planner_step_still_parks_and_says_so() -> R {
     let rig = rig()?;
-    assert_eq!(start(&rig)?, StartAction::OpenAndWait);
+    assert_eq!(poll(&rig)?, None);
     let text = exceptions(&rig);
     assert_eq!(count(&text), 1, "{text}");
     assert!(text.contains("actual: no planner step found"), "{text}");

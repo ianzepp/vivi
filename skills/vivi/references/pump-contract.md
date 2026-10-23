@@ -21,18 +21,18 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 | Unit task | **[pump].to** (the hand role) | The hand role's pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kinds and **default_kind** route the unit. |
 | **planner:board**, **planner:revision**, **planner:split** | Active **pump-planner** role | Its pool and fallback chain. An active pump-planner role with a pool is required when **[pump]** is configured; a role named **planner** is not used. |
 | **merge** | **merge** role | Merge role pool and fallback chain. The live pipeline requires a merge role with a usable pool. |
-| **gate** | **gate** role | Gate role pool and fallback chain, followed by configured **[pump.gate].pools** candidates. The gate job is read-only. |
+| **gate** | **gate** role | Gate role pool and fallback chain. The gate job is read-only. `[pump.gate]` is retired: an old table parses and is ignored. |
 | **audit** | **auditor** role | Auditor role pool and fallback chain, followed by configured gate-pool candidates. If no auditor role exists, the built-in read-only audit fallback uses gate pools. |
 | **need-audit** | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
 | **investigation** | Configured **auditor** role | Auditor role pool and fallback chain. Investigation work is read-only and is not eligible without an auditor role. |
 | **promote** | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. Publication is restricted to the exact configured main ref and candidate. |
-| **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. A **mind**-kind cadence run is a read-only oversight wake: the brief is a compact pump-state snapshot, and the worker returns **PUMP_OVERSIGHT_RESULT=** JSON. Allowlisted actions are **hold-merge**, **clear-hold-merge**, **skip-unit**, **unskip-unit**, **replan-need**, and **note**. Anything else is refused and recorded; applying the receipt never blocks the tick. |
+| **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. A **mind**-kind cadence run is a read-only oversight wake: the brief is a compact pump-state snapshot, and the worker returns **PUMP_OVERSIGHT_RESULT=** JSON. Allowlisted actions are **replan-need** and **note**. Anything else is refused and recorded; applying the receipt never blocks the tick. |
 | **reclaim** | **reclaim** role, or the hand role | Local-provider pools only; it never falls back to a remote pool. |
 | **ref-delete** | Active **merge** role | Merge role pool and fallback chain. Used to delete a failed attempt branch; the privileged runner deletes the ref. |
 
 Pool fallback is configured in the pool's table. For example, **[pools.workers]** can set **fallback = "backup"**. For unit work, the hand role pool is preferred; when no hand pool is assigned, legacy kind pool lists remain the compatibility route. A configured role pool takes precedence over legacy dispatch kind routing.
 
-Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **[pump.merge].lanes**, **remote_wait**, **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.workspace]** when needed. A source contract test fails if production `src/pump` grows an in-process merger, planner, or git push of refs.
+Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.workspace]** when needed. A source contract test fails if production `src/pump` grows an in-process merger, planner, or git push of refs.
 
 ## Durable pool jobs
 
@@ -58,8 +58,6 @@ The principal unit states are:
 - **stuck**, **needs-replan**, **splitting**, **replaced**, and **withdrawn**: parked, replacement, or operator-managed states; they are not satisfied unless their successors are.
 
 The shared integration merge scheduler queues at most one target-level job at a time. It includes eligible delivered units from unmanaged needs and eligible completed write-role branches, and records the source IDs before dispatch. Managed needs use the separate per-need merge path below. A shared merge worker starts from the integration tip, diagnoses and repairs conflicts and failing checks within each source's write scope, runs configured formatting, shared checks, scope-mapped checks, and unit proofs, then commits a candidate. Isolation among several sources is a last-resort diagnosis tool, not the default action. The worker returns a structured result receipt and does not push the integration ref. The privileged pool runner publishes the candidate; the controller accepts a merge only after checking the worker's clean exit, exact source list, runner publication receipt, current remote ref, and candidate ancestry. The full protocol is in [pump protocols](pump-protocols.md).
-
-**[pump.merge].need_parallel** (default 4, also accepted per target under **[pump.targets.&lt;id&gt;.merge]**, must be >= 1) caps how many per-need unit merge jobs, which run the shared checks, are queued or running at once on one target. Only need-merge jobs count; need branch init and landing jobs are cheap git operations and take no slot, and a finished job whose receipt is not yet applied has freed its slot. Waiting need groups start as slots free, in the unit ranking (fix units first, then need priority level highest first, then the rest). A tick that defers groups logs once per target: `need-merge cap <target>: <active>/<cap> active, <n> waiting`. The shared integration lane is separate.
 
 A fresh mailspace provisions the **merge** role on init. When a local pool already exists, that pool is assigned automatically; otherwise `vivi doctor` fails the **merge pool** check until `vivi role pool merge <pool>` binds one. Without that binding, the pump raises **merge-route-missing** and queues no merge jobs.
 
@@ -94,8 +92,7 @@ The audit receipt supports four verdicts:
   path, and recheck-trigger provenance.
 - **block_range** keeps acceptance pending, creates repair units on the same
   need branch, then reviews only the repair diff under the Auditor policy.
-  **[pump.need].repair_rounds** (default 1) is the cap: a finding that remains
-  blocked after that many repairs is held and escalated.
+  The **[pump.need].repair_rounds** key is retired and ignored.
 - **block_ship** keeps a persistent hold on the need branch and records an
   operator and CTO escalation. It does not authorize landing.
 
@@ -249,8 +246,6 @@ fresh plan.
 
 **vivi pump withdraw <need>... --reason <text>** stops a need inside the pump without touching the mail board: it posts a withdraw action on the need's open pump record; the pump withdraws the need's unfinished units, stuck ones included, adds it to the closed set, drops its need-branch record (the remote **vivi/need/&lt;id&gt;** branch is left for manual deletion), records a **need-withdrawn** exception and closes the record **withdrawn**. A need with no open record is refused; the synthetic **pumpfix-** repair needs of Vivi 15 have no mail need to hold a record and can no longer be withdrawn this way.
 
-**vivi pump recover <need>... [--target <id>] [--reason <text>] [--dry-run]** releases a need branch held **unverified** (a need-merge job published a tip the pump did not accept; the log says `need branch held for explicit recovery` once). It posts a recover action on the need's open pump record. The pump reads the remote **vivi/need/&lt;id&gt;** ref again: when it still sits at the recorded unverified tip, that tip becomes the trusted tip, the hold and error clear, the branch is **active** and the need's **delivered** units merge onto it on the next dispatch; a moved or unreadable ref is refused with a **need-recover-refused** exception, and any other branch status is skipped with a **need-recover-skipped** log line. Applied recovers record **need-recovered**.
-
 A job brief over the project server's 64 KiB letter cap is never sent whole.
 Revision planner input carries the whole prior plan: every unit of the need
 with its full brief and a **state** (**merged**, **in-flight**, **pending**,
@@ -266,9 +261,7 @@ its middle, keeps its head and tail, and is saved in full as
 exception.
 
 **[pump.merge].repair_budget** is an optional wall-clock budget for quarantine
-repair units. When omitted it is **proof_timeout + 300 seconds**. An explicit
-value must be at least **proof_timeout** and at least one second. Repair units
-use this budget instead of **[pump.dispatch].budget**.
+repair units. An explicit value must be at least one second.
 
 A failed shared check gets exactly one retry on the same tree before bisect
 or quarantine. A timeout (exit 124 or the timeout wrapper's kill) is
@@ -300,7 +293,7 @@ creates **gatefix-planner-failed**. Status reports
 **gatefix-active** or **gatefix-no-live-work**, attempt and failure counts,
 queued/active/parked fix-unit counts, the reason, and the recovery action.
 
-**Gate fix needs are the pump's own needs.** The need a red gate creates (subject **pump: gate fix for g&lt;tip&gt;**) is sent from the pump identity (**[pump] reply_from**) to **[pump.board] reply_to**, and the pump opens its pump record in the same step, so the fix units' attempt records have a record to reply on and **pump replan**, **withdraw**, **requeue** and **recover** have one to act on. The board never plans such a need (the audit does), and its record is not reported as unplannable. **pump send** accepts any need the pump identity itself sent, whoever it is addressed to. A gate fix need an older pump created without a record is repaired by **vivi pump adopt** (or **vivi pump send --need &lt;need&gt;** for one need). The synthetic **pumpfix-** ids (repair units, a gate fix whose need could not be sent) are not mailspace needs: they never have a record and never reply.
+**Gate fix needs are the pump's own needs.** The need a red gate creates (subject **pump: gate fix for g&lt;tip&gt;**) is sent from the pump identity (**[pump] reply_from**) to **[pump.board] reply_to**, and the pump opens its pump record in the same step, so the fix units' attempt records have a record to reply on and **pump replan**, **withdraw** and **requeue** have one to act on. The board never plans such a need (the audit does), and its record is not reported as unplannable. **pump send** accepts any need the pump identity itself sent, whoever it is addressed to. A gate fix need an older pump created without a record is repaired by **vivi pump adopt** (or **vivi pump send --need &lt;need&gt;** for one need). The synthetic **pumpfix-** ids (repair units, a gate fix whose need could not be sent) are not mailspace needs: they never have a record and never reply.
 
 A revision the pump asked for is never left without an answer. A plan file that is not valid JSON, names no **need**, is stale, or fails validation is logged and raised as an exception (**bad-plan**, **revision-stale**), never skipped quietly; a revision file **&lt;need&gt;.r&lt;N&gt;.json** answers revision N whatever number is inside it, and a plan wrapped in a code fence between the markers is unwrapped. A need that stays **amendment_pending** with no revision planner in flight (the planner failed, timed out or its answer was rejected) is asked again after 60 seconds, doubling, at most three times; then one **revision-failed** exception names **vivi pump replan &lt;need&gt;** and the need waits. Units of a need with a pending revision do not dispatch.
 

@@ -161,7 +161,7 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
         job.body
     );
     assert!(job.body.contains("slice body text"), "{}", job.body);
-    assert_eq!(rig.store.attempts_of(&task)?, 0);
+    assert_eq!(rig.store.last_attempt(&task)?, 0);
     Ok(())
 }
 
@@ -333,6 +333,59 @@ fn a_job_of_a_superseded_run_is_marked_applied_with_no_other_effect() -> R {
     let row = rig.store.step_by_task(&task)?.expect("row");
     assert_eq!(row.state, StepState::Running);
     assert!(slice_task_of(&rig, "A.1").is_err());
+    assert_eq!(count_of(&rig, JOB_STALE), 0, "{}", exceptions(&rig));
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_withdrawn_run_is_marked_applied_with_no_alarm() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    rig.store.set_run_state(NEED, 1, "withdrawn")?;
+
+    run_phase(&mut rig)?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert!(job.applied_at.is_some());
+    assert_eq!(count_of(&rig, JOB_STALE), 0, "{}", exceptions(&rig));
+    assert!(slice_task_of(&rig, "A.1").is_err());
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_done_run_raises_one_stale_job_and_is_applied() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    rig.store.set_run_state(NEED, 1, "done")?;
+
+    run_phase(&mut rig)?;
+    run_phase(&mut rig)?;
+
+    assert_eq!(count_of(&rig, JOB_STALE), 1, "{}", exceptions(&rig));
+    assert!(exceptions(&rig).contains("is done"), "{}", exceptions(&rig));
+    assert!(
+        rig.jobs.jobs[&format!("reslice-{task}-a1")]
+            .applied_at
+            .is_some()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_job_naming_a_run_that_does_not_exist_raises_one_stale_job() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    set_payload_run(&mut rig, &task, Some(7));
+
+    run_phase(&mut rig)?;
+    run_phase(&mut rig)?;
+
+    assert_eq!(count_of(&rig, JOB_STALE), 1, "{}", exceptions(&rig));
+    assert!(
+        exceptions(&rig).contains("live runs of"),
+        "{}",
+        exceptions(&rig)
+    );
     Ok(())
 }
 

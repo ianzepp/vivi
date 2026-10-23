@@ -28,14 +28,8 @@ fn counts(out: &mut String, pump: &PumpBoot) {
     line(
         out,
         format!(
-            "  complete {} | complete-but-open {} | amendments {} | stuck {} | exceptions {} | planners {} | parked {}",
-            pump.complete,
-            pump.complete_but_open,
-            pump.amendments,
-            pump.stuck,
-            pump.exceptions,
-            pump.planning,
-            pump.planner_parked
+            "  complete {} | complete-but-open {} | amendments {} | stuck {} | exceptions {}",
+            pump.complete, pump.complete_but_open, pump.amendments, pump.stuck, pump.exceptions
         ),
     );
     line(
@@ -56,11 +50,10 @@ fn detail(out: &mut String, view: PumpView, snap: &PumpSnapshot) {
     }
     queue(out, snap);
     held(out, &snap.held);
-    gate(out, snap);
     ready(out, &snap.needs_ready);
     stuck(out, &snap.stuck);
     exceptions(out, &snap.exceptions);
-    lanes(out, &snap.lanes, snap.last_promote.as_deref());
+    lanes(out, &snap.lanes);
     pools(out, &snap.pools);
 }
 
@@ -99,19 +92,6 @@ fn held(out: &mut String, rows: &[PumpUnitRow]) {
     }
 }
 
-fn gate(out: &mut String, snap: &PumpSnapshot) {
-    let Some(gate) = &snap.gate_pending else {
-        return;
-    };
-    let task = gate.task.as_deref().unwrap_or("-");
-    let pool = gate.pool.as_deref().unwrap_or("-");
-    let age = gate.age.as_deref().unwrap_or("-");
-    line(
-        out,
-        format!("  {:<9} pending  task {task}  pool {pool}  {age}", "gate"),
-    );
-}
-
 fn ready(out: &mut String, needs: &[String]) {
     if needs.is_empty() {
         return;
@@ -136,13 +116,10 @@ fn exceptions(out: &mut String, rows: &[super::PumpExceptionRow]) {
     }
 }
 
-fn lanes(out: &mut String, lanes: &[String], promote: Option<&str>) {
+fn lanes(out: &mut String, lanes: &[String]) {
     for (i, lane) in lanes.iter().enumerate() {
         let prefix = if i == 0 { "lanes" } else { "" };
         line(out, format!("  {prefix:<9} {lane}"));
-    }
-    if let Some(promote) = promote {
-        line(out, format!("  {:<9} {promote}", "promote"));
     }
 }
 

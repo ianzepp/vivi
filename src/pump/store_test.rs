@@ -6,9 +6,7 @@ use std::fs::File;
 use tempfile::tempdir;
 
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus};
-use crate::pump::state::{
-    Attempt, EnvPause, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
-};
+use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// A `state.json` written by the live pump, used as the import fixture.
@@ -41,7 +39,6 @@ fn sample() -> State {
         replaced_by: vec![String::from("u1.1")],
         verdict_text: Some(String::from("ok")),
         kind_reported: true,
-        send_reported: true,
         split_fails: 2,
         split_retry_at: Some(99),
         split_reasks: 1,
@@ -60,14 +57,6 @@ fn sample() -> State {
         .insert(String::from("future"), serde_json::json!(7));
     st.units.insert(String::from("u1"), unit);
     st.order = vec![String::from("u1")];
-    st.target_states.insert(
-        String::from("radix"),
-        TargetState {
-            merges: 3,
-            baseline: Some(vec![String::from("radix failure")]),
-            ..TargetState::default()
-        },
-    );
     st.needs.insert(
         String::from("n1"),
         NeedRecord {
@@ -81,24 +70,8 @@ fn sample() -> State {
             ..NeedRecord::default()
         },
     );
-    st.gates.push(GateRecord {
-        tip: String::from("tip"),
-        at: 13,
-        merges: 2,
-        names: Some(vec![String::from("crate test")]),
-        new: None,
-    });
-    st.baseline = Some(vec![String::from("old")]);
     st.closed_needs = vec![String::from("n1")];
     st.plans_seen = vec![String::from("n1.json")];
-    st.promotions.push(Promotion {
-        tip: String::from("tip"),
-        at: 14,
-        failing: None,
-    });
-    st.red
-        .insert(String::from("crate test"), String::from("u1"));
-    st.red_reported = vec![String::from("n1:x")];
     st.merges = 3;
     st.rate_limited_at = Some(1_700_000_123);
     st.extra
@@ -145,17 +118,11 @@ fn a_saved_state_round_trips() {
     let back = store.load().unwrap();
     let unit = &back.units["u1"];
     assert_eq!(unit.target, "tela");
-    assert_eq!(back.target_states["radix"].merges, 3);
-    assert_eq!(
-        back.target_states["radix"].baseline,
-        Some(vec![String::from("radix failure")])
-    );
     assert_eq!(unit.status, Status::Merged);
     assert_eq!(unit.commit.as_deref(), Some("abc123"));
     assert_eq!(unit.merged_at, Some(12));
     assert_eq!(unit.ready_at, Some(8));
     assert_eq!(unit.next_branch_suffix, Some(5));
-    assert!(unit.send_reported);
     assert_eq!(unit.split_fails, 2);
     assert_eq!(unit.split_retry_at, Some(99));
     assert_eq!(unit.split_reasks, 1);
@@ -173,14 +140,8 @@ fn a_saved_state_round_trips() {
     assert_eq!(back.needs["n1"].thread_sha256.as_deref(), Some("abc"));
     assert_eq!(back.needs["n1"].thread_seen_at, Some(77));
     assert!(back.needs["n1"].amendment_pending);
-    assert_eq!(back.gates[0].names.as_ref().unwrap()[0], "crate test");
-    assert_eq!(back.gates[0].new, None);
-    assert_eq!(back.baseline.as_ref().unwrap()[0], "old");
     assert_eq!(back.closed_needs, vec![String::from("n1")]);
     assert_eq!(back.plans_seen, vec![String::from("n1.json")]);
-    assert_eq!(back.promotions[0].at, 14);
-    assert_eq!(back.red["crate test"], "u1");
-    assert_eq!(back.red_reported, vec![String::from("n1:x")]);
     assert_eq!(back.merges, 3);
     assert_eq!(back.rate_limited_at, Some(1_700_000_123));
     let job = &back.jobs["reclaim-default-u1"];
@@ -207,7 +168,7 @@ fn the_live_state_snapshot_round_trips_through_the_database() {
     let back = store.load().unwrap();
     assert_eq!(back.units.len(), state.units.len());
     assert_eq!(back.needs.len(), state.needs.len());
-    assert_eq!(back.gates.len(), state.gates.len());
+    assert_eq!(back.extra, state.extra);
     assert_eq!(back.order, state.order);
     assert_eq!(back.merges, state.merges);
     assert_eq!(back.closed_needs, state.closed_needs);
@@ -238,7 +199,7 @@ fn a_version_one_database_gains_the_revision_columns() {
 }
 
 #[test]
-fn loading_a_legacy_current_plan_backfills_only_listed_zero_revision_units() {
+fn a_unit_saved_with_revision_zero_loads_back_with_revision_zero() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);
     let mut store = PumpStore::open(&path).unwrap();
@@ -259,20 +220,11 @@ fn loading_a_legacy_current_plan_backfills_only_listed_zero_revision_units() {
             ..Unit::default()
         },
     );
-    state.units.insert(
-        String::from("historical"),
-        Unit {
-            need: String::from("n1"),
-            revision: 0,
-            ..Unit::default()
-        },
-    );
     store.save(&state).unwrap();
     drop(store);
 
     let loaded = PumpStore::open(&path).unwrap().load().unwrap();
-    assert_eq!(loaded.units["current"].revision, 4);
-    assert_eq!(loaded.units["historical"].revision, 0);
+    assert_eq!(loaded.units["current"].revision, 0);
 }
 
 #[test]
@@ -601,42 +553,12 @@ fn applied_actions_and_the_records_a_need_ran_under_survive_a_state_save() {
 }
 
 #[test]
-fn env_pauses_round_trip_through_pump_db() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join(DB_FILENAME);
-    let empty = PumpStore::open(&path).unwrap();
-    assert!(empty.load().unwrap().env_pauses.is_empty());
-    drop(empty);
-
-    let mut state = State::default();
-    state.env_pauses.insert(
-        String::from("here"),
-        EnvPause {
-            fails: vec![1_700_000_000, 1_700_000_060],
-            evidence: String::from("`pi` not found: bash: line 1: pi: command not found"),
-            probe: Some(String::from("command -v pi")),
-            paused_at: Some(1_700_000_120),
-        },
-    );
-    state.env_pauses.insert(
-        String::from("glm"),
-        EnvPause {
-            fails: vec![1_700_000_000],
-            evidence: String::from("git index.lock held"),
-            ..EnvPause::default()
-        },
-    );
-
-    let mut store = PumpStore::open(&path).unwrap();
-    store.save(&state).unwrap();
-    let back = store.load().unwrap();
-    assert_eq!(back.env_pauses, state.env_pauses);
-    let here = &back.env_pauses["here"];
-    assert_eq!(here.fails, vec![1_700_000_000, 1_700_000_060]);
-    assert_eq!(here.probe.as_deref(), Some("command -v pi"));
-    assert_eq!(here.paused_at, Some(1_700_000_120));
-    assert_eq!(back.env_pauses["glm"].probe, None);
-    assert_eq!(back.env_pauses["glm"].paused_at, None);
+fn retired_unit_and_state_keys_still_load_and_are_written_back() {
+    let json =
+        r#"{"env_pauses":{"here":{"fails":[1]}},"units":{"u1":{"need":"n","send_reported":true}}}"#;
+    let state: State = serde_json::from_str(json).unwrap();
+    assert!(state.extra.contains_key("env_pauses"));
+    assert!(state.units["u1"].extra.contains_key("send_reported"));
 }
 
 /// A store written by a pump before `needs.withdrawn` existed (schema 6, as

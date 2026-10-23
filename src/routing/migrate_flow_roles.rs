@@ -1,11 +1,11 @@
 //! `vivi config migrate`: the flow roles (researcher, admitter, slicer) and
 //! their shipped charters.
 
+use crate::mailspace::MailspaceConfig;
 use crate::mailspace::shipped::{
     ADMITTER_CHARTER, ADMITTER_ROLE, RESEARCHER_CHARTER, RESEARCHER_ROLE, SLICER_CHARTER,
     SLICER_ROLE,
 };
-use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::migrate::{Assignment, CharterWrite, MigrateInputs, MigratePlan, NewRole, hand_pool};
@@ -28,7 +28,7 @@ pub(super) fn plan_flow_roles(
 ) {
     let pool = hand_pool(config, pump, plan);
     for (name, shipped) in FLOW_ROLES {
-        let existing = find_role(config, name);
+        let existing = config.role_named(name);
         if existing.is_some_and(|role| role.status != "active") {
             continue;
         }
@@ -66,16 +66,6 @@ pub(super) fn plan_flow_roles(
             });
         }
     }
-}
-
-fn find_role<'a>(config: &'a MailspaceConfig, name: &str) -> Option<&'a LocalIdentity> {
-    config.identities.iter().find(|role| {
-        role.name.eq_ignore_ascii_case(name)
-            || role
-                .aliases
-                .iter()
-                .any(|alias| alias.eq_ignore_ascii_case(name))
-    })
 }
 
 #[cfg(test)]

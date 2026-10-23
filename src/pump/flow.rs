@@ -98,3 +98,39 @@ mod e2e_repair_green_test;
 #[cfg(test)]
 #[path = "flow/e2e_build_test.rs"]
 mod e2e_build_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_full_test.rs"]
+mod e2e_gate_full_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_front_test.rs"]
+mod e2e_gate_front_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_admit_test.rs"]
+mod e2e_gate_admit_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_verify_test.rs"]
+mod e2e_gate_verify_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_rework_test.rs"]
+mod e2e_gate_rework_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_integration_test.rs"]
+mod e2e_gate_integration_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_cto_test.rs"]
+mod e2e_gate_cto_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_gate_repair_test.rs"]
+mod e2e_gate_repair_test;
+
+#[cfg(test)]
+#[path = "flow/e2e_cross_need_test.rs"]
+mod e2e_cross_need_test;

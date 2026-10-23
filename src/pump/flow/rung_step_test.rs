@@ -192,7 +192,7 @@ fn a_lost_job_runs_again_then_answers_failed() -> R {
     let again = &rig.jobs.jobs[&a2];
     assert_eq!(again.from_ref.as_deref(), Some(BASE));
     assert_eq!(again.payload["attempt"], serde_json::json!(2));
-    assert_eq!(rig.store.attempts_of(&task)?, 2);
+    assert_eq!(rig.store.last_attempt(&task)?, 2);
     let stored = rig
         .store
         .step_job(&a2)?
@@ -381,7 +381,7 @@ fn an_environment_failure_holds_the_step_without_routing_or_retrying() -> R {
     assert_eq!(step.state, StepState::Waiting);
     assert_eq!(step.verdict.as_deref(), Some("operator-hold"));
     assert_eq!(rig.job_ids(), vec![id]);
-    assert_eq!(rig.store.attempts_of(&step.task)?, 1);
+    assert_eq!(rig.store.last_attempt(&step.task)?, 1);
     let rows = rig.store.steps_of(NEED, 1)?;
     assert!(rows.iter().all(|row| row.node != "rework1"), "{rows:?}");
     let text = exceptions(&rig);

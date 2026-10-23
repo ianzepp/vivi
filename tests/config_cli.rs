@@ -112,7 +112,6 @@ models = ["m/ok"]
 P2 = [{ model = "m/ok", reasoning = "high" }]
 
 [pump]
-branch = "next"
 to = "hand"
 committer_name = "t"
 committer_email = "t@t"
@@ -122,12 +121,6 @@ default_kind = "plain"
 model = "m/a"
 cap = 1
 [pump.dispatch.kinds.plain]
-pools = ["glm"]
-[pump.merge]
-lanes = 2
-shared_checks = ["true"]
-[pump.gate]
-command = "true"
 pools = ["glm"]
 "#,
     );
@@ -158,7 +151,6 @@ name = "hand"
 kind = "hand"
 pool = "ghost"
 [pump]
-branch = "next"
 to = "hand"
 "#,
     );
@@ -261,7 +253,7 @@ fn config_migrate_dry_run_and_write_on_faber_fixture() {
     assert!(text.contains("set role hand pool=glm"), "{text}");
     assert!(text.contains("set role merge pool=host"), "{text}");
     assert!(text.contains("add [pools.host]"), "{text}");
-    assert!(text.contains("add role gate"), "{text}");
+    assert!(!text.contains("add role gate"), "{text}");
     assert!(text.contains("dry-run"), "{text}");
     let before = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
     assert!(!hand_has_pool(&before), "fixture must start unmigrated");
@@ -272,7 +264,7 @@ fn config_migrate_dry_run_and_write_on_faber_fixture() {
     let after = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
     assert!(hand_has_pool(&after), "{after}");
     assert!(after.contains("[pools.host]"), "{after}");
-    assert!(after.contains("name = \"gate\""), "{after}");
+    assert!(!after.contains("name = \"gate\""), "{after}");
     let bak = fs::read_dir(dir.path().join(".vivi"))
         .unwrap()
         .filter_map(|entry| entry.ok())
@@ -315,10 +307,8 @@ pool = "glm"
 provider = "local"
 slots = 4
 [pump]
-branch = "next"
 to = "hand"
 main = "main"
-promote = true
 "#,
     );
     let root = dir.path().to_str().unwrap();
@@ -342,7 +332,7 @@ fn mailspace_init_writes_a_starter_pump_table() {
     let dir = init_project();
     let text = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
     assert!(text.contains("\n[pump]\n"), "{text}");
-    assert!(text.contains("[pump.gate]"), "{text}");
+    assert!(!text.contains("[pump.gate]"), "{text}");
     assert!(text.contains("# Starter pump configuration."), "{text}");
 }
 
@@ -364,7 +354,7 @@ fn config_validate_says_not_ready_and_exits_3_on_a_fresh_project() {
     let text = stdout(&out);
     assert!(text.contains("not ready: "), "{text}");
     assert!(text.contains("item(s) missing"), "{text}");
-    assert!(text.contains("- pump.gate.command:"), "{text}");
+    assert!(text.contains("- pump.committer_name:"), "{text}");
     assert!(text.contains("- hand pool:"), "{text}");
     assert!(!text.contains("error:"), "{text}");
 }
@@ -376,13 +366,13 @@ fn config_validate_json_marks_missing_items_not_ready() {
     let out = vivi(&["config", "validate", "--json", "--project", root]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let rows: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-    let gate = rows
+    let missing = rows
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["item"] == "pump.gate.command")
+        .find(|row| row["item"] == "pump.committer_name")
         .unwrap_or_else(|| panic!("{rows}"));
-    assert_eq!(gate["severity"], "not_ready");
+    assert_eq!(missing["severity"], "not_ready");
 }
 
 #[test]
@@ -408,4 +398,84 @@ fn config_validate_exits_0_for_a_project_without_a_pump() {
     let root = dir.path().to_str().unwrap();
     let out = vivi(&["config", "validate", "--project", root]);
     assert_success(&out);
+}
+
+const RETIRED_KEYS: &str = r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[pools.glm]
+provider = "local"
+slots = 2
+[pump]
+branch = "next"
+promote = true
+to = "hand"
+[pump.merge]
+batch = 4
+shared_checks = ["true"]
+[pump.need]
+repair_rounds = 2
+[pump.gate]
+command = "true"
+[pump.targets.other]
+repo = "/tmp/other"
+branch = "next"
+gate = { command = "true" }
+"#;
+
+#[test]
+fn config_validate_names_each_retired_key_and_still_reports_readiness() {
+    let dir = project_with(RETIRED_KEYS);
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    let text = stdout(&out);
+    for expected in [
+        "[pump] branch:",
+        "[pump] promote:",
+        "[pump] gate:",
+        "[pump] need:",
+        "[pump.merge] batch:",
+        "[pump.merge] shared_checks:",
+        "[pump.targets.other] branch:",
+        "[pump.targets.other] gate:",
+    ] {
+        assert!(text.contains(expected), "{expected} missing from:\n{text}");
+    }
+    assert!(text.contains("retired: "), "{text}");
+    assert_eq!(out.status.code(), Some(3), "{text}{}", stderr(&out));
+    assert!(text.contains("not ready: "), "{text}");
+}
+
+#[test]
+fn config_migrate_removes_each_retired_key_with_its_reason() {
+    let dir = project_with(RETIRED_KEYS);
+    let root = dir.path().to_str().unwrap();
+    let dry = vivi(&["config", "migrate", "--project", root]);
+    assert_success(&dry);
+    let text = stdout(&dry);
+    assert!(
+        text.contains("remove [pump] gate = (table: command)"),
+        "{text}"
+    );
+    assert!(text.contains("remove [pump.targets.other] gate"), "{text}");
+    assert!(text.contains("there is no integration branch"), "{text}");
+    assert_success(&vivi(&["config", "migrate", "--write", "--project", root]));
+    let after = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    for gone in [
+        "branch =",
+        "promote =",
+        "batch =",
+        "shared_checks",
+        "repair_rounds",
+        "[pump.gate]",
+        "[pump.need]",
+        "gate =",
+    ] {
+        assert!(!after.contains(gone), "{gone} still in:\n{after}");
+    }
+    assert!(after.contains("repo = \"/tmp/other\""), "{after}");
 }

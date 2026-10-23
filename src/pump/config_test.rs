@@ -71,20 +71,8 @@ max  = 2
 skip_proof = true
 
 [pump.merge]
-batch         = 8
 format        = "cargo fmt --all"
-shared_checks = ["./scripta/test --stage 1", "./scripta/test --stage 2"]
-proof_timeout = 300
-remote_wait   = 90
 remote_limit  = 1800
-
-[pump.gate]
-command      = "./scripta/test --stage 4b"
-every_merges = 8
-every_seconds = 1800
-pools        = ["flyfull", "flygate"]
-model        = "zai/glm-5.3-flash"
-budget       = 1800
 "#;
 
 fn mailspace(text: &str) -> MailspaceConfig {
@@ -120,59 +108,31 @@ fn a_kind_parses_with_optional_max_and_skip_proof() {
 }
 
 #[test]
-fn need_repair_rounds_default_to_one_and_can_be_overridden() {
-    let defaulted = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
-    assert_eq!(defaulted.need.repair_rounds, 1);
-    let configured =
-        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.need]\nrepair_rounds = 3\n");
-    assert_eq!(configured.need.repair_rounds, 3);
-}
-
-#[test]
-fn quarantine_repair_budget_defaults_above_proof_timeout_and_can_be_overridden() {
-    let defaulted =
-        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.merge]\nproof_timeout = 900\n");
-    assert_eq!(defaulted.merge.quarantine_repair_budget(), 1200);
-
-    let configured = pump(
-        "name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.merge]\nproof_timeout = 900\nrepair_budget = 1800\n",
-    );
-    assert_eq!(configured.merge.repair_budget, Some(1800));
-    assert_eq!(configured.merge.quarantine_repair_budget(), 1800);
-}
-
-#[test]
-fn validation_rejects_a_repair_budget_shorter_than_its_proof_timeout() {
+fn validation_rejects_a_zero_repair_budget() {
     let mut config = PumpConfig::default();
     config.committer_name = String::from("Pump Tester");
     config.committer_email = String::from("pump@example.com");
-    config.branch = String::from("next");
     config.dispatch.lanes = vec![Lane {
         model: String::from("standin"),
         cap: 1,
     }];
-    config.merge.shared_checks = vec![String::from("true")];
-    config.merge.proof_timeout = 900;
-    config.merge.repair_budget = Some(899);
-    config.gate.command = String::from("true");
+    config.merge.repair_budget = Some(0);
 
     let error = config
         .validate(Path::new("."), &[])
-        .expect_err("a repair budget must allow its configured proof timeout");
+        .expect_err("a zero repair budget must fail");
     assert!(
         error
             .to_string()
-            .contains("repair_budget must be >= proof_timeout")
+            .contains("[pump.merge] repair_budget must be >= 1")
     );
 }
 
 #[test]
 fn a_minimal_pump_table_takes_every_default() {
     let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
-    assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.remote, "origin");
     assert_eq!(cfg.main, "main");
-    assert!(cfg.promote);
     assert_eq!(cfg.tick, 20);
     assert_eq!(cfg.shell_prefix, "");
     assert_eq!(cfg.hand_rules, None);
@@ -211,29 +171,11 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.from, None);
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");
-    assert_eq!(cfg.merge.batch, 8);
-    assert_eq!(cfg.merge.lanes, 1);
-    assert_eq!(cfg.merge.need_parallel, 4);
     assert_eq!(cfg.merge.format, "");
-    assert!(cfg.merge.shared_checks.is_empty());
-    assert_eq!(cfg.merge.proof_timeout, 300);
-    assert_eq!(cfg.merge.remote_wait, 90);
+    assert_eq!(cfg.merge.repair_budget, None);
     assert_eq!(cfg.merge.remote_limit, 1800);
-    assert_eq!(cfg.gate.command, "");
-    assert_eq!(cfg.gate.every_merges, 8);
-    assert_eq!(cfg.gate.every_seconds, 1800);
-    assert!(cfg.gate.pools.is_empty());
-    assert_eq!(cfg.gate.model, "");
-    assert_eq!(cfg.gate.budget, 1800);
-    assert_eq!(cfg.dispatch_from(), "next");
+    assert_eq!(cfg.dispatch_from(), "main");
     assert_eq!(cfg.reply_to(), "");
-}
-
-#[test]
-fn gate_hold_defaults_are_off_and_zero() {
-    let gate = crate::pump::config::GateConfig::default();
-    assert!(!gate.hold_on_red);
-    assert_eq!(gate.hold_priority_floor, 0);
 }
 
 #[test]
@@ -297,7 +239,6 @@ fn transient_retry_knobs_parse_and_take_defaults() {
 #[test]
 fn the_full_design_file_block_parses() {
     let mut cfg = pump(&format!("name = \"t\"\n{FULL}"));
-    assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.main, "main");
     assert_eq!(cfg.tick, 20);
     assert_eq!(cfg.board.retired_mark, None);
@@ -313,8 +254,7 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.dispatch.kinds["plain"].pools, ["fly4"]);
     assert_eq!(cfg.dispatch.kinds["full"].max, Some(2));
     assert!(cfg.dispatch.kinds["full"].skip_proof);
-    assert_eq!(cfg.merge.batch, 8);
-    assert_eq!(cfg.gate.model, "zai/glm-5.3-flash");
+    assert_eq!(cfg.merge.format, "cargo fmt --all");
     assert_eq!(cfg.reply_to(), "operator@bd371d96.local");
     assert_eq!(cfg.committer_name, "Ian Zepp");
     assert_eq!(cfg.committer_email, "ian@example.com");
@@ -343,15 +283,11 @@ fn a_config_round_trips_through_the_mailspace_file_without_losing_a_key() {
 }
 
 #[test]
-fn named_targets_keep_repository_paths_and_inherit_shared_merge_and_gate_defaults() {
+fn named_targets_keep_repository_paths_and_inherit_shared_merge_defaults() {
     let mut cfg = PumpConfig {
         merge: crate::pump::config::MergeConfig {
-            shared_checks: vec![String::from("cargo check")],
+            format: String::from("cargo fmt"),
             ..crate::pump::config::MergeConfig::default()
-        },
-        gate: crate::pump::config::GateConfig {
-            command: String::from("./gate"),
-            ..crate::pump::config::GateConfig::default()
         },
         ..PumpConfig::default()
     };
@@ -360,8 +296,6 @@ fn named_targets_keep_repository_paths_and_inherit_shared_merge_and_gate_default
             String::from("radix"),
             PumpTarget {
                 path: String::from("radix"),
-                branch: String::from("next"),
-                promote: false,
                 ..PumpTarget::default()
             },
         ),
@@ -369,8 +303,6 @@ fn named_targets_keep_repository_paths_and_inherit_shared_merge_and_gate_default
             String::from("tela"),
             PumpTarget {
                 path: String::from("tela"),
-                branch: String::from("main"),
-                promote: false,
                 ..PumpTarget::default()
             },
         ),
@@ -378,11 +310,8 @@ fn named_targets_keep_repository_paths_and_inherit_shared_merge_and_gate_default
     let targets = cfg.target_configs();
     assert_eq!(targets["radix"].path, "radix");
     assert_eq!(targets["tela"].path, "tela");
-    assert_eq!(
-        targets["radix"].merge.as_ref().unwrap().shared_checks,
-        ["cargo check"]
-    );
-    assert_eq!(targets["tela"].gate.as_ref().unwrap().command, "./gate");
+    assert_eq!(targets["radix"].merge.as_ref().unwrap().format, "cargo fmt");
+    assert_eq!(targets["tela"].merge.as_ref().unwrap().format, "cargo fmt");
 }
 
 #[test]
@@ -395,16 +324,7 @@ fn an_unknown_key_is_ignored() {
         "[pump.board]\n",
         "nope = true\n",
     ));
-    assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.board.retired_mark, None);
-}
-
-#[test]
-fn validate_rejects_a_missing_branch_and_names_the_key() {
-    let err = PumpConfig::default()
-        .validate(Path::new("."), &[])
-        .expect_err("empty branch must fail");
-    assert!(err.to_string().contains("[pump] branch"), "{err}");
 }
 
 #[test]
@@ -448,12 +368,6 @@ fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
     let mut cfg = PumpConfig {
         committer_name: "Vivi".into(),
         committer_email: "vivi@example.invalid".into(),
-        branch: "next".into(),
-        promote: false,
-        gate: crate::pump::config::GateConfig {
-            command: "./gate".into(),
-            ..crate::pump::config::GateConfig::default()
-        },
         ..PumpConfig::default()
     };
     cfg.dispatch.kinds.insert(
@@ -496,72 +410,8 @@ fn parallel_parses_and_must_be_at_least_one() {
 }
 
 #[test]
-fn validate_rejects_zero_merge_lanes() {
-    let cfg = PumpConfig {
-        merge: crate::pump::config::MergeConfig {
-            lanes: 0,
-            ..crate::pump::config::MergeConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let err = cfg
-        .validate(Path::new("."), &pools(&["p"]))
-        .expect_err("zero merge lanes must fail");
-    assert!(
-        err.to_string().contains("[pump.merge] lanes must be >= 1"),
-        "{err}"
-    );
-}
-
-#[test]
-fn validate_rejects_zero_need_parallel() {
-    let cfg = PumpConfig {
-        merge: crate::pump::config::MergeConfig {
-            need_parallel: 0,
-            ..crate::pump::config::MergeConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let err = cfg
-        .validate(Path::new("."), &pools(&["p"]))
-        .expect_err("zero need_parallel must fail");
-    assert!(
-        err.to_string()
-            .contains("[pump.merge] need_parallel must be >= 1"),
-        "{err}"
-    );
-    let mut cfg = valid();
-    cfg.targets = BTreeMap::from([(
-        String::from("tela"),
-        PumpTarget {
-            path: String::from("tela"),
-            branch: String::from("main"),
-            promote: false,
-            merge: Some(crate::pump::config::MergeConfig {
-                need_parallel: 0,
-                ..crate::pump::config::MergeConfig::default()
-            }),
-            gate: Some(crate::pump::config::GateConfig {
-                command: String::from("./gate"),
-                ..crate::pump::config::GateConfig::default()
-            }),
-            ..PumpTarget::default()
-        },
-    )]);
-    let err = cfg
-        .validate(Path::new("."), &pool_names())
-        .expect_err("zero target need_parallel must fail");
-    assert!(
-        err.to_string()
-            .contains("[pump.targets.tela].merge need_parallel must be >= 1"),
-        "{err}"
-    );
-}
-
-#[test]
 fn validate_checks_default_kind_and_kind_pools() {
     let mut cfg = PumpConfig {
-        branch: "next".into(),
         committer_name: "Test".into(),
         committer_email: "test@example.com".into(),
         dispatch: DispatchConfig {
@@ -574,8 +424,6 @@ fn validate_checks_default_kind_and_kind_pools() {
         },
         ..PumpConfig::default()
     };
-    cfg.gate.command = "./gate".into();
-    cfg.merge.shared_checks = vec!["./check".into()];
     let all = pools(&["p"]);
     let err = cfg.validate(Path::new("."), &all).expect_err("no default");
     assert!(
@@ -606,7 +454,6 @@ fn validate_checks_default_kind_and_kind_pools() {
 #[test]
 fn validate_rejects_an_unknown_pool_in_a_multi_pool_kind() {
     let cfg = PumpConfig {
-        branch: "next".into(),
         dispatch: DispatchConfig {
             lanes: vec![Lane {
                 model: "m".into(),
@@ -657,7 +504,6 @@ fn kind_of_resolves_tools_or_the_default_kind() {
 #[test]
 fn validate_rejects_an_unknown_pool_name() {
     let mut cfg = PumpConfig {
-        branch: "next".into(),
         dispatch: DispatchConfig {
             lanes: vec![Lane {
                 model: "m".into(),
@@ -679,16 +525,8 @@ fn validate_rejects_an_unknown_pool_name() {
     );
     cfg.dispatch.kinds.clear();
     cfg.dispatch.default_kind = String::new();
-    cfg.gate.pools = vec!["flygate".into()];
-    let err = cfg
-        .validate(Path::new("."), &pools(&["other"]))
-        .expect_err("unknown pool must fail");
-    assert!(err.to_string().contains("[pump.gate] pools"), "{err}");
-    cfg.gate.pools = vec!["flygate".into(), "flyfull".into()];
     cfg.committer_name = "Test".into();
     cfg.committer_email = "test@example.com".into();
-    cfg.gate.command = "./gate".into();
-    cfg.merge.shared_checks = vec!["./check".into()];
     assert!(
         cfg.validate(Path::new("."), &pools(&["flygate", "flyfull"]))
             .is_ok()
@@ -704,49 +542,6 @@ fn valid() -> PumpConfig {
 
 fn pool_names() -> Vec<String> {
     pools(&["fly4", "flyfull", "flygate"])
-}
-
-#[test]
-fn validate_rejects_an_empty_gate_command_even_without_promotion() {
-    let mut cfg = valid();
-    cfg.gate.command = String::new();
-    let err = cfg
-        .validate(Path::new("."), &pool_names())
-        .expect_err("empty gate");
-    assert!(err.to_string().contains("[pump.gate] command"), "{err}");
-    cfg.promote = false;
-    let err = cfg
-        .validate(Path::new("."), &pool_names())
-        .expect_err("empty gate");
-    assert!(err.to_string().contains("[pump.gate] command"), "{err}");
-}
-
-#[test]
-fn every_merges_zero_is_accepted() {
-    let mut cfg = valid();
-    cfg.gate.every_merges = 0;
-    assert!(
-        cfg.validate(Path::new("."), &pool_names()).is_ok(),
-        "every_merges is retired and must not gate validation"
-    );
-}
-
-#[test]
-fn validate_rejects_empty_shared_checks_only_while_promotion_is_enabled() {
-    let mut cfg = valid();
-    cfg.merge.shared_checks = Vec::new();
-    let err = cfg
-        .validate(Path::new("."), &pool_names())
-        .expect_err("no checks");
-    assert!(
-        err.to_string().contains("[pump.merge] shared_checks"),
-        "{err}"
-    );
-    cfg.promote = false;
-    assert!(cfg.validate(Path::new("."), &pool_names()).is_ok());
-    cfg.promote = true;
-    cfg.main = String::new();
-    assert!(cfg.validate(Path::new("."), &pool_names()).is_ok());
 }
 
 #[test]
@@ -827,8 +622,13 @@ fn reserved_file_defaults_to_reserved_txt_under_home() {
 }
 
 #[test]
-fn max_replans_defaults_to_two() {
-    assert_eq!(PumpConfig::default().gate.max_replans, 2);
+fn a_retired_pump_gate_table_still_parses_and_is_not_written_back() {
+    let cfg = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.gate]\ncommand = \"./gate\"\n\
+         [pump.targets.app]\npath = \"app\"\n[pump.targets.app.gate]\ncommand = \"./gate\"\n",
+    );
+    let text = toml::to_string(&cfg).unwrap();
+    assert!(!text.contains("gate"), "{text}");
 }
 
 #[test]
@@ -979,18 +779,12 @@ fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
         String::from("tela"),
         PumpTarget {
             path: String::from("tela"),
-            branch: String::from("main"),
-            promote: false,
             merge: Some(crate::pump::config::MergeConfig {
                 generated: vec![crate::pump::config::Generated {
                     paths: vec!["out/a.json".into()],
                     ..crate::pump::config::Generated::default()
                 }],
                 ..crate::pump::config::MergeConfig::default()
-            }),
-            gate: Some(crate::pump::config::GateConfig {
-                command: String::from("./gate"),
-                ..crate::pump::config::GateConfig::default()
             }),
             ..PumpTarget::default()
         },
@@ -1001,36 +795,6 @@ fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
     assert!(
         err.to_string()
             .contains("[pump.targets.tela.merge] generated"),
-        "{err}"
-    );
-}
-
-#[test]
-fn validate_rejects_target_checks_for_with_blank_commands() {
-    let mut cfg = valid();
-    cfg.targets = BTreeMap::from([(
-        String::from("tela"),
-        PumpTarget {
-            path: String::from("tela"),
-            branch: String::from("main"),
-            promote: false,
-            merge: Some(crate::pump::config::MergeConfig {
-                checks_for: BTreeMap::from([("src/**".to_string(), vec![" ".into()])]),
-                ..crate::pump::config::MergeConfig::default()
-            }),
-            gate: Some(crate::pump::config::GateConfig {
-                command: String::from("./gate"),
-                ..crate::pump::config::GateConfig::default()
-            }),
-            ..PumpTarget::default()
-        },
-    )]);
-    let err = cfg
-        .validate(Path::new("."), &pool_names())
-        .expect_err("blank target checks_for command must fail");
-    assert!(
-        err.to_string()
-            .contains("[pump.targets.tela.merge.checks_for] 'src/**' must have non-empty commands"),
         "{err}"
     );
 }
@@ -1069,58 +833,6 @@ fn pool_sources_map_local_worktree_pools() {
 }
 
 #[test]
-fn checks_for_parses_glob_keys_into_command_lists() {
-    let cfg = pump(
-        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.merge.checks_for]\n\
-         \"corpus/**/*.fab\" = [\"cargo test -p faber --lib explain_\"]\n\
-         \"locale/**\" = [\"./locale-check\", \"cargo test -p radix-module locale_pack\"]\n",
-    );
-    assert_eq!(
-        cfg.merge.checks_for,
-        BTreeMap::from([
-            (
-                String::from("corpus/**/*.fab"),
-                vec![String::from("cargo test -p faber --lib explain_")],
-            ),
-            (
-                String::from("locale/**"),
-                vec![
-                    String::from("./locale-check"),
-                    String::from("cargo test -p radix-module locale_pack"),
-                ],
-            ),
-        ])
-    );
-}
-
-#[test]
-fn checks_for_is_empty_by_default() {
-    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
-    assert!(cfg.merge.checks_for.is_empty());
-}
-
-#[test]
-fn validate_rejects_checks_for_with_blank_commands() {
-    for commands in [vec![String::from(" ")], Vec::new()] {
-        let cfg = PumpConfig {
-            merge: crate::pump::config::MergeConfig {
-                checks_for: BTreeMap::from([(String::from("src/**"), commands)]),
-                ..crate::pump::config::MergeConfig::default()
-            },
-            ..PumpConfig::default()
-        };
-        let err = cfg
-            .validate(Path::new("."), &pools(&["p"]))
-            .expect_err("blank checks_for commands must fail");
-        assert!(
-            err.to_string()
-                .contains("[pump.merge.checks_for] 'src/**' must have non-empty commands"),
-            "{err}"
-        );
-    }
-}
-
-#[test]
 fn findings_report_absent_items_apart_from_wrong_values() {
     let found = PumpConfig::default().findings_for(Path::new("."), &[], false);
     assert!(found.errors.is_empty(), "{:?}", found.errors);
@@ -1129,14 +841,7 @@ fn findings_report_absent_items_apart_from_wrong_values() {
         .iter()
         .map(|item| item.name.as_str())
         .collect();
-    for expected in [
-        "pump.committer_name",
-        "pump.committer_email",
-        "pump.branch",
-        "hand pool",
-        "pump.merge.shared_checks",
-        "pump.gate.command",
-    ] {
+    for expected in ["pump.committer_name", "pump.committer_email", "hand pool"] {
         assert!(names.contains(&expected), "{expected} not in {names:?}");
     }
 }
@@ -1145,7 +850,11 @@ fn findings_report_absent_items_apart_from_wrong_values() {
 fn findings_keep_wrong_values_as_errors_and_report_nothing_missing() {
     let mut cfg = valid();
     cfg.tick = 0;
-    cfg.gate.pools = vec![String::from("nowhere")];
+    cfg.dispatch
+        .kinds
+        .get_mut("plain")
+        .expect("the sample defines the plain kind")
+        .pools = vec![String::from("nowhere")];
     let found = cfg.findings_for(Path::new("."), &pool_names(), false);
     assert!(found.missing.is_empty(), "{:?}", found.missing);
     assert_eq!(found.errors.len(), 2, "{:?}", found.errors);
@@ -1170,9 +879,8 @@ fn a_hand_role_pool_makes_the_dispatch_lanes_optional() {
 }
 
 #[test]
-fn target_level_gaps_are_missing_items_not_errors() {
+fn a_target_with_only_a_path_reports_no_gap() {
     let mut cfg = valid();
-    cfg.gate.command = String::new();
     cfg.targets.insert(
         String::from("app"),
         PumpTarget {
@@ -1187,21 +895,22 @@ fn target_level_gaps_are_missing_items_not_errors() {
         .iter()
         .map(|item| item.name.as_str())
         .collect();
-    for expected in ["pump.targets.app.branch", "pump.targets.app.gate.command"] {
-        assert!(names.contains(&expected), "{expected} not in {names:?}");
-    }
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("pump.targets.app")),
+        "{names:?}"
+    );
 }
 
 /// A config that validates clean apart from what the caller changes.
 fn valid_pump(extra: &str) -> PumpConfig {
-    let mut cfg = pump(&format!(
+    pump(&format!(
         "name = \"t\"\n[pump]\nbranch = \"next\"\ncommitter_name = \"Test\"\n\
          committer_email = \"test@example.com\"\npromote = false\n\
          [pump.dispatch]\nlanes = [{{ model = \"m\", cap = 1 }}]\n\
-         [pump.gate]\ncommand = \"./gate\"\n{extra}"
-    ));
-    cfg.merge.shared_checks = vec!["./check".into()];
-    cfg
+         {extra}"
+    ))
 }
 
 #[test]

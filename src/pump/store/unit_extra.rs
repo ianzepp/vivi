@@ -22,8 +22,6 @@ const REPAIRS_KEY: &str = "repairs";
 const BASE_KEY: &str = "base";
 /// The `extra_json` key of [`Unit::solo`].
 const SOLO_KEY: &str = "solo";
-/// The `extra_json` key of [`Unit::send_reported`].
-const SEND_REPORTED_KEY: &str = "send_reported";
 /// The `extra_json` key of [`Unit::transient_retries`].
 const TRANSIENT_RETRIES_KEY: &str = "transient_retries";
 /// The `extra_json` key of [`Unit::retry_not_before`].
@@ -53,9 +51,6 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     }
     if unit.solo {
         extra.insert(SOLO_KEY.to_string(), Value::Bool(true));
-    }
-    if unit.send_reported {
-        extra.insert(SEND_REPORTED_KEY.to_string(), Value::Bool(true));
     }
     if unit.transient_retries > 0 {
         extra.insert(
@@ -98,9 +93,6 @@ pub(super) fn lift(unit: &mut Unit) {
     }
     if let Some(Value::Bool(solo)) = unit.extra.remove(SOLO_KEY) {
         unit.solo = solo;
-    }
-    if let Some(Value::Bool(flag)) = unit.extra.remove(SEND_REPORTED_KEY) {
-        unit.send_reported = flag;
     }
     if let Some(retries) = unit
         .extra

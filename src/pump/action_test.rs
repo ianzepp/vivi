@@ -6,7 +6,7 @@
 use std::fs;
 
 use super::*;
-use crate::mailspace::{PumpActionRequest, PumpRecord, PumpState};
+use crate::mailspace::{PumpActionKind, PumpActionRequest, PumpRecord, PumpState};
 use crate::pump::fixture::{Project, T0, planned, project};
 use crate::pump::state::Unit;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -142,13 +142,49 @@ fn an_applied_withdraw_closes_the_record_withdrawn_once() {
 }
 
 #[test]
-fn an_applied_replan_supersedes_the_record_opens_a_fresh_one_and_clears_the_parked_planner() {
+fn a_recover_letter_for_a_need_with_no_run_is_settled_once_and_changes_no_state() {
+    let project = project();
+    let ctx = project.pump_ctx();
+    let need = project.need("fix auth");
+    let record = open_record(&project, &need);
+    let mut st = planned(&need, &[("u1", Status::Stuck), ("u2", Status::Merged)]);
+    let id = post(
+        &project,
+        &need,
+        &PumpActionRequest {
+            kind: PumpActionKind::Recover,
+            ..PumpActionRequest::withdraw("the tip is sound")
+        },
+    );
+
+    apply_pending(&ctx, &mut st);
+
+    assert_eq!(st.board.actions[&id].kind, "recover");
+    assert!(
+        st.board.actions[&id].owes.is_empty(),
+        "recover owes no close"
+    );
+    assert!(logged(&project, "recover is retired"));
+    assert_eq!(st.units["u1"].status, Status::Stuck, "recover moved u1");
+    assert_eq!(st.units["u2"].status, Status::Merged, "recover moved u2");
+    assert!(st.closed_needs.is_empty(), "recover closed the need");
+    let records = history(&project, &need);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].handle, record.handle);
+    assert_eq!(records[0].status, PumpState::Open);
+
+    let before = project.host.logs().len();
+    apply_pending(&ctx, &mut st);
+    assert_eq!(project.host.logs().len(), before, "applied again");
+}
+
+#[test]
+fn an_applied_replan_supersedes_the_record_opens_a_fresh_one_and_clears_the_planner_failures() {
     let project = project();
     let ctx = project.pump_ctx();
     let need = project.need("fix auth");
     let first = open_record(&project, &need);
     let mut st = planned(&need, &[("u1", Status::Pending), ("u2", Status::Merged)]);
-    st.board.planner_failed.push(need.clone());
     st.board.planner_fails.insert(need.clone(), 3);
     st.plans_seen.push(format!("{need}.json"));
     let id = post(&project, &need, &PumpActionRequest::replan(false));
@@ -161,7 +197,6 @@ fn an_applied_replan_supersedes_the_record_opens_a_fresh_one_and_clears_the_park
     assert_eq!(records[0].outcome.as_deref(), Some("superseded"));
     assert_eq!(records[1].status, PumpState::Open, "the replan is intake");
     assert!(!st.needs.contains_key(&need), "the plan is thrown away");
-    assert!(st.board.planner_failed.is_empty());
     assert!(st.board.planner_fails.is_empty());
     assert_eq!(st.units["u1"].status, Status::Withdrawn);
     assert_eq!(st.units["u2"].status, Status::Merged);
@@ -374,39 +409,6 @@ fn a_new_record_for_a_given_up_need_requeues_its_stuck_units_instead_of_closing_
     assert_eq!(st.units["u0"].status, Status::Merged);
     assert_eq!(crate::pump::record::gave_up_reason(&ctx, &st, &need), None);
     crate::pump::record::settle_gave_up(&ctx, &st, std::slice::from_ref(&need));
-    assert_eq!(
-        project
-            .mailspace
-            .pump_open_record(&need)
-            .unwrap()
-            .map(|r| r.handle),
-        Some(second.handle)
-    );
-}
-
-#[test]
-fn a_new_record_for_a_planner_parked_need_clears_the_park_and_is_not_given_up() {
-    let project = project();
-    let ctx = project.pump_ctx();
-    let need = project.need("fix auth");
-    let first = open_record(&project, &need);
-    let mut st = State::default();
-    st.board.planner_failed.push(need.clone());
-    st.board.planner_fails.insert(need.clone(), 3);
-    apply_pending(&ctx, &mut st);
-    assert_eq!(st.board.records[&need], first.handle);
-    crate::pump::record::settle_gave_up(&ctx, &st, std::slice::from_ref(&need));
-    assert_eq!(
-        history(&project, &need)[0].outcome.as_deref(),
-        Some("gave-up")
-    );
-
-    let second = open_record(&project, &need);
-    apply_pending(&ctx, &mut st);
-
-    assert!(st.board.planner_failed.is_empty());
-    assert!(st.board.planner_fails.is_empty());
-    assert_eq!(crate::pump::record::gave_up_reason(&ctx, &st, &need), None);
     assert_eq!(
         project
             .mailspace

@@ -51,8 +51,6 @@ fn result_line(actions: &str) -> String {
 
 #[test]
 fn the_mind_brief_carries_compact_pump_state_and_the_allowlist() {
-    let dir = tempfile::tempdir().unwrap();
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let mut st = State::default();
     st.units.insert(
         String::from("u1"),
@@ -61,11 +59,12 @@ fn the_mind_brief_carries_compact_pump_state_and_the_allowlist() {
             ..Unit::default()
         },
     );
-    let (kind, _, body) = job_parts(&ctx, &st, &role(), 1_000);
+    let (kind, _, body) = job_parts(&st, &role(), 1_000);
     assert_eq!(kind, "cadence");
     assert!(body.contains("PUMP-STATE-BEGIN"));
     assert!(body.contains("units pending=1"));
-    assert!(body.contains("Allowlist: hold-merge"));
+    assert!(body.contains("Allowlist: replan-need, note."));
+    assert!(!body.contains("hold-merge"));
     assert!(body.contains(RESULT_MARKER));
 }
 
@@ -88,8 +87,12 @@ fn allowlisted_actions_apply_and_unknown_ops_are_refused() {
         )),
     );
     oversight::apply(&ctx, &mut st, "cadence-mind-1");
-    assert!(ctx.flag("HOLD-MERGE"));
-    assert!(crate::pump::board::read_skip(&ctx).contains("u1"));
+    let flag_files: Vec<String> = std::fs::read_dir(&ctx.home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_lowercase())
+        .filter(|name| name.contains("hold") || name.contains("skip"))
+        .collect();
+    assert!(flag_files.is_empty(), "retired ops wrote {flag_files:?}");
     assert!(st.needs["n1"].amendment_pending);
     let log = oversight::state(&st);
     assert_eq!(log.interventions.len(), 5);
@@ -98,8 +101,16 @@ fn allowlisted_actions_apply_and_unknown_ops_are_refused() {
             .iter()
             .filter(|row| row.result == "applied")
             .count()
-            == 4
+            == 2
     );
+    for retired in ["hold-merge", "skip-unit"] {
+        let row = log
+            .interventions
+            .iter()
+            .find(|row| row.op == retired)
+            .unwrap();
+        assert!(row.result.contains("not on the allowlist"), "{retired}");
+    }
     let refused = log
         .interventions
         .iter()
@@ -124,6 +135,5 @@ fn a_missing_or_malformed_result_does_not_block_or_change_state() {
         job_with(&format!("{RESULT_MARKER}{{nope}}\n")),
     );
     oversight::apply(&ctx, &mut st, "cadence-mind-2");
-    assert!(!ctx.flag("HOLD-MERGE"));
     assert!(oversight::state(&st).interventions.is_empty());
 }
