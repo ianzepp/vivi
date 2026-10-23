@@ -12,7 +12,7 @@ use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::TickPhase;
-use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::index::{JOB_STALE, RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::step_error::STEP_ERROR_HELD;
@@ -447,5 +447,85 @@ fn a_store_that_keeps_failing_holds_the_row_after_three_ticks() -> R {
     assert_eq!(row.state, StepState::Waiting);
     assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
     assert_eq!(count_of(&rig, STEP_ERROR_HELD), 1, "{}", exceptions(&rig));
+    Ok(())
+}
+
+// ---- payload identity ----
+
+fn set_payload_run(rig: &mut Rig, task: &str, run: Option<u32>) {
+    let job = rig
+        .jobs
+        .jobs
+        .get_mut(&format!("reslice-{task}-a1"))
+        .expect("job");
+    let fields = job.payload.as_object_mut().expect("object payload");
+    match run {
+        Some(n) => fields.insert("run".into(), serde_json::json!(n)),
+        None => fields.remove("run"),
+    };
+}
+
+#[test]
+fn a_payload_without_a_run_raises_one_stale_job_naming_run_and_is_applied() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    set_payload_run(&mut rig, &task, None);
+
+    run_phase(&mut rig)?;
+    run_phase(&mut rig)?;
+
+    assert_eq!(count_of(&rig, JOB_STALE), 1, "{}", exceptions(&rig));
+    assert!(exceptions(&rig).contains("`run`"), "{}", exceptions(&rig));
+    assert!(
+        rig.jobs.jobs[&format!("reslice-{task}-a1")]
+            .applied_at
+            .is_some()
+    );
+    assert_eq!(verdict(&rig, &task)?, None);
+    Ok(())
+}
+
+#[test]
+fn a_payload_run_that_differs_from_the_step_row_raises_one_stale_job_naming_both() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    let second = RunRow {
+        run: 2,
+        ..rig.run.clone()
+    };
+    rig.store.insert_run(&second)?;
+    set_payload_run(&mut rig, &task, Some(2));
+
+    run_phase(&mut rig)?;
+
+    assert_eq!(count_of(&rig, JOB_STALE), 1, "{}", exceptions(&rig));
+    let text = exceptions(&rig);
+    assert!(text.contains("r1") && text.contains("r2"), "{text}");
+    assert!(
+        rig.jobs.jobs[&format!("reslice-{task}-a1")]
+            .applied_at
+            .is_some()
+    );
+    assert_eq!(verdict(&rig, &task)?, None);
+    assert!(slice_task_of(&rig, "A.1").is_err());
+    Ok(())
+}
+
+#[test]
+fn a_closed_step_is_a_late_result_applied_with_no_exception() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    rig.store
+        .set_step_state(&task, StepState::Done, Some("sliced"))?;
+
+    run_phase(&mut rig)?;
+
+    assert_eq!(count_of(&rig, JOB_STALE), 0, "{}", exceptions(&rig));
+    assert!(
+        rig.jobs.jobs[&format!("reslice-{task}-a1")]
+            .applied_at
+            .is_some()
+    );
+    assert!(slice_task_of(&rig, "A.1").is_err());
     Ok(())
 }
