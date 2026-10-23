@@ -27,7 +27,7 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::record::open_mailspace;
-use crate::pump::store::PumpStore;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// Exception kind: a reply arrived on a run that is too far along to restart.
 pub const THREAD_CHANGED: &str = "flow-thread-changed";
@@ -35,9 +35,6 @@ pub const THREAD_CHANGED: &str = "flow-thread-changed";
 /// Exception kind: the thread check for a run could not be made (an
 /// unparsable date, or the check itself failed).
 pub const THREAD_CHECK_FAILED: &str = "flow-thread-check-failed";
-
-/// The run state of a run that is still being advanced.
-const RUN_LIVE: &str = "live";
 
 /// Registry hook: the thread-change phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {

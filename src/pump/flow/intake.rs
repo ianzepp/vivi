@@ -27,7 +27,7 @@ use crate::pump::flow::rank::need_key;
 use crate::pump::flow::tick::{FLOW_INVALID, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
-use crate::pump::store::PumpStore;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// Exception kind: a run stayed `starting` too long.
 pub const START_STUCK: &str = "flow-run-start-stuck";
@@ -37,9 +37,6 @@ const START_STUCK_SECS: u64 = 600;
 
 /// Exception kind: a need has an open pump record the flow cannot act on.
 pub const RECORD_UNUSABLE: &str = "flow-record-unusable";
-
-/// Run states that occupy a slot under the cap or block a new run.
-const RUN_LIVE: &str = "live";
 
 /// Registry hook: the intake phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {

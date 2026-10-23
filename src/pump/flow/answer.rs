@@ -33,7 +33,7 @@ use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
-use crate::pump::store::PumpStore;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// The exception kind raised for an answer that cannot be applied.
 pub const ANSWER_REFUSED: &str = "flow-answer-refused";
@@ -43,9 +43,6 @@ pub const ANSWER_RETRYING: &str = "flow-answer-retrying";
 
 /// Retries a letter gets in this process before it is refused.
 const MAX_RETRIES: u32 = 3;
-
-/// The run state of a run that is still being advanced.
-const RUN_LIVE: &str = "live";
 
 /// How one answer letter ended.
 #[derive(Debug, PartialEq, Eq)]

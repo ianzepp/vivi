@@ -19,7 +19,7 @@ use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, mark_applied};
-use crate::pump::store::PumpStore;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// Run state: a restart of this run began and has not finished.
 pub(crate) const RUN_RESTARTING: &str = "restarting";
@@ -27,8 +27,6 @@ pub(crate) const RUN_RESTARTING: &str = "restarting";
 const RUN_SUPERSEDED: &str = "superseded";
 /// Run state: withdrawn.
 const RUN_WITHDRAWN: &str = "withdrawn";
-/// Run state: a run still being advanced.
-const RUN_LIVE: &str = "live";
 /// Exception kind: a restart stayed unfinished too long.
 pub(crate) const RESTART_STUCK: &str = "flow-run-restart-stuck";
 /// Marker of the reply that lists a dead run's dispatched job ids.
