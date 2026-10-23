@@ -365,7 +365,6 @@ impl PumpStore {
             ..State::default()
         };
         load_meta(&self.conn, &mut st)?;
-        crate::pump::need::backfill_legacy_unit_revisions(&mut st);
         Ok(st)
     }
 

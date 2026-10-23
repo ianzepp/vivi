@@ -201,7 +201,7 @@ fn a_version_one_database_gains_the_revision_columns() {
 }
 
 #[test]
-fn loading_a_legacy_current_plan_backfills_only_listed_zero_revision_units() {
+fn a_unit_saved_with_revision_zero_loads_back_with_revision_zero() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);
     let mut store = PumpStore::open(&path).unwrap();
@@ -222,20 +222,11 @@ fn loading_a_legacy_current_plan_backfills_only_listed_zero_revision_units() {
             ..Unit::default()
         },
     );
-    state.units.insert(
-        String::from("historical"),
-        Unit {
-            need: String::from("n1"),
-            revision: 0,
-            ..Unit::default()
-        },
-    );
     store.save(&state).unwrap();
     drop(store);
 
     let loaded = PumpStore::open(&path).unwrap().load().unwrap();
-    assert_eq!(loaded.units["current"].revision, 4);
-    assert_eq!(loaded.units["historical"].revision, 0);
+    assert_eq!(loaded.units["current"].revision, 0);
 }
 
 #[test]
