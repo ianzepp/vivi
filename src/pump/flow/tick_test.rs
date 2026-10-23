@@ -10,8 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    FINISHING_STUCK, FOLLOW_UP, FOLLOW_UP_MARKER, KIND_CHANGED, OPERATOR_HOLD, RUN_ERROR,
-    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, VALIDATED, tick_with,
+    FINISHING_STUCK, FOLLOW_UP, FOLLOW_UP_MARKER, JOB_ORPHANED, KIND_CHANGED, OPERATOR_HOLD,
+    RUN_ERROR, SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STALE_ATTEMPT, STEP_OVERDUE, VALIDATED,
+    tick_with,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -870,5 +871,74 @@ fn an_unchanged_fanout_payload_says_why() -> R {
     let reason = stored.payload["reason"].as_str().unwrap_or_default();
     assert!(reason.contains("expected a change"), "{reason}");
     assert!(reason.contains("0 merged"), "{reason}");
+    Ok(())
+}
+
+// ---- orphaned and stale step jobs --------------------------------------------
+
+#[test]
+fn a_job_of_a_done_run_is_applied_and_raised_once() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    rig.role_job("plan", "plan-j1", PLANNED)?;
+    rig.store.set_run_state(NEED, 1, "done")?;
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs["plan-j1"].applied_at.is_some());
+    assert_eq!(rig.count(JOB_ORPHANED), 1);
+    let text = rig.exceptions();
+    assert!(
+        text.contains("plan-j1") && text.contains("actual: done"),
+        "{text}"
+    );
+    assert_eq!(rig.step("plan")?.state, StepState::Running, "not applied");
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_superseded_run_is_applied_without_an_exception() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    rig.role_job("plan", "plan-j1", PLANNED)?;
+    rig.store.set_run_state(NEED, 1, "superseded")?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs["plan-j1"].applied_at.is_some());
+    assert_eq!(rig.count(JOB_ORPHANED), 0);
+    Ok(())
+}
+
+#[test]
+fn only_the_newest_attempt_of_a_step_routes() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    rig.role_job("plan", "plan-j1", PLANNED)?;
+    let task = rig.step("plan")?.task;
+    let mut spec = JobSpec::new("plan-j2", "planner", "pump-planner", "s", "b");
+    spec.task = Some(task.clone());
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    rig.finish("plan-j2", &receipt("", 0, PLANNED));
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "plan-j2".into(),
+            run: 1,
+            node: "plan".into(),
+            task,
+            attempt: 2,
+        },
+    )?;
+    rig.tick()?;
+    assert_eq!(rig.step("plan")?.state, StepState::Done);
+    assert_eq!(rig.step("admit1")?.state, StepState::Pending);
+    assert_eq!(rig.count(STALE_ATTEMPT), 1);
+    let text = rig.exceptions();
+    assert!(
+        text.contains("plan-j1")
+            && text.contains("expected attempt 2")
+            && text.contains("actual: attempt 1"),
+        "{text}"
+    );
+    assert!(rig.jobs.jobs["plan-j1"].applied_at.is_some());
+    assert!(rig.jobs.jobs["plan-j2"].applied_at.is_some());
     Ok(())
 }

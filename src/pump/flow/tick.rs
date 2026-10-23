@@ -27,7 +27,7 @@ use crate::pump::flow::cto_step::unchanged_text;
 use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
-use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
@@ -61,6 +61,10 @@ pub const SCOPE_REWORK: &str = "flow-scope-rework";
 pub const KIND_CHANGED: &str = "flow-kind-changed";
 /// Exception kind: routing refused a collected word.
 pub const WORD_REJECTED: &str = "flow-word-rejected";
+/// Exception kind: a finished step job belongs to a run that cannot apply it.
+pub const JOB_ORPHANED: &str = "flow-job-orphaned";
+/// Exception kind: a finished step job is not its step's newest attempt.
+pub const STALE_ATTEMPT: &str = "flow-stale-attempt";
 
 /// Seconds a run may stay `finishing` before the alarm.
 const FINISHING_STUCK_SECS: u64 = 600;
@@ -133,6 +137,8 @@ where
         });
         boundary(ctx, &unit, result);
     }
+    let left = unapplied_step_jobs(st, store)?;
+    settle_orphans(ctx, st, store, &left);
     for phase in registry.phases() {
         boundary(ctx, phase.name(), phase.run(ctx, st, store, mail));
     }
@@ -249,6 +255,63 @@ fn unapplied_step_jobs<S: JobStore>(
     Ok(found)
 }
 
+/// Settle finished step jobs that no live run applied. A run in a state that
+/// resolves on its own (`live`, `starting`, `finishing`, `restarting`) keeps
+/// its jobs; a `superseded` or `withdrawn` run is a dead run's expected late
+/// result (logged); a `done` run or an unknown state is raised once.
+fn settle_orphans<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    left: &[(String, StepJobRow)],
+) {
+    for (id, row) in left {
+        let (run, state) = match orphan_state(store, row) {
+            Ok(found) => found,
+            Err(error) => {
+                boundary(ctx, &format!("job {id}"), Err::<(), _>(error));
+                continue;
+            }
+        };
+        if matches!(
+            state.as_str(),
+            run_state::LIVE | run_state::STARTING | run_state::FINISHING | run_state::RESTARTING
+        ) {
+            continue;
+        }
+        jobs::mark_applied(st, id, ctx.now());
+        if matches!(state.as_str(), run_state::SUPERSEDED | run_state::WITHDRAWN) {
+            ctx.log(&format!(
+                "flow tick: job {id} step {} of r{run} ({state}) applied late; ignored",
+                row.task
+            ));
+            continue;
+        }
+        raise_once(
+            ctx,
+            JOB_ORPHANED,
+            id,
+            &format!(
+                "job {id} step {}: expected run r{run} live; actual: {state}; result not applied",
+                row.task
+            ),
+        );
+    }
+}
+
+/// The run number and stored run state a step job's step belongs to.
+fn orphan_state(store: &PumpStore, row: &StepJobRow) -> Result<(u32, String), VivariumError> {
+    let Some((need, run)) = store.step_run_of(&row.task)? else {
+        return Ok((row.run, String::from("no step row")));
+    };
+    let state = store
+        .runs_of(&need)?
+        .into_iter()
+        .find(|candidate| candidate.run == run)
+        .map_or_else(|| String::from("no run row"), |candidate| candidate.state);
+    Ok((run, state))
+}
+
 impl<S, M> RunCx<'_, S, M>
 where
     S: JobStore,
@@ -338,6 +401,20 @@ where
         let Some(job) = self.st.jobs().get(id).cloned() else {
             return Ok(());
         };
+        let newest = self.store.last_attempt(&row.task)?;
+        if row.attempt < newest {
+            jobs::mark_applied(self.st, id, self.ctx.now());
+            raise_once(
+                self.ctx,
+                STALE_ATTEMPT,
+                id,
+                &format!(
+                    "job {id} step {}: expected attempt {newest}; actual: attempt {}; result ignored",
+                    row.task, row.attempt
+                ),
+            );
+            return Ok(());
+        }
         let step = self.store.step_by_task(&row.task)?;
         if let Some(step) = step.filter(|s| {
             matches!(
