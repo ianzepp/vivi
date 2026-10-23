@@ -208,10 +208,40 @@ fn a_pending_merge_of_a_superseded_run_is_removed() -> R {
     rig.tick()?;
     assert!(rig.merges("n1").is_empty());
     let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!raised.contains("flow-job-stale"), "{raised}");
+    assert_eq!(rig.state(&slice)?, Some(StepState::Running));
+    Ok(())
+}
+
+#[test]
+fn a_pending_merge_of_a_withdrawn_run_is_removed_with_no_alarm() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    rig.slice("n1", "A", true)?;
+    rig.tick()?;
+    assert_eq!(rig.merges("n1").len(), 1);
+    rig.store.set_run_state("n1", 1, "withdrawn")?;
+    rig.tick()?;
+    assert!(rig.merges("n1").is_empty());
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!raised.contains("flow-job-stale"), "{raised}");
+    Ok(())
+}
+
+#[test]
+fn a_pending_merge_of_a_done_run_is_removed_with_one_alarm() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    rig.slice("n1", "A", true)?;
+    rig.tick()?;
+    rig.store.set_run_state("n1", 1, "done")?;
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.merges("n1").is_empty());
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
     assert_eq!(raised.matches("flow-job-stale").count(), 1, "{raised}");
     assert!(raised.contains("hand-A-merge-t1"), "{raised}");
     assert!(raised.contains("n1 r1"), "{raised}");
-    assert_eq!(rig.state(&slice)?, Some(StepState::Running));
     Ok(())
 }
 
