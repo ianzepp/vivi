@@ -185,8 +185,10 @@ fn send_need(project: &tempfile::TempDir, to: &str, subject: &str) -> String {
         to,
         "--subject",
         subject,
+        "--done-when",
+        "it is planned.",
         "--body",
-        "done_when: it is planned.",
+        "it is planned.",
         "--project",
         root(project),
     ]);

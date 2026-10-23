@@ -64,8 +64,10 @@ fn send_need(root: &str) -> String {
         "mind",
         "--subject",
         "fix auth",
+        "--done-when",
+        "it works",
         "--body",
-        "done_when: it works",
+        "it works",
     ]));
     out.lines()
         .find_map(|line| line.strip_prefix("created mind "))

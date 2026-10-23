@@ -5,6 +5,8 @@
 use std::collections::BTreeSet;
 use std::process::{Command, Output};
 
+use vivi::letter::render;
+use vivi::letter::work::{NeedFront, TaskFront};
 use vivi::mailspace::{Mailspace, PumpActionKind, SendRequest};
 
 fn project() -> (tempfile::TempDir, Mailspace) {
@@ -35,6 +37,14 @@ fn send(mailspace: &Mailspace, role: &str, kind: &str, body: &str) -> String {
         .handle
 }
 
+fn need_body() -> String {
+    render(&NeedFront::new(vec!["it works".into()]), "").unwrap()
+}
+
+fn step_body(need: &str) -> String {
+    render(&TaskFront::step(need, 1, "plan"), "").unwrap()
+}
+
 fn answer(tmp: &tempfile::TempDir, step: &str, extra: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args(["pump", "answer", step, "planned"])
@@ -51,14 +61,9 @@ fn text(bytes: &[u8]) -> String {
 #[test]
 fn answer_posts_on_the_open_record() {
     let (tmp, mailspace) = project();
-    let need = send(&mailspace, "needs", "need", "done_when: it works");
+    let need = send(&mailspace, "needs", "need", &need_body());
     mailspace.pump_send(None, &need, None).unwrap();
-    let step = send(
-        &mailspace,
-        "tasks",
-        "task",
-        &format!("pump-step: {need} r1 plan"),
-    );
+    let step = send(&mailspace, "tasks", "task", &step_body(&need));
 
     let out = answer(&tmp, &step, &["--note", "operator ruled"]);
 
@@ -79,13 +84,8 @@ fn answer_posts_on_the_open_record() {
 #[test]
 fn answer_is_refused_without_an_open_record() {
     let (tmp, mailspace) = project();
-    let need = send(&mailspace, "needs", "need", "done_when: it works");
-    let step = send(
-        &mailspace,
-        "tasks",
-        "task",
-        &format!("pump-step: {need} r1 plan"),
-    );
+    let need = send(&mailspace, "needs", "need", &need_body());
+    let step = send(&mailspace, "tasks", "task", &step_body(&need));
 
     let out = answer(&tmp, &step, &[]);
 
@@ -106,9 +106,14 @@ fn answer_is_refused_without_an_open_record() {
 #[test]
 fn answer_is_refused_for_a_task_that_is_not_a_pump_step() {
     let (tmp, mailspace) = project();
-    let need = send(&mailspace, "needs", "need", "done_when: it works");
+    let need = send(&mailspace, "needs", "need", &need_body());
     mailspace.pump_send(None, &need, None).unwrap();
-    let task = send(&mailspace, "tasks", "task", "an ordinary task");
+    let task = send(
+        &mailspace,
+        "tasks",
+        "task",
+        &render(&TaskFront::default(), "an ordinary task").unwrap(),
+    );
 
     let out = answer(&tmp, &task, &[]);
 

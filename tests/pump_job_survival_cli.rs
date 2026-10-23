@@ -8,8 +8,9 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use vivi::letter::render;
+use vivi::letter::work::{NeedFront, TaskFront};
 use vivi::mailspace::{Mailspace, SendRequest};
-use vivi::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use vivi::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepState, run_state};
 use vivi::pump::flow::mail::{MailWriter, MailspacePort};
 use vivi::pump::flow::need_branch;
@@ -315,7 +316,7 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "merge survival".into(),
-            body: "done_when: it works".into(),
+            body: render(&NeedFront::new(vec!["it works".into()]), "").unwrap(),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -369,7 +370,7 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
             "mind",
             "mind",
             &format!("{need} r1 sentinel"),
-            &format!("{SENTINEL_MARKER} {need} r1"),
+            &render(&TaskFront::sentinel(&need, 1), "").unwrap(),
             &[],
         )
         .unwrap();
@@ -381,7 +382,7 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
             "mind",
             "mind",
             &format!("{need} r1 merge"),
-            &format!("{STEP_MARKER} {need} r1 merge"),
+            &render(&TaskFront::step(&need, 1, "merge"), "").unwrap(),
             &[],
         )
         .unwrap();
