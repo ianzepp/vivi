@@ -110,7 +110,7 @@ pub use pool_record::{
     marked_payload, order_marked,
 };
 pub use pump_action::{PumpAction, PumpActionKind, PumpActionRequest, UnreadableAction};
-pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
+pub use pump_record::{PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest};

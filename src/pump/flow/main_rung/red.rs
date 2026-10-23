@@ -9,6 +9,7 @@ use std::fs;
 
 use super::{FAILING, REPAIRED, key, record_target};
 use crate::error::VivariumError;
+use crate::letter::records::{RecordFront, RecordKind};
 use crate::mailspace::marked_line;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::FlowMail;
@@ -184,7 +185,14 @@ fn open_filed<M: FlowMail>(
     tip: &str,
     need: &str,
 ) -> Result<(), VivariumError> {
-    let record = format!("kind: repair\ntarget: {target}\ntested: {tip}\n");
+    let front = RecordFront {
+        need: need.to_string(),
+        kind: Some(RecordKind::Repair),
+        target: Some(target.to_string()),
+        tested: Some(tip.to_string()),
+    };
+    let record = crate::letter::render(&front, "")
+        .map_err(|error| VivariumError::Message(error.to_string()))?;
     MailWriter::open_record(mail, need, &record)?;
     store.clear_main_state(&key(SENDING, target))
 }

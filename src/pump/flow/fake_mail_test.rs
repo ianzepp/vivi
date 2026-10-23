@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::read::step_of;
+use crate::letter::read::{record_of, step_of};
+use crate::letter::records::record_letter;
 use crate::letter::work::StepFront;
 use crate::pump::flow::mail::{
     MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
@@ -399,6 +400,16 @@ impl MailWriter for FakeMail {
 
     fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
         self.injected()?;
+        let (front, prose) =
+            record_letter(need, body).map_err(|error| VivariumError::Message(error.to_string()))?;
+        if front.need != need {
+            return Err(VivariumError::Message(format!(
+                "pump record front matter names need {}, not {need}",
+                front.need
+            )));
+        }
+        let stored = crate::letter::render(&front, &prose)
+            .map_err(|error| VivariumError::Message(error.to_string()))?;
         self.next += 1;
         let handle = format!("r{:04}", self.next);
         self.opened_count += 1;
@@ -406,7 +417,7 @@ impl MailWriter for FakeMail {
             need.to_string(),
             FakeRecord {
                 handle: handle.clone(),
-                body: body.to_string(),
+                body: stored,
                 outcome: None,
                 opened: self.opened_count,
             },
@@ -593,10 +604,13 @@ fn sentinels_marks_and_records() -> R {
     mail.set_marks("n1", &["kind-fix"]);
     assert_eq!(mail.need_marks("n1")?, vec!["kind-fix".to_string()]);
     assert!(MailReader::open_record(&mail, "n1")?.is_none());
-    let handle = MailWriter::open_record(&mut mail, "n1", "kind: fix")?;
+    let handle = MailWriter::open_record(&mut mail, "n1", "")?;
+    let (stored, body) = MailReader::open_record(&mail, "n1")?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    assert_eq!(stored, handle);
     assert_eq!(
-        MailReader::open_record(&mail, "n1")?,
-        Some((handle, "kind: fix".to_string()))
+        record_of(&handle, &body).map(|e| e.front.need).as_deref(),
+        Ok("n1")
     );
     mail.close_record("n1", "landed")?;
     assert!(MailReader::open_record(&mail, "n1")?.is_none());
