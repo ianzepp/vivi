@@ -8,10 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use super::{ABANDONED_MARKER, RESTART_STUCK, prune_dead_jobs, register, restart};
+use super::{RESTART_STUCK, prune_dead_jobs, register, restart};
 use crate::error::VivariumError;
 use crate::letter::fixture::step_body;
-use crate::mailspace::marked_payload;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::Note;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
@@ -351,18 +352,15 @@ fn dead_runs_list_their_dispatched_jobs_once_and_late_results_close_out_quietly(
     if let Some(job) = rig.jobs.jobs.get_mut("j-live") {
         job.status = JobStatus::Dispatched;
     }
-    let abandoned = |rig: &Rig| -> Result<Vec<(String, String)>, VivariumError> {
-        rig.mail.marked_replies(&sentinel, ABANDONED_MARKER)
+    let abandoned = |rig: &Rig| -> Result<Vec<(String, Note)>, VivariumError> {
+        rig.mail.notes(&sentinel, NoteWord::Abandoned)
     };
 
     rig.tick()?;
     assert!(!rig.jobs.jobs.contains_key("j-pending"));
     let replies = abandoned(&rig)?;
     assert_eq!(replies.len(), 1);
-    assert_eq!(
-        marked_payload(&replies[0].1, ABANDONED_MARKER),
-        Some("j-flying")
-    );
+    assert_eq!(replies[0].1.prose, "j-flying");
 
     let calls = rig.mail.calls.len();
     rig.tick()?;

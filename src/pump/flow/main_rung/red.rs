@@ -9,8 +9,9 @@ use std::fs;
 
 use super::{FAILING, REPAIRED, key, record_target};
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
 use crate::letter::records::{RecordFront, RecordKind};
-use crate::mailspace::marked_line;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::kind;
@@ -19,9 +20,6 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
-
-/// Marker of the reply naming a later red main rung on an open repair need.
-pub(crate) const RED_MARKER: &str = "pump-main-red:";
 
 /// Main-state key (per target): the tip whose repair need is being sent.
 /// Written before `need send`; cleared once the need's record is open.
@@ -89,7 +87,7 @@ pub(crate) fn report_red<M: FlowMail>(
                 return Ok(());
             }
             let rest = format!("tested {tip}\n{}", body_tail(failing, tail));
-            mail.reply(&need, &marked_line(RED_MARKER, &rest))?;
+            mail.reply(&need, &note_body(NoteWord::MainRed, None, &rest)?)?;
         }
         None => {
             let Some(need) = file_need(ctx, store, target, tip, failing, tail)? else {
