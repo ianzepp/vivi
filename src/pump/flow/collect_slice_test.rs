@@ -7,6 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{BuiltHook, register_defaults, runner_env_failure};
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::letter::fixture::task_body_with;
 use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
@@ -99,7 +100,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     Ok(Rig {
         _dir: dir,
         ctx,

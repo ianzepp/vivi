@@ -3,6 +3,7 @@
 use std::fs;
 
 use super::{SENTINEL_NODE, start};
+use crate::letter::fixture::record_body;
 use crate::letter::read::step_of;
 use crate::letter::work::StepFront;
 use crate::pump::fixture::{Project, project};
@@ -192,7 +193,7 @@ fn marks_pick_the_kind_and_the_record_body_overrides_them() {
     );
 
     mail.set_marks("n-body", &["research"]);
-    MailWriter::open_record(&mut mail, "n-body", "intake\nkind: release\n").unwrap();
+    MailWriter::open_record(&mut mail, "n-body", &record_body("n-body", "release")).unwrap();
     assert_eq!(
         start(&ctx, &store, &mut mail, "n-body", None).unwrap().kind,
         "release"
