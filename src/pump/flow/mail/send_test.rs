@@ -152,7 +152,7 @@ fn a_reply_lands_on_the_task() {
     let task = port
         .send_step("mind", "operator", "t", &task_body("x"), &[])
         .unwrap();
-    port.reply(&task, "pump-attempt: hello").unwrap();
+    port.reply(&task, "hello").unwrap();
     let storage = p.mailspace.storage().unwrap();
     let id = storage.resolve_message_token(&task).unwrap();
     let view = storage.message_by_id(&id).unwrap().unwrap();
@@ -162,7 +162,6 @@ fn a_reply_lands_on_the_task() {
 
 #[test]
 fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
-    use crate::mailspace::marked_line;
     use crate::pump::flow::slice_dispatch::SliceMail;
 
     let p = project();
@@ -170,13 +169,8 @@ fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
     let task = port
         .send_step("mind", "mind", "t", &task_body("x"), &[])
         .unwrap();
-    port.reply(&task, &marked_line("pump-attempt:", "hello"))
-        .unwrap();
-    let replies = port.marked_replies(&task, "pump-attempt:").unwrap();
+    port.reply(&task, "pool result j1: finished").unwrap();
+    let replies = port.marked_replies(&task, "pool result ").unwrap();
     assert_eq!(replies.len(), 1, "{replies:?}");
-    assert_eq!(replies[0].1, "pump-attempt: hello");
-    let from_pump = port
-        .marked_replies_from(&task, "pump-attempt:", "mind")
-        .unwrap();
-    assert_eq!(from_pump.len(), 1, "{from_pump:?}");
+    assert_eq!(replies[0].1, "pool result j1: finished");
 }
