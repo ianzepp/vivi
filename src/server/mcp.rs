@@ -495,15 +495,6 @@ fn tools_list() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             })),
-            tool("pump_gate", "Hosted projects only, operator only. Show or set the pump gate command (`[pump.gate] command` in the project's mailspace config), as `vivi pump gate` reads and sets it. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. `set` needs a non-blank `command` and is rate limited as a write. Pools, roles and other config are not exposed. Returns {command}, null when unset.", json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["show", "set"] },
-                    "command": { "type": "string", "description": "The gate command; required for set, ignored by show" }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-            })),
             tool("pool_bands", "Hosted projects only, operator only. Show, set, or unset one pool's band table (`[pools.<pool>.bands]` in the project's mailspace config), as `vivi pool bands set|unset` and `vivi pool show` do: which model and reasoning effort serves each band P0 to P5. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator; show is held to it too. `set` replaces that band's entry with one {model, reasoning} choice (reasoning defaults to xhigh) and is refused for a model not in the pool's `harness.models` (the error names the allowed list), an unknown pool (the error names the pools) or a malformed band; `unset` removes the band's entry. Both are rate limited as writes. Only the bands table of the one named pool can change: no other pool, role, remote, harness or config key is reachable. Returns {pool, bands: {band: [{model, reasoning}]}, harness_models} as the table stands afterwards.", json!({
                 "type": "object",
                 "properties": {
