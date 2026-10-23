@@ -1,9 +1,11 @@
 //! Park handling for the build flow: the step that holds a run for the operator.
 //!
-//! The step opens its task, raises one alarm naming the need and why the
-//! planner parked it, and waits. Nothing polls it: a reply on the need's
-//! thread restarts a parked run at `plan` (the `thread-change` phase), and an
-//! operator answer on the step routes it.
+//! The router opens a park row already Waiting, so the tick never calls
+//! `start` for it; the alarm is raised from `poll`, which runs for waiting
+//! rows (as the lock step does). The step raises one alarm naming the need and
+//! why the planner parked it, and keeps waiting: a reply on the need's thread
+//! restarts a parked run at `plan` (the `thread-change` phase), and an operator
+//! answer on the step routes it.
 
 use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -17,11 +19,15 @@ use crate::pump::jobs::JobStore;
 /// Exception kind raised once when a run parks.
 pub const NEED_PARKED: &str = "flow-need-parked";
 
-/// Opens the park step's task, raises the alarm, and waits for a restart or an answer.
+/// Opens the park step's task and waits; `poll` raises the alarm once.
 struct ParkStep;
 
 impl StepHandler for ParkStep {
-    fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+    fn start(&self, _cx: &StartCx<'_>, _step: &StepRow) -> Result<StartAction, VivariumError> {
+        Ok(StartAction::OpenAndWait)
+    }
+
+    fn poll(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<Option<String>, VivariumError> {
         let actual = actual_text(cx, step)?;
         let text = format!(
             "need {} r{} parked at {}: expected the planner to answer planned; actual: {actual}; \
@@ -29,7 +35,7 @@ impl StepHandler for ParkStep {
             cx.run.need, cx.run.run, step.node, step.task
         );
         raise_once(cx.ctx, NEED_PARKED, &step.task, &text);
-        Ok(StartAction::OpenAndWait)
+        Ok(None)
     }
 }
 

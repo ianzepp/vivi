@@ -177,12 +177,7 @@ fn parks_and_restarts(word: &str) -> R {
     Ok(())
 }
 
-/// The park step is meant to raise its alarm once (see `build_front/park.rs`).
-/// A park row starts Waiting, so the tick never calls the handler's `start`
-/// and nothing else raises it: the alarm never fires. Remove the `ignore`
-/// when the park handler raises the alarm from `poll`, as the lock step does.
 #[test]
-#[ignore = "defect: the park step never raises flow-need-parked (its handler only acts in start, which a Waiting park row never gets)"]
 fn a_parked_run_raises_one_park_alarm() -> R {
     let mut rig = build("plan")?;
     answer(&mut rig, "plan", &planner("operator"))?;
