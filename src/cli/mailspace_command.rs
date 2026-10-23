@@ -332,6 +332,32 @@ pub struct TaskSendCommand {
     /// Task handle this task depends on (repeatable)
     #[arg(long = "depends-on")]
     pub depends_on: Vec<String>,
+
+    /// What must be true for the task to be done; builds the front matter (repeatable)
+    #[arg(long = "done-when")]
+    pub done_when: Vec<String>,
+
+    /// The repo or checkout the task targets; builds the front matter
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// A path the task may change; builds the front matter (repeatable)
+    #[arg(long = "write-scope")]
+    pub write_scope: Vec<String>,
+}
+
+impl TaskSendCommand {
+    /// The front matter flags of this send.
+    #[must_use]
+    pub fn sugar(&self) -> crate::letter::sugar::Sugar {
+        crate::letter::sugar::Sugar {
+            done_when: self.done_when.clone(),
+            target: self.target.clone(),
+            write_scope: self.write_scope.clone(),
+            depends_on: self.depends_on.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -346,6 +372,42 @@ pub struct NeedSendCommand {
     /// Mark slug to write on the new need, as the sending identity (repeatable)
     #[arg(long = "mark")]
     pub marks: Vec<String>,
+
+    /// What must be true for the need to be done; builds the front matter (repeatable)
+    #[arg(long = "done-when")]
+    pub done_when: Vec<String>,
+
+    /// The repo or checkout the need targets; builds the front matter
+    #[arg(long)]
+    pub target: Option<String>,
+
+    /// A path the need may change; builds the front matter (repeatable)
+    #[arg(long = "write-scope")]
+    pub write_scope: Vec<String>,
+
+    /// The want this need serves; builds the front matter
+    #[arg(long)]
+    pub serves: Option<String>,
+
+    /// The want this research need explores; builds the front matter
+    #[arg(long)]
+    pub explores: Option<String>,
+}
+
+impl NeedSendCommand {
+    /// The front matter flags of this send.
+    #[must_use]
+    pub fn sugar(&self) -> crate::letter::sugar::Sugar {
+        crate::letter::sugar::Sugar {
+            done_when: self.done_when.clone(),
+            target: self.target.clone(),
+            write_scope: self.write_scope.clone(),
+            serves: self.serves.clone(),
+            explores: self.explores.clone(),
+            depends_on: self.depends_on.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -356,6 +418,22 @@ pub struct WantSendCommand {
     /// Need or want handle this want depends on (repeatable)
     #[arg(long = "depends-on")]
     pub depends_on: Vec<String>,
+
+    /// The question or goal the want explores; builds the front matter
+    #[arg(long)]
+    pub question: Option<String>,
+}
+
+impl WantSendCommand {
+    /// The front matter flags of this send.
+    #[must_use]
+    pub fn sugar(&self) -> crate::letter::sugar::Sugar {
+        crate::letter::sugar::Sugar {
+            question: self.question.clone(),
+            depends_on: self.depends_on.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Parser)]

@@ -749,7 +749,11 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         command.send.body.as_deref(),
         command.send.body_file.as_deref(),
     )?;
-    let lacks_clause = !vivi::mailspace::body_has_labeled_clause(&body, "done_when");
+    let sugared = vivi::letter::sugar::apply("task", &body, &command.sugar())
+        .map_err(|err| VivariumError::Message(err.to_string()))?;
+    let body = sugared.body;
+    let lacks_clause = !vivi::letter::sugar::opens_with_fence(&body)
+        && !vivi::mailspace::body_has_labeled_clause(&body, "done_when");
     let result = mailspace.send(SendRequest {
         from: command.send.from.clone(),
         to: command.send.to.clone(),
@@ -760,7 +764,7 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         role: "tasks".into(),
         kind: Some("task".into()),
         reply_to: command.send.reply_to.clone(),
-        depends_on: command.depends_on.clone(),
+        depends_on: sugared.depends_on,
     })?;
     for delivered in &result.delivered {
         println!("created {} {}", delivered.identity, delivered.handle);

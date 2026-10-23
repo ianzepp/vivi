@@ -3,6 +3,7 @@ use vivi::cli::{
     LocalSendCommand, NeedCommand, TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand,
     WantStatus,
 };
+use vivi::letter::sugar::{self, Sugar};
 use vivi::mailspace::{
     DumpFilters, Mailspace, Recipient, SendRequest, TaskDumpRequest, WantListOptions,
     WantMetadataUpdate,
@@ -150,13 +151,9 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
 
 pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumError> {
     match command {
-        WantCommand::Send(command) => send_local_item(
-            &command.send,
-            "wants",
-            "want",
-            "created",
-            &command.depends_on,
-        )?,
+        WantCommand::Send(command) => {
+            send_local_item(&command.send, "wants", "want", "created", &command.sugar())?;
+        }
         WantCommand::Watch(command) => {
             crate::local_mailspace_command::run_watch(&command.common, "want")?;
         }
@@ -436,13 +433,7 @@ fn dump_work_items(
 /// need.
 fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> {
     vivi::mailspace::validate_marks_filter(&command.marks)?;
-    let result = send_local_item_sent(
-        &command.send,
-        "needs",
-        "need",
-        "created",
-        &command.depends_on,
-    )?;
+    let result = send_local_item_sent(&command.send, "needs", "need", "created", &command.sugar())?;
     if command.marks.is_empty() {
         return Ok(());
     }
@@ -470,9 +461,9 @@ fn send_local_item(
     role: &str,
     kind: &str,
     verb: &str,
-    depends_on: &[String],
+    sugar: &Sugar,
 ) -> Result<(), VivariumError> {
-    send_local_item_sent(command, role, kind, verb, depends_on).map(|_| ())
+    send_local_item_sent(command, role, kind, verb, sugar).map(|_| ())
 }
 
 /// Send one local item and return the handle of the sender's own copy.
@@ -481,13 +472,18 @@ fn send_local_item_sent(
     role: &str,
     kind: &str,
     verb: &str,
-    depends_on: &[String],
+    sugar: &Sugar,
 ) -> Result<vivi::mailspace::DeliveryResult, VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
     let body =
         vivi::mailspace::read_body_input(command.body.as_deref(), command.body_file.as_deref())?;
-    // Wants are parked by design; only task/need bodies feed step clauses.
+    let sugared =
+        sugar::apply(kind, &body, sugar).map_err(|err| VivariumError::Message(err.to_string()))?;
+    let body = sugared.body;
+    // Wants are parked by design; only task/need bodies feed step clauses. A
+    // front-matter body never warns.
     let lacks_clause = matches!(kind, "task" | "need")
+        && !sugar::opens_with_fence(&body)
         && !vivi::mailspace::body_has_labeled_clause(&body, "done_when");
     let result = mailspace.send(SendRequest {
         from: command.from.clone(),
@@ -499,7 +495,7 @@ fn send_local_item_sent(
         role: role.into(),
         kind: Some(kind.into()),
         reply_to: command.reply_to.clone(),
-        depends_on: depends_on.to_vec(),
+        depends_on: sugared.depends_on,
     })?;
     for delivered in &result.delivered {
         println!("{verb} {} {}", delivered.identity, delivered.handle);
