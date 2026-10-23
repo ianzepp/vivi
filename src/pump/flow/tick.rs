@@ -137,13 +137,21 @@ where
     Ok(())
 }
 
+/// The flows checked at startup.
+pub(crate) const VALIDATED: [FlowKind; 4] = [
+    FlowKind::Build,
+    FlowKind::Research,
+    FlowKind::Release,
+    FlowKind::Repair,
+];
+
 /// The shipped flows validate once per process; a failure is an exception.
 fn validate_once(ctx: &Ctx) {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::SeqCst) {
         return;
     }
-    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+    for kind in VALIDATED {
         let verdict = load(kind)
             .map_err(|error| vec![error.to_string()])
             .and_then(|def| validate(&def));
@@ -361,6 +369,9 @@ where
                 }
                 StartAction::Decide { word } => {
                     self.advance_word(&step, &word, serde_json::json!({"source": "code"}))?;
+                }
+                StartAction::Answer { word, payload } => {
+                    self.advance_word(&step, &word, payload)?;
                 }
                 StartAction::Fanout {
                     slicer_step,
