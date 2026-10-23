@@ -10,6 +10,7 @@
 mod defaults;
 mod diff;
 mod migrate;
+mod migrate_flow_roles;
 mod migrate_keys;
 mod migrate_pool;
 mod model;

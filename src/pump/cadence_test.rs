@@ -257,3 +257,46 @@ fn investigation_run(want: &str, started_at: u64) -> InvestigationRun {
         retry_at: None,
     }
 }
+
+fn head_role(name: &str) -> RoleView {
+    RoleView {
+        name: String::from(name),
+        address: String::new(),
+        aliases: Vec::new(),
+        kind: Some(String::from("head")),
+        labels: Vec::new(),
+        status: String::from("active"),
+        harness: None,
+        provider: None,
+        model: None,
+        thinking: None,
+        pid: None,
+        host: None,
+        cadence: None,
+        pool: None,
+        read_only: None,
+        models: Vec::new(),
+        charter: String::new(),
+        has_charter: true,
+    }
+}
+
+#[test]
+fn head_ceo_cadence_text_files_research_needs_and_asks_for_the_envelope() {
+    let text = cadence_run_text(&head_role("head-ceo"), 0);
+    assert!(text.contains("need send --mark research"));
+    assert!(text.contains("for: <want-handle>"));
+    assert!(text.contains("before `vivi pump send`"));
+    assert!(text.contains("`reviewed` or `no-op`"));
+    assert!(text.contains("promoted"));
+    assert!(text.contains("Do not implement work."));
+    assert!(!text.contains("investigat"));
+    assert!(!text.contains("investigate"));
+}
+
+#[test]
+fn other_head_cadence_text_has_no_ceo_instructions() {
+    let text = cadence_run_text(&head_role("head-cto"), 0);
+    assert!(text.contains("file findings as wants only"));
+    assert!(!text.contains("research need"));
+}

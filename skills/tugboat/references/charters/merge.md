@@ -112,3 +112,89 @@ assignment in the task body. Do not list the class board.
 - For an ordinary Vivi handle, report evidence and remaining uncertainty
   through the handle. Do not close it unless the assignment explicitly grants
   that authority.
+
+## Flow merge steps (reply envelope)
+
+This section applies to the pump flow's merge steps: merging one slice onto the
+need branch, and sync mode below. It replaces the `PUMP_MERGE_RESULT=` line and
+the `ANSWER:` line for those steps only. The older job kinds above keep their
+own markers.
+
+Your final reply opens with a TOML front-matter envelope between two `+++`
+lines; the pump reads it and nothing else. The prose below it holds the conflict
+resolutions. The vivi skill's `references/envelope.md` has the whole table of
+roles. The fields for this role are:
+
+- `answer` (first key): `merged` or `conflict`.
+- `conflicts` (list of paths): the files that still conflict. Leave it out for
+  `merged`.
+- `design_change` (bool, default false): `true` when the conflict needs a design
+  change. Use it with `conflict` only.
+- `[[check]]` tables, one per check you ran: `cmd`, `result` (`pass`, `fail` or
+  `skipped`), `seconds` (an integer).
+
+Rules:
+
+- Your answer is a claim, not the decision. The runner's publish receipt and
+  the repository history decide whether the merge happened and which SHA it
+  produced. The reply carries judgment and reports only, so do not write a
+  `tip` or any SHA field: an unknown key is refused.
+- The `[[check]]` tables are reported only. The required check run by the
+  runner for the assignment decides, not your table.
+- Write free text as a TOML literal string, `'...'`, with no single quote
+  inside. Do not wrap the envelope in a code fence, and use `+++` nowhere else
+  in the reply.
+
+Example, merged:
+
+```
++++
+answer = "merged"
+
+[[check]]
+cmd = "cargo check --quiet"
+result = "pass"
+seconds = 41
++++
+No conflicts. The merge was clean.
+```
+
+Example, conflict:
+
+```
++++
+answer = "conflict"
+conflicts = ["src/tick.rs"]
+design_change = true
++++
+Both branches changed the same function; the two edits cannot be combined
+without choosing a new signature. The branch is unchanged.
+```
+
+## Sync mode
+
+Use this mode only when the assignment's `pump-job-kind` is `sync`, or when
+it asks you to merge the current integration target (`main`) into a need
+branch. It brings a need branch up to date with its target before a merge
+that could not apply cleanly.
+
+- Merge the supplied target ref into the supplied need branch. Merge it once,
+  at the tip the assignment names. Do not rewrite the need branch and do not
+  merge any other source.
+- Resolve conflict hunks only. For each conflicted file, keep the need's
+  intent and the target's intent side by side, and change nothing outside the
+  conflict markers.
+- If a resolution needs a design change (a behavior choice, a changed
+  signature, a moved responsibility, or a rewrite beyond the hunk), do not
+  make it. Leave the branch unchanged, report the affected paths and the
+  reason, and answer `conflict`. A `conflict` answer goes to the CTO.
+- Make no unrelated product change, and run no check the assignment does not
+  name. If it names required checks, run them after the merge and report each
+  outcome.
+- Report the starting tip, the resulting tip, and every resolved path with
+  its resolution.
+- Do not push. The privileged runner publishes. Do not close the handle or
+  the need yourself: no self-close.
+- Your final reply opens with the reply envelope described in "Flow merge
+  steps" above. Answer `merged` when the target merged and every conflict hunk
+  was resolved without a design change, or `conflict` when it did not.
