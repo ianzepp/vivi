@@ -43,7 +43,7 @@ pub const DEFAULT_LOCAL_ROOT: &str = ".vivi/pool";
 /// settings live in [`PoolFly`], [`PoolDocker`], [`PoolSsh`] and [`PoolLocal`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
-    /// Machine host: `fly`, `docker`, `ssh`, `local` or `runpod`.
+    /// Machine host: one of [`PROVIDERS`].
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Legacy default source repository, `owner/name`. Target jobs supply
@@ -313,11 +313,7 @@ impl PoolLocal {
     /// expanded.
     #[must_use]
     pub fn worktree_path(&self) -> Option<PathBuf> {
-        let raw = self.worktree_of.as_deref()?;
-        Some(match raw.strip_prefix("~/") {
-            Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(raw), |h| h.join(rest)),
-            None => PathBuf::from(raw),
-        })
+        self.worktree_of.as_deref().map(expand_home)
     }
 }
 
@@ -473,12 +469,6 @@ impl PoolConfig {
         Ok(RepoAccess { repo, github })
     }
 
-    /// The organization a new application is created in.
-    #[must_use]
-    pub fn organization_name(&self) -> &str {
-        self.fly.organization_name()
-    }
-
     /// Check the table before any command acts on it. `id` is the pool's
     /// identity: its name is the table key, and the mailspace slug is part of
     /// every mark and machine name. Every message names the pool.
@@ -531,7 +521,7 @@ impl PoolConfig {
     fn validate_identity(&self, id: &PoolId) -> Result<(), VivariumError> {
         if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
-                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\", \"local\" or \"runpod\")",
+                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\", \"local\", \"runpod\" or \"worker\")",
                 self.provider
             )));
         }
@@ -544,9 +534,8 @@ impl PoolConfig {
         if self.provider == "fly" {
             self.validate_fly_names()?;
         }
-        match (&self.repo, &self.github) {
-            (Some(_), None) => return Err(bad("github is required when repo is set")),
-            _ => {}
+        if self.repo.is_some() && self.github.is_none() {
+            return Err(bad("github is required when repo is set"));
         }
         if self.repo.is_some() && self.local.worktree_of.is_some() {
             return Err(bad(
@@ -569,11 +558,10 @@ impl PoolConfig {
                 "fly.app is required for a fly pool and has no default (Fly app names are unique across all Fly accounts); set `app = \"<your-unique-app-name>\"` in [fly]",
             ));
         };
-        let org = self.organization_name().to_string();
         for (field, value) in [
-            ("app", app),
-            ("organization", &org),
-            ("region", &self.fly.region),
+            ("app", app.as_str()),
+            ("organization", self.fly.organization_name()),
+            ("region", self.fly.region.as_str()),
         ] {
             if !is_slug(value) {
                 return Err(bad(format!(
@@ -639,15 +627,17 @@ impl PoolConfig {
     }
 
     fn validate_commands(&self) -> Result<(), VivariumError> {
-        for (field, list) in [("setup", &self.setup), ("seed", &self.seed)] {
+        for (field, list) in [
+            ("setup", &self.setup),
+            ("seed", &self.seed),
+            ("requires", &self.requires),
+            ("facts", &self.facts),
+        ] {
             if list.iter().any(|c| c.trim().is_empty()) {
                 return Err(bad(format!("{field} holds an empty command")));
             }
         }
         for (field, list) in [("requires", &self.requires), ("facts", &self.facts)] {
-            if list.iter().any(|c| c.trim().is_empty()) {
-                return Err(bad(format!("{field} holds an empty command")));
-            }
             if list
                 .iter()
                 .any(|c| c.chars().any(|ch| ch.is_control() && ch != '\t'))
@@ -721,19 +711,10 @@ impl PoolLocal {
 /// Check the repository a worktree pool is made from: an absolute path or
 /// `~/<path>`, with no line break, `..` part or empty part. It may hold any
 /// other character a directory name can.
-///
-/// # Errors
-/// Returns the reason the path cannot be used.
-pub fn check_worktree_of(path: &str) -> Result<(), String> {
+fn check_worktree_of(path: &str) -> Result<(), String> {
     let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix('/'));
-    let parts_ok = |rest: &str| {
-        !rest.is_empty()
-            && rest
-                .split('/')
-                .all(|part| !part.is_empty() && part != "." && part != "..")
-    };
     match rest {
-        Some(rest) if parts_ok(rest) && !path.chars().any(char::is_control) => Ok(()),
+        Some(rest) if root_parts_ok(rest) && !path.chars().any(char::is_control) => Ok(()),
         _ => Err(
             "local.worktree_of must be the path of a Git repository on this machine: /abs/path or ~/path (no .. and no line break)"
                 .to_string(),
@@ -742,10 +723,7 @@ pub fn check_worktree_of(path: &str) -> Result<(), String> {
 }
 
 /// Check what `ssh` will be given as the host.
-///
-/// # Errors
-/// Returns the reason the host cannot be used.
-pub fn check_ssh_host(host: &str) -> Result<(), String> {
+fn check_ssh_host(host: &str) -> Result<(), String> {
     let plain = |c: char| {
         c.is_ascii_alphanumeric()
             || matches!(c, '.' | '_' | '@' | ':' | '-' | '[' | ']' | '%' | '+')
@@ -763,10 +741,7 @@ pub fn check_ssh_host(host: &str) -> Result<(), String> {
 /// may not be relative: the path is used on the remote host, so it must say
 /// where it is: `~/<path>` or an absolute path, never the home directory or
 /// `/` itself.
-///
-/// # Errors
-/// Returns the reason the root cannot be used.
-pub fn check_ssh_root(root: &str) -> Result<(), String> {
+fn check_ssh_root(root: &str) -> Result<(), String> {
     let rest = root.strip_prefix("~/").or_else(|| root.strip_prefix('/'));
     match rest {
         Some(rest) if root.chars().skip(1).all(plain_path_char) && root_parts_ok(rest) => Ok(()),
@@ -782,10 +757,7 @@ pub fn check_ssh_root(root: &str) -> Result<(), String> {
 /// directory of its own: `~/<path>`, an absolute path, or a path relative to
 /// the project, plain characters only, never the home directory or `/`
 /// itself.
-///
-/// # Errors
-/// Returns the reason the root cannot be used.
-pub fn check_root(root: &str, key: &str) -> Result<(), String> {
+fn check_root(root: &str, key: &str) -> Result<(), String> {
     let ok = match root.strip_prefix("~/").or_else(|| root.strip_prefix('/')) {
         Some(rest) => root.chars().skip(1).all(plain_path_char) && root_parts_ok(rest),
         None => root.chars().all(plain_path_char) && root_parts_ok(root),
@@ -796,6 +768,15 @@ pub fn check_root(root: &str, key: &str) -> Result<(), String> {
     Err(format!(
         "{key} must be a directory of its own: ~/some/dir, /abs/dir, or a path relative to the project (letters, digits and . _ - / only; no .., not / or the home directory itself)"
     ))
+}
+
+/// `path` with a leading `~/` replaced by the home directory; left as given
+/// when there is no such prefix or no home directory.
+fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(path), |home| home.join(rest)),
+        None => PathBuf::from(path),
+    }
 }
 
 /// A character allowed in a pool root path.
@@ -816,11 +797,7 @@ impl PoolGithub {
     /// The private key path with a leading `~` expanded.
     #[must_use]
     pub fn private_key_path(&self) -> PathBuf {
-        match self.private_key.strip_prefix("~/") {
-            Some(rest) => dirs::home_dir()
-                .map_or_else(|| PathBuf::from(&self.private_key), |home| home.join(rest)),
-            None => PathBuf::from(&self.private_key),
-        }
+        expand_home(&self.private_key)
     }
 }
 
@@ -841,9 +818,10 @@ impl PoolHarness {
     #[must_use]
     pub fn rules_path(&self, root: &std::path::Path) -> Option<PathBuf> {
         let raw = self.rules.as_deref()?;
-        Some(match raw.strip_prefix("~/") {
-            Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(raw), |h| h.join(rest)),
-            None => root.join(raw),
+        Some(if raw.starts_with("~/") {
+            expand_home(raw)
+        } else {
+            root.join(raw)
         })
     }
 
@@ -882,9 +860,7 @@ impl PoolHarness {
 }
 
 fn validate_build_dir(dir: &str) -> Result<(), VivariumError> {
-    let safe_chars = dir
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'));
+    let safe_chars = dir.chars().all(plain_path_char);
     let escapes = dir.split('/').any(|part| part == ".." || part == ".");
     if dir.is_empty() || dir.starts_with('/') || !safe_chars || escapes || dir.contains("//") {
         return Err(bad(

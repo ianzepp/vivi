@@ -363,9 +363,9 @@ fn a_fly_pool_requires_an_app_with_no_default() {
 #[test]
 fn the_organization_is_the_one_a_new_app_is_made_in() {
     let mut config = full();
-    assert_eq!(config.organization_name(), "personal");
+    assert_eq!(config.fly.organization_name(), "personal");
     config.fly.organization = Some("acme".into());
-    assert_eq!(config.organization_name(), "acme");
+    assert_eq!(config.fly.organization_name(), "acme");
 }
 
 #[test]
@@ -516,14 +516,13 @@ fn the_fly_settings_are_not_checked_against_a_docker_pool_and_back() {
 }
 
 #[test]
-fn providers_other_than_the_three_are_refused_and_all_are_named() {
+fn an_unknown_provider_is_refused_and_every_provider_is_named() {
     let mut config = docker();
     config.provider = "podman".into();
     let said = err(&config);
-    assert!(
-        said.contains("\"fly\"") && said.contains("\"docker\"") && said.contains("\"ssh\""),
-        "{said}"
-    );
+    for provider in PROVIDERS {
+        assert!(said.contains(&format!("\"{provider}\"")), "{said}");
+    }
 }
 
 const SSH: &str = r#"
