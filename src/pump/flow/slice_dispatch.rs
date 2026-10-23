@@ -16,6 +16,8 @@
 //! and an envelope correction use no attempt ([`redispatch_scope`]).
 
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::{Note, note_of};
 use crate::mailspace::{MailspaceThreadMessage, marked_payload, order_marked};
 use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
 use crate::pump::brief::hand_rules;
@@ -152,6 +154,26 @@ pub trait SliceMail: MailReader {
         sender: &str,
     ) -> Result<Vec<(String, String)>, VivariumError>;
 
+    /// The pump notes of `word` on `task`, oldest first by `(t, date, message
+    /// id)`, each as `(sortable date, note)`. Events, the task itself and
+    /// replies that are not a note of `word` are left out.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the thread cannot be read.
+    fn notes(&self, task: &str, word: NoteWord) -> Result<Vec<(String, Note)>, VivariumError>;
+
+    /// Like [`SliceMail::notes`], but only the notes sent by the identity
+    /// `sender` (matched as [`SliceMail::marked_replies_from`] does).
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the thread cannot be read.
+    fn notes_from(
+        &self,
+        task: &str,
+        word: NoteWord,
+        sender: &str,
+    ) -> Result<Vec<(String, Note)>, VivariumError>;
+
     /// The handle of this mailspace's own copy of the want `id` names (the
     /// `explores` or `serves` value a need stores), or `None` when no copy of
     /// that want is here.
@@ -164,6 +186,23 @@ pub trait SliceMail: MailReader {
 impl SliceMail for MailspacePort {
     fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError> {
         self.mailspace.resolve_want(id)
+    }
+
+    fn notes(&self, task: &str, word: NoteWord) -> Result<Vec<(String, Note)>, VivariumError> {
+        self.notes_where(task, word, |_| true)
+    }
+
+    fn notes_from(
+        &self,
+        task: &str,
+        word: NoteWord,
+        sender: &str,
+    ) -> Result<Vec<(String, Note)>, VivariumError> {
+        let wanted = self.mailspace.resolve_identity(sender);
+        self.notes_where(task, word, |message| match &wanted {
+            Ok(wanted) => self.sent_by(message, wanted),
+            Err(_) => false,
+        })
     }
 
     fn task_body(&self, task: &str) -> Result<String, VivariumError> {
@@ -245,6 +284,28 @@ impl MailspacePort {
                 };
                 (message.date, text)
             })
+            .collect())
+    }
+
+    /// The notes of `word` on `task` that `keep` accepts, oldest first, each as
+    /// `(sortable date, note)`.
+    fn notes_where(
+        &self,
+        task: &str,
+        word: NoteWord,
+        keep: impl Fn(&MailspaceThreadMessage) -> bool,
+    ) -> Result<Vec<(String, Note)>, VivariumError> {
+        let (id, thread) = self.thread_of(task)?;
+        let mut found: Vec<MailspaceThreadMessage> = thread
+            .into_iter()
+            .filter(|message| message.event.is_none() && message.message_id != id)
+            .filter(|message| note_of(&message.body).is_some_and(|note| note.pump.note == word))
+            .filter(|message| keep(message))
+            .collect();
+        order_marked(&mut found);
+        Ok(found
+            .into_iter()
+            .filter_map(|message| note_of(&message.body).map(|note| (message.date, note)))
             .collect())
     }
 
@@ -763,6 +824,56 @@ impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
             .collect())
     }
 
+    fn notes(&self, task: &str, word: NoteWord) -> Result<Vec<(String, Note)>, VivariumError> {
+        use crate::pump::flow::fake_mail::Call;
+        let found = self
+            .tasks
+            .get(task)
+            .ok_or_else(|| VivariumError::Message(format!("fake mail: no task {task}")))?;
+        let mut notes: Vec<(i64, String, Note)> = found
+            .replies
+            .iter()
+            .filter_map(|reply| {
+                let note = note_of(reply).filter(|note| note.pump.note == word)?;
+                let at = self.position(
+                    |call| matches!(call, Call::Reply { handle, body } if handle == task && body == reply),
+                );
+                Some((note.pump.t, format!("{:08}", at.unwrap_or_default()), note))
+            })
+            .collect();
+        notes.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        Ok(notes
+            .into_iter()
+            .map(|(_, date, note)| (date, note))
+            .collect())
+    }
+
+    fn notes_from(
+        &self,
+        task: &str,
+        word: NoteWord,
+        sender: &str,
+    ) -> Result<Vec<(String, Note)>, VivariumError> {
+        if sender == self.identity {
+            return self.notes(task, word);
+        }
+        let foreign = self.foreign.get(task).map(Vec::as_slice).unwrap_or(&[]);
+        let mut notes: Vec<(i64, String, Note)> = foreign
+            .iter()
+            .enumerate()
+            .filter(|(_, (who, _))| who == sender)
+            .filter_map(|(at, (_, body))| {
+                let note = note_of(body).filter(|note| note.pump.note == word)?;
+                Some((note.pump.t, format!("{at:08}"), note))
+            })
+            .collect();
+        notes.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        Ok(notes
+            .into_iter()
+            .map(|(_, date, note)| (date, note))
+            .collect())
+    }
+
     fn marked_replies_from(
         &self,
         task: &str,
@@ -789,3 +900,7 @@ mod tests;
 #[cfg(test)]
 #[path = "slice_dispatch_check_test.rs"]
 mod check_tests;
+
+#[cfg(test)]
+#[path = "slice_dispatch_notes_test.rs"]
+mod notes_tests;
