@@ -133,10 +133,7 @@ impl PumpConfig {
             validate_rung_pools(&scope, &self.effective_rungs(Some(id)), &mut found);
         }
         if self.targets.is_empty() {
-            if self.branch.is_empty() {
-                found.absent("pump.branch", "[pump] branch must not be empty");
-            }
-            self.validate_merge(&mut found);
+            validate_merge(&self.merge, &mut found);
         } else {
             let mut target_paths = BTreeSet::new();
             for (id, target) in self.target_configs() {
@@ -273,17 +270,6 @@ impl PumpConfig {
             ));
         }
     }
-
-    fn validate_merge(&self, found: &mut Findings) {
-        validate_merge(&self.merge, found);
-        if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
-            found.absent(
-                "pump.merge.shared_checks",
-                "[pump.merge] shared_checks must not be empty while promotion is enabled \
-                 (promote = true and main set)",
-            );
-        }
-    }
 }
 
 /// The legacy `[pump.merge]` settings that are wrong when present.
@@ -332,26 +318,11 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
             "{prefix} path must be a workspace-relative path without `..`"
         ));
     }
-    if target.branch.trim().is_empty() {
-        found.absent(
-            format!("pump.targets.{id}.branch"),
-            format!("{prefix} branch must not be empty"),
-        );
-    }
     if target.github_repo.as_deref().is_some_and(str::is_empty) {
         found.invalid(format!("{prefix} github_repo must not be empty when set"));
     }
     let merge = target.merge.as_ref();
     validate_target_merge(id, merge, found);
-    if target.promote
-        && !target.main.is_empty()
-        && merge.is_some_and(|merge| merge.shared_checks.is_empty())
-    {
-        found.absent(
-            format!("pump.targets.{id}.merge.shared_checks"),
-            format!("{prefix}.merge shared_checks must not be empty while promotion is enabled"),
-        );
-    }
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {

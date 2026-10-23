@@ -382,7 +382,6 @@ fn two_target_rig() -> Result<Rig, VivariumError> {
             name.to_owned(),
             PumpTarget {
                 path: name.to_owned(),
-                branch: String::from("next"),
                 main: main.to_owned(),
                 ..PumpTarget::default()
             },

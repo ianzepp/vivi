@@ -54,10 +54,8 @@ fn a_fresh_project_is_not_ready_and_has_no_errors() {
     assert!(!is_ready(&issues));
     let names = items(&issues);
     for expected in [
-        "pump.branch",
         "pump.committer_name",
         "pump.committer_email",
-        "pump.merge.shared_checks",
         "hand pool",
         "merge pool",
         "pump-planner pool",
@@ -202,22 +200,15 @@ fn filling_in_the_missing_items_makes_the_project_ready_with_no_other_step() {
     assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
     assert_eq!(
         items(&issues),
-        [
-            "pump.committer_name",
-            "pump.committer_email",
-            "pump.branch",
-            "pump.merge.shared_checks"
-        ],
+        ["pump.committer_name", "pump.committer_email"],
         "{issues:?}"
     );
     edit(tmp.path(), |text| {
-        text.replace("branch = \"\"", "branch = \"next\"")
-            .replace("committer_name = \"\"", "committer_name = \"T\"")
+        text.replace("committer_name = \"\"", "committer_name = \"T\"")
             .replace(
                 "committer_email = \"\"",
                 "committer_email = \"t@example.com\"",
             )
-            .replace("shared_checks = []", "shared_checks = [\"true\"]")
     });
     let issues = assess(&reopen(tmp.path()));
     assert!(is_ready(&issues), "{issues:?}");
@@ -247,4 +238,34 @@ fn a_misspelled_pump_role_is_an_error_not_a_missing_role() {
         "{issues:?}"
     );
     assert!(!items(&issues).iter().any(|name| name == "role hnad"));
+}
+
+#[test]
+fn a_writable_cadence_role_is_one_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = fresh(tmp.path());
+    space
+        .add_role(
+            "head-writer",
+            RoleUpdate {
+                kind: Some(Some(String::from("head"))),
+                cadence: Some(Some(String::from("4h"))),
+                read_only: Some(Some(false)),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    let warnings: Vec<&Issue> = issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Warning && issue.message.contains("cadence"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{issues:?}");
+    assert!(warnings[0].message.contains("head-writer"), "{warnings:?}");
+    assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
+    assert!(
+        !items(&issues)
+            .iter()
+            .any(|name| name.contains("head-writer"))
+    );
 }

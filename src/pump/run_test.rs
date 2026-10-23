@@ -731,7 +731,6 @@ fn a_missing_clone_without_a_remote_url_refuses_to_start() {
 fn a_missing_clone_is_cloned_from_the_remote_url() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
-        branch: String::from("next"),
         remote_url: Some(String::from("git@example.com:org/repo.git")),
         ..PumpConfig::default()
     };
@@ -740,7 +739,7 @@ fn a_missing_clone_is_cloned_from_the_remote_url() {
     crate::pump::run::ensure_repo(&ctx).unwrap();
     let clone = host.commands().into_iter().next().unwrap();
     assert!(
-        clone.starts_with("git clone -q -o origin --branch next git@example.com:org/repo.git "),
+        clone.starts_with("git clone -q -o origin --branch main git@example.com:org/repo.git "),
         "{clone}"
     );
     assert!(
@@ -759,7 +758,6 @@ fn named_targets_initialize_separate_integration_clones_under_the_pump_home() {
         String::from("radix"),
         PumpTarget {
             path: String::from("radix"),
-            branch: String::from("next"),
             ..PumpTarget::default()
         },
     );
@@ -773,14 +771,13 @@ fn named_targets_initialize_separate_integration_clones_under_the_pump_home() {
         .unwrap();
     assert!(command.contains(&target_repo.display().to_string()));
     assert!(command.contains(&source.display().to_string()));
-    assert!(command.contains("--branch next"));
+    assert!(command.contains("--branch main"));
 }
 
 #[test]
 fn a_failed_clone_stops_the_start_with_the_git_output() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
-        branch: String::from("next"),
         remote_url: Some(String::from("/nowhere")),
         ..PumpConfig::default()
     };
@@ -804,7 +801,6 @@ fn an_existing_clone_is_left_alone() {
 fn dispatch_config() -> PumpConfig {
     PumpConfig {
         tick: 1,
-        branch: String::from("next"),
         board: BoardConfig {
             from: Vec::new(),
             pull: true,

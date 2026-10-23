@@ -23,7 +23,6 @@ fn hand_message_reads_the_receipt_section_only() {
 
 fn config() -> PumpConfig {
     PumpConfig {
-        branch: String::from("next"),
         board: BoardConfig {
             from: vec![String::from("operator@x")],
             ..BoardConfig::default()
@@ -169,4 +168,179 @@ fn a_task_record_is_posted_to_the_pump_identity() {
     let sent = mails_to(&host, "t9");
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].contains("--from mind --to mind"), "{}", sent[0]);
+}
+
+// ---- the failed-attempt record body -----------------------------------------
+//
+// `slice_dispatch::post_failed_attempt` builds `Ending::failed(why, detail,
+// receipt)` and calls `post_on_task` with the same receipt as the facts text;
+// these tests drive that pair with each `why` it uses.
+
+/// Post the record of a failed attempt on task `t9` the way the slice flow
+/// does, and return the one record body posted.
+fn failed_record(why: &str, detail: &str, receipt: Option<&str>) -> String {
+    let (_dir, ctx, _host) = setup();
+    let mut job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));
+    job.payload = serde_json::json!({"attempt": 1});
+    let ending = Ending::failed(why, detail, receipt);
+    assert!(post_on_task(
+        &ctx,
+        "t9",
+        &job,
+        &ending,
+        receipt.unwrap_or_default()
+    ));
+    let records = records_for(&ctx, "t9");
+    assert_eq!(records.len(), 1, "{records:?}");
+    records[0].1.clone()
+}
+
+#[test]
+fn a_hand_failure_record_names_the_exit_the_stderr_excerpt_and_the_final_message() {
+    let text = failed_record(
+        "hand failed",
+        "finished/pushed unit/u-1-a1 abc",
+        Some(&receipt(
+            1,
+            "I gave up on the borrow.",
+            "error[E0308]: mismatched types",
+        )),
+    );
+    assert!(
+        text.contains("outcome: agent failed: hand failed\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "failing command:\n  agent exit 1\nexcerpt:\n  error[E0308]: mismatched types\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.trim_end()
+            .ends_with("hand's final message:\n  I gave up on the borrow."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_timeout_record_carries_the_outcome_label_and_the_exit() {
+    let text = failed_record(
+        "job timed out",
+        "",
+        Some(&receipt(124, "ran out of time", "")),
+    );
+    assert!(
+        text.contains("outcome: agent failed: job timed out\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("failing command:\n  agent exit 124\n"),
+        "{text}"
+    );
+    assert!(!text.contains("excerpt:"), "{text}");
+    assert!(
+        text.contains("hand's final message:\n  ran out of time"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_lost_job_record_says_so_and_has_no_failing_command() {
+    let text = failed_record("job lost", "slot vanished", None);
+    assert!(text.contains("outcome: agent failed: job lost\n"), "{text}");
+    assert!(!text.contains("failing command:"), "{text}");
+    assert!(
+        text.trim_end().ends_with("hand's final message:\n  (none)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_record_for_a_job_with_no_receipt_names_that_ending() {
+    let text = failed_record("job ended without a receipt", "", None);
+    assert!(
+        text.contains("outcome: agent failed: job ended without a receipt\n"),
+        "{text}"
+    );
+    assert!(!text.contains("failing command:"), "{text}");
+    assert!(
+        text.trim_end().ends_with("hand's final message:\n  (none)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_final_message_and_the_excerpt_keep_their_tails() {
+    let long_message = format!("HEAD-OF-MESSAGE {} TAIL-OF-MESSAGE", "m".repeat(3000));
+    let long_stderr = format!("HEAD-OF-STDERR {} TAIL-OF-STDERR", "e".repeat(3000));
+    let text = failed_record(
+        "hand failed",
+        "",
+        Some(&receipt(1, &long_message, &long_stderr)),
+    );
+    assert!(text.contains("TAIL-OF-MESSAGE"), "message tail kept");
+    assert!(!text.contains("HEAD-OF-MESSAGE"), "message head cut");
+    assert!(text.contains("TAIL-OF-STDERR"), "excerpt tail kept");
+    assert!(!text.contains("HEAD-OF-STDERR"), "excerpt head cut");
+}
+
+#[test]
+fn a_proof_failure_record_names_the_failing_command_and_the_output() {
+    let detail = "After merging into the integration branch, this command failed (exit 101):\ncargo test --lib\n\nWhat failed:\nerror[E0308]: mismatched types\n";
+    let text = failed_record(
+        "proof-failed",
+        detail,
+        Some(&receipt(0, "pushed the fix", "")),
+    );
+    assert!(text.contains("outcome: proof-failed\n"), "{text}");
+    assert!(
+        text.contains(
+            "failing command:\n  cargo test --lib\nexcerpt:\n  error[E0308]: mismatched types\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("hand's final message:\n  pushed the fix"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_merge_conflict_record_posts_the_conflict_text_as_the_excerpt() {
+    let text = failed_record(
+        "merge-conflict",
+        "CONFLICT (content): src/a.rs",
+        Some(&receipt(0, "done", "")),
+    );
+    assert!(text.contains("outcome: merge-conflict\n"), "{text}");
+    assert!(
+        text.contains("failing command:\n  (none)\nexcerpt:\n  CONFLICT (content): src/a.rs\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_failed_send_is_logged_and_the_post_reports_false_after_one_try() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply", 1, "relay down");
+    let job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));
+    let ending = Ending::failed("hand failed", "", None);
+
+    assert!(!post_on_task(
+        &ctx,
+        "t9",
+        &job,
+        &ending,
+        &receipt(1, "m", "")
+    ));
+
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("attempt record send failed on task t9")),
+        "{:?}",
+        host.logs()
+    );
+    assert_eq!(mails_to(&host, "t9").len(), 1, "one try per attempt end");
 }

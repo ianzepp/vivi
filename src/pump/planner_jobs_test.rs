@@ -207,10 +207,7 @@ fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
     use crate::pool::dispatch::{DispatchFlags, plan_job};
 
     let dir = tempfile::tempdir().unwrap();
-    let cfg = PumpConfig {
-        branch: "next".into(),
-        ..PumpConfig::default()
-    };
+    let cfg = PumpConfig::default();
     let (ctx, host) = test_ctx(dir.path(), cfg);
     let ctx = ctx.with_routing(planner_routing(&[("pump-planner", "apool")]));
     host.reply(
@@ -222,7 +219,7 @@ fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
     host.reply("pool dispatch", 0, "dispatched 1234abcd to apool");
     let mut st = State::default();
     let id = enqueue_one(&ctx, &mut st).unwrap();
-    assert_eq!(st.jobs()[&id].from_ref.as_deref(), Some("next"));
+    assert_eq!(st.jobs()[&id].from_ref.as_deref(), Some("main"));
 
     jobs::dispatch_pending(&ctx, &mut st).unwrap();
     let command = host
@@ -254,7 +251,6 @@ fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
 fn three_targets() -> PumpConfig {
     use crate::pump::config::PumpTarget;
     let target = |branch: &str| PumpTarget {
-        branch: branch.into(),
         ..PumpTarget::default()
     };
     PumpConfig {

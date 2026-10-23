@@ -6,7 +6,6 @@ fn scan(name: &str, kind: Option<&str>, status: &str, cadence: Option<&str>) -> 
         name: String::from(name),
         kind: kind.map(String::from),
         status: String::from(status),
-        read_only: false,
         cadence: cadence.map(String::from),
         pool: None,
         open_wants: 0,
@@ -22,7 +21,6 @@ fn run(ended_at: Option<u64>, retry_at: Option<u64>) -> RoleRun {
     RoleRun {
         job: String::from("cadence-periodic-1"),
         task: String::from("t"),
-        branch: None,
         read_only: true,
         started_at: 1_000,
         ended_at,
@@ -194,4 +192,33 @@ fn other_head_cadence_text_has_no_ceo_instructions() {
     let text = cadence_run_text(&head_role("head-cto"), 0);
     assert!(text.contains("file findings as wants only"));
     assert!(!text.contains("research need"));
+}
+
+#[test]
+fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) =
+        crate::pump::host::test_ctx(dir.path(), crate::pump::config::PumpConfig::default());
+    for (kind, role_name) in [("hand", "hand-writer"), ("head", "head-writer")] {
+        let mut role = head_role(role_name);
+        role.kind = Some(String::from(kind));
+        role.cadence = Some(String::from("4h"));
+        role.read_only = Some(false);
+        let scan = scan(role_name, Some(kind), "active", Some("4h"));
+        let spec = finish_cadence_spec(
+            &ctx,
+            &role,
+            &scan,
+            1,
+            1_000,
+            false,
+            String::from("cadence-x-1"),
+            String::from("cadence"),
+            String::from("subject"),
+            String::from("body"),
+        );
+        assert!(spec.read_only, "{kind}");
+        assert!(spec.branch.is_none(), "{kind}");
+        assert!(spec.target.is_none(), "{kind}");
+    }
 }

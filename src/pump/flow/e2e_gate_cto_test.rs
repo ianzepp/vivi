@@ -181,7 +181,7 @@ fn restarts_at(rig: &mut Rig, word: &str, entry: &str) -> R {
         .map(|row| (row.state, row.verdict));
     assert_eq!(cto, Some((StepState::Done, Some(word.to_string()))));
     assert_ne!(rig.port.need_state(&rig.need)?, NeedStatus::Done, "{word}");
-    assert_eq!(alarms(rig), 0, "{word}: {}", rig.exceptions());
+    assert_eq!(rig.exceptions(), "", "{word}");
     Ok(())
 }
 
@@ -237,7 +237,7 @@ fn a_cto_rework_restart_is_driven_to_done_and_the_need_closes_once() -> R {
     }
     assert_eq!(rig.runs()?.len(), 2);
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Done);
-    assert_eq!(alarms(&rig), 0, "{}", rig.exceptions());
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 

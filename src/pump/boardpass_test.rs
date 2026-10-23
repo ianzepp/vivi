@@ -20,7 +20,6 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
             from: vec![String::from("operator@bd371d96.local")],
             ..BoardConfig::default()
         },
-        branch: String::from("next"),
         ..PumpConfig::default()
     };
     let dir = tempdir().unwrap();

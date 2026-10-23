@@ -27,7 +27,6 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 fn setup_with(board: BoardConfig) -> (TempDir, Ctx, Arc<FakeHost>) {
     let cfg = PumpConfig {
         board,
-        branch: String::from("next"),
         ..PumpConfig::default()
     };
     let dir = tempdir().unwrap();
@@ -504,7 +503,6 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
     };
     let cfg = PumpConfig {
         board: board.clone(),
-        branch: String::from("next"),
         reply_from: String::from("mind role"),
         ..PumpConfig::default()
     };
@@ -522,7 +520,6 @@ fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
             reply_to: Some(String::from("operator role")),
             ..board
         },
-        branch: String::from("next"),
         reply_from: String::from("mind role"),
         ..PumpConfig::default()
     };

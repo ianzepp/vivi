@@ -16,14 +16,12 @@ pub const STARTER_PUMP: &str = r#"
 # a pool (`vivi pool --help`, then `vivi role pool <role> <pool>`).
 # `vivi config validate` lists what is still missing.
 [pump]
-# Integration branch the pump merges units into.
-branch = ""
 # Git author and committer of every commit the pump makes.
 committer_name = ""
 committer_email = ""
 
 [pump.merge]
-# Checks run after every merge, before the integration branch is promoted.
+# Checks run after every merge.
 shared_checks = []
 "#;
 
