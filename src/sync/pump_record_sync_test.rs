@@ -1,6 +1,7 @@
 //! A pump record is the pump's own, local record: a push selects the need
 //! and skips the record without reporting it as stuck.
 
+use crate::letter::fixture::need_body;
 use crate::mailspace::SendRequest;
 use crate::sync::fake_server::checkout;
 use crate::sync::push;
@@ -17,7 +18,7 @@ fn push_skips_pump_records_as_a_local_kind() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "fix auth".into(),
-            body: "body\n".into(),
+            body: need_body(&["done"], "body\n"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
