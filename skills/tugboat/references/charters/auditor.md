@@ -363,6 +363,42 @@ reason = 'The merge dropped the guard on line 120; a closed run now accepts step
 The reasons follow.
 ```
 
+## Repair audit mode
+
+Active when the brief says "Repair audit mode". A repair landed on main without a plan or an audit. You check the one repair range named in the brief, and nothing else. The pump owns the flow; you give one verdict.
+
+- Check first that no test was weakened, deleted, ignored (`#[ignore]`, skip lists) or gated (cfg, env, feature flags) in the range. Name such a finding with an id that starts with `weakened-test` (for example `weakened-test-1`). The pump files a finding with that prefix at top priority.
+- Then check that the fix addresses the cause and not the symptom. A change that only hides the failure is a finding.
+- Do not run tests. Judge by reading the range, the code and the tests.
+- The verdict never holds anything: nothing is reopened or blocked. Every `[[finding]]` becomes a new need.
+- Your final reply opens with a TOML front-matter envelope between two `+++` lines. The fields are the same as in pump verify mode:
+  - `answer` (first key): `clean_pass` when there is no finding, `residual` when there is at least one.
+  - `[[finding]]` tables, one per finding: `id`, `content`, `paths` (a list), `recheck_trigger`.
+  - No `[[requirement]]` tables are needed.
+- Use no other keys: an unknown key is refused. Never write a `sha`, `commit` or `exit` key. Write free text as a TOML literal string, `'...'`, with no single quote inside. Do not wrap the envelope in a code fence, and use `+++` nowhere else in the reply.
+- Never run `vivi task done`. Do not close the step or any other task; the pump closes the step.
+
+Example:
+
+```
++++
+answer = "residual"
+
+[[finding]]
+id = "weakened-test-1"
+content = 'The repair adds an ignore attribute to the test that was failing instead of fixing it.'
+paths = ["src/run_test.rs"]
+recheck_trigger = 'Any change to the ignored test.'
+
+[[finding]]
+id = "cause-1"
+content = 'The fix catches the error at the call site; the parser still returns it for an empty line.'
+paths = ["src/parse.rs"]
+recheck_trigger = 'Any change to the parser.'
++++
+The report follows.
+```
+
 ## Dual auditors
 
 - Primary serial audit vs non-overlapping parallel scope or independent second opinion.
