@@ -250,9 +250,6 @@ pub(crate) fn need_complete(state: &State, handle: &str) -> bool {
     if record.amendment_pending {
         return false;
     }
-    if landing_required(state, handle) {
-        return crate::pump::need::fully_landed(state, handle).unwrap_or(false);
-    }
     if record.verdict == "delivered" {
         return true;
     }
@@ -262,26 +259,6 @@ pub(crate) fn need_complete(state: &State, handle: &str) -> bool {
                 .units
                 .get(unit)
                 .is_some_and(|unit| satisfied(state, unit, 0))
-        })
-}
-
-/// Whether a need must carry verified accepted-landing evidence before it can
-/// appear complete. New revision-bound units enter this path before their
-/// first branch record is created; legacy units keep their prior disposition.
-pub(crate) fn landing_required(state: &State, handle: &str) -> bool {
-    match crate::pump::need::managed(state, handle) {
-        Ok(true) | Err(_) => return true,
-        Ok(false) => {}
-    }
-    let Some(record) = state.needs.get(handle) else {
-        return false;
-    };
-    record.revision > 0
-        && record.units.iter().any(|uid| {
-            state
-                .units
-                .get(uid)
-                .is_some_and(|unit| unit.revision == record.revision)
         })
 }
 
