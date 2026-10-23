@@ -501,3 +501,68 @@ fn send_accepts_a_need_addressed_to_hand() {
     let record = mailspace.pump_send(None, &need, None).unwrap();
     assert_eq!(record.status, PumpState::Open);
 }
+
+#[test]
+fn a_record_has_no_need_header_and_its_body_parses_as_a_record_front() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&record.handle).unwrap();
+    let raw = String::from_utf8(storage.read_message(&id).unwrap()).unwrap();
+    assert!(!raw.contains("X-Vivi-Need"), "{raw}");
+    let (shown, body) = mailspace.pump_show(&record.handle).unwrap();
+    let envelope = crate::letter::read::record_of(&shown.handle, &body).unwrap();
+    assert_eq!(envelope.front.need, need);
+    assert_eq!(envelope.body, format!("Dispatch of need {need}."));
+}
+
+#[test]
+fn a_full_front_matter_body_is_accepted_and_a_need_mismatch_refused() {
+    let (mailspace, _tmp) = roster();
+    let first = send_need(&mailspace, "fix auth");
+    let second = send_need(&mailspace, "fix mail");
+    let body = crate::letter::fixture::record_body(&first, "build");
+    let record = mailspace.pump_send(None, &first, Some(&body)).unwrap();
+    assert_eq!(record.need, first);
+    let (_, stored) = mailspace.pump_show(&record.handle).unwrap();
+    let front = crate::letter::read::record_of("", &stored).unwrap().front;
+    assert_eq!(front.kind, Some(crate::letter::records::RecordKind::Build));
+    let error = mailspace
+        .pump_send(None, &second, Some(&body))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("names need"), "{error}");
+    assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 1);
+    assert!(error.contains(&format!("not {second}")), "{error}");
+}
+
+#[test]
+fn a_record_in_the_old_form_lists_with_no_need_and_a_letter_error_naming_it() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let extras = [("X-Vivi-Need".to_string(), need.clone())];
+    let sent = mailspace
+        .send_with_extras(
+            SendRequest {
+                from: "operator".into(),
+                to: vec!["mind".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "pump old".into(),
+                body: "Dispatch of an old record.".into(),
+                role: "pumps".into(),
+                kind: Some("pump".into()),
+                reply_to: None,
+            },
+            &extras,
+        )
+        .unwrap();
+    let listed = mailspace.pump_list(None, None).unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].need, "");
+    let error = listed[0].letter_error.as_deref().unwrap();
+    assert!(error.contains(&listed[0].handle), "{error}");
+    assert!(error.contains("old format"), "{error}");
+    assert!(!sent.delivered.is_empty());
+}

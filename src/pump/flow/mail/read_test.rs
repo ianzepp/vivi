@@ -110,7 +110,13 @@ fn need_state_marks_and_open_record_are_read() {
         .unwrap();
     let (handle, body) = port.open_record(&need).unwrap().expect("an open record");
     assert_eq!(handle, record.handle);
-    assert!(body.contains("kind: release"));
+    let front = crate::letter::read::record_of(&handle, &body)
+        .unwrap()
+        .front;
+    assert_eq!(
+        front.kind,
+        Some(crate::letter::records::RecordKind::Release)
+    );
     let listed = port.open_record_needs().unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].0, need);

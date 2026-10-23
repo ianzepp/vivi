@@ -7,6 +7,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::{find_repair_need, report_red};
 use crate::error::VivariumError;
+use crate::letter::fixture::repair_record_body;
+use crate::letter::read::record_of;
+use crate::letter::records::{RecordFront, RecordKind};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -95,8 +98,11 @@ fn first_red_files_one_repair_need_and_opens_its_record() -> R {
     );
     let (_, body) = MailReader::open_record(&rig.mail, &rig.need)?
         .ok_or_else(|| VivariumError::Message("no record".into()))?;
-    assert!(body.contains("kind: repair"), "{body}");
-    assert!(body.contains("target: default"), "{body}");
+    let front = record_of("", &body).unwrap().front;
+    assert_eq!(front.need, rig.need);
+    assert_eq!(front.kind, Some(RecordKind::Repair));
+    assert_eq!(front.target.as_deref(), Some("default"));
+    assert!(front.tested.is_some(), "{body}");
     assert_eq!(
         rig.store.main_state(&key(FAILING, "default"))?,
         Some("[\"a::t1\"]".to_string())
@@ -141,7 +147,11 @@ fn a_different_set_replies_on_the_open_need_and_files_nothing() -> R {
 #[test]
 fn a_repair_need_for_another_target_is_not_used() -> R {
     let mut rig = rig()?;
-    MailWriter::open_record(&mut rig.mail, "other", "kind: repair\ntarget: elsewhere\n")?;
+    MailWriter::open_record(
+        &mut rig.mail,
+        "other",
+        &repair_record_body("other", "elsewhere", None, ""),
+    )?;
     rig.red("default", &["a::t1"])?;
     assert_eq!(rig.sends().len(), 1);
     assert!(rig.replies().is_empty());
@@ -159,8 +169,16 @@ fn a_repair_need_for_another_target_is_not_used() -> R {
 #[test]
 fn find_repair_need_ignores_a_build_need_with_a_target_line() -> R {
     let mut rig = rig()?;
-    MailWriter::open_record(&mut rig.mail, "build1", "kind: build\ntarget: default\n")?;
-    MailWriter::open_record(&mut rig.mail, "build2", "target: default\n")?;
+    for (need, kind) in [("build1", Some(RecordKind::Build)), ("build2", None)] {
+        let front = RecordFront {
+            need: need.to_string(),
+            kind,
+            target: Some("default".to_string()),
+            tested: None,
+        };
+        let body = crate::letter::render(&front, "").unwrap();
+        MailWriter::open_record(&mut rig.mail, need, &body)?;
+    }
     assert_eq!(find_repair_need(&rig.mail, "default")?, None);
     Ok(())
 }
@@ -195,7 +213,8 @@ fn a_failed_open_record_resumes_on_the_same_need_without_a_second_send() -> R {
     assert_eq!(rig.sends().len(), 1);
     let (_, body) = MailReader::open_record(&rig.mail, &rig.need)?
         .ok_or_else(|| VivariumError::Message("no record".into()))?;
-    assert!(body.contains("target: default"), "{body}");
+    let front = record_of("", &body).unwrap().front;
+    assert_eq!(front.target.as_deref(), Some("default"), "{body}");
     assert_eq!(
         rig.store.main_state(&key(FAILING, "default"))?,
         Some("[\"a::t1\"]".to_string())

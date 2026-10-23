@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::JobFront;
-use crate::letter::{Validate, check_text, is_false};
+use crate::letter::{LetterError, Validate, check_text, is_false, parse_letter};
 use crate::pump::flow::def::FlowKind;
 
 /// The flow a pump record asks for.
@@ -57,6 +58,69 @@ impl Validate for RecordFront {
         }
         Ok(())
     }
+}
+
+impl RecordKind {
+    fn parse(word: &str) -> Option<Self> {
+        match word {
+            "build" => Some(Self::Build),
+            "research" => Some(Self::Research),
+            "release" => Some(Self::Release),
+            "repair" => Some(Self::Repair),
+            _ => None,
+        }
+    }
+}
+
+/// The record front and prose a `pump send` body stands for. A body that opens
+/// with front matter is parsed and validated as a [`RecordFront`], its `need`
+/// as written. A prose body gets `need` as its front and the prose as the body.
+///
+/// TRANSITIONAL (W3-B3): the first `kind:`, `target:` and `tested:` prose lines
+/// are lifted into the front and dropped from the prose. W3B3-25 replaces the
+/// lift with a refusal.
+///
+/// # Errors
+/// Returns the `LetterError` when front matter does not parse or validate, when
+/// a `kind:` line names no record kind, or when `tested` is set without kind
+/// repair.
+pub fn record_letter(need: &str, body: &str) -> Result<(RecordFront, String), LetterError> {
+    if opens_with_fence(body) {
+        let envelope = parse_letter::<RecordFront>(body)?;
+        return Ok((envelope.front, envelope.body));
+    }
+    let mut front = RecordFront {
+        need: need.to_string(),
+        kind: None,
+        target: None,
+        tested: None,
+    };
+    let (mut kind_seen, mut target_seen, mut tested_seen) = (false, false, false);
+    let mut prose = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if !kind_seen && let Some(word) = trimmed.strip_prefix("kind:") {
+            kind_seen = true;
+            let word = word.trim();
+            if !word.is_empty() {
+                front.kind = Some(RecordKind::parse(word).ok_or_else(|| {
+                    LetterError::Invalid(format!(
+                        "pump record: expected a `kind:` line naming one of build, research, release, repair; actual: {word}"
+                    ))
+                })?);
+            }
+        } else if !target_seen && let Some(word) = trimmed.strip_prefix("target:") {
+            target_seen = true;
+            front.target = Some(word.trim().to_string()).filter(|word| !word.is_empty());
+        } else if !tested_seen && let Some(word) = trimmed.strip_prefix("tested:") {
+            tested_seen = true;
+            front.tested = Some(word.trim().to_string()).filter(|word| !word.is_empty());
+        } else {
+            prose.push(line);
+        }
+    }
+    front.validate().map_err(LetterError::Invalid)?;
+    Ok((front, prose.join("\n").trim().to_string()))
 }
 
 /// What an operator action reply asks the pump to do.
