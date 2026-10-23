@@ -333,6 +333,10 @@ impl MailReader for Flaky {
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
         self.inner.sentinel_count(need)
     }
+
+    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
+        self.inner.sent_step(subject, first_line)
+    }
 }
 
 #[test]
