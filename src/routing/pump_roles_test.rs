@@ -29,25 +29,28 @@ fn check_of(config: &MailspaceConfig, name: &str) -> PumpRoleCheck {
 }
 
 #[test]
-fn each_missing_flow_role_is_not_ready() {
+fn each_missing_flow_role_is_a_warning() {
     let config = config(&[("hand", "pool = \"p\"")]);
     for role in FLOW_ROLES {
         let check = check_of(&config, role);
         assert_eq!(check.issues.len(), 1, "{role}: {:?}", check.issues);
         let issue = &check.issues[0];
-        assert_eq!(issue.severity, Severity::NotReady, "{role}");
-        assert_eq!(issue.item.as_deref(), Some(format!("{role} role").as_str()));
+        assert_eq!(issue.severity, Severity::Warning, "{role}");
+        assert_eq!(issue.item, None, "{role}");
+        assert!(issue.message.contains(role), "{role}");
         assert!(issue.message.contains("vivi config migrate"), "{role}");
+        assert!(issue.message.contains("dispatches role steps"), "{role}");
     }
 }
 
 #[test]
-fn a_flow_role_without_a_pool_is_not_ready() {
+fn a_flow_role_without_a_pool_is_a_warning() {
     let config = config(&[("researcher", "")]);
     let check = check_of(&config, "researcher");
     assert_eq!(check.issues.len(), 1, "{:?}", check.issues);
-    assert_eq!(check.issues[0].severity, Severity::NotReady);
-    assert_eq!(check.issues[0].item.as_deref(), Some("researcher pool"));
+    assert_eq!(check.issues[0].severity, Severity::Warning);
+    assert!(check.issues[0].message.contains("must name a pool"));
+    assert!(check.issues[0].message.contains("dispatches role steps"));
 }
 
 #[test]
