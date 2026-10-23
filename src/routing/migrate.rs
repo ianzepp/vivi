@@ -8,12 +8,13 @@ use crate::error::VivariumError;
 use crate::mailspace::config_edit::{IdentityPatch, insert_identity, patch_identity};
 use crate::mailspace::shipped::{
     ADMITTER_ROLE, AUDITOR_CHARTER, MERGE_CHARTER, PUMP_PLANNER_CHARTER, PUMP_PLANNER_ROLE,
-    RESEARCHER_ROLE, SLICER_ROLE,
+    RESEARCHER_ROLE, SLICER_ROLE, pre_v20_charter,
 };
 use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
+use super::migrate_charters::plan_stale_charters;
 use super::migrate_flow_roles::plan_flow_roles;
 use super::migrate_keys::{
     apply_removals, apply_roots, plan_pool_roots, plan_removals, raw_merge_lanes, review_slot_dirs,
@@ -225,6 +226,7 @@ fn plan_pump(
     plan_flow_roles(config, pump, inputs, plan);
     inherit_hand_band(config, pump, plan);
     review_new_roles(plan);
+    plan_stale_charters(config, inputs, plan);
 }
 
 /// New pump roles start at the hand role's band, so the pool serves them as
@@ -452,21 +454,32 @@ fn plan_pump_planner_charter(
     if current.is_some_and(|text| !text.trim().is_empty()) {
         return;
     }
+    let shipped = || {
+        (
+            "the shipped default".to_string(),
+            PUMP_PLANNER_CHARTER.to_string(),
+        )
+    };
     let (origin, text) = match &inputs.legacy_planner_charter {
+        Some(legacy) if pre_v20_charter(&legacy.text) => {
+            plan.review.push(format!(
+                "{} is ignored: it has no `+++` v20 reply envelope; {PUMP_PLANNER_ROLE} gets the \
+                 shipped default charter",
+                legacy.path
+            ));
+            shipped()
+        }
         Some(legacy) => {
             plan.review.push(format!(
-                "{PUMP_PLANNER_ROLE} charter was copied from {}, which was written for 15: 16 planner \
-                 jobs return the plan between PUMP-PLAN-BEGIN and PUMP-PLAN-END (the pool contract \
-                 is added to every prompt), so remove any instruction to write plan files, or use \
-                 the shipped charter (`vivi skills show vivi --file references/charters/pump-planner.md`)",
+                "{PUMP_PLANNER_ROLE} charter was copied from {}, which was written for 15: check \
+                 that it ends with the `+++` TOML reply envelope the pump planner returns (the \
+                 pool contract is added to every prompt), or use the shipped charter \
+                 (`vivi skills show vivi --file references/charters/pump-planner.md`)",
                 legacy.path
             ));
             (legacy.path.clone(), legacy.text.clone())
         }
-        None => (
-            "the shipped default".to_string(),
-            PUMP_PLANNER_CHARTER.to_string(),
-        ),
+        None => shipped(),
     };
     plan.charters.push(CharterWrite {
         role: PUMP_PLANNER_ROLE.into(),

@@ -67,7 +67,14 @@ fn initialize_with_lock_policy(
     let stop = home.join("STOP");
     let pause = home.join("PAUSE");
     let marker_mode = legacy_marker_mode(home);
-    let legacy_mode = marker_mode.unwrap_or(PumpMode::Running);
+    let db_path = home.join(DB_FILENAME);
+    // Only a brand-new database starts stopped; an existing one keeps today's default.
+    let default_mode = if db_path.exists() {
+        PumpMode::Running
+    } else {
+        PumpMode::Stopped
+    };
+    let legacy_mode = marker_mode.unwrap_or(default_mode);
     let mut store = if caller_holds_pump_lock {
         PumpStore::open_for_run(&home.join(DB_FILENAME))?
     } else {
@@ -87,6 +94,9 @@ fn initialize_with_lock_policy(
 }
 
 /// Read control state from an already-initialized pump database.
+///
+/// Production always initializes before reading (`run_inner`), so a missing row reads as
+/// running here; lib tests that drive the loop through `run_with` skip initialization.
 pub fn read(home: &Path) -> Result<PumpControl, VivariumError> {
     Ok(read_initialized(home)?.unwrap_or(PumpControl {
         mode: PumpMode::Running,
@@ -119,7 +129,16 @@ fn read_initialized(home: &Path) -> Result<Option<PumpControl>, VivariumError> {
 
 /// Report control mode and migrate legacy flags only when relevant state exists.
 pub fn inspect(home: &Path) -> Result<PumpControl, VivariumError> {
-    Ok(read_initialized(home)?.unwrap_or_else(|| legacy_control(home)))
+    if let Some(control) = read_initialized(home)? {
+        return Ok(control);
+    }
+    if !home.join(DB_FILENAME).exists() && legacy_marker_mode(home).is_none() {
+        return Ok(PumpControl {
+            mode: PumpMode::Stopped,
+            shutdown_requested: false,
+        });
+    }
+    Ok(legacy_control(home))
 }
 
 /// Set one project's operator mode, migrating any legacy flags first.

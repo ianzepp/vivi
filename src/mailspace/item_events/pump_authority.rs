@@ -4,11 +4,13 @@
 //! as and the one pump records are addressed to) may close and reopen a need while the
 //! need has an open pump record here, whoever authored the need and whatever
 //! its delegation history. Pump records do not sync, so another member
-//! cannot see that record: it accepts the pump's letter only from a sender
-//! whose role is the pump identity and whose address already posted on the
-//! need's thread.
+//! cannot see that record: it accepts the pump's letter only from the one full
+//! address of the earliest non-event letter on the need's thread sent by the
+//! pump identity's role.
 
 use std::collections::HashSet;
+
+use chrono::{DateTime, FixedOffset};
 
 use super::{HeldItem, Mailspace, parse_event, parse_property_event};
 use crate::mailspace::PumpState;
@@ -53,19 +55,23 @@ impl Mailspace {
     }
 
     /// True when `from_addr`, a sender in another member's mailspace, is the
-    /// pump identity by role and has already posted on the need's thread.
-    /// The letter being judged (`letter_id`) and event letters do not count
-    /// as that earlier post.
+    /// pump's one address for this need: the full address of the EARLIEST
+    /// non-event letter on the need's thread whose sender's role is the pump
+    /// identity (ordered by date, ties by content id). Only that exact
+    /// address counts; the same role on another prefix never does. The letter
+    /// being judged (`letter_id`) and event letters are not that earliest
+    /// letter, so a pump-role address with no earlier post is refused.
     pub(in crate::mailspace) fn remote_pump_speaks(
         &self,
         item: &HeldItem,
         from_addr: &str,
         letter_id: &str,
     ) -> bool {
+        let pump_role = self.pump_names().1;
         let Some((role, _)) = from_addr.rsplit_once('@') else {
             return false;
         };
-        if item.kind != "need" || !role.trim().eq_ignore_ascii_case(&self.pump_names().1) {
+        if item.kind != "need" || !role.trim().eq_ignore_ascii_case(&pump_role) {
             return false;
         }
         let Ok(storage) = self.storage() else {
@@ -73,6 +79,7 @@ impl Mailspace {
         };
         let mut seen = HashSet::new();
         let mut queue = vec![item.content_id.clone()];
+        let mut earliest: Option<(PostKey, String)> = None;
         while let Some(parent) = queue.pop() {
             let Ok(children) = storage.reply_child_contents(&parent) else {
                 return false;
@@ -85,22 +92,36 @@ impl Mailspace {
                 let Ok(Some(view)) = storage.message_by_content_id(&child) else {
                     continue;
                 };
-                if view.normalized_message_id.as_deref() == Some(letter_id)
-                    || !view.from_addr.eq_ignore_ascii_case(from_addr)
-                {
+                let posted_by_pump = view
+                    .from_addr
+                    .rsplit_once('@')
+                    .is_some_and(|(r, _)| r.trim().eq_ignore_ascii_case(&pump_role));
+                if view.normalized_message_id.as_deref() == Some(letter_id) || !posted_by_pump {
                     continue;
                 }
                 let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
                     continue;
                 };
-                if parse_event(&bytes).is_none() && parse_property_event(&bytes).is_none() {
-                    return true;
+                if parse_event(&bytes).is_some() || parse_property_event(&bytes).is_some() {
+                    continue;
+                }
+                let at = match DateTime::parse_from_rfc3339(view.date.trim()) {
+                    Ok(at) => Some(at),
+                    Err(_) => None,
+                };
+                let key = (at.is_none(), at, child);
+                if earliest.as_ref().is_none_or(|(best, _)| key < *best) {
+                    earliest = Some((key, view.from_addr));
                 }
             }
         }
-        false
+        earliest.is_some_and(|(_, addr)| addr.trim().eq_ignore_ascii_case(from_addr.trim()))
     }
 }
+
+/// Order of a pump-role post: dated letters first by date, undated last, ties
+/// by content id.
+type PostKey = (bool, Option<DateTime<FixedOffset>>, String);
 
 #[cfg(test)]
 #[path = "pump_authority_test.rs"]

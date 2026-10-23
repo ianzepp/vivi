@@ -121,10 +121,16 @@ pub fn read_only_job(
         .filter(|found| found.status == "active")
         .ok_or_else(|| VivariumError::Config(format!("role {role} is missing or not active")))?;
     let mut spec = role_job(ctx, run, step, &class.name(), &found.name, brief);
+    make_read_only(ctx, &mut spec);
+    Ok(spec)
+}
+
+/// Makes `spec` a read-only job: all targets beside the checkout, the main ref
+/// as the start point.
+pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) {
     spec.read_only = true;
     spec.from_ref = Some(ctx.cfg.main.clone());
     spec.extra_targets = targets(ctx);
-    Ok(spec)
 }
 
 #[cfg(test)]

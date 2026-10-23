@@ -19,11 +19,8 @@ use crate::pump::par::map_bounded;
 /// # Errors
 /// Returns filesystem and task-store errors that prevent writing a brief.
 pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>, VivariumError> {
-    if !st
-        .jobs()
-        .values()
-        .any(|job| job.status == JobStatus::Pending)
-    {
+    super::release::apply_releases(ctx, st)?;
+    if !st.jobs().values().any(dispatchable) {
         return Ok(Vec::new());
     }
     let mut free = super::slots(ctx);
@@ -31,7 +28,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
     let mut pending: Vec<PoolJob> = st
         .jobs()
         .iter()
-        .filter(|(_, job)| job.status == JobStatus::Pending)
+        .filter(|(_, job)| dispatchable(job))
         .map(|(_, job)| job.clone())
         .collect();
     pending.sort_by_key(|job| dispatch_order(job, &priorities));
@@ -42,6 +39,14 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
         started.extend(dispatch_chunk(ctx, st, chunk, &mut free)?);
     }
     Ok(started)
+}
+
+/// Pool refusals after which a job is held back from dispatch.
+pub const REFUSAL_LIMIT: u32 = 3;
+
+/// Whether a job waits for a pool: Pending and not held.
+fn dispatchable(job: &PoolJob) -> bool {
+    job.status == JobStatus::Pending && job.held.is_none()
 }
 
 /// One job being offered to its candidate pools in order.
@@ -90,7 +95,12 @@ fn dispatch_chunk(
                     started.push(snapshot.id.clone());
                     finished.insert(*index);
                 }
-                Ok(false) => refresh_snapshot(st, &mut active[*index]),
+                Ok(false) => {
+                    refresh_snapshot(st, &mut active[*index]);
+                    if active[*index].snapshot.held.is_some() {
+                        finished.insert(*index);
+                    }
+                }
                 Err(error) => {
                     failure.get_or_insert(error);
                     finished.insert(*index);
@@ -297,11 +307,7 @@ fn apply_dispatch(
         {
             return Ok(true);
         }
-        ctx.log(&format!(
-            "job dispatch deferred {} on {pool}: {}",
-            snapshot.id,
-            tail(&text, 240)
-        ));
+        defer(ctx, st, snapshot, pool, &text);
         return Ok(false);
     }
     let job = st.jobs_mut().get_mut(&snapshot.id).ok_or_else(|| {
@@ -320,6 +326,43 @@ fn apply_dispatch(
         snapshot.id, snapshot.role
     ));
     Ok(true)
+}
+
+/// Log a deferred dispatch; a `refused` porcelain line also counts a refusal.
+fn defer(ctx: &Ctx, st: &mut impl JobStore, snapshot: &PoolJob, pool: &str, text: &str) {
+    ctx.log(&format!(
+        "job dispatch deferred {} on {pool}: {}",
+        snapshot.id,
+        tail(text, 240)
+    ));
+    if let Some(reason) = crate::pool::porcelain::refused_reason(text) {
+        note_refusal(ctx, st, snapshot, pool, &reason);
+    }
+}
+
+/// Count one pool refusal on the stored job. At [`REFUSAL_LIMIT`] the job is
+/// held, with one `job-dispatch-refused` exception naming the release.
+fn note_refusal(ctx: &Ctx, st: &mut impl JobStore, snapshot: &PoolJob, pool: &str, reason: &str) {
+    let Some(job) = st.jobs_mut().get_mut(&snapshot.id) else {
+        return;
+    };
+    job.dispatch_refusals += 1;
+    if job.dispatch_refusals < REFUSAL_LIMIT || job.held.is_some() {
+        return;
+    }
+    job.held = Some(reason.to_owned());
+    let release = match job.payload["task"].as_str() {
+        Some(step) => format!("vivi pump requeue {step}"),
+        None => format!("vivi pump requeue --job {}", snapshot.id),
+    };
+    ctx.exception(
+        "job-dispatch-refused",
+        &snapshot.id,
+        &format!(
+            "pool {pool} refused job {} {REFUSAL_LIMIT} times: {reason}; fix the cause, then run `{release}` to release it, or `vivi pump withdraw <need>`",
+            snapshot.id
+        ),
+    );
 }
 
 pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, VivariumError> {

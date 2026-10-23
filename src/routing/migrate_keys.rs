@@ -22,11 +22,14 @@ const PROMOTE_REASON: &str = "retired: there is no integration branch to promote
 const MERGE_CHECKS_REASON: &str = "retired: the merge flow no longer reads a check list here";
 const MERGE_BATCH_REASON: &str = "retired: the merge flow no longer batches or fans out needs";
 const MERGE_TIMER_REASON: &str = "retired: the merge flow has its own step timeouts";
+const MERGE_LANES_REASON: &str =
+    "ignored: merge concurrency follows the slots of the merge role's pool";
 const NEED_REASON: &str = "retired: no repair-round counter; the whole table is ignored";
 
 /// Keys that are always ignored: `(table, key, reason, behaviour_change)`.
-/// A key that holds a table retires the whole table.
-const RETIRED: [(&str, &str, &str, bool); 18] = [
+/// A key that holds a table retires the whole table. A `*` in the table path
+/// stands for each `[pump.targets.<id>]`.
+const RETIRED: [(&str, &str, &str, bool); 25] = [
     ("pump.planner", "run", PLANNER_REASON, false),
     ("pump.planner", "charter", PLANNER_REASON, false),
     ("pump.board", "mark", INTAKE_REASON, true),
@@ -51,6 +54,38 @@ const RETIRED: [(&str, &str, &str, bool); 18] = [
     ("pump.targets.*", "branch", BRANCH_REASON, true),
     ("pump.targets.*", "promote", PROMOTE_REASON, true),
     ("pump.targets.*", "gate", GATE_REASON, true),
+    ("pump.targets.*.merge", "batch", MERGE_BATCH_REASON, true),
+    (
+        "pump.targets.*.merge",
+        "need_parallel",
+        MERGE_BATCH_REASON,
+        true,
+    ),
+    (
+        "pump.targets.*.merge",
+        "shared_checks",
+        MERGE_CHECKS_REASON,
+        true,
+    ),
+    (
+        "pump.targets.*.merge",
+        "checks_for",
+        MERGE_CHECKS_REASON,
+        true,
+    ),
+    (
+        "pump.targets.*.merge",
+        "proof_timeout",
+        MERGE_TIMER_REASON,
+        false,
+    ),
+    (
+        "pump.targets.*.merge",
+        "remote_wait",
+        MERGE_TIMER_REASON,
+        false,
+    ),
+    ("pump.targets.*.merge", "lanes", MERGE_LANES_REASON, false),
 ];
 
 /// Plan the removal of every ignored key the document still holds.
@@ -72,9 +107,9 @@ pub(super) fn plan_removals(
         })
         .unwrap_or_default();
     for (table, key, reason, behaviour_change) in RETIRED {
-        if let Some(rest) = table.strip_suffix(".*") {
+        if table.contains('*') {
             for id in &target_ids {
-                let path = format!("{rest}.{id}");
+                let path = table.replace('*', id);
                 push_removal(doc, &path, key, reason, behaviour_change, plan);
             }
         } else {
@@ -262,3 +297,7 @@ pub(super) fn apply_roots(doc: &mut DocumentMut, plan: &MigratePlan) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "migrate_keys_test.rs"]
+mod tests;

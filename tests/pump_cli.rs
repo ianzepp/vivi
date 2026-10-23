@@ -626,6 +626,12 @@ fn temp_mailspace() -> tempfile::TempDir {
         .output()
         .unwrap();
     assert_success(&init);
+    assert_success(&vivi([
+        "pump",
+        "start",
+        "--project",
+        project.path().to_str().unwrap(),
+    ]));
     project
 }
 
@@ -753,6 +759,7 @@ fn mark_amended(project: &tempfile::TempDir, handle: &str) {
 fn pump_once_on_a_freshly_initialised_project_holds_instead_of_failing() {
     let project = tempfile::tempdir().unwrap();
     assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
+    assert_success(&vivi(["pump", "start", "--project", root(&project)]));
     let out = vivi(["pump", "once", "--project", root(&project)]);
     assert_success(&out);
     let status = vivi(["pump", "status", "--project", root(&project)]);
@@ -772,6 +779,7 @@ fn a_service_child_on_a_not_ready_project_announces_ready_and_keeps_running() {
     use std::io::{BufRead, BufReader};
     let project = tempfile::tempdir().unwrap();
     assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
+    assert_success(&vivi(["pump", "start", "--project", root(&project)]));
     let mut child = Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args([
             "pump",

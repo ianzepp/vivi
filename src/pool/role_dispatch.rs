@@ -10,11 +10,14 @@
 //! 1. Read-only: the `--read-only` flag, or the role's kind is `auditor`,
 //!    `triage` or `cadence` (case-insensitive).
 //! 2. Band: the body's `band:` line, else the role's `model` band string
-//!    parsed with [`parse_band`].
-//! 3. Model: `--model` wins; otherwise the band must resolve through the
-//!    pool's bands table with [`choose`]. With `--model`, the band's
-//!    reasoning is taken only when the pool's choice for that band names the
-//!    same model.
+//!    parsed with [`parse_band`]. A role `model` that is not a band but is a
+//!    model in the pool's `harness.models` is a model slug, not a band.
+//! 3. Model: `--model` wins; then a body `band:` line; then the role's slug;
+//!    then the role's band, which must resolve through the pool's bands table
+//!    with [`choose`]. With `--model`, the band's reasoning is taken only
+//!    when the pool's choice for that band names the same model. A role's
+//!    slug takes the role's `thinking`, else the reasoning of the first band
+//!    entry (P0 to P5, any position) that names the slug, else none.
 //!
 //! There is no failover, no health tracking and no retry on another model:
 //! the pool's first choice for a band is the only choice. [`standing_prompt`]
@@ -36,9 +39,11 @@ pub struct RoleFacts {
     pub name: String,
     /// The role's kind, e.g. `hand`, `auditor`, `triage`, `cadence`.
     pub kind: Option<String>,
-    /// The role's `model` field: a band string such as `P2-S0`, not a model
-    /// slug.
+    /// The role's `model` field: a band string such as `P2-S0`, or a model
+    /// slug that is in the pool's `harness.models`.
     pub band: Option<String>,
+    /// The role's reasoning effort, used with a model slug in `band`.
+    pub thinking: Option<String>,
     /// The role's charter text, possibly blank.
     pub charter: String,
     /// Explicit `read_only` on the role, when set.
@@ -54,6 +59,7 @@ impl RoleFacts {
             name: String::from("auditor"),
             kind: Some(String::from("auditor")),
             band: None,
+            thinking: None,
             charter: crate::mailspace::shipped::AUDITOR_CHARTER.to_string(),
             read_only: Some(true),
         }
@@ -80,9 +86,10 @@ pub struct Input<'a> {
 pub struct Resolved {
     /// Model slug the harness is run with.
     pub model: String,
-    /// Reasoning effort the harness is run at, when a band chose the model.
+    /// Reasoning effort the harness is run at, when a band or a role slug
+    /// chose the model.
     pub reasoning: Option<String>,
-    /// The band the job runs at, when one was given.
+    /// The band the job runs at, when one was given. None for a role slug.
     pub band: Option<u8>,
     /// Whether the job publishes nothing.
     pub read_only: bool,
@@ -98,17 +105,21 @@ pub struct Resolved {
 /// `--model` nor any band names a model, when the pool has nothing for the
 /// band, or when the chosen model is not one the pool harness offers.
 pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolved, VivariumError> {
-    let band = resolve_band(input)?;
+    let band = resolve_band(config, input)?;
+    let slug = role_slug(config, input.role);
     let (model, reasoning) = match input.model_flag {
-        Some(slug) => (
-            slug.to_string(),
-            matching_reasoning(config, pool, band, slug),
-        ),
-        None => {
-            let band = band.ok_or_else(|| no_model(input.role))?;
-            let choice = choose(config, pool, band)?;
-            (choice.model, Some(choice.reasoning))
+        Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => {
+            (slug_flag.to_string(), slug_reasoning(config, slug))
         }
+        Some(flag) => (
+            flag.to_string(),
+            matching_reasoning(config, pool, band, flag),
+        ),
+        None => match (band, slug) {
+            (Some(band), _) => choose_pair(config, pool, band)?,
+            (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
+            (None, None) => return Err(no_model(input.role)),
+        },
     };
     check_model(config, &model)?;
     Ok(Resolved {
@@ -199,9 +210,10 @@ fn is_read_only(input: &Input) -> bool {
 }
 
 /// The body's `band:` line, else the role's band string. The role's band is
-/// only consulted (and so only refused when unparseable) when the body gives
-/// no band of its own.
-fn resolve_band(input: &Input) -> Result<Option<u8>, VivariumError> {
+/// only consulted (and so only refused when neither a band nor a harness
+/// model) when the body gives no band of its own. A role model slug is no
+/// band.
+fn resolve_band(config: &PoolConfig, input: &Input) -> Result<Option<u8>, VivariumError> {
     if let Some(band) = bands::body_band(input.body)? {
         return Ok(Some(band));
     }
@@ -211,9 +223,58 @@ fn resolve_band(input: &Input) -> Result<Option<u8>, VivariumError> {
     let Some(band) = role.band.as_deref() else {
         return Ok(None);
     };
-    parse_band(band)
-        .map(Some)
-        .ok_or_else(|| bad_role_band(&role.name, band))
+    match parse_band(band) {
+        Some(band) => Ok(Some(band)),
+        None if offers(config, band) => Ok(None),
+        None => Err(bad_role_band(config, &role.name, band)),
+    }
+}
+
+/// Whether the pool harness offers `model`.
+fn offers(config: &PoolConfig, model: &str) -> bool {
+    config
+        .harness
+        .as_ref()
+        .is_some_and(|harness| harness.models.iter().any(|offered| offered == model))
+}
+
+/// The role's model slug and its facts: the role's `model` when it is not a
+/// band but is a model the pool harness offers.
+fn role_slug<'a>(
+    config: &PoolConfig,
+    role: Option<&'a RoleFacts>,
+) -> Option<(&'a str, &'a RoleFacts)> {
+    let role = role?;
+    let value = role.band.as_deref()?;
+    (parse_band(value).is_none() && offers(config, value)).then_some((value, role))
+}
+
+/// The reasoning for a role's slug: the role's `thinking`, else the first
+/// band entry (P0 to P5, any position) that names the slug, else none.
+fn slug_reasoning(config: &PoolConfig, slug: Option<(&str, &RoleFacts)>) -> Option<String> {
+    let (model, role) = slug?;
+    if let Some(thinking) = role.thinking.as_deref().filter(|t| !t.trim().is_empty()) {
+        return Some(thinking.to_string());
+    }
+    (0..=5).find_map(|band| {
+        config
+            .bands
+            .entries
+            .get(&format!("P{band}"))?
+            .iter()
+            .find(|entry| entry.model == model)
+            .map(|entry| entry.reasoning.clone())
+    })
+}
+
+/// The pool's model and reasoning for `band`.
+fn choose_pair(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+) -> Result<(String, Option<String>), VivariumError> {
+    let choice = choose(config, pool, band)?;
+    Ok((choice.model, Some(choice.reasoning)))
 }
 
 /// The band choice's reasoning when the pool's choice for the band names the
@@ -246,9 +307,14 @@ fn check_model(config: &PoolConfig, model: &str) -> Result<(), VivariumError> {
     )))
 }
 
-fn bad_role_band(role: &str, band: &str) -> VivariumError {
+fn bad_role_band(config: &PoolConfig, role: &str, band: &str) -> VivariumError {
+    let models = config
+        .harness
+        .as_ref()
+        .map_or_else(|| String::from("none"), |harness| harness.models.join(", "));
     VivariumError::Config(format!(
-        "role {role} has band \"{band}\": use a band P0 to P5, optionally with a -S0 to -S3 speed"
+        "role {role} has band \"{band}\": use a band P0 to P5, optionally with a -S0 to -S3 speed, \
+         or a model in harness.models ({models})"
     ))
 }
 

@@ -590,3 +590,30 @@ fn a_provider_only_pool_passes_doctor_config_and_skips_the_repository() {
         "no repository configured for this pool"
     );
 }
+
+const BANDS: &str = r#"
+[pools.lanes.bands]
+P2 = [{ model = "m/ok", reasoning = "high" }]
+"#;
+
+#[test]
+fn pool_show_prints_each_band_model_and_effort() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    let config = project.path().join(".vivi/mailspace.toml");
+    let mut body = std::fs::read_to_string(&config).unwrap();
+    body.push_str(BANDS);
+    std::fs::write(&config, body).unwrap();
+
+    let shown = vivi(["pool", "show", "lanes", "--project", root]);
+    assert!(shown.status.success(), "{}", text(&shown));
+    assert!(text(&shown).contains("P2: m/ok (high)"), "{}", text(&shown));
+
+    let json = vivi(["pool", "show", "lanes", "--json", "--project", root]);
+    assert!(json.status.success(), "{}", text(&json));
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["bands"]["P2"][0]["model"], "m/ok");
+    assert_eq!(value["bands"]["P2"][0]["reasoning"], "high");
+    assert_eq!(value["harness_models"], serde_json::json!(["m/ok"]));
+}

@@ -9,6 +9,7 @@ use super::{
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::ProbeHost;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[derive(Default)]
@@ -28,6 +29,22 @@ impl JobStore for Store {
 
 fn spec(id: &str) -> JobSpec {
     JobSpec::new(id, "planner:board", "planner", "plan board", "write a plan")
+}
+
+#[test]
+fn enqueue_refuses_a_read_only_job_without_a_start_ref() {
+    let mut store = Store::default();
+    let mut job = spec("review-1");
+    job.read_only = true;
+    let err = enqueue(&mut store, job.clone()).unwrap_err().to_string();
+    assert!(
+        err.contains("review-1") && err.contains("from_ref"),
+        "{err}"
+    );
+    assert!(store.jobs.is_empty());
+    job.from_ref = Some("main".into());
+    enqueue(&mut store, job).unwrap();
+    assert_eq!(store.jobs.len(), 1);
 }
 
 #[test]
@@ -742,4 +759,168 @@ fn a_job_without_a_preset_task_posts_no_brief_reply() {
     assert_eq!(replies_in(&commands), 0, "{commands:?}");
     assert!(brief.is_none());
     assert!(commands.iter().any(|c| c.contains("task send")));
+}
+
+/// One queued `merge` job `m1` with its task `t1` preset, against a pool with
+/// one free slot whose `pool dispatch` answers `code`/`reply`.
+fn refusal_rig(code: i32, reply: &str) -> (tempfile::TempDir, Ctx, Arc<FakeHost>, Store) {
+    refusal_rig_for(Some("t1"), None, code, reply)
+}
+
+/// Like [`refusal_rig`], with the job's preset task and the step task its
+/// payload carries (a flow job stamps it) chosen by the caller.
+fn refusal_rig_for(
+    task: Option<&str>,
+    step: Option<&str>,
+    code: i32,
+    reply: &str,
+) -> (tempfile::TempDir, Ctx, Arc<FakeHost>, Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\n");
+    host.reply("pool dispatch", code, reply);
+    host.reply("task send", 0, "created merge a1b2c3d4\n");
+    let mut store = Store::default();
+    let mut job = JobSpec::new("m1", "merge", "merge", "integrate", "merge branches");
+    job.task = task.map(str::to_owned);
+    if let Some(step) = step {
+        job.payload = serde_json::json!({ "task": step });
+    }
+    enqueue(&mut store, job).unwrap();
+    (dir, ctx, host, store)
+}
+
+fn pool_dispatch_calls(host: &FakeHost) -> usize {
+    host.commands()
+        .iter()
+        .filter(|c| c.contains("pool dispatch"))
+        .count()
+}
+
+#[test]
+fn three_porcelain_refusals_hold_the_job_and_raise_one_alarm() {
+    let (_dir, ctx, host, mut store) = refusal_rig_for(
+        Some("t1"),
+        Some("t-step"),
+        1,
+        "refused t1 \"no usable bridge\"\nremote refused\n",
+    );
+    for tick in 1..=2 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+        assert_eq!(store.jobs["m1"].dispatch_refusals, tick);
+        assert!(store.jobs["m1"].held.is_none(), "tick {tick}");
+    }
+    assert!(!ctx.home.join("exceptions.txt").exists());
+
+    assert!(dispatch_pending(&ctx, &mut store).unwrap().is_empty());
+    let job = &store.jobs["m1"];
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.dispatch_refusals, 3);
+    assert_eq!(job.held.as_deref(), Some("no usable bridge"));
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(exceptions.matches("job-dispatch-refused m1").count(), 1);
+    assert!(
+        exceptions.contains("refused job m1 3 times: no usable bridge")
+            && exceptions.contains("`vivi pump requeue t-step`"),
+        "{exceptions}"
+    );
+
+    // A held job is not offered to a pool again, and the alarm is not repeated.
+    let calls = pool_dispatch_calls(&host);
+    assert_eq!(calls, 3);
+    dispatch_pending(&ctx, &mut store).unwrap();
+    assert_eq!(pool_dispatch_calls(&host), calls);
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(exceptions.matches("job-dispatch-refused m1").count(), 1);
+}
+
+#[test]
+fn only_the_porcelain_refused_line_counts_toward_a_hold() {
+    let (_dir, ctx, host, mut store) = refusal_rig(1, "remote refused\n");
+    for _ in 0..4 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    host.reply("pool dispatch", 1, "no free slot on primary\n");
+    for _ in 0..4 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    host.reply("pool dispatch", 1, "unrefused t1 words\n");
+    for _ in 0..4 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    let job = &store.jobs["m1"];
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.dispatch_refusals, 0);
+    assert!(job.held.is_none());
+    assert!(pool_dispatch_calls(&host) >= 8, "the retry never stops");
+    assert!(!ctx.home.join("exceptions.txt").exists());
+}
+
+#[test]
+fn a_correction_job_without_a_preset_task_names_its_step_task() {
+    let (_dir, ctx, _host, mut store) =
+        refusal_rig_for(None, Some("t-step"), 1, "refused t \"no usable bridge\"\n");
+    for _ in 0..3 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    assert!(store.jobs["m1"].held.is_some());
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(exceptions.matches("job-dispatch-refused m1").count(), 1);
+    assert!(
+        exceptions.contains("`vivi pump requeue t-step`"),
+        "{exceptions}"
+    );
+}
+
+#[test]
+fn a_held_job_without_a_step_names_the_job_release() {
+    let (_dir, ctx, _host, mut store) =
+        refusal_rig_for(Some("t1"), None, 1, "refused t1 \"no usable bridge\"\n");
+    for _ in 0..3 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exceptions.contains("`vivi pump requeue --job m1`"),
+        "{exceptions}"
+    );
+}
+
+#[test]
+fn a_release_request_clears_the_hold_and_the_job_is_offered_again() {
+    let (_dir, ctx, host, mut store) =
+        refusal_rig_for(Some("t1"), None, 1, "refused t1 \"no usable bridge\"\n");
+    for _ in 0..3 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    assert!(store.jobs["m1"].held.is_some());
+    let calls = pool_dispatch_calls(&host);
+
+    let pump_db = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    pump_db.request_job_release("m1", 1).unwrap();
+    pump_db.request_job_release("nope", 1).unwrap();
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched t1 bridge slot-1 model/default unit/task\n",
+    );
+    assert_eq!(dispatch_pending(&ctx, &mut store).unwrap(), ["m1"]);
+
+    let job = &store.jobs["m1"];
+    assert_eq!(job.status, JobStatus::Dispatched);
+    assert!(job.held.is_none());
+    assert_eq!(job.dispatch_refusals, 0);
+    assert_eq!(pool_dispatch_calls(&host), calls + 1);
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exceptions.contains("resolved job-dispatch-refused m1 released by operator"),
+        "{exceptions}"
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("job release ignored: nope is not held"))
+    );
+    assert!(pump_db.take_job_releases().unwrap().is_empty());
 }

@@ -139,6 +139,12 @@ fn the_job_is_head_cto_with_run_count_and_step_verdicts() {
     let run = two_runs(&f, "block_ship");
     let spec = start(&f, &run);
     assert_eq!(spec.role, "head-cto");
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some(f.ctx.cfg.main.as_str()));
+    assert_eq!(
+        spec.extra_targets,
+        crate::pump::flow::step_inputs::targets(&f.ctx)
+    );
     assert_eq!(spec.kind, "flow-cto");
     assert_eq!(spec.task.as_deref(), Some("t-cto"));
     assert!(spec.body.contains("runs: 2"), "{}", spec.body);

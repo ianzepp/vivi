@@ -123,7 +123,7 @@ fn an_existing_flow_role_with_a_pool_and_a_charter_is_left_alone() {
     let mut inputs = MigrateInputs::default();
     inputs
         .charters
-        .insert("slicer".into(), "Your own slicer rules.\n".into());
+        .insert("slicer".into(), "Your own slicer rules.\n+++\n".into());
     let plan = plan_of(&raw, &inputs);
     assert!(plan.new_roles.iter().all(|role| role.name != "slicer"));
     assert!(plan.assignments.iter().all(|row| row.role != "slicer"));

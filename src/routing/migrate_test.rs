@@ -256,16 +256,19 @@ fn pump_planner_without_a_hand_pool_to_copy_is_reported_not_invented() {
 
 #[test]
 fn pump_planner_gets_the_text_of_the_old_planner_charter_file() {
-    let inputs = legacy("You are the project planner.\nPlan well.\n");
+    let inputs = legacy("You are the project planner.\n+++\nPlan well.\n");
     let (plan, _) = migrate_with(V15, &inputs);
     assert_eq!(writes_for(&plan, "pump-planner").len(), 1, "{plan:?}");
     let write = writes_for(&plan, "pump-planner")[0];
     assert_eq!(write.role, "pump-planner");
     assert_eq!(write.origin, "/tmp/planner-charter.md");
-    assert_eq!(write.text, "You are the project planner.\nPlan well.\n");
+    assert_eq!(
+        write.text,
+        "You are the project planner.\n+++\nPlan well.\n"
+    );
     let text = render_plan(&plan);
     assert!(
-        text.contains("set role pump-planner charter from /tmp/planner-charter.md (2 lines)"),
+        text.contains("set role pump-planner charter from /tmp/planner-charter.md (3 lines)"),
         "{text}"
     );
     assert!(
@@ -278,7 +281,23 @@ fn pump_planner_gets_the_text_of_the_old_planner_charter_file() {
         .iter()
         .find(|item| item.contains("was copied from /tmp/planner-charter.md"));
     assert!(
-        copied.is_some_and(|item| item.contains("PUMP-PLAN-BEGIN")),
+        copied.is_some_and(|item| item.contains("`+++`") && !item.contains("PUMP-PLAN-BEGIN")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn an_old_planner_charter_file_without_the_envelope_is_ignored() {
+    let inputs = legacy("You are the project planner.\nPlan well.\n");
+    let (plan, _) = migrate_with(V15, &inputs);
+    let writes = writes_for(&plan, "pump-planner");
+    assert_eq!(writes.len(), 1, "{plan:?}");
+    assert_eq!(writes[0].origin, "the shipped default");
+    assert_eq!(writes[0].text, PUMP_PLANNER_CHARTER);
+    assert!(
+        plan.review.iter().any(|item| {
+            item.contains("/tmp/planner-charter.md is ignored") && item.contains("no `+++`")
+        }),
         "{plan:?}"
     );
 }
@@ -308,10 +327,10 @@ fn a_pump_planner_charter_that_has_text_is_never_replaced() {
         "[pools.glm]",
         "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\nstatus = \"active\"\npool = \"glm\"\nmodel = \"P2-S0\"\n\n[pools.glm]",
     );
-    let mut inputs = legacy("legacy text\n");
+    let mut inputs = legacy("legacy text\n+++\n");
     inputs
         .charters
-        .insert("pump-planner".into(), "my own charter\n".into());
+        .insert("pump-planner".into(), "my own charter\n+++\n".into());
     assert!(writes_for(&plan_with(&raw, &inputs), "pump-planner").is_empty());
     inputs.charters.insert("pump-planner".into(), "  \n".into());
     assert_eq!(
@@ -337,7 +356,7 @@ fn a_merge_charter_that_is_not_the_shipped_one_gets_a_review_line() {
     let mut inputs = MigrateInputs::default();
     inputs.charters.insert(
         "merge".into(),
-        "Your lane (worktrees/merge/) is the merge lane.\nYou are the only writer to main.\n"
+        "Your lane (worktrees/merge/) is the merge lane.\nYou are the only writer to main.\n+++\n"
             .into(),
     );
     let plan = plan_with(V15, &inputs);
@@ -718,10 +737,10 @@ fn migrated_text_still_parses_as_a_pump_config() {
 
 #[test]
 fn a_second_migrate_of_the_written_text_changes_nothing() {
-    let mut with_merge_charter = legacy("planner charter\n");
+    let mut with_merge_charter = legacy("planner charter\n+++\n");
     with_merge_charter
         .charters
-        .insert("merge".into(), "Your own merge rules.\n".into());
+        .insert("merge".into(), "Your own merge rules.\n+++\n".into());
     for (raw, first) in [
         (V15.to_string(), with_merge_charter),
         (without_id(V15), MigrateInputs::default()),
@@ -881,7 +900,7 @@ fn an_auditor_charter_that_has_text_is_kept_and_reported() {
     let mut inputs = MigrateInputs::default();
     inputs.charters.insert(
         "auditor".into(),
-        "You are a Tugboat auditor seat.\nReport to the Mind.\n".into(),
+        "You are a Tugboat auditor seat.\nReport to the Mind.\n+++\n".into(),
     );
     let plan = plan_with(V15, &inputs);
     assert!(writes_for(&plan, "auditor").is_empty(), "{plan:?}");

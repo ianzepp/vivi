@@ -200,6 +200,7 @@ fn receipt(exit: i32, message: &str, stderr: &str) -> String {
 fn finished_job(rig: &mut Rig, id: &str, role: &str, task: &str, text: String) -> R {
     let mut spec = JobSpec::new(id, role, role, "s", "b");
     spec.task = Some(task.to_owned());
+    spec.from_ref = Some("main".into());
     jobs::enqueue(&mut rig.jobs, spec)?;
     let job = rig
         .jobs

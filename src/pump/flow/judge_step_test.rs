@@ -94,6 +94,11 @@ fn judge_job_is_a_read_only_auditor_with_audit_and_rung() -> Result<(), Vivarium
     };
     assert_eq!(spec.role, "auditor");
     assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(
+        spec.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
     assert_eq!(spec.builtin_role.as_deref(), Some("auditor"));
     assert!(spec.body.starts_with("Judge mode\n"), "{}", spec.body);
     assert!(spec.body.contains(NEED));

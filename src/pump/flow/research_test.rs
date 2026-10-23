@@ -141,6 +141,11 @@ fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
     rig.host.reply("want show", 0, "WANT-THREAD-TEXT");
     let spec = start_job(&rig)?;
     assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(
+        spec.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
     assert_eq!(spec.role, "researcher");
     assert_eq!(spec.kind, "researcher");
     assert_eq!(spec.task.as_deref(), Some("t-step"));

@@ -10,7 +10,9 @@
 //!   record closed);
 //! - `requeue` queues the step's newest job again, as `<job id>-q<n>`, at the
 //!   same attempt; it is refused unless that job is terminal and the step is
-//!   open (a done step is reopened by advance, never here);
+//!   open (a done step is reopened by advance, never here). A Pending job held
+//!   after repeated pool refusals is released in place instead: its hold and
+//!   refusal count clear and the next dispatch offers it to a pool again;
 //! - `recover` is refused: it has no meaning for a flow run;
 //! - `answer` and `unlock` are left alone: other phases apply them.
 //!
@@ -28,7 +30,7 @@ use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
+use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
 /// Exception kind of an operator action the flow cannot apply.
@@ -179,6 +181,9 @@ fn requeue(
             step.state
         )));
     }
+    if release_held(st, store, &run.need, task)? {
+        return Ok(());
+    }
     let (old, row) = newest_job(st, store, task)?
         .ok_or_else(|| VivariumError::Message(format!("step {task} has no job to requeue")))?;
     if !old.status.is_terminal() {
@@ -194,6 +199,34 @@ fn requeue(
     jobs::enqueue(st, spec)?;
     store.insert_step_job(&run.need, &again)?;
     store.set_step_state(&step.task, StepState::Running, None)
+}
+
+/// Release every held Pending job of step `task` in place: a job whose
+/// payload names this task and need (a slice-merge job, a correction) or that
+/// has a `step_jobs` row for it. True when any was released.
+fn release_held(
+    st: &mut impl JobStore,
+    store: &PumpStore,
+    need: &str,
+    task: &str,
+) -> Result<bool, VivariumError> {
+    let mut ids = Vec::new();
+    for job in st.jobs().values() {
+        if job.status != JobStatus::Pending || job.held.is_none() {
+            continue;
+        }
+        let stamped = job.payload["task"] == task && job.payload["need"] == need;
+        if stamped || store.step_job(&job.id)?.is_some_and(|row| row.task == task) {
+            ids.push(job.id.clone());
+        }
+    }
+    for id in &ids {
+        if let Some(job) = st.jobs_mut().get_mut(id) {
+            job.held = None;
+            job.dispatch_refusals = 0;
+        }
+    }
+    Ok(!ids.is_empty())
 }
 
 /// The step's job at its highest attempt, with its `step_jobs` row.

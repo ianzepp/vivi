@@ -170,7 +170,7 @@ impl Rig {
     fn role_job(&mut self, node: &str, id: &str, message: &str) -> R {
         let step = self.step(node)?;
         let mut spec = JobSpec::new(id, "planner", "pump-planner", "s", "b");
-        spec.task = Some(step.task.clone());
+        (spec.task, spec.from_ref) = (Some(step.task.clone()), Some("main".into()));
         jobs::enqueue(&mut self.jobs, spec)?;
         self.store.insert_step_job(
             NEED,

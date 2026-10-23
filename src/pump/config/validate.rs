@@ -50,7 +50,49 @@ impl Findings {
     }
 }
 
+/// The rungs every build and repair need run: a slice merge needs `task`,
+/// every need rung step needs `need`, and the repair flow's main steps need
+/// `main`. `release` stays optional.
+const REQUIRED_RUNGS: [&str; 3] = ["task", "need", "main"];
+
 impl PumpConfig {
+    /// Each required rung command (`task`, `need`, `main`) that is not set:
+    /// the workspace one with no named targets, else per target, counting the
+    /// workspace commands a target inherits.
+    #[must_use]
+    pub fn missing_rungs(&self) -> Vec<Missing> {
+        let mut missing = Vec::new();
+        if self.targets.is_empty() {
+            self.missing_rungs_of(None, "pump.rungs", "pump", &mut missing);
+        }
+        for id in self.targets.keys() {
+            let name = format!("pump.targets.{id}.rungs");
+            let scope = format!("target {id}");
+            self.missing_rungs_of(Some(id), &name, &scope, &mut missing);
+        }
+        missing
+    }
+
+    fn missing_rungs_of(
+        &self,
+        target: Option<&str>,
+        name: &str,
+        scope: &str,
+        missing: &mut Vec<Missing>,
+    ) {
+        let effective = self.effective_rungs(target);
+        for rung in REQUIRED_RUNGS {
+            if effective.command(rung).is_none() {
+                missing.push(Missing {
+                    name: format!("{name}.{rung}"),
+                    detail: format!(
+                        "{scope} {rung} is not set; build and repair needs run it (`vivi pump rungs set ...`)"
+                    ),
+                });
+            }
+        }
+    }
+
     /// Check the config against itself and the known pool names, strictly:
     /// both wrong and missing items fail.
     ///

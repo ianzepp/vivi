@@ -3,8 +3,8 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    POOL_RESULT_MARKER, done_step, need_thread, predecessor_step, read_only_job, step_replies,
-    targets,
+    POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
+    step_replies, targets,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -185,5 +185,28 @@ fn read_only_job_sets_read_only_from_ref_and_all_targets() -> R {
     assert_eq!(spec.role, "pump-planner");
     assert_eq!(spec.task.as_deref(), Some("t1"));
     assert!(spec.target.is_none());
+    Ok(())
+}
+
+#[test]
+fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
+    let rig = rig()?;
+    let step = row("plan", "t1", StepState::Running);
+    let mut spec = crate::pump::flow::outcome::role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "flow-x",
+        "pump-planner",
+        "the brief",
+    );
+    assert!(!spec.read_only);
+    assert!(spec.from_ref.is_none());
+
+    make_read_only(&rig.ctx, &mut spec);
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(spec.extra_targets, targets(&rig.ctx));
     Ok(())
 }

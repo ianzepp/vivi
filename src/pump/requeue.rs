@@ -32,6 +32,11 @@ use crate::pump::state::{State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::transient;
 
+#[path = "requeue_job.rs"]
+mod requeue_job;
+#[path = "requeue_step.rs"]
+mod requeue_step;
+
 /// Timeout for one `ls-remote` of a target's unit branches.
 const SCAN_TIMEOUT_SECS: u64 = 60;
 
@@ -275,9 +280,12 @@ fn highest_branch(branches: &BTreeMap<String, TargetBranches>, st: &State, uid: 
         .unwrap_or(0)
 }
 
-/// `vivi pump requeue <uid>...`: post one requeue action per named unit on
-/// its need's open pump record, for the running pump to apply at its next
+/// `vivi pump requeue <uid>...`: post one requeue action per named unit (or
+/// flow step task, see [`requeue_step`]) on its need's open pump record, for the running pump to apply at its next
 /// tick. `--dry-run` prints what each uid would become and posts nothing.
+///
+/// `vivi pump requeue --job <id>` releases one held pool job instead, see
+/// [`requeue_job`].
 ///
 /// `vivi pump requeue --stuck-since <time> --why <class>` is the bulk form:
 /// every unit still stuck inside that window gets a default-policy action
@@ -291,6 +299,9 @@ fn highest_branch(branches: &BTreeMap<String, TargetBranches>, st: &State, uid: 
 /// posting an action fails with.
 pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError> {
     let home = project_home(project)?;
+    if let Some(id) = cmd.job.as_deref() {
+        return requeue_job::request(&home, id, cmd.dry_run);
+    }
     let policy = AttemptPolicy::from_command(cmd)?;
     if cmd.stuck_since.is_some() {
         return run_bulk(project, cmd, &home);
@@ -302,20 +313,25 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
     }
     let path = home.join(DB_FILENAME);
     let st = load_state(&path)?;
-    for uid in &cmd.units {
-        if !st.units.contains_key(uid.as_str()) {
-            return Err(VivariumError::Message(format!("unknown unit: {uid}")));
+    let steps = requeue_step::resolve(&path, &cmd.units, |uid| st.units.contains_key(uid))?;
+    let uids: Vec<String> = cmd
+        .units
+        .iter()
+        .filter(|uid| st.units.contains_key(uid.as_str()))
+        .cloned()
+        .collect();
+    let reason = cmd.reason.as_deref().unwrap_or(DEFAULT_REASON);
+    if !uids.is_empty() {
+        let ctx = cli_ctx(project, &home)?;
+        let branches = scan_targets(&ctx, &st, &uids);
+        let planned = plan(&st, &branches, &uids, policy);
+        if cmd.dry_run {
+            print_planned(&planned);
+        } else {
+            post_all(project, &st, &planned, policy, reason, false)?;
         }
     }
-    let ctx = cli_ctx(project, &home)?;
-    let branches = scan_targets(&ctx, &st, &cmd.units);
-    let planned = plan(&st, &branches, &cmd.units, policy);
-    if cmd.dry_run {
-        print_planned(&planned);
-        return Ok(());
-    }
-    let reason = cmd.reason.as_deref().unwrap_or(DEFAULT_REASON);
-    post_all(project, &st, &planned, policy, reason, false)
+    requeue_step::post(project, &steps, policy, reason, cmd.dry_run)
 }
 
 /// Post one requeue action per planned unit on its need's open pump record.

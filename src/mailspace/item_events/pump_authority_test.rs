@@ -138,6 +138,25 @@ fn the_pump_closes_and_reopens_a_need_another_role_authored() {
 
 /// Deliver a letter from `from` as a reply on the need, link it, and settle.
 fn deliver(mailspace: &Mailspace, from: &str, need: &str, headers: &str, n: u8) -> EventTally {
+    deliver_at(
+        mailspace,
+        from,
+        need,
+        headers,
+        n,
+        "Sun, 11 Oct 2026 12:00:00 +0000",
+    )
+}
+
+/// [`deliver`] with an explicit `Date` header.
+fn deliver_at(
+    mailspace: &Mailspace,
+    from: &str,
+    need: &str,
+    headers: &str,
+    n: u8,
+    date: &str,
+) -> EventTally {
     let item_id = {
         let storage = mailspace.storage().unwrap();
         let id = storage.resolve_message_token(need).unwrap();
@@ -149,7 +168,7 @@ fn deliver(mailspace: &Mailspace, from: &str, need: &str, headers: &str, n: u8) 
     };
     let bytes = format!(
         "From: {from}\r\nTo: {}\r\nSubject: Re: run by the pump\r\n\
-         Message-ID: <pump-auth-{n}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         Message-ID: <pump-auth-{n}@x.test>\r\nDate: {date}\r\n\
          In-Reply-To: <{item_id}>\r\n{headers}\r\nbody\r\n",
         mailspace.address_for("pumper"),
     )
@@ -253,4 +272,83 @@ fn a_second_member_accepts_the_pumps_done_after_it_posted_on_the_thread() {
         mailspace.item_event_state(&need).unwrap().unwrap().state,
         "done"
     );
+}
+
+/// Two foreign prefixes, neither this mailspace's own.
+fn foreign_prefixes(mailspace: &Mailspace) -> (&'static str, &'static str) {
+    let mut free = ["aaaaaaaa", "bbbbbbbb", "cccccccc"]
+        .into_iter()
+        .filter(|p| *p != mailspace.address_prefix());
+    (free.next().unwrap(), free.next().unwrap())
+}
+
+#[test]
+fn the_first_pump_role_poster_is_the_only_address_that_counts() {
+    let (_tmp, mailspace) = space();
+    let need = need_of(&mailspace);
+    mailspace.assign_need("head", &need, "other").unwrap();
+    let rfc = need_rfc_id(&mailspace, &need);
+    let (first, later) = foreign_prefixes(&mailspace);
+    let first_pump = format!("pumper@{first}.local");
+    let later_pump = format!("pumper@{later}.local");
+
+    // The first pump-role post, then a later one from another prefix.
+    deliver_at(
+        &mailspace,
+        &first_pump,
+        &need,
+        "",
+        1,
+        "Sun, 11 Oct 2026 12:00:00 +0000",
+    );
+    deliver_at(
+        &mailspace,
+        &later_pump,
+        &need,
+        "",
+        2,
+        "Sun, 11 Oct 2026 13:00:00 +0000",
+    );
+
+    // The later address posted, then says done: it is not the earliest.
+    let tally = deliver_at(
+        &mailspace,
+        &later_pump,
+        &need,
+        &done_headers(&rfc),
+        3,
+        "Sun, 11 Oct 2026 14:00:00 +0000",
+    );
+    assert_eq!(tally.applied, 0, "a later same-role address never counts");
+    assert_eq!(mailspace.item_event_state(&need).unwrap(), None);
+
+    // The first poster's done counts.
+    let tally = deliver_at(
+        &mailspace,
+        &first_pump,
+        &need,
+        &done_headers(&rfc),
+        4,
+        "Sun, 11 Oct 2026 15:00:00 +0000",
+    );
+    assert_eq!(tally.applied, 1, "ignored: {}", tally.ignored);
+    assert_eq!(
+        mailspace.item_event_state(&need).unwrap().unwrap().state,
+        "done"
+    );
+}
+
+#[test]
+fn a_pump_role_done_with_no_earlier_post_does_not_count() {
+    let (_tmp, mailspace) = space();
+    let need = need_of(&mailspace);
+    mailspace.assign_need("head", &need, "other").unwrap();
+    let rfc = need_rfc_id(&mailspace, &need);
+    let (first, _) = foreign_prefixes(&mailspace);
+    let pump = format!("pumper@{first}.local");
+
+    // The done is the pump role's only letter: it is not its own earlier post.
+    let tally = deliver(&mailspace, &pump, &need, &done_headers(&rfc), 1);
+    assert_eq!(tally.applied, 0, "no earlier non-event post");
+    assert_eq!(mailspace.item_event_state(&need).unwrap(), None);
 }
