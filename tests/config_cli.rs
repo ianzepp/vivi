@@ -425,6 +425,9 @@ command = "true"
 repo = "/tmp/other"
 branch = "next"
 gate = { command = "true" }
+[pump.targets.other.merge]
+shared_checks = ["true"]
+batch = 2
 "#;
 
 #[test]
@@ -442,6 +445,8 @@ fn config_validate_names_each_retired_key_and_still_reports_readiness() {
         "[pump.merge] shared_checks:",
         "[pump.targets.other] branch:",
         "[pump.targets.other] gate:",
+        "[pump.targets.other.merge] shared_checks:",
+        "[pump.targets.other.merge] batch:",
     ] {
         assert!(text.contains(expected), "{expected} missing from:\n{text}");
     }
