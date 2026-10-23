@@ -20,6 +20,7 @@ use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, TaskStatus}
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use crate::pump::store::flow_links::SliceLink;
 
 /// Prefix of a slice step row's node: `slice:<id>`.
 pub const SLICE_NODE_PREFIX: &str = "slice:";
@@ -71,17 +72,19 @@ pub fn target_of(body: &str) -> Option<&str> {
 ///
 /// Each task depends on the slicer step's task and on the tasks of its
 /// prerequisites (slices of this batch, or slices an earlier fanout of the
-/// run already sent). The tasks are bound to the need with the run sentinel
-/// in one call, then each slice gets a pending step row and a `slice_scope`
-/// row. Nothing is sent when the batch is refused.
+/// run already sent). The call is idempotent: a slice the run already
+/// indexed under the open fanout is reused, a task a failed earlier call sent
+/// is adopted, and each new task is recorded (step row, `slice_scope`, link)
+/// before the next one is sent. The sentinel and every task of the batch are
+/// bound to the need in one call at the end.
 ///
-/// Returns the sent task handles in the order they were sent.
+/// Returns the slice task handles in topological order.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] for a duplicate slice id, a dependency on an
 /// unknown slice, a dependency cycle, a run without a sentinel, or a failed
 /// mail or store call.
-pub fn expand<M: MailWriter>(
+pub fn expand<M: MailWriter + MailReader>(
     ctx: &Ctx,
     store: &PumpStore,
     mail: &mut M,
@@ -92,39 +95,111 @@ pub fn expand<M: MailWriter>(
     let rows = store.steps_of(&run.need, run.run)?;
     let sentinel = sentinel_of(&rows, run)?;
     let order = topological_order(slices, &rows)?;
+    let fanout = store.open_fanout(&run.need, run.run)?;
 
-    let mut sent: BTreeMap<&str, String> = BTreeMap::new();
-    let mut pairs: Vec<(&Slice, String)> = Vec::with_capacity(order.len());
+    let mut tasks: BTreeMap<&str, String> = BTreeMap::new();
+    let mut handles: Vec<String> = Vec::with_capacity(order.len());
     for slice in order {
-        let mut depends_on = vec![slicer_step.task.clone()];
-        for dep in &slice.deps {
-            let task = match sent.get(dep.as_str()) {
-                Some(task) => task.clone(),
-                None => earlier_task(&rows, dep)?,
-            };
-            if !depends_on.contains(&task) {
-                depends_on.push(task);
+        let dep_tasks = dep_tasks(slice, &tasks, &rows)?;
+        let task = match linked_task(store, &rows, slice, fanout.as_deref())? {
+            Some(task) => task,
+            None => {
+                let mut depends_on = vec![slicer_step.task.clone()];
+                depends_on.extend(
+                    dep_tasks
+                        .iter()
+                        .filter(|t| **t != slicer_step.task)
+                        .cloned(),
+                );
+                let task = adopt_or_send(ctx, store, mail, run, slice, &depends_on, &fanout)?;
+                let link = SliceLink {
+                    task: task.clone(),
+                    need: run.need.clone(),
+                    run: run.run,
+                    fanout: fanout.clone(),
+                    deps: dep_tasks,
+                };
+                record_slice(store, run, slice, &link)?;
+                task
             }
-        }
-        let task = mail.send_step(
-            &ctx.cfg.reply_from,
-            &ctx.cfg.reply_from,
-            &format!("{} ({} r{})", slice.title, run.need, run.run),
-            &slice_body(run, slice),
-            &depends_on,
-        )?;
-        sent.insert(slice.id.as_str(), task.clone());
-        pairs.push((slice, task));
+        };
+        tasks.insert(slice.id.as_str(), task.clone());
+        handles.push(task);
     }
 
     let mut units = vec![sentinel];
-    units.extend(pairs.iter().map(|(_, task)| task.clone()));
+    units.extend(handles.iter().cloned());
     mail.bind(&run.need, &units)?;
+    Ok(handles)
+}
 
-    for (slice, task) in &pairs {
-        record_slice(store, run, slice, task)?;
+/// The tasks of the slices `slice` depends on: this batch's, else an earlier
+/// fanout's. The slicer step's task is not among them.
+fn dep_tasks(
+    slice: &Slice,
+    batch: &BTreeMap<&str, String>,
+    rows: &[StepRow],
+) -> Result<Vec<String>, VivariumError> {
+    let mut found: Vec<String> = Vec::with_capacity(slice.deps.len());
+    for dep in &slice.deps {
+        let task = match batch.get(dep.as_str()) {
+            Some(task) => task.clone(),
+            None => earlier_task(rows, dep)?,
+        };
+        if !found.contains(&task) {
+            found.push(task);
+        }
     }
-    Ok(pairs.into_iter().map(|(_, task)| task).collect())
+    Ok(found)
+}
+
+/// The task of the run's row for `slice` whose link names `fanout`: an
+/// earlier `expand` finished this slice, so nothing is written for it.
+fn linked_task(
+    store: &PumpStore,
+    rows: &[StepRow],
+    slice: &Slice,
+    fanout: Option<&str>,
+) -> Result<Option<String>, VivariumError> {
+    let node = slice_node(&slice.id);
+    for row in rows.iter().rev().filter(|row| row.node == node) {
+        if let Some(link) = store.slice_link(&row.task)? {
+            if link.fanout.as_deref() == fanout {
+                return Ok(Some(row.task.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Adopt the open task an earlier, failed `expand` already sent for `slice`,
+/// else send it. A task another fanout of the run owns is never adopted.
+fn adopt_or_send<M: MailWriter + MailReader>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &mut M,
+    run: &RunRow,
+    slice: &Slice,
+    depends_on: &[String],
+    fanout: &Option<String>,
+) -> Result<String, VivariumError> {
+    let subject = slice_subject(run, slice);
+    if let Some(task) = mail.sent_step(&subject, &slice_header(run, slice))? {
+        let owned_elsewhere = match store.slice_link(&task)? {
+            Some(link) => link.fanout != *fanout,
+            None => false,
+        };
+        if !owned_elsewhere {
+            return Ok(task);
+        }
+    }
+    mail.send_step(
+        &ctx.cfg.reply_from,
+        &ctx.cfg.reply_from,
+        &subject,
+        &slice_body(run, slice),
+        depends_on,
+    )
 }
 
 fn sentinel_of(rows: &[StepRow], run: &RunRow) -> Result<String, VivariumError> {
@@ -139,32 +214,52 @@ fn sentinel_of(rows: &[StepRow], run: &RunRow) -> Result<String, VivariumError> 
         })
 }
 
-/// Write a slice's pending step row and its `slice_scope` row.
+/// Write a slice's pending step row, its `slice_scope` row and its link. The
+/// link goes last, so a link marks a slice that was recorded completely; a
+/// row an earlier attempt already wrote is kept.
 fn record_slice(
     store: &PumpStore,
     run: &RunRow,
     slice: &Slice,
-    task: &str,
+    link: &SliceLink,
 ) -> Result<(), VivariumError> {
-    store.insert_step(
-        &run.need,
-        &StepRow {
-            run: run.run,
-            node: slice_node(&slice.id),
-            task: task.to_string(),
-            state: StepState::Pending,
-            verdict: None,
-        },
-    )?;
-    store.insert_slice_scope(task, run.run, &slice.write_scope)
+    if store.step_by_task(&link.task)?.is_none() {
+        store.insert_step(
+            &run.need,
+            &StepRow {
+                run: run.run,
+                node: slice_node(&slice.id),
+                task: link.task.clone(),
+                state: StepState::Pending,
+                verdict: None,
+            },
+        )?;
+    }
+    if store.slice_scope(&link.task)?.is_none() {
+        store.insert_slice_scope(&link.task, run.run, &slice.write_scope)?;
+    }
+    store.link_slice(link)
+}
+
+/// The subject of a slice task.
+fn slice_subject(run: &RunRow, slice: &Slice) -> String {
+    format!("{} ({} r{})", slice.title, run.need, run.run)
+}
+
+/// The first line of a slice task body.
+fn slice_header(run: &RunRow, slice: &Slice) -> String {
+    format!(
+        "{STEP_MARKER} {} r{} {}",
+        run.need,
+        run.run,
+        slice_node(&slice.id)
+    )
 }
 
 fn slice_body(run: &RunRow, slice: &Slice) -> String {
     format!(
-        "{STEP_MARKER} {} r{} {}\ntarget: {}\n\n{}\n\n{}",
-        run.need,
-        run.run,
-        slice_node(&slice.id),
+        "{}\ntarget: {}\n\n{}\n\n{}",
+        slice_header(run, slice),
         slice.target,
         slice.title,
         slice.brief
@@ -322,10 +417,11 @@ pub fn settle<M: MailReader>(
     mail: &M,
     run: &RunRow,
 ) -> Result<Option<&'static str>, VivariumError> {
+    let open = store.open_fanout(&run.need, run.run)?;
     let mut slices = 0;
     let mut unsettled = false;
     for row in store.steps_of(&run.need, run.run)? {
-        if !is_slice_row(&row) {
+        if !is_slice_row(&row) || !in_fanout(store, &row, open.as_deref())? {
             continue;
         }
         if row.state == StepState::Failed {
@@ -348,6 +444,17 @@ pub fn settle<M: MailReader>(
         }
     }
     Ok((slices > 0 && !unsettled).then_some(BUILT))
+}
+
+/// True when the slice row belongs to `fanout`; a row with no link counts as
+/// fanout `None`.
+fn in_fanout(
+    store: &PumpStore,
+    row: &StepRow,
+    fanout: Option<&str>,
+) -> Result<bool, VivariumError> {
+    let linked = store.slice_link(&row.task)?.and_then(|link| link.fanout);
+    Ok(linked.as_deref() == fanout)
 }
 
 #[cfg(test)]
