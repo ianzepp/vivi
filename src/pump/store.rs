@@ -18,6 +18,7 @@ use rusqlite::{
 use crate::error::VivariumError;
 
 mod codec;
+mod flow_index;
 mod priority;
 mod promotions;
 mod schema;
@@ -486,6 +487,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     conn.execute_batch(SCHEMA_DDL)
         .map_err(db_err("create schema"))?;
     drop_request_queues(conn)?;
+    flow_index::ensure_tables(conn)?;
     promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
