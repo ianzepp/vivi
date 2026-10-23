@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
 use super::{absence_only, appears, test_filters, vacuous_proof};
-use crate::pump::board::{NeedRow, launch_planners, reask_invalid_plans, replan_unblocked};
+use crate::pump::board::{NeedRow, replan_unblocked};
 use crate::pump::config::{PlanConfig, ProofConfig, ProofRule, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::plan::ingest;
@@ -419,83 +419,6 @@ fn row(handle: &str) -> NeedRow {
     }
 }
 
-fn vacuous_first_plan() -> Value {
-    plan(
-        "n1",
-        &[unit("n1-1", &["src/a.rs"], &["! grep -q old src/a.rs"])],
-    )
-}
-
-fn board_job(st: &State) -> Option<&crate::pump::jobs::PoolJob> {
-    st.jobs.values().find(|job| job.kind == "planner:board")
-}
-
-#[test]
-fn a_rejected_first_plan_is_asked_again_with_the_findings_and_then_held() {
-    let (_dir, ctx, host, mut st) = setup();
-    let rows = [row("n1")];
-
-    // First rejection: the need is `invalid`, the findings are kept.
-    write_plan(&ctx, "n1.json", &vacuous_first_plan());
-    ingest(&ctx, &mut st);
-    assert_eq!(st.needs["n1"].verdict, "invalid");
-    assert!(st.board.plan_findings["n1"].contains("only checks that something is absent"));
-
-    // The board pass supersedes the plan and waits out the backoff.
-    reask_invalid_plans(&ctx, &mut st, &rows);
-    assert!(!st.needs.contains_key("n1"));
-    assert!(!st.plans_seen.iter().any(|seen| seen == "n1.json"));
-    assert!(!ctx.home.join("plans/n1.json").exists());
-    assert_eq!(st.board.planner_fails["n1.invalid"], 1);
-    let retry_at = st.board.planner_retry_at["n1"];
-    assert_eq!(retry_at, host_now(&host) + 60);
-    launch_planners(&ctx, &mut st, &rows);
-    assert!(board_job(&st).is_none(), "no relaunch before the backoff");
-
-    // After the backoff the planner is asked again, with the findings.
-    host.set_now(retry_at);
-    launch_planners(&ctx, &mut st, &rows);
-    let body = &board_job(&st).expect("relaunched").body;
-    assert!(body.contains("rejected by the pump's checks"), "{body}");
-    assert!(
-        body.contains("only checks that something is absent"),
-        "{body}"
-    );
-
-    // Second rejection: asked once more, with a doubled backoff.
-    st.board.planning.clear();
-    write_plan(&ctx, "n1.json", &vacuous_first_plan());
-    ingest(&ctx, &mut st);
-    assert_eq!(st.needs["n1"].verdict, "invalid");
-    reask_invalid_plans(&ctx, &mut st, &rows);
-    assert_eq!(st.board.planner_fails["n1.invalid"], 2);
-    assert_eq!(st.board.planner_retry_at["n1"], host_now(&host) + 120);
-
-    // Third rejection: held, with the findings as the reason.
-    write_plan(&ctx, "n1.json", &vacuous_first_plan());
-    ingest(&ctx, &mut st);
-    let record = &st.needs["n1"];
-    assert_eq!(record.verdict, "hold");
-    assert!(
-        record
-            .reason
-            .contains("only checks that something is absent")
-    );
-    assert!(!st.board.plan_findings.contains_key("n1"));
-    assert!(exceptions(&ctx).contains("plan-held n1 3 plans were rejected"));
-    reask_invalid_plans(&ctx, &mut st, &rows);
-    assert_eq!(
-        st.needs["n1"].verdict, "hold",
-        "a held need is not re-asked"
-    );
-    assert!(ctx.home.join("plans/n1.json").exists());
-}
-
-fn host_now(host: &FakeHost) -> u64 {
-    use crate::pump::host::Host;
-    host.now()
-}
-
 #[test]
 fn an_accepted_plan_clears_the_findings_and_the_count() {
     let (_dir, ctx, _host, mut st) = setup();
@@ -819,23 +742,4 @@ fn an_empty_rule_scope_or_proof_is_an_error_and_an_empty_table_is_not_written() 
     );
     let text = toml::to_string(&PumpConfig::default()).unwrap();
     assert!(!text.contains("proof_rules"), "{text}");
-}
-
-#[test]
-fn the_board_pass_re_ask_survives_the_merge_back() {
-    let (_dir, ctx, _host, mut st) = setup();
-    write_plan(&ctx, "n1.json", &vacuous_first_plan());
-    ingest(&ctx, &mut st);
-    let snapshot = st.clone();
-    let mut done = st.clone();
-    reask_invalid_plans(&ctx, &mut done, &[row("n1")]);
-    crate::pump::boardpass::merge_back(&mut st, &snapshot, &done);
-    assert!(!st.needs.contains_key("n1"));
-    assert!(!st.plans_seen.iter().any(|seen| seen == "n1.json"));
-    assert_eq!(st.board.planner_fails["n1.invalid"], 1);
-    assert!(st.board.planner_retry_at.contains_key("n1"));
-    assert!(
-        st.board.plan_findings.contains_key("n1"),
-        "the findings stay for the relaunch"
-    );
 }

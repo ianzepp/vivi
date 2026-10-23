@@ -29,33 +29,6 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 }
 
 #[test]
-fn merge_back_carries_the_planner_bookkeeping_the_pass_changed_and_not_a_stale_snapshot() {
-    let mut snap = State::default();
-    snap.board.planner_fails.insert(String::from("a"), 1);
-    snap.board.planner_failed.push(String::from("old"));
-    snap.board.planner_retry_at.insert(String::from("c"), 50);
-
-    // During the pass the tick thread cleared "old" (a new pump record).
-    let mut live = snap.clone();
-    live.board.planner_failed.clear();
-
-    // The pass counted another failure for "a", parked "new", scheduled a
-    // retry for "b" and freed "c".
-    let mut done = snap.clone();
-    done.board.planner_fails.insert(String::from("a"), 2);
-    done.board.planner_failed.push(String::from("new"));
-    done.board.planner_retry_at.insert(String::from("b"), 99);
-    done.board.planner_retry_at.remove("c");
-
-    merge_back(&mut live, &snap, &done);
-
-    assert_eq!(live.board.planner_fails["a"], 2);
-    assert_eq!(live.board.planner_failed, vec![String::from("new")]);
-    assert_eq!(live.board.planner_retry_at["b"], 99);
-    assert!(!live.board.planner_retry_at.contains_key("c"));
-}
-
-#[test]
 fn merge_back_keeps_new_outbox_jobs_and_preserves_live_dispatch_progress() {
     let pending = |id: &str| {
         PoolJob::from(JobSpec::new(
@@ -145,29 +118,21 @@ fn merge_back_applies_worker_removals_additions_and_replies() {
     st.needs.insert(String::from("added"), record("parker"));
     st.plans_seen = vec![String::from("a.json"), String::from("c.json")];
     st.board.at = 100;
-    st.board.planning.insert(String::from("p1"), 10);
     st.board.replied.push(String::from("n1:planned"));
-    st.board.revision_planning.insert(String::from("r1"), 5);
 
     let mut snap = State::default();
     snap.needs.insert(String::from("a"), record("split"));
     snap.needs.insert(String::from("b"), record("single"));
     snap.plans_seen = vec![String::from("a.json")];
     snap.board.at = 100;
-    snap.board.planning.insert(String::from("p1"), 10);
     snap.board.replied.push(String::from("n1:planned"));
-    snap.board.revision_planning.insert(String::from("r1"), 5);
 
     let mut done = State::default();
     done.needs.insert(String::from("b"), record("single"));
     done.plans_seen = Vec::new();
     done.board.at = 500;
-    // `p1` expired during the pass, `p2` and `n9` launched by it.
-    done.board.planning.insert(String::from("p2"), 20);
-    done.board.planning.insert(String::from("n9"), 30);
     done.board.replied.push(String::from("n1:planned"));
     done.board.replied.push(String::from("n2:planned"));
-    done.board.revision_planning.insert(String::from("r2"), 7);
 
     merge_back(&mut st, &snap, &done);
 
@@ -175,73 +140,11 @@ fn merge_back_applies_worker_removals_additions_and_replies() {
     assert!(st.needs.contains_key("b"));
     assert!(st.needs.contains_key("added"), "main's need must survive");
     assert_eq!(st.plans_seen, vec![String::from("c.json")]);
-    assert_eq!(st.board.planning.len(), 2);
-    assert_eq!(st.board.planning.get("p2"), Some(&20));
-    assert_eq!(st.board.planning.get("n9"), Some(&30));
     assert_eq!(
         st.board.replied,
         vec![String::from("n1:planned"), String::from("n2:planned")]
     );
-    assert_eq!(st.board.revision_planning.len(), 1);
-    assert_eq!(st.board.revision_planning.get("r2"), Some(&7));
     assert_eq!(st.board.at, 500);
-}
-
-#[test]
-fn merge_back_copies_amendment_fields_but_not_main_side_changes() {
-    let mut planned = record("split");
-    planned.thread_seen_at = Some(100);
-    planned.thread_sha256 = Some(String::from("aaaa"));
-    planned.units = vec![String::from("u1")];
-    planned.revision = 1;
-
-    let mut st = State::default();
-    st.needs.insert(String::from("n1"), planned.clone());
-    // The tick thread replanned during the pass.
-    let live = st.needs.get_mut("n1").unwrap();
-    live.units.push(String::from("u2"));
-    live.revision = 2;
-
-    let snap = st.clone();
-
-    let mut done = State::default();
-    let mut amended = planned;
-    amended.thread_seen_at = Some(200);
-    amended.thread_sha256 = Some(String::from("bbbb"));
-    amended.amendment_pending = true;
-    // A worker-side change to a field main owns must not land.
-    amended.units.push(String::from("u9"));
-    amended.verdict = String::from("hold");
-    done.needs.insert(String::from("n1"), amended);
-
-    merge_back(&mut st, &snap, &done);
-
-    let merged = st.needs.get("n1").unwrap();
-    assert_eq!(merged.revision, 2);
-    assert_eq!(
-        merged.units,
-        vec![String::from("u1"), String::from("u2")],
-        "the worker's unit change must not land"
-    );
-    assert_eq!(merged.verdict, "split");
-    assert_eq!(merged.thread_seen_at, Some(200));
-    assert_eq!(merged.thread_sha256.as_deref(), Some("bbbb"));
-    assert!(merged.amendment_pending);
-}
-
-#[test]
-fn merge_back_skips_launching_a_need_planned_during_the_pass() {
-    let mut st = State::default();
-    // Entered the live state after the snapshot was taken.
-    st.needs.insert(String::from("late"), record("split"));
-    let snap = State::default();
-
-    let mut done = State::default();
-    done.board.planning.insert(String::from("late"), 30);
-
-    merge_back(&mut st, &snap, &done);
-
-    assert!(st.board.planning.is_empty());
 }
 
 #[test]
@@ -313,19 +216,17 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
     }
 
     assert_eq!(st.board.at, ctx.now());
-    assert!(st.board.planning.contains_key("n1"));
-    let job = st
-        .jobs
-        .values()
-        .find(|job| job.kind == "planner:board")
-        .expect("worker planner outbox entry was merged into the live state");
-    assert_eq!(job.role, "pump-planner");
-    assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
-    assert_eq!(job.status, JobStatus::Pending);
-    assert_eq!(job.payload["planner_output"]["out"], "board/n1.out");
-    assert!(job.body.contains("PUMP-NEED-INPUT-BEGIN"));
-    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
-    assert!(host.spawned().is_empty(), "pool owns planner execution");
+    assert!(
+        st.board.planning.is_empty(),
+        "the board launches no planner"
+    );
+    assert!(st.jobs.is_empty(), "the board queues no planner job");
+    assert!(
+        !host.commands().iter().any(|cmd| cmd.contains("need show")),
+        "the board reads no thread to plan; commands: {:?}",
+        host.commands()
+    );
+    assert!(host.spawned().is_empty());
 }
 
 #[test]
@@ -368,11 +269,6 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
     }
 
     assert!(
-        st.board.planning.contains_key("n1"),
-        "the reloaded reply_from found the need; commands: {:?}",
-        host.commands()
-    );
-    assert!(
         host.commands()
             .iter()
             .any(|cmd| cmd.contains("need list --status open --json --to reloaded")),
@@ -386,37 +282,5 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
             .any(|cmd| cmd.contains("--json --to mind")),
         "startup reply_from leaked; commands: {:?}",
         host.commands()
-    );
-}
-
-#[test]
-fn merge_back_does_not_undo_a_revision_that_landed_during_the_pass() {
-    let mut pending = record("units");
-    pending.revision = 1;
-    pending.amendment_pending = true;
-    pending.thread_sha256 = Some(String::from("aaaa"));
-
-    // The pass worked on a snapshot taken while the revision was pending.
-    let snap = {
-        let mut st = State::default();
-        st.needs.insert(String::from("n1"), pending.clone());
-        st
-    };
-    // The tick thread ingested the revision plan meanwhile.
-    let mut st = snap.clone();
-    let live = st.needs.get_mut("n1").unwrap();
-    live.revision = 2;
-    live.amendment_pending = false;
-    // The pass left the record as it found it (it skips a pending need).
-    let mut done = State::default();
-    done.needs.insert(String::from("n1"), pending);
-
-    merge_back(&mut st, &snap, &done);
-
-    let merged = st.needs.get("n1").unwrap();
-    assert_eq!(merged.revision, 2);
-    assert!(
-        !merged.amendment_pending,
-        "a stale snapshot must not set the flag again"
     );
 }
