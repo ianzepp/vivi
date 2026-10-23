@@ -30,6 +30,18 @@ pub struct PoolEventRow {
     pub note: String,
 }
 
+/// First line of a pump attempt-context reply on a slice task.
+const ATTEMPT_MARKER: &str = "pump-attempt:";
+
+/// Heading under which a task's earlier attempts are appended to its body.
+const ATTEMPTS_HEADING: &str = "## Earlier attempts";
+
+/// Most bytes of attempt replies appended to a task body.
+const ATTEMPTS_CAP: usize = 8 * 1024;
+
+/// Line that opens the attempt text when older replies were cut.
+const ATTEMPTS_CUT: &str = "[older attempts cut]";
+
 /// Event types the pool writes.
 pub const POOL_EVENT_TYPES: [&str; 2] = ["pool_dispatched", "pool_collected"];
 
@@ -54,6 +66,10 @@ impl Mailspace {
             )));
         }
         let data = storage.read_message(&id)?;
+        let body = with_attempts(
+            text_body(&data),
+            self.attempt_replies(&storage.display_handle(&id)?, &id)?,
+        );
         // The copy is held under the recipient's account; a recipient that
         // is not a known local role leaves no addressee.
         let addressee = match self.resolve_identity(&view.account) {
@@ -63,9 +79,20 @@ impl Mailspace {
         Ok(PoolTask {
             handle: storage.display_handle(&id)?,
             subject: view.subject,
-            body: text_body(&data),
+            body,
             addressee,
         })
+    }
+
+    /// The `pump-attempt:` replies on a task's thread, oldest first.
+    fn attempt_replies(&self, handle: &str, task_id: &str) -> Result<Vec<String>, VivariumError> {
+        let thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
+        Ok(thread
+            .into_iter()
+            .filter(|message| message.event.is_none() && message.message_id != task_id)
+            .map(|message| message.body.trim().to_owned())
+            .filter(|body| body.starts_with(ATTEMPT_MARKER))
+            .collect())
     }
 
     /// The display handle of any item, for matching against pool events.
@@ -129,6 +156,26 @@ impl Mailspace {
         })?;
         Ok(())
     }
+}
+
+/// `body` with the attempt replies appended under a heading, newest last. A
+/// task with none is unchanged. Past the cap the oldest text is dropped and
+/// a cut marker opens the section.
+fn with_attempts(body: String, replies: Vec<String>) -> String {
+    if replies.is_empty() {
+        return body;
+    }
+    let joined = replies.join("\n\n");
+    let section = if joined.len() > ATTEMPTS_CAP {
+        let mut start = joined.len() - ATTEMPTS_CAP;
+        while !joined.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("{ATTEMPTS_CUT}\n{}", &joined[start..])
+    } else {
+        joined
+    };
+    format!("{}\n\n{ATTEMPTS_HEADING}\n\n{section}\n", body.trim_end())
 }
 
 fn pool_event(

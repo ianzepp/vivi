@@ -17,9 +17,12 @@
 use crate::pump::collect::{local_branch_exists, receipt_full, tail};
 use crate::pump::dispatch::dispatch_base;
 use crate::pump::host::{CmdOutput, Ctx, shell_quote};
-use crate::pump::record::send_reply;
+use crate::pump::record::{reply_on, send_reply};
 use crate::pump::state::State;
 
+/// First line of an attempt-context reply on a slice task; the pool task
+/// reader (`mailspace::pool_record`) picks replies up by it.
+const ATTEMPT_MARKER: &str = "pump-attempt:";
 /// Commits listed in a record.
 const MAX_COMMITS: usize = 20;
 /// Lines of `git diff --stat` listed in a record.
@@ -328,6 +331,51 @@ pub fn post(ctx: &Ctx, st: &mut State, uid: &str, ending: &Ending) {
     } else {
         ctx.log(&format!("attempt record send failed {uid}"));
     }
+}
+
+/// Post the record of one attempt as a `pump-attempt:` reply on the slice
+/// task itself, from the pump identity, so the next attempt's brief carries
+/// it. `facts_text` is the task receipt; the ending's own receipt wins when
+/// it has one. Returns whether the reply went out; a failure is logged and
+/// never blocks the caller.
+pub fn post_on_task(ctx: &Ctx, task: &str, ending: &Ending, facts_text: &str) -> bool {
+    let receipt = ending.receipt.as_deref().unwrap_or(facts_text);
+    let facts = Facts {
+        need: task.to_owned(),
+        task: Some(task.to_owned()),
+        actor: ctx.actor.clone(),
+        role: ctx.cfg.to.clone(),
+        kind: None,
+        slot: None,
+        ready_at: None,
+        start: started_from(receipt),
+        end: ctx.now(),
+        agent_secs: agent_secs(receipt),
+        delivered_at: None,
+        uid: task.to_owned(),
+        attempt: 0,
+        model: "None".to_owned(),
+        pool: "?".to_owned(),
+        target: String::new(),
+        branch: None,
+        base: String::new(),
+        shape: Branch::Absent,
+        label: ending.label.clone(),
+        failing: ending.failing.clone(),
+        message: tail(&parse_receipt(receipt).message, FINAL_MESSAGE_CHARS),
+    };
+    let body = format!("{ATTEMPT_MARKER} {}\n{}", ending.label, compose(&facts));
+    let sent = reply_on(
+        ctx,
+        task,
+        task,
+        &format!("attempt-{}", slug(&ending.label)),
+        &body,
+    );
+    if !sent {
+        ctx.log(&format!("attempt record send failed on task {task}"));
+    }
+    sent
 }
 
 /// Post a lifecycle event that enriches the synced attempt record.
