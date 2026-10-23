@@ -1,4 +1,5 @@
 use super::*;
+use crate::letter::fixture::{body_with_deps, need_body};
 use crate::mailspace::{GraphNodeView, SendRequest};
 use crate::storage::Storage;
 
@@ -24,11 +25,11 @@ fn send_item(
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "body".into(),
+            body: body_with_deps(kind.unwrap_or("mail"), "body", &depends_on),
             role: role.into(),
             kind: kind.map(str::to_string),
             reply_to: None,
-            depends_on,
+            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -175,11 +176,11 @@ fn send_rejects_unknown_dep_before_creating_anything() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "bad dep".into(),
-            body: "body".into(),
+            body: body_with_deps("task", "body", &["deadbeef".to_string()]),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: vec!["deadbeef".into()],
+            depends_on: Vec::new(),
         })
         .unwrap_err();
     assert!(err.to_string().contains("deadbeef"), "{err}");
@@ -452,7 +453,7 @@ fn join_settle_moves_every_recipient_copy() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "shared need".into(),
-            body: "done_when: exists".into(),
+            body: need_body(&["exists"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -509,7 +510,7 @@ fn dependency_edges_canonicalize_across_copies() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "shared dep".into(),
-            body: "done_when: exists".into(),
+            body: need_body(&["exists"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -545,7 +546,7 @@ fn completing_any_copy_unlocks_dependents_of_the_other() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "shared dep".into(),
-            body: "done_when: exists".into(),
+            body: need_body(&["exists"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,

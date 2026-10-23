@@ -1,10 +1,24 @@
 use super::*;
+use crate::letter::fixture::{body_with_deps, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::mailspace::{
     DumpFilters, SendRequest, TaskDumpRequest, TaskDumpStatus, WantListOptions, frontier_from_show,
 };
 
 const REMOTE: &str = "hand@3f9a1c7e.local";
-const BODY: &str = "done_when: it works\n";
+
+/// A work body that declares what done means, so a task can dispatch.
+fn work_body(kind: &str, deps: &[String]) -> String {
+    if kind == "task" {
+        let front = TaskFront {
+            done_when: vec!["it works".to_string()],
+            depends_on: deps.to_vec(),
+            ..TaskFront::default()
+        };
+        return task_body_with(&front, "");
+    }
+    body_with_deps(kind, "", deps)
+}
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();
@@ -22,17 +36,18 @@ fn send_work(
     depends_on: &[&str],
 ) -> Result<String, VivariumError> {
     let role = format!("{kind}s");
+    let deps: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
     let result = mailspace.send(SendRequest {
         from: "mind".into(),
         to: vec![to.into()],
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: subject.into(),
-        body: BODY.into(),
+        body: work_body(kind, &deps),
         role,
         kind: Some(kind.into()),
         reply_to: None,
-        depends_on: depends_on.iter().map(ToString::to_string).collect(),
+        depends_on: Vec::new(),
     })?;
     // The item is the delivered copy when there is one, else the sent copy.
     Ok(result
@@ -222,7 +237,7 @@ fn a_local_sent_copy_of_local_work_still_reopens_its_delivered_copy() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "local".into(),
-            body: BODY.into(),
+            body: work_body("task", &[]),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
