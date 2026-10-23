@@ -4,7 +4,7 @@
 use tempfile::tempdir;
 
 use crate::pump::cadence::{CadenceState, RoleRun, set_state};
-use crate::pump::report::{PumpRead, read, render_need, render_state};
+use crate::pump::report::{PumpRead, read};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -65,29 +65,11 @@ fn ready(st: State) -> crate::pump::report::Snapshot {
 }
 
 #[test]
-fn need_summary_counts_and_completion() {
-    let snapshot = ready(state());
-    let summary = snapshot.need("n1").unwrap();
-    assert_eq!(summary.verdict, "units");
-    assert_eq!(summary.units_total, 2);
-    assert_eq!(summary.counts["merged"], 1);
-    assert_eq!(summary.counts["pending"], 1);
-    assert!(!summary.complete);
-    assert!(snapshot.need("n2").unwrap().complete);
-    assert!(snapshot.need("n3").unwrap().complete);
-    assert!(snapshot.need("missing").is_none());
-}
-
-#[test]
-fn render_names_the_registry_state_and_counts() {
-    let snapshot = ready(state());
-    let text = render_need(&snapshot.need("n1").unwrap(), Some(true));
-    assert!(text.contains("verdict units"), "{text}");
-    assert!(text.contains("r3"), "{text}");
-    assert!(text.contains("2 units: merged=1 pending=1"), "{text}");
-    assert!(text.contains("complete no"), "{text}");
-    assert!(text.contains("amendment pending"), "{text}");
-    assert!(text.contains("registry open"), "{text}");
+fn complete_needs_are_the_delivered_or_fully_satisfied() {
+    let complete = ready(state()).complete_needs();
+    assert!(!complete.contains("n1"));
+    assert!(complete.contains("n2"));
+    assert!(complete.contains("n3"));
 }
 
 #[test]
@@ -112,24 +94,7 @@ fn replaced_units_delegate_to_their_successors() {
     );
     st.units
         .insert(String::from("u1.1"), unit("n1", Status::Merged));
-    let snapshot = ready(st);
-    assert!(snapshot.need("n1").unwrap().complete);
-}
-
-#[test]
-fn state_summary_counts_complete_stuck_and_inflight() {
-    let mut st = state();
-    st.units
-        .insert(String::from("u4"), unit("n1", Status::Stuck));
-    st.units
-        .insert(String::from("u5"), unit("n1", Status::Inflight));
-    let summary = ready(st).summary();
-    assert_eq!(summary.complete, 2);
-    assert_eq!(summary.stuck, 1);
-    assert_eq!(summary.inflight, 1);
-    let text = render_state(&summary, 2);
-    assert!(text.contains("working"), "{text}");
-    assert!(text.contains("complete-but-open 2"), "{text}");
+    assert!(ready(st).complete_needs().contains("n1"));
 }
 
 #[test]

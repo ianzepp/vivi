@@ -28,18 +28,6 @@ pub struct Snapshot {
     exceptions: Vec<(u64, String, String, String)>,
 }
 
-/// One need's pump state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NeedSummary {
-    pub verdict: String,
-    pub revision: u64,
-    pub units_total: usize,
-    pub counts: BTreeMap<String, usize>,
-    pub complete: bool,
-    pub amendment_pending: bool,
-    pub last_event: Option<String>,
-}
-
 /// The whole pump's state, in counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateSummary {
@@ -116,33 +104,6 @@ impl Snapshot {
         &self.exceptions
     }
 
-    /// The pump state for one need, when the pump has planned it.
-    #[must_use]
-    pub fn need(&self, handle: &str) -> Option<NeedSummary> {
-        let record = self.state.needs.get(handle)?;
-        let mut counts = BTreeMap::new();
-        for unit in self.state.units.values().filter(|unit| unit.need == handle) {
-            *counts.entry(unit.status.as_str().to_owned()).or_default() += 1;
-        }
-        let complete = need_complete(&self.state, handle);
-        let last_event = self
-            .state
-            .units
-            .iter()
-            .filter(|(_, unit)| unit.need == handle)
-            .max_by_key(|(_, unit)| unit.since)
-            .map(|(id, unit)| format!("{id} {}", unit.status.as_str()));
-        Some(NeedSummary {
-            verdict: record.verdict.clone(),
-            revision: record.revision,
-            units_total: record.units.len(),
-            counts,
-            complete,
-            amendment_pending: record.amendment_pending,
-            last_event,
-        })
-    }
-
     /// Counts for the boot digest.
     #[must_use]
     pub fn summary(&self) -> StateSummary {
@@ -182,57 +143,6 @@ impl Snapshot {
             .cloned()
             .collect()
     }
-}
-
-/// One `need show` block. `registry_open` is the item's Vivi folder state;
-/// `None` means the caller could not determine it.
-#[must_use]
-pub fn render_need(summary: &NeedSummary, registry_open: Option<bool>) -> String {
-    let rendered = render_counts(&summary.counts);
-    let total = summary.units_total;
-    let complete = if summary.complete { "yes" } else { "no" };
-    let registry = match registry_open {
-        Some(true) => "open",
-        Some(false) => "closed",
-        None => "unknown",
-    };
-    let last = summary.last_event.as_deref().unwrap_or("none");
-    let amendment = if summary.amendment_pending {
-        "; amendment pending"
-    } else {
-        ""
-    };
-    format!(
-        "  pump      verdict {}; r{}; {total} units: {rendered}\n  pump      complete {complete}{amendment}; registry {registry}; last {last}\n",
-        summary.verdict, summary.revision
-    )
-}
-
-/// One boot block.
-#[must_use]
-pub fn render_state(summary: &StateSummary, complete_but_open: usize) -> String {
-    let rendered = render_counts(&summary.units);
-    let activity = if summary.inflight > 0 {
-        "working"
-    } else {
-        "idle"
-    };
-    format!(
-        "  pump      {activity}; units {rendered}\n  pump      complete {}; complete-but-open {complete_but_open}; amendments {}; stuck {}; exceptions {}\n",
-        summary.complete, summary.amendments, summary.stuck, summary.exceptions
-    )
-}
-
-/// `status=count` in sorted order, or `none` for an empty map.
-fn render_counts(counts: &BTreeMap<String, usize>) -> String {
-    if counts.is_empty() {
-        return String::from("none");
-    }
-    counts
-        .iter()
-        .map(|(status, count)| format!("{status}={count}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// A need is complete when its verdict says delivered, or when it has units
