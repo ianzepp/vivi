@@ -357,6 +357,7 @@ async fn initialize_and_tools_list() {
             "depend",
             "pump",
             "pump_control",
+            "pump_rungs",
             "pool_bands",
             "pump_send",
             "pump_list",
