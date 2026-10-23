@@ -278,8 +278,9 @@ pub enum HeadCeoAnswer {
 #[serde(deny_unknown_fields)]
 pub struct HeadCeo {
     pub answer: HeadCeoAnswer,
+    /// The wants this run sent serving needs for.
     #[serde(default)]
-    pub promoted: Vec<String>,
+    pub served: Vec<String>,
     #[serde(default)]
     pub research: Vec<String>,
     #[serde(default)]
