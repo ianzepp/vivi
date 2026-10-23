@@ -50,6 +50,10 @@ pub trait MailWriter {
     fn bind(&mut self, need: &str, units: &[String]) -> Result<(), VivariumError>;
     /// Reply on a task.
     fn reply(&mut self, handle: &str, body: &str) -> Result<(), VivariumError>;
+    /// Post a note on a need, addressed to the need's own recipient set (its
+    /// `From`, `To` and `Cc`, minus the pump identity), so it reaches every
+    /// member that holds the need. `reply` goes to the sender only.
+    fn post_to_need_audience(&mut self, need: &str, body: &str) -> Result<(), VivariumError>;
     /// Close a task with a verdict and, for a merge, its branch and commit.
     fn close_task(
         &mut self,
@@ -100,6 +104,10 @@ impl MailWriter for MailspacePort {
 
     fn reply(&mut self, handle: &str, body: &str) -> Result<(), VivariumError> {
         MailspacePort::reply(self, handle, body)
+    }
+
+    fn post_to_need_audience(&mut self, need: &str, body: &str) -> Result<(), VivariumError> {
+        MailspacePort::post_to_need_audience(self, need, body)
     }
 
     fn close_task(

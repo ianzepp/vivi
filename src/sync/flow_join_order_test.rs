@@ -113,17 +113,10 @@ fn hub_run(hub: &Checkout, to: &str) -> Run {
     };
     let need = hub.send_need("mind", to, "run the flow");
     port.open_pump_record(&need, "kind: build").unwrap();
-    // The pump's plain note on the need's thread, addressed so it travels:
-    // the earlier post other members need before they take the pump's close.
-    hub.mailspace
-        .reply(
-            &need,
-            "operator",
-            vec![to.to_string()],
-            Vec::new(),
-            None,
-            "run started".into(),
-        )
+    // The run-start post the engine writes: addressed to the need's own
+    // recipient set so it reaches every member, the earlier post other
+    // members need before they take the pump's close.
+    port.post_to_need_audience(&need, "pump: run r1 started (build, entry plan)")
         .unwrap();
     let step = |subject: &str, after: &[String]| {
         port.send_step("mind", to, subject, "step\n", after)
@@ -321,4 +314,68 @@ fn the_need_stays_open_until_the_sentinel_closes_whatever_the_letter_order() {
     assert_eq!(node_state(mine, &run.need), "done");
     deliver(&wire, &hub, &member, &[&l.done_need]);
     assert_eq!(fold_state(mine, &run.need).as_deref(), Some("done"));
+}
+
+/// A need the member authored and delegated to the hub, which runs the pump
+/// as `pump` (not the operator role): the second member takes the pump's
+/// close only after the pump has posted on the need's thread. The hub opens
+/// its record, posts (when `post`) and closes the need; the member receives
+/// the letters and returns the need's folded state there.
+fn member_authored_close(post: bool) -> Option<String> {
+    // Both members share the project's `[pump] from`.
+    let pump_config = || {
+        Some(crate::pump::config::PumpConfig {
+            from: "pump".into(),
+            ..crate::pump::config::PumpConfig::default()
+        })
+    };
+    let mut hub = checkout("hub", &["mind", "pump"]);
+    hub.mailspace.config.pump = pump_config();
+    let mut member = member();
+    member.mailspace.config.pump = pump_config();
+    let need = member.send_need("mind", &hub.address("mind"), "run the flow");
+    member
+        .mailspace
+        .assign_need("mind", &need, &hub.address("mind"))
+        .unwrap();
+    let wire = FakeServer::new();
+    member.push(&member.client(&wire));
+    let pulled = hub.pull(&hub.client(&wire));
+    assert!(pulled.failure().is_none(), "{:?}", pulled.warnings);
+    let hub_need = hub
+        .rows()
+        .into_iter()
+        .find(|row| row.subject == "run the flow" && row.local_role != "sent")
+        .expect("the hub holds the need")
+        .handle;
+
+    let port = MailspacePort {
+        mailspace: hub.mailspace.clone(),
+        pump_identity: "pump".into(),
+    };
+    port.open_pump_record(&hub_need, "kind: build").unwrap();
+    if post {
+        port.post_to_need_audience(&hub_need, "pump: run r1 started (build, entry plan)")
+            .unwrap();
+    }
+    port.close_need(&hub_need, "flow finished").unwrap();
+
+    hub.push(&hub.client(&wire));
+    let pulled = member.pull(&member.client(&wire));
+    assert!(pulled.failure().is_none(), "{:?}", pulled.warnings);
+    fold_state(&member.mailspace, &need)
+}
+
+#[test]
+fn without_the_run_start_post_a_second_member_rejects_the_pump_close() {
+    assert_eq!(
+        member_authored_close(false),
+        None,
+        "a close from a pump that never posted is not honored"
+    );
+}
+
+#[test]
+fn the_run_start_post_lets_a_second_member_fold_the_pump_close() {
+    assert_eq!(member_authored_close(true).as_deref(), Some("done"));
 }
