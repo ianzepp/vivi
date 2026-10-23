@@ -159,16 +159,19 @@ fn env_hold(
     Ok(())
 }
 
-/// The lost count stored for `tip`; 0 when absent, for another tip, or unreadable.
-fn lost_count(store: &PumpStore, target: &str, tip: &str) -> Result<u32, VivariumError> {
-    let Some(text) = store.main_state(&key(LOST, target))? else {
+/// The lost count stored for `tip`; 0 when absent or stored for another tip.
+///
+/// # Errors
+/// A store failure, or a stored value for `tip` whose count does not parse.
+pub(crate) fn lost_count(store: &PumpStore, target: &str, tip: &str) -> Result<u32, VivariumError> {
+    let name = key(LOST, target);
+    let Some(text) = store.main_state(&name)? else {
         return Ok(0);
     };
     match text.split_once(' ') {
-        Some((seen, count)) if seen == tip => match count.parse::<u32>() {
-            Ok(n) => Ok(n),
-            Err(_) => Ok(0),
-        },
+        Some((seen, count)) if seen == tip => count.parse::<u32>().map_err(|e| {
+            VivariumError::Parse(format!("main_state {name} value {text:?}: bad count: {e}"))
+        }),
         _ => Ok(0),
     }
 }
