@@ -70,6 +70,8 @@ pub const STALE_ATTEMPT: &str = "flow-stale-attempt";
 /// Exception kind: a run was stored under another flow version than the
 /// loaded definition.
 pub const FLOW_VERSION_STALE: &str = "flow-version-stale";
+/// Exception kind: a fanout step is running with no open fanout row.
+pub const FANOUT_UNBOUND: &str = "flow-fanout-unbound";
 /// Exception kind: a step row names a node the loaded flow does not have.
 pub const NODE_UNKNOWN: &str = "flow-node-unknown";
 
@@ -146,6 +148,11 @@ where
     }
     let left = unapplied_step_jobs(st, store)?;
     settle_orphans(ctx, st, store, &left);
+    boundary(
+        ctx,
+        "overdue orphans",
+        orphans::overdue_orphans(ctx, &*st, store),
+    );
     for phase in registry.phases() {
         boundary(ctx, phase.name(), phase.run(ctx, st, store, mail));
     }
@@ -482,6 +489,7 @@ where
     // ---- fanouts, new steps, alarms ---------------------------------------
 
     fn settle_fanouts(&mut self) -> Result<(), VivariumError> {
+        self.check_fanout_bound()?;
         let word = match fanout::settle(self.store, &*self.mail, &self.run) {
             Ok(Some(word)) => word,
             Ok(None) => return Ok(()),
@@ -744,6 +752,13 @@ where
         Ok(())
     }
 }
+
+#[path = "tick_orphans.rs"]
+mod orphans;
+
+#[cfg(test)]
+#[path = "tick_overdue_test.rs"]
+mod overdue_tests;
 
 #[cfg(test)]
 #[path = "tick_test.rs"]
