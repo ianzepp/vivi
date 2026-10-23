@@ -27,7 +27,9 @@ use crate::pump::flow::cto_step::unchanged_text;
 use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
-use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state};
+use crate::pump::flow::index::{
+    FLOW_VERSION_NUMBER, RunRow, StepJobRow, StepRow, StepState, run_state,
+};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
@@ -65,6 +67,11 @@ pub const WORD_REJECTED: &str = "flow-word-rejected";
 pub const JOB_ORPHANED: &str = "flow-job-orphaned";
 /// Exception kind: a finished step job is not its step's newest attempt.
 pub const STALE_ATTEMPT: &str = "flow-stale-attempt";
+/// Exception kind: a run was stored under another flow version than the
+/// loaded definition.
+pub const FLOW_VERSION_STALE: &str = "flow-version-stale";
+/// Exception kind: a step row names a node the loaded flow does not have.
+pub const NODE_UNKNOWN: &str = "flow-node-unknown";
 
 /// Seconds a run may stay `finishing` before the alarm.
 const FINISHING_STUCK_SECS: u64 = 600;
@@ -109,7 +116,7 @@ where
     S: JobStore,
     M: FlowMail,
 {
-    let def_for = |run: &RunRow| def_of(run);
+    let def_for = |run: &RunRow| def_of(ctx, run);
     let decide = |node: &FlowNode, inputs: &[JoinInput]| registry.decide(store, node, inputs);
     boundary(
         ctx,
@@ -122,7 +129,7 @@ where
     let unapplied = unapplied_step_jobs(st, store)?;
     for run in store.live_runs()? {
         let unit = format!("{} r{}", run.need, run.run);
-        let result = def_of(&run).and_then(|def| {
+        let result = def_of(ctx, &run).and_then(|def| {
             RunCx {
                 ctx,
                 st: &mut *st,
@@ -169,13 +176,28 @@ fn validate_once(ctx: &Ctx) {
     }
 }
 
-fn def_of(run: &RunRow) -> Result<FlowDef, VivariumError> {
+/// The loaded definition of a run's flow. A run stored under another flow
+/// version is held: raised once, never applied on the wrong definition.
+fn def_of(ctx: &Ctx, run: &RunRow) -> Result<FlowDef, VivariumError> {
     let kind = FlowKind::parse(&run.kind).ok_or_else(|| {
         VivariumError::Parse(format!(
             "need {} r{}: unknown flow kind `{}`",
             run.need, run.run, run.kind
         ))
     })?;
+    if run.flow_version != FLOW_VERSION_NUMBER {
+        let text = format!(
+            "need {} r{}: expected flow version {FLOW_VERSION_NUMBER}; actual: stored {}",
+            run.need, run.run, run.flow_version
+        );
+        raise_once(
+            ctx,
+            FLOW_VERSION_STALE,
+            &format!("{} r{}", run.need, run.run),
+            &text,
+        );
+        return Err(VivariumError::Parse(text));
+    }
     load(kind)
 }
 
@@ -436,10 +458,23 @@ where
                     )));
                 };
                 collector.collect(self, &job, row, &step, &class)?;
+            } else {
+                let text = self.node_unknown_text(&row.task, &step.node, Some(id));
+                raise_once(self.ctx, NODE_UNKNOWN, &row.task, &text);
             }
         }
         jobs::mark_applied(self.st, id, self.ctx.now());
         Ok(())
+    }
+
+    /// The text of a step whose node the loaded flow does not have.
+    fn node_unknown_text(&self, task: &str, node: &str, job: Option<&str>) -> String {
+        let tail = job.map_or_else(String::new, |id| format!("; job {id} not applied"));
+        format!(
+            "step {task}: expected node {node} in the {} flow (version {}); actual: not in the definition{tail}",
+            self.def.kind.name(),
+            self.run.flow_version
+        )
     }
 
     // ---- fanouts, new steps, alarms ---------------------------------------
@@ -503,7 +538,9 @@ where
     fn start_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
         let registry = self.registry;
         let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-            return Ok(());
+            return Err(VivariumError::Parse(
+                self.node_unknown_text(&step.task, &step.node, None),
+            ));
         };
         let Some(handler) = registry.handler_for(self.def.kind, node) else {
             return Ok(());
@@ -569,7 +606,9 @@ where
     fn poll_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
         let registry = self.registry;
         let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-            return Ok(());
+            return Err(VivariumError::Parse(
+                self.node_unknown_text(&step.task, &step.node, None),
+            ));
         };
         let Some(handler) = registry.handler_for(self.def.kind, node) else {
             return Ok(());
