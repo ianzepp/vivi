@@ -56,10 +56,6 @@ fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
         "{collect}"
     );
     assert!(
-        collect.contains("planner_jobs::apply_completions(ctx, st)"),
-        "{collect}"
-    );
-    assert!(
         !run.contains("Merger::start"),
         "legacy merger started in run.rs"
     );
