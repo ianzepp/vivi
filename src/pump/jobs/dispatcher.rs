@@ -9,6 +9,7 @@ use std::path::Path;
 use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
 use crate::error::VivariumError;
 use crate::pump::dispatch;
+use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
 
@@ -39,6 +40,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
         ids: st.fix_ids(),
     };
     pending.sort_by_key(|job| dispatch_order(job, &fix, &priorities));
+    let pending = rank::single_flight(pending, st.jobs());
     let mut started = Vec::new();
     let width = (ctx.cfg.dispatch.parallel as usize).max(1);
     for chunk in pending.chunks(width) {
@@ -179,7 +181,10 @@ pub(super) fn dispatch_order(
     job: &PoolJob,
     fix_marks: &FixMarks<'_>,
     priorities: &BTreeMap<String, i64>,
-) -> (u8, Reverse<i64>, u64, String) {
+) -> RankKey {
+    if let Some(key) = rank::flow_key(job, priorities) {
+        return key;
+    }
     let recovery = matches!(job.kind.as_str(), "audit" | "gate" | "promote");
     let fix = job.kind.contains("fix")
         || (fix_marks.any_mark()
