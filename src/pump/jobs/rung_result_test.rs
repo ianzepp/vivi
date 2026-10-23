@@ -1,4 +1,4 @@
-use super::{TAIL_BYTES, TAIL_LINES, parse};
+use super::{EnvFailure, EnvKind, TAIL_BYTES, TAIL_LINES, env_failure, parse};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 
 fn job(status: JobStatus, receipt: Option<&str>) -> PoolJob {
@@ -224,4 +224,96 @@ fn a_json_failure_line_is_parsed() {
         running("alpha"),
     );
     assert_eq!(failing_of(&receipt, ""), ["alpha::m::t"]);
+}
+
+fn with_detail(text: &str, detail: &str) -> PoolJob {
+    let mut job = job(JobStatus::Finished, Some(text));
+    if let Some(outcome) = job.outcome.as_mut() {
+        outcome.detail = detail.to_owned();
+    }
+    job
+}
+
+fn env_of(rc: &str, receipt: &str, stderr: &str) -> Option<EnvFailure> {
+    let text = posted(rc, receipt, stderr, "");
+    env_failure(&job(JobStatus::Finished, Some(&text)))
+}
+
+#[test]
+fn agent_exit_127_is_a_missing_tool() {
+    let found = env_of("127", "", "").expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+    assert_eq!(found.tool, None);
+    let found = env_of("126", "", "").expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+}
+
+#[test]
+fn a_bash_command_not_found_in_stderr_names_the_tool() {
+    let found = env_of("1", "", "bash: tsc: command not found\n").expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+    assert_eq!(found.tool.as_deref(), Some("tsc"));
+    assert!(found.evidence.contains("command not found"));
+}
+
+#[test]
+fn the_dash_form_names_the_tool() {
+    let found = env_of("2", "", "sh: 1: tsc: not found\n").expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+    assert_eq!(found.tool.as_deref(), Some("tsc"));
+}
+
+#[test]
+fn exit_127_takes_the_tool_from_the_stderr_line() {
+    let found = env_of("127", "", "bash: tool-x: command not found\n").expect("env failure");
+    assert_eq!(found.kind, EnvKind::ToolMissing);
+    assert_eq!(found.tool.as_deref(), Some("tool-x"));
+}
+
+#[test]
+fn a_failed_checkout_is_a_host_setup_failure() {
+    let text = posted("1", "", "", "");
+    let found = env_failure(&with_detail(&text, "checkout_failed exited 128"));
+    let found = found.expect("env failure");
+    assert_eq!(found.kind, EnvKind::HostSetup);
+    assert_eq!(found.tool, None);
+}
+
+#[test]
+fn an_index_lock_is_a_host_setup_failure() {
+    let stderr = "fatal: Unable to create '.x/index.lock': File exists.\n";
+    let found = env_of("1", "", stderr).expect("env failure");
+    assert_eq!(found.kind, EnvKind::HostSetup);
+}
+
+#[test]
+fn an_ordinary_red_test_run_is_not_an_environment_failure() {
+    let receipt = format!("{}test a::one ... FAILED\n", running("alpha"));
+    let stderr = "error: test failed, to rerun pass `--lib`\nerror: file not found in fixture\n";
+    assert_eq!(env_of("101", &receipt, stderr), None);
+}
+
+#[test]
+fn a_passing_job_is_not_an_environment_failure() {
+    assert_eq!(env_of("0", "ok\n", ""), None);
+    let ok = job(JobStatus::Finished, Some("out\nagent exit 0 in 8s"));
+    assert_eq!(env_failure(&ok), None);
+    let bare = PoolJob::from(JobSpec::new("rung-1", "rung", "pool", "s", "b"));
+    assert_eq!(env_failure(&bare), None);
+}
+
+#[test]
+fn command_not_found_in_the_hand_message_or_receipt_is_ignored() {
+    let text = posted("1", "bash: tsc: command not found\n", "", "");
+    assert_eq!(env_failure(&job(JobStatus::Finished, Some(&text))), None);
+    let message = format!("{text}\n\n--- hand final message\nsh: 1: tsc: not found\n");
+    assert_eq!(env_failure(&job(JobStatus::Finished, Some(&message))), None);
+}
+
+#[test]
+fn the_evidence_is_one_line_of_at_most_200_chars() {
+    let long = format!("bash: tsc: command not found {}\nsecond\n", "x".repeat(400));
+    let found = env_of("1", "", &long).expect("env failure");
+    assert!(found.evidence.chars().count() <= 200);
+    assert!(!found.evidence.contains('\n'));
 }

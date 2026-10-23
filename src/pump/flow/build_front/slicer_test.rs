@@ -188,7 +188,7 @@ fn a_planner_step_without_a_reply_is_an_error() -> R {
 }
 
 #[test]
-fn shipped_registers_slice_but_not_rework1() -> R {
+fn shipped_registers_slice_and_the_rework_step_override_for_rework1() -> R {
     let rig = rig()?;
     let registry: Registry<State, FakeMail> = shipped(&rig.ctx);
     let node = |id: &str| {
@@ -204,10 +204,11 @@ fn shipped_registers_slice_but_not_rework1() -> R {
             .handler_for(FlowKind::Build, node("slice")?)
             .is_some()
     );
+    // rework1 has N5's rework_step node override, not this slicer's handler.
     assert!(
         registry
             .handler_for(FlowKind::Build, node("rework1")?)
-            .is_none()
+            .is_some()
     );
     Ok(())
 }

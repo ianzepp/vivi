@@ -143,6 +143,7 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
             "pump role slicer",
             "pump role merge kind",
             "pump role auditor",
+            "pump role head-cto",
             "pump role hand kind"
         ]
     );
@@ -174,7 +175,7 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
                 finding.fix.as_deref(),
                 Some("vivi config migrate --project <root>")
             );
-        } else if ["researcher", "admitter", "slicer"]
+        } else if ["researcher", "admitter", "slicer", "head-cto"]
             .iter()
             .any(|role| finding.name == format!("pump role {role}"))
         {
@@ -187,13 +188,13 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
     }
     assert!(findings[0].detail.contains("pump-planner"));
     assert!(findings[5].detail.contains("must name a pool"));
-    assert!(findings[6].detail.contains("not authorized to publish"));
+    assert!(findings[7].detail.contains("not authorized to publish"));
 }
 
 #[test]
 fn doctor_passes_a_pump_with_every_required_role() {
     let config = pump_config(
-        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"researcher\"\nkind = \"researcher\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"admitter\"\nkind = \"admitter\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"slicer\"\nkind = \"slicer\"\npool = \"here\"\nmodel = \"P2\"\n[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n",
+        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"researcher\"\nkind = \"researcher\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"admitter\"\nkind = \"admitter\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"slicer\"\nkind = \"slicer\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"head-cto\"\nkind = \"head-cto\"\npool = \"here\"\nmodel = \"P2\"\n[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n",
     );
     assert!(
         pump_role_findings(&config)

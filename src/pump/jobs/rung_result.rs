@@ -56,6 +56,130 @@ pub fn parse(job: &PoolJob) -> RungResult {
     }
 }
 
+/// The exception kind the flow raises for an environment failure: the worker
+/// lacks a tool or its host setup failed, so the job says nothing about the
+/// code under test. Raised once per subject, never retried.
+pub const ENV_FAILURE: &str = "flow-env-failure";
+
+/// Longest evidence line an environment failure keeps, in characters.
+const EVIDENCE_CHARS: usize = 200;
+
+/// What kind of environment failure a job hit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvKind {
+    /// A command the job needs is not installed on the worker.
+    ToolMissing,
+    /// Git or the checkout, fetch or target setup failed on the host.
+    HostSetup,
+}
+
+/// A job that failed because of its worker, read from machine facts only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvFailure {
+    /// Which kind of environment failure.
+    pub kind: EnvKind,
+    /// The missing command, when the facts name one.
+    pub tool: Option<String>,
+    /// One line of evidence, at most 200 characters.
+    pub evidence: String,
+}
+
+/// Read an environment failure from a job's machine facts: the agent exit
+/// code, the runner facts (`envfail::classify`) and shell markers in the
+/// receipt's stderr tail. Model text is never read. `None` when the job has
+/// no outcome, succeeded, or failed for another reason. The first rule that
+/// matches wins.
+#[must_use]
+pub fn env_failure(job: &PoolJob) -> Option<EnvFailure> {
+    let outcome = job.outcome.as_ref()?;
+    if outcome.agent_success() == Some(true) {
+        return None;
+    }
+    let stderr = stderr_marker(&outcome.receipt);
+    let tool_of = |from_facts: Option<&str>| {
+        from_facts
+            .map(str::to_owned)
+            .or_else(|| stderr.as_ref().and_then(|(tool, _)| tool.clone()))
+    };
+    if let Some(code @ (126 | 127)) = parse(job).exit {
+        let evidence = match &stderr {
+            Some((_, line)) => line.clone(),
+            None => format!("agent exit {code}"),
+        };
+        return Some(env(EnvKind::ToolMissing, tool_of(None), &evidence));
+    }
+    if let Some(host) = outcome.host_failure() {
+        match host.class.as_str() {
+            "agent_exit" | "facts_exit" => {
+                let tool = tool_of(host.command.as_deref());
+                return Some(env(EnvKind::ToolMissing, tool, &host.detail));
+            }
+            "shell_marker" => {
+                let missing = host.detail.contains("command not found");
+                let kind = if missing {
+                    EnvKind::ToolMissing
+                } else {
+                    EnvKind::HostSetup
+                };
+                let tool = if missing { tool_of(None) } else { None };
+                return Some(env(kind, tool, &host.detail));
+            }
+            "push_outcome" => return Some(env(EnvKind::HostSetup, None, &host.detail)),
+            _ => {}
+        }
+    }
+    stderr.map(|(tool, line)| env(EnvKind::ToolMissing, tool, &line))
+}
+
+fn env(kind: EnvKind, tool: Option<String>, evidence: &str) -> EnvFailure {
+    let line = evidence.lines().next().unwrap_or_default().trim();
+    EnvFailure {
+        kind,
+        tool,
+        evidence: line.chars().take(EVIDENCE_CHARS).collect(),
+    }
+}
+
+/// The first missing-tool line in the receipt's stderr tail section: the tool
+/// (when the line names it) and the line. Reads that section only, never the
+/// agent's own message.
+fn stderr_marker(receipt: &str) -> Option<(Option<String>, String)> {
+    let mut sections = receipt.split("\n\n--- ");
+    sections.next();
+    for section in sections {
+        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
+        if title.trim() != "stderr tail" {
+            continue;
+        }
+        for line in body.lines().map(str::trim) {
+            if let Some(tool) = missing_tool_of(line) {
+                return Some((Some(tool), line.to_owned()));
+            }
+            if line.contains("command not found") {
+                return Some((None, line.to_owned()));
+            }
+        }
+    }
+    None
+}
+
+/// The tool of `<shell>: <tool>: command not found` or the dash form
+/// `sh: <n>: <tool>: not found`.
+fn missing_tool_of(line: &str) -> Option<String> {
+    let tool = if let Some(head) = line.strip_suffix(": command not found") {
+        head.rsplit(": ").next()?
+    } else {
+        let head = line.strip_prefix("sh: ")?.strip_suffix(": not found")?;
+        let (number, tool) = head.split_once(": ")?;
+        if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        tool
+    };
+    let tool = tool.trim();
+    (!tool.is_empty() && !tool.contains(char::is_whitespace)).then(|| tool.to_owned())
+}
+
 /// The binary a cargo `Running` or `Doc-tests` line names, canonical; the
 /// outer `None` for any other line.
 fn binary_line(line: &str) -> Option<Option<String>> {
