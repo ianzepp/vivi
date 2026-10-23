@@ -15,8 +15,11 @@ use crate::pump::host::Ctx;
 mod brief;
 mod dispatcher;
 mod gate_sources;
+pub mod merge_main;
 mod receipts;
 mod recovery;
+pub mod rung;
+pub mod rung_result;
 #[cfg(test)]
 use dispatcher::{FixMarks, dispatch_order, pool_command, send_task};
 pub use dispatcher::{candidate_pools, dispatch_pending};
@@ -58,6 +61,8 @@ pub struct JobSpec {
     pub with: Vec<String>,
     /// Optional model override for a built-in role fallback.
     pub model: Option<String>,
+    /// Shell command run as the harness instead of a model (`--command`).
+    pub command: Option<String>,
     /// A shipped role charter to resolve when the task has no such identity.
     pub builtin_role: Option<String>,
     /// Optional destination branch for write jobs.
@@ -109,6 +114,7 @@ impl JobSpec {
             from_ref: None,
             with: Vec::new(),
             model: None,
+            command: None,
             builtin_role: None,
             branch: None,
             allow_default_branch: false,
@@ -175,6 +181,9 @@ pub struct PoolJob {
     pub with: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Shell command run as the harness instead of a model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin_role: Option<String>,
     pub branch: Option<String>,
@@ -240,6 +249,7 @@ impl From<JobSpec> for PoolJob {
             from_ref: spec.from_ref,
             with: spec.with,
             model: spec.model,
+            command: spec.command,
             builtin_role: spec.builtin_role,
             branch: spec.branch,
             allow_default_branch: spec.allow_default_branch,
@@ -560,6 +570,7 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.from_ref == spec.from_ref
         && job.with == spec.with
         && job.model == spec.model
+        && job.command == spec.command
         && job.builtin_role == spec.builtin_role
         && job.branch == spec.branch
         && job.allow_default_branch == spec.allow_default_branch
