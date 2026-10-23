@@ -13,9 +13,6 @@ use crate::pump::state::State;
 use crate::role_schedule::{self, state_label};
 use crate::routing::resolve_read_only;
 
-mod investigations;
-pub use investigations::InvestigationRun;
-
 /// The `state.extra` key holding the cadence state.
 pub const EXTRA_KEY: &str = "cadence";
 
@@ -93,8 +90,6 @@ pub struct RoleRun {
 pub struct CadenceState {
     #[serde(default)]
     pub runs: BTreeMap<String, RoleRun>,
-    #[serde(default)]
-    pub investigations: BTreeMap<String, InvestigationRun>,
     #[serde(default)]
     pub scans: BTreeMap<String, RoleScan>,
     #[serde(default)]
@@ -186,8 +181,6 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
         }
     };
     let scans = scan_roles(ctx, &mailspace, now);
-    investigations::complete(ctx, st, &mailspace, &mut cadence, now);
-    investigations::prepare(ctx, st, &mailspace, &mut cadence, now);
     for scan in scans.values() {
         let previous = cadence.runs.get(&scan.name);
         if !launchable(scan, previous, now) {
@@ -205,7 +198,7 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
 pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     let cadence = state(st);
     let now = ctx.now();
-    let mut lines: Vec<String> = cadence
+    cadence
         .scans
         .iter()
         .filter(|(_, scan)| scan.cadence.is_some())
@@ -237,9 +230,7 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
                 if scan.read_only { "read-only" } else { "write" }
             )
         })
-        .collect();
-    lines.extend(investigations::status_lines(&cadence));
-    lines
+        .collect()
 }
 
 fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, RoleScan> {

@@ -26,7 +26,7 @@ pub struct NeedRow {
     pub date: String,
     /// Subject line.
     pub subject: String,
-    /// Marks on the need; `investigate` routes it to the auditor instead.
+    /// Marks on the need.
     pub marks: Vec<String>,
 }
 
@@ -112,7 +112,7 @@ pub fn candidate_rows_except(ctx: &Ctx, own: &BTreeSet<String>) -> Vec<NeedRow> 
             continue;
         };
         for row in found.into_iter().filter(|row| wanted.contains(&row.handle)) {
-            if seen.insert(row.handle.clone()) && !is_investigation_need(&row) {
+            if seen.insert(row.handle.clone()) {
                 rows.push(row);
             }
         }
@@ -124,12 +124,6 @@ pub fn candidate_rows_except(ctx: &Ctx, own: &BTreeSet<String>) -> Vec<NeedRow> 
         ));
     }
     rows
-}
-
-fn is_investigation_need(row: &NeedRow) -> bool {
-    row.marks
-        .iter()
-        .any(|mark| mark.eq_ignore_ascii_case("investigate"))
 }
 
 /// Handles of the needs addressed to the pump identity that are closed in
