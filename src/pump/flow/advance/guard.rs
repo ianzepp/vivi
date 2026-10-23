@@ -81,3 +81,7 @@ where
 #[cfg(test)]
 #[path = "guard_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "guard_mailspace_test.rs"]
+mod mailspace_tests;
