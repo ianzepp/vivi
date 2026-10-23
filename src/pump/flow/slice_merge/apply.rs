@@ -12,10 +12,11 @@ use crate::error::VivariumError;
 use crate::mailspace::marked_line;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
-use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::index::{JOB_STALE, RunRow, StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, Retried};
 use crate::pump::flow::slice_merge::classify::{SliceMergeResult, classify};
+use crate::pump::flow::slice_merge::queue::{live_identity, stale_text};
 use crate::pump::flow::slice_merge::spec::KIND;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
@@ -95,22 +96,29 @@ fn apply<S: JobStore, M: FlowMail>(
     runs: &[RunRow],
     job: &PoolJob,
 ) -> Result<(), VivariumError> {
-    let need = text(job, "need");
+    let identity = match live_identity(job, runs) {
+        Ok(identity) => identity,
+        Err(reason) => return settle_stale(ctx, st, job, &reason),
+    };
+    let need = identity.need.clone();
     let slice = match job.task.as_deref() {
         Some(task) => store.step_by_task(task)?,
         None => None,
     };
+    if let Some(row) = slice.as_ref().filter(|row| row.run != identity.run) {
+        let found = format!("slice {} is of run {}", row.task, row.run);
+        let reason = stale_text(job, "slice run", &identity.run.to_string(), &found);
+        return settle_stale(ctx, st, job, &reason);
+    }
     let open = slice.filter(|row| {
         matches!(
             row.state,
             StepState::Pending | StepState::Running | StepState::Waiting
-        ) && runs
-            .iter()
-            .any(|run| run.need == need && u64::from(run.run) == u64::from(row.run))
+        )
     });
     let (Some(slice), Some(result)) = (open, classify(job)) else {
         ctx.log(&format!(
-            "slice merge: job {} needs no apply (slice closed, run not live, or job not terminal)",
+            "slice merge: job {} needs no apply (slice closed or job not terminal)",
             job.id
         ));
         jobs::mark_applied(st, &job.id, ctx.now());
@@ -134,6 +142,19 @@ fn apply<S: JobStore, M: FlowMail>(
         SliceMergeResult::Env(env) => ended.environment(mail, &env)?,
         SliceMergeResult::Unclear => ended.unclear(st, mail)?,
     }
+    jobs::mark_applied(st, &job.id, ctx.now());
+    Ok(())
+}
+
+/// A stale job names a run or slice that is not the live one: raise once, then
+/// mark it applied so it is never looked at again.
+fn settle_stale<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    job: &PoolJob,
+    reason: &str,
+) -> Result<(), VivariumError> {
+    raise_once(ctx, JOB_STALE, &job.id, reason);
     jobs::mark_applied(st, &job.id, ctx.now());
     Ok(())
 }

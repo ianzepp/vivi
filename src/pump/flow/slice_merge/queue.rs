@@ -7,7 +7,7 @@
 use crate::error::VivariumError;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
-use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_merge::spec::{self, KIND};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
@@ -158,15 +158,53 @@ fn slice_open(store: &PumpStore, task: &str) -> Result<bool, VivariumError> {
     }))
 }
 
-fn run_live(job: &PoolJob, runs: &[RunRow]) -> bool {
-    let number = job.payload.get("run").and_then(serde_json::Value::as_u64);
-    runs.iter().any(|run| {
-        need_of(job) == Some(run.need.as_str()) && number.is_none_or(|n| n == u64::from(run.run))
-    })
+/// The stale-identity text: what the job must name and what it names.
+pub(super) fn stale_text(job: &PoolJob, field: &str, expected: &str, found: &str) -> String {
+    format!(
+        "slice merge job {}: expected {field} {expected}; actual: {found}",
+        job.id
+    )
+}
+
+/// The job's payload identity when its need and run are live; otherwise the
+/// stale-identity text. A missing or unparseable identity field, or a
+/// need/run that names no live run, is stale. The hand `attempt` is not part
+/// of the identity here: it is checked where the retry reads it, and a bad
+/// one is a parse error there, not a stale job.
+pub(super) fn live_identity(job: &PoolJob, runs: &[RunRow]) -> Result<PayloadIdentity, String> {
+    let mut payload = job.payload.clone();
+    if let Some(fields) = payload.as_object_mut() {
+        fields.remove("attempt");
+    }
+    let identity = PayloadIdentity::of(&payload)
+        .map_err(|found| stale_text(job, "identity", "need, run and task", &found))?;
+    if runs
+        .iter()
+        .any(|run| run.need == identity.need && run.run == identity.run)
+    {
+        return Ok(identity);
+    }
+    let others: Vec<String> = runs
+        .iter()
+        .filter(|run| run.need == identity.need)
+        .map(|run| run.run.to_string())
+        .collect();
+    let found = if others.is_empty() {
+        format!("no live run of {}", identity.need)
+    } else {
+        format!("live runs of {}: {}", identity.need, others.join(", "))
+    };
+    Err(stale_text(
+        job,
+        "live run",
+        &format!("{} r{}", identity.need, identity.run),
+        &found,
+    ))
 }
 
 /// Remove Pending slice merge jobs whose slice or run is gone. They have no
-/// step_jobs row, so the restart phase does not see them.
+/// step_jobs row, so the restart phase does not see them. A closed slice is
+/// the expected end and drops quietly; a stale identity raises once.
 fn drop_dead<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -178,19 +216,25 @@ fn drop_dead<S: JobStore>(
         if job.kind != KIND || job.status != JobStatus::Pending {
             continue;
         }
+        if let Err(text) = live_identity(job, runs) {
+            raise_once(ctx, JOB_STALE, &job.id, &text);
+            dead.push(job.id.clone());
+            continue;
+        }
         let open = match job.task.as_deref() {
             Some(task) => slice_open(store, task)?,
             None => false,
         };
-        if !open || !run_live(job, runs) {
+        if !open {
+            ctx.log(&format!(
+                "slice merge: removed pending job {} of a closed slice",
+                job.id
+            ));
             dead.push(job.id.clone());
         }
     }
     for id in dead {
         st.jobs_mut().remove(&id);
-        ctx.log(&format!(
-            "slice merge: removed pending job {id} of a closed slice or superseded run"
-        ));
     }
     Ok(())
 }
