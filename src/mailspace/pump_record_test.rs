@@ -614,3 +614,25 @@ fn a_record_in_the_old_form_lists_with_no_need_and_a_letter_error_naming_it() {
     assert!(error.contains("old format"), "{error}");
     assert!(!sent.delivered.is_empty());
 }
+
+#[test]
+fn send_refuses_a_legacy_need_and_stores_no_record() {
+    let (mailspace, _tmp) = roster();
+    let letter = format!(
+        "From: {}\r\nTo: {}\r\nSubject: old need\r\nMessage-ID: <old-need@x.test>\r\n\
+         X-Vivi-Kind: need\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\ndone_when: it works\r\n",
+        mailspace.address_for("operator"),
+        mailspace.address_for("mind"),
+    );
+    let handle = mailspace
+        .deliver_raw(letter.as_bytes(), "needs")
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let error = mailspace.pump_send(None, &handle, None).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains(&format!("need {handle}: ")), "{text}");
+    assert!(text.contains("old format"), "{text}");
+    assert!(mailspace.pump_list(None, None).unwrap().is_empty());
+}

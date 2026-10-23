@@ -95,6 +95,7 @@ pub(super) fn post(
     let open: BTreeSet<String> = mailspace
         .pump_list(None, Some(PumpState::Open))?
         .into_iter()
+        .filter(|record| record.letter_error.is_none())
         .map(|record| record.need)
         .collect();
     for (task, need) in steps {

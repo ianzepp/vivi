@@ -456,3 +456,30 @@ fn an_unlock_action_is_neither_applied_nor_marked_by_the_old_pump() {
     assert!(!saved(&project).board.actions.contains_key(&id));
     assert_eq!(st.units["u1"].status, Status::Stuck);
 }
+
+#[test]
+fn legacy_open_records_are_not_new_dispatches_of_need_empty() {
+    let project = project();
+    let ctx = project.pump_ctx();
+    let legacy = |handle: &str| PumpRecord {
+        handle: handle.to_owned(),
+        kind: String::from("pump"),
+        need: String::new(),
+        status: PumpState::Open,
+        from: String::new(),
+        to: String::new(),
+        date: String::new(),
+        subject: String::new(),
+        outcome: None,
+        letter_error: Some(format!("pump record {handle}: old format")),
+    };
+    let mut st = State::default();
+    st.board.planner_fails.insert(String::new(), 3);
+
+    revive_new_records(&ctx, &mut st, &[legacy("aaa"), legacy("bbb")]);
+    revive_new_records(&ctx, &mut st, &[legacy("bbb"), legacy("aaa")]);
+
+    assert!(!logged(&project, "is a new dispatch of need"));
+    assert!(st.board.records.is_empty(), "{:?}", st.board.records);
+    assert_eq!(st.board.planner_fails.get(""), Some(&3));
+}

@@ -242,7 +242,7 @@ fn settle_owed(ctx: &Ctx, st: &mut State, mailspace: &Mailspace) {
 /// `vivi pump adopt` opens for in-flight work do not disturb it.
 fn revive_new_records(ctx: &Ctx, st: &mut State, open: &[PumpRecord]) {
     let mut requeues = Vec::new();
-    for record in open {
+    for record in open.iter().filter(|record| record.letter_error.is_none()) {
         let previous = st
             .board
             .records
