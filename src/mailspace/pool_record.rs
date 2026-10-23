@@ -8,6 +8,7 @@
 use super::Mailspace;
 use super::thread::{MailspaceThreadMessage, text_body};
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
 
 /// A task as the pool reads it.
@@ -186,7 +187,7 @@ impl Mailspace {
         })
     }
 
-    /// The `pump-brief:` and `pump-attempt:` replies on a task's thread,
+    /// The `pump-brief:` replies and the attempt notes on a task's thread,
     /// each oldest first.
     fn marked_thread_replies(
         &self,
@@ -201,8 +202,10 @@ impl Mailspace {
                 continue;
             }
             let body = message.body.trim();
-            if body.starts_with(ATTEMPT_MARKER) {
-                found.attempts.push(body.to_owned());
+            if let Some(note) = super::pump_note::note_of(body) {
+                if note.pump.note == NoteWord::Attempt {
+                    found.attempts.push(note.prose.trim().to_owned());
+                }
             } else if body.starts_with(BRIEF_MARKER) {
                 found.briefs.push(body.to_owned());
             }

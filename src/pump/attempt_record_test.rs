@@ -152,6 +152,29 @@ fn a_task_record_carries_the_jobs_attempt_pool_and_model() {
 }
 
 #[test]
+fn a_task_record_is_an_attempt_note_labelled_with_the_ending() {
+    let (_dir, ctx, _host) = setup();
+    let job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));
+    let ending = Ending::failed("hand failed", "", None);
+    assert!(post_on_task(
+        &ctx,
+        "t9",
+        &job,
+        &ending,
+        &receipt(1, "m", "")
+    ));
+    let records = records_for(&ctx, "t9");
+    let note = crate::mailspace::pump_note::note_of(&records[0].1).expect("a pump note");
+    assert_eq!(note.pump.note, crate::letter::records::NoteWord::Attempt);
+    assert!(note.pump.reference.is_some_and(|label| !label.is_empty()));
+    assert!(
+        note.prose.contains("pump: attempt record"),
+        "{}",
+        note.prose
+    );
+}
+
+#[test]
 fn a_task_record_is_posted_to_the_pump_identity() {
     let (_dir, ctx, host) = setup();
     let job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));

@@ -1,4 +1,5 @@
 use super::*;
+use crate::letter::records::NoteWord;
 use crate::mailspace::SendRequest;
 
 /// The task letter the tests send: pool lines in the front matter, prose "do it".
@@ -112,6 +113,11 @@ fn the_addressee_is_the_role_the_task_copy_is_held_under() {
     assert_eq!(task.addressee, None);
 }
 
+/// The body of an attempt note labelled `label` whose prose is `prose`.
+fn attempt_note(label: &str, prose: &str) -> String {
+    crate::mailspace::pump_note::note_body(NoteWord::Attempt, Some(label), prose).unwrap()
+}
+
 fn reply_on_task(space: &Mailspace, handle: &str, body: &str) {
     space
         .send(SendRequest {
@@ -121,8 +127,8 @@ fn reply_on_task(space: &Mailspace, handle: &str, body: &str) {
             bcc: Vec::new(),
             subject: "attempt".into(),
             body: body.into(),
-            role: "tasks".into(),
-            kind: None,
+            role: "inbox".into(),
+            kind: Some("mail".into()),
             reply_to: Some(handle.into()),
         })
         .unwrap();
@@ -141,16 +147,8 @@ fn a_task_with_no_attempt_replies_keeps_its_body() {
 #[test]
 fn attempt_replies_are_appended_in_order() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
-    reply_on_task(
-        &space,
-        &handle,
-        &format!("{}\nfirst body", marked_line("pump-attempt:", "first")),
-    );
-    reply_on_task(
-        &space,
-        &handle,
-        &format!("{}\nsecond body", marked_line("pump-attempt:", "second")),
-    );
+    reply_on_task(&space, &handle, &attempt_note("first", "first body"));
+    reply_on_task(&space, &handle, &attempt_note("second", "second body"));
     let body = space.pool_task(&handle).unwrap().body;
     let heading = body.find("## Earlier attempts").expect("heading");
     let first = body.find("first body").expect("first");
@@ -165,17 +163,9 @@ fn the_attempt_section_is_capped() {
     reply_on_task(
         &space,
         &handle,
-        &format!(
-            "{}\nOLDEST\n{}",
-            marked_line("pump-attempt:", "big"),
-            "x".repeat(20_000)
-        ),
+        &attempt_note("big", &format!("OLDEST\n{}", "x".repeat(20_000))),
     );
-    reply_on_task(
-        &space,
-        &handle,
-        &format!("{}\nNEWEST", marked_line("pump-attempt:", "last")),
-    );
+    reply_on_task(&space, &handle, &attempt_note("last", "NEWEST"));
     let body = space.pool_task(&handle).unwrap().body;
     assert!(body.contains("[older attempts cut]"), "cut marker");
     assert!(body.contains("NEWEST"), "newest kept");
@@ -191,11 +181,7 @@ fn only_the_newest_brief_is_the_body_with_attempts_after_it() {
         &handle,
         &format!("{}\nOLD BRIEF", marked_line("pump-brief:", "job-a")),
     );
-    reply_on_task(
-        &space,
-        &handle,
-        &format!("{}\nattempt body", marked_line("pump-attempt:", "first")),
-    );
+    reply_on_task(&space, &handle, &attempt_note("first", "attempt body"));
     reply_on_task(
         &space,
         &handle,
@@ -232,10 +218,7 @@ fn same_second_attempts_come_back_in_posting_order() {
             reply_on_task(
                 &space,
                 &handle,
-                &format!(
-                    "{}\nbody-{n}",
-                    marked_line("pump-attempt:", &format!("a{n}"))
-                ),
+                &attempt_note(&format!("a{n}"), &format!("body-{n}")),
             );
         }
         let body = space.pool_task(&handle).unwrap().body;
@@ -279,11 +262,7 @@ fn the_shared_markers_read_back_as_attempt_and_brief() {
         &handle,
         &format!("{}\nBRIEF BODY", marked_line(BRIEF_MARKER, "job-a")),
     );
-    reply_on_task(
-        &space,
-        &handle,
-        &format!("{}\nATTEMPT BODY", marked_line(ATTEMPT_MARKER, "first")),
-    );
+    reply_on_task(&space, &handle, &attempt_note("first", "ATTEMPT BODY"));
     let body = space.pool_task(&handle).unwrap().body;
     assert!(!body.contains(BRIEF_MARKER), "{body}");
     assert!(body.contains("BRIEF BODY"), "{body}");

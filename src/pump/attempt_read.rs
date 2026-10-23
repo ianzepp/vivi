@@ -156,7 +156,11 @@ impl AttemptFields {
 /// record.
 #[must_use]
 pub fn parse_record(body: &str) -> Option<AttemptFields> {
-    let mut lines = body.lines();
+    let prose = match crate::letter::split(body) {
+        Ok((_, prose)) => prose.trim_start(),
+        Err(_) => body,
+    };
+    let mut lines = prose.lines();
     if lines.next()?.trim_end() != HEADER {
         return None;
     }
