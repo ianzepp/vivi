@@ -480,11 +480,6 @@ fn send_local_item_sent(
     let sugared =
         sugar::apply(kind, &body, sugar).map_err(|err| VivariumError::Message(err.to_string()))?;
     let body = sugared.body;
-    // Wants are parked by design; only task/need bodies feed step clauses. A
-    // front-matter body never warns.
-    let lacks_clause = matches!(kind, "task" | "need")
-        && !sugar::opens_with_fence(&body)
-        && !vivi::mailspace::body_has_labeled_clause(&body, "done_when");
     let result = mailspace.send(SendRequest {
         from: command.from.clone(),
         to: command.to.clone(),
@@ -502,12 +497,6 @@ fn send_local_item_sent(
     println!("sent {}", result.sent);
     crate::local_mailspace_command::print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
-    if lacks_clause {
-        eprintln!(
-            "note: body declares no 'done_when:' clause; vivi step will report this {kind} as \
-             no_done_when"
-        );
-    }
     Ok(result)
 }
 

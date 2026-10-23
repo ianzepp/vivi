@@ -229,9 +229,23 @@ fn a_want_with_only_depends_on_is_told_to_pass_question() {
 }
 
 #[test]
-fn prose_with_no_flag_is_sent_unchanged() {
-    let sugared = apply("need", "prose", &Sugar::default()).unwrap();
-    assert_eq!(sugared.body, "prose");
+fn bare_prose_task_is_wrapped_in_empty_front_matter() {
+    let sugared = apply("task", "prose", &Sugar::default()).unwrap();
+    assert!(opens_with_fence(&sugared.body), "{}", sugared.body);
+    let parsed = parse_letter::<TaskFront>(&sugared.body).unwrap();
+    assert_eq!(parsed.body.trim(), "prose");
+}
+
+#[test]
+fn bare_prose_need_is_refused_with_the_ruling_text() {
+    let err = err(apply("need", "prose", &Sugar::default()));
+    assert!(err.contains("need has no done_when"), "{err}");
+}
+
+#[test]
+fn bare_prose_want_is_refused_with_the_want_text() {
+    let err = err(apply("want", "prose", &Sugar::default()));
+    assert!(err.contains("want has no question"), "{err}");
 }
 
 #[test]

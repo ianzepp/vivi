@@ -5,6 +5,7 @@
 use super::super::Mailspace;
 use super::super::serves::canonical_wants;
 use crate::error::VivariumError;
+use crate::letter::sugar::opens_with_fence;
 use crate::letter::{Front, Letter, LetterKind, parse_kind, render};
 
 /// A validated work letter body and what it declares.
@@ -17,14 +18,12 @@ pub(super) struct WorkLetter {
     pub letter: Letter,
 }
 
-/// Parse and validate `body` when `kind` is need, want or task and the body
-/// opens with front matter.
-///
-/// TRANSITIONAL (W3-B2): a prose body returns `Ok(None)` and is stored as
-/// before; W3B2-38 refuses it.
+/// Parse and validate `body` when `kind` is need, want or task. Any other
+/// kind returns `Ok(None)`.
 ///
 /// # Errors
-/// Returns the `LetterError` text when the front matter is invalid.
+/// Returns the `LetterError` text when the front matter is invalid, or the
+/// kind's refusal text when the body does not open with front matter.
 pub(super) fn work_letter(
     mailspace: &Mailspace,
     kind: Option<&str>,
@@ -36,13 +35,8 @@ pub(super) fn work_letter(
         Some("task") => LetterKind::Task,
         _ => return Ok(None),
     };
-    if body
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(str::trim)
-        != Some("+++")
-    {
-        return Ok(None);
+    if !opens_with_fence(body) {
+        return Err(VivariumError::Message(no_front(&letter_kind).into()));
     }
     let mut letter = parse(&letter_kind, body)?;
     let mut body = body.to_string();
@@ -63,6 +57,20 @@ pub(super) fn work_letter(
         depends_on,
         letter,
     }))
+}
+
+fn no_front(kind: &LetterKind) -> &'static str {
+    match kind {
+        LetterKind::Need => {
+            "need has no done_when: pass --done-when or add done_when = [...] to the front matter"
+        }
+        LetterKind::Want => {
+            "want has no question: pass --question or add question = \"...\" to the front matter"
+        }
+        _ => {
+            "task letter has no front matter: open the body with +++ ... +++ (an empty front matter is fine)"
+        }
+    }
 }
 
 fn parse(kind: &LetterKind, body: &str) -> Result<Letter, VivariumError> {

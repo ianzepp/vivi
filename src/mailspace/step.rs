@@ -353,21 +353,6 @@ fn item_body(storage: &crate::storage::Storage, message_id: &str) -> Result<Stri
     crate::extract::extract_text(&data)
 }
 
-fn has_labeled_field(body: &str, label: &str) -> bool {
-    body.lines().any(|line| {
-        line.trim_start()
-            .to_ascii_lowercase()
-            .starts_with(&format!("{label}:"))
-    })
-}
-
-/// Whether a body carries at least one `label:` clause line. Shared with
-/// the send runners' clause warning.
-#[must_use]
-pub fn body_has_labeled_clause(body: &str, label: &str) -> bool {
-    has_labeled_field(body, label)
-}
-
 /// Detail for clauseless bodies: name the labeled fields the body does
 /// carry, so coordination work (verdict/output bodies) reads as such
 /// instead of as a defect.

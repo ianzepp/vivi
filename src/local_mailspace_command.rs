@@ -752,8 +752,6 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
     let sugared = vivi::letter::sugar::apply("task", &body, &command.sugar())
         .map_err(|err| VivariumError::Message(err.to_string()))?;
     let body = sugared.body;
-    let lacks_clause = !vivi::letter::sugar::opens_with_fence(&body)
-        && !vivi::mailspace::body_has_labeled_clause(&body, "done_when");
     let result = mailspace.send(SendRequest {
         from: command.send.from.clone(),
         to: command.send.to.clone(),
@@ -771,12 +769,6 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
     println!("sent {}", result.sent);
     print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
-    if lacks_clause {
-        eprintln!(
-            "note: body declares no 'done_when:' clause; vivi step will report this task as \
-             no_done_when"
-        );
-    }
     Ok(())
 }
 

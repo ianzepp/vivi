@@ -54,11 +54,22 @@ pub fn apply(kind: &str, body: &str, sugar: &Sugar) -> Result<Sugared, LetterErr
     } else if sugar.has_front_flags() {
         built(kind, body, sugar)
     } else {
-        // TRANSITIONAL (W3-B2): a prose body with no flag is sent as today;
-        // W3B2-38 removes this branch.
-        Ok(Sugared {
-            body: body.to_string(),
-        })
+        bare(kind, body)
+    }
+}
+
+/// A prose body with no flag: a task is wrapped in empty front matter; a need
+/// or want has nothing to build its required key from.
+fn bare(kind: &str, body: &str) -> Result<Sugared, LetterError> {
+    match kind {
+        "need" => Err(LetterError::Invalid(NEED_NO_DONE_WHEN.into())),
+        "want" => Err(LetterError::Invalid(WANT_NO_QUESTION.into())),
+        "task" => Ok(Sugared {
+            body: render(&TaskFront::default(), body)?,
+        }),
+        other => Err(LetterError::Invalid(format!(
+            "front matter flags do not apply to a {other}"
+        ))),
     }
 }
 

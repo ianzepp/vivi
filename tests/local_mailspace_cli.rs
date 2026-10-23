@@ -3484,71 +3484,59 @@ fn graph_complete_ignores_task_flag_with_hint() {
 }
 
 #[test]
-fn task_send_without_done_when_warns_on_stderr() {
+fn bare_prose_send_follows_the_front_matter_rule() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let p = project.path().to_str().unwrap();
-    let vague = vivi([
-        "task",
-        "send",
-        "--project",
-        p,
-        "--from",
-        "ceo",
-        "--to",
-        "cto",
-        "--subject",
-        "vague work",
-        "--body",
-        "just do it",
-    ]);
-    assert_success(&vague);
-    assert!(
-        stderr(&vague).contains("no_done_when"),
-        "{}",
-        stderr(&vague)
-    );
+    let send = |kind: &str, extra: &[&str]| {
+        let mut args = vec![
+            kind,
+            "send",
+            "--project",
+            p,
+            "--from",
+            "ceo",
+            "--to",
+            "cto",
+            "--subject",
+            "vague work",
+            "--body",
+            "just do it",
+        ];
+        args.extend_from_slice(extra);
+        vivi(args)
+    };
 
-    let clear = vivi([
-        "task",
-        "send",
-        "--project",
-        p,
-        "--from",
-        "ceo",
-        "--to",
-        "cto",
-        "--subject",
-        "clear work",
-        "--body",
-        "done_when: it works",
-    ]);
-    assert_success(&clear);
+    let need = send("need", &[]);
+    assert!(!need.status.success());
     assert!(
-        !stderr(&clear).contains("no_done_when"),
+        stderr(&need).contains("need has no done_when: pass --done-when"),
         "{}",
-        stderr(&clear)
+        stderr(&need)
     );
+    let needs = vivi(["need", "list", "--project", p, "--for", "cto"]);
+    assert_success(&needs);
+    assert!(!stdout(&needs).contains("vague work"), "{}", stdout(&needs));
 
-    // Wants stay quiet: they are parked by design.
-    let want = vivi([
-        "want",
-        "send",
-        "--project",
-        p,
-        "--from",
-        "ceo",
-        "--to",
-        "ceo",
-        "--subject",
-        "someday",
-        "--body",
-        "someday",
-        "--question",
-        "someday?",
-    ]);
-    assert_success(&want);
-    assert!(!stderr(&want).contains("no_done_when"), "{}", stderr(&want));
+    let task = send("task", &[]);
+    assert_success(&task);
+    let handle = stdout(&task)
+        .lines()
+        .find_map(|line| line.strip_prefix("created cto "))
+        .unwrap()
+        .trim()
+        .to_string();
+    let shown = vivi(["task", "show", &handle, "--project", p]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains("just do it"), "{}", stdout(&shown));
+
+    let want = send("want", &[]);
+    assert!(!want.status.success());
+    assert!(
+        stderr(&want).contains("want has no question: pass --question"),
+        "{}",
+        stderr(&want)
+    );
 }
 
 #[test]
