@@ -29,6 +29,7 @@ use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORREC
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailspacePort, TaskStatus};
+use crate::pump::flow::need_branch;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
@@ -330,6 +331,7 @@ fn hand_spec<M: SliceMail>(
         &landed_deviations(store, mail, need, &slice.task)?,
         &task_body,
     );
+    let from = hand_start(ctx, store, need, slice.run, target)?;
     let target_ctx = ctx.for_target(target);
     let cfg = target_ctx.as_ref().map_or(&*ctx.cfg, |target| &*target.cfg);
     let mut branch = unit_branch(&slice.task, attempt);
@@ -345,7 +347,7 @@ fn hand_spec<M: SliceMail>(
     );
     spec.task = Some(slice.task.clone());
     spec.target = Some(target.to_owned());
-    spec.from_ref = Some(cfg.dispatch_from().to_owned());
+    spec.from_ref = Some(from);
     spec.publish_ref = Some(format!("refs/heads/{branch}"));
     spec.branch = Some(branch);
     spec.budget = cfg.dispatch.budget;
@@ -357,6 +359,29 @@ fn hand_spec<M: SliceMail>(
         "attempt": attempt,
     });
     Ok(spec)
+}
+
+/// Where a hand starts: the need-branch tip. The first dispatch of a run
+/// records the base. One need branch per need: a slice on another target is
+/// refused.
+fn hand_start(
+    ctx: &Ctx,
+    store: &PumpStore,
+    need: &str,
+    run: u32,
+    target: &str,
+) -> Result<String, VivariumError> {
+    need_branch::record_base(ctx, store, need, run, target)?;
+    if let Some(row) = store.need_branch(need)?
+        && row.target != target
+    {
+        return Err(VivariumError::Config(format!(
+            "need {need} has its need branch on target {}, but the slice targets {target}",
+            row.target
+        )));
+    }
+    need_branch::tip(ctx, store, need)?
+        .ok_or_else(|| VivariumError::Other(format!("need {need} has no need-branch tip")))
 }
 
 /// The hand brief: rules, write scope, envelope contract, landed deviations,
