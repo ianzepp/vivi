@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use super::Mailspace;
+use super::backlog::canonical_content_handle;
 use super::kind::effective_kind;
 use crate::error::VivariumError;
 use crate::letter::work::NeedFront;
@@ -69,6 +71,28 @@ fn want_id(storage: &Storage, key: &str, handle: &str) -> Result<(String, String
         )));
     };
     Ok((resolved, format!("<{id}>")))
+}
+
+impl Mailspace {
+    /// The handle of this mailspace's own copy of the want `id` names, for a
+    /// reader that acts on a stored `serves` or `explores`. `id` is the
+    /// want's `<Message-ID>` (matched first), or a handle a legacy `for:` line
+    /// held. `None` when no copy of the want is here.
+    ///
+    /// # Errors
+    /// Returns an error when the mailspace cannot be read.
+    pub fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError> {
+        let storage = self.storage()?;
+        if let Some(rfc) = normalize_message_id(id)
+            && let Some(view) = storage.live_message_by_rfc_id(&rfc)?
+        {
+            return canonical_content_handle(&storage, &view.message_id).map(Some);
+        }
+        match storage.resolve_message_token(id) {
+            Ok(row) => Ok(Some(storage.display_handle(&row)?)),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
 /// Record a need's `serves` and `explores` in the row's item metadata, merged

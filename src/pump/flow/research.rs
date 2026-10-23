@@ -28,6 +28,21 @@ pub(crate) fn for_want(body: &str) -> Option<String> {
     }
 }
 
+/// The handle of this mailspace's copy of the want a need explores. A want
+/// with no copy here is logged once for the step and left out of the brief.
+fn own_want(cx: &StartCx<'_>, stored: Option<String>) -> Result<Option<String>, VivariumError> {
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let handle = cx.mail.resolve_want(&stored)?;
+    if handle.is_none() {
+        cx.ctx.log(&format!(
+            "research: want {stored} is not in this mailspace; the brief has no want thread"
+        ));
+    }
+    Ok(handle)
+}
+
 /// Starts the research step as a read-only researcher job.
 struct ResearcherStart;
 
@@ -40,7 +55,7 @@ impl StepHandler for ResearcherStart {
         })?;
         let need = &cx.run.need;
         let body = cx.mail.task_body(need)?;
-        let want = for_want(&body);
+        let want = own_want(cx, for_want(&body))?;
         let thread = section(
             cx.ctx,
             &format!("need show {} --newest 40", shell_quote(need)),

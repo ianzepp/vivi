@@ -104,8 +104,13 @@ fn post_run<S: JobStore, M: FlowMail>(
     run: &RunRow,
 ) -> Result<(), VivariumError> {
     let need = &run.need;
-    let Some(want) = for_want(&mail.task_body(need)?) else {
+    let Some(stored) = for_want(&mail.task_body(need)?) else {
         return Ok(());
+    };
+    let Some(want) = mail.resolve_want(&stored)? else {
+        return Err(VivariumError::Message(format!(
+            "want {stored} is not in this mailspace"
+        )));
     };
     let steps = store.steps_of(need, run.run)?;
     let Some(step) = steps.iter().find(|step| step.node == RESEARCH_NODE) else {

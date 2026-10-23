@@ -1,4 +1,5 @@
 use super::MailspacePort;
+use crate::letter::fixture::{body_with_deps, task_body};
 use crate::pump::fixture::{Project, project};
 
 fn port(p: &Project) -> MailspacePort {
@@ -30,10 +31,16 @@ fn a_step_sent_with_a_dependency_has_the_edge_in_the_backlog() {
     let p = project();
     let port = port(&p);
     let first = port
-        .send_step("mind", "operator", "first", "x", &[])
+        .send_step("mind", "operator", "first", &task_body("x"), &[])
         .unwrap();
     let second = port
-        .send_step("mind", "operator", "second", "y", &[first.clone()])
+        .send_step(
+            "mind",
+            "operator",
+            "second",
+            &body_with_deps("task", "y", std::slice::from_ref(&first)),
+            &[],
+        )
         .unwrap();
     let deps = p.mailspace.backlog_dependencies(&second).unwrap();
     assert_eq!(deps.len(), 1, "{deps:?}");
@@ -45,8 +52,12 @@ fn one_bind_writes_one_bound_letter_naming_every_unit() {
     let p = project();
     let port = port(&p);
     let need = p.need("bind me");
-    let a = port.send_step("mind", "operator", "a", "x", &[]).unwrap();
-    let b = port.send_step("mind", "operator", "b", "x", &[]).unwrap();
+    let a = port
+        .send_step("mind", "operator", "a", &task_body("x"), &[])
+        .unwrap();
+    let b = port
+        .send_step("mind", "operator", "b", &task_body("x"), &[])
+        .unwrap();
     port.bind(&need, &[a, b]).unwrap();
     assert_eq!(bound_letters(&p, &need), vec![2]);
 }
@@ -56,8 +67,12 @@ fn binding_the_same_unit_to_the_same_need_again_is_idempotent() {
     let p = project();
     let port = port(&p);
     let need = p.need("bind twice");
-    let a = port.send_step("mind", "operator", "a", "x", &[]).unwrap();
-    let b = port.send_step("mind", "operator", "b", "x", &[]).unwrap();
+    let a = port
+        .send_step("mind", "operator", "a", &task_body("x"), &[])
+        .unwrap();
+    let b = port
+        .send_step("mind", "operator", "b", &task_body("x"), &[])
+        .unwrap();
     port.bind(&need, &[a.clone()]).unwrap();
     port.bind(&need, &[a.clone(), b.clone()]).unwrap();
     let storage = p.mailspace.storage().unwrap();
@@ -81,7 +96,9 @@ fn binding_the_same_unit_to_the_same_need_again_is_idempotent() {
 fn a_reply_lands_on_the_task() {
     let p = project();
     let port = port(&p);
-    let task = port.send_step("mind", "operator", "t", "x", &[]).unwrap();
+    let task = port
+        .send_step("mind", "operator", "t", &task_body("x"), &[])
+        .unwrap();
     port.reply(&task, "pump-attempt: hello").unwrap();
     let storage = p.mailspace.storage().unwrap();
     let id = storage.resolve_message_token(&task).unwrap();
@@ -97,7 +114,9 @@ fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
 
     let p = project();
     let port = port(&p);
-    let task = port.send_step("mind", "mind", "t", "x", &[]).unwrap();
+    let task = port
+        .send_step("mind", "mind", "t", &task_body("x"), &[])
+        .unwrap();
     port.reply(&task, &marked_line("pump-attempt:", "hello"))
         .unwrap();
     let replies = port.marked_replies(&task, "pump-attempt:").unwrap();
