@@ -52,7 +52,7 @@ consistently:
 |---|---|
 | `task` | Concrete work assigned now, with an owner and done condition |
 | `need` | Must-do-soon work awaiting lowering or assignment |
-| `want` | Deferred work or an idea whose precondition is not yet met |
+| `want` | A question or goal under discussion; the needs that serve it decide its state |
 | `mail` | Question, report, decision, or handoff communication |
 | `memo` | Private durable context for one role; not work or communication |
 | `rule` | Project rule shared by every seat; not work and not a private memo |
@@ -60,8 +60,9 @@ consistently:
 ### Letters
 
 Need, want and task letters are TOML front matter between two `+++` lines,
-then Markdown prose; the send stamps the header `X-Vivi-Format: 1`. Vivi reads
-the front matter and never the prose. Required keys: a need needs a non-empty
+then Markdown prose. Every need, want, task, pump, mail and chat send carries
+the header `X-Vivi-Format: 1`; a memo or a rule does not. Vivi reads the front
+matter and never the prose. Required keys: a need needs a non-empty
 `done_when` list, a want needs a `question`; a task needs neither. Send flags
 build the front matter:
 
@@ -94,10 +95,25 @@ vivi task send --from mind --to hand --subject 'unit U-17: parser input validati
 `task send` has no flags for `from`, `branch`, `with` or `band`: put them in
 the front matter of a whole-letter body. Lines such as `unit:` in the prose are
 free text. A need with no `done_when` is refused at send and nothing is stored.
-A letter with no front matter is history: `show` and `list` read it, but
-`vivi step` reports it as `letter_invalid` and the pump refuses to run it; send
-a new letter instead. The keys of every kind and the role reply envelope are in
-[the letter format](references/envelope.md).
+A letter without valid front matter cannot run: `show` and `list` read it,
+`vivi step` reports it as `letter_invalid`, and the pump refuses it. A mail or
+reply that is plain prose needs no front matter. Mail that opens with `+++`
+must be a pump action, a pump note or a role reply envelope, or the send is
+refused and nothing is stored. The keys of every kind and the role reply
+envelope are in [the letter format](references/envelope.md).
+
+**Wants and serving needs.** A want is where a discussion lives; it never runs.
+Send the work as needs with the `--serves <want>` flag of `need send`. A
+research need uses `--explores <want>` instead and does not count toward the
+want's state; the two flags are exclusive. The state is computed, never stored. A want is
+open while any need that serves it is open. It is done once it has at least one
+serving need and all of them are closed (a withdrawn need counts as closed). A
+new serving need reopens it, and a reply does not. A want with no serving
+needs is open; `want done` by hand is only for a want abandoned before any need
+was sent. `vivi want show` ends with `state open (N of M serving needs done)`
+and one `serves <need> <open|done> (<verdict>) <subject>` line per serving
+need, `vivi board` lists the same needs under each open want, and
+`want show --json` is `{thread, want_state}`.
 
 The board aggregates open work. Kind-specific `list` commands orient within one
 queue. `show` loads one handle. Use `dump` only for bounded audits or recovery;
@@ -204,7 +220,7 @@ Run it first when orienting or re-orienting. Every section is capped, and the
 digest closes with a truncation manifest naming each cap and how much it
 omitted — so the digest is complete in coverage and bounded in length. Long
 pump lists point at `vivi pump status` / `vivi pool status`. Boot never
-absorbs, closes, promotes, dispatches, or writes. Act on it with the ordinary
+absorbs, closes, dispatches, or writes. Act on it with the ordinary
 verbs. `--json` prints the same bounded digest as JSON. `--role` names the
 booting seat (otherwise inferred from a local slot / `VIVI_SLOT_ROOT`).
 `--pump full|own|none` overrides the snapshot depth; counts still print.
@@ -352,40 +368,16 @@ read_only table plus the merge/gate flow. `validate` checks those together
 and also runs at `vivi pump run|once` start. `mailspace init` writes a starter
 `[pump]` table with empty required values. A project missing things the pump
 needs (the committer name and email, roles and pools, and a task, need and main
-rung for each target; there is no branch, gate-command or shared-checks item) is
-**not ready**, not invalid: `validate` prints `not ready:` with each missing item and
-exits 3 (a wrong value is an error and exits 1; ready exits 0). The pump on a
-not-ready project dispatches nothing, exits cleanly, and shows the items in its
+rung for each target) is **not ready**, not invalid: `validate` prints
+`not ready:` with each missing item and exits 3 (a wrong value is an error and
+exits 1; ready exits 0). The pump on a not-ready project dispatches nothing, exits cleanly, and shows the items in its
 status and `vivi pump health`. A fresh `pump.db` starts stopped, so once the
 project is ready it also needs `vivi pump start`.
-A pump role charter that predates the v20 reply envelope is an error
-(`charter <role>: no v20 reply envelope`), and `config migrate --write` fixes it
-by installing the shipped charter. Retired target-level merge keys are named by
-`validate` and removed by `migrate`. `migrate` is a dry-run diff
-unless `--write` (a timestamped `.bak` is kept; comments survive). To upgrade a
-15.0.0 mailspace: `vivi update`, `vivi config migrate`, read the plan, then
-`vivi config migrate --write` and `vivi config validate`. It assigns the hand,
-merge and gate roles a pool, adds the pump's own `pump-planner` role (kind
-planner, hand pool) with the old `[pump.planner] charter` file's text as its
-charter when readable, else the shipped one, leaves a role named `planner`
-alone, gives the auditor role the hand pool (adding it read-only when absent,
-with the shipped charter when blank; need acceptance audits have no fallback),
-sets `kind = "hand"` on a `[pump] to` role with no kind (another kind is
-reported), adds a `merge` role when absent and sets `kind = "merge"` on a merge
-role of another kind (validate errors on both: only merge- and hand-kind roles
-may publish), replaces a pump role charter that predates the v20 envelope with the shipped
-one (16 jobs use it as the system prompt), renames `split_timeout`, and removes
-the keys 16 ignores with a reason each: `[pump.planner] run` and `charter`,
-`[pump] priority_file`, `[pump.merge] lanes`, and `[pump.gate] every_merges` and
-`every_seconds` (a behaviour change: the gate runs after every merge batch). For
-local pools it sets the 15.0.0 shared slot root only when the mailspace has no
-id; with an id 15.0.0 slots are not reused and the plan says which pools. Charters
-are written only under `--write`, after a `.bak` of any existing file, and only
-a pump role charter that predates the v20 envelope is replaced; any other
-charter with text is left alone. `vivi doctor` reports the same pump
-role requirements as `validate`. The plan
-ends with `review:` lines for what a human has to settle. A second run on a
-migrated file reports no changes.
+A pump role charter without the reply envelope is an error. `vivi config
+migrate` is a dry-run diff unless `--write` (a timestamped `.bak` is kept;
+comments survive): it converts routing to role pools, adds missing flow roles,
+installs the shipped pump-role charters and ends with `review:` lines for what
+a human has to settle. A second run reports no changes.
 
 Capacity and model fields are preferences. Use `role status` or
 `board --process` when process state matters. A host starting a role should
@@ -411,12 +403,11 @@ a new item: `need list`, `want list`, and the other work lists show a thread
 once, by its root, and `show` reads the whole thread. Dependencies are the front matter
 `depends_on` list; `--depends-on` on any work-kind send (task, need, or want
 handles) builds that list and creates a graph edge. Handles are validated
-before anything is created, so an unknown dependency fails the send. No
-`X-Vivi-Depends-On` header is written. The front matter travels with the
-letter: whatever files a work letter (local send, pull, fetch, resync,
+before anything is created, so an unknown dependency fails the send. The
+front matter travels with the letter: whatever files a work letter (local
+send, pull, fetch, resync,
 `pull --refs`, audit repair) builds the edges its front matter names for every
-dependency this mailspace holds as work, with or without `[sync]`. A letter in
-the old format names none.
+dependency this mailspace holds as work, with or without `[sync]`.
 A listed dependency always blocks: a reference this mailspace does not hold
 yet (not yet synced, or unknown) leaves the dependent blocked and reported as
 an exception until the dependency is present and done, and the edge is made
@@ -426,9 +417,9 @@ substrate — the graph — for small and multi-unit relationships alike.
 
 Closing a task, need, or want records its current disposition, as a letter on
 the item (see State as letters). Reopen when the CLI permits and evidence
-changes. `want promote` moves deferred work into the
-must-do queue; promotion is request-only and never fires because a
-dependency completed. Lifecycle notes (`--note`) never inbox the acting
+changes. A want never runs: send needs that serve it (`need send --serves <want>`),
+and it is done when all of them are. Lifecycle notes (`--note`) never
+inbox the acting
 identity: other participants receive the receipt, and the actor keeps only a
 read sent copy.
 
@@ -438,7 +429,7 @@ task associations are read from — the work graph holds the dependency chains.
 A want carries no list of tasks created from it.
 
 `absorb` seals a record. After absorption it cannot be changed, reopened,
-promoted, dropped, reprioritized, marked, or deleted. A later reply or derived
+dropped, reprioritized, marked, or deleted. A later reply or derived
 task is a new record. Absorb only when the identity is finished with the item
 and its state should remain frozen. A role that may close the item for
 everyone — its author, or a role of kind `mind` or `operator`, in any
@@ -476,7 +467,7 @@ and the same pair on `want` each take the handle, one or more slugs, and
 already in that state changes nothing. `show` prints `Marks: bug regression`
 when any are present, sorted. `list --mark` is repeatable and keeps an item
 only when it carries every named slug. The slug is letters, numbers, dot,
-dash, and underscore, compared exactly. Marks survive promote, done, reopen,
+dash, and underscore, compared exactly. Marks survive done, reopen,
 and drop. They do not change graph readiness, `vivi step`, or `need bind`.
 They travel when the acting role may close the item (its author, or a mind
 or an operator): each mark or unmark of a slug that changes writes a
@@ -574,7 +565,8 @@ or `reopen` (and, on a want, `drop`) writes one small reply on the item, with
 `In-Reply-To`, plus an `X-Vivi-Event-At` stamp. It is addressed to the item's
 From, To and Cc minus the sender (the author's address first in To) and filed
 read (it still shows in `mail list` and boot's unabsorbed mail as
-`Re: <subject>`); `--note` is its body.
+`Re: <subject>`); `--note` is its body. On a want, `done` and `drop` set its state only while
+no need serves it; once a need does, the state follows those needs.
 
 Any handle of the item works for a role that may close it. An authorized role
 can name the delivered copy another role holds, its own copy, or the author's
@@ -619,26 +611,25 @@ member's prefix domain (`<8 hex>.local`) counts, whoever authored the
 item — the receiver cannot see that mailspace's roles: the server's
 `from_prefix` stamp, which pull checks, authenticates the mailspace, and
 the writing CLI there enforced the same rule. Any other domain — a bare
-`local`, or a legacy name domain that is not this mailspace's own — is a
+`local`, or a name domain (`<name>.local`) that is not this mailspace's own — is a
 claim anyone can make: it is filed as plain mail and counted ignored (`N
 event(s) ignored: not from a member mailspace, or for a sealed item, or
 dated in the future` in the pull summary), as is an event for an absorbed
-item. A legacy name-domain mailspace counts its own events.
+item. A mailspace with a name domain counts its own events.
 
 Every holder applies the letter. The `X-Vivi-Event` header is the stable
 marker that tells an event letter from work: every letter that carries it
-travels with envelope kind `mail`, never a work kind — the version gate.
-An old client files a pulled letter by its envelope kind, so it files an
-event as mail and never as phantom work; this client files any letter
-with the header as mail whatever its envelope carries, so the event takes
-no folder row and no backlog node of its own; it moves the rows and the
-node of the item it names. The event must reach every member that holds
+travels with envelope kind `mail`, never a work kind, and is filed as mail
+whatever its envelope carries, so the event takes no folder row and no
+backlog node of its own; it moves the rows and the node of the item it
+names. The event must reach every member that holds
 the item, so the server must show a letter with the header to every
 member by the header; until it does, the event reaches only the sender
 and the addressed members, as plain mail always has. Work held for
 another mailspace's role (`need list --held`) follows the events too: the
-state is the item's, not the holder's. `need|task|want show` prints `State: done|reopened` once an event
-exists, and `graph audit` reports a folder that disagrees with its item's
+state is the item's, not the holder's. `need|task show` prints
+`State: done|reopened` once an event exists, `want show` ends with its computed
+`state` line, and `graph audit` reports a folder that disagrees with its item's
 newest event as `event_state` (`--repair` re-applies it).
 
 Text `need show` and `want show` print a `Contents (N message(s))` table
@@ -656,14 +647,6 @@ This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
 see (`N event(s) applied` in the pull summary), and an event that arrives
 before its item is applied when the item arrives.
-
-Mixed versions: a client that predates these letters does not apply other
-members' events, but never files them as work — every event letter travels
-with envelope kind `mail`, and an old client files a pulled letter by its
-envelope kind. Every member of a project must run the new client for events
-to move anything, and the project server's board follows the same rule only
-once the server folds events the same way — a need for that is filed with
-the operator's Mind.
 
 ### Need delegation
 
@@ -728,12 +711,13 @@ differ, the need-level pair is omitted and each unit keeps its own values.
 
 For a bug detected outside the pump, before it becomes a need, read the
 [manual bug-triage playbook](references/bug-triage.md). The flow files a want,
-gets an outside-the-pump audit, and promotes only after the operator reviews
-the finding.
+gets an outside-the-pump audit, and sends a serving need only after the
+operator reviews the finding.
 
 - File the report as a want so the pump ignores it; mark it `bug`.
 - An auditor reproduces the issue and replies with its root cause.
-- Promotion feeds the planner the whole thread, including the report.
+- The serving need (`need send --serves <want>`) carries the repro and root
+  cause in its body.
 - Use `done` or `drop` for invalid, duplicate, or won't-fix bugs.
 
 ## Rules
@@ -817,17 +801,16 @@ role of kind `mind` or kind `operator`) complete the item's node and unlock
 dependents; a
 report by any other role completes nothing (State as letters); `reopen`
 re-locks them (cascading through join parents and content siblings);
-`want promote` never changes node state and wants never dispatch in
-`vivi step` before explicit promotion. Lowering is a graph fact:
+wants never dispatch: `vivi step` reports `want_parked`; send a need that
+serves it. Lowering is a graph fact:
 `vivi need bind <need> <task>...` binds unit tasks to a need, and the need
 auto-completes when every bound unit is accepted (a report does not count) —
 node and mailbox item together (`via=join` in the event log); the accepting
 `done` prints `need <handle> completed (all bound units accepted)` when it
 closes the need, and a `done` that fires no join prints no such line.
 Reopening a bound unit restores the need to open the same way.
-For a need managed by the pump, this mailbox join does not substitute for
-need acceptance: the managed branch must also be accepted and landed on its
-integration target before the need can close.
+A pump-run need closes when its flow lands the need branch on main; the pump
+writes that close.
 `vivi need show <handle>` prints the bound units with their states. Imported
 Mermaid graphs are for non-item topology (pipelines, environment flows);
 delivery lowering uses `need bind` in the backlog, so work is never
@@ -890,12 +873,12 @@ shows no `awaiting` or `reported` row. Work held for another mailspace's role
 `boot` leave it out; `mail list --to <address> --folder needs|tasks|wants`
 shows it. Use `vivi step [--json]` for a mechanical adjudication of the
 backlog into `dispatches` (ready, verifiable work with clause counts) and
-`exceptions` (reason vocabulary: `want_requires_promotion`,
+`exceptions` (reason vocabulary: `want_parked`,
 `lowered_awaiting_units`, `no_done_when`, `letter_invalid`, `pump_owned`,
 `item_missing`, `not_settled`, `untracked_item`, `awaiting_remote`,
-`awaiting_acceptance`, `awaiting_dependency`). `letter_invalid` is an item in
-the old format or with invalid front matter; `pump_owned` is a pump step task
-(its front matter has a `[step]` table) that the pump runs and closes. Wants
+`awaiting_acceptance`, `awaiting_dependency`). `letter_invalid` is an item with no or
+invalid front matter; `pump_owned` is a pump step task (its front matter has a
+`[step]` or `[job]` table) that the pump runs and closes. Wants
 render as parked in their exception detail. A need without `done_when` is
 refused at send; a task without one sends, and `step` reports `no_done_when`.
 A duplicate work send (same sender, same subject, still open in the
@@ -922,10 +905,9 @@ edges (from folder state and front matter `depends_on`), completes nodes for set
 items, settles need mailboxes whose join fired, settles `foreign_held` nodes,
 re-applies the latest event for `event_state`, and corrects kinds.
 `orphan_node` is reported, never repaired. `graph activate` / `need bind`
-errors point here. Stale vivi binaries silently skip node minting entirely
-(observed with an old Homebrew 8.1.0 on PATH): `mailspace status` prints the
-running binary's version — check it when nodes go missing, and keep one vivi
-on PATH.
+errors point here. A vivi binary older than the mailspace may skip node minting:
+`mailspace status` prints the running binary's version — check it when nodes
+go missing, and keep one vivi on PATH.
 
 ### Work-graph flow (dispatching ordered work)
 
