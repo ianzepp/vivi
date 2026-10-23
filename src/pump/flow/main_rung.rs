@@ -51,6 +51,8 @@ pub(crate) fn record_target(body: &str) -> Option<&str> {
 
 /// Exception kind of a main rung job that ended without an exit code.
 pub(crate) const MAIN_RUNG_FAILED: &str = "flow-main-rung-failed";
+/// Exception kind of a finished main rung job whose target has no main rung configured.
+pub(crate) const MAIN_TARGET_UNKNOWN: &str = "flow-main-target-unknown";
 
 /// The last main tip whose main rung passed on `target`, for status.
 ///
@@ -74,6 +76,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for MainRung {
         store: &PumpStore,
         mail: &mut M,
     ) -> Result<(), VivariumError> {
+        let mut configured = Vec::new();
         for target in ctx.cfg.target_configs().keys() {
             if ctx
                 .cfg
@@ -83,10 +86,38 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for MainRung {
             {
                 continue;
             }
+            configured.push(target.clone());
             collect(ctx, st, store, mail, target)?;
             schedule::schedule(ctx, st, store, mail, target)?;
         }
+        retire_unknown(ctx, st, &configured);
         Ok(())
+    }
+}
+
+/// Raise once and mark applied every finished, unapplied main rung job whose
+/// target is not among the `configured` main rung targets (removed or renamed).
+fn retire_unknown<S: JobStore>(ctx: &Ctx, st: &mut S, configured: &[String]) {
+    let orphans: Vec<(String, String)> = st
+        .jobs()
+        .values()
+        .filter(|job| job.kind == "rung" && job.status.is_terminal() && job.applied_at.is_none())
+        .filter_map(|job| {
+            let target = job.payload.get(PAYLOAD_KEY)?.as_str()?;
+            (!configured.iter().any(|t| t == target)).then(|| (job.id.clone(), target.to_owned()))
+        })
+        .collect();
+    for (id, target) in orphans {
+        raise_once(
+            ctx,
+            MAIN_TARGET_UNKNOWN,
+            &id,
+            &format!(
+                "main rung job {id}: expected target {target} configured with a main rung; actual: configured [{}]",
+                configured.join(", ")
+            ),
+        );
+        jobs::mark_applied(st, &id, ctx.now());
     }
 }
 
