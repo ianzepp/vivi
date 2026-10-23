@@ -8,7 +8,7 @@ use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::{NodeClass, STEP_MARKER};
 use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
-use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::step_inputs::{read_only_job, targets};
@@ -295,6 +295,64 @@ fn hold_env<S: JobStore>(
     Ok(())
 }
 
+/// The live run and the step row a reslice job names, or `None` when the job
+/// is settled here. A payload identity that is missing, names no live run or
+/// no step row, or disagrees with the step row's run is stale: the job is
+/// marked applied and [`JOB_STALE`] is raised once.
+fn checked_identity<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    job: &PoolJob,
+) -> Result<Option<(RunRow, StepRow)>, VivariumError> {
+    let stale = |st: &mut S, text: String| {
+        raise_once(ctx, JOB_STALE, &job.id, &text);
+        jobs::mark_applied(st, &job.id, ctx.now());
+        Ok(None)
+    };
+    let identity = match PayloadIdentity::of(&job.payload) {
+        Ok(identity) => identity,
+        Err(error) => return stale(st, format!("reslice job {}: {error}", job.id)),
+    };
+    let runs = store.runs_of(&identity.need)?;
+    let Some(run) = runs
+        .iter()
+        .find(|r| r.run == identity.run && r.state == RUN_LIVE)
+        .cloned()
+    else {
+        let live: Vec<String> = runs
+            .iter()
+            .filter(|r| r.state == RUN_LIVE)
+            .map(|r| format!("r{}", r.run))
+            .collect();
+        let found = if live.is_empty() {
+            format!("no live run of {}", identity.need)
+        } else {
+            format!("live runs of {}: {}", identity.need, live.join(", "))
+        };
+        let text = format!(
+            "reslice job {}: expected run r{} of {} live; actual: {found}",
+            job.id, identity.run, identity.need
+        );
+        return stale(st, text);
+    };
+    let Some(row) = store.step_by_task(&identity.task)? else {
+        let text = format!(
+            "reslice job {}: expected task {} to have a step row; actual: no such step",
+            job.id, identity.task
+        );
+        return stale(st, text);
+    };
+    if row.run != identity.run {
+        let text = format!(
+            "reslice job {}: expected run r{} (the payload); actual: step {} belongs to r{}",
+            job.id, identity.run, row.task, row.run
+        );
+        return stale(st, text);
+    }
+    Ok(Some((run, row)))
+}
+
 /// Apply one terminal reslice job, or drop it when its run is closed.
 fn collect_one<S: JobStore, M: FlowMail>(
     ctx: &Ctx,
@@ -303,30 +361,22 @@ fn collect_one<S: JobStore, M: FlowMail>(
     mail: &mut M,
     job: &PoolJob,
 ) -> Result<(), VivariumError> {
+    let Some((run, row)) = checked_identity(ctx, st, store, job)? else {
+        return Ok(());
+    };
     let text = |key: &str| job.payload.get(key).and_then(|v| v.as_str());
-    let (Some(need), Some(task), Some(slice), Some(mode)) = (
-        text("need"),
-        text("task"),
-        text("slice"),
-        text("mode").and_then(Mode::from_name),
-    ) else {
+    let (Some(slice), Some(mode)) = (text("slice"), text("mode").and_then(Mode::from_name)) else {
         jobs::mark_applied(st, &job.id, ctx.now());
         return Err(VivariumError::Parse(format!(
-            "reslice job {}: payload lacks need, task, slice or mode",
+            "reslice job {}: payload lacks slice or mode",
             job.id
         )));
     };
-    let number = job.payload.get("run").and_then(serde_json::Value::as_u64);
-    let live = store
-        .runs_of(need)?
-        .into_iter()
-        .find(|r| Some(u64::from(r.run)) == number && r.state == RUN_LIVE);
-    let row = store.step_by_task(task)?;
-    let (Some(run), Some(row)) = (live, row) else {
-        jobs::mark_applied(st, &job.id, ctx.now());
-        return Ok(());
-    };
     if matches!(row.state, StepState::Done | StepState::Failed) {
+        ctx.log(&format!(
+            "reslice job {}: {} is already closed; late result dropped",
+            job.id, row.task
+        ));
         jobs::mark_applied(st, &job.id, ctx.now());
         return Ok(());
     }
