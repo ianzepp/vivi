@@ -15,7 +15,9 @@ pub struct RungResult {
     pub pass: bool,
     /// The command's exit code; `None` when the job never reported one.
     pub exit: Option<i32>,
-    /// The end of the receipt's output, capped by lines and bytes.
+    /// The end of the receipt section followed by the stderr tail section of
+    /// the posted reply, capped by lines and bytes. A reply with no sections
+    /// is tailed whole.
     pub tail: String,
 }
 
@@ -24,7 +26,7 @@ pub struct RungResult {
 #[must_use]
 pub fn parse(job: &PoolJob) -> RungResult {
     let receipt = job.outcome.as_ref().map_or("", |o| o.receipt.as_str());
-    let tail = tail_of(receipt);
+    let tail = tail_of(&failure_text(receipt));
     let exit = match job.status {
         JobStatus::Finished => agent_exit(receipt),
         _ => None,
@@ -34,6 +36,32 @@ pub fn parse(job: &PoolJob) -> RungResult {
         exit,
         tail,
     }
+}
+
+/// Section headings `pool::record::collected_text` writes.
+const HEADINGS: [&str; 4] = [
+    "--- facts",
+    "--- receipt",
+    "--- stderr tail",
+    "--- runner log tail",
+];
+
+/// The receipt and stderr sections of a posted reply, joined; the whole text
+/// when it has no section headings.
+fn failure_text(text: &str) -> String {
+    if !text.lines().any(|line| HEADINGS.contains(&line)) {
+        return text.to_owned();
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut keeping = false;
+    for line in text.lines() {
+        if HEADINGS.contains(&line) {
+            keeping = line == "--- receipt" || line == "--- stderr tail";
+        } else if keeping {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
 }
 
 fn tail_of(text: &str) -> String {
