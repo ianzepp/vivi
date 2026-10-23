@@ -88,6 +88,10 @@ impl fmt::Display for LetterError {
                 f,
                 "unknown letter kind `{kind}`: expected need, want, task, memo, rule, pump, mail or chat"
             ),
+            Self::UnknownFormat(value) if value.is_empty() => write!(
+                f,
+                "letter has a blank `X-Vivi-Format` header: a format-1 letter carries `X-Vivi-Format: 1`"
+            ),
             Self::UnknownFormat(value) => write!(
                 f,
                 "letter format `{value}` is not known to this vivi (it reads format {FORMAT_VERSION}): upgrade vivi"
@@ -227,10 +231,16 @@ pub const FORMAT_VERSION: &str = "1";
 ///
 /// # Errors
 ///
-/// Returns `LetterError::Invalid` when the front matter does not serialize.
+/// Returns `LetterError::Invalid` when the front matter does not serialize or
+/// holds a line that is only `+++`, which would close the front matter early.
 pub fn render<T: serde::Serialize>(front: &T, prose: &str) -> Result<String, LetterError> {
     let toml = toml::to_string(front)
         .map_err(|err| LetterError::Invalid(format!("front matter does not render: {err}")))?;
+    if toml.lines().any(|line| line.trim() == FENCE) {
+        return Err(LetterError::Invalid(format!(
+            "front matter value has a `{FENCE}` line, which would close the front matter"
+        )));
+    }
     Ok(format!("{FENCE}\n{toml}{FENCE}\n\n{prose}"))
 }
 
@@ -268,3 +278,7 @@ pub fn check_list(key: &str, items: &[String]) -> Result<(), String> {
 #[cfg(test)]
 #[path = "letter_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "letter/fixture_test.rs"]
+pub(crate) mod fixture;
