@@ -9,7 +9,9 @@ use super::{INTERVAL_SECS, schedule};
 use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
-use crate::pump::flow::main_rung::{GREEN, LOST, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
+use crate::pump::flow::main_rung::{
+    ENV_FAILED, GREEN, LOST, PAYLOAD_KEY, STARTED, TASK, TESTED, key,
+};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -150,6 +152,39 @@ fn tested_tip_is_not_run_again() -> R {
     rig.store.set_main_state(&key(GREEN, TARGET), TIP_A)?;
     assert_eq!(rig.schedule()?, None);
     assert!(rig.jobs.jobs.is_empty());
+    Ok(())
+}
+
+#[test]
+fn an_env_failed_tip_is_not_run_again_but_a_new_tip_is() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    rig.store.set_main_state(&key(ENV_FAILED, TARGET), TIP_A)?;
+    assert_eq!(rig.schedule()?, None);
+    assert!(rig.jobs.jobs.is_empty());
+    rig.main_at(TIP_B);
+    let id = rig.schedule()?;
+    assert_eq!(
+        id.as_deref(),
+        Some(format!("rung-main-main-default-{}-a1", &TIP_B[..12]).as_str())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_new_tip_after_an_env_failure_waits_for_the_interval() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    rig.schedule()?;
+    for job in rig.jobs.jobs.values_mut() {
+        job.status = JobStatus::Finished;
+    }
+    rig.store.set_main_state(&key(ENV_FAILED, TARGET), TIP_A)?;
+    rig.main_at(TIP_B);
+    rig.host.advance(INTERVAL_SECS - 1);
+    assert_eq!(rig.schedule()?, None);
+    rig.host.advance(1);
+    assert!(rig.schedule()?.is_some());
     Ok(())
 }
 

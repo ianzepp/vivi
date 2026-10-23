@@ -19,6 +19,8 @@ use crate::pump::store::PumpStore;
 
 /// main_state key: the last main tip a main rung finished on.
 pub(crate) const TESTED: &str = "main-tested";
+/// main_state key: the last tip whose main rung hit an environment failure.
+pub(crate) const ENV_FAILED: &str = "main-env-failed";
 /// main_state key: the last main tip whose main rung passed.
 pub(crate) const GREEN: &str = "main-green";
 /// main_state key: unix seconds when the last main rung job was started.
@@ -133,7 +135,8 @@ fn same_tip_ids<S: JobStore>(st: &S, target: &str, job: &PoolJob) -> Vec<String>
 }
 
 /// An environment failure is not a red main: no repair need, one alarm per
-/// target and tool, and the tip counts as tested so it does not run again.
+/// (target, tip, tool). The tip is recorded as env-failed (not tested, not
+/// green, not red) and does not run again; a new tip runs after the interval.
 fn env_hold(
     ctx: &Ctx,
     store: &PumpStore,
@@ -142,18 +145,18 @@ fn env_hold(
     job: &PoolJob,
     env: &EnvFailure,
 ) -> Result<(), VivariumError> {
-    store.set_main_state(&key(TESTED, target), tip)?;
+    store.set_main_state(&key(ENV_FAILED, target), tip)?;
     let tool = env.tool.as_deref().unwrap_or("host");
     raise_once(
         ctx,
         rung_result::ENV_FAILURE,
-        &format!("{target}:{tool}"),
+        &format!("{target}:{tip}:{tool}"),
         &format!(
-            "main rung for target {target} at {tip} hit an environment failure ({:?}, tool {tool}): job {}, pool {}, evidence: {}. No repair need was filed; fix the worker, the tip is marked tested",
+            "main rung for target {target} at {tip}: expected the rung script to run; actual: {:?}, tool {tool}: {} (job {}, pool {}). No repair need filed; this tip is not run again; a new main tip runs after the interval",
             env.kind,
+            env.evidence,
             job.id,
             job.pool.as_deref().unwrap_or("none"),
-            env.evidence
         ),
     );
     Ok(())

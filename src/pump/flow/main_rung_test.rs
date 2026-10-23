@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{FAILING, record_target};
+use super::{ENV_FAILED, FAILING, record_target};
 use super::{
     GREEN, LOST, MAIN_RUNG_FAILED, MainRung, PAYLOAD_KEY, STARTED, TESTED, key, last_green,
 };
@@ -210,8 +210,9 @@ fn a_missing_tool_is_not_a_red_main() -> R {
     assert_eq!(rig.env_raised(), 1);
     assert_eq!(rig.raised(), 0);
     assert!(rig.sends().is_empty());
+    assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
     assert_eq!(
-        rig.store.main_state(&key(TESTED, TARGET))?.as_deref(),
+        rig.store.main_state(&key(ENV_FAILED, TARGET))?.as_deref(),
         Some(TIP)
     );
     assert_eq!(rig.store.main_state(&key(FAILING, TARGET))?, None);
@@ -221,17 +222,34 @@ fn a_missing_tool_is_not_a_red_main() -> R {
 }
 
 #[test]
-fn the_same_tool_missing_on_a_new_tip_raises_nothing_new() -> R {
+fn the_same_tool_missing_on_a_new_tip_raises_per_tip() -> R {
     let mut rig = rig(true)?;
     rig.job(JobStatus::Finished, TSC_MISSING)?;
     rig.run()?;
+    assert_eq!(rig.env_raised(), 1);
     rig.job_at(JobStatus::Finished, TSC_MISSING, TIP2, 1)?;
     rig.run()?;
-    assert_eq!(rig.env_raised(), 1);
+    assert_eq!(rig.env_raised(), 2);
     assert!(rig.sends().is_empty());
+    assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
     assert_eq!(
-        rig.store.main_state(&key(TESTED, TARGET))?.as_deref(),
+        rig.store.main_state(&key(ENV_FAILED, TARGET))?.as_deref(),
         Some(TIP2)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_same_tip_failing_again_raises_nothing_new() -> R {
+    let mut rig = rig(true)?;
+    rig.job(JobStatus::Finished, TSC_MISSING)?;
+    rig.run()?;
+    rig.job_at(JobStatus::Finished, TSC_MISSING, TIP, 2)?;
+    rig.run()?;
+    assert_eq!(rig.env_raised(), 1);
+    assert_eq!(
+        rig.store.main_state(&key(ENV_FAILED, TARGET))?.as_deref(),
+        Some(TIP)
     );
     Ok(())
 }
