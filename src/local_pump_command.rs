@@ -169,8 +169,11 @@ fn pump_rungs(command: &PumpRungsCommand) -> Result<(), VivariumError> {
         }
         PumpRungsCommand::Set(cmd) => {
             let root = project_root(&cmd.project);
-            RungsConfig::set(&root, &cmd.rung, &cmd.command, cmd.target.as_deref())?;
+            let write = RungsConfig::set(&root, &cmd.rung, &cmd.command, cmd.target.as_deref())?;
             println!("{} rung set for {}", cmd.rung, root.display());
+            for line in write.notes() {
+                eprintln!("{line}");
+            }
             Ok(())
         }
     }
