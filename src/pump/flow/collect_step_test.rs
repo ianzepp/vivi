@@ -8,6 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{RoleCollector, RunCx, StepCollector};
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::FlowDef;
@@ -57,7 +58,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     start(&ctx, &store, &mut mail, NEED, Some("plan"))?;
     Ok(Rig {
         _dir: dir,

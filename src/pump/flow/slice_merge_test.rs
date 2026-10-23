@@ -7,6 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::register;
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::letter::fixture::task_body_with;
 use crate::letter::work::TaskFront;
 use crate::pump::config::{PumpConfig, RungsConfig};
@@ -94,7 +95,7 @@ fn rig() -> Result<Rig, VivariumError> {
     // merged onto the need branch and fetched.
     host.reply("cat-file -e", 128, "fatal: Not a valid object name");
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     let mut registry = Registry::<Jobs, FakeMail>::new();
     collect_slice::register_defaults(&mut registry);
     register(&mut registry);

@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::letter::fixture::step_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
@@ -109,7 +110,7 @@ fn rig(entry: &str) -> Result<Rig, VivariumError> {
     );
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),
         branch: format!("vivi/need/{NEED}"),
