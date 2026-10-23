@@ -15,16 +15,18 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
+use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+const BASE: &str = "2222222222222222222222222222222222222222";
 const BUILT: &str = "+++\nanswer = \"built\"\ndeviations = ['changed a signature']\n+++\ndone";
 
 #[derive(Default)]
@@ -60,6 +62,19 @@ struct Rig {
     jobs: Jobs,
 }
 
+/// A live need-branch row on the slices' target, so hands have a start point.
+fn seed_need_branch(store: &PumpStore) -> R {
+    store.upsert_need_branch(&NeedBranchRow {
+        need: NEED.into(),
+        branch: need_branch::branch(NEED),
+        base: Some(BASE.into()),
+        status: need_branch::LIVE.into(),
+        run: 1,
+        target: "default".into(),
+        priors: Vec::new(),
+    })
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
@@ -75,6 +90,7 @@ fn rig() -> Result<Rig, VivariumError> {
     });
     let ctx = ctx.with_routing(routing);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, "kind: build")?;
     Ok(Rig {
@@ -94,7 +110,7 @@ fn built_slice(rig: &mut Rig) -> Result<StepRow, VivariumError> {
         "mind",
         "mind",
         "slice a",
-        &format!("pump-step: {NEED} r1 slice:a\ntarget: vivi\n\ntitle a\n\nbrief a"),
+        &format!("pump-step: {NEED} r1 slice:a\ntarget: default\n\ntitle a\n\nbrief a"),
         &[],
     )?;
     let slice = StepRow {

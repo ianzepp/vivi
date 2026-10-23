@@ -18,15 +18,18 @@ use crate::pump::envelope::roles::Hand;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::need_branch;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+const BASE: &str = "2222222222222222222222222222222222222222";
+const NEED_TIP: &str = "3333333333333333333333333333333333333333";
 
 #[derive(Default)]
 struct Jobs {
@@ -52,7 +55,26 @@ struct Rig {
     jobs: Jobs,
 }
 
+fn need_branch_row(target: &str) -> NeedBranchRow {
+    NeedBranchRow {
+        need: NEED.into(),
+        branch: need_branch::branch(NEED),
+        base: Some(BASE.into()),
+        status: need_branch::LIVE.into(),
+        run: 1,
+        target: target.into(),
+        priors: Vec::new(),
+    }
+}
+
+/// A rig whose need already has a live need branch on the slices' target.
 fn rig() -> Result<Rig, VivariumError> {
+    let rig = rig_bare()?;
+    rig.store.upsert_need_branch(&need_branch_row("default"))?;
+    Ok(rig)
+}
+
+fn rig_bare() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let mut routing = (*ctx.routing).clone();
@@ -93,7 +115,9 @@ impl Rig {
             "pump",
             "pump",
             &format!("slice {id}"),
-            &format!("pump-step: {NEED} r1 slice:{id}\ntarget: vivi\n\ntitle {id}\n\nbrief {id}"),
+            &format!(
+                "pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"
+            ),
             &[],
         )?;
         let row = StepRow {
@@ -151,7 +175,7 @@ fn dispatch_queues_a_hand_job_on_the_slice_task() -> R {
     assert_eq!(job.kind, "hand");
     assert_eq!(job.role, "hand");
     assert_eq!(job.task.as_deref(), Some(slice.task.as_str()));
-    assert_eq!(job.target.as_deref(), Some("vivi"));
+    assert_eq!(job.target.as_deref(), Some("default"));
     let branch = job.branch.clone().unwrap();
     assert_eq!(branch, format!("vivi/unit/{}-a1", slice.task));
     assert_eq!(job.publish_ref, Some(format!("refs/heads/{branch}")));
@@ -654,4 +678,68 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
             "pump-deviations: third"
         ]
     );
+}
+
+// ---- hands start from the need branch -------------------------------------
+
+#[test]
+fn the_first_dispatch_records_the_base_and_starts_from_it() -> R {
+    let mut rig = rig_bare()?;
+    rig.host.reply(
+        "ls-remote origin main",
+        0,
+        &format!("{BASE}\trefs/heads/main\n"),
+    );
+    let slice = rig.slice("a", &["src/a.rs"])?;
+
+    let id = rig.dispatch(&slice, 1)?;
+
+    assert_eq!(rig.job(&id).from_ref.as_deref(), Some(BASE));
+    let row = rig.store.need_branch(NEED)?.expect("row recorded");
+    assert_eq!(row.status, need_branch::LIVE);
+    assert_eq!(row.base.as_deref(), Some(BASE));
+    assert_eq!((row.run, row.target.as_str()), (1, "default"));
+    Ok(())
+}
+
+#[test]
+fn a_published_need_branch_is_where_the_hand_starts() -> R {
+    let mut rig = rig()?;
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{NEED_TIP}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+    let slice = rig.slice("a", &["src/a.rs"])?;
+
+    let id = rig.dispatch(&slice, 1)?;
+
+    assert_eq!(rig.job(&id).from_ref.as_deref(), Some(NEED_TIP));
+    Ok(())
+}
+
+#[test]
+fn an_unpublished_need_branch_falls_back_to_the_recorded_base() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice("a", &["src/a.rs"])?;
+
+    let id = rig.dispatch(&slice, 1)?;
+
+    assert_eq!(rig.job(&id).from_ref.as_deref(), Some(BASE));
+    Ok(())
+}
+
+#[test]
+fn a_need_branch_on_another_target_refuses_the_slice() -> R {
+    let mut rig = rig_bare()?;
+    rig.store.upsert_need_branch(&need_branch_row("other"))?;
+    let slice = rig.slice("a", &["src/a.rs"])?;
+
+    let err = rig.dispatch(&slice, 1).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("other") && text.contains("default"), "{text}");
+    assert!(rig.jobs.jobs.is_empty());
+    Ok(())
 }
