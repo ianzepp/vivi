@@ -33,8 +33,9 @@ pub enum Status {
     /// The agent finished; stored by the retired merge pipeline, which no
     /// longer picks it up.
     Delivered,
-    /// Retired merge-pipeline status: no code sets it. A stored unit keeps it
-    /// and is never dispatched.
+    /// Retired merge-pipeline status: the pump no longer sets it. A stored
+    /// unit keeps it and is never dispatched; pool slot counts and reclaim
+    /// still read it as live work on the unit's pool and target.
     Merging,
     /// Merged into the need branch or main.
     Merged,
@@ -104,14 +105,9 @@ impl Status {
     }
 }
 
-/// Serde skip predicate: an absent revision is the old shape.
-fn is_zero(value: &u64) -> bool {
-    *value == 0
-}
-
-/// Serde skip predicate: an absent counter is zero.
-fn is_zero_u32(value: &u32) -> bool {
-    *value == 0
+/// Serde skip predicate: an absent revision or counter is zero.
+fn is_zero<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// Intern an unknown status string so [`Status`] can stay `Copy`. One leaked
@@ -260,11 +256,11 @@ pub struct Unit {
     pub kind_reported: bool,
     /// Consecutive split-planner exits that produced no plan. `pump.db`
     /// keeps it in the unit's `extra_json` column.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub split_fails: u32,
     /// Provider rate-limit (429) split-planner retries; never counts toward
     /// `split_fails`. `pump.db` keeps it in the unit's `extra_json` column.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub split_rate_retries: u32,
     /// Earliest epoch seconds the split planner may respawn for this unit.
     /// `pump.db` keeps it in the unit's `extra_json` column.
@@ -272,7 +268,7 @@ pub struct Unit {
     pub split_retry_at: Option<u64>,
     /// Bad split plans already re-asked; one maximum. `pump.db` keeps it in
     /// the unit's `extra_json` column.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub split_reasks: u32,
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
