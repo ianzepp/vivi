@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-const BODY: &str = "done_when: it works";
+const BODY: &str = "the unit of work";
 const NOTICE: &str = "completed (all bound units accepted)";
 
 fn vivi(project: &Path, args: &[&str]) -> Output {
@@ -40,21 +40,22 @@ fn project() -> tempfile::TempDir {
 
 /// The handle the hand's delivered copy of a send has.
 fn send(p: &Path, kind: &str, subject: &str) -> String {
-    let out = ok(
-        p,
-        &[
-            kind,
-            "send",
-            "--from",
-            "mind",
-            "--to",
-            "hand",
-            "--subject",
-            subject,
-            "--body",
-            BODY,
-        ],
-    );
+    let mut args = vec![
+        kind,
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "hand",
+        "--subject",
+        subject,
+        "--body",
+        BODY,
+    ];
+    if kind == "need" {
+        args.extend(["--done-when", "it works"]);
+    }
+    let out = ok(p, &args);
     out.lines()
         .find_map(|line| line.strip_prefix("created hand "))
         .unwrap()
