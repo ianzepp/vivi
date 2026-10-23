@@ -235,7 +235,9 @@ slots = 2
         "{}",
         stderr(&refused)
     );
-    assert_success(&vivi(&[
+    let config = dir.path().join(".vivi/mailspace.toml");
+    let before = fs::read_to_string(&config).unwrap();
+    let forced = vivi(&[
         "pool",
         "remove",
         "glm",
@@ -243,9 +245,49 @@ slots = 2
         "--force",
         "--project",
         root,
+    ]);
+    assert!(!forced.status.success());
+    let err = stderr(&forced);
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(err.contains("names unknown pool `glm`"), "{err}");
+    let raw = fs::read_to_string(&config).unwrap();
+    assert!(raw.contains("[pools.glm]"), "{raw}");
+    assert_eq!(raw, before);
+    fs::write(&config, before.replace("pool = \"glm\"\n", "")).unwrap();
+    assert_success(&vivi(&[
+        "pool",
+        "remove",
+        "glm",
+        "--yes",
+        "--project",
+        root,
     ]));
-    let raw = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    let raw = fs::read_to_string(&config).unwrap();
     assert!(!raw.contains("[pools.glm]"), "{raw}");
+}
+
+#[test]
+fn pool_set_of_a_value_that_breaks_loading_is_rolled_back() {
+    let dir = project_with(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[pools.glm]
+provider = "local"
+slots = 2
+"#,
+    );
+    let root = dir.path().to_str().unwrap();
+    let config = dir.path().join(".vivi/mailspace.toml");
+    let before = fs::read_to_string(&config).unwrap();
+    let out = vivi(&["pool", "set", "glm", "slots", "many", "--project", root]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(stderr(&out).contains("rolled back"), "{}", stderr(&out));
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
 }
 
 #[test]
