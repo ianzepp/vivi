@@ -187,6 +187,9 @@ pub struct PumpRequeueCommand {
     /// Restrict the requeue to this failure class (bulk form)
     #[arg(long, value_name = "CLASS")]
     pub why: Option<String>,
+    /// Release this held pool job; the pump applies it at its next tick
+    #[arg(long, value_name = "JOB", conflicts_with_all = ["units", "stuck_since"])]
+    pub job: Option<String>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

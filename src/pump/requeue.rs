@@ -32,6 +32,8 @@ use crate::pump::state::{State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::transient;
 
+#[path = "requeue_job.rs"]
+mod requeue_job;
 #[path = "requeue_step.rs"]
 mod requeue_step;
 
@@ -282,6 +284,9 @@ fn highest_branch(branches: &BTreeMap<String, TargetBranches>, st: &State, uid: 
 /// flow step task, see [`requeue_step`]) on its need's open pump record, for the running pump to apply at its next
 /// tick. `--dry-run` prints what each uid would become and posts nothing.
 ///
+/// `vivi pump requeue --job <id>` releases one held pool job instead, see
+/// [`requeue_job`].
+///
 /// `vivi pump requeue --stuck-since <time> --why <class>` is the bulk form:
 /// every unit still stuck inside that window gets a default-policy action
 /// whose reason records the incident class.
@@ -294,6 +299,9 @@ fn highest_branch(branches: &BTreeMap<String, TargetBranches>, st: &State, uid: 
 /// posting an action fails with.
 pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError> {
     let home = project_home(project)?;
+    if let Some(id) = cmd.job.as_deref() {
+        return requeue_job::request(&home, id, cmd.dry_run);
+    }
     let policy = AttemptPolicy::from_command(cmd)?;
     if cmd.stuck_since.is_some() {
         return run_bulk(project, cmd, &home);

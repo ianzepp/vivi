@@ -19,6 +19,7 @@ use crate::pump::par::map_bounded;
 /// # Errors
 /// Returns filesystem and task-store errors that prevent writing a brief.
 pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>, VivariumError> {
+    super::release::apply_releases(ctx, st)?;
     if !st.jobs().values().any(dispatchable) {
         return Ok(Vec::new());
     }
@@ -350,12 +351,15 @@ fn note_refusal(ctx: &Ctx, st: &mut impl JobStore, snapshot: &PoolJob, pool: &st
         return;
     }
     job.held = Some(reason.to_owned());
-    let task = job.task.as_deref().unwrap_or("<step task>");
+    let release = match job.payload["task"].as_str() {
+        Some(step) => format!("vivi pump requeue {step}"),
+        None => format!("vivi pump requeue --job {}", snapshot.id),
+    };
     ctx.exception(
         "job-dispatch-refused",
         &snapshot.id,
         &format!(
-            "pool {pool} refused job {} {REFUSAL_LIMIT} times: {reason}; fix the cause, then run `vivi pump requeue {task}` to release it, or `vivi pump withdraw <need>`",
+            "pool {pool} refused job {} {REFUSAL_LIMIT} times: {reason}; fix the cause, then run `{release}` to release it, or `vivi pump withdraw <need>`",
             snapshot.id
         ),
     );

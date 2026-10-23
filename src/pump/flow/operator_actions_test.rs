@@ -335,6 +335,71 @@ fn a_requeue_releases_a_held_pending_job_and_dispatch_offers_it_again() -> R {
     Ok(())
 }
 
+/// Mark `id` Pending and held, its payload stamped with step `task` of `need`.
+fn hold(jobs: &mut Jobs, id: &str, need: &str, task: &str) {
+    if let Some(job) = jobs.jobs.get_mut(id) {
+        job.status = JobStatus::Pending;
+        job.dispatch_refusals = 3;
+        job.held = Some(String::from("no usable bridge"));
+        job.payload = serde_json::json!({ "need": need, "task": task });
+    }
+}
+
+#[test]
+fn a_requeue_releases_a_held_correction_job_in_place() -> R {
+    let mut rig = rig()?;
+    let (need, step) = (rig.need.clone(), rig.step.clone());
+    let mut spec = JobSpec::new("hand-a2-c1", "hand", "hand", "fix", "body");
+    spec.task = Some(step.clone());
+    enqueue(&mut rig.jobs, spec)?;
+    hold(&mut rig.jobs, "hand-a2-c1", &need, &step);
+    rig.store.insert_step_job(
+        &need,
+        &StepJobRow {
+            job: "hand-a2-c1".into(),
+            run: 1,
+            node: "build1".into(),
+            task: step.clone(),
+            attempt: 3,
+        },
+    )?;
+
+    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert_eq!(rig.jobs.jobs().len(), 2, "released in place, not copied");
+    let job = &rig.jobs.jobs()["hand-a2-c1"];
+    assert!(job.held.is_none());
+    assert_eq!(job.dispatch_refusals, 0);
+    Ok(())
+}
+
+#[test]
+fn a_requeue_releases_a_held_slice_merge_job_and_reruns_no_hand_job() -> R {
+    let mut rig = rig()?;
+    let (need, step) = (rig.need.clone(), rig.step.clone());
+    // The slice's merge job has the slice task and no `step_jobs` row; the
+    // slice's finished hand job (`hand-a2`) is the only row.
+    let mut spec = JobSpec::new("merge-s1", "merge", "merge", "land", "body");
+    spec.task = Some(step.clone());
+    enqueue(&mut rig.jobs, spec)?;
+    hold(&mut rig.jobs, "merge-s1", &need, &step);
+
+    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(!rig.exceptions().contains(ACTION_REFUSED));
+    assert_eq!(rig.jobs.jobs().len(), 2, "no job added");
+    assert!(!rig.jobs.jobs().contains_key("hand-a2-q1"));
+    let job = &rig.jobs.jobs()["merge-s1"];
+    assert!(job.held.is_none());
+    assert_eq!(job.dispatch_refusals, 0);
+    assert_eq!(rig.jobs.jobs()["hand-a2"].status, JobStatus::Finished);
+    Ok(())
+}
+
 #[test]
 fn a_requeue_on_a_done_step_is_refused_and_queues_nothing() -> R {
     let mut rig = rig()?;
