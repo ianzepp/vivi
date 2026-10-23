@@ -99,7 +99,7 @@ fn enqueue<S: JobStore, M: FlowMail>(
 ) -> Result<(), VivariumError> {
     let key = run_key(&run.need, run.run);
     let id = job_id(&run.need, run.run);
-    let Some(facts) = published_facts(store, mail, run)? else {
+    let Some(facts) = published_facts(store, mail, &ctx.cfg.reply_from, run)? else {
         ctx.log(&format!(
             "repair audit: {} r{} published nothing; nothing to audit",
             run.need, run.run
@@ -290,10 +290,11 @@ fn settle(ctx: &Ctx, store: &PumpStore, key: &str) -> Result<(), VivariumError> 
 fn published_facts<M: FlowMail>(
     store: &PumpStore,
     mail: &M,
+    pump: &str,
     run: &RunRow,
 ) -> Result<Option<AttemptFacts>, VivariumError> {
     for attempt in [2, 1] {
-        if let Some(facts) = repair::latest_facts(store, mail, &run.need, run.run, attempt)? {
+        if let Some(facts) = repair::latest_facts(store, mail, pump, &run.need, run.run, attempt)? {
             return Ok(Some(facts));
         }
     }

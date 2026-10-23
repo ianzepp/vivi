@@ -128,13 +128,15 @@ pub(crate) fn parse_facts(reply: &str) -> Option<AttemptFacts> {
 }
 
 /// The newest facts of `attempt` in a run: the newest `fix<N>` step row, then
-/// the newest parseable [`ATTEMPT_MARKER`] reply on its task.
+/// the newest parseable [`ATTEMPT_MARKER`] reply on its task that `pump` (the
+/// pump identity) sent. Replies from anyone else are ignored.
 ///
 /// # Errors
 /// Returns [`VivariumError`] when the steps or the replies cannot be read.
 pub(crate) fn latest_facts(
     store: &PumpStore,
     mail: &dyn SliceMail,
+    pump: &str,
     need: &str,
     run: u32,
     attempt: u32,
@@ -144,7 +146,7 @@ pub(crate) fn latest_facts(
     let Some(step) = steps.iter().rev().find(|step| step.node == node) else {
         return Ok(None);
     };
-    let replies = mail.marked_replies(&step.task, ATTEMPT_MARKER)?;
+    let replies = mail.marked_replies_from(&step.task, ATTEMPT_MARKER, pump)?;
     Ok(replies.iter().rev().find_map(|(_, text)| parse_facts(text)))
 }
 

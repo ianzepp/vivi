@@ -32,8 +32,15 @@ fn inputs(cx: &StartCx<'_>, step: &StepRow) -> Result<(String, AttemptFacts), Vi
         .open_record(need)?
         .ok_or_else(|| VivariumError::Other(format!("need {need} has no open record")))?;
     let rec = repair::record(&body)?;
-    let facts = repair::latest_facts(cx.store, cx.mail, need, cx.run.run, attempt)?
-        .ok_or_else(|| VivariumError::Other("no published repair attempt".to_owned()))?;
+    let facts = repair::latest_facts(
+        cx.store,
+        cx.mail,
+        &cx.ctx.cfg.reply_from,
+        need,
+        cx.run.run,
+        attempt,
+    )?
+    .ok_or_else(|| VivariumError::Other("no published repair attempt".to_owned()))?;
     Ok((rec.target, facts))
 }
 

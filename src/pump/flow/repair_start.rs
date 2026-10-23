@@ -128,11 +128,15 @@ fn prior_attempt(cx: &StartCx<'_>) -> Result<String, VivariumError> {
             step.verdict.as_deref().unwrap_or("none")
         ));
     }
-    if let Some(facts) = repair::latest_facts(cx.store, cx.mail, need, run, 1)? {
+    if let Some(facts) =
+        repair::latest_facts(cx.store, cx.mail, &cx.ctx.cfg.reply_from, need, run, 1)?
+    {
         text.push_str(&format!("Facts: {}\n", repair::facts_text(&facts)));
     }
     if let Some(rung) = first.iter().find(|s| s.node == repair::rung_node(1)) {
-        let replies = cx.mail.marked_replies(&rung.task, repair::RUNG_MARKER)?;
+        let replies =
+            cx.mail
+                .marked_replies_from(&rung.task, repair::RUNG_MARKER, &cx.ctx.cfg.reply_from)?;
         if let Some((_, reply)) = replies.last() {
             text.push_str(&format!("Rung verdict: {reply}\n"));
         }
