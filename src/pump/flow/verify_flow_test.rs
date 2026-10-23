@@ -260,3 +260,41 @@ fn a_residual_audit_that_raises_a_rung_joins_to_raised_and_queues_that_rung() ->
     assert_eq!(rig.step("raise1")?.state, StepState::Running);
     Ok(())
 }
+
+#[test]
+fn a_block_with_a_lost_rung_routes_to_rework_and_shows_no_exit() -> R {
+    let mut rig = rig()?;
+    rig.to_verify()?;
+
+    let a1 = rig.job_of("test1")?;
+    let task = rig.step("test1")?.task;
+    let a2 = format!("rung-need-{task}-a2");
+    for id in [a1, a2.clone()] {
+        let job = rig
+            .jobs
+            .jobs
+            .get_mut(&id)
+            .ok_or_else(|| VivariumError::Message(format!("no job {id}")))?;
+        job.status = JobStatus::Lost;
+        if id != a2 {
+            rig.tick()?;
+        }
+    }
+    rig.finish(
+        "audit1",
+        &receipt("+++\nanswer = \"block_range\"\n+++\nstill broken"),
+    )?;
+    rig.tick()?;
+    rig.tick()?;
+
+    assert_eq!(rig.step("test1")?.verdict.as_deref(), Some("failed"));
+    assert_eq!(rig.step("audit1")?.verdict.as_deref(), Some("block_range"));
+    assert!(
+        rig.step("cto1").is_err(),
+        "a lost rung sent the block to the CTO"
+    );
+    let id = rig.job_of("rework1")?;
+    let body = &rig.jobs.jobs[&id].body;
+    assert!(body.contains("exit: none"), "{body}");
+    Ok(())
+}
