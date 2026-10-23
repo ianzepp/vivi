@@ -112,15 +112,42 @@ fn a_front_matter_task_stores_its_dependency_list_and_edges() {
     assert_eq!(edges(&mailspace).len(), 2);
 }
 
+fn nothing_stored(mailspace: &Mailspace) {
+    assert!(mailspace.list("hand", "needs").unwrap().is_empty());
+    assert!(mailspace.list("hand", "wants").unwrap().is_empty());
+    assert!(mailspace.list("hand", "tasks").unwrap().is_empty());
+    assert!(mailspace.list("mind", "sent").unwrap().is_empty());
+}
+
 #[test]
-fn a_prose_need_is_still_stored_without_the_format_header() {
-    // TRANSITIONAL (W3-B2): W3B2-38 refuses a prose work body; this test then
-    // pins the refusal instead.
+fn a_prose_need_is_refused_and_nothing_is_stored() {
     let (_tmp, mailspace) = space();
-    let result = mailspace
+    let err = mailspace
         .send(work("need", "done_when: x\n".into()))
-        .unwrap();
-    let eml = stored(&mailspace, &result.delivered[0].handle);
-    assert!(!eml.contains("X-Vivi-Format"), "{eml}");
-    assert!(eml.contains("X-Vivi-Kind: need"), "{eml}");
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("need has no done_when"), "{err}");
+    nothing_stored(&mailspace);
+}
+
+#[test]
+fn a_prose_want_is_refused_and_nothing_is_stored() {
+    let (_tmp, mailspace) = space();
+    let err = mailspace
+        .send(work("want", "what if\n".into()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("want has no question"), "{err}");
+    nothing_stored(&mailspace);
+}
+
+#[test]
+fn a_prose_task_is_refused_and_nothing_is_stored() {
+    let (_tmp, mailspace) = space();
+    let err = mailspace
+        .send(work("task", "do it\n".into()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("task letter has no front matter"), "{err}");
+    nothing_stored(&mailspace);
 }

@@ -114,7 +114,7 @@ pub use pump_action::{
 pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
-pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
+pub use step::{StepDispatch, StepException, StepManifest};
 pub use thread::{
     MailspaceThreadMessage, ThreadOutlineRow, print_thread, print_thread_newest,
     print_thread_outline,
