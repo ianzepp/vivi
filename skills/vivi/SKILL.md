@@ -57,6 +57,48 @@ consistently:
 | `memo` | Private durable context for one role; not work or communication |
 | `rule` | Project rule shared by every seat; not work and not a private memo |
 
+### Letters
+
+Need, want and task letters are TOML front matter between two `+++` lines,
+then Markdown prose; the send stamps the header `X-Vivi-Format: 1`. Vivi reads
+the front matter and never the prose. Required keys: a need needs a non-empty
+`done_when` list, a want needs a `question`; a task needs neither. Send flags
+build the front matter:
+
+```sh
+vivi need send --from mind --to hand-1 --subject "Add a greeting" \
+  --body "Print hello." \
+  --done-when "running hello.sh prints hello"
+```
+
+Repeat `--done-when` for more clauses. `--target`, `--write-scope` and
+`--depends-on` are optional and repeatable where a list fits; a need may also
+carry `--serves <want>` or `--explores <want>` (never both). `want send` takes
+`--question`. A body whose first non-blank line is `+++` is the whole letter,
+and passing a front-matter flag beside it is refused:
+
+```
++++
+done_when = ["cargo test -p parser --test validate passes"]
+write_scope = ["crates/parser/src/validate.rs"]
+band = "P1"
++++
+
+unit: U-17
+```
+
+```sh
+vivi task send --from mind --to hand --subject 'unit U-17: parser input validation' --body-file unit.md
+```
+
+`task send` has no flags for `from`, `branch`, `with` or `band`: put them in
+the front matter of a whole-letter body. Lines such as `unit:` in the prose are
+free text. A need with no `done_when` is refused at send and nothing is stored.
+A letter with no front matter is history: `show` and `list` read it, but
+`vivi step` reports it as `letter_invalid` and the pump refuses to run it; send
+a new letter instead. The keys of every kind and the role reply envelope are in
+[the letter format](references/envelope.md).
+
 The board aggregates open work. Kind-specific `list` commands orient within one
 queue. `show` loads one handle. Use `dump` only for bounded audits or recovery;
 full dumps are noisy and can hide the current frontier.
@@ -109,10 +151,12 @@ project sets only what is its own.
   `unset = ["pools.studio.size_gib", "identities.reviewer"]` (dotted paths;
   quote a segment that contains a dot: `pools."a.b".x`).
 - **Charters** fall back to the nearest base's `charters/<role>.md`.
-- **Writers** (`vivi pool set`, `vivi role ...`) edit
+- **Writers** (`vivi pool set`, `vivi role ...`, `vivi config set`) edit
   only the project's own file, never a base. A role or pool defined only in a
-  base cannot be changed from the project with the CLI yet; override it by
-  editing the project's file.
+  base is overridden from the project with `vivi config set <dotted.key>
+  <value>`, which writes the override into the project's own file (roles
+  themselves still go through `vivi role ...`; `config set` refuses
+  `identities` keys).
 - `vivi config show` and `vivi config validate` list the merged files and
   which file each pool, role and pump key came from.
 
@@ -246,7 +290,8 @@ and an optional `fix` command.
 Exit codes are 0 for `ok`, 1 for `warn` and 2 for `fail`.
 
 The project checks cover mailspace config and storage, unabsorbed inbox mail,
-open needs without `done_when:`, roles, sync, pools and pump state. Other
+ready items whose front matter has no `done_when` and items that are not valid
+letters (`letter_invalid`), roles, sync, pools and pump state. Other
 findings cover the running binary, installed skill copies, proxy and disk.
 Release, sync-server and local-proxy health checks are read-only probes; if a
 probe is unavailable its finding is skipped or warned. Proxy credential checks
@@ -254,7 +299,7 @@ inspect file presence and permissions only: they never read credential values
 or run `key_cmd`.
 
 For a WAL-mode mailspace whose `mail.sqlite-shm` sidecar is missing, Doctor
-skips the store, unabsorbed-mail and `done_when:` checks. Opening the database
+skips the store, unabsorbed-mail and `done_when` checks. Opening the database
 could create that sidecar, so this limit preserves the read-only guarantee.
 Use `vivi pool doctor` for provider-specific checks; `vivi doctor` does not run
 the pool's live `--test`.
@@ -283,17 +328,39 @@ vivi role pool <role> <pool>
 vivi config show [--resolved] [--json | --porcelain]
 vivi config validate [--json]
 vivi config migrate [--write]
+vivi config set <key> <value>
+vivi config unset <key>
 ```
+
+`config set` parses the value as TOML (a bare word is a string); `config unset`
+removes the key. Every command that writes the project's `mailspace.toml`
+goes through one guard: `config set` and `unset`, `pump target add|remove`,
+`pump rungs set`, `pool add|set|unset|remove|bands`, and `role add|set|pool` and
+`role charter set`. While the pump runs (its lock is held and its mode is
+running) the write is refused with "the pump is running: run vivi pump pause
+first". Before writing, the guard keeps `mailspace.toml.bak.<stamp>` (the last
+10 are kept) and prints `backup <path>`. A write that adds a new validate error
+is rolled back; errors the project already had are not blamed on the write and
+print as `still invalid: ...`. A config that does not load is repaired step by
+step: a write that makes it load is kept, a write that leaves the same load
+error is rolled back, and a write that reaches a different load error is kept.
+`role add` of the pump's hand role (`[pump] to`, else `hand`) defaults
+`kind = hand` when `--kind` is absent.
 
 `vivi config show` is the role -> kind -> pool -> slots -> models ->
 read_only table plus the merge/gate flow. `validate` checks those together
 and also runs at `vivi pump run|once` start. `mailspace init` writes a starter
 `[pump]` table with empty required values. A project missing things the pump
-needs (committer, branch, gate command, shared checks, roles, pools) is **not
-ready**, not invalid: `validate` prints `not ready:` with each missing item and
+needs (committer, branch, gate command, shared checks, roles, pools, and a task,
+need and main rung for each target) is **not ready**, not invalid: `validate` prints `not ready:` with each missing item and
 exits 3 (a wrong value is an error and exits 1; ready exits 0). The pump on a
 not-ready project dispatches nothing, exits cleanly, shows the items in its
-status and `vivi pump health`, and starts by itself once they are supplied. `migrate` is a dry-run diff
+status and `vivi pump health`, and starts by itself once they are supplied. A
+fresh `pump.db` starts stopped, so a new project also needs `vivi pump start`.
+A pump role charter that predates the v20 reply envelope is an error
+(`charter <role>: no v20 reply envelope`), and `config migrate --write` fixes it
+by installing the shipped charter. Retired target-level merge keys are named by
+`validate` and removed by `migrate`. `migrate` is a dry-run diff
 unless `--write` (a timestamped `.bak` is kept; comments survive). To upgrade a
 15.0.0 mailspace: `vivi update`, `vivi config migrate`, read the plan, then
 `vivi config migrate --write` and `vivi config validate`. It assigns the hand,
@@ -305,15 +372,16 @@ with the shipped charter when blank; need acceptance audits have no fallback),
 sets `kind = "hand"` on a `[pump] to` role with no kind (another kind is
 reported), adds a `merge` role when absent and sets `kind = "merge"` on a merge
 role of another kind (validate errors on both: only merge- and hand-kind roles
-may publish), reports a merge or auditor charter that is not the shipped one
-(16 jobs use it as the system prompt), renames `split_timeout`, and removes
+may publish), replaces a pump role charter that predates the v20 envelope with the shipped
+one (16 jobs use it as the system prompt), renames `split_timeout`, and removes
 the keys 16 ignores with a reason each: `[pump.planner] run` and `charter`,
 `[pump] priority_file`, `[pump.merge] lanes`, and `[pump.gate] every_merges` and
 `every_seconds` (a behaviour change: the gate runs after every merge batch). For
 local pools it sets the 15.0.0 shared slot root only when the mailspace has no
 id; with an id 15.0.0 slots are not reused and the plan says which pools. Charters
-are written only under `--write`, after a `.bak` of any existing file, and a
-charter that has text is never replaced. `vivi doctor` reports the same pump
+are written only under `--write`, after a `.bak` of any existing file, and only
+a pump role charter that predates the v20 envelope is replaced; any other
+charter with text is left alone. `vivi doctor` reports the same pump
 role requirements as `validate`. The plan
 ends with `review:` lines for what a human has to settle. A second run on a
 migrated file reports no changes.
@@ -339,13 +407,15 @@ document.
 Use `send` to create a project-local record and `mail reply` to continue its
 thread. A work send with `--reply-to` is a captured reply on that thread, not
 a new item: `need list`, `want list`, and the other work lists show a thread
-once, by its root, and `show` reads the whole thread. `--depends-on` on any
-work-kind send (task, need, or want handles)
-creates a graph edge; handles are validated before anything is created, so
-an unknown dependency fails the send. `X-Vivi-Depends-On` headers remain on
-the message and travel with it: whatever files a work letter (local send, pull,
-fetch, resync, `pull --refs`, audit repair) builds the edges its headers name
-for every dependency this mailspace holds as work, with or without `[sync]`.
+once, by its root, and `show` reads the whole thread. Dependencies are the front matter
+`depends_on` list; `--depends-on` on any work-kind send (task, need, or want
+handles) builds that list and creates a graph edge. Handles are validated
+before anything is created, so an unknown dependency fails the send. No
+`X-Vivi-Depends-On` header is written. The front matter travels with the
+letter: whatever files a work letter (local send, pull, fetch, resync,
+`pull --refs`, audit repair) builds the edges its front matter names for every
+dependency this mailspace holds as work, with or without `[sync]`. A letter in
+the old format names none.
 A listed dependency always blocks: a reference this mailspace does not hold
 yet (not yet synced, or unknown) leaves the dependent blocked and reported as
 an exception until the dependency is present and done, and the edge is made
@@ -431,8 +501,8 @@ resolve before anything is written, so an unknown handle fails the whole
 command; a dependency already in the asked state changes nothing and writes
 no letter; an item cannot depend on itself, close a cycle, or change after
 it is done. Per dependency the newest counted letter by (instant,
-Message-ID) controls and wins over the `X-Vivi-Depends-On` header the item
-was sent with, so removing an edge named at send works, add and remove
+Message-ID) controls and wins over the `depends_on` the item
+named at send, so removing an edge named at send works, add and remove
 converge whatever the arrival order, and a later pull or `graph audit
 --repair` never puts a removed edge back. A dependency the member does not
 hold yet waits as an unresolved reference and its edge is made when the letter
@@ -820,11 +890,14 @@ shows no `awaiting` or `reported` row. Work held for another mailspace's role
 shows it. Use `vivi step [--json]` for a mechanical adjudication of the
 backlog into `dispatches` (ready, verifiable work with clause counts) and
 `exceptions` (reason vocabulary: `want_requires_promotion`,
-`lowered_awaiting_units`, `no_done_when`, `item_missing`, `not_settled`,
-`untracked_item`, `awaiting_remote`, `awaiting_acceptance`,
-`awaiting_dependency`). Wants render as
-parked in their exception detail. A clauseless task/need body warns at send
-time, and a duplicate work send (same sender, same subject, still open in the
+`lowered_awaiting_units`, `no_done_when`, `letter_invalid`, `pump_owned`,
+`item_missing`, `not_settled`, `untracked_item`, `awaiting_remote`,
+`awaiting_acceptance`, `awaiting_dependency`). `letter_invalid` is an item in
+the old format or with invalid front matter; `pump_owned` is a pump step task
+(its front matter has a `[step]` table) that the pump runs and closes. Wants
+render as parked in their exception detail. A need without `done_when` is
+refused at send; a task without one sends, and `step` reports `no_done_when`.
+A duplicate work send (same sender, same subject, still open in the
 recipient's folder) warns on stderr without blocking. `vivi step --apply
 <handle>` completes an already-settled item's node and lists transitions under
 `decisions`; applying an item the lifecycle already settled records
@@ -838,13 +911,13 @@ invariant — every work item sent while the graph existed has a node in step
 with its folder state — and reports `missing_node`, `node_state`, `node_kind`,
 `missing_edge`, `foreign_held`, `event_state`, and `orphan_node` findings,
 with a one-line count per class. `missing_edge` is a held open work letter
-whose `X-Vivi-Depends-On` header names held work the graph has no edge from.
+whose front matter `depends_on` names held work the graph has no edge from.
 `foreign_held` is a node still open for work held under another mailspace's
 role. `event_state` is a folder that disagrees with its item's latest event
 letter. A `done` folder under an open or active node is a report awaiting
 acceptance, not `node_state` drift: audit neither reports nor repairs it, and
 `graph complete` is the manual override. `--repair` mints missing nodes and
-edges (from folder state and dependency headers), completes nodes for settled
+edges (from folder state and front matter `depends_on`), completes nodes for settled
 items, settles need mailboxes whose join fired, settles `foreign_held` nodes,
 re-applies the latest event for `event_state`, and corrects kinds.
 `orphan_node` is reported, never repaired. `graph activate` / `need bind`
@@ -871,9 +944,9 @@ it before lowering a multi-unit delivery. The load-bearing rules:
   it. Neither means the code is on main, and Vivi has no merged state. "On
   main" is a **merge task** filed with `--depends-on <unit>`; anything that
   needs the code `--depends-on` the merge task, not the unit.
-- `vivi step` dispatches a ready node only if a line of its body begins with
-  `done_when:` (a `write_scope:` line is reported, not required). One-line
-  compressed forms, bullets, and bold labels do not match.
+- `vivi step` dispatches a ready node only when its front matter has a
+  non-empty `done_when` list (`write_scope` is reported, not required). Prose
+  lines are not read.
 - Per unit, in order: file with `--depends-on` and a valid body, `need bind`
   the need to its units (and their merge tasks), claim the lane, `graph
   activate <handle> --task <handle>`, spawn the seat, and when it reports
