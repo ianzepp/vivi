@@ -4,7 +4,7 @@
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
-use super::withdraw;
+use super::{resume, withdraw};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::route::JoinInput;
@@ -14,7 +14,7 @@ use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, SENTINEL_MARKER, STEP_
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -230,5 +230,125 @@ fn withdrawal_closes_open_tasks_and_never_reopens_a_closed_need() -> R {
     assert!(rig.store.live_runs()?.is_empty());
     let row = rig.store.step_by_task(&a.task)?.expect("row");
     assert_eq!(row.verdict.as_deref(), Some("withdrawn"));
+    Ok(())
+}
+
+/// A fake whose `close_record` fails once, as a mail error would mid-finish.
+struct Flaky {
+    inner: FakeMail,
+    fail_close_record: bool,
+}
+
+impl MailWriter for Flaky {
+    fn send_step(
+        &mut self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
+        depends_on: &[String],
+    ) -> Result<String, VivariumError> {
+        self.inner.send_step(from, to, subject, body, depends_on)
+    }
+
+    fn bind(&mut self, need: &str, units: &[String]) -> Result<(), VivariumError> {
+        self.inner.bind(need, units)
+    }
+
+    fn reply(&mut self, handle: &str, body: &str) -> Result<(), VivariumError> {
+        self.inner.reply(handle, body)
+    }
+
+    fn close_task(
+        &mut self,
+        handle: &str,
+        verdict: &str,
+        branch: Option<&str>,
+        commit: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        self.inner.close_task(handle, verdict, branch, commit)
+    }
+
+    fn reopen_task(&mut self, handle: &str) -> Result<(), VivariumError> {
+        self.inner.reopen_task(handle)
+    }
+
+    fn close_need(&mut self, need: &str, note: &str) -> Result<(), VivariumError> {
+        self.inner.close_need(need, note)
+    }
+
+    fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
+        MailWriter::open_record(&mut self.inner, need, body)
+    }
+
+    fn close_record(&mut self, need: &str, outcome: &str) -> Result<(), VivariumError> {
+        if std::mem::take(&mut self.fail_close_record) {
+            return Err(VivariumError::Other("close_record failed once".into()));
+        }
+        self.inner.close_record(need, outcome)
+    }
+}
+
+impl MailReader for Flaky {
+    fn task_state(&self, handle: &str) -> Result<TaskState, VivariumError> {
+        self.inner.task_state(handle)
+    }
+
+    fn need_state(&self, need: &str) -> Result<NeedStatus, VivariumError> {
+        self.inner.need_state(need)
+    }
+
+    fn need_marks(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        self.inner.need_marks(need)
+    }
+
+    fn open_record(&self, need: &str) -> Result<Option<(String, String)>, VivariumError> {
+        MailReader::open_record(&self.inner, need)
+    }
+
+    fn bound_units(&self, need: &str) -> Result<Vec<String>, VivariumError> {
+        self.inner.bound_units(need)
+    }
+
+    fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
+        self.inner.sentinel_count(need)
+    }
+}
+
+#[test]
+fn resume_completes_a_finish_that_failed_at_the_record() -> R {
+    let mut rig = rig()?;
+    let plan = rig.step("plan", "delivered")?;
+    rig.mail.calls.clear();
+    let inner = std::mem::replace(&mut rig.mail, FakeMail::new("pump"));
+    let mut flaky = Flaky {
+        inner,
+        fail_close_record: true,
+    };
+
+    let decide = |_: &FlowNode, _: &[JoinInput]| Ok(String::new());
+    let failed = advance(&rig.ctx, &rig.store, &mut flaky, &rig.def, &plan, &decide);
+    assert!(failed.is_err(), "the record close fails once");
+    assert_eq!(rig.store.finishing_runs()?.len(), 1);
+    assert!(rig.store.live_runs()?.is_empty());
+
+    let run = rig.store.finishing_runs()?.remove(0);
+    resume(&rig.ctx, &rig.store, &mut flaky, &run)?;
+
+    let count = |pred: &dyn Fn(&Call) -> bool| flaky.inner.calls.iter().filter(|c| pred(c)).count();
+    assert_eq!(count(&|c| matches!(c, Call::CloseNeed { .. })), 1);
+    assert_eq!(
+        count(&|c| matches!(c, Call::CloseTask { handle, .. } if *handle == rig.sentinel)),
+        1
+    );
+    assert_eq!(flaky.inner.record_outcome(NEED), Some("landed"));
+    assert_eq!(flaky.inner.need_state(NEED)?, NeedStatus::Done);
+    assert!(rig.store.finishing_runs()?.is_empty());
+    assert_eq!(rig.store.runs_of(NEED)?[0].state, "done");
+
+    // A second resume changes nothing.
+    let calls = flaky.inner.calls.len();
+    resume(&rig.ctx, &rig.store, &mut flaky, &run)?;
+    assert_eq!(flaky.inner.calls.len(), calls);
     Ok(())
 }

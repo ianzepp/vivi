@@ -17,6 +17,9 @@ use crate::pump::flow::scope::ScopeState;
 /// finished run.
 pub const RUN_LIVE: &str = "live";
 
+/// The run state of a run whose terminal is closing the need; a tick resumes it.
+const RUN_FINISHING: &str = "finishing";
+
 const FLOW_DDL: &str = "
 CREATE TABLE IF NOT EXISTS flow_runs (
     need TEXT NOT NULL,
@@ -26,6 +29,7 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     kind TEXT NOT NULL,
     entry TEXT NOT NULL,
     state TEXT NOT NULL,
+    state_at INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (need, run)
 );
 CREATE TABLE IF NOT EXISTS flow_steps (
@@ -153,8 +157,8 @@ impl PumpStore {
     pub fn insert_run(&self, row: &RunRow) -> Result<(), VivariumError> {
         self.conn
             .execute(
-                "INSERT INTO flow_runs (need, run, flow, flow_version, kind, entry, state) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO flow_runs (need, run, flow, flow_version, kind, entry, state, state_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CAST(strftime('%s', 'now') AS INTEGER))",
                 params![
                     row.need,
                     row.run,
@@ -174,10 +178,41 @@ impl PumpStore {
     /// # Errors
     /// Returns [`VivariumError`] when the rows cannot be read.
     pub fn live_runs(&self) -> Result<Vec<RunRow>, VivariumError> {
+        self.runs_in_state(RUN_LIVE)
+    }
+
+    /// Every run left `finishing`, ordered by need then run.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the rows cannot be read.
+    pub fn finishing_runs(&self) -> Result<Vec<RunRow>, VivariumError> {
+        self.runs_in_state(RUN_FINISHING)
+    }
+
+    /// Every run in `state`, ordered by need then run.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the rows cannot be read.
+    pub fn runs_in_state(&self, state: &str) -> Result<Vec<RunRow>, VivariumError> {
         self.query_runs(
             &format!("SELECT {RUN_COLUMNS} FROM flow_runs WHERE state = ?1 ORDER BY need, run"),
-            params![RUN_LIVE],
+            params![state],
         )
+    }
+
+    /// When the run last changed state (unix seconds), or `None` for no such run.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be read.
+    pub fn run_state_at(&self, need: &str, run: u32) -> Result<Option<i64>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT state_at FROM flow_runs WHERE need = ?1 AND run = ?2",
+                params![need, run],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err("read flow run state time"))
     }
 
     /// Every run of one need, oldest first.
@@ -212,7 +247,8 @@ impl PumpStore {
     pub fn set_run_state(&self, need: &str, run: u32, state: &str) -> Result<(), VivariumError> {
         self.conn
             .execute(
-                "UPDATE flow_runs SET state = ?3 WHERE need = ?1 AND run = ?2",
+                "UPDATE flow_runs SET state = ?3, state_at = CAST(strftime('%s', 'now') AS INTEGER) \
+                 WHERE need = ?1 AND run = ?2",
                 params![need, run, state],
             )
             .map_err(db_err("set flow run state"))?;

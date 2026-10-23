@@ -5,7 +5,7 @@ use crate::error::VivariumError;
 use crate::pump::flow::advance::route::Terminal;
 use crate::pump::flow::def::{FlowDef, NodeClass, VERDICT_SUPERSEDED, VERDICT_WITHDRAWN};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::flow::run::{SENTINEL_NODE, start};
 use crate::pump::host::Ctx;
@@ -54,16 +54,7 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
     let sentinel = sentinel_of(store, &outcome.need, outcome.run)?;
     match &terminal.class {
         NodeClass::Done => {
-            // The run is no longer live, but it is not withdrawn either: a tick
-            // that sees the need closed mid-finish must not read a withdrawal.
-            store.set_run_state(&outcome.need, outcome.run, RUN_FINISHING)?;
-            // The travelling close goes first, while the record is open. The
-            // sentinel closes after it, so the join finds the need already
-            // done and the pump's letter is the close every member folds.
-            mail.close_need(&outcome.need, LANDED_NOTE)?;
-            close_row(store, mail, &sentinel, VERDICT_DELIVERED)?;
-            mail.close_record(&outcome.need, RECORD_LANDED)?;
-            store.set_run_state(&outcome.need, outcome.run, RUN_DONE)?;
+            land(store, mail, &outcome.need, outcome.run, &sentinel)?;
             Ok(Finished::Landed)
         }
         NodeClass::Restart(name) => {
@@ -81,6 +72,52 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
             terminal.node
         ))),
     }
+}
+
+/// Complete a run left `finishing` (a tick that found it after a failed
+/// `finish`): re-run the `done` sequence, skipping each step already done, then
+/// set the run `done`. Safe to call on any number of ticks.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the run has no sentinel or a mail or
+/// store call fails.
+pub(crate) fn resume<M: MailWriter + MailReader>(
+    _ctx: &Ctx,
+    store: &PumpStore,
+    mail: &mut M,
+    run: &RunRow,
+) -> Result<(), VivariumError> {
+    let sentinel = sentinel_of(store, &run.need, run.run)?;
+    land(store, mail, &run.need, run.run, &sentinel)
+}
+
+/// The `done` sequence, idempotent step by step: finishing state, the need
+/// close, the sentinel close, the record close, the done state.
+fn land<M: MailWriter + MailReader>(
+    store: &PumpStore,
+    mail: &mut M,
+    need: &str,
+    run: u32,
+    sentinel: &StepRow,
+) -> Result<(), VivariumError> {
+    // The run is no longer live, but it is not withdrawn either: a tick
+    // that sees the need closed mid-finish must not read a withdrawal.
+    store.set_run_state(need, run, RUN_FINISHING)?;
+    // The travelling close goes first, while the record is open. The
+    // sentinel closes after it, so the join finds the need already
+    // done and the pump's letter is the close every member folds.
+    if mail.need_state(need)? != NeedStatus::Done {
+        mail.close_need(need, LANDED_NOTE)?;
+    }
+    if mail.task_state(&sentinel.task)?.status == TaskStatus::Open {
+        close_row(store, mail, sentinel, VERDICT_DELIVERED)?;
+    } else if sentinel.state != StepState::Done {
+        store.set_step_state(&sentinel.task, StepState::Done, Some(VERDICT_DELIVERED))?;
+    }
+    if MailReader::open_record(mail, need)?.is_some() {
+        mail.close_record(need, RECORD_LANDED)?;
+    }
+    store.set_run_state(need, run, RUN_DONE)
 }
 
 /// Withdraw a run: close every open task of it, the sentinel last, with
