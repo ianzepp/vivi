@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
-use crate::pump::fixture::{Project, project};
+use crate::pump::fixture::{Project, project, send_need};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow};
@@ -209,6 +209,25 @@ impl Rig {
             at: 0,
         });
         Ok(())
+    }
+
+    /// Open a second need on this rig: a new need with its own pump record
+    /// (`record_body`) and a run started at `entry`. Returns its handle. The
+    /// rig's own `need`, `row` and `runs` keep pointing at the first need.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] when the record or the run cannot be
+    /// opened.
+    pub(crate) fn add_need(
+        &mut self,
+        subject: &str,
+        record_body: &str,
+        entry: &str,
+    ) -> Result<String, VivariumError> {
+        let need = send_need(&self.port.mailspace, subject, PUMP);
+        MailWriter::open_record(&mut self.port, &need, record_body)?;
+        start(&self.ctx, &self.store, &mut self.port, &need, Some(entry))?;
+        Ok(need)
     }
 
     /// The pump's `exceptions.txt`; empty when it was never written.
