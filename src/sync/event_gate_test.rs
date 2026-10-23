@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use crate::letter::fixture::{need_body, task_body};
 use crate::mailspace::{AbsorbConfig, Mailspace, SendRequest};
 use crate::sync::events::state;
 use crate::sync::fake_server::{
@@ -104,7 +105,7 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: format!("{subject} body\n"),
+            body: task_body(&format!("{subject} body\n")),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
@@ -277,7 +278,7 @@ fn without_the_header_rule_events_reach_only_their_addressees() {
 #[test]
 fn an_event_letter_pulled_with_a_work_envelope_kind_files_as_mail() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
 
     // The event on the wire riding the item's kind, as a mind/sync2-era
