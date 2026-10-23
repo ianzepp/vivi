@@ -6,9 +6,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::{FOLLOW_UP_UNROUTED, apply};
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::{Slice, Slicer, SlicerAnswer, SlicerMode};
-use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::fanout::{self, slice_node};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -70,18 +70,12 @@ fn rig() -> Result<Rig, VivariumError> {
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
-    let sentinel = mail.send_step(
-        "pump",
-        "pump",
-        "run",
-        &format!("{SENTINEL_MARKER} {NEED} r1"),
-        &[],
-    )?;
+    let sentinel = mail.send_step("pump", "pump", "run", &sentinel_body(NEED, 1, ""), &[])?;
     let slicer_task = mail.send_step(
         "pump",
         "pump",
         "slice",
-        &format!("{STEP_MARKER} {NEED} r1 slice"),
+        &step_body(NEED, 1, "slice", ""),
         &[],
     )?;
     mail.bind(NEED, &[sentinel.clone(), slicer_task.clone()])?;
@@ -100,7 +94,7 @@ fn rig() -> Result<Rig, VivariumError> {
         "pump",
         "pump",
         "reslice",
-        &format!("{STEP_MARKER} {NEED} r1 reslice:A-1\nmode: split\n\nsplit it"),
+        &step_body(NEED, 1, "reslice:A-1", "mode: split\n\nsplit it"),
         &[],
     )?;
     let reslice = step(1, "reslice:A-1", &reslice_task, StepState::Running);
@@ -227,6 +221,11 @@ fn follow_up_escalate_files_one_need() -> R {
         .filter(|c| c.contains("need send"))
         .collect();
     assert_eq!(sends.len(), 1);
+    assert!(
+        sends[0].contains("--done-when 'the follow-up of n1 r1 slice "),
+        "{}",
+        sends[0]
+    );
     let row = rig.store.step_by_task(&rig.old)?.expect("row");
     assert_ne!(row.state, StepState::Failed);
     Ok(())

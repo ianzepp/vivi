@@ -395,6 +395,7 @@ fn findings_file_one_need_each_and_a_weakened_test_gets_top_priority() -> R {
     assert!(first.contains("repair audit n1 r1: F1"), "{first}");
     assert!(first.contains("src/a.rs"), "{first}");
     assert!(first.contains(&format!("{BASE}..{COMMIT}")), "{first}");
+    assert!(first.contains("--done-when 'F1 is resolved'"), "{first}");
     assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
     assert!(
         rig.store

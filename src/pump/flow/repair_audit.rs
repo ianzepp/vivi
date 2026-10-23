@@ -286,11 +286,16 @@ fn send_need(ctx: &Ctx, run: &RunRow, job: &PoolJob, finding: &Finding) -> Resul
         run.need,
         run.run,
     );
+    let done_when = format!(
+        "{} is resolved",
+        crate::pump::flow::residual::one_line(&finding.id)
+    );
     let from = shell_quote(&ctx.cfg.reply_from);
     let command = format!(
-        "need send --from {from} --to {from} --subject {} --body {}",
+        "need send --from {from} --to {from} --subject {} --body {} --done-when {}",
         shell_quote(&subject),
         shell_quote(&body),
+        shell_quote(&done_when),
     );
     let out = ctx.vivi(&command, 60);
     if out.code != 0 {
