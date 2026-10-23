@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 const REMOTE: &str = "hand@3f9a1c7e.local";
-const BODY: &str = "done_when: it works";
+const BODY: &str = "the unit of work";
 
 fn vivi<I, S>(args: I) -> Output
 where
@@ -69,6 +69,11 @@ fn send(project: &Path, kind: &str, to: &str, subject: &str, extra: &[&str]) -> 
         "--body",
         BODY,
     ];
+    match kind {
+        "need" => args.extend(["--done-when", "it works"]),
+        "want" => args.extend(["--question", subject]),
+        _ => {}
+    }
     args.extend_from_slice(extra);
     sent_handle(&ok(project, &args))
 }
@@ -93,6 +98,8 @@ fn a_sent_copy_is_awaiting_listed_and_orderable_but_never_dispatched() {
             "home",
             "--body",
             BODY,
+            "--done-when",
+            "it works",
         ],
     );
     assert!(local.contains("created hand"), "{local}");

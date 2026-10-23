@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use vivi::letter::render;
+use vivi::letter::work::{NeedFront, TaskFront, WantFront};
 use vivi::mailspace::Mailspace;
 use vivi::storage::MessageIngestRequest;
 
@@ -14,7 +16,7 @@ const THEIRS: &str = "mind@bd371d96.local";
 /// Another member's `hand`: a second holder, so `--held` shows more than one.
 const OTHERS: &str = "hand@bd371d96.local";
 const AUTHOR: &str = "hand@3f9a1c7e.local";
-const BODY: &str = "done_when: it works";
+const BODY: &str = "the home need";
 
 fn vivi<I, S>(args: I) -> Output
 where
@@ -58,10 +60,22 @@ fn project() -> tempfile::TempDir {
 /// File one letter under `account`, as `vivi sync` files work pulled for a
 /// role of another mailspace: the row is held under the raw address.
 fn ingest_held(project: &Path, account: &str, role: &str, subject: &str, kind: &str) -> String {
+    let body = match kind {
+        "need" => render(&NeedFront::new(vec!["it works".to_string()]), BODY),
+        "want" => render(
+            &WantFront {
+                question: subject.to_string(),
+                depends_on: Vec::new(),
+            },
+            BODY,
+        ),
+        _ => render(&TaskFront::default(), BODY),
+    }
+    .unwrap();
     let letter = format!(
         "From: {AUTHOR}\r\nTo: {account}\r\nSubject: {subject}\r\n\
          Message-ID: <{subject}@3f9a1c7e.local>\r\nX-Vivi-Kind: {kind}\r\n\
-         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{BODY}\r\n"
+         X-Vivi-Format: 1\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{body}\r\n"
     );
     let mailspace = Mailspace::discover(Some(project)).unwrap();
     let mut storage = mailspace.storage().unwrap();
@@ -113,6 +127,8 @@ fn a_need_held_for_another_member_lists_under_held_and_for_address() {
             "home need",
             "--body",
             BODY,
+            "--done-when",
+            "it works",
         ],
     ));
 
@@ -161,6 +177,8 @@ fn a_held_need_is_not_listed_under_this_mailspaces_own_role() {
             "home need",
             "--body",
             BODY,
+            "--done-when",
+            "it works",
         ],
     ));
     let mine = ok(p, &["need", "list", "--for", "mind"]);
