@@ -1,22 +1,11 @@
-//! Operator withdraw: `vivi pump withdraw`, both halves.
+//! Operator withdraw: `vivi pump withdraw`.
 //!
-//! A pump need normally closes through the mail board
-//! (`board::reconcile_done_needs`). The operator closes one here when it
-//! should stop. The CLI closes the need itself `withdrawn` while its pump
-//! record is still open, as the pump identity (a close that travels to every
-//! member), then posts a withdraw action on that record
-//! ([`crate::mailspace::PumpActionRequest`]); the pump applies it once
-//! ([`crate::pump::action`]):
-//!
-//! - every unfinished unit of the need is withdrawn, stuck ones included;
-//! - the need joins `closed_needs`, so nothing re-plans or dispatches it;
-//! - the need record is flagged `withdrawn`, so the amendment scan never
-//!   reopens or revises it on a later thread change;
-//! - an exception of kind `need-withdrawn` records the act;
-//! - afterwards the pump closes the need's pump record `withdrawn`.
-//!
-//! A need the pump holds no state for (its planner has not run) still has its
-//! record closed: there is nothing to withdraw but the dispatch.
+//! The CLI closes each need itself `withdrawn` while its pump record is still
+//! open, as the pump identity (a close that travels to every member), then
+//! posts a withdraw action on that record
+//! ([`crate::mailspace::PumpActionRequest`]). The flow applies the action at
+//! its next tick (`pump::flow::operator_actions`): a need with a live run is
+//! withdrawn, one with none has its record closed `withdrawn`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,47 +16,7 @@ use crate::mailspace::want_state::need_closed;
 use crate::mailspace::{Mailspace, PumpActionRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::control::project_home;
-use crate::pump::host::Ctx;
-use crate::pump::state::{State, Status};
 use crate::pump::store::{DB_FILENAME, PumpStore};
-
-/// Whether the state has anything for `need`: a plan record or a unit.
-fn known(st: &State, need: &str) -> bool {
-    st.needs.contains_key(need) || st.units.values().any(|unit| unit.need == need)
-}
-
-/// Withdraw one need in `st` and return the text the pump replies on its
-/// record when it closes it `withdrawn`. A need the state holds nothing for
-/// is only logged: its dispatch still ends.
-pub fn apply_one(ctx: &Ctx, st: &mut State, need: &str, reason: &str) -> String {
-    if !known(st, need) {
-        let text = format!("withdrew need {need}: the pump held no plan for it ({reason})");
-        ctx.log(&format!(
-            "withdraw {need}: unknown need; closing its record"
-        ));
-        return text;
-    }
-    let now = ctx.now();
-    let mut count = 0usize;
-    for unit in st.units.values_mut().filter(|unit| unit.need == need) {
-        if crate::pump::board::unfinished_closed_need_unit(unit) || unit.status == Status::Stuck {
-            unit.status = Status::Withdrawn;
-            unit.since = now;
-            unit.ready_at = None;
-            count += 1;
-        }
-    }
-    if !st.closed_needs.iter().any(|closed| closed == need) {
-        st.closed_needs.push(need.to_owned());
-    }
-    if let Some(record) = st.needs.get_mut(need) {
-        record.withdrawn = true;
-    }
-    let text = format!("withdrew need {need}: {count} unit(s) ({reason})");
-    ctx.log(&text);
-    ctx.exception("need-withdrawn", need, &text);
-    text
-}
 
 /// `vivi pump withdraw <NEED>... --reason <TEXT>`: post one withdraw action
 /// per need on its open pump record, for the running pump to apply at its
