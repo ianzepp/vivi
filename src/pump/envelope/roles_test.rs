@@ -197,3 +197,44 @@ fn split_mode_needs_two_to_four_numbered_ids() {
     ));
     assert!(parse_for(RoleKind::Slicer, &one).is_err());
 }
+
+const REPAIRER_BUILT: &str = "answer = \"built\"\nchange = [\"src/a.rs\"]\n\
+    [[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\nseconds = 12\n";
+
+#[test]
+fn from_class_maps_the_repairer() {
+    assert_eq!(
+        RoleKind::from_class(&NodeClass::Repairer),
+        Some(RoleKind::Repairer)
+    );
+}
+
+#[test]
+fn a_valid_repairer_envelope_parses() {
+    let parsed = parse_for(RoleKind::Repairer, &hand(REPAIRER_BUILT)).unwrap();
+    assert_eq!(parsed.answer, "built");
+    assert_eq!(parsed.front["change"][0], "src/a.rs");
+    let failed = parse_for(RoleKind::Repairer, &hand("answer = \"failed\"\n")).unwrap();
+    assert_eq!(failed.answer, "failed");
+}
+
+#[test]
+fn a_repairer_refuses_overtime_blocked_scope_and_unknown_keys() {
+    for word in ["overtime", "blocked-scope"] {
+        let text = hand(&format!("answer = \"{word}\"\n"));
+        assert!(parse_for(RoleKind::Repairer, &text).is_err(), "{word}");
+    }
+    let with_sha = hand(&format!("{REPAIRER_BUILT}sha = \"abc\"\n"));
+    assert!(parse_for(RoleKind::Repairer, &with_sha).is_err());
+}
+
+#[test]
+fn a_repairer_has_no_diff_cap() {
+    let change: Vec<String> = (0..500).map(|n| format!("\"src/f{n}.rs\"")).collect();
+    let text = hand(&format!(
+        "answer = \"built\"\nchange = [{}]\n",
+        change.join(", ")
+    ));
+    let parsed = parse_for(RoleKind::Repairer, &text).unwrap();
+    assert_eq!(parsed.front["change"].as_array().map(Vec::len), Some(500));
+}
