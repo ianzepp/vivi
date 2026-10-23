@@ -65,7 +65,7 @@ fn role(name: &str, read_only: Option<bool>) -> RoutedRole {
 /// A build need at `plan`, with every role the flow needs routed and main at
 /// [`MAIN`].
 fn build() -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", "plan")?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", "plan")?;
     let mut routing = (*rig.ctx.routing).clone();
     routing.roles.push(role("admitter", Some(true)));
     routing.roles.push(role("slicer", Some(true)));

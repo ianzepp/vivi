@@ -67,7 +67,7 @@ impl StepHandler for BuiltAtOnce {
 /// A build run started at `rework1`, over a live need branch at [`TIP`] cut
 /// from `base`, with main at [`MAIN`] and a merge role routed.
 fn build(base: &str) -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", "rework1")?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", "rework1")?;
     let mut routing = (*rig.ctx.routing).clone();
     routing.roles.push(RoutedRole {
         name: String::from("merge"),

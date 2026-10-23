@@ -74,8 +74,9 @@ fn routed(name: &str, kind: &str) -> RoutedRole {
 }
 
 /// A rig under `cfg`: a need sent to the pump identity, its pump record
-/// opened with `record_body` (for example `kind: repair\ntarget:
-/// default\ntested: <sha>`), and a run started at `entry`. The routing holds
+/// opened with `record_body` (a record letter without `need`, for example
+/// front matter with `kind = "repair"`, `target` and `tested`), and a run
+/// started at `entry`. The routing holds
 /// a `researcher` and a `repairer` role besides the fixture's planner.
 ///
 /// # Errors
@@ -95,7 +96,11 @@ pub(crate) fn rig(cfg: PumpConfig, record_body: &str, entry: &str) -> Result<Rig
         mailspace: project.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    MailWriter::open_record(&mut port, &need, record_body)?;
+    MailWriter::open_record(
+        &mut port,
+        &need,
+        &crate::letter::fixture::record_with_need(record_body, &need),
+    )?;
     start(&ctx, &store, &mut port, &need, Some(entry))?;
     let registry = shipped::<Jobs, MailspacePort>(&ctx);
     Ok(Rig {
@@ -225,7 +230,11 @@ impl Rig {
         entry: &str,
     ) -> Result<String, VivariumError> {
         let need = send_need(&self.port.mailspace, subject, PUMP);
-        MailWriter::open_record(&mut self.port, &need, record_body)?;
+        MailWriter::open_record(
+            &mut self.port,
+            &need,
+            &crate::letter::fixture::record_with_need(record_body, &need),
+        )?;
         start(&self.ctx, &self.store, &mut self.port, &need, Some(entry))?;
         Ok(need)
     }
@@ -291,7 +300,11 @@ pub(crate) fn env_receipt(tool: &str) -> String {
 
 #[test]
 fn a_ready_research_envelope_lands_the_run_and_closes_the_need() -> R {
-    let mut rig = rig(PumpConfig::default(), "kind: research", "research")?;
+    let mut rig = rig(
+        PumpConfig::default(),
+        "+++\nkind = \"research\"\n+++\n",
+        "research",
+    )?;
     rig.tick_until("research job", |rig| rig.open_job("research").is_some())?;
     let job = rig
         .open_job("research")
