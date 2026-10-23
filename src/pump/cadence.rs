@@ -164,7 +164,7 @@ pub fn next_due_at(report: &role_schedule::ScheduleReport, now: u64) -> Option<u
 pub fn prepare_due(ctx: &Ctx, st: &mut State) {
     let now = ctx.now();
     let mut cadence = state(st);
-    complete_runs(ctx, st, &mut cadence, now);
+    complete_runs(st, &mut cadence, now);
     let mailspace = match Mailspace::discover(Some(&ctx.project)) {
         Ok(mailspace) => mailspace,
         Err(error) => {
@@ -316,7 +316,7 @@ fn enqueue_due(
         return;
     };
     let attempt = next_attempt(cadence.runs.get(&scan.name));
-    let spec = job_spec(ctx, st, &role, scan, attempt, now);
+    let spec = job_spec(ctx, &role, scan, attempt, now);
     let job_id = spec.id.clone();
     if let Err(error) = jobs::enqueue(st, spec) {
         ctx.log(&format!("cadence enqueue {} failed: {error}", scan.name));
@@ -342,22 +342,11 @@ fn enqueue_due(
     ctx.log(&format!("cadence queued {} attempt {attempt}", scan.name));
 }
 
-fn job_spec(
-    ctx: &Ctx,
-    st: &State,
-    role: &RoleView,
-    scan: &RoleScan,
-    attempt: u32,
-    now: u64,
-) -> JobSpec {
+fn job_spec(ctx: &Ctx, role: &RoleView, scan: &RoleScan, attempt: u32, now: u64) -> JobSpec {
     let is_digest = role
         .kind
         .as_deref()
         .is_some_and(|kind| kind.eq_ignore_ascii_case("digest"));
-    let is_mind = role
-        .kind
-        .as_deref()
-        .is_some_and(|kind| kind.eq_ignore_ascii_case("mind"));
     let cadence_secs = scan
         .cadence
         .as_deref()
@@ -370,8 +359,6 @@ fn job_spec(
     );
     let (kind, subject, body) = if is_digest {
         digest_job(ctx, role, scan, cadence_secs, now)
-    } else if is_mind {
-        crate::pump::oversight::job_parts(st, role, now)
     } else {
         (
             String::from("cadence"),
@@ -379,9 +366,7 @@ fn job_spec(
             cadence_run_text(role, now),
         )
     };
-    finish_cadence_spec(
-        ctx, role, scan, attempt, now, is_mind, id, kind, subject, body,
-    )
+    finish_cadence_spec(ctx, role, scan, attempt, now, id, kind, subject, body)
 }
 
 fn finish_cadence_spec(
@@ -390,7 +375,6 @@ fn finish_cadence_spec(
     scan: &RoleScan,
     attempt: u32,
     now: u64,
-    is_mind: bool,
     id: String,
     kind: String,
     subject: String,
@@ -406,7 +390,6 @@ fn finish_cadence_spec(
         "attempt": attempt,
         "open_wants": scan.open_wants,
         "open_needs": scan.open_needs,
-        "oversight": is_mind,
     });
     spec
 }
@@ -465,7 +448,7 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
     )
 }
 
-fn complete_runs(ctx: &Ctx, st: &mut State, cadence: &mut CadenceState, now: u64) {
+fn complete_runs(st: &mut State, cadence: &mut CadenceState, now: u64) {
     let mut apply = Vec::new();
     for run in cadence.runs.values_mut() {
         if run.job.is_empty() {
@@ -500,15 +483,12 @@ fn complete_runs(ctx: &Ctx, st: &mut State, cadence: &mut CadenceState, now: u64
         }
         apply.push(run.job.clone());
     }
-    settle_completed_runs(ctx, st, apply, now);
+    settle_completed_runs(st, apply, now);
 }
 
-fn settle_completed_runs(ctx: &Ctx, st: &mut State, ids: Vec<String>, now: u64) {
+fn settle_completed_runs(st: &mut State, ids: Vec<String>, now: u64) {
     for id in ids {
         jobs::mark_applied(st, &id, now);
-        if crate::pump::oversight::due(st, &id) {
-            crate::pump::oversight::apply(ctx, st, &id);
-        }
     }
 }
 
