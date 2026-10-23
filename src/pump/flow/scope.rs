@@ -18,9 +18,6 @@ pub enum ScopeState {
     Wait,
     /// Waiting for the slicer to repair the scopes.
     Repair,
-    /// A wait ended: the held paths were granted and the slice went out
-    /// again. Its next request is the first of a new round, not a second.
-    Granted,
 }
 
 impl ScopeState {
@@ -31,7 +28,6 @@ impl ScopeState {
             Self::Clear => "none",
             Self::Wait => "scope-wait",
             Self::Repair => "scope-repair",
-            Self::Granted => "scope-granted",
         }
     }
 
@@ -44,7 +40,6 @@ impl ScopeState {
             "none" => Self::Clear,
             "scope-wait" => Self::Wait,
             "scope-repair" => Self::Repair,
-            "scope-granted" => Self::Granted,
             other => {
                 return Err(VivariumError::Other(format!(
                     "pump.db slice_scope: unknown scope state {other:?}"
@@ -107,14 +102,14 @@ pub fn grant_held(store: &PumpStore, task: &str) -> Result<(), VivariumError> {
     store.widen_slice_scope(task, &held)
 }
 
-/// The wait is over and the slice went out again: forget the wait record and
-/// make its next request count as the first.
+/// The wait is over and the slice went out again: forget the wait record. The
+/// request that ended in the wait still counts, so the slice's next blocked
+/// request is its second.
 ///
 /// # Errors
 /// Returns [`VivariumError`] when the store fails.
 pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> {
-    store.set_scope_holders(task, &[])?;
-    store.set_scope_state(task, ScopeState::Granted)
+    store.set_scope_holders(task, &[])
 }
 
 /// True when a scope entry holds `path`: the same path, or a directory entry
@@ -170,8 +165,7 @@ pub fn resolve(
     req: &BlockedScope,
 ) -> Result<Resolution, VivariumError> {
     let requests = store.bump_scope_requests(task)?;
-    let after_grant = store.scope_state(task)? == Some(ScopeState::Granted);
-    if requests >= 2 && !after_grant {
+    if requests >= 2 {
         return Ok(Resolution::Repair(format!(
             "second blocked-scope request on {task}"
         )));

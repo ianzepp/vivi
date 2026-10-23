@@ -201,7 +201,7 @@ fn scope_rows_round_trip() {
 }
 
 #[test]
-fn granting_the_held_paths_widens_the_scope_and_the_next_request_is_the_first() {
+fn granting_the_held_paths_widens_the_scope_and_the_next_request_is_the_second() {
     let mut f = fixture();
     let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
     f.slice("n1", 1, &["src/b.rs"], StepState::Running);
@@ -213,24 +213,12 @@ fn granting_the_held_paths_widens_the_scope_and_the_next_request_is_the_first() 
         Some(strings(&["src/a.rs", "src/c.rs", "src/b.rs"]))
     );
     finish_grant(&f.store, &a).expect("finish");
-    assert_eq!(
-        f.store.scope_state(&a).expect("state"),
-        Some(ScopeState::Granted)
-    );
     assert!(wait_holders(&f.store, &a).expect("holders").is_empty());
 
-    // The request after the wait is a first request: it settles, no repair.
+    // The request that ended in the wait still counts: the next one is the
+    // second and goes to the slicer.
     assert!(matches!(
         f.resolve(1, &a, &["src/d.rs"], false),
-        Resolution::Widen(_)
-    ));
-    // The re-dispatch of a settled request clears the state; the one after
-    // that is the second.
-    f.store
-        .set_scope_state(&a, ScopeState::Clear)
-        .expect("clear");
-    assert!(matches!(
-        f.resolve(1, &a, &["src/e.rs"], false),
         Resolution::Repair(_)
     ));
 }
