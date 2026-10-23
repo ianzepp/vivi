@@ -8,6 +8,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::VivariumError;
+use crate::pump::flow::index::RunRow;
 
 use super::{PumpStore, db_err};
 
@@ -24,11 +25,32 @@ pub struct NeedBranchRow {
     pub priors: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+impl NeedBranchRow {
+    /// Build a row for `run`: need and run come from the run row.
+    #[must_use]
+    pub fn for_run(
+        run: &RunRow,
+        branch: String,
+        base: Option<String>,
+        status: &str,
+        target: &str,
+        priors: Vec<String>,
+    ) -> NeedBranchRow {
+        NeedBranchRow {
+            need: run.need.clone(),
+            branch,
+            base,
+            status: status.to_string(),
+            run: run.run,
+            target: target.to_string(),
+            priors,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 struct Record {
-    #[serde(default)]
     run: u32,
-    #[serde(default)]
     target: String,
     #[serde(default)]
     priors: Vec<String>,
@@ -59,12 +81,13 @@ impl PumpStore {
         let Some((branch, base, status, record_json)) = raw else {
             return Ok(None);
         };
-        let record: Record = match record_json {
-            Some(text) => {
-                serde_json::from_str(&text).map_err(db_err("decode need branch record"))?
-            }
-            None => Record::default(),
+        let Some(text) = record_json else {
+            return Err(VivariumError::Parse(format!(
+                "need branch {need}: expected a record with run and target; actual: none"
+            )));
         };
+        let record: Record = serde_json::from_str(&text)
+            .map_err(|err| VivariumError::Parse(format!("need branch {need}: {err}")))?;
         Ok(Some(NeedBranchRow {
             need: need.to_string(),
             branch,
