@@ -269,3 +269,25 @@ fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     assert!(error.contains("names the word"), "{error}");
     assert!(mailspace.pump_pending_actions(&none()).unwrap().is_empty());
 }
+
+#[test]
+fn an_unlock_carries_its_entry_in_the_word_and_none_without_one() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    mailspace.pump_send(None, &need, None).unwrap();
+    mailspace
+        .pump_post_action(None, &need, &PumpActionRequest::unlock(Some("slice"), "ok"))
+        .unwrap();
+    mailspace
+        .pump_post_action(None, &need, &PumpActionRequest::unlock(None, ""))
+        .unwrap();
+
+    let pending = mailspace.pump_pending_actions(&none()).unwrap();
+
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].request.kind, PumpActionKind::Unlock);
+    assert_eq!(pending[0].request.word.as_deref(), Some("slice"));
+    assert_eq!(pending[0].request.reason, "ok");
+    assert_eq!(pending[1].request.kind, PumpActionKind::Unlock);
+    assert_eq!(pending[1].request.word, None);
+}
