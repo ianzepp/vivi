@@ -22,6 +22,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
+use crate::pump::flow::main_rung::record_target;
 use crate::pump::flow::rank::need_key;
 use crate::pump::flow::tick::{FLOW_INVALID, raise_once};
 use crate::pump::host::Ctx;
@@ -219,10 +220,7 @@ fn target_of<M: FlowMail>(mail: &M, need: &str) -> Result<String, VivariumError>
 
 /// The `target:` line of a record body; empty when absent.
 fn target_line(body: &str) -> String {
-    body.lines()
-        .find_map(|line| line.trim().strip_prefix("target:"))
-        .map(|word| word.trim().to_owned())
-        .unwrap_or_default()
+    record_target(body).unwrap_or_default().to_owned()
 }
 
 /// Epoch seconds of an RFC 3339 or RFC 2822 date; `u64::MAX` when neither parses.

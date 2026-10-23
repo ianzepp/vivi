@@ -2,6 +2,7 @@
 
 use crate::error::VivariumError;
 use crate::mailspace::marked_payload;
+use crate::pump::flow::main_rung::record_target;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::store::PumpStore;
 
@@ -61,26 +62,27 @@ pub(crate) struct RepairRecord {
 /// # Errors
 /// Returns [`VivariumError::Parse`] when the body has no `target:` line.
 pub(crate) fn record(body: &str) -> Result<RepairRecord, VivariumError> {
-    let mut target = None;
+    let target = record_target(body).ok_or_else(|| {
+        let head: String = body.chars().take(80).collect();
+        VivariumError::Parse(format!(
+            "repair record: expected a `target:` line; actual: none in {head}"
+        ))
+    })?;
     let mut tested = None;
     let mut tail = Vec::new();
     for line in body.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("kind:") {
+        if trimmed.starts_with("kind:") || trimmed.starts_with("target:") {
             continue;
         }
-        if let Some(word) = trimmed.strip_prefix("target:") {
-            target = Some(word.trim().to_owned()).filter(|word| !word.is_empty());
-        } else if let Some(word) = trimmed.strip_prefix("tested:") {
+        if let Some(word) = trimmed.strip_prefix("tested:") {
             tested = Some(word.trim().to_owned()).filter(|word| !word.is_empty());
         } else {
             tail.push(line);
         }
     }
-    let target = target
-        .ok_or_else(|| VivariumError::Parse("repair record has no `target:` line".to_owned()))?;
     Ok(RepairRecord {
-        target,
+        target: target.to_owned(),
         tested,
         tail: tail.join("\n").trim().to_owned(),
     })
