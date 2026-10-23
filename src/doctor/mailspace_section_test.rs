@@ -177,3 +177,48 @@ fn done_when_matches_step_and_ignores_blocked_needs() {
     assert!(done_when.detail.contains(&ready), "{done_when:#?}");
     assert!(!done_when.detail.contains(&blocked), "{done_when:#?}");
 }
+
+#[test]
+fn letter_invalid_item_is_reported() {
+    let (mailspace, tmp) = with_roster();
+    let domain = mailspace.address_domain();
+    let bytes = format!(
+        "From: ceo@{domain}\r\nTo: cto@{domain}\r\nSubject: broken\r\n\
+         Message-ID: <broken@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         X-Vivi-Kind: need\r\n\r\n+++\ndone_when = 5\n+++\nbody\n"
+    )
+    .into_bytes();
+    let storage = mailspace.storage().unwrap();
+    let stored = storage
+        .ingest_message(
+            &crate::storage::MessageIngestRequest {
+                account: "cto".into(),
+                local_role: "needs".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: "cto\0broken".into(),
+                remote: None,
+            },
+            &bytes,
+        )
+        .unwrap();
+    let handle = storage.display_handle(&stored.message_id).unwrap();
+    drop(storage);
+    mailspace
+        .backlog_attach_letter("need", &stored.message_id, "broken", &bytes)
+        .unwrap();
+    mailspace
+        .backlog_settle_pending_dependencies(&[(stored.message_id.clone(), stored.content_id)])
+        .unwrap();
+
+    let findings = findings(Some(tmp.path()));
+    let done_when = status_of(&findings, "done_when");
+    assert_eq!(done_when.status, Status::Warn, "{done_when:#?}");
+    assert!(
+        done_when.detail.contains("letter_invalid"),
+        "{done_when:#?}"
+    );
+    assert!(done_when.detail.contains(&handle), "{done_when:#?}");
+}
