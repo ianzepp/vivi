@@ -22,24 +22,22 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::{FollowUp, Hand, RoleKind};
+use crate::pump::flow::advance::route::{self, JoinInput};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
-use crate::pump::flow::advance::{self, guard, route::JoinInput, terminal};
+use crate::pump::flow::advance::{self, guard, terminal};
 use crate::pump::flow::answer;
 use crate::pump::flow::collect::{self, Collected};
 use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, FlowNode, NodeClass};
-use crate::pump::flow::fanout::{
-    self, SliceEdges, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row,
-};
+use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
+use crate::pump::flow::handlers::{self, FlowMail, Registry};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
-use crate::pump::flow::outcome::{Outcome, StartAction, StepHandlers};
+use crate::pump::flow::outcome::{Outcome, StartAction, StartCx};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
-use crate::pump::flow::slice_dispatch::{
-    self, AttemptResult, DEVIATIONS_MARKER, Retried, SliceMail,
-};
+use crate::pump::flow::slice_dispatch::{self, AttemptResult, DEVIATIONS_MARKER, Retried};
 use crate::pump::flow::validate::validate;
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
@@ -94,10 +92,11 @@ pub fn tick<S: JobStore>(ctx: &Ctx, st: &mut S) -> Result<(), VivariumError> {
         mailspace,
         pump_identity: ctx.cfg.reply_from.clone(),
     };
-    tick_with(ctx, st, &store, &mut mail, &StepHandlers::new())
+    let registry = handlers::shipped::<S, MailspacePort>(ctx);
+    tick_with(ctx, st, &store, &mut mail, &registry)
 }
 
-/// The tick over an explicit store, port and step handlers.
+/// The tick over an explicit store, port and registry.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when the run lists cannot be read.
@@ -106,13 +105,14 @@ pub(crate) fn tick_with<S, M>(
     st: &mut S,
     store: &PumpStore,
     mail: &mut M,
-    handlers: &StepHandlers,
+    registry: &Registry<S, M>,
 ) -> Result<(), VivariumError>
 where
     S: JobStore,
-    M: MailWriter + SliceMail + SliceEdges,
+    M: FlowMail,
 {
     let def_for = |run: &RunRow| def_of(run);
+    let decide = |node: &FlowNode, inputs: &[JoinInput]| registry.decide(store, node, inputs);
     boundary(
         ctx,
         "answers",
@@ -130,13 +130,17 @@ where
                 st: &mut *st,
                 store,
                 mail: &mut *mail,
-                handlers,
+                registry,
+                decide: &decide,
                 def,
                 run: run.clone(),
             }
             .run(&unapplied)
         });
         boundary(ctx, &unit, result);
+    }
+    for phase in registry.phases() {
+        boundary(ctx, phase.name(), phase.run(ctx, st, store, mail));
     }
     Ok(())
 }
@@ -167,15 +171,6 @@ fn def_of(run: &RunRow) -> Result<FlowDef, VivariumError> {
     load(kind)
 }
 
-/// No code decision has a rule yet: a join or raise check that routing reaches
-/// is an error held on its run.
-fn decide(node: &FlowNode, _inputs: &[JoinInput]) -> Result<String, VivariumError> {
-    Err(VivariumError::Parse(format!(
-        "decision node `{}` has no decision rule yet",
-        node.id
-    )))
-}
-
 /// Log a failed unit of the tick and raise it, at most once per distinct error
 /// per [`crate::pump::tick_steps::RERAISE_SECS`].
 fn boundary<T>(ctx: &Ctx, unit: &str, result: Result<T, VivariumError>) {
@@ -199,7 +194,7 @@ fn first_time(ctx: &Ctx, kind: &str, unit: &str) -> bool {
     seen.insert(format!("{}\u{0}{kind}\u{0}{unit}", ctx.home.display()))
 }
 
-fn raise_once(ctx: &Ctx, kind: &str, unit: &str, text: &str) {
+pub(crate) fn raise_once(ctx: &Ctx, kind: &str, unit: &str, text: &str) {
     if first_time(ctx, kind, unit) {
         ctx.exception(kind, unit, text);
     }
@@ -258,7 +253,8 @@ struct Tick<'a, S, M> {
     st: &'a mut S,
     store: &'a PumpStore,
     mail: &'a mut M,
-    handlers: &'a StepHandlers,
+    registry: &'a Registry<S, M>,
+    decide: route::Decide<'a>,
     def: FlowDef,
     run: RunRow,
 }
@@ -266,7 +262,7 @@ struct Tick<'a, S, M> {
 impl<S, M> Tick<'_, S, M>
 where
     S: JobStore,
-    M: MailWriter + SliceMail + SliceEdges,
+    M: FlowMail,
 {
     fn run(&mut self, unapplied: &[(String, StepJobRow)]) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
@@ -342,7 +338,12 @@ where
             payload,
         };
         let advanced = advance::advance(
-            self.ctx, self.store, self.mail, &self.def, &outcome, &decide,
+            self.ctx,
+            self.store,
+            self.mail,
+            &self.def,
+            &outcome,
+            self.decide,
         )?;
         if let Some(reason) = advanced.routed.rejected {
             self.ctx.exception(WORD_REJECTED, &step.task, &reason);
@@ -693,16 +694,25 @@ where
             if step.state != StepState::Pending {
                 continue;
             }
-            let Some(class) = self.class_of(&step.node) else {
+            let registry = self.registry;
+            let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
                 continue;
             };
-            let Some(handler) = self.handlers.get(&class) else {
+            let Some(handler) = registry.handler_for(self.def.kind, node) else {
                 continue;
             };
-            match handler.start(&step)? {
-                StartAction::EnqueueJob { kind, brief } => {
-                    self.enqueue_first(&step, &kind, &brief)?
-                }
+            let action = {
+                let cx = StartCx {
+                    ctx: self.ctx,
+                    store: self.store,
+                    mail: &*self.mail,
+                    run: &self.run,
+                    def: &self.def,
+                };
+                handler.start(&cx, &step)?
+            };
+            match action {
+                StartAction::Job(spec) => self.enqueue_job(&step, *spec)?,
                 StartAction::OpenAndWait => {
                     self.store
                         .set_step_state(&step.task, StepState::Waiting, None)?;
@@ -715,29 +725,26 @@ where
         Ok(())
     }
 
-    fn enqueue_first(
-        &mut self,
-        step: &StepRow,
-        kind: &str,
-        brief: &str,
-    ) -> Result<(), VivariumError> {
-        let id = format!("step-{}-a1", step.task);
-        let mut spec = JobSpec::new(
-            id.clone(),
-            kind,
-            kind,
-            format!("{} ({} r{})", step.node, self.run.need, self.run.run),
-            brief,
-        );
-        spec.task = Some(step.task.clone());
-        spec.budget = self.ctx.cfg.dispatch.budget;
-        spec.payload = serde_json::json!({
-            "need": self.run.need,
-            "run": self.run.run,
-            "node": step.node,
-            "task": step.task,
-            "attempt": 1,
-        });
+    /// Enqueue a handler's first job for a step and mark the step running.
+    fn enqueue_job(&mut self, step: &StepRow, mut spec: JobSpec) -> Result<(), VivariumError> {
+        if spec.task.is_none() {
+            spec.task = Some(step.task.clone());
+        }
+        let mut payload = match std::mem::take(&mut spec.payload) {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        for (key, value) in [
+            ("need", serde_json::json!(self.run.need)),
+            ("run", serde_json::json!(self.run.run)),
+            ("node", serde_json::json!(step.node)),
+            ("task", serde_json::json!(step.task)),
+            ("attempt", serde_json::json!(1)),
+        ] {
+            payload.insert(key.to_owned(), value);
+        }
+        spec.payload = serde_json::Value::Object(payload);
+        let id = spec.id.clone();
         jobs::enqueue(self.st, spec)?;
         self.store.insert_step_job(
             &self.run.need,
