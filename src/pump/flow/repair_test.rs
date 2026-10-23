@@ -55,17 +55,6 @@ fn the_branch_is_one_segment_after_the_prefix() {
 }
 
 #[test]
-fn a_record_gives_target_tested_and_the_tail() -> R {
-    let body =
-        "kind: repair\ntarget: default\ntested: 1234abcd\n\nthread 'x' panicked\nFAILED a::b\n";
-    let rec = record(body)?;
-    assert_eq!(rec.target, "default");
-    assert_eq!(rec.tested.as_deref(), Some("1234abcd"));
-    assert_eq!(rec.tail, "thread 'x' panicked\nFAILED a::b");
-    Ok(())
-}
-
-#[test]
 fn a_front_matter_record_gives_target_tested_and_the_tail() -> R {
     use crate::letter::fixture::{record_body, repair_record_body};
     let body = repair_record_body(
@@ -89,35 +78,19 @@ fn a_front_matter_record_gives_target_tested_and_the_tail() -> R {
 
 #[test]
 fn tested_is_optional_and_target_is_required() -> R {
-    let rec = record("kind: repair\ntarget: vivi\nboom\n")?;
+    use crate::letter::fixture::{record_body, repair_record_body};
+    let rec = record(&repair_record_body(NEED, "vivi", None, "boom"))?;
     assert_eq!(rec.tested, None);
     assert_eq!(rec.tail, "boom");
-    let err = record("kind: repair\ntested: abc\nboom\n").unwrap_err();
+    let err = record(&record_body(NEED, "repair")).unwrap_err();
     assert!(matches!(err, VivariumError::Parse(text) if text.contains("target")));
-    assert!(record("target:\n").is_err());
     Ok(())
 }
 
 #[test]
-fn a_padded_target_line_is_trimmed() -> R {
-    assert_eq!(record("  target:  x  \nboom\n")?.target, "x");
-    Ok(())
-}
-
-#[test]
-fn a_blank_target_names_expected_and_actual() {
-    let err = record("kind: repair\ntarget:   \nboom\n").unwrap_err();
-    assert!(
-        matches!(err, VivariumError::Parse(text) if text.contains("expected a `target:` line")
-            && text.contains("actual: none in kind: repair"))
-    );
-}
-
-#[test]
-fn the_tail_excludes_kind_target_and_tested_lines() -> R {
-    let rec = record("kind: repair\n  target: x\ntested: abc\nline one\nline two\n")?;
-    assert_eq!(rec.tail, "line one\nline two");
-    Ok(())
+fn a_body_without_front_matter_is_refused() {
+    let err = record("kind: repair\ntarget: x\nboom\n").unwrap_err();
+    assert!(matches!(err, VivariumError::Parse(text) if text.starts_with("repair record:")));
 }
 
 #[test]

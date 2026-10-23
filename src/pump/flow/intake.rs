@@ -5,9 +5,9 @@
 //! `[pump.flow] max_live_runs` cap allows, at most one repair-kind run per
 //! target. Repair-kind runs neither count toward the cap nor wait for it. The addressee of the need plays no part.
 //!
-//! Assumption: the target of a repair-kind need is read from a `target:` line
-//! of the open pump record body, which N6 writes together with the
-//! `kind: repair` line.
+//! Assumption: the target of a repair-kind need is read from the `target` of
+//! the open pump record's front matter, which is written together with
+//! `kind = "repair"`.
 
 use std::collections::BTreeMap;
 
@@ -252,7 +252,7 @@ fn known_target(ctx: &Ctx, need: &str, target: &str) -> bool {
         RECORD_UNUSABLE,
         need,
         &format!(
-            "repair need {need}: expected a `target:` line naming one of {}; actual: {actual}",
+            "repair need {need}: expected a `target` in the record front matter naming one of {}; actual: {actual}",
             targets.join(", ")
         ),
     );

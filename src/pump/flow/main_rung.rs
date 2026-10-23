@@ -7,7 +7,6 @@ mod schedule;
 use std::collections::BTreeSet;
 
 use crate::error::VivariumError;
-use crate::letter::LetterError;
 use crate::letter::read::record_of;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -45,23 +44,13 @@ pub(crate) fn key(name: &str, target: &str) -> String {
     format!("{name}:{target}")
 }
 
-/// The target a record body names: the front matter `target`, else (a body
-/// with no front matter) the trimmed value of the first `target:` line; None
-/// when absent or empty.
+/// The target a record body names: the front matter `target`; None when the
+/// body has no readable front matter or the target is absent or empty.
 pub(crate) fn record_target(body: &str) -> Option<String> {
     match record_of("", body) {
         Ok(envelope) => envelope.front.target.filter(|value| !value.is_empty()),
-        Err(LetterError::Legacy { .. }) => target_line(body).map(str::to_owned),
         Err(_) => None,
     }
-}
-
-/// TRANSITIONAL (W3-B3): the old `target:` line of a record with no front matter.
-pub(crate) fn target_line(body: &str) -> Option<&str> {
-    body.lines()
-        .find_map(|line| line.trim().strip_prefix("target:"))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 /// Exception kind of a main rung job that ended without an exit code.
