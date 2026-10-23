@@ -107,7 +107,7 @@ fn owned_refs(
             }
             prefixes.push(format!(
                 "pump/merge-main/{}-merge-main-{}-",
-                ref_safe(&row.target),
+                jobs::merge_main::ref_safe(&row.target),
                 step.task
             ));
         }
@@ -234,19 +234,6 @@ fn failure(job: &PoolJob) -> Option<String> {
         }
         JobStatus::Pending | JobStatus::Dispatched => None,
     }
-}
-
-/// The merge-main scratch-branch spelling of a name (see `jobs::merge_main`).
-fn ref_safe(text: &str) -> String {
-    text.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
