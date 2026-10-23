@@ -110,13 +110,8 @@ impl Rig {
             },
         )?;
         if facts {
-            let text = repair::facts_text(&AttemptFacts {
-                branch: repair::branch(NEED, 1, 1),
-                commit: COMMIT.into(),
-                base: BASE.into(),
-            });
-            self.mail
-                .reply(&task, &marked_line(repair::ATTEMPT_MARKER, &text))?;
+            self.post_facts(&task, 1, COMMIT)?;
+            self.step("merge1", StepState::Done, Some("merged"))?;
         }
         self.store.upsert_need_branch(&NeedBranchRow {
             need: NEED.into(),
@@ -127,6 +122,50 @@ impl Rig {
             target: "vivi".into(),
             priors: Vec::new(),
         })
+    }
+
+    /// Post attempt facts for `attempt` with `commit` on `task`.
+    fn post_facts(&mut self, task: &str, attempt: u32, commit: &str) -> R {
+        let text = repair::facts_text(&AttemptFacts {
+            branch: repair::branch(NEED, 1, attempt),
+            commit: commit.into(),
+            base: BASE.into(),
+        });
+        self.mail
+            .reply(task, &marked_line(repair::ATTEMPT_MARKER, &text))?;
+        Ok(())
+    }
+
+    /// Add a step row of run 1.
+    fn step(&mut self, node: &str, state: StepState, verdict: Option<&str>) -> R {
+        let task = self.mail.send_step("mind", "mind", node, node, &[])?;
+        self.store.insert_step(
+            NEED,
+            &StepRow {
+                run: 1,
+                node: node.into(),
+                task,
+                state,
+                verdict: verdict.map(str::to_owned),
+            },
+        )
+    }
+
+    /// Add a `fix<attempt>` step carrying facts for `commit`; returns nothing.
+    fn fix(&mut self, attempt: u32, commit: &str) -> R {
+        let node = format!("fix{attempt}");
+        let task = self.mail.send_step("mind", "mind", &node, &node, &[])?;
+        self.store.insert_step(
+            NEED,
+            &StepRow {
+                run: 1,
+                node,
+                task: task.clone(),
+                state: StepState::Done,
+                verdict: Some("built".into()),
+            },
+        )?;
+        self.post_facts(&task, attempt, commit)
     }
 
     /// End the queued audit job with `status` and `receipt`.
@@ -249,6 +288,55 @@ fn a_run_that_published_nothing_is_marked_and_audits_nothing() -> R {
     rig.land("repair", false)?;
     rig.tick()?;
     assert!(rig.jobs.jobs.is_empty());
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+const COMMIT2: &str = "3333333333333333333333333333333333333333";
+
+#[test]
+fn the_merged_attempt_is_audited_even_when_attempt_one_also_published() -> R {
+    let mut rig = rig(true)?;
+    rig.land("repair", true)?;
+    rig.store.set_step_state(
+        &rig.store.steps_of(NEED, 1)?[1].task,
+        StepState::Done,
+        Some("conflict"),
+    )?;
+    rig.fix(2, COMMIT2)?;
+    rig.step("merge2", StepState::Done, Some("merged"))?;
+    rig.tick()?;
+    let job = &rig.jobs.jobs[&job_id(NEED, 1)];
+    assert_eq!(job.payload["commit"], COMMIT2);
+    assert_eq!(job.from_ref.as_deref(), Some(COMMIT2));
+    Ok(())
+}
+
+#[test]
+fn a_run_landed_through_green_queues_nothing_and_settles_its_key() -> R {
+    let mut rig = rig(true)?;
+    rig.land("repair", false)?;
+    rig.fix(1, COMMIT)?;
+    rig.fix(2, COMMIT2)?;
+    rig.step("merge1", StepState::Done, Some("conflict"))?;
+    rig.step("merge2", StepState::Done, Some("failed"))?;
+    rig.step("unrepaired", StepState::Done, Some("green"))?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs.is_empty());
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    assert_eq!(rig.alarms(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_merged_attempt_without_facts_raises_once_and_settles() -> R {
+    let mut rig = rig(true)?;
+    rig.land("repair", false)?;
+    rig.step("merge1", StepState::Done, Some("merged"))?;
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs.is_empty());
+    assert_eq!(rig.alarms(), 1);
     assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
     Ok(())
 }
