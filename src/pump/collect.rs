@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use crate::pump::host::{Ctx, shell_quote, shell_split};
+use crate::pump::host::{Ctx, shell_split};
 use crate::pump::state::{State, Status};
 
 #[path = "collect/burst.rs"]
@@ -159,22 +159,6 @@ pub fn collect(ctx: &Ctx, st: &mut State) {
     let _terminal_jobs = crate::pump::jobs::apply_reconcile(ctx, st, &seen);
     crate::pump::planner_jobs::apply_completions(ctx, st);
     expire_splits(ctx, st);
-}
-
-/// A local worktree target commits its result branch directly into the
-/// target integration clone instead of pushing it to the configured remote.
-pub(crate) fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
-    if ctx.cfg.targets.is_empty() {
-        return false;
-    }
-    let out = ctx.git(
-        &format!(
-            "show-ref --verify --quiet refs/heads/{}",
-            shell_quote(branch)
-        ),
-        30,
-    );
-    out.code == 0
 }
 
 /// `SPLIT_PROMPT` with the stored resplit record and unit handle substituted.
