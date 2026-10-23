@@ -144,15 +144,34 @@ fn input_order_does_not_matter() -> Result<(), VivariumError> {
 fn a_failed_input_fails_the_join() -> Result<(), VivariumError> {
     let (_dir, store) = open()?;
     let join = node("join", NodeClass::Join);
-    for pair in [
-        [input("audit1", "a", "failed"), input("rung", "r", "pass")],
-        [
-            input("audit1", "a", "block_ship"),
-            input("rung", "r", "failed"),
-        ],
-        [input("audit1", "a", "failed"), input("rung", "r", "failed")],
-    ] {
-        assert_eq!(decide(&store, &join, &pair)?, "failed");
+    let pairs = [
+        ("failed", "pass"),
+        ("clean_pass", "failed"),
+        ("residual", "failed"),
+        ("failed", "failed"),
+    ];
+    for (audit, rung) in pairs {
+        let forward = [input("audit1", "a", audit), input("rung", "r", rung)];
+        let reverse = [input("rung", "r", rung), input("audit1", "a", audit)];
+        assert_eq!(decide(&store, &join, &forward)?, "failed", "{audit}+{rung}");
+        assert_eq!(decide(&store, &join, &reverse)?, "failed", "{rung}+{audit}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_auditor_block_beats_a_lost_rung() -> Result<(), VivariumError> {
+    let (_dir, store) = open()?;
+    let join = node("join", NodeClass::Join);
+    for audit in ["block_range", "block_ship"] {
+        let forward = [input("audit1", "a", audit), input("rung", "r", "failed")];
+        let reverse = [input("rung", "r", "failed"), input("audit1", "a", audit)];
+        assert_eq!(decide(&store, &join, &forward)?, "block", "{audit}");
+        assert_eq!(
+            decide(&store, &join, &reverse)?,
+            "block",
+            "{audit} reversed"
+        );
     }
     Ok(())
 }

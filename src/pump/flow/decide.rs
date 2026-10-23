@@ -50,12 +50,16 @@ fn join(store: &PumpStore, node: &FlowNode, inputs: &[JoinInput]) -> Result<Stri
             format!("a join needs two inputs, got {}", inputs.len()),
         ));
     };
-    if a.word == FAILED || b.word == FAILED {
+    if a.word == FAILED && b.word == FAILED {
         return Ok(FAILED.into());
     }
-    let (audit, rung) = if is_audit(&a.word) && is_rung(&b.word) {
+    let (audit, rung) = if is_audit(&a.word) && is_rung_or_failed(&b.word) {
         (a, b)
-    } else if is_audit(&b.word) && is_rung(&a.word) {
+    } else if is_audit(&b.word) && is_rung_or_failed(&a.word) {
+        (b, a)
+    } else if a.word == FAILED && is_rung(&b.word) {
+        (a, b)
+    } else if b.word == FAILED && is_rung(&a.word) {
         (b, a)
     } else {
         return Err(bad(
@@ -66,8 +70,12 @@ fn join(store: &PumpStore, node: &FlowNode, inputs: &[JoinInput]) -> Result<Stri
             ),
         ));
     };
+    // Rows run top to bottom: a failed audit, then an auditor block (which beats a lost rung),
+    // then a lost rung, then a failing rung, then a pass.
     let word = match (audit.word.as_str(), rung.word.as_str()) {
+        (FAILED, _) => FAILED,
         ("block_range" | "block_ship", _) => "block",
+        (_, FAILED) => FAILED,
         (_, "fail") => "judge",
         _ if raise_rung(store, &audit.task)?.is_some() => "raised",
         _ => "verified",
@@ -104,6 +112,10 @@ fn is_audit(word: &str) -> bool {
 
 fn is_rung(word: &str) -> bool {
     RUNG_WORDS.contains(&word)
+}
+
+fn is_rung_or_failed(word: &str) -> bool {
+    is_rung(word) || word == FAILED
 }
 
 fn raise_rung(store: &PumpStore, task: &str) -> Result<Option<String>, VivariumError> {
