@@ -332,3 +332,20 @@ fn a_job_of_a_superseded_run_is_marked_applied_with_no_other_effect() -> R {
     assert!(slice_task_of(&rig, "A.1").is_err());
     Ok(())
 }
+
+#[test]
+fn a_duplicate_id_split_reply_exhausts_the_slice_and_marks_the_job_applied() -> R {
+    let (mut rig, task) = phase_rig()?;
+    let duplicated = SPLIT_REPLY.replace("A.2", "A.1");
+    end_job(&mut rig, &task, JobStatus::Finished, &duplicated);
+
+    run_phase(&mut rig)?;
+
+    let old = rig.store.step_by_task(&rig.slice.task)?.expect("row");
+    assert_eq!(old.state, StepState::Failed);
+    assert_eq!(verdict(&rig, &task)?.as_deref(), Some("failed"));
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert!(job.applied_at.is_some());
+    assert!(slice_task_of(&rig, "A.1").is_err());
+    Ok(())
+}

@@ -179,6 +179,26 @@ fn an_unknown_target_answers_failed_and_raises_the_exception() -> R {
 }
 
 #[test]
+fn a_cyclic_reply_answers_failed_and_raises_the_exception() -> R {
+    let mut rig = rig()?;
+    let cyclic = format!(
+        "{}{}",
+        slice("A", "default", "\"src/a.rs\"").replace("deps = []", "deps = [\"B\"]"),
+        slice("B", "default", "\"src/b.rs\"").replace("deps = []", "deps = [\"A\"]")
+    );
+    seat(&mut rig, "slice", "build1", &[envelope(&cyclic)])?;
+
+    let action = start(&rig, "build1")?;
+
+    assert_eq!(action, failed());
+    let text = exceptions(&rig);
+    assert!(text.contains("flow-slices-invalid"), "{text}");
+    assert!(text.contains("cycle"), "{text}");
+    assert_eq!(rig.store.open_fanout(NEED, 1)?, None);
+    Ok(())
+}
+
+#[test]
 fn an_empty_write_scope_answers_failed() -> R {
     let mut rig = rig()?;
     let bad = slice("S1", "default", "");

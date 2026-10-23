@@ -6,15 +6,12 @@
 use crate::error::VivariumError;
 use crate::pump::envelope::roles::{Slice, SlicerAnswer};
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fanout::parse_reply;
+use crate::pump::flow::fanout::{SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
-
-/// The exception kind raised when the slicer's slices cannot be used.
-const SLICES_INVALID: &str = "flow-slices-invalid";
 
 /// Starts a fanout step from the slicer's reply.
 struct FanoutStart;
@@ -75,7 +72,8 @@ fn latest_slices(
     )))
 }
 
-/// What is wrong with `slices`: unknown targets and empty write scopes.
+/// What is wrong with `slices`: unknown targets, empty write scopes, and a
+/// duplicate id, unknown dependency or cycle.
 fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Vec<String> {
     let known = step_inputs::targets(cx.ctx);
     let mut out = Vec::new();
@@ -89,6 +87,9 @@ fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Vec<String> {
         if slice.write_scope.iter().all(|path| path.trim().is_empty()) {
             out.push(format!("slice {} has an empty write_scope", slice.id));
         }
+    }
+    if let Err(reason) = check_batch(cx.store, cx.run, slices) {
+        out.push(reason);
     }
     out
 }

@@ -5,7 +5,7 @@ use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::envelope::roles::{Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{NodeClass, STEP_MARKER};
-use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, parse_reply};
+use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
@@ -263,7 +263,7 @@ fn collect_one<S: JobStore, M: FlowMail>(
         jobs::mark_applied(st, &job.id, ctx.now());
         return Ok(());
     }
-    let reply = reply_of(ctx, job, mode);
+    let reply = reply_of(ctx, store, &run, job, mode);
     let word = reslice_apply::apply(ctx, store, mail, &run, &row, slice, mode, reply.as_ref())?;
     mail.close_task(&row.task, word, None, None)?;
     store.set_step_state(&row.task, StepState::Done, Some(word))?;
@@ -272,8 +272,15 @@ fn collect_one<S: JobStore, M: FlowMail>(
 }
 
 /// The slicer envelope of a finished job whose mode matches the request; any
-/// other outcome raises [`RESLICE_FAILED`] and gives `None`.
-fn reply_of(ctx: &Ctx, job: &PoolJob, mode: Mode) -> Option<Slicer> {
+/// other outcome raises [`RESLICE_FAILED`] and gives `None`, and slices that
+/// fail [`check_batch`] raise [`SLICES_INVALID`] and give `None`.
+fn reply_of(
+    ctx: &Ctx,
+    store: &PumpStore,
+    run: &RunRow,
+    job: &PoolJob,
+    mode: Mode,
+) -> Option<Slicer> {
     let fail = |why: String| {
         let text = format!("reslice job {}: {why}", job.id);
         raise_once(ctx, RESLICE_FAILED, &job.id, &text);
@@ -297,6 +304,11 @@ fn reply_of(ctx: &Ctx, job: &PoolJob, mode: Mode) -> Option<Slicer> {
     };
     if slicer.mode != wanted {
         return fail(format!("reply mode {:?} is not {wanted:?}", slicer.mode));
+    }
+    if let Err(reason) = check_batch(store, run, &slicer.slice) {
+        let text = format!("reslice job {}: {reason}", job.id);
+        raise_once(ctx, SLICES_INVALID, &job.id, &text);
+        return None;
     }
     Some(slicer)
 }
