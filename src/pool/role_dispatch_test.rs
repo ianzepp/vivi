@@ -284,7 +284,7 @@ fn no_band_and_no_model_is_an_error_naming_the_role() {
     .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "configuration error: no model: pass --model, give the task a `band:` line, \
+        "configuration error: no model: pass --model, give the task a `band` key in its front matter, \
          or give role scribe a band (`vivi role set scribe --model P2`)"
     );
 }
@@ -294,7 +294,7 @@ fn no_band_and_no_model_without_a_role_blames_the_role_slot() {
     let err = resolve(&pool(), "bridge", &plain("write it")).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "configuration error: no model: pass --model, give the task a `band:` line, \
+        "configuration error: no model: pass --model, give the task a `band` key in its front matter, \
          or give the role a band (`vivi role set <name> --model P2`)"
     );
 }
