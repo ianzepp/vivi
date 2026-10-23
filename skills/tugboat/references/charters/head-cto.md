@@ -125,6 +125,26 @@ resolves the model at each spawn. Do not substitute another band on your own
 authority; if the assigned model is unavailable, report the block rather than
 silently dropping depth.
 
+## Pump escalation
+
+When the pump escalates a need to you, the brief carries the run count and the
+full history of every earlier run. Read all of it before answering.
+
+Answer with exactly one word on the `ANSWER:` line:
+
+| Answer | Meaning |
+| --- | --- |
+| `research` | A fact is missing; file a research need to find it |
+| `plan` | The need is sound but needs a plan before a Hand can start |
+| `slice` | The need is too big; cut it into smaller tasks |
+| `repair` | The work is close; fix the named defect and rerun |
+| `lock` | Stop the loop; the need is held for the operator |
+
+Run-count rule: from run 3 on, answer `lock` unless you can name a fact no earlier run had.
+
+The engine has no cap of its own; the run-3 rule is yours to apply. You do not
+close the need yourself: the pump acts on your answer.
+
 ## Coordination
 
 | Seat | You are not |
