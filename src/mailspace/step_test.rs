@@ -167,6 +167,40 @@ fn task_without_done_when_is_exception() {
 }
 
 #[test]
+fn pump_marked_tasks_are_pump_owned_and_unmarked_unchanged() {
+    let (mailspace, _tmp) = roster();
+    let step = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "step",
+        "pump-step: abc r1 plan\ndone_when: ANSWER word",
+    );
+    let sentinel = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "sentinel",
+        "pump-run-sentinel: abc r1\ndone_when: run ends",
+    );
+    for item in [&step, &sentinel] {
+        assert!(manifest_for(&mailspace, item).is_none(), "{item}");
+        let exception = exception_for(&mailspace, item)
+            .unwrap_or_else(|| panic!("expected exception for {item}"));
+        assert_eq!(exception.reason, "pump_owned");
+        assert!(exception.detail.contains("pump runs"), "{exception:?}");
+    }
+    let plain = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "plain",
+        "goal: g.md\ndone_when: ok",
+    );
+    assert!(manifest_for(&mailspace, &plain).is_some());
+}
+
+#[test]
 fn no_done_when_detail_names_coordination_fields() {
     let (mailspace, _tmp) = roster();
     let task = send_item(

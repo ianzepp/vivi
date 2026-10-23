@@ -241,15 +241,14 @@ fn adjudicate_node(
     let body = item_body(storage, &message.message_id)?;
     let clauses = count_labeled_clauses(&body, "done_when");
     if kind == "want" {
-        let mut detail = "parked: wants never dispatch before explicit promotion".to_string();
-        if clauses == 0 {
-            detail.push_str("; body declares no done_when clause");
-        }
+        return Ok(StepOutcome::Exception(want_exception(node, clauses)));
+    }
+    if is_pump_owned(&body) {
         return Ok(StepOutcome::Exception(exception(
             node,
             &kind,
-            "want_requires_promotion",
-            &detail,
+            "pump_owned",
+            "the pump runs and closes this step",
         )));
     }
     if !storage
@@ -279,6 +278,21 @@ fn adjudicate_node(
         done_when_clauses: clauses,
         write_scope: has_labeled_field(&body, "write_scope"),
     }))
+}
+
+fn want_exception(node: &GraphNodeView, clauses: usize) -> StepException {
+    let mut detail = "parked: wants never dispatch before explicit promotion".to_string();
+    if clauses == 0 {
+        detail.push_str("; body declares no done_when clause");
+    }
+    exception(node, "want", "want_requires_promotion", &detail)
+}
+
+/// A pump step task or run sentinel: the pump runs and closes it, never step.
+fn is_pump_owned(body: &str) -> bool {
+    let first = body.lines().next().unwrap_or("").trim_start();
+    first.starts_with(crate::pump::flow::def::STEP_MARKER)
+        || first.starts_with(crate::pump::flow::def::SENTINEL_MARKER)
 }
 
 fn kind_for_role(role: &str) -> String {
