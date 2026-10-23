@@ -9,6 +9,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::jobs::JobStore;
 use crate::pump::ready::blocked_needs;
 
+mod prereq;
+
 /// The word the milestone answers when every prerequisite need is done.
 const READY: &str = "ready";
 
