@@ -4,6 +4,8 @@
 mod project_server;
 
 use serde_json::{Value, json};
+use vivi::b64;
+use vivi::sync::identity::SyncIdentity;
 
 use project_server::{HttpReply, ProjectServer, http};
 
@@ -103,7 +105,7 @@ fn show_with_other_project_is_a_tool_error() {
         json!({ "project": "other", "handle": "n1" }),
     );
     assert_eq!(reply["result"]["isError"], true);
-    assert_eq!(text(&reply), "unknown project: other");
+    assert_eq!(text(&reply), "this key has no grant on other");
 }
 
 #[test]
@@ -150,13 +152,64 @@ fn refuse_mcp_next_applies() {
 fn requests_record_their_path() {
     let (server, key) = setup();
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
-    post(&server, "/v1/mcp", &key, body.clone());
-    let old = format!("/v1/projects/{}/mcp", server.project());
-    post(&server, &old, &key, body);
+    post(&server, "/v1/mcp", &key, body);
     let seen = server.mcp_requests();
-    assert_eq!(seen.len(), 2);
+    assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].path, "/v1/mcp");
-    assert_eq!(seen[1].path, old);
+}
+
+#[test]
+fn the_per_project_mcp_route_is_gone() {
+    let (server, key) = setup();
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
+    let old = format!("/v1/projects/{}/mcp", server.project());
+    assert_eq!(post(&server, &old, &key, body).status, 404);
+    assert!(server.mcp_requests().is_empty());
+}
+
+#[test]
+fn a_live_identity_token_is_refused_on_v1_mcp() {
+    let (server, key) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(&dir.path().join(".vivi")).unwrap();
+    server.register("alice", &identity.public_key_pem());
+    let challenge = http(
+        &server.url(),
+        "POST",
+        &format!("/v1/projects/{}/identities/challenge", server.project()),
+        &[("Content-Type", "application/json")],
+        Some(&json!({ "public_key_pem": identity.public_key_pem() }).to_string()),
+    );
+    let parsed: Value = serde_json::from_str(&challenge.body).unwrap();
+    let bytes = b64::decode(parsed["challenge"].as_str().unwrap()).unwrap();
+    let minted = http(
+        &server.url(),
+        "POST",
+        &format!("/v1/projects/{}/auth/token", server.project()),
+        &[("Content-Type", "application/json")],
+        Some(
+            &json!({
+                "name": "alice",
+                "challenge_id": parsed["challenge_id"].as_str().unwrap(),
+                "signature_base64": b64::encode(&identity.sign(&bytes)),
+            })
+            .to_string(),
+        ),
+    );
+    assert_eq!(minted.status, 200, "{}", minted.body);
+    let minted: Value = serde_json::from_str(&minted.body).unwrap();
+    let token = minted["token"].as_str().unwrap();
+
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
+    let refused = post(&server, "/v1/mcp", token, body.clone());
+    assert_eq!(refused.status, 401);
+    let refused: Value = serde_json::from_str(&refused.body).unwrap();
+    assert_eq!(refused["error"]["code"], "unauthorized");
+    assert_eq!(
+        refused["error"]["message"],
+        "identity tokens are not accepted on /v1/mcp"
+    );
+    assert_eq!(post(&server, "/v1/mcp", &key, body).status, 200);
 }
 
 #[test]
