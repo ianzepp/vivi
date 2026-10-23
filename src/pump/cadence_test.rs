@@ -217,7 +217,6 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
             &scan,
             1,
             1_000,
-            false,
             String::from("cadence-x-1"),
             String::from("cadence"),
             String::from("subject"),
