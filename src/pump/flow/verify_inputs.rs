@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VivariumError;
+use crate::letter::work::NeedFront;
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
@@ -73,17 +74,40 @@ pub struct NeedAuditRequirement {
     pub text: String,
 }
 
-/// The requirements an audit must account for, one per whole need message.
+/// The requirements an audit must account for. A root message with front
+/// matter gives one requirement per `done_when` entry, ids `<handle>-d<n>`
+/// (1-based). A root without front matter (an old prose need), and every
+/// later message (an amendment), is one whole-message requirement.
 pub(crate) fn requirements(ctx: &Ctx, need: &str, messages: &[Value]) -> Vec<NeedAuditRequirement> {
-    whole_message_requirements(ctx, need, messages)
+    let whole = whole_message_requirements(ctx, need, messages);
+    let Some(root) = messages.first() else {
+        return whole;
+    };
+    let handle = root["handle"].as_str().unwrap_or("");
+    let body = root["body"].as_str().unwrap_or("");
+    let Ok(envelope) = crate::letter::parse_letter::<NeedFront>(body) else {
+        return whole;
+    };
+    let root_id = format!("{handle}-r0");
+    let mut out: Vec<NeedAuditRequirement> = envelope
+        .front
+        .done_when
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| NeedAuditRequirement {
+            id: format!("{handle}-d{}", index + 1),
+            text,
+        })
+        .collect();
+    out.extend(whole.into_iter().filter(|req| req.id != root_id));
+    out
 }
 
-/// Requirements for a need that declares no `done_when:` lines: each source
-/// message is one requirement, so the audit checks the delivered work against
-/// what the need actually asked for. The requirement text is one short line
+/// One requirement per source message: the requirement text is one short line
 /// that names the message and points at the thread the auditor already
 /// receives as `original_need_thread`: a receipt must repeat each requirement
 /// text byte for byte, and a model auditor cannot reliably echo a long body.
+/// Generated pump replies are skipped.
 pub fn whole_message_requirements(
     ctx: &Ctx,
     need: &str,

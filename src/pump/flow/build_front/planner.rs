@@ -51,6 +51,7 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
         targets(cx.ctx).join(", ")
     )
     .map_err(fmt_err)?;
+    text.push_str(&front_lines(cx, need));
     writeln!(text, "thread:\n{}", need_thread(cx.ctx, need)?).map_err(fmt_err)?;
     if step.node == SECOND_PLAN {
         writeln!(
@@ -65,6 +66,31 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
         text.push_str(&prior_branch_note(cx)?);
     }
     Ok(text)
+}
+
+/// The front-matter facts of the need as brief lines: one `done_when:` line
+/// per entry, `target:` and `depends_on:` when set. Empty when the need body
+/// cannot be read or has no valid front.
+fn front_lines(cx: &StartCx<'_>, need: &str) -> String {
+    let Ok(body) = cx.mail.task_body(need) else {
+        return String::new();
+    };
+    let Ok(envelope) = crate::letter::read::need_of(need, &body) else {
+        return String::new();
+    };
+    let front = envelope.front;
+    let mut lines: Vec<String> = front
+        .done_when
+        .iter()
+        .map(|entry| format!("done_when: {entry}\n"))
+        .collect();
+    if let Some(target) = front.target {
+        lines.push(format!("target: {target}\n"));
+    }
+    if !front.depends_on.is_empty() {
+        lines.push(format!("depends_on: {}\n", front.depends_on.join(", ")));
+    }
+    lines.concat()
 }
 
 /// The newest reply of the last Done step of `node`, or `(none)`.

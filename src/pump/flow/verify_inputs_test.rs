@@ -184,6 +184,33 @@ fn need_thread_parses_a_need_show_reply() {
 }
 
 #[test]
+fn a_front_matter_root_gives_one_requirement_per_done_when_entry() {
+    let f = fixture();
+    let root = crate::letter::fixture::need_body(&["first thing", "second thing"], "prose");
+    let messages: Vec<serde_json::Value> = vec![
+        json!({"handle": NEED, "from": "operator@local", "body": root}),
+        json!({"handle": "reply-1", "from": "operator@local", "body": "also keep the CLI shape"}),
+    ];
+    let reqs = requirements(&f.ctx, NEED, &messages);
+    let ids: Vec<&str> = reqs.iter().map(|req| req.id.as_str()).collect();
+    assert_eq!(ids, ["need-1-d1", "need-1-d2", "reply-1-r0"]);
+    assert_eq!(reqs[0].text, "first thing");
+    assert_eq!(reqs[1].text, "second thing");
+}
+
+#[test]
+fn a_prose_root_keeps_the_whole_message_requirement() {
+    let f = fixture();
+    let messages: Vec<serde_json::Value> = vec![
+        json!({"handle": NEED, "from": "operator@local", "body": "Build the thing"}),
+        json!({"handle": "reply-1", "from": "operator@local", "body": "more"}),
+    ];
+    let reqs = requirements(&f.ctx, NEED, &messages);
+    let ids: Vec<&str> = reqs.iter().map(|req| req.id.as_str()).collect();
+    assert_eq!(ids, ["need-1-r0", "reply-1-r0"]);
+}
+
+#[test]
 fn need_thread_errors_on_an_empty_array_and_on_failure() {
     let f = fixture();
     f.host.reply("need show", 0, "[]");

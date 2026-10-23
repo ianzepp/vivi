@@ -117,6 +117,26 @@ fn plan_is_a_read_only_planner_job_with_the_thread() -> R {
 }
 
 #[test]
+fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
+    let mut rig = rig(true, 1)?;
+    let mut front = crate::letter::work::NeedFront::new(vec![
+        String::from("first thing"),
+        String::from("second thing"),
+    ]);
+    front.target = Some(String::from("default"));
+    front.depends_on = vec![String::from("a1"), String::from("b2")];
+    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.run.need = need;
+
+    let spec = start(&rig, "plan")?;
+
+    let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\nthread:";
+    assert!(spec.body.contains(lines), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
 fn plan2_carries_the_first_plan_and_the_admitter_reasons() -> R {
     let mut rig = rig(true, 1)?;
     let plan = rig.mail.send_step("pump", "pump", "plan", "b", &[])?;

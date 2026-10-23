@@ -1,7 +1,7 @@
 //! Researcher step handler.
 //!
 //! The research step of the build and research flows hands the researcher the
-//! need thread, plus the want a `for: <want>` line of the need body names. The
+//! need thread, plus the want the need front's `explores` names. The
 //! job is read-only; the researcher answers with its envelope.
 
 use crate::error::VivariumError;
@@ -19,17 +19,13 @@ const SECTION_CAP: usize = 24 * 1024;
 /// Seconds one `vivi` read may take.
 const READ_TIMEOUT: u64 = 60;
 
-/// The want a need body names with a `for:` line: the first such line,
-/// trimmed, without surrounding `<>` or backticks.
+/// The want a need body explores: the need front's `explores`, read through
+/// the one need reader (an old `for:` line converts there).
 pub(crate) fn for_want(body: &str) -> Option<String> {
-    body.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("for:")?;
-        let want = rest
-            .trim()
-            .trim_matches(|c| matches!(c, '<' | '>' | '`'))
-            .trim();
-        (!want.is_empty()).then(|| want.to_owned())
-    })
+    match crate::letter::read::need_of("", body) {
+        Ok(envelope) => envelope.front.explores,
+        Err(_) => None,
+    }
 }
 
 /// Starts the research step as a read-only researcher job.

@@ -135,6 +135,16 @@ fn for_want_reads_the_first_for_line() {
 }
 
 #[test]
+fn for_want_reads_a_front_matter_explores() {
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    front.explores = Some(String::from("want-9"));
+    let body = crate::letter::fixture::need_body_with(&front, "Look into it.");
+    assert_eq!(for_want(&body), Some("want-9".to_owned()));
+    let plain = crate::letter::fixture::need_body(&["answered"], "Look into it.");
+    assert_eq!(for_want(&plain), None);
+}
+
+#[test]
 fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
     let rig = rig("Look into it.\nfor: w1", true)?;
     rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
