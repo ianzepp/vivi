@@ -11,7 +11,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
-use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
+use crate::pump::flow::step_error::{self, STEP_ERROR_HELD, STEP_ERROR_LIMIT};
 use crate::pump::flow::step_inputs::{read_only_job, targets};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::host::Ctx;
@@ -240,6 +240,8 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Reslices {
 /// is kept for the caller and the job stays unapplied. At the limit the job is
 /// marked applied and the reslice row is held for the operator; the error is
 /// then settled and gives `None` (a failed hold is the only error returned).
+/// A job whose payload names no task has no row to hold: it raises
+/// [`STEP_ERROR_HELD`] on the job id instead.
 fn settle_error<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -252,7 +254,15 @@ fn settle_error<S: JobStore>(
         return Some(error);
     }
     jobs::mark_applied(st, &job.id, ctx.now());
-    let task = job.payload.get("task").and_then(|v| v.as_str())?;
+    let Some(task) = job.payload.get("task").and_then(|v| v.as_str()) else {
+        let text = format!(
+            "reslice job {}: expected a payload task to hold; actual: none; \
+             job settled after {n} failures: {error}",
+            job.id
+        );
+        raise_once(ctx, STEP_ERROR_HELD, &job.id, &text);
+        return None;
+    };
     let text = format!(
         "reslice job {} for {task}: expected the reply to apply; actual: {error} on {n} ticks in a row",
         job.id

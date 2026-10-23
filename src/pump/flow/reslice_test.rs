@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{KIND, Mode, RESLICE_FAILED, Reslices, request};
+use super::{KIND, Mode, RESLICE_FAILED, Reslices, request, settle_error};
 use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
@@ -528,4 +528,36 @@ fn a_closed_step_is_a_late_result_applied_with_no_exception() -> R {
     );
     assert!(slice_task_of(&rig, "A.1").is_err());
     Ok(())
+}
+
+#[test]
+fn a_job_with_no_payload_task_raises_its_own_held_alarm_when_it_gives_up() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    let id = format!("reslice-{task}-a1");
+    let job = rig.jobs.jobs.get_mut(&id).expect("job");
+    job.payload
+        .as_object_mut()
+        .expect("object payload")
+        .remove("task");
+    let job = job.clone();
+
+    for _ in 0..2 {
+        let kept = settle_error(&rig.ctx, &mut rig.jobs, &rig.store, &job, failure());
+        assert!(kept.is_some());
+        assert_eq!(count_of(&rig, STEP_ERROR_HELD), 0);
+    }
+    let kept = settle_error(&rig.ctx, &mut rig.jobs, &rig.store, &job, failure());
+
+    assert!(kept.is_none());
+    assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    assert_eq!(count_of(&rig, STEP_ERROR_HELD), 1, "{}", exceptions(&rig));
+    let text = exceptions(&rig);
+    assert!(text.contains(&id), "{text}");
+    assert!(text.contains("expected a payload task to hold"), "{text}");
+    Ok(())
+}
+
+fn failure() -> VivariumError {
+    VivariumError::Other("store down".into())
 }
