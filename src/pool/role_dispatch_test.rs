@@ -107,20 +107,29 @@ fn privileged_publication_is_limited_to_merge_and_guarded_release_roles() {
     let release = role("release", Some("release"), None);
     let hand = role("hand", Some("hand"), None);
     let sha = "a".repeat(40);
-    assert!(validate_publish(Some(&merge), Some("refs/heads/next"), None).is_ok());
-    assert!(validate_publish(Some(&merge), Some("refs/heads/main"), Some(&sha)).is_ok());
-    assert!(validate_publish(Some(&release), Some("refs/heads/main"), Some(&sha)).is_ok());
-    assert!(validate_publish(Some(&release), Some("refs/heads/main"), None).is_err());
-    assert!(validate_publish(Some(&hand), Some("refs/heads/main"), None).is_err());
-    assert!(validate_publish(Some(&hand), Some("refs/heads/vivi/unit/u1-a1"), None).is_ok());
-    assert!(validate_publish(Some(&hand), Some("refs/heads/vivi/need/n1"), None).is_err());
-    assert!(validate_publish(None, Some("refs/heads/main"), None).is_err());
+    let mains = vec!["main".to_owned()];
+    assert!(validate_publish(Some(&merge), Some("refs/heads/next"), None, &mains).is_err());
+    assert!(validate_publish(Some(&merge), Some("refs/heads/main"), Some(&sha), &mains).is_ok());
+    assert!(validate_publish(Some(&release), Some("refs/heads/main"), Some(&sha), &mains).is_ok());
+    assert!(validate_publish(Some(&release), Some("refs/heads/main"), None, &mains).is_err());
+    assert!(validate_publish(Some(&hand), Some("refs/heads/main"), None, &mains).is_err());
+    assert!(
+        validate_publish(
+            Some(&hand),
+            Some("refs/heads/vivi/unit/u1-a1"),
+            None,
+            &mains
+        )
+        .is_ok()
+    );
+    assert!(validate_publish(Some(&hand), Some("refs/heads/vivi/need/n1"), None, &mains).is_err());
+    assert!(validate_publish(None, Some("refs/heads/main"), None, &mains).is_err());
 }
 
 #[test]
 fn a_repairer_publishes_only_one_repair_segment() {
     let repairer = role("fixer", Some("Repairer"), None);
-    assert!(validate_publish(Some(&repairer), Some("refs/heads/vivi/repair/x"), None).is_ok());
+    assert!(validate_publish(Some(&repairer), Some("refs/heads/vivi/repair/x"), None, &[]).is_ok());
     for bad in [
         "refs/heads/vivi/repair/x/y",
         "refs/heads/vivi/repair/",
@@ -128,7 +137,7 @@ fn a_repairer_publishes_only_one_repair_segment() {
         "refs/heads/vivi/unit/x",
     ] {
         assert!(
-            validate_publish(Some(&repairer), Some(bad), None).is_err(),
+            validate_publish(Some(&repairer), Some(bad), None, &["main".to_owned()]).is_err(),
             "{bad}"
         );
     }
@@ -570,4 +579,45 @@ fn digest_run_text_names_contract() {
     assert!(text.contains("/tmp/demo"), "got: {text}");
     assert!(text.contains("status.txt"), "got: {text}");
     assert!(text.contains("only write"), "got: {text}");
+}
+
+#[test]
+fn a_merge_role_publishes_only_its_four_ref_families() {
+    let merge = role("merge", Some("merge"), None);
+    let mains = vec!["trunk".to_owned(), "main".to_owned()];
+    for good in [
+        "refs/heads/trunk",
+        "refs/heads/main",
+        "refs/heads/vivi/need/n1",
+        "refs/heads/vivi/need-prior/n1-r2",
+        "refs/heads/pump/merge-main/default-job-1",
+    ] {
+        assert!(
+            validate_publish(Some(&merge), Some(good), None, &mains).is_ok(),
+            "{good}"
+        );
+    }
+    for bad in [
+        "refs/heads/next",
+        "refs/heads/vivi/need/a/b",
+        "refs/heads/vivi/need/",
+        "refs/heads/vivi/need-prior/a/b",
+        "refs/heads/pump/merge-main/a/b",
+        "refs/heads/vivi/unit/x",
+        "refs/heads/vivi/repair/x",
+    ] {
+        assert!(
+            validate_publish(Some(&merge), Some(bad), None, &mains).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_merge_role_may_not_publish_main_when_the_configured_main_is_another_name() {
+    let merge = role("merge", Some("merge"), None);
+    let mains = vec!["trunk".to_owned()];
+    assert!(validate_publish(Some(&merge), Some("refs/heads/trunk"), None, &mains).is_ok());
+    assert!(validate_publish(Some(&merge), Some("refs/heads/main"), None, &mains).is_err());
+    assert!(validate_publish(Some(&merge), Some("refs/heads/main"), None, &[]).is_err());
 }
