@@ -7,13 +7,14 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    AttemptResult, DEVIATIONS_CAP, DEVIATIONS_CUT, DEVIATIONS_MARKER, EXAMPLE_BLOCKED,
-    EXAMPLE_BUILT, MAX_ATTEMPTS, Retried, SliceMail, classify, classify_corrected, contract,
-    dispatch, redispatch_scope, retry,
+    AttemptResult, DEVIATIONS_CAP, DEVIATIONS_CUT, EXAMPLE_BLOCKED, EXAMPLE_BUILT, MAX_ATTEMPTS,
+    Retried, SliceMail, classify, classify_corrected, contract, dispatch, redispatch_scope, retry,
 };
 use crate::error::VivariumError;
 use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::parse;
 use crate::pump::envelope::roles::Hand;
@@ -157,8 +158,10 @@ impl Rig {
 
     /// Close `slice` merged and post its deviations.
     fn land(&mut self, slice: &StepRow, deviations: &str) -> R {
-        self.mail
-            .reply(&slice.task, &format!("{DEVIATIONS_MARKER} {deviations}"))?;
+        self.mail.reply(
+            &slice.task,
+            &note_body(NoteWord::Deviations, None, deviations)?,
+        )?;
         self.mail.close_task(&slice.task, "merged", None, None)
     }
 
@@ -396,10 +399,10 @@ fn deviations_of_merged_siblings_come_newest_first_and_skip_unmerged_ones() -> R
     rig.land(&b, "the new one")?;
     rig.mail.reply(
         &c.task,
-        &format!("{DEVIATIONS_MARKER} from an unmerged slice"),
+        &note_body(NoteWord::Deviations, None, "from an unmerged slice")?,
     )?;
     rig.mail
-        .reply(&me.task, &format!("{DEVIATIONS_MARKER} my own"))?;
+        .reply(&me.task, &note_body(NoteWord::Deviations, None, "my own")?)?;
 
     let id = rig.dispatch(&me, 1)?;
     let body = &rig.job(&id).body;
@@ -678,27 +681,25 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
         )
         .unwrap();
     let stamped = |marker: &str, rest: &str| crate::mailspace::marked_line(marker, rest);
-    port.reply(&task, &stamped("pump-deviations:", "first"))
-        .unwrap();
+    port.reply(&task, &stamped("pump-brief:", "first")).unwrap();
     port.reply(&task, &stamped("pump-attempt:", "not a deviation"))
         .unwrap();
-    port.reply(&task, &stamped("pump-deviations:", "second"))
+    port.reply(&task, &stamped("pump-brief:", "second"))
         .unwrap();
-    port.reply(&task, &stamped("pump-deviations:", "third"))
-        .unwrap();
+    port.reply(&task, &stamped("pump-brief:", "third")).unwrap();
 
     assert_eq!(
         crate::pump::flow::fanout::target_of(&port.task_body(&task).unwrap()).as_deref(),
         Some("vivi")
     );
-    let found = port.marked_replies(&task, DEVIATIONS_MARKER).unwrap();
+    let found = port.marked_replies(&task, "pump-brief:").unwrap();
     let texts: Vec<&str> = found.iter().map(|(_, text)| text.as_str()).collect();
     assert_eq!(
         texts,
         [
-            "pump-deviations: first",
-            "pump-deviations: second",
-            "pump-deviations: third"
+            "pump-brief: first",
+            "pump-brief: second",
+            "pump-brief: third"
         ]
     );
 }
