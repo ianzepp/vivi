@@ -11,11 +11,15 @@ use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fanout::{VERDICT_MERGED, slice_node};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::reslice;
+use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const NEED: &str = "n1";
@@ -206,5 +210,105 @@ fn a_reslice_job_of_the_run_counts_and_another_runs_job_does_not() -> Result<(),
     assert!(!text.contains("reslice-other"));
     assert!(!text.contains("stray-hand-job"));
     assert_eq!(rig.raised(), 1);
+    Ok(())
+}
+
+/// A Pending slice row `id` on a sent task, linked to `deps`; returns the task.
+fn slice(rig: &mut Rig, id: &str, deps: &[String]) -> Result<String, VivariumError> {
+    let task = rig.mail.send_step("mind", "mind", id, "body", &[])?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: slice_node(id),
+            task: task.clone(),
+            state: StepState::Pending,
+            verdict: None,
+        },
+    )?;
+    rig.store.link_slice(&SliceLink {
+        task: task.clone(),
+        need: NEED.into(),
+        run: 1,
+        fanout: None,
+        deps: deps.to_vec(),
+    })?;
+    Ok(task)
+}
+
+fn settle_plain_rows(rig: &Rig) -> Result<(), VivariumError> {
+    for task in ["P-s", "A-s"] {
+        rig.store.set_step_state(task, StepState::Running, None)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_slice_waiting_on_an_open_dep_raises_nothing_until_the_dep_closes_merged()
+-> Result<(), VivariumError> {
+    let mut rig = rig("s")?;
+    settle_plain_rows(&rig)?;
+    let dep = slice(&mut rig, "dep", &[])?;
+    rig.store.set_step_state(&dep, StepState::Running, None)?;
+    slice(&mut rig, "late", std::slice::from_ref(&dep))?;
+    rig.tick()?;
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0, "a waiting slice is not held");
+    rig.mail.close_task(&dep, VERDICT_MERGED, None, None)?;
+    rig.tick()?;
+    rig.host.advance(past_limit(&rig) - 2);
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0, "the budget starts when the slice is ready");
+    rig.host.advance(2);
+    rig.tick()?;
+    assert_eq!(rig.raised(), 1);
+    rig.tick()?;
+    assert_eq!(rig.raised(), 1, "raised once");
+    Ok(())
+}
+
+#[test]
+fn a_dep_closed_with_another_verdict_keeps_the_slice_waiting() -> Result<(), VivariumError> {
+    let mut rig = rig("s")?;
+    settle_plain_rows(&rig)?;
+    let dep = slice(&mut rig, "dep", &[])?;
+    rig.store.set_step_state(&dep, StepState::Running, None)?;
+    slice(&mut rig, "late", std::slice::from_ref(&dep))?;
+    rig.mail.close_task(&dep, "failed", None, None)?;
+    rig.tick()?;
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_scope_wait_slice_raises_nothing() -> Result<(), VivariumError> {
+    let mut rig = rig("s")?;
+    settle_plain_rows(&rig)?;
+    let wait = slice(&mut rig, "w", &[])?;
+    let rework = slice(&mut rig, "r", &[])?;
+    rig.store.insert_slice_scope(&wait, 1, &[])?;
+    rig.store.insert_slice_scope(&rework, 1, &[])?;
+    rig.store.set_scope_state(&wait, ScopeState::Wait)?;
+    rig.store.set_scope_state(&rework, ScopeState::Rework)?;
+    rig.tick()?;
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_ready_slice_and_a_non_slice_pending_row_still_raise() -> Result<(), VivariumError> {
+    let mut rig = rig("s")?;
+    slice(&mut rig, "free", &[])?;
+    rig.tick()?;
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    assert_eq!(rig.raised(), 2, "the Pending plan row and the ready slice");
     Ok(())
 }
