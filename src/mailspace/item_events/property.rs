@@ -41,7 +41,7 @@
 //! mailspace's own is a claim anyone can make: it is filed as plain mail
 //! and counted ignored.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mail_parser::{HeaderValue, MessageParser};
 
@@ -64,6 +64,8 @@ const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 const EVENT_STATE_HEADER: &str = "X-Vivi-Event-State";
 const VERDICT_HEADER: &str = "X-Vivi-Verdict";
 const REPO_HEADER: &str = "X-Vivi-Repo";
+const BRANCH_HEADER: &str = "X-Vivi-Branch";
+const COMMIT_HEADER: &str = "X-Vivi-Commit";
 /// Paired on an event letter to clear the latest branch/commit metadata.
 pub(super) const PROVENANCE_CLEAR_SENTINEL: &str = "-";
 
@@ -242,9 +244,9 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
             && let Some((repo, tip)) = text.trim().split_once('=')
         {
             values.push((format!("repo:{}", repo.trim()), tip.trim().to_string()));
-        } else if name.eq_ignore_ascii_case("X-Vivi-Branch") {
+        } else if name.eq_ignore_ascii_case(BRANCH_HEADER) {
             branch = Some(text.trim().to_string());
-        } else if name.eq_ignore_ascii_case("X-Vivi-Commit") {
+        } else if name.eq_ignore_ascii_case(COMMIT_HEADER) {
             commit = Some(text.trim().to_string());
         }
     }
@@ -337,10 +339,11 @@ pub(super) fn store_letter_verdicts(
         .into_iter()
         .map(|(key, verdict)| (key, verdict.value))
         .collect();
-    for row in &item.rows {
-        if row.absorbed_at.is_none() && !winners.is_empty() {
-            storage.set_item_metadata(&row.message_id, &winners)?;
-        }
+    if winners.is_empty() {
+        return Ok(());
+    }
+    for row in item.rows.iter().filter(|row| row.absorbed_at.is_none()) {
+        storage.set_item_metadata(&row.message_id, &winners)?;
     }
     Ok(())
 }
@@ -519,8 +522,7 @@ impl Mailspace {
         }
         tally.applied += usize::from(bound);
         if bound {
-            let need_source = need.source_id.clone();
-            self.backlog_complete_if_join_complete(&need_source, &mut Vec::new())?;
+            self.backlog_complete_if_join_complete(&need.source_id, &mut Vec::new())?;
         }
         Ok(())
     }
@@ -584,8 +586,7 @@ impl Mailspace {
         tally: &mut EventTally,
     ) -> Result<(), VivariumError> {
         let mut inputs: Vec<MailspaceEventInput> = Vec::new();
-        for letter in newest_mark_letters(events) {
-            let slug = letter.slug.as_deref().unwrap_or_default();
+        for (slug, letter) in newest_mark_letters(events) {
             let marked = letter.kind == PropertyKind::Marked;
             for row in &item.rows {
                 if row.absorbed_at.is_some() && !sealed_too {
@@ -602,7 +603,7 @@ impl Mailspace {
 
 /// The newest `marked`/`unmarked` letter per slug by `(at, Message-ID)`,
 /// sorted by slug: the one whose word the row's folded marks follow.
-fn newest_mark_letters(events: &[PropertyEvent]) -> Vec<&PropertyEvent> {
+fn newest_mark_letters(events: &[PropertyEvent]) -> Vec<(&str, &PropertyEvent)> {
     let mut newest: BTreeMap<&str, &PropertyEvent> = BTreeMap::new();
     for event in events {
         if !matches!(event.kind, PropertyKind::Marked | PropertyKind::Unmarked) {
@@ -618,7 +619,7 @@ fn newest_mark_letters(events: &[PropertyEvent]) -> Vec<&PropertyEvent> {
             newest.insert(slug, event);
         }
     }
-    newest.into_values().collect()
+    newest.into_iter().collect()
 }
 
 /// The local mark event `row` needs to match `marked` for `slug`, or `None`
@@ -679,14 +680,14 @@ fn item_node(
 /// of the held mail; a letter that names no unit is never parsed.
 pub(super) fn needs_naming_units(
     storage: &Storage,
-    units: &std::collections::BTreeSet<String>,
-) -> Result<std::collections::BTreeSet<String>, VivariumError> {
-    let mut needs = std::collections::BTreeSet::new();
+    units: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, VivariumError> {
+    let mut needs = BTreeSet::new();
     if units.is_empty() {
         return Ok(needs);
     }
     let marker = EVENT_UNIT_HEADER.to_ascii_lowercase().into_bytes();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     for view in storage.list_messages()? {
         if !seen.insert(view.content_id.clone()) {
             continue;
