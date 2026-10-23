@@ -322,10 +322,12 @@ fn the_need_stays_open_until_the_sentinel_closes_whatever_the_letter_order() {
 /// its record, posts (when `post`) and closes the need; the member receives
 /// the letters and returns the need's folded state there.
 fn member_authored_close(post: bool) -> Option<String> {
-    // Both members share the project's `[pump] from`.
+    // Both members share the project's `[pump]` identity: `reply_from` is the
+    // pump identity; `from` is the record's sender and must be a hub role.
     let pump_config = || {
         Some(crate::pump::config::PumpConfig {
             from: "pump".into(),
+            reply_from: "pump".into(),
             ..crate::pump::config::PumpConfig::default()
         })
     };
@@ -333,7 +335,9 @@ fn member_authored_close(post: bool) -> Option<String> {
     hub.mailspace.config.pump = pump_config();
     let mut member = member();
     member.mailspace.config.pump = pump_config();
-    let need = member.send_need("mind", &hub.address("mind"), "run the flow");
+    // Addressed to the pump identity (the board only plans needs sent to it),
+    // delegated to the hub's mind.
+    let need = member.send_need("mind", &hub.address("pump"), "run the flow");
     member
         .mailspace
         .assign_need("mind", &need, &hub.address("mind"))
