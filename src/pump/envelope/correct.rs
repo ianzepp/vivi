@@ -162,6 +162,9 @@ fn fields(kind: RoleKind) -> &'static str {
         RoleKind::Hand => {
             "hand: answer = \"built\" | \"blocked-scope\" | \"failed\"; change (list); [[check]] {cmd, result = pass | fail | skipped, seconds}; deviations (list); [[follow_up]] {paths (list), need}; remaining (list); scope_paths (list, required for blocked-scope); scope_reason (string, required for blocked-scope); scope_design (bool)"
         }
+        RoleKind::Repairer => {
+            "repairer: answer = \"built\" | \"failed\"; change (list); [[check]] {cmd, result = pass | fail | skipped, seconds}; deviations (list). No sha, ref, commit or exit code."
+        }
         RoleKind::HeadCeo => {
             "head-ceo: answer = \"reviewed\" | \"no-op\"; promoted, research, dropped (lists of handles)"
         }

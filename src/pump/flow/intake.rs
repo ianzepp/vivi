@@ -37,9 +37,6 @@ const START_STUCK_SECS: u64 = 600;
 /// Run states that occupy a slot under the cap or block a new run.
 const RUN_LIVE: &str = "live";
 
-/// The mark that keeps a need out of intake until N7 retires it.
-const MARK_INVESTIGATE: &str = "investigate";
-
 /// Registry hook: the intake phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     registry.phase(Box::new(Intake));
@@ -169,8 +166,8 @@ fn in_flight<M: FlowMail>(
     Ok((active, busy))
 }
 
-/// The needs with an open record, an open need state, no run in flight, and
-/// no `investigate` mark, with their rank inputs.
+/// The needs with an open record, an open need state, and no run in flight,
+/// with their rank inputs.
 fn candidates<M: FlowMail>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -183,9 +180,6 @@ fn candidates<M: FlowMail>(
             continue;
         }
         let marks = mail.need_marks(&need)?;
-        if marks.iter().any(|m| m == MARK_INVESTIGATE) {
-            continue;
-        }
         let body = MailReader::open_record(mail, &need)?.map(|(_, body)| body);
         let (flow_kind, _) = kind::of(body.as_deref(), &marks);
         if let Err(error) = load(flow_kind) {

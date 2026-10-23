@@ -357,21 +357,6 @@ fn an_unreadable_need_list_keeps_what_the_other_list_gave() {
 }
 
 #[test]
-fn investigation_marked_needs_are_routed_out_of_normal_planning() {
-    let (_dir, ctx, host) = setup();
-    open_records(&host, &["i1"]);
-    let investigation = row("i1", "2026-10-15", "Investigate want w1", &["investigate"]);
-    host.reply("--held", 0, &list(&[investigation.clone()]));
-    host.reply("--json --to mind", 0, &list(&[investigation]));
-    let rows = candidate_rows(&ctx);
-    assert!(rows.is_empty(), "investigation needs use the auditor route");
-    assert!(
-        !host.logs().join("\n").contains("names no open need"),
-        "an investigation need is not reported as missing"
-    );
-}
-
-#[test]
 fn read_skip_reads_whitespace_separated_handles() {
     let (_dir, ctx, _host) = setup();
     assert_eq!(read_skip(&ctx), BTreeSet::new());

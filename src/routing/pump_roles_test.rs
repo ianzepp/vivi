@@ -2,7 +2,7 @@ use super::*;
 use crate::mailspace::MailspaceConfig;
 use crate::routing::Severity;
 
-const FLOW_ROLES: [&str; 3] = ["researcher", "admitter", "slicer"];
+const FLOW_ROLES: [&str; 4] = ["researcher", "admitter", "slicer", "repairer"];
 
 fn config(roles: &[(&str, &str)]) -> MailspaceConfig {
     let mut text = String::from("name = \"t\"\n");
@@ -73,6 +73,7 @@ fn flow_roles_with_a_pool_meet_the_requirement() {
         ("researcher", "pool = \"p\"\nmodel = \"P2\""),
         ("admitter", "pool = \"p\"\nmodel = \"P2\""),
         ("slicer", "pool = \"p\"\nmodel = \"P2\""),
+        ("repairer", "pool = \"p\"\nmodel = \"P2\""),
     ]);
     for role in FLOW_ROLES {
         assert!(check_of(&config, role).issues.is_empty(), "{role}");
@@ -83,6 +84,52 @@ fn flow_roles_with_a_pool_meet_the_requirement() {
             "{role} model"
         );
     }
+}
+
+#[test]
+fn a_repairer_without_a_pool_is_a_warning() {
+    let config = config(&[("repairer", "")]);
+    let check = check_of(&config, "repairer");
+    assert_eq!(check.issues.len(), 1, "{:?}", check.issues);
+    assert_eq!(check.issues[0].severity, Severity::Warning);
+    assert!(check.issues[0].message.contains("must name a pool"));
+}
+
+fn repairer_config(extra: &str) -> MailspaceConfig {
+    let mut config = config(&[("repairer", extra)]);
+    let role = config
+        .identities
+        .iter_mut()
+        .find(|identity| identity.name == "repairer")
+        .expect("repairer identity");
+    role.kind = Some("hand".to_string());
+    config
+}
+
+#[test]
+fn a_repairer_of_the_wrong_kind_is_an_error() {
+    let config = repairer_config("pool = \"p\"\nmodel = \"P2\"");
+    let check = check_of(&config, "repairer");
+    assert!(
+        check.issues.iter().any(|issue| {
+            issue.severity == Severity::Error && issue.message.contains("kind = \"repairer\"")
+        }),
+        "{:?}",
+        check.issues
+    );
+}
+
+#[test]
+fn a_read_only_repairer_is_an_error() {
+    let config = config(&[("repairer", "pool = \"p\"\nmodel = \"P2\"\nread_only = true")]);
+    let check = check_of(&config, "repairer");
+    assert!(
+        check.issues.iter().any(|issue| {
+            issue.severity == Severity::Error && issue.message.contains("read-only")
+        }),
+        "{:?}",
+        check.issues
+    );
 }
 
 #[test]
