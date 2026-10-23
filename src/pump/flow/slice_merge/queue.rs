@@ -8,8 +8,10 @@ use crate::error::VivariumError;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_merge::spec::{self, KIND};
-use crate::pump::flow::tick::raise_once;
+use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
+use crate::pump::flow::verify;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
@@ -49,6 +51,9 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
                     row.node, run.need
                 ),
             );
+            // A start error holds the slice for the operator: it is never
+            // retried tick after tick.
+            store.set_step_state(&row.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
         }
     }
     Ok(())
@@ -85,9 +90,38 @@ fn start<S: JobStore, M: FlowMail>(
     let hand = spec::hand_job_of(st, &row.task).ok_or_else(|| {
         VivariumError::Other(format!("slice {} has no finished hand job", row.node))
     })?;
+    if let Some(tip) = already_merged(ctx, &*mail, run, row, &hand)? {
+        // Merged by ancestry on the need branch, a machine fact: no job and
+        // no check.
+        return fanout::close_slice_merged(
+            store,
+            mail,
+            &row.task,
+            &need_branch::branch(&run.need),
+            &tip,
+        );
+    }
     let job = spec::spec(ctx, store, &*mail, run, row, &hand)?;
     jobs::enqueue(st, job)?;
     store.set_step_state(&row.task, StepState::Running, None)
+}
+
+/// The need-branch tip when the hand's commit is already on the need branch.
+fn already_merged<M: FlowMail>(
+    ctx: &Ctx,
+    mail: &M,
+    run: &RunRow,
+    row: &StepRow,
+    hand: &PoolJob,
+) -> Result<Option<String>, VivariumError> {
+    let Some(sha) = spec::hand_commit(hand) else {
+        return Ok(None);
+    };
+    let body = mail.task_body(&row.task)?;
+    let target = fanout::target_of(&body)
+        .ok_or_else(|| VivariumError::Parse(format!("slice task {} names no target", row.task)))?;
+    let remote_ref = format!("refs/heads/{}", need_branch::branch(&run.need));
+    verify::ref_contains(ctx, target, &remote_ref, &sha).map_err(VivariumError::Other)
 }
 
 /// True while the slice row of `task` can still use a merge.
