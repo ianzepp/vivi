@@ -177,7 +177,9 @@ fn head_ceo_cadence_text_files_research_needs_and_asks_for_the_envelope() {
     ));
     assert!(text.contains("before `vivi pump send`"));
     assert!(text.contains("`reviewed` or `no-op`"));
-    assert!(text.contains("promoted"));
+    assert!(text.contains("served"));
+    assert!(text.contains("--serves <want-handle>"));
+    assert!(!text.contains("romot"));
     assert!(text.contains("Do not implement work."));
     assert!(text.contains("names in `explores`"));
     assert!(text.contains("at most two"));
