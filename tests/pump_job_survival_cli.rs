@@ -15,15 +15,11 @@ use vivi::pump::store::{DB_FILENAME, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
     ("planner-board", "planner:board", "pump-planner"),
-    ("merge-default-1", "merge", "merge"),
     ("gate-survival", "gate", "gate"),
     ("audit-survival", "audit", "auditor"),
     ("promote-survival", "promote", "release"),
     ("cadence-survival", "cadence", "mind"),
     ("digest-survival", "digest", "digest"),
-    ("reclaim-survival", "reclaim", "hand"),
-    ("need-audit-survival", "need-audit", "auditor"),
-    ("need-merge-survival", "need-merge", "merge"),
 ];
 const UNIT: &str = "hand-survival";
 const TEST_HARNESS: &str = r#"#!/bin/sh
@@ -41,13 +37,6 @@ case "$kind" in
   planner:board)
     printf '%s\n' 'PUMP-PLAN-BEGIN' '{"need":"planner-survival","verdict":"hold","reason":"recovered once"}' 'PUMP-PLAN-END'
     ;;
-  merge)
-    printf 'survived merge\n' > .survival-merge.txt
-    git add .survival-merge.txt
-    git -c user.name='Survival Test' -c user.email=survival@localhost commit -q -m 'survival merge candidate'
-    candidate=$(git rev-parse HEAD)
-    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$candidate\",\"sources\":[]}"
-    ;;
   gate)
     printf '%s\n' 'FAILING-BEGIN' 'FAILING-END'
     ;;
@@ -62,19 +51,6 @@ case "$kind" in
     ;;
   digest)
     printf 'digest survived\n'
-    ;;
-  reclaim)
-    printf 'reclaim survived\n'
-    ;;
-  need-audit)
-    printf '%s\n' 'PUMP_NEED_AUDIT_RESULT={"version":1,"verdict":"clean_pass"}'
-    ;;
-  need-merge)
-    printf 'survived need landing\n' > .survival-landing.txt
-    git add .survival-landing.txt
-    git -c user.name='Survival Test' -c user.email=survival@localhost commit -q -m 'survival need landing'
-    candidate=$(git rev-parse HEAD)
-    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$candidate\",\"sources\":[]}"
     ;;
   hand)
     printf '%s\n' 'VERDICT: no-defect'
@@ -224,33 +200,23 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
         let receipt = &job.outcome.as_ref().unwrap().receipt;
         let marker = match job.kind.as_str() {
             "planner:board" => "PUMP-PLAN-BEGIN",
-            "merge" | "need-merge" => "PUMP_MERGE_RESULT=",
             "gate" => "FAILING-BEGIN",
             "audit" => "AUDIT-BEGIN",
             "promote" => "PUMP_PROMOTE_RESULT=",
             "cadence" => "cadence survived",
             "digest" => "digest survived",
-            "reclaim" => "reclaim survived",
-            "need-audit" => "PUMP_NEED_AUDIT_RESULT=",
             other => panic!("unexpected seeded job kind {other}"),
         };
         assert!(
             receipt.contains(marker),
             "{id} has the wrong saved receipt: {receipt}"
         );
-        if job.kind != "need-audit" {
-            assert!(job.applied_at.is_some(), "{id} receipt was not applied");
-        }
-        if matches!(job.kind.as_str(), "merge" | "promote") {
+        assert!(job.applied_at.is_some(), "{id} receipt was not applied");
+        if job.kind == "promote" {
             let publication = job.outcome.as_ref().unwrap().runner_publish().unwrap();
             assert!(publication.succeeded(), "{id}: {publication:?}");
             assert_eq!(
-                publication.reference,
-                if job.kind == "merge" {
-                    "refs/heads/next"
-                } else {
-                    "refs/heads/main"
-                },
+                publication.reference, "refs/heads/main",
                 "{id} published the wrong integration ref"
             );
             assert_eq!(publication.candidate, publication.remote_sha);
@@ -410,12 +376,8 @@ fn seed_state(rig: &Rig) {
         spec.budget = 60;
         spec.read_only = matches!(
             *kind,
-            "planner:board" | "gate" | "audit" | "cadence" | "digest" | "reclaim" | "need-audit"
+            "planner:board" | "gate" | "audit" | "cadence" | "digest"
         );
-        if *kind == "merge" {
-            spec.branch = Some(String::from("pump/merge/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/next"));
-        }
         if *kind == "promote" {
             spec.branch = Some(String::from("pump/promotion/default/survival"));
             spec.publish_ref = Some(String::from("refs/heads/main"));
@@ -428,13 +390,6 @@ fn seed_state(rig: &Rig) {
                 "failing": [],
             });
         }
-        if *kind == "merge" {
-            spec.payload = serde_json::json!({
-                "version": 1,
-                "target": "default",
-                "integration_branch": "next",
-            });
-        }
         if *kind == "planner:board" {
             spec.payload = serde_json::json!({
                 "planner_output": {
@@ -442,10 +397,6 @@ fn seed_state(rig: &Rig) {
                     "plan": "plans/survival-plan.json",
                 }
             });
-        }
-        if *kind == "need-merge" {
-            spec.branch = Some(String::from("pump/need-merge/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/vivi/need/survival"));
         }
         jobs::enqueue(&mut st, spec).unwrap();
     }
@@ -523,10 +474,11 @@ fn dispatched(rig: &Rig) -> bool {
 
 fn applied(rig: &Rig) -> bool {
     let state = load_state(rig);
-    WORKERS.iter().all(|(id, kind, _)| {
-        state.jobs.get(*id).is_some_and(|job| {
-            job.status == JobStatus::Finished && (*kind == "need-audit" || job.applied_at.is_some())
-        })
+    WORKERS.iter().all(|(id, _, _)| {
+        state
+            .jobs
+            .get(*id)
+            .is_some_and(|job| job.status == JobStatus::Finished && job.applied_at.is_some())
     }) && state
         .units
         .get(UNIT)
