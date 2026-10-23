@@ -434,6 +434,12 @@ pub fn project_base_url(settings: &SyncSettings) -> String {
     format!("{}/v1/projects/{}", settings.server, settings.project)
 }
 
+/// The server's MCP endpoint: {server}/v1/mcp, with no trailing slash on `server`.
+#[must_use]
+pub fn server_mcp_url(server: &str) -> String {
+    format!("{server}/v1/mcp")
+}
+
 /// What a request carries: nothing, a JSON document, or raw bytes sent as-is
 /// (the caller sets `Content-Type`).
 enum Body {

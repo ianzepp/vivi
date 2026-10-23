@@ -214,6 +214,33 @@ pub fn result_text(result: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// Whether the tool called `name` in a `tools/list` array declares a
+/// `project` input property.
+#[must_use]
+pub fn takes_project(tools: &[Value], name: &str) -> bool {
+    tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        .and_then(|tool| tool.get("inputSchema"))
+        .and_then(|schema| schema.get("properties"))
+        .and_then(|properties| properties.get("project"))
+        .is_some()
+}
+
+/// The arguments with `"project": project` added when they carry no
+/// `project` key. An explicit `project` is kept; a non-object comes back
+/// unchanged.
+#[must_use]
+pub fn with_project(arguments: &Value, project: &str) -> Value {
+    let mut arguments = arguments.clone();
+    if let Some(object) = arguments.as_object_mut() {
+        object
+            .entry("project")
+            .or_insert_with(|| Value::String(project.to_string()));
+    }
+    arguments
+}
+
 /// Whether a tool result reports a tool failure.
 #[must_use]
 pub fn result_is_error(result: &Value) -> bool {
