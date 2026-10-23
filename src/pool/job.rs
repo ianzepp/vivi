@@ -9,9 +9,8 @@
 //! agent-visible `mcp.json`, which names the key only by reference, and the
 //! brief the worker reads is a pointer at the task on the server.
 
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use super::bridge::Grant;
 use super::config::PoolCommitter;
@@ -100,22 +99,25 @@ pub struct BodyRefs {
 #[must_use]
 pub fn body_refs(body: &str) -> BodyRefs {
     let mut refs = BodyRefs::default();
-    for line in body.lines() {
-        let line = line.trim().trim_start_matches(['-', '*']).trim();
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        if value.is_empty() || value.contains(char::is_whitespace) {
-            continue;
-        }
-        match key.trim().to_ascii_lowercase().as_str() {
+    for (key, value) in ref_lines(body) {
+        match key.to_ascii_lowercase().as_str() {
             "from" if refs.from.is_none() => refs.from = Some(value.to_string()),
             "branch" if refs.branch.is_none() => refs.branch = Some(value.to_string()),
             _ => {}
         }
     }
     refs
+}
+
+/// The `key: value` lines of a task body whose value is one word: lines are
+/// trimmed and a leading list dash is ignored.
+fn ref_lines(body: &str) -> impl Iterator<Item = (&str, &str)> {
+    body.lines().filter_map(|line| {
+        let line = line.trim().trim_start_matches(['-', '*']).trim();
+        let (key, value) = line.split_once(':')?;
+        let value = value.trim();
+        (!value.is_empty() && !value.contains(char::is_whitespace)).then_some((key.trim(), value))
+    })
 }
 
 /// Where to start and where to push, after flags and body are merged. A
@@ -179,16 +181,9 @@ pub fn resolve_refs(
 /// list-dash rules as [`body_refs`], but every line counts.
 #[must_use]
 pub fn body_with_refs(body: &str) -> Vec<String> {
-    body.lines()
-        .filter_map(|line| {
-            let line = line.trim().trim_start_matches(['-', '*']).trim();
-            let (key, value) = line.split_once(':')?;
-            let value = value.trim();
-            (key.trim().eq_ignore_ascii_case("with")
-                && !value.is_empty()
-                && !value.contains(char::is_whitespace))
-            .then(|| value.to_string())
-        })
+    ref_lines(body)
+        .filter(|(key, _)| key.eq_ignore_ascii_case("with"))
+        .map(|(_, value)| value.to_string())
         .collect()
 }
 
@@ -415,6 +410,16 @@ pub struct BundleFile {
     pub mode: u32,
 }
 
+impl BundleFile {
+    fn new(name: &'static str, content: &str, mode: u32) -> Self {
+        Self {
+            name,
+            content: content.as_bytes().to_vec(),
+            mode,
+        }
+    }
+}
+
 /// The files of one job.
 #[derive(Debug, Clone)]
 pub struct Bundle {
@@ -446,14 +451,10 @@ pub fn sh_quote(value: &str) -> String {
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     let mut params: String = params_fields(spec, slot)
         .into_iter()
-        .map(|(k, v)| format!("{k}={}\n", sh_quote(&v)))
+        .map(|(k, v)| env_line(k, &v))
         .collect();
     params.push_str(&ramdisk_params(spec));
-    let file = |name, content: &str, mode| BundleFile {
-        name,
-        content: content.as_bytes().to_vec(),
-        mode,
-    };
+    let file = BundleFile::new;
     let mut files = vec![
         file("run.sh", RUNNER, 0o700),
         file("params.env", &params, 0o600),
@@ -512,17 +513,18 @@ fn ramdisk_params(spec: &JobPlan) -> String {
     }
     fields
         .into_iter()
-        .map(|(key, value)| format!("{key}={}\n", sh_quote(&value)))
+        .map(|(key, value)| env_line(&key, &value))
         .collect()
+}
+
+/// One `KEY='value'` line of a shell-sourced file.
+fn env_line(key: &str, value: &str) -> String {
+    format!("{key}={}\n", sh_quote(value))
 }
 
 /// Repository metadata and preparation scripts delivered only for target jobs.
 fn target_files(target: &super::dispatch::target::JobTarget) -> Vec<BundleFile> {
-    let file = |name, content: &str| BundleFile {
-        name,
-        content: content.as_bytes().to_vec(),
-        mode: 0o600,
-    };
+    let file = |name, content: &str| BundleFile::new(name, content, 0o600);
     vec![
         file("checkout-key", &target.cache_key),
         file("target-id", &target.id),
@@ -630,7 +632,7 @@ fn append_target_fields(fields: &mut Vec<ParamField>, spec: &JobPlan) {
 /// per extra checkout. Root-only like `params.env`; the tokens in it are read
 /// by the runner and never reach the agent.
 fn extras_env(extras: &[ExtraCheckout]) -> String {
-    let mut text = format!("EXTRA_COUNT={}\n", sh_quote(&extras.len().to_string()));
+    let mut text = env_line("EXTRA_COUNT", &extras.len().to_string());
     for (index, extra) in extras.iter().enumerate() {
         let target = &extra.target;
         for (name, value) in [
@@ -641,7 +643,7 @@ fn extras_env(extras: &[ExtraCheckout]) -> String {
             ("LOCAL_SOURCE", target.local_source.as_deref().unwrap_or("")),
             ("TOKEN", extra.token.expose()),
         ] {
-            text.push_str(&format!("EXTRA_{index}_{name}={}\n", sh_quote(value)));
+            text.push_str(&env_line(&format!("EXTRA_{index}_{name}"), value));
         }
     }
     text
@@ -677,11 +679,7 @@ pub fn lf(text: &str) -> String {
 /// the root-only key, and the agent-visible MCP configuration that names the
 /// key only by reference.
 fn bridge_files(bridge: &Grant) -> Vec<BundleFile> {
-    let file = |name, content: &str, mode| BundleFile {
-        name,
-        content: content.as_bytes().to_vec(),
-        mode,
-    };
+    let file = BundleFile::new;
     vec![
         file("bridge.key", bridge.key.expose(), 0o600),
         file(
@@ -705,8 +703,7 @@ pub fn pack(bundle: &Bundle) -> Result<Vec<u8>, VivariumError> {
     std::fs::set_permissions(&job, std::fs::Permissions::from_mode(0o700))?;
     for file in &bundle.files {
         let path = job.join(file.name);
-        let mut handle = std::fs::File::create(&path)?;
-        handle.write_all(&file.content)?;
+        std::fs::write(&path, &file.content)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(file.mode))?;
     }
     let output = Command::new("tar")
@@ -714,8 +711,6 @@ pub fn pack(bundle: &Bundle) -> Result<Vec<u8>, VivariumError> {
         .args(["-czf", "-", "-C"])
         .arg(dir.path())
         .arg("job")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .output()
         .map_err(|e| VivariumError::Message(format!("failed to run tar: {e}")))?;
     if !output.status.success() {
