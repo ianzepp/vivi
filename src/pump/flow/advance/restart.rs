@@ -54,6 +54,7 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
     old: &RunRow,
     entry: &str,
 ) -> Result<RunRow, VivariumError> {
+    store.set_restart_entry(&old.need, old.run, entry)?;
     store.set_run_state(&old.need, old.run, RUN_RESTARTING)?;
     let next = start(ctx, store, mail, &old.need, Some(entry))?;
     supersede(store, mail, old)?;
@@ -62,11 +63,12 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
 
 /// Finish a restart left `restarting`: the newer run of the same need
 /// (starting or live) is the restart target; resume it if it is still
-/// starting, then finish the closes.
+/// starting, then finish the closes. With no newer run (the start failed
+/// before it wrote a run row), start one at the entry [`restart`] recorded.
 ///
 /// # Errors
-/// Returns a [`VivariumError`] when no newer run exists (the entry is
-/// unknown), or a start, close or store call fails.
+/// Returns a [`VivariumError`] when no newer run exists and no entry was
+/// recorded, or a start, close or store call fails.
 pub(crate) fn resume<M: MailWriter + MailReader>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -77,15 +79,21 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
         .runs_of(&old.need)?
         .into_iter()
         .filter(|row| row.run > old.run && (row.state == RUN_STARTING || row.state == RUN_LIVE))
-        .max_by_key(|row| row.run)
-        .ok_or_else(|| {
-            VivariumError::Message(format!(
-                "need {} r{}: restarting but no newer run exists, so its entry is unknown",
-                old.need, old.run
-            ))
-        })?;
-    if newer.state == RUN_STARTING {
-        start(ctx, store, mail, &old.need, Some(&newer.entry))?;
+        .max_by_key(|row| row.run);
+    match newer {
+        Some(row) if row.state == RUN_STARTING => {
+            start(ctx, store, mail, &old.need, Some(&row.entry))?;
+        }
+        Some(_) => {}
+        None => {
+            let entry = store.restart_entry(&old.need, old.run)?.ok_or_else(|| {
+                VivariumError::Message(format!(
+                    "need {} r{}: restarting but no newer run exists, so its entry is unknown",
+                    old.need, old.run
+                ))
+            })?;
+            start(ctx, store, mail, &old.need, Some(&entry))?;
+        }
     }
     supersede(store, mail, old)
 }
@@ -301,3 +309,7 @@ fn list_abandoned<M: FlowMail>(
 #[cfg(test)]
 #[path = "restart_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "restart_entry_test.rs"]
+mod entry_tests;
