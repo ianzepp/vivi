@@ -81,3 +81,50 @@ pub trait MailReader {
     /// How many run sentinels the need has.
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError>;
 }
+
+impl MailWriter for MailspacePort {
+    fn send_step(
+        &mut self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
+        depends_on: &[String],
+    ) -> Result<String, VivariumError> {
+        MailspacePort::send_step(self, from, to, subject, body, depends_on)
+    }
+
+    fn bind(&mut self, need: &str, units: &[String]) -> Result<(), VivariumError> {
+        MailspacePort::bind(self, need, units)
+    }
+
+    fn reply(&mut self, handle: &str, body: &str) -> Result<(), VivariumError> {
+        MailspacePort::reply(self, handle, body)
+    }
+
+    fn close_task(
+        &mut self,
+        handle: &str,
+        verdict: &str,
+        branch: Option<&str>,
+        commit: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        MailspacePort::close_task(self, handle, verdict, branch, commit)
+    }
+
+    fn reopen_task(&mut self, handle: &str) -> Result<(), VivariumError> {
+        MailspacePort::reopen_task(self, handle)
+    }
+
+    fn close_need(&mut self, need: &str, note: &str) -> Result<(), VivariumError> {
+        MailspacePort::close_need(self, need, note)
+    }
+
+    fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
+        self.open_pump_record(need, body)
+    }
+
+    fn close_record(&mut self, need: &str, outcome: &str) -> Result<(), VivariumError> {
+        self.close_pump_record(need, outcome)
+    }
+}
