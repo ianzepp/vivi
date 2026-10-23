@@ -14,6 +14,7 @@ fn fresh_project() -> tempfile::TempDir {
     space.ensure_merge_role().unwrap();
     space.ensure_pump_planner_role().unwrap();
     space.ensure_starter_pump().unwrap();
+    control::set_project_mode(tmp.path(), control::PumpMode::Running).unwrap();
     tmp
 }
 
