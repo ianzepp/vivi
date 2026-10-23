@@ -443,8 +443,9 @@ impl Mailspace {
     /// * The domain is the item author's own domain: the event counts.
     /// * The item has a delegation history, so another member's word is
     ///   narrowed: it counts only from a role named `operator`, from the
-    ///   pump identity ([`Self::remote_pump_speaks`]), or from the item's
-    ///   delegate.
+    ///   pump identity ([`Self::remote_pump_speaks`]: only the full address of
+    ///   the earliest non-event letter on the need's thread sent by the pump
+    ///   identity's role), or from the item's delegate.
     /// * The domain is another member's prefix domain (`<8 hex>.local`):
     ///   the event counts. The receiver cannot see that mailspace's roles;
     ///   the writing CLI there enforced the same rule, and the sync
