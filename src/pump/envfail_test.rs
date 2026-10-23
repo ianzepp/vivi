@@ -2,10 +2,7 @@
 //! real dispatch evidence.
 
 use super::attempt_record::sections_tail;
-use super::envfail::{
-    HOST_FAIL_WINDOW, HOST_PAUSE_AFTER, HOST_PUSH_OUTCOMES, classify, missing_tool, timed_out,
-    timeout_seconds,
-};
+use super::envfail::{HOST_PUSH_OUTCOMES, classify, missing_tool, timed_out, timeout_seconds};
 
 /// A task receipt as the pool writes it: summary lines, then sections.
 fn receipt(exit: i32, message: &str, stderr: &str) -> String {
@@ -224,8 +221,6 @@ fn missing_tool_by_code_and_text() {
 
 #[test]
 fn constants_match_the_plan() {
-    assert_eq!(HOST_FAIL_WINDOW, 300);
-    assert_eq!(HOST_PAUSE_AFTER, 2);
     assert_eq!(HOST_PUSH_OUTCOMES.len(), 10);
     assert!(HOST_PUSH_OUTCOMES.contains(&"checkout_failed"));
     assert!(HOST_PUSH_OUTCOMES.contains(&"target_worktree_missing"));
