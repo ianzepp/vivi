@@ -150,3 +150,7 @@ pub(crate) fn latest_facts(
 #[cfg(test)]
 #[path = "repair_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "repair_flow_test.rs"]
+mod flow_tests;
