@@ -82,7 +82,6 @@ pub struct PumpHealth {
     pub units: std::collections::BTreeMap<String, usize>,
     pub merges: Merges,
     pub blocked: Vec<BlockedView>,
-    pub planner_parked: Vec<String>,
     pub complete_open_needs: Vec<CloseoutRow>,
     pub exceptions: Vec<ExceptionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -176,7 +175,6 @@ fn blank(now: u64, tick_secs: u64, opts: &HealthOptions) -> PumpHealth {
         units: std::collections::BTreeMap::new(),
         merges: Merges::default(),
         blocked: Vec::new(),
-        planner_parked: Vec::new(),
         complete_open_needs: Vec::new(),
         exceptions: Vec::new(),
         changed_since: None,
@@ -200,7 +198,6 @@ fn fill(
     out.units = state.counts();
     out.merges = views::merges(state);
     out.blocked = views::blocked(state, now);
-    out.planner_parked = state.board.planner_failed.clone();
     out.complete_open_needs = closeout::complete_open(mailspace, snapshot)?;
     let window = opts
         .since
@@ -230,7 +227,6 @@ fn signals(out: &PumpHealth) -> Signals {
         stuck: count("stuck"),
         quarantined: count("quarantined"),
         needs_replan: count("needs-replan"),
-        planner_parked: out.planner_parked.len(),
         stall_exceptions: out
             .exceptions
             .iter()

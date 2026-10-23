@@ -88,12 +88,11 @@ fn parked_work_and_stalls_each_give_a_reason() {
         stuck: 2,
         quarantined: 1,
         needs_replan: 1,
-        planner_parked: 1,
         stall_exceptions: 1,
         ..running()
     });
     assert_eq!(verdict, Verdict::Degraded);
-    assert_eq!(reasons.len(), 5, "{reasons:?}");
+    assert_eq!(reasons.len(), 4, "{reasons:?}");
     assert!(reasons.contains(&String::from("2 units stuck")));
 }
 

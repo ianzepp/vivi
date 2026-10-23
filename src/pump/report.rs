@@ -49,10 +49,6 @@ pub struct StateSummary {
     pub stuck: usize,
     pub exceptions: usize,
     pub inflight: usize,
-    /// Planners the board currently has in flight.
-    pub planning: usize,
-    /// Handles parked after exhausting planner retries.
-    pub planner_parked: usize,
 }
 
 /// One role's latest cadence run, for read-only board and status views.
@@ -170,8 +166,6 @@ impl Snapshot {
                 .values()
                 .filter(|record| record.amendment_pending)
                 .count(),
-            planning: self.state.board.planning.len(),
-            planner_parked: self.state.board.planner_failed.len(),
             units,
             complete,
             exceptions: self.exceptions.len(),

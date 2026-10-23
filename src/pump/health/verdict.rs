@@ -40,7 +40,6 @@ pub struct Signals {
     pub stuck: usize,
     pub quarantined: usize,
     pub needs_replan: usize,
-    pub planner_parked: usize,
     /// `stall-*` exceptions inside the window.
     pub stall_exceptions: usize,
 }
@@ -106,9 +105,6 @@ fn degraded_reasons(s: &Signals) -> Vec<String> {
         if count > 0 {
             out.push(format!("{count} units {state}"));
         }
-    }
-    if s.planner_parked > 0 {
-        out.push(format!("{} needs planner-parked", s.planner_parked));
     }
     if s.stall_exceptions > 0 {
         out.push(format!("{} stall exceptions in window", s.stall_exceptions));
