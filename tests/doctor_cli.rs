@@ -49,7 +49,7 @@ fn text(output: &Output) -> String {
     )
 }
 
-const FLOW_ROLES: [&str; 4] = ["researcher", "admitter", "slicer", "head-cto"];
+const FLOW_ROLES: [&str; 5] = ["researcher", "admitter", "slicer", "repairer", "head-cto"];
 
 /// Give the flow roles what a ready project has: a local pool that serves a
 /// band with a model, and each flow role assigned to that pool and band.

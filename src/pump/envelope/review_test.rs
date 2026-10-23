@@ -20,7 +20,7 @@ fn is_err(kind: RoleKind, front: &str) -> bool {
     parse_for(kind, &env(front)).is_err()
 }
 
-const ROLES: [RoleKind; 10] = [
+const ROLES: [RoleKind; 11] = [
     RoleKind::Researcher,
     RoleKind::Planner,
     RoleKind::Admitter,
@@ -30,6 +30,7 @@ const ROLES: [RoleKind; 10] = [
     RoleKind::Cto,
     RoleKind::Merge,
     RoleKind::Hand,
+    RoleKind::Repairer,
     RoleKind::HeadCeo,
 ];
 
@@ -302,7 +303,7 @@ fn mechanical_keys_are_refused_on_the_other_roles_too() {
             let base = match kind {
                 RoleKind::Planner => "planned",
                 RoleKind::Slicer => "escalate",
-                RoleKind::Hand => "built",
+                RoleKind::Hand | RoleKind::Repairer => "built",
                 RoleKind::Researcher => "READY",
                 RoleKind::Admitter => "admitted",
                 RoleKind::Auditor => "clean_pass",

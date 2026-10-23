@@ -911,6 +911,7 @@ fn the_pump_role_checks_name_each_requirement_for_doctor() {
             "researcher",
             "admitter",
             "slicer",
+            "repairer",
             "merge",
             "merge kind",
             "auditor",

@@ -82,7 +82,7 @@ fn entries(kind: FlowKind) -> Vec<String> {
         FlowKind::Build => &["plan", "research", "slice", "rework1"],
         FlowKind::Research => &["research"],
         FlowKind::Release => &["wait"],
-        FlowKind::Repair => &[],
+        FlowKind::Repair => &["fix1"],
     };
     names.iter().map(|name| (*name).to_string()).collect()
 }

@@ -221,7 +221,12 @@ fn shipped_registers_a_collector_for_every_step_class() -> Result<(), VivariumEr
         }
     }
     let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
-    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+    for kind in [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ] {
         let def = load(kind)?;
         for node in def.nodes.iter().filter(|n| n.class.is_step()) {
             assert!(

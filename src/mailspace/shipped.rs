@@ -22,6 +22,8 @@ pub const ADMITTER_ROLE: &str = "admitter";
 
 /// The role that cuts an admitted plan into slices.
 pub const SLICER_ROLE: &str = "slicer";
+/// The role that fixes a red main in the repair flow.
+pub const REPAIRER_ROLE: &str = "repairer";
 
 /// The shipped charter of the [`RESEARCHER_ROLE`] role.
 pub const RESEARCHER_CHARTER: &str =
@@ -33,6 +35,10 @@ pub const ADMITTER_CHARTER: &str =
 
 /// The shipped charter of the [`SLICER_ROLE`] role.
 pub const SLICER_CHARTER: &str = include_str!("../../skills/vivi/references/charters/slicer.md");
+
+/// The shipped charter of the [`REPAIRER_ROLE`] role.
+pub const REPAIRER_CHARTER: &str =
+    include_str!("../../skills/vivi/references/charters/repairer.md");
 
 /// The role the build flow sends its CTO step to.
 pub const HEAD_CTO_ROLE: &str = "head-cto";
@@ -51,6 +57,7 @@ pub fn shipped_charter(role: &str) -> Option<&'static str> {
         RESEARCHER_ROLE => Some(RESEARCHER_CHARTER),
         ADMITTER_ROLE => Some(ADMITTER_CHARTER),
         SLICER_ROLE => Some(SLICER_CHARTER),
+        REPAIRER_ROLE => Some(REPAIRER_CHARTER),
         HEAD_CTO_ROLE => Some(HEAD_CTO_CHARTER),
         _ => None,
     }
