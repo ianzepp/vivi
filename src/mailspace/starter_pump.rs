@@ -19,10 +19,6 @@ pub const STARTER_PUMP: &str = r#"
 # Git author and committer of every commit the pump makes.
 committer_name = ""
 committer_email = ""
-
-[pump.merge]
-# Checks run after every merge.
-shared_checks = []
 "#;
 
 impl Mailspace {

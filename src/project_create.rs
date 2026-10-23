@@ -50,7 +50,7 @@ pub struct ProjectCreate {
     /// Pool whose `remote_url` is set to the git URL. The pool must come from
     /// a base config above the projects root. `None` skips it.
     pub pool: Option<String>,
-    /// Integration branch (`[pump] branch`) and the repo's default branch.
+    /// The new repo's default branch.
     pub branch: String,
     /// Register the project for the pump supervisor.
     pub pump: bool,
@@ -317,8 +317,7 @@ fn register(
     })
 }
 
-/// Write `[pump] branch` and the pool's `remote_url` into the project's own
-/// config file.
+/// Write the pool's `remote_url` into the project's own config file.
 fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumError> {
     let path = plan.root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
     if let Some(pool) = &request.pool {
@@ -332,7 +331,6 @@ fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumErro
         }
     }
     config_edit::apply(&path, |doc| {
-        config_edit::table_at(doc.as_table_mut(), &["pump"])?["branch"] = value(&request.branch);
         if let Some(pool) = &request.pool {
             let table = config_edit::table_at(doc.as_table_mut(), &["pools", pool])?;
             table["remote_url"] = value(&plan.git_url);

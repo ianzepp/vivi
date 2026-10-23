@@ -7,7 +7,7 @@
 //! project in the second state is "not ready", not broken: filling the items
 //! in makes it ready with no other step.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
@@ -274,20 +274,8 @@ impl PumpConfig {
 
 /// The legacy `[pump.merge]` settings that are wrong when present.
 fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
-    if merge.batch == 0 {
-        found.invalid("[pump.merge] batch must be >= 1");
-    }
-    if merge.lanes == 0 {
-        found.invalid("[pump.merge] lanes must be >= 1");
-    }
-    if merge.need_parallel == 0 {
-        found.invalid("[pump.merge] need_parallel must be >= 1");
-    }
-    if merge
-        .repair_budget
-        .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
-    {
-        found.invalid("[pump.merge] repair_budget must be >= proof_timeout and >= 1");
+    if merge.repair_budget == Some(0) {
+        found.invalid("[pump.merge] repair_budget must be >= 1");
     }
     for entry in &merge.generated {
         if entry.paths.is_empty() {
@@ -297,7 +285,6 @@ fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
             found.invalid("[[pump.merge.generated]] regenerate must not be empty");
         }
     }
-    validate_checks_for("[pump.merge.checks_for]", &merge.checks_for, found);
 }
 
 fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
@@ -327,23 +314,8 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {
     let prefix = format!("[pump.targets.{id}]");
-    if merge.is_some_and(|merge| merge.batch == 0) {
-        found.invalid(format!("{prefix}.merge batch must be >= 1"));
-    }
-    if merge.is_some_and(|merge| merge.lanes == 0) {
-        found.invalid(format!("{prefix}.merge lanes must be >= 1"));
-    }
-    if merge.is_some_and(|merge| merge.need_parallel == 0) {
-        found.invalid(format!("{prefix}.merge need_parallel must be >= 1"));
-    }
-    if merge.is_some_and(|merge| {
-        merge
-            .repair_budget
-            .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
-    }) {
-        found.invalid(format!(
-            "{prefix}.merge repair_budget must be >= proof_timeout and >= 1"
-        ));
+    if merge.is_some_and(|merge| merge.repair_budget == Some(0)) {
+        found.invalid(format!("{prefix}.merge repair_budget must be >= 1"));
     }
     for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
         if entry.paths.is_empty() {
@@ -357,13 +329,6 @@ fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Find
             ));
         }
     }
-    let scope = format!("[pump.targets.{id}.merge.checks_for]");
-    let empty = BTreeMap::new();
-    validate_checks_for(
-        &scope,
-        merge.map(|merge| &merge.checks_for).unwrap_or(&empty),
-        found,
-    );
 }
 
 fn validate_rungs(scope: &str, rungs: &RungsConfig, pools: &[String], found: &mut Findings) {
@@ -392,14 +357,6 @@ fn validate_rung_pools(scope: &str, effective: &RungsConfig, found: &mut Finding
         found.invalid(format!(
             "{scope} sets a rung command but its effective pools are empty; rung jobs cannot dispatch"
         ));
-    }
-}
-
-fn validate_checks_for(scope: &str, table: &BTreeMap<String, Vec<String>>, found: &mut Findings) {
-    for (glob, cmds) in table {
-        if cmds.is_empty() || cmds.iter().any(|cmd| cmd.trim().is_empty()) {
-            found.invalid(format!("{scope} '{glob}' must have non-empty commands"));
-        }
     }
 }
 

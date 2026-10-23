@@ -13,7 +13,6 @@ fn the_starter_table_parses_and_is_written_with_its_comments() {
     space.ensure_starter_pump().unwrap();
     let pump = space.config.pump.as_ref().expect("pump after starter");
     assert!(pump.committer_name.is_empty());
-    assert!(pump.merge.shared_checks.is_empty());
     let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
     assert!(reopened.config.pump.is_some());
     let text = config_text(tmp.path());
@@ -59,7 +58,7 @@ fn config_exists_follows_the_config_file() {
 
 #[test]
 fn the_starter_text_names_every_required_value() {
-    for key in ["committer_name", "committer_email", "shared_checks"] {
+    for key in ["committer_name", "committer_email"] {
         assert!(STARTER_PUMP.contains(key), "{key}");
     }
 }

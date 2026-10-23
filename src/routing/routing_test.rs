@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{Lane, PumpConfig};
+use crate::pump::config::Lane;
 use crate::routing::model::pick_lane_with;
 use crate::routing::{
     Issue, MigrateInputs, RoleRouting, RoutedPool, RoutedRole, Severity, apply_plan_to_document,
@@ -128,20 +128,16 @@ fn merge_lanes_follow_the_merge_role_pool_slots() {
         roles: vec![role("merge", "merge", Some("host"))],
         pools: BTreeMap::from([("host".into(), pool(4))]),
     };
-    let mut pump = PumpConfig::default();
-    pump.merge.lanes = 1;
-    assert_eq!(merge_lane_count(&routing, &pump), 4);
+    assert_eq!(merge_lane_count(&routing), 4);
 }
 
 #[test]
-fn merge_lanes_fall_back_to_pump_merge_when_unassigned() {
+fn merge_lanes_fall_back_to_one_slot_when_unassigned() {
     let routing = RoleRouting {
         roles: vec![role("merge", "merge", None)],
         pools: BTreeMap::new(),
     };
-    let mut pump = PumpConfig::default();
-    pump.merge.lanes = 3;
-    assert_eq!(merge_lane_count(&routing, &pump), 3);
+    assert_eq!(merge_lane_count(&routing), 1);
 }
 
 #[test]
@@ -635,7 +631,7 @@ lanes = 4
     assert!(
         plan.new_pools
             .iter()
-            .any(|pool| pool.name == "host" && pool.slots == 4 && pool.provider == "local")
+            .any(|pool| pool.name == "host" && pool.slots == 1 && pool.provider == "local")
     );
     assert!(
         plan.caps
@@ -787,7 +783,7 @@ fn faber_fixture_migrates_hand_to_glm_and_merge_to_host() {
     assert!(
         plan.new_pools
             .iter()
-            .any(|pool| pool.name == "host" && pool.slots == 4)
+            .any(|pool| pool.name == "host" && pool.slots == 1)
     );
     assert!(
         plan.caps

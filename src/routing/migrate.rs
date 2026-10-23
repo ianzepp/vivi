@@ -355,7 +355,7 @@ fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigrateP
     plan.assignments.push(Assignment {
         role: role.name.clone(),
         pool: pool.clone(),
-        reason: "[pump.merge] lanes".into(),
+        reason: "the merge role needs a pool".into(),
     });
     pool
 }
@@ -386,8 +386,8 @@ fn choose_merge_pool(
         plan.new_pools.push(NewPool {
             name: name.clone(),
             provider: "local".into(),
-            slots: pump.merge.lanes.max(1),
-            reason: "[pump.merge] lanes (pump-host merge)".into(),
+            slots: 1,
+            reason: "pump-host merge".into(),
             copy_from,
         });
         plan.review.push(format!(

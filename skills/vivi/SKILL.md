@@ -1006,9 +1006,10 @@ slots = 4
 
 Legacy `[pump.dispatch.kinds]` routes unit tasks when the hand role has no pool;
 `[[pump.dispatch.lanes]]` supplies legacy model caps when a pool has no per-model caps.
-`[pump.merge] need_parallel` (default 4, >= 1, per target under `[pump.targets.<id>.merge]`) caps
-concurrent need-merge jobs per target; waiting needs start in priority order as slots free.
-`[pump.merge] lanes` is not a live merge route. Convert supported legacy
+The old `[pump.merge]` keys `batch`, `lanes`, `need_parallel`, `shared_checks`,
+`checks_for`, `proof_timeout` and `remote_wait`, and the `[pump.need]` table
+(`repair_rounds`), are retired: they are no longer read and a config that still
+carries them parses with them ignored. Convert supported legacy
 dispatch and gate routing with
 `vivi config migrate` (dry-run) or `vivi config migrate --write`.
 A role that names a band when its pool has no `[pools.X.bands]` table
@@ -2781,11 +2782,8 @@ proof = "<regex>"              # one proof command of the unit must match
 reason = "<why the rule exists>"   # shown to the planner on rejection
 
 [pump.merge]
-batch = 8
 format = "<formatter command>"
-shared_checks = ["<check command>"]
-proof_timeout = 300
-# repair_budget = 600  # default: proof_timeout + 300 seconds
+# repair_budget = 600
 remote_limit = 1800
 
 ```
@@ -2847,12 +2845,11 @@ slot; a **worker** host serialises slot creation under its own lock (30
 seconds of waiting before it reports the lock busy), so very high **parallel**
 against one worker host can fail a dispatch that the next tick retries.
 
-Only current execution settings are shown above. **[pump.dispatch].lanes** is a legacy model-cap route; **[pump.merge].lanes** is not a live merge route;
-**[pump.merge].remote_wait** is unused by the live merge path.
-**[pump.merge].repair_budget** optionally overrides the wall-clock budget
-for quarantine repair units. It defaults to **proof_timeout + 300** seconds;
-an explicit value must be at least **proof_timeout** and at least one second.
-Repair units use this budget instead of **[pump.dispatch].budget**.
+Only current execution settings are shown above. **[pump.dispatch].lanes** is a legacy model-cap route; The retired **[pump.merge]** keys (**batch**, **lanes**, **need_parallel**,
+**shared_checks**, **checks_for**, **proof_timeout**, **remote_wait**) and
+**[pump.need]** are ignored.
+**[pump.merge].repair_budget** optionally sets the wall-clock budget
+for quarantine repair units; an explicit value must be at least one second.
 **[pump.merge].remote_limit** still contributes to the merge job budget, which
 is the greater of **remote_limit** and **[pump.dispatch].budget**.
 **[pump.planner].run** and **charter**, **REMOTE-MERGE**, **merge-jobs/**,

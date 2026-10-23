@@ -119,7 +119,10 @@ fn creates_repo_mailspace_values_and_registration() {
     }
 
     let text = config_text(&host.project("app"));
-    assert!(text.contains("branch = \"trunk\""), "{text}");
+    assert!(
+        !text.contains("branch ="),
+        "no [pump] branch key is written: {text}"
+    );
     assert!(!created.mailspace_id.is_empty());
     assert!(text.contains(&created.mailspace_id), "{text}");
 
