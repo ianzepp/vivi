@@ -1,6 +1,7 @@
 //! Closing-half tests on a real mailspace.
 
 use super::MailspacePort;
+use crate::letter::fixture::{need_body, sentinel_body, task_body};
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
@@ -34,7 +35,7 @@ fn need_to(p: &Project, from: &str, to: &[&str]) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "authored elsewhere".into(),
-            body: "done_when: ok".into(),
+            body: need_body(&["ok"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -85,7 +86,7 @@ fn a_verdict_is_visible_on_a_closed_task_and_a_reopen_clears_it() {
     let p = project();
     let port = port(&p);
     let task = port
-        .send_step("mind", "elsewhere", "step", "x", &[])
+        .send_step("mind", "elsewhere", "step", &task_body("x"), &[])
         .unwrap();
     port.close_task(&task, "merged", Some("need/x"), Some("abc123"))
         .unwrap();
@@ -103,7 +104,7 @@ fn a_branch_without_a_commit_is_refused() {
     let p = project();
     let port = port(&p);
     let task = port
-        .send_step("mind", "elsewhere", "step", "x", &[])
+        .send_step("mind", "elsewhere", "step", &task_body("x"), &[])
         .unwrap();
     assert!(port.close_task(&task, "merged", Some("b"), None).is_err());
     assert_eq!(port.task_state(&task).unwrap().status, TaskStatus::Open);
@@ -141,7 +142,7 @@ fn closing_the_sentinel_after_the_need_leaves_the_pumps_close_as_the_last_word()
     let mut port = port(&p);
     let need = foreign_need(&p);
     let sentinel = port
-        .send_step("mind", "mind", "run", "pump-sentinel: x r1", &[])
+        .send_step("mind", "mind", "run", &sentinel_body("x", 1, ""), &[])
         .unwrap();
     port.bind(&need, std::slice::from_ref(&sentinel)).unwrap();
     MailWriter::open_record(&mut port, &need, "kind: build").unwrap();

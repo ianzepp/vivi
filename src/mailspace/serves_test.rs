@@ -129,3 +129,52 @@ fn a_need_with_both_serves_and_explores_is_refused_by_the_schema() {
 
     assert!(err.contains("serves") && err.contains("explores"), "{err}");
 }
+
+#[test]
+fn a_stored_want_id_resolves_to_this_mailspaces_own_copy() {
+    let (_tmp, mailspace) = space();
+    let want = send(&mailspace, "want", want_body("q", "p")).unwrap();
+    let id = format!("<{}>", want_id(&mailspace, &want));
+    let storage = mailspace.storage().unwrap();
+
+    // The stored id is the letter's RFC Message-ID. No local row is keyed by it,
+    // so a reader that handed it to the handle resolver would not find the want.
+    assert!(storage.resolve_message_token(&id).is_err());
+    let row = storage.resolve_message_token(&want).unwrap();
+    let copies = storage
+        .message_ids_by_content(&storage.message_by_id(&row).unwrap().unwrap().content_id)
+        .unwrap();
+    assert!(copies.contains(&row), "{copies:?}");
+    assert_ne!(id.trim_matches(['<', '>']), row);
+
+    let handle = mailspace.resolve_want(&id).unwrap().expect("a local copy");
+    let resolved = storage.resolve_message_token(&handle).unwrap();
+    assert!(copies.contains(&resolved), "{resolved} not in {copies:?}");
+    assert_eq!(
+        storage
+            .message_by_id(&resolved)
+            .unwrap()
+            .unwrap()
+            .normalized_message_id,
+        Some(id.trim_matches(['<', '>']).to_string())
+    );
+    // Without the brackets, and as a plain handle, it finds a copy too.
+    assert!(
+        mailspace
+            .resolve_want(id.trim_matches(['<', '>']))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(mailspace.resolve_want(&want).unwrap(), Some(want));
+}
+
+#[test]
+fn a_want_with_no_copy_here_resolves_to_none() {
+    let (_tmp, mailspace) = space();
+    assert_eq!(
+        mailspace
+            .resolve_want("<nobody-sent-this@example.test>")
+            .unwrap(),
+        None
+    );
+}

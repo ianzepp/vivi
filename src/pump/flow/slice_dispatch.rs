@@ -151,9 +151,21 @@ pub trait SliceMail: MailReader {
         marker: &str,
         sender: &str,
     ) -> Result<Vec<(String, String)>, VivariumError>;
+
+    /// The handle of this mailspace's own copy of the want `id` names (the
+    /// `explores` or `serves` value a need stores), or `None` when no copy of
+    /// that want is here.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the mailspace cannot be read.
+    fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError>;
 }
 
 impl SliceMail for MailspacePort {
+    fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError> {
+        self.mailspace.resolve_want(id)
+    }
+
     fn task_body(&self, task: &str) -> Result<String, VivariumError> {
         let (id, thread) = self.thread_of(task)?;
         thread
@@ -717,6 +729,10 @@ fn push_of(receipt: &str) -> Push<'_> {
 
 #[cfg(test)]
 impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
+    fn resolve_want(&self, id: &str) -> Result<Option<String>, VivariumError> {
+        Ok(Some(id.to_string()))
+    }
+
     fn task_body(&self, task: &str) -> Result<String, VivariumError> {
         self.tasks
             .get(task)
