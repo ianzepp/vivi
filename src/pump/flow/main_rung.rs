@@ -27,6 +27,8 @@ pub(crate) const GREEN: &str = "main-green";
 pub(crate) const STARTED: &str = "main-started";
 /// main_state key: the failing test id set of the last red main rung.
 pub(crate) const FAILING: &str = "main-failing";
+/// main_state key: the main sha of the newest landed repair merge.
+pub(crate) const REPAIRED: &str = "main-repaired";
 /// main_state key: the long-lived task the main rung jobs run on.
 pub(crate) const TASK: &str = "main-rung-task";
 /// main_state key: `<tip> <count>`, the lost main rung jobs seen on that tip.
