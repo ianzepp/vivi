@@ -1,13 +1,15 @@
-//! Provisioning of the flow roles: researcher, admitter, slicer and repairer.
+//! Provisioning of the flow roles: researcher, admitter, slicer, repairer and head-cto.
 
-use super::shipped::{ADMITTER_ROLE, REPAIRER_ROLE, RESEARCHER_ROLE, SLICER_ROLE, shipped_charter};
+use super::shipped::{
+    ADMITTER_ROLE, HEAD_CTO_ROLE, REPAIRER_ROLE, RESEARCHER_ROLE, SLICER_ROLE, shipped_charter,
+};
 use super::{Mailspace, MailspaceConfig, RoleUpdate};
 use crate::error::VivariumError;
 
 const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
 
 impl Mailspace {
-    /// Ensure the `researcher`, `admitter`, `slicer` and `repairer` roles and
+    /// Ensure the `researcher`, `admitter`, `slicer`, `repairer` and `head-cto` roles and
     /// their shipped charters exist.
     ///
     /// A new role gets kind equal to its name, `read_only: true`, and the pool
@@ -24,6 +26,7 @@ impl Mailspace {
         for name in FLOW_ROLES {
             self.ensure_flow_role(name)?;
         }
+        self.ensure_flow_role(HEAD_CTO_ROLE)?;
         self.ensure_repairer_role()
     }
 

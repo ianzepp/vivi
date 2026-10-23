@@ -14,6 +14,7 @@ use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use crate::pump::store::step_payload::StepPayloadRow;
 
 /// One finished input of a code decision (a join or a raise check).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,18 @@ pub(crate) fn route<M: MailWriter + MailReader>(
             )),
             ..Routed::default()
         });
+    }
+    // Recorded before expansion: a join fed by this step decides inside this
+    // call and must already see the payload.
+    if node.class.is_step() {
+        store.record_step_payload(&StepPayloadRow {
+            need: outcome.need.clone(),
+            run: outcome.run,
+            node: outcome.node.clone(),
+            class: node.class.name(),
+            task: outcome.task.clone(),
+            payload: outcome.payload.clone(),
+        })?;
     }
     let rows = store.steps_of(&outcome.need, outcome.run)?;
     let mut walk = Walk {

@@ -24,6 +24,7 @@ mod priority;
 mod promotions;
 mod schema;
 mod snapshot;
+pub mod step_payload;
 mod unit_extra;
 pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
 pub use need_branch::NeedBranchRow;
@@ -490,6 +491,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         .map_err(db_err("create schema"))?;
     drop_request_queues(conn)?;
     flow_index::ensure_tables(conn)?;
+    step_payload::ensure_table(conn)?;
     promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
