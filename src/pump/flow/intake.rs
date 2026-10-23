@@ -3,7 +3,7 @@
 //! Each tick the phase resumes runs left `starting`, then ranks the needs that
 //! have an open pump record and no run in flight, and starts as many as the
 //! `[pump.flow] max_live_runs` cap allows, at most one repair-kind run per
-//! target. The addressee of the need plays no part.
+//! target. Repair-kind runs neither count toward the cap nor wait for it. The addressee of the need plays no part.
 //!
 //! Assumption: the target of a repair-kind need is read from a `target:` line
 //! of the open pump record body, which N6 writes together with the
@@ -60,10 +60,12 @@ pub(crate) struct Candidate {
 
 /// The needs to start, in rank order.
 ///
-/// `active` is the number of runs already starting, live or restarting;
-/// `busy_targets` the targets of repair-kind runs already in flight. With a
-/// `cap` the selection stops when `active` plus the picks reach it; a
-/// repair-kind candidate whose target is busy (or already picked) is skipped.
+/// `active` is the number of non-repair runs already starting, live or
+/// restarting; `busy_targets` the targets of repair-kind runs already in
+/// flight. With a `cap` the selection stops picking ordinary candidates when
+/// `active` plus the ordinary picks reach it. A repair-kind candidate is never
+/// stopped by the cap and does not count toward it; one whose target is busy
+/// (or already picked) is skipped.
 #[must_use]
 pub(crate) fn select(
     mut candidates: Vec<Candidate>,
@@ -74,15 +76,18 @@ pub(crate) fn select(
     candidates.sort_by_key(|c| need_key(c.repair, c.priority, c.age, &c.need));
     let mut busy: Vec<String> = busy_targets.to_vec();
     let mut picked = Vec::new();
+    let mut ordinary = 0;
     for candidate in candidates {
-        if cap.is_some_and(|cap| active + picked.len() >= cap) {
-            break;
-        }
         if candidate.repair {
             if busy.contains(&candidate.target) {
                 continue;
             }
             busy.push(candidate.target.clone());
+        } else {
+            if cap.is_some_and(|cap| active + ordinary >= cap) {
+                break;
+            }
+            ordinary += 1;
         }
         picked.push(candidate.need);
     }
@@ -151,7 +156,8 @@ fn resume_starting<M: FlowMail>(ctx: &Ctx, store: &PumpStore, mail: &mut M) {
     }
 }
 
-/// The count of runs under the cap and the targets of repair-kind runs in flight.
+/// The count of non-repair runs under the cap and the targets of repair-kind
+/// runs in flight (repair runs use no cap slot).
 fn in_flight<M: FlowMail>(
     store: &PumpStore,
     mail: &M,
@@ -160,9 +166,10 @@ fn in_flight<M: FlowMail>(
     let mut busy = Vec::new();
     for state in [RUN_STARTING, RUN_LIVE, RUN_RESTARTING] {
         for run in store.runs_in_state(state)? {
-            active += 1;
             if run.kind == FlowKind::Repair.name() {
                 busy.push(target_of(mail, &run.need)?);
+            } else {
+                active += 1;
             }
         }
     }

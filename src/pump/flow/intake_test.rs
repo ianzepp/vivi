@@ -221,3 +221,32 @@ fn select_with_a_full_cap_picks_nothing() {
     let candidates = vec![cand("n1", false, "", 0, 1)];
     assert!(select(candidates, 3, Some(3), &[]).is_empty());
 }
+
+#[test]
+fn select_never_holds_a_repair_candidate_at_the_cap() {
+    let candidates = vec![
+        cand("build", false, "", 9, 1),
+        cand("fix-a", true, "vivi", 0, 2),
+        cand("fix-busy", true, "other", 0, 3),
+    ];
+    // Cap 1 is full of ordinary runs: the repair for a free target starts,
+    // the ordinary candidate and the repair for a busy target do not.
+    assert_eq!(
+        select(candidates, 1, Some(1), &["other".to_owned()]),
+        ["fix-a"]
+    );
+}
+
+#[test]
+fn select_repair_picks_do_not_count_toward_the_cap() {
+    let candidates = vec![
+        cand("fix-a", true, "vivi", 0, 1),
+        cand("fix-b", true, "other", 0, 2),
+        cand("n1", false, "", 0, 3),
+        cand("n2", false, "", 0, 4),
+    ];
+    assert_eq!(
+        select(candidates, 0, Some(1), &[]),
+        ["fix-a", "fix-b", "n1"]
+    );
+}
