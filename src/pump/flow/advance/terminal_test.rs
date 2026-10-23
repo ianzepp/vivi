@@ -259,6 +259,10 @@ impl MailWriter for Flaky {
         self.inner.reply(handle, body)
     }
 
+    fn post_to_need_audience(&mut self, need: &str, body: &str) -> Result<(), VivariumError> {
+        self.inner.post_to_need_audience(need, body)
+    }
+
     fn close_task(
         &mut self,
         handle: &str,
