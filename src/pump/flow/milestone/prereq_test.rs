@@ -4,6 +4,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{Prereq, PrereqState, prerequisites};
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
@@ -77,7 +78,7 @@ impl Rig {
 #[test]
 fn a_landed_record_is_landed() -> R {
     let mut rig = rig()?;
-    rig.mail.open_record(DEP, "kind: build")?;
+    rig.mail.open_record(DEP, &record_body(DEP, "build"))?;
     rig.mail.close_record(DEP, "landed")?;
     rig.mail.close_need(DEP, "done")?;
     assert_eq!(rig.state()?, PrereqState::Landed);
@@ -95,7 +96,7 @@ fn a_done_need_with_no_record_is_landed() -> R {
 #[test]
 fn a_record_closed_withdrawn_is_closed_unlanded() -> R {
     let mut rig = rig()?;
-    rig.mail.open_record(DEP, "kind: build")?;
+    rig.mail.open_record(DEP, &record_body(DEP, "build"))?;
     rig.mail.close_record(DEP, "withdrawn")?;
     rig.mail.close_need(DEP, "done")?;
     assert_eq!(

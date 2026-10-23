@@ -7,7 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{RepairMerge, RepairRung, register};
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
+use crate::letter::fixture::{repair_record_body, step_body};
 use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::{note_body, note_of};
 use crate::pump::config::{PumpConfig, RungsConfig};
@@ -80,7 +80,11 @@ fn rig(facts: bool) -> Result<Rig, VivariumError> {
     ctx = ctx.with_routing(routing);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: repair\ntarget: default")?;
+    MailWriter::open_record(
+        &mut mail,
+        NEED,
+        &repair_record_body(NEED, "default", None, ""),
+    )?;
     start(&ctx, &store, &mut mail, NEED, Some("fix1"))?;
     let mut rig = Rig {
         _dir: dir,
