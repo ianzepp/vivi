@@ -162,8 +162,31 @@ pub fn send_need_reply(ctx: &Ctx, need: &str, stage: &str, body: &str) -> bool {
 
 /// Write the body to `<home>/board/reply-<need>-<stage>.txt` and run `mail
 /// reply <target>` from the reply identity; true when the reply succeeded.
-/// `target` is a pump record or a need handle.
+/// `target` is a pump record or a need handle. The recipient is
+/// `board.reply_to` when set; see [`reply_on_task`] for a pump-to-pump task.
 pub fn reply_on(ctx: &Ctx, target: &str, need: &str, stage: &str, body: &str) -> bool {
+    let reply_to = ctx.cfg.reply_to();
+    reply_with(ctx, target, need, stage, body, &reply_to)
+}
+
+/// Post a reply on a task the pump sent to itself (a flow step, a slice, the
+/// main-rung task). The only other identity on that thread is the pump, so the
+/// reply always goes `--to <reply_from>`: a bare `mail reply` has no other
+/// recipient to resolve, and `board.reply_to` would send it to the operator.
+pub fn reply_on_task(ctx: &Ctx, task: &str, need: &str, stage: &str, body: &str) -> bool {
+    reply_with(ctx, task, need, stage, body, &ctx.cfg.reply_from)
+}
+
+/// The body-file and log code shared by [`reply_on`] and [`reply_on_task`]:
+/// `reply_to` is the `--to` value, left off when empty.
+fn reply_with(
+    ctx: &Ctx,
+    target: &str,
+    need: &str,
+    stage: &str,
+    body: &str,
+    reply_to: &str,
+) -> bool {
     let dir = ctx.home.join("board");
     drop(fs::create_dir_all(&dir));
     let path = dir.join(format!("reply-{need}-{stage}.txt"));
@@ -178,9 +201,8 @@ pub fn reply_on(ctx: &Ctx, target: &str, need: &str, stage: &str, body: &str) ->
         shell_quote(target),
         shell_quote(&ctx.cfg.reply_from)
     );
-    let reply_to = ctx.cfg.reply_to();
     if !reply_to.is_empty() {
-        args.push_str(&format!(" --to {}", shell_quote(&reply_to)));
+        args.push_str(&format!(" --to {}", shell_quote(reply_to)));
     }
     args.push_str(&format!(
         " --body-file {}",

@@ -811,3 +811,22 @@ fn a_task_record_carries_the_jobs_attempt_pool_and_model() {
         "{text}"
     );
 }
+
+#[test]
+fn a_task_record_is_posted_to_the_pump_identity() {
+    let (_dir, ctx, host) = setup();
+    let job = PoolJob::from(JobSpec::new("slice-t9-a1", "hand", "hand", "s", "b"));
+    let ending = Ending::failed("hand failed", "", None);
+
+    assert!(post_on_task(
+        &ctx,
+        "t9",
+        &job,
+        &ending,
+        &receipt(1, "m", "")
+    ));
+
+    let sent = mails_to(&host, "t9");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("--from mind --to mind"), "{}", sent[0]);
+}

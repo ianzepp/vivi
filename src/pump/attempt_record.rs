@@ -18,7 +18,7 @@ use crate::pump::collect::{local_branch_exists, receipt_full, tail};
 use crate::pump::dispatch::dispatch_base;
 use crate::pump::host::{CmdOutput, Ctx, shell_quote};
 use crate::pump::jobs::PoolJob;
-use crate::pump::record::{reply_on, send_reply};
+use crate::pump::record::{reply_on_task, send_reply};
 use crate::pump::state::State;
 
 /// First line of an attempt-context reply on a slice task; the pool task
@@ -380,7 +380,7 @@ pub fn post_on_task(
         crate::mailspace::marked_line(ATTEMPT_MARKER, &ending.label),
         compose(&facts)
     );
-    let sent = reply_on(
+    let sent = reply_on_task(
         ctx,
         task,
         task,
