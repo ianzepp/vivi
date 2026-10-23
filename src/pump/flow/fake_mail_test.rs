@@ -93,6 +93,8 @@ pub(crate) struct FakeMail {
     pub calls: Vec<Call>,
     pub tasks: BTreeMap<String, FakeTask>,
     bound: BTreeMap<String, Vec<String>>,
+    /// Replies posted by someone other than the pump: task -> (sender, body).
+    pub foreign: BTreeMap<String, Vec<(String, String)>>,
     marks: BTreeMap<String, Vec<String>>,
     closed_needs: BTreeMap<String, NeedClose>,
     close_notes: BTreeMap<String, String>,
@@ -117,6 +119,14 @@ impl FakeMail {
             need.to_string(),
             marks.iter().map(|m| (*m).to_string()).collect(),
         );
+    }
+
+    /// Someone other than the pump identity replies on `task`.
+    pub fn foreign_reply(&mut self, task: &str, who: &str, body: &str) {
+        self.foreign
+            .entry(task.to_string())
+            .or_default()
+            .push((who.to_string(), body.to_string()));
     }
 
     /// Someone other than the pump closes a task (verdict `done`).
