@@ -438,6 +438,16 @@ pub fn settle<M: MailReader>(
     run: &RunRow,
 ) -> Result<Option<&'static str>, VivariumError> {
     let open = store.open_fanout(&run.need, run.run)?;
+    if let Some(task) = open.as_deref() {
+        // Only the fanout step that is itself still open answers: a Done or
+        // Failed one (build1 after rework1 routed on to build2) has answered.
+        let answered = store
+            .step_by_task(task)?
+            .is_some_and(|row| matches!(row.state, StepState::Done | StepState::Failed));
+        if answered {
+            return Ok(None);
+        }
+    }
     let mut slices = 0;
     let mut unsettled = false;
     for row in store.steps_of(&run.need, run.run)? {
@@ -503,3 +513,7 @@ mod tests;
 #[cfg(test)]
 #[path = "fanout_merged_test.rs"]
 mod merged_tests;
+
+#[cfg(test)]
+#[path = "fanout_tick_test.rs"]
+mod tick_tests;
