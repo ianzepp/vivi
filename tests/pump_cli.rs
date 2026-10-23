@@ -593,11 +593,10 @@ fn temp_mailspace() -> tempfile::TempDir {
     let config = project.path().join(".vivi").join("mailspace.toml");
     let root = project.path().to_str().unwrap();
     let table = format!(
-        "\n[pump]\nbranch = \"next\"\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\
+        "\n[pump]\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\
          committer_name = \"Test\"\ncommitter_email = \"test@example.com\"\n\n\
          [pump.board]\nfrom = []\npull = false\n\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
-         [pump.merge]\nshared_checks = [\"true\"]\n\n\
          [pools.test]\nprovider = \"local\"\nslots = 1\n\n\
          [pools.test.harness]\nname = \"test\"\nrun = \"test --model {{model}} @{{brief}}\"\n\
          models = [\"test/model\"]\n\n\

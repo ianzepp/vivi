@@ -68,7 +68,8 @@ pub struct JobSpec {
     pub allow_default_branch: bool,
     /// Remote refs the privileged runner may publish after clean worker exit.
     pub publish_ref: Option<String>,
-    /// Exact source commit required for guarded promotion.
+    /// Exact source commit the runner publishes (for example a need-branch
+    /// rename publishes the old tip under the prior name).
     pub publish_expect: Option<String>,
     pub publish_contains: Option<String>,
     pub delete_ref: Option<String>,

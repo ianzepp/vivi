@@ -100,14 +100,11 @@ fn fill_in(root: &Path) {
     let path = root.join(".vivi").join("mailspace.toml");
     let text = fs::read_to_string(&path).unwrap();
     let text = text
-        .replace("branch = \"\"", "branch = \"next\"")
         .replace("committer_name = \"\"", "committer_name = \"T\"")
         .replace(
             "committer_email = \"\"",
             "committer_email = \"t@example.com\"",
-        )
-        .replace("shared_checks = []", "shared_checks = [\"true\"]")
-        .replace("command = \"\"", "command = \"true\"");
+        );
     fs::write(&path, text + POOL).unwrap();
     let mut space = Mailspace::open_root(root.to_path_buf()).unwrap();
     for (name, kind) in [
