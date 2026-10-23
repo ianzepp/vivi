@@ -66,6 +66,7 @@ The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 | head-cto | `research`, `plan`, `slice`, `rework`, `lock` | `reason` (string; required); `new_fact` (string; required for any answer but `lock` from the third run on) | the analysis |
 | merge (a flow merge step: a slice onto the need branch, and the sync step) | `merged`, `conflict` (the worker's claim; the runner's publish receipt and git decide) | `conflicts` (list of paths); `design_change` (bool; the conflict needs a design change); `[[check]]` tables (reported only). No `tip`: the SHA comes from the publish receipt | the conflict resolutions |
 | hand | `built`, `blocked-scope`, `failed` | `change` (list of paths; reported only, and empty means no defect was found); `[[check]]` tables (reported only; the merge job's task rung exit code decides); `deviations` (list); `[[follow_up]]` tables {`paths` (list), `need` (string)}; `remaining` (list); `scope_paths` (list; required for `blocked-scope`); `scope_reason` (string; required for `blocked-scope`); `scope_design` (bool, default false) | the report |
+| repairer (the repair flow) | `built`, `failed` | `change` (list of paths; reported only); `[[check]]` tables (reported only; the main rung decides); `deviations` (list). No diff cap; no sha, ref, commit or exit keys. `overtime` is the pump's word for a job past its time cap, never written by the repairer | notes |
 | head-ceo (cadence prompt; the pump does not parse it) | `reviewed`, `no-op` | `promoted`, `research`, `dropped` (lists of handles) | notes |
 
 ## Examples, one per role
@@ -284,6 +285,32 @@ answer = "built"
 change = []
 +++
 The reported defect does not reproduce: the guard is already in place.
+```
+
+### Repairer
+
+```
++++
+answer = "built"
+change = ["src/store.rs", "src/store_test.rs"]
+deviations = ['The failing test also covered the empty case; the fix handles it too.']
+
+[[check]]
+cmd = "cargo test --lib store --quiet"
+result = "pass"
+seconds = 38
++++
+The row id was read before the insert; it is read after it now.
+```
+
+A repairer that cannot find a fix changes nothing and answers `failed`:
+
+```
++++
+answer = "failed"
+deviations = ['The failing test passes on the branch; the red came from a stale build cache.']
++++
+No change made.
 ```
 
 ### Head-ceo

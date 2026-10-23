@@ -36,6 +36,10 @@ pub const ADMITTER_CHARTER: &str =
 /// The shipped charter of the [`SLICER_ROLE`] role.
 pub const SLICER_CHARTER: &str = include_str!("../../skills/vivi/references/charters/slicer.md");
 
+/// The shipped charter of the [`REPAIRER_ROLE`] role.
+pub const REPAIRER_CHARTER: &str =
+    include_str!("../../skills/vivi/references/charters/repairer.md");
+
 /// The shipped charter text for a shipped role name, or `None` for any other.
 #[must_use]
 pub fn shipped_charter(role: &str) -> Option<&'static str> {
@@ -46,6 +50,7 @@ pub fn shipped_charter(role: &str) -> Option<&'static str> {
         RESEARCHER_ROLE => Some(RESEARCHER_CHARTER),
         ADMITTER_ROLE => Some(ADMITTER_CHARTER),
         SLICER_ROLE => Some(SLICER_CHARTER),
+        REPAIRER_ROLE => Some(REPAIRER_CHARTER),
         _ => None,
     }
 }
