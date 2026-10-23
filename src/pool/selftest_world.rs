@@ -228,7 +228,11 @@ impl<'a> World<'a> {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: format!("vivi pool doctor --test: {label} ({})", self.counter),
-            body: "Throwaway task of `vivi pool doctor --test`. It lives in a temporary mailspace that is deleted when the test ends.\n".into(),
+            body: crate::letter::render(
+                &crate::letter::work::TaskFront::default(),
+                "Throwaway task of `vivi pool doctor --test`. It lives in a temporary mailspace that is deleted when the test ends.\n",
+            )
+            .map_err(|error| VivariumError::Message(format!("failed to render test task: {error}")))?,
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
