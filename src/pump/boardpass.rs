@@ -1,17 +1,13 @@
-//! The board pass on its own worker thread, merge-lane style.
+//! The board pass on its own worker thread.
 //!
-//! One board pass is minutes of serial `vivi` calls (`sync pull`, `need
-//! list`, `need show`, `mail reply`). Running it inline in the tick blocks
-//! dispatch, collect and stop for that whole time. [`BoardPass`] runs it on
-//! one named thread instead: the tick thread sends a clone of the state,
-//! keeps writing the live state while the pass runs, and folds the worker's
-//! result back through [`merge_back`].
+//! One board pass is `vivi sync pull`, which can take minutes. Running it
+//! inline in the tick blocks dispatch, collect and stop for that whole time.
+//! [`BoardPass`] runs it on one named thread instead: the tick thread sends a
+//! clone of the state, keeps writing the live state while the pass runs, and
+//! folds the worker's result back through [`merge_back`].
 //!
-//! The worker never touches the live state. Every field it reads is a
-//! snapshot, so [`merge_back`] copies back only what the board pass itself
-//! owns, and the rules below name who else mutates each field concurrently.
-//! Newly queued jobs return through the outbox merge without rewinding
-//! tick-side dispatch or reconciliation.
+//! The worker never touches the live state. [`merge_back`] copies back only
+//! `board.at`, the one field the pass owns.
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
@@ -31,8 +27,6 @@ pub struct BoardPass {
     results: Receiver<State>,
     /// A pass is in flight; no second one is requested until it lands.
     busy: bool,
-    /// The exact state clone the worker holds.
-    snapshot: Option<State>,
 }
 
 impl BoardPass {
@@ -54,7 +48,6 @@ impl BoardPass {
             send,
             results,
             busy: false,
-            snapshot: None,
         }
     }
 
@@ -68,7 +61,6 @@ impl BoardPass {
             send,
             results,
             busy: false,
-            snapshot: None,
         };
         (pass, requests, out)
     }
@@ -108,11 +100,10 @@ impl BoardPass {
         // The tick thread owns due-ness; a zero stamp makes the worker's own
         // interval check in `board` pass.
         clone.board.at = 0;
-        if self.send.send((ctx.clone(), clone.clone())).is_err() {
+        if self.send.send((ctx.clone(), clone)).is_err() {
             return;
         }
         std::mem::take(&mut st.board.sync_pending);
-        self.snapshot = Some(clone);
         self.busy = true;
     }
 
@@ -124,9 +115,7 @@ impl BoardPass {
         }
         match self.results.try_recv() {
             Ok(done) => {
-                if let Some(snapshot) = self.snapshot.take() {
-                    merge_back(st, &snapshot, &done);
-                }
+                merge_back(st, &done);
                 self.busy = false;
             }
             Err(TryRecvError::Empty) => {}
@@ -134,7 +123,6 @@ impl BoardPass {
             // than waiting forever on a pass that will never land.
             Err(TryRecvError::Disconnected) => {
                 ctx.log("board worker is gone; the pass is lost");
-                self.snapshot = None;
                 self.busy = false;
             }
         }
@@ -154,68 +142,8 @@ fn board_loop(requests: &Receiver<BoardRequest>, out: &Sender<State>) {
     }
 }
 
-/// Fold one finished pass into the live state: only the fields the board pass
-/// itself owns move, and only for the handles the pass touched.
-pub(crate) fn merge_back(st: &mut State, snap: &State, done: &State) {
-    merge_needs(st, snap, done);
-    merge_plans_seen(st, snap, done);
-    merge_jobs(st, snap, done);
-    merge_replied(st, snap, done);
-    // The interval restarts at completion.
+/// Fold one finished pass into the live state: the pass owns only the
+/// interval stamp, which restarts at completion.
+pub(crate) fn merge_back(st: &mut State, done: &State) {
     st.board.at = done.board.at;
-}
-
-/// Fold worker-created jobs into the live outbox without rewinding jobs that
-/// the tick thread dispatched or reconciled while the board pass was running.
-fn merge_jobs(st: &mut State, snap: &State, done: &State) {
-    for (id, completed) in &done.jobs {
-        let Some(snapshot) = snap.jobs.get(id) else {
-            st.jobs
-                .entry(id.clone())
-                .or_insert_with(|| completed.clone());
-            continue;
-        };
-        if snapshot == completed {
-            continue;
-        }
-        if st.jobs.get(id).is_none_or(|live| live == snapshot) {
-            st.jobs.insert(id.clone(), completed.clone());
-        }
-    }
-}
-
-/// A need the worker dropped (replan surgery) leaves the live state; a need
-/// the tick thread added during the pass is not in `done`, but it is not in
-/// `snap` either, so it stays.
-fn merge_needs(st: &mut State, snap: &State, done: &State) {
-    let dropped: Vec<String> = snap
-        .needs
-        .keys()
-        .filter(|handle| !done.needs.contains_key(*handle))
-        .cloned()
-        .collect();
-    for handle in dropped {
-        st.needs.remove(&handle);
-    }
-}
-
-/// Entries the pass dropped (replan surgery); one `plan::ingest` added
-/// during the pass stays.
-fn merge_plans_seen(st: &mut State, snap: &State, done: &State) {
-    st.plans_seen
-        .retain(|seen| !(snap.plans_seen.contains(seen) && !done.plans_seen.contains(seen)));
-}
-
-/// Reply keys the pass did not record are dropped, the ones it recorded
-/// are appended in its order.
-fn merge_replied(st: &mut State, snap: &State, done: &State) {
-    st.board
-        .replied
-        .retain(|key| !(snap.board.replied.contains(key) && !done.board.replied.contains(key)));
-    for key in &done.board.replied {
-        if snap.board.replied.contains(key) || st.board.replied.contains(key) {
-            continue;
-        }
-        st.board.replied.push(key.clone());
-    }
 }
