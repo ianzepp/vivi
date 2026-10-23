@@ -1,6 +1,7 @@
 //! Tests for the fanout start handler.
 
 use std::fs;
+use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
@@ -14,8 +15,8 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
-use crate::pump::host::{Ctx, test_ctx};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 type R = Result<(), VivariumError>;
 
@@ -24,6 +25,7 @@ const NEED: &str = "n1";
 struct Rig {
     dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     run: RunRow,
@@ -32,7 +34,7 @@ struct Rig {
 
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let run = RunRow {
         need: NEED.into(),
@@ -47,6 +49,7 @@ fn rig() -> Result<Rig, VivariumError> {
     Ok(Rig {
         dir,
         ctx,
+        host,
         store,
         mail: FakeMail::new("pump"),
         run,
@@ -245,5 +248,50 @@ fn a_missing_slicer_step_is_an_error_naming_the_node() -> R {
     let rig = rig()?;
     let err = start(&rig, "build1").unwrap_err();
     assert!(err.to_string().contains("build1"), "{err}");
+    Ok(())
+}
+
+fn need_tip(rig: &Rig, sha: &str) {
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{sha}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+}
+
+#[test]
+fn the_need_tip_at_the_start_is_recorded_once() -> R {
+    let mut rig = rig()?;
+    let one = slice("S1", "default", "\"src/a.rs\"");
+    seat(&mut rig, "slice", "build1", &[envelope(&one)])?;
+    rig.store.upsert_need_branch(&NeedBranchRow {
+        need: NEED.into(),
+        branch: format!("vivi/need/{NEED}"),
+        base: None,
+        status: "live".into(),
+        run: 1,
+        target: "default".into(),
+        priors: Vec::new(),
+    })?;
+    assert_eq!(rig.store.fanout_start("t-fan")?, None);
+
+    let first = "1".repeat(40);
+    need_tip(&rig, &first);
+    assert!(matches!(start(&rig, "build1")?, StartAction::Fanout { .. }));
+    assert_eq!(rig.store.fanout_start("t-fan")?, Some(Some(first.clone())));
+
+    need_tip(&rig, &"2".repeat(40));
+    assert!(matches!(start(&rig, "build1")?, StartAction::Fanout { .. }));
+    assert_eq!(rig.store.fanout_start("t-fan")?, Some(Some(first)));
+    Ok(())
+}
+
+#[test]
+fn a_start_with_no_need_branch_records_none() -> R {
+    let mut rig = rig()?;
+    let one = slice("S1", "default", "\"src/a.rs\"");
+    seat(&mut rig, "slice", "build1", &[envelope(&one)])?;
+    start(&rig, "build1")?;
+    assert_eq!(rig.store.fanout_start("t-fan")?, Some(None));
     Ok(())
 }

@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS restart_entries (
     entry TEXT NOT NULL,
     PRIMARY KEY (need, run)
 );
+CREATE TABLE IF NOT EXISTS fanout_starts (
+    fanout TEXT PRIMARY KEY,
+    tip TEXT
+);
 ";
 
 /// Create the flow link tables when they are missing.
@@ -217,6 +221,37 @@ impl PumpStore {
             )
             .optional()
             .map_err(db_err("read restart entry"))
+    }
+
+    /// Record the need branch tip when a fanout started (`None`: no base yet).
+    /// The first start of a fanout wins; a later call changes nothing.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written.
+    pub fn set_fanout_start(&self, fanout: &str, tip: Option<&str>) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO fanout_starts (fanout, tip) VALUES (?1, ?2)",
+                params![fanout, tip],
+            )
+            .map_err(db_err("write fanout start"))?;
+        Ok(())
+    }
+
+    /// The tip recorded when a fanout started: `None` when no start is
+    /// recorded, `Some(None)` when it started with no need branch base.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be read.
+    pub fn fanout_start(&self, fanout: &str) -> Result<Option<Option<String>>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT tip FROM fanout_starts WHERE fanout = ?1",
+                [fanout],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err("read fanout start"))
     }
 }
 
