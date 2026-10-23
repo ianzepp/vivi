@@ -9,7 +9,6 @@ use tempfile::{TempDir, tempdir};
 
 use crate::cli::PumpReplanCommand;
 use crate::mailspace::PumpAction;
-use crate::pump::audit::{AuditRun, current as current_audit, store as store_audit};
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::{Project, project};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -304,47 +303,6 @@ fn run_replan_posts_an_action_on_the_open_record_and_the_tick_applies_it() {
     crate::pump::action::apply_pending(&ctx, &mut st);
     assert!(!st.needs.contains_key(&need));
     assert_eq!(project.mailspace.pump_history(&need).unwrap().len(), 2);
-}
-
-#[test]
-fn explicit_replan_rearms_an_exhausted_audit_and_keeps_the_record() {
-    let project = project();
-    let need = project.need("fix auth");
-    let record = project.mailspace.pump_send(None, &need, None).unwrap();
-    let mut st = State::default();
-    store_audit(
-        &mut st,
-        Some(AuditRun {
-            need: need.clone(),
-            tip: String::from("0123456789abcdef0123456789abcdef01234567"),
-            fails: 3,
-            attempts: 3,
-            exhausted: true,
-            last_error: Some(String::from("provider: Connection error.")),
-            ..AuditRun::default()
-        }),
-    );
-    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
-    store.save(&st).unwrap();
-
-    run(project.root(), &command(&need, false)).unwrap();
-    let ctx = project.pump_ctx();
-    let mut st = saved(&project);
-    crate::pump::action::apply_pending(&ctx, &mut st);
-
-    let audit = current_audit(&st).unwrap();
-    assert!(!audit.exhausted);
-    assert_eq!(audit.fails, 0);
-    assert_eq!(audit.attempts, 3);
-    assert_eq!(audit.retry_at, Some(T0));
-    assert!(
-        audit
-            .last_error
-            .unwrap()
-            .contains("operator replan requested")
-    );
-    let open = project.mailspace.pump_open_record(&need).unwrap();
-    assert_eq!(open.map(|open| open.handle), Some(record.handle));
 }
 
 #[test]

@@ -7,7 +7,6 @@ pub mod amend;
 pub mod apfssweep;
 pub mod attempt_read;
 pub mod attempt_record;
-pub mod audit;
 pub mod blockers;
 pub mod board;
 pub mod boardpass;
@@ -21,9 +20,7 @@ pub(crate) mod cycle;
 pub mod envelope;
 pub mod envfail;
 pub mod flow;
-pub mod gate;
 pub mod gate_config;
-pub mod gatefix;
 pub mod health;
 pub mod hold;
 pub mod host;
@@ -128,22 +125,6 @@ mod host_test;
 mod collect_test;
 
 #[cfg(test)]
-#[path = "pump/gate_test.rs"]
-mod gate_test;
-
-#[cfg(test)]
-#[path = "pump/gatefix_test.rs"]
-mod gatefix_test;
-
-#[cfg(test)]
-#[path = "pump/gatefix_flow_test.rs"]
-mod gatefix_flow_test;
-
-#[cfg(test)]
-#[path = "pump/gate_promote_test.rs"]
-mod gate_promote_test;
-
-#[cfg(test)]
 #[path = "pump/board_test.rs"]
 mod board_test;
 
@@ -190,10 +171,6 @@ mod envfail_test;
 #[cfg(test)]
 #[path = "pump/proof_test.rs"]
 mod proof_test;
-
-#[cfg(test)]
-#[path = "pump/audit_test.rs"]
-mod audit_test;
 
 #[cfg(test)]
 #[path = "pump/ramsweep_test.rs"]

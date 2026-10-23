@@ -25,7 +25,7 @@ use crate::pump::store::{DB_FILENAME, PumpStore};
 pub enum Outcome {
     /// Live work, or a running planner, refused it without `--force`.
     Refused,
-    /// An exhausted audit was rearmed; the plan and the record stand.
+    /// Retired: the audit rearm that produced it is gone, nothing returns it.
     Rearmed,
     /// The plan is thrown away; the record is owed a `superseded` close.
     Superseded,
@@ -48,9 +48,6 @@ pub fn apply_one(
     need: &str,
     force: bool,
 ) -> Result<Outcome, VivariumError> {
-    if crate::pump::audit::rearm_operator_replan(ctx, st, need) {
-        return Ok(Outcome::Rearmed);
-    }
     let units = st
         .needs
         .get(need)
@@ -192,9 +189,6 @@ pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError>
 /// pump has no plan for is known when its planner is running or parked.
 fn check_command(st: &State, cmd: &PumpReplanCommand) -> Result<(), VivariumError> {
     let need = cmd.need.as_str();
-    if crate::pump::audit::operator_replan_allowed(st, need) {
-        return Ok(());
-    }
     let planned = st.needs.get(need);
     let parked = st.board.planner_failed.iter().any(|failed| failed == need);
     if planned.is_none() && !parked && !st.board.planning.contains_key(need) {

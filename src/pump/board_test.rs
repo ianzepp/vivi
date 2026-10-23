@@ -779,25 +779,3 @@ fn a_progress_reply_for_a_need_without_an_open_record_is_dropped_and_retried() {
             .contains(&"board reply n5 planned dropped: no open pump record".to_string())
     );
 }
-
-#[test]
-fn the_record_of_a_pump_created_need_is_neither_planned_nor_reported() {
-    let (_dir, ctx, host) = setup();
-    open_records(&host, &["a", "gatefix"]);
-    host.reply(
-        "--json --to mind",
-        0,
-        &list(&[row("a", "2026-10-15", "A", &[])]),
-    );
-    host.reply("--held", 0, "[]");
-    let own = std::collections::BTreeSet::from([String::from("gatefix")]);
-
-    let rows = candidate_rows_except(&ctx, &own);
-
-    assert_eq!(handles(&rows), vec!["a"]);
-    assert!(
-        host.logs().iter().all(|line| !line.contains("gatefix")),
-        "{:?}",
-        host.logs()
-    );
-}
