@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 
 use vivi::b64;
 
+#[path = "project_server_mcp.rs"]
+mod server_mcp;
+
 /// The one project id this fake serves.
 const PROJECT: &str = "abcde-fghjk";
 /// Default `/auth/token` lifetime, reflected in `token_expires_at`.
@@ -37,6 +40,7 @@ const ACCEPT_IDLE: Duration = Duration::from_millis(5);
 /// One `/mcp` request as the fake saw it, recorded before any judgment.
 #[derive(Clone)]
 pub struct McpSeen {
+    pub path: String,
     pub bearer: String,
     pub body: Value,
     pub accept: Option<String>,
@@ -510,6 +514,13 @@ fn reason_phrase(status: u16) -> &'static str {
 
 /// Route under `/v1/projects/{project}`, in the contract's priority order.
 fn route(state: &Mutex<State>, request: &Request) -> Reply {
+    if request.path == "/v1/mcp" {
+        return if request.method == "POST" {
+            server_mcp::handle(state, request)
+        } else {
+            error_reply(404, "not_found", "/v1/mcp accepts POST only")
+        };
+    }
     let Some(rest) = request.path.strip_prefix("/v1/projects/") else {
         return error_reply(404, "not_found", "paths live under /v1/projects/{project}");
     };
@@ -615,11 +626,11 @@ fn handle_mcp(state: &Mutex<State>, request: &Request) -> Reply {
     let parsed = match serde_json::from_slice::<Value>(&request.body) {
         Ok(parsed) => parsed,
         Err(_) => {
-            record_mcp(state, &bearer, Value::Null, &accept);
+            record_mcp(state, &request.path, &bearer, Value::Null, &accept);
             return parse_error_reply();
         }
     };
-    record_mcp(state, &bearer, parsed.clone(), &accept);
+    record_mcp(state, &request.path, &bearer, parsed.clone(), &accept);
     {
         let mut state = state.lock().unwrap();
         if state.refuse_always || state.refuse_next > 0 {
@@ -638,8 +649,15 @@ fn handle_mcp(state: &Mutex<State>, request: &Request) -> Reply {
 }
 
 /// Record one `/mcp` request as it arrived, before any judgment.
-fn record_mcp(state: &Mutex<State>, bearer: &str, body: Value, accept: &Option<String>) {
+fn record_mcp(
+    state: &Mutex<State>,
+    path: &str,
+    bearer: &str,
+    body: Value,
+    accept: &Option<String>,
+) {
     state.lock().unwrap().mcp_seen.push(McpSeen {
+        path: path.to_string(),
         bearer: bearer.to_string(),
         body,
         accept: accept.clone(),
