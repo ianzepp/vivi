@@ -177,7 +177,6 @@ fn one_need_can_assign_units_to_two_workspace_targets() {
             String::from("radix"),
             PumpTarget {
                 path: String::from("radix"),
-                branch: String::from("next"),
                 ..PumpTarget::default()
             },
         ),
@@ -185,7 +184,6 @@ fn one_need_can_assign_units_to_two_workspace_targets() {
             String::from("tela"),
             PumpTarget {
                 path: String::from("tela"),
-                branch: String::from("main"),
                 ..PumpTarget::default()
             },
         ),
@@ -220,7 +218,6 @@ fn explicit_target_map_holds_a_plan_unit_with_no_target() {
         String::from("radix"),
         PumpTarget {
             path: String::from("radix"),
-            branch: String::from("next"),
             ..PumpTarget::default()
         },
     )]
@@ -257,7 +254,6 @@ fn a_revision_cannot_move_an_attempted_unit_to_another_target() {
                 id.to_string(),
                 PumpTarget {
                     path: id.to_string(),
-                    branch: String::from("main"),
                     ..PumpTarget::default()
                 },
             )
@@ -302,7 +298,6 @@ fn a_cross_target_prerequisite_parks_the_need_before_dispatch() {
                 id.to_string(),
                 PumpTarget {
                     path: id.to_string(),
-                    branch: String::from("main"),
                     ..PumpTarget::default()
                 },
             )

@@ -12,7 +12,7 @@ fn the_starter_table_parses_and_is_written_with_its_comments() {
     assert!(space.config.pump.is_none());
     space.ensure_starter_pump().unwrap();
     let pump = space.config.pump.as_ref().expect("pump after starter");
-    assert!(pump.branch.is_empty());
+    assert!(pump.committer_name.is_empty());
     assert!(pump.merge.shared_checks.is_empty());
     let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
     assert!(reopened.config.pump.is_some());
@@ -40,11 +40,11 @@ fn ensure_starter_pump_leaves_an_existing_pump_table_alone() {
     let mut space = Mailspace::init(Some(tmp.path())).unwrap();
     let path = tmp.path().join(".vivi").join("mailspace.toml");
     let mut text = std::fs::read_to_string(&path).unwrap();
-    text.push_str("\n[pump]\nbranch = \"next\"\n");
+    text.push_str("\n[pump]\ncommitter_name = \"kept\"\n");
     std::fs::write(&path, text).unwrap();
     let mut space2 = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
     space2.ensure_starter_pump().unwrap();
-    assert_eq!(space2.config.pump.as_ref().unwrap().branch, "next");
+    assert_eq!(space2.config.pump.as_ref().unwrap().committer_name, "kept");
     assert!(!config_text(tmp.path()).contains("Starter pump"));
     drop(space);
 }
@@ -59,12 +59,7 @@ fn config_exists_follows_the_config_file() {
 
 #[test]
 fn the_starter_text_names_every_required_value() {
-    for key in [
-        "branch",
-        "committer_name",
-        "committer_email",
-        "shared_checks",
-    ] {
+    for key in ["committer_name", "committer_email", "shared_checks"] {
         assert!(STARTER_PUMP.contains(key), "{key}");
     }
 }

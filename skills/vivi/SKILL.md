@@ -127,7 +127,7 @@ project's own values, and a host-registry entry (pump and serve on unless
 - `--pool <p>` writes `[pools.<p>] remote_url = <U><name>.git` in the
   project's file; the pool itself must come from a base mailspace above `P`
   (`base = true`).
-- `--branch` sets `[pump] branch` (default `main`).
+- `--branch` names the new repo's default branch (default `main`).
 - `--initial-commit` makes one empty commit on the branch; without it the repo
   stays empty until the first push.
 - Any failing step undoes every earlier step this call made. The result
@@ -2745,10 +2745,8 @@ commands, pool names, and model values below belong to the project.
 ```toml
 [pump]
 home = "<project>/.vivi/pump"
-branch = "<integration-branch>"
 remote = "origin"
 main = "main"
-promote = true
 committer_name = "<name>"
 committer_email = "<email>"
 tick = 20

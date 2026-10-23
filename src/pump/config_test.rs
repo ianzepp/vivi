@@ -125,7 +125,6 @@ fn validation_rejects_a_repair_budget_shorter_than_its_proof_timeout() {
     let mut config = PumpConfig::default();
     config.committer_name = String::from("Pump Tester");
     config.committer_email = String::from("pump@example.com");
-    config.branch = String::from("next");
     config.dispatch.lanes = vec![Lane {
         model: String::from("standin"),
         cap: 1,
@@ -147,10 +146,8 @@ fn validation_rejects_a_repair_budget_shorter_than_its_proof_timeout() {
 #[test]
 fn a_minimal_pump_table_takes_every_default() {
     let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
-    assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.remote, "origin");
     assert_eq!(cfg.main, "main");
-    assert!(cfg.promote);
     assert_eq!(cfg.tick, 20);
     assert_eq!(cfg.shell_prefix, "");
     assert_eq!(cfg.hand_rules, None);
@@ -197,7 +194,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.merge.proof_timeout, 300);
     assert_eq!(cfg.merge.remote_wait, 90);
     assert_eq!(cfg.merge.remote_limit, 1800);
-    assert_eq!(cfg.dispatch_from(), "next");
+    assert_eq!(cfg.dispatch_from(), "main");
     assert_eq!(cfg.reply_to(), "");
 }
 
@@ -262,7 +259,6 @@ fn transient_retry_knobs_parse_and_take_defaults() {
 #[test]
 fn the_full_design_file_block_parses() {
     let mut cfg = pump(&format!("name = \"t\"\n{FULL}"));
-    assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.main, "main");
     assert_eq!(cfg.tick, 20);
     assert_eq!(cfg.board.retired_mark, None);
@@ -320,8 +316,6 @@ fn named_targets_keep_repository_paths_and_inherit_shared_merge_defaults() {
             String::from("radix"),
             PumpTarget {
                 path: String::from("radix"),
-                branch: String::from("next"),
-                promote: false,
                 ..PumpTarget::default()
             },
         ),
@@ -329,8 +323,6 @@ fn named_targets_keep_repository_paths_and_inherit_shared_merge_defaults() {
             String::from("tela"),
             PumpTarget {
                 path: String::from("tela"),
-                branch: String::from("main"),
-                promote: false,
                 ..PumpTarget::default()
             },
         ),
@@ -358,16 +350,7 @@ fn an_unknown_key_is_ignored() {
         "[pump.board]\n",
         "nope = true\n",
     ));
-    assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.board.retired_mark, None);
-}
-
-#[test]
-fn validate_rejects_a_missing_branch_and_names_the_key() {
-    let err = PumpConfig::default()
-        .validate(Path::new("."), &[])
-        .expect_err("empty branch must fail");
-    assert!(err.to_string().contains("[pump] branch"), "{err}");
 }
 
 #[test]
@@ -411,8 +394,6 @@ fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
     let mut cfg = PumpConfig {
         committer_name: "Vivi".into(),
         committer_email: "vivi@example.invalid".into(),
-        branch: "next".into(),
-        promote: false,
         ..PumpConfig::default()
     };
     cfg.dispatch.kinds.insert(
@@ -494,8 +475,6 @@ fn validate_rejects_zero_need_parallel() {
         String::from("tela"),
         PumpTarget {
             path: String::from("tela"),
-            branch: String::from("main"),
-            promote: false,
             merge: Some(crate::pump::config::MergeConfig {
                 need_parallel: 0,
                 ..crate::pump::config::MergeConfig::default()
@@ -516,7 +495,6 @@ fn validate_rejects_zero_need_parallel() {
 #[test]
 fn validate_checks_default_kind_and_kind_pools() {
     let mut cfg = PumpConfig {
-        branch: "next".into(),
         committer_name: "Test".into(),
         committer_email: "test@example.com".into(),
         dispatch: DispatchConfig {
@@ -560,7 +538,6 @@ fn validate_checks_default_kind_and_kind_pools() {
 #[test]
 fn validate_rejects_an_unknown_pool_in_a_multi_pool_kind() {
     let cfg = PumpConfig {
-        branch: "next".into(),
         dispatch: DispatchConfig {
             lanes: vec![Lane {
                 model: "m".into(),
@@ -611,7 +588,6 @@ fn kind_of_resolves_tools_or_the_default_kind() {
 #[test]
 fn validate_rejects_an_unknown_pool_name() {
     let mut cfg = PumpConfig {
-        branch: "next".into(),
         dispatch: DispatchConfig {
             lanes: vec![Lane {
                 model: "m".into(),
@@ -654,20 +630,9 @@ fn pool_names() -> Vec<String> {
 }
 
 #[test]
-fn validate_rejects_empty_shared_checks_only_while_promotion_is_enabled() {
+fn validate_accepts_empty_shared_checks() {
     let mut cfg = valid();
     cfg.merge.shared_checks = Vec::new();
-    let err = cfg
-        .validate(Path::new("."), &pool_names())
-        .expect_err("no checks");
-    assert!(
-        err.to_string().contains("[pump.merge] shared_checks"),
-        "{err}"
-    );
-    cfg.promote = false;
-    assert!(cfg.validate(Path::new("."), &pool_names()).is_ok());
-    cfg.promote = true;
-    cfg.main = String::new();
     assert!(cfg.validate(Path::new("."), &pool_names()).is_ok());
 }
 
@@ -906,8 +871,6 @@ fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
         String::from("tela"),
         PumpTarget {
             path: String::from("tela"),
-            branch: String::from("main"),
-            promote: false,
             merge: Some(crate::pump::config::MergeConfig {
                 generated: vec![crate::pump::config::Generated {
                     paths: vec!["out/a.json".into()],
@@ -935,8 +898,6 @@ fn validate_rejects_target_checks_for_with_blank_commands() {
         String::from("tela"),
         PumpTarget {
             path: String::from("tela"),
-            branch: String::from("main"),
-            promote: false,
             merge: Some(crate::pump::config::MergeConfig {
                 checks_for: BTreeMap::from([("src/**".to_string(), vec![" ".into()])]),
                 ..crate::pump::config::MergeConfig::default()
@@ -1048,13 +1009,7 @@ fn findings_report_absent_items_apart_from_wrong_values() {
         .iter()
         .map(|item| item.name.as_str())
         .collect();
-    for expected in [
-        "pump.committer_name",
-        "pump.committer_email",
-        "pump.branch",
-        "hand pool",
-        "pump.merge.shared_checks",
-    ] {
+    for expected in ["pump.committer_name", "pump.committer_email", "hand pool"] {
         assert!(names.contains(&expected), "{expected} not in {names:?}");
     }
 }
@@ -1092,7 +1047,7 @@ fn a_hand_role_pool_makes_the_dispatch_lanes_optional() {
 }
 
 #[test]
-fn target_level_gaps_are_missing_items_not_errors() {
+fn a_target_with_only_a_path_reports_no_gap() {
     let mut cfg = valid();
     cfg.targets.insert(
         String::from("app"),
@@ -1109,8 +1064,10 @@ fn target_level_gaps_are_missing_items_not_errors() {
         .map(|item| item.name.as_str())
         .collect();
     assert!(
-        names.contains(&"pump.targets.app.branch"),
-        "pump.targets.app.branch not in {names:?}"
+        !names
+            .iter()
+            .any(|name| name.starts_with("pump.targets.app")),
+        "{names:?}"
     );
 }
 

@@ -28,7 +28,7 @@ pub struct PumpConfig {
     /// The integration clone; cloned from `remote_url` at startup when
     /// absent. Default `<home>/repo`.
     pub repo: Option<String>,
-    /// Git remote (name) the integration branch and main live on.
+    /// Git remote (name) main lives on.
     pub remote: String,
     /// URL or path the integration clone is created from when `repo` is
     /// missing at startup; the clone's remote is named `remote`. With none
@@ -44,13 +44,8 @@ pub struct PumpConfig {
     /// Git author and committer email of every commit and merge the pump
     /// makes. Required: `validate` rejects an empty one.
     pub committer_email: String,
-    /// The integration branch. Required: `validate` rejects an empty one.
-    pub branch: String,
-    /// Main branch merged into the integration branch each batch; empty
-    /// disables merging main in and promotion.
+    /// The main branch units start from and merge into.
     pub main: String,
-    /// A clean gate fast-forwards main to the gated tip.
-    pub promote: bool,
     /// Seconds between ticks.
     pub tick: u64,
     /// Shell fragment prepended to every command line.
@@ -116,9 +111,7 @@ impl Default for PumpConfig {
             targets: BTreeMap::new(),
             committer_name: String::new(),
             committer_email: String::new(),
-            branch: String::new(),
             main: "main".into(),
-            promote: true,
             tick: 20,
             shell_prefix: String::new(),
             hand_rules: None,
@@ -157,9 +150,7 @@ impl PumpConfig {
                     path: String::from("."),
                     remote_url: self.remote_url.clone(),
                     remote: self.remote.clone(),
-                    branch: self.branch.clone(),
                     main: self.main.clone(),
-                    promote: self.promote,
                     integration_repo: self.repo.clone(),
                     merge: Some(self.merge.clone()),
                     ..PumpTarget::default()
@@ -233,9 +224,7 @@ impl PumpConfig {
         config.repo = target.integration_repo;
         config.remote_url = target.remote_url;
         config.remote = target.remote;
-        config.branch = target.branch;
         config.main = target.main;
-        config.promote = target.promote;
         config.merge = target.merge.unwrap_or_default();
         Some(config)
     }
@@ -290,12 +279,8 @@ pub struct PumpTarget {
     pub remote_url: Option<String>,
     /// Git remote name in the target checkout.
     pub remote: String,
-    /// Integration branch for this target.
-    pub branch: String,
-    /// Main branch merged into the target integration branch.
+    /// Main branch of this target.
     pub main: String,
-    /// Whether a clean target gate promotes its branch to main.
-    pub promote: bool,
     /// Optional target-specific integration checkout under the pump home.
     pub integration_repo: Option<String>,
     /// Target-specific merge behavior. Omitted fields inherit the legacy
@@ -314,9 +299,7 @@ impl Default for PumpTarget {
             github_repo: None,
             remote_url: None,
             remote: String::from("origin"),
-            branch: String::new(),
             main: String::from("main"),
-            promote: true,
             integration_repo: None,
             merge: None,
             rungs: RungsConfig::default(),
@@ -472,7 +455,7 @@ pub struct DispatchConfig {
     /// tick, for both unit starts and durable role jobs. 1 starts them one
     /// after another.
     pub parallel: u32,
-    /// `--from` of a unit dispatch; absent means `branch`.
+    /// `--from` of a unit dispatch; absent means `main`.
     pub from: Option<String>,
     /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
     /// names its kind. Without an assigned hand-role pool, the kind names the
@@ -668,10 +651,10 @@ impl PumpConfig {
         resolve(&self.home_dir(project), &self.reserved_file)
     }
 
-    /// `--from` of a unit dispatch: `dispatch.from`, else `branch`.
+    /// `--from` of a unit dispatch: `dispatch.from`, else `main`.
     #[must_use]
     pub fn dispatch_from(&self) -> &str {
-        self.dispatch.from.as_deref().unwrap_or(&self.branch)
+        self.dispatch.from.as_deref().unwrap_or(&self.main)
     }
 
     /// `--to` of thread replies: `board.reply_to`, else the first of
