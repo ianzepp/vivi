@@ -316,7 +316,7 @@ where
             }
             if all_closed {
                 grant_held(self.store, &step.task)?;
-                let attempt = self.current_attempt(&step.task);
+                let attempt = self.current_attempt(&step.task)?;
                 self.redispatch(&step, attempt)?;
                 finish_grant(self.store, &step.task)?;
             }
@@ -324,16 +324,18 @@ where
         Ok(())
     }
 
-    /// The attempt of the newest hand job on `task` (1 when none is known).
-    pub(crate) fn current_attempt(&self, task: &str) -> u32 {
-        self.st
-            .jobs()
-            .values()
-            .filter(|job| job.task.as_deref() == Some(task) && job.kind == slice_dispatch::KIND)
-            .filter_map(|job| job.payload.get("attempt")?.as_u64())
-            .map(|attempt| u32::try_from(attempt).unwrap_or(u32::MAX))
-            .max()
-            .unwrap_or(1)
+    /// The attempt of the newest job row of the slice `task`, from step_jobs.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the attempt cannot be read, or when the
+    /// task has no step_jobs row.
+    pub(crate) fn current_attempt(&self, task: &str) -> Result<u32, VivariumError> {
+        match self.store.last_attempt(task)? {
+            0 => Err(VivariumError::Message(format!(
+                "slice {task}: expected a step_jobs row; actual: none"
+            ))),
+            attempt => Ok(attempt),
+        }
     }
 }
 
