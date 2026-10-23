@@ -20,6 +20,7 @@ pub mod control;
 pub(crate) mod cycle;
 pub mod dispatch;
 pub mod envfail;
+pub mod flow;
 pub mod gate;
 pub mod gate_config;
 pub mod gatefix;
