@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use super::{GateConfig, MergeConfig, PumpConfig, PumpTarget, known};
+use super::{GateConfig, MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
 use crate::VivariumError;
 
 /// One thing the pump needs and the config does not yet say.
@@ -123,6 +123,11 @@ impl PumpConfig {
         self.validate_plan(&mut found);
         self.validate_workspace(&mut found);
         self.validate_dispatch(pools, hand_role_pool, &mut found);
+        validate_rungs("[pump.rungs]", &self.rungs, pools, &mut found);
+        for (id, target) in &self.targets {
+            let scope = format!("[pump.targets.{id}.rungs]");
+            validate_rungs(&scope, &target.rungs, pools, &mut found);
+        }
         if self.targets.is_empty() {
             if self.branch.is_empty() {
                 found.absent("pump.branch", "[pump] branch must not be empty");
@@ -421,6 +426,22 @@ fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], found: &m
     for name in &gate.pools {
         if !known(pools, name) {
             found.invalid(format!("{prefix} pools names unknown pool `{name}`"));
+        }
+    }
+}
+
+fn validate_rungs(scope: &str, rungs: &RungsConfig, pools: &[String], found: &mut Findings) {
+    if rungs.timeout == 0 {
+        found.invalid(format!("{scope} timeout must be >= 1"));
+    }
+    for name in RUNG_NAMES {
+        if rungs.command(name).is_some_and(|cmd| cmd.trim().is_empty()) {
+            found.invalid(format!("{scope} {name} must not be empty when set"));
+        }
+    }
+    for name in &rungs.pools {
+        if !known(pools, name) {
+            found.invalid(format!("{scope} pools names unknown pool `{name}`"));
         }
     }
 }
