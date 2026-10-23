@@ -80,6 +80,20 @@ fn step_replies_are_newest_first_and_reduced_to_the_agent_message() -> R {
 }
 
 #[test]
+fn step_replies_reduce_a_crlf_pool_result_to_its_receipt_message() -> R {
+    let mut mail = FakeMail::new("pump");
+    let task = mail.send_step("pump", "pump", "plan", "body", &[])?;
+    let crlf =
+        result("j1", "finished", "the answer\n\n--- stderr tail\nnoise").replace('\n', "\r\n");
+    mail.reply(&task, &crlf)?;
+
+    let replies = step_replies(&mail, &task)?;
+
+    assert_eq!(replies, vec!["the answer"]);
+    Ok(())
+}
+
+#[test]
 fn need_thread_fails_on_a_nonzero_exit_naming_the_need() -> R {
     let rig = rig()?;
     rig.host.reply("need show", 1, "boom");
