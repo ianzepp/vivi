@@ -213,7 +213,7 @@ A `lock` answer needs no `new_fact`:
 ```
 +++
 answer = "lock"
-reason = 'Nothing new since the last run; the need is done as planned.'
+reason = 'Three runs failed on the same missing decision; the operator must choose.'
 +++
 Notes.
 ```

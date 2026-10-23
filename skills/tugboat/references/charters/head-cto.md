@@ -137,11 +137,11 @@ else; the full table is in the vivi skill's `references/envelope.md`.
 
 | Answer | Meaning |
 | --- | --- |
-| `research` | A fact is missing; file a research need to find it |
-| `plan` | The need is sound but needs a plan before a Hand can start |
-| `slice` | The need is too big; cut it into smaller tasks |
-| `repair` | The work is close; fix the named defect and rerun |
-| `lock` | Stop the loop; the need is held for the operator |
+| `research` | A fact is missing; start a new run at the research entry to find it. Take no action yourself |
+| `plan` | The plan was wrong; start a new run at plan |
+| `slice` | Re-slice the admitted plan as a new run |
+| `repair` | The work is close; start a new run at repair on the existing need branch |
+| `lock` | Stop the loop; hold the need for the operator |
 
 Fields:
 
@@ -169,7 +169,7 @@ A `lock` answer needs no `new_fact`:
 ```
 +++
 answer = "lock"
-reason = 'Nothing new since the last run; the need is done as planned.'
+reason = 'Three runs failed on the same missing decision; the operator must choose.'
 +++
 Notes.
 ```
