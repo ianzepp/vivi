@@ -1,9 +1,9 @@
 //! Reading half of the mailspace port: task, need and record state, marks,
 //! bound units and the run count derived from bound sentinels.
 
-use super::{MailReader, MailspacePort, NeedStatus, TaskState, TaskStatus};
+use super::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskState, TaskStatus};
 use crate::error::VivariumError;
-use crate::mailspace::{Mailspace, folded_marks};
+use crate::mailspace::{Mailspace, PumpState, folded_marks};
 use crate::pump::flow::def::SENTINEL_MARKER;
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
 
@@ -99,6 +99,17 @@ impl MailReader for MailspacePort {
 
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
         sentinel_count_of(&self.mailspace, need)
+    }
+}
+
+impl OpenRecords for MailspacePort {
+    fn open_record_needs(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        let mut records = self.mailspace.pump_list(None, Some(PumpState::Open))?;
+        records.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(records
+            .into_iter()
+            .map(|record| (record.need, record.date))
+            .collect())
     }
 }
 

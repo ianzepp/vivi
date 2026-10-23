@@ -86,6 +86,16 @@ pub trait MailReader {
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError>;
 }
 
+/// Listing the pump records that are still open.
+pub trait OpenRecords {
+    /// The needs that have an open pump record and that record's date, oldest
+    /// first.
+    ///
+    /// # Errors
+    /// Returns an error when the records cannot be read.
+    fn open_record_needs(&self) -> Result<Vec<(String, String)>, VivariumError>;
+}
+
 impl MailWriter for MailspacePort {
     fn send_step(
         &mut self,
