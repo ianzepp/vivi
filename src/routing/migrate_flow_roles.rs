@@ -19,7 +19,7 @@ const FLOW_ROLES: [(&str, &str); 3] = [
 /// Plan the `researcher`, `admitter` and `slicer` roles: a missing role is
 /// added read-only on the hand role's pool, a role with no pool gets that
 /// pool, and a blank charter gets the shipped text. The band is the
-/// operator's to set, so none is copied here.
+/// operator's to set: none is copied, and `migrate` asks for one in review.
 pub(super) fn plan_flow_roles(
     config: &MailspaceConfig,
     pump: &PumpConfig,
@@ -69,10 +69,13 @@ pub(super) fn plan_flow_roles(
 }
 
 fn find_role<'a>(config: &'a MailspaceConfig, name: &str) -> Option<&'a LocalIdentity> {
-    config
-        .identities
-        .iter()
-        .find(|role| role.name.eq_ignore_ascii_case(name))
+    config.identities.iter().find(|role| {
+        role.name.eq_ignore_ascii_case(name)
+            || role
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+    })
 }
 
 #[cfg(test)]
