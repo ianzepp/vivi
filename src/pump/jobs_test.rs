@@ -31,6 +31,22 @@ fn spec(id: &str) -> JobSpec {
 }
 
 #[test]
+fn enqueue_refuses_a_read_only_job_without_a_start_ref() {
+    let mut store = Store::default();
+    let mut job = spec("review-1");
+    job.read_only = true;
+    let err = enqueue(&mut store, job.clone()).unwrap_err().to_string();
+    assert!(
+        err.contains("review-1") && err.contains("from_ref"),
+        "{err}"
+    );
+    assert!(store.jobs.is_empty());
+    job.from_ref = Some("main".into());
+    enqueue(&mut store, job).unwrap();
+    assert_eq!(store.jobs.len(), 1);
+}
+
+#[test]
 fn enqueue_is_idempotent_but_rejects_reusing_an_id_for_other_work() {
     let mut store = Store::default();
     let job = spec("plan-board-1");

@@ -286,6 +286,12 @@ pub trait JobStore {
 /// Returns an error if the same ID is reused for different job inputs.
 pub fn enqueue(st: &mut impl JobStore, spec: JobSpec) -> Result<(), VivariumError> {
     validate_id(&spec.id)?;
+    if spec.read_only && spec.from_ref.is_none() {
+        return Err(VivariumError::Config(format!(
+            "pump job {:?} is read-only and has no start ref (from_ref); a read-only dispatch needs one",
+            spec.id
+        )));
+    }
     if let Some(current) = st.jobs().get(&spec.id) {
         if same_spec(current, &spec) {
             return Ok(());
