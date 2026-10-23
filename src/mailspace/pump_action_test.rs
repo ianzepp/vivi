@@ -213,7 +213,10 @@ fn an_answer_posts_on_the_open_record_of_the_steps_need_with_step_and_word_heade
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
     let record = mailspace.pump_send(None, &need, None).unwrap();
-    let step = send_task(&mailspace, &format!("pump-step: {need} r1 plan\n\nPlan"));
+    let step = send_task(
+        &mailspace,
+        &crate::letter::fixture::step_body(&need, 1, "plan", "Plan"),
+    );
 
     let posted = mailspace
         .pump_post_answer(None, &step, "planned", "operator ruled")
@@ -235,7 +238,10 @@ fn an_answer_to_the_run_sentinel_posts_too() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
     mailspace.pump_send(None, &need, None).unwrap();
-    let sentinel = send_task(&mailspace, &format!("pump-run-sentinel: {need} r1"));
+    let sentinel = send_task(
+        &mailspace,
+        &crate::letter::fixture::sentinel_body(&need, 1, ""),
+    );
 
     mailspace
         .pump_post_answer(None, &sentinel, "failed", "")
@@ -248,7 +254,10 @@ fn an_answer_to_the_run_sentinel_posts_too() {
 fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
-    let step = send_task(&mailspace, &format!("pump-step: {need} r1 plan"));
+    let step = send_task(
+        &mailspace,
+        &crate::letter::fixture::step_body(&need, 1, "plan", ""),
+    );
     let error = mailspace
         .pump_post_answer(None, &step, "planned", "")
         .unwrap_err()

@@ -141,14 +141,14 @@ fn ready_wants_require_promotion() {
 }
 
 #[test]
-fn clauseless_wants_combine_parked_and_missing_clause() {
+fn clauseless_wants_are_parked_without_a_missing_clause_note() {
     let (mailspace, _tmp) = roster();
     let want = send_item(&mailspace, "wants", "want", "parked idea", "someday");
     let exception =
         exception_for(&mailspace, &want).unwrap_or_else(|| panic!("expected exception for {want}"));
     assert_eq!(exception.reason, "want_requires_promotion");
     assert!(exception.detail.contains("parked"), "{exception:?}");
-    assert!(exception.detail.contains("no done_when"), "{exception:?}");
+    assert!(!exception.detail.contains("no done_when"), "{exception:?}");
 }
 
 #[test]
@@ -544,4 +544,72 @@ fn judged_apply_skips_cleanly_on_provider_error() {
         !_tmp.path().join(".vivi/judgment-corpus.jsonl").exists(),
         "no corpus record on provider failure"
     );
+}
+
+#[test]
+fn front_matter_need_dispatches_with_clauses_and_write_scope() {
+    let (mailspace, _tmp) = roster();
+    let mut front = crate::letter::work::NeedFront::new(vec!["first".into(), "second".into()]);
+    front.write_scope = vec!["src/a.rs".into()];
+    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let need = send_item(&mailspace, "needs", "need", "front need", &body);
+    let dispatch =
+        manifest_for(&mailspace, &need).unwrap_or_else(|| panic!("expected dispatch for {need}"));
+    assert_eq!(dispatch.done_when_clauses, 2);
+    assert!(dispatch.write_scope);
+}
+
+#[test]
+fn front_matter_step_task_is_pump_owned() {
+    let (mailspace, _tmp) = roster();
+    let body = crate::letter::fixture::step_body("n1", 1, "plan", "Plan");
+    let task = send_item(&mailspace, "tasks", "task", "step", &body);
+    let exception =
+        exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
+    assert_eq!(exception.reason, "pump_owned");
+}
+
+#[test]
+fn invalid_front_matter_task_is_letter_invalid() {
+    let (mailspace, _tmp) = roster();
+    let task = file_raw_task(&mailspace, "+++\ndone_when = 5\n+++\nbody\n");
+    let exception =
+        exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
+    assert_eq!(exception.reason, "letter_invalid");
+}
+
+/// File a task whose stored bytes are `body` verbatim, bypassing the send gate.
+fn file_raw_task(mailspace: &Mailspace, body: &str) -> String {
+    let domain = mailspace.address_domain();
+    let bytes = format!(
+        "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: raw\r\n\
+         Message-ID: <raw@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         X-Vivi-Kind: task\r\n\r\n{body}"
+    )
+    .into_bytes();
+    let storage = mailspace.storage().unwrap();
+    let stored = storage
+        .ingest_message(
+            &MessageIngestRequest {
+                account: "cto".into(),
+                local_role: "tasks".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: "cto\0raw".into(),
+                remote: None,
+            },
+            &bytes,
+        )
+        .unwrap();
+    let handle = storage.display_handle(&stored.message_id).unwrap();
+    drop(storage);
+    mailspace
+        .backlog_attach_letter("task", &stored.message_id, "raw", &bytes)
+        .unwrap();
+    mailspace
+        .backlog_settle_pending_dependencies(&[(stored.message_id.clone(), stored.content_id)])
+        .unwrap();
+    handle
 }

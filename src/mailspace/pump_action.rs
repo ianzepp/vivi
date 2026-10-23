@@ -34,7 +34,6 @@ use serde::Serialize;
 use super::pump_record::{PumpState, header_value, in_write_batch};
 use super::{Mailspace, SendRequest};
 use crate::error::VivariumError;
-use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
 
 /// The header naming the action.
@@ -303,8 +302,8 @@ impl Mailspace {
     /// Post an operator answer to the flow step task `step_task`, on the
     /// open pump record of the need the step belongs to.
     ///
-    /// The need is read from the step task's own body (`pump-step: <need> ...`
-    /// or `pump-run-sentinel: <need> ...`); a task that is neither is refused.
+    /// The need is read from the step task's own `[step]` table (a pump step
+    /// or run sentinel); a task without one is refused.
     /// The note (may be empty) is the letter's body.
     ///
     /// # Errors
@@ -490,22 +489,18 @@ impl Mailspace {
     }
 }
 
-/// The need a pump step task or run sentinel belongs to, read from its body.
+/// The need a pump step task or run sentinel belongs to, read from its
+/// `[step]` table.
 fn step_need(storage: &Storage, task: &str) -> Result<String, VivariumError> {
     let message_id = storage
         .resolve_message_token(task)
         .map_err(|error| VivariumError::Message(format!("unknown task '{task}': {error}")))?;
     let body = crate::extract::extract_text(&storage.read_message(&message_id)?)?;
-    let body = body.trim_start();
-    [STEP_MARKER, SENTINEL_MARKER]
-        .iter()
-        .find_map(|marker| body.strip_prefix(marker))
-        .and_then(|rest| rest.split_whitespace().next())
-        .map(str::to_string)
+    crate::letter::read::step_of(&body)
+        .map(|step| step.need)
         .ok_or_else(|| {
             VivariumError::Message(format!(
-                "{task} is not a pump step task: its body starts with neither \
-                 `{STEP_MARKER}` nor `{SENTINEL_MARKER}`"
+                "{task} is not a pump step task: it has no [step] table"
             ))
         })
 }
