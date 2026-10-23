@@ -655,3 +655,66 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
         ]
     );
 }
+
+#[test]
+fn the_fake_returns_port_replies_for_its_identity_and_foreign_ones_only_for_their_sender() -> R {
+    let mut mail = FakeMail::new("pump");
+    let task = mail.send_step("pump", "mind", "slice", "pump-step: n1 r1 slice:a", &[])?;
+    mail.reply(&task, "pump-attempt: mine")?;
+    mail.foreign_reply(&task, "mind", "pump-attempt: forged");
+    mail.foreign_reply(&task, "mind", "other: not marked");
+
+    let texts = |found: Vec<(String, String)>| -> Vec<String> {
+        found.into_iter().map(|(_, text)| text).collect()
+    };
+    assert_eq!(
+        texts(mail.marked_replies_from(&task, "pump-attempt:", "pump")?),
+        ["pump-attempt: mine"]
+    );
+    assert_eq!(
+        texts(mail.marked_replies_from(&task, "pump-attempt:", "mind")?),
+        ["pump-attempt: forged"]
+    );
+    assert!(
+        mail.marked_replies_from(&task, "pump-attempt:", "nobody")?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_real_port_reads_marked_replies_from_one_sender_only() -> R {
+    use crate::pump::fixture::project;
+    use crate::pump::flow::mail::MailspacePort;
+
+    let p = project();
+    let port = MailspacePort {
+        mailspace: p.mailspace.clone(),
+        pump_identity: "mind".into(),
+    };
+    let task = port.send_step("mind", "operator", "slice", "pump-step: n1 r1 slice:a", &[])?;
+    let marker = "pump-attempt:";
+    port.reply(
+        &task,
+        &crate::mailspace::marked_line(marker, "from the pump"),
+    )?;
+    p.mailspace.reply(
+        &task,
+        "operator",
+        Vec::new(),
+        Vec::new(),
+        None,
+        crate::mailspace::marked_line(marker, "from a member"),
+    )?;
+
+    let all = port.marked_replies(&task, marker)?;
+    assert_eq!(all.len(), 2);
+    let from_pump = port.marked_replies_from(&task, marker, "mind")?;
+    let texts: Vec<&str> = from_pump.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(texts, ["pump-attempt: from the pump"]);
+    let from_member = port.marked_replies_from(&task, marker, "operator")?;
+    let texts: Vec<&str> = from_member.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(texts, ["pump-attempt: from a member"]);
+    assert!(port.marked_replies_from(&task, marker, "ghost")?.is_empty());
+    Ok(())
+}

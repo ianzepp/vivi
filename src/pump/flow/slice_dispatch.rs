@@ -136,6 +136,19 @@ pub trait SliceMail: MailReader {
         task: &str,
         marker: &str,
     ) -> Result<Vec<(String, String)>, VivariumError>;
+
+    /// Like [`SliceMail::marked_replies`], but only the replies sent by the
+    /// identity `sender` (a role name or alias). A reply whose sender does not
+    /// resolve to `sender` is left out.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the thread cannot be read.
+    fn marked_replies_from(
+        &self,
+        task: &str,
+        marker: &str,
+        sender: &str,
+    ) -> Result<Vec<(String, String)>, VivariumError>;
 }
 
 impl SliceMail for MailspacePort {
@@ -153,11 +166,55 @@ impl SliceMail for MailspacePort {
         task: &str,
         marker: &str,
     ) -> Result<Vec<(String, String)>, VivariumError> {
+        self.marked_where(task, marker, |_| true)
+    }
+
+    fn marked_replies_from(
+        &self,
+        task: &str,
+        marker: &str,
+        sender: &str,
+    ) -> Result<Vec<(String, String)>, VivariumError> {
+        let wanted = self.mailspace.resolve_identity(sender);
+        self.marked_where(task, marker, |message| match &wanted {
+            Ok(wanted) => self.sent_by(message, wanted),
+            Err(_) => false,
+        })
+    }
+}
+
+/// The bare address inside a stored `From` value (`Name <a@b>` or `a@b`).
+fn bare_address(from: &str) -> &str {
+    match (from.find('<'), from.rfind('>')) {
+        (Some(open), Some(close)) if open < close => from[open + 1..close].trim(),
+        _ => from.trim(),
+    }
+}
+
+impl MailspacePort {
+    /// Whether `message` came from the identity `wanted` (already resolved).
+    /// A sender that resolves to no known role is not a match.
+    fn sent_by(&self, message: &MailspaceThreadMessage, wanted: &str) -> bool {
+        match self.mailspace.resolve_identity(bare_address(&message.from)) {
+            Ok(from) => from == wanted,
+            Err(_) => false,
+        }
+    }
+
+    /// The marked replies on `task` that `keep` accepts, oldest first, each as
+    /// `(sortable date, trimmed text)`.
+    fn marked_where(
+        &self,
+        task: &str,
+        marker: &str,
+        keep: impl Fn(&MailspaceThreadMessage) -> bool,
+    ) -> Result<Vec<(String, String)>, VivariumError> {
         let (id, thread) = self.thread_of(task)?;
         let mut found: Vec<MailspaceThreadMessage> = thread
             .into_iter()
             .filter(|message| message.event.is_none() && message.message_id != id)
             .filter(|message| message.body.trim_start().starts_with(marker))
+            .filter(|message| keep(message))
             .collect();
         order_marked(&mut found);
         Ok(found
@@ -176,9 +233,7 @@ impl SliceMail for MailspacePort {
             })
             .collect())
     }
-}
 
-impl MailspacePort {
     /// The task's resolved message id and its thread, oldest first.
     fn thread_of(
         &self,
@@ -654,6 +709,24 @@ impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
                 );
                 (format!("{:08}", at.unwrap_or_default()), reply.trim().to_owned())
             })
+            .collect())
+    }
+
+    fn marked_replies_from(
+        &self,
+        task: &str,
+        marker: &str,
+        sender: &str,
+    ) -> Result<Vec<(String, String)>, VivariumError> {
+        if sender == self.identity {
+            return self.marked_replies(task, marker);
+        }
+        let foreign = self.foreign.get(task).map(Vec::as_slice).unwrap_or(&[]);
+        Ok(foreign
+            .iter()
+            .enumerate()
+            .filter(|(_, (who, body))| who == sender && body.trim_start().starts_with(marker))
+            .map(|(at, (_, body))| (format!("{at:08}"), body.trim().to_owned()))
             .collect())
     }
 }
