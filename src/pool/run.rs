@@ -11,10 +11,10 @@ use super::provider::{CreateSpec, MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
 use super::requires;
 use super::slot::{self, META_STATE, PoolId, STATE_READY, SlotStatus};
+use crate::error::VivariumError;
 
 /// Environment names the seed needs once; they never stay on a ready slot.
 pub const ONCE_ENV: [&str; 1] = ["GH_TOKEN"];
-use crate::error::VivariumError;
 
 const MISSING_GRACE: Duration = Duration::from_secs(30);
 
@@ -204,29 +204,33 @@ fn adopt_finished_seeds(
 ) -> bool {
     let mut touched = false;
     for machine in machines {
-        let ours = id.owns(machine);
         let marked = machine.metadata.get(META_STATE).map(String::as_str) == Some(STATE_READY);
-        if ours && !marked && machine.state == "stopped" {
-            let fresh = provider
-                .machine(&machine.id)
-                .unwrap_or_else(|_| machine.clone());
-            if fresh.state == "stopped" && fresh.exit_code == Some(0) {
-                progress.say(&format!("adopting a finished seed on {}", machine.name));
-                if let Err(e) = finalize_slot(provider, &machine.id) {
-                    eprintln!("warning: could not finish seeding {}: {e}", machine.name);
-                }
-                touched = true;
+        if !id.owns(machine) || marked || machine.state != "stopped" {
+            continue;
+        }
+        let fresh = provider
+            .machine(&machine.id)
+            .unwrap_or_else(|_| machine.clone());
+        if fresh.state == "stopped" && fresh.exit_code == Some(0) {
+            progress.say(&format!("adopting a finished seed on {}", machine.name));
+            if let Err(e) = finalize_slot(provider, &machine.id) {
+                eprintln!("warning: could not finish seeding {}: {e}", machine.name);
             }
+            touched = true;
         }
     }
     touched
 }
+
+/// A slot whose create call succeeded, and when, for the seed timeout.
 struct Launched {
     name: String,
     id: String,
     at: Instant,
 }
 
+/// Create each missing slot in turn, `spacing` apart. A failure on the first
+/// create is the whole call's error; a later one only warns.
 fn launch_all(
     provider: &dyn PoolProvider,
     config: &PoolConfig,
@@ -305,6 +309,7 @@ fn slot_spec(
     }
 }
 
+/// Poll the listing until every launched slot has an outcome.
 fn wait_for_seeds(
     provider: &dyn PoolProvider,
     id: &PoolId,
@@ -375,27 +380,27 @@ struct ListingErrors {
 impl ListingErrors {
     fn observe(&mut self, pool: &str, error: Option<&String>, progress: &Progress) {
         let now = super::work::epoch_secs();
-        match (error, self.open) {
-            (Some(message), open) => {
-                let same = open.is_some_and(|i| &self.issues[i].message == message);
-                if same {
-                    return;
-                }
-                self.close(now);
-                progress.say(&format!("warning: cannot list machines yet: {message}"));
-                self.open = Some(self.issues.len());
-                self.issues.push(Issue {
-                    pool: Some(pool.to_string()),
-                    kind: "list-error",
-                    subject: None,
-                    message: message.clone(),
-                    first_seen: now,
-                    cleared: None,
-                });
-            }
-            (None, Some(_)) => self.close(now),
-            (None, None) => {}
+        let Some(message) = error else {
+            self.close(now);
+            return;
+        };
+        if self
+            .open
+            .is_some_and(|i| &self.issues[i].message == message)
+        {
+            return;
         }
+        self.close(now);
+        progress.say(&format!("warning: cannot list machines yet: {message}"));
+        self.open = Some(self.issues.len());
+        self.issues.push(Issue {
+            pool: Some(pool.to_string()),
+            kind: "list-error",
+            subject: None,
+            message: message.clone(),
+            first_seen: now,
+            cleared: None,
+        });
     }
 
     fn close(&mut self, now: u64) {
@@ -405,19 +410,30 @@ impl ListingErrors {
     }
 }
 
+impl Launched {
+    fn outcome(
+        &self,
+        pool: &PoolId,
+        state: &str,
+        exit_code: Option<i64>,
+        timed_out: bool,
+    ) -> SlotOutcome {
+        SlotOutcome {
+            pool: pool.pool.clone(),
+            name: self.name.clone(),
+            id: self.id.clone(),
+            state: state.to_string(),
+            exit_code,
+            seconds: self.at.elapsed().as_secs(),
+            timed_out,
+            error: None,
+        }
+    }
+}
+
 /// The outcome for a slot that could not be looked at for the whole timeout.
 fn unseen((id, slot): (&PoolId, &Launched), timeout: Duration) -> Option<SlotOutcome> {
-    let elapsed = slot.at.elapsed();
-    (elapsed >= timeout).then(|| SlotOutcome {
-        pool: id.pool.clone(),
-        name: slot.name.clone(),
-        id: slot.id.clone(),
-        state: "unknown".to_string(),
-        exit_code: None,
-        seconds: elapsed.as_secs(),
-        timed_out: true,
-        error: None,
-    })
+    (slot.at.elapsed() >= timeout).then(|| slot.outcome(id, "unknown", None, true))
 }
 
 /// The outcome for one slot once it has stopped, vanished, or timed out.
@@ -432,16 +448,8 @@ fn settled(
     let gone = state == "missing" && elapsed >= MISSING_GRACE;
     let finished = matches!(state, "stopped" | "destroyed" | "failed") || gone;
     let timed_out = !finished && elapsed >= timeout;
-    (finished || timed_out).then(|| SlotOutcome {
-        pool: id.pool.clone(),
-        name: slot.name.clone(),
-        id: slot.id.clone(),
-        state: state.to_string(),
-        exit_code: record.and_then(|m| m.exit_code),
-        seconds: elapsed.as_secs(),
-        timed_out,
-        error: None,
-    })
+    (finished || timed_out)
+        .then(|| slot.outcome(id, state, record.and_then(|m| m.exit_code), timed_out))
 }
 
 /// What making the pool's home ready found.
