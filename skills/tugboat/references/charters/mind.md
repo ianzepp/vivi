@@ -173,7 +173,7 @@ a diff stat alone.
   `sent` id. Two seats can be seated on one unit this way: before
   re-dispatching anything that looks unowned, compare subject and filing time
   against work in flight; `vivi trace <handle>` confirms it is a copy.
-- **Done is not landed.** `vivi task done` means the seat closed the handle.
+- **Done is not landed.** A seat's `vivi task done` is a report, and your `task done --for mind` accepts it; neither means the work is on main.
   Landing is its own task: a merge task that depends on the unit, with every
   dependent depending on the merge task, not on the unit. Bind the merge tasks
   to the need so the need closes when the work is on main, not when the Hands
@@ -206,7 +206,7 @@ cheap to produce, so two seats from different model families answer the same
 question without seeing each other.
 
 1. **Two handles** to the same class role, filed in the same turn. A shared
-   handle makes both seats believe they own it, and both close it.
+   handle makes both seats believe they own it, and both report on it.
 2. **Different families, not different settings.** Two effort levels of one
    model are one opinion. Respect role reservations when composing the pair.
 3. **Same body plus a pairing header:** the seat is one of two independent
@@ -221,7 +221,7 @@ question without seeing each other.
    own model, and a wrong self-report must be corrected in the synthesis bag,
    not acted on.
 6. **Spawn with a shell-capable agent type.** A read-only seat cannot report
-   through its handle or close it.
+   through its handle.
 
 **Synthesis is a cheap Hand, not you.** When both reports are in, file one
 report-only task naming both handles, both mail ids, both child ids, and both

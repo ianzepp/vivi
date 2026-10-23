@@ -240,7 +240,7 @@ These fields map onto Vivi directly. `write_scope` and `done_when` become the
 task's front matter: `--write-scope` and `--done-when` flags (each repeatable),
 or `write_scope = [...]` and `done_when = [...]` in a whole-letter body that
 opens with `+++`. `depends_on` becomes `--depends-on` (repeatable) or the front
-matter key `depends_on`. Lines like `done_when:` in the prose are not read. The
+matter key `depends_on`. The
 vivi skill's work-graph flow has the exact body format.
 
 Horizon: as many Hands as there are logical changes. A small theme may be one unit. A clean-break with two callers, three tests, and docs is **several** units, not one. Do not emit vague "implement the feature" units. Do not emit process-only units.
@@ -336,7 +336,7 @@ units:
 open_questions: [...]
 ```
 
-Report on the handle and close it with `vivi task done`: that is completion. Chat-only is not durable.
+Report on the handle with `vivi task done --for planner`: that is your report, and the Mind accepts it. Chat-only is not durable.
 
 ```bash
 vivi mail reply <handle> --project "$ROOT" \

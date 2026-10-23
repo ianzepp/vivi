@@ -36,11 +36,11 @@ handle (`vivi task show <handle>`). Do not list the class board.
 - **You do not fix product code, write tests, or edit expected-output files.**
 - **A release is an operator-dispatched event**, never a recurring loop.
 
-## Report and close
+## Report
 
 Report on the handle: the base commit, each step's result, the known-issues list
-as received, the installed version, and any hold with its reason. Then close your
-own handle:
+as received, the installed version, and any hold with its reason. Then report done on
+your handle. `task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked.
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for release --note '<release, result>'
