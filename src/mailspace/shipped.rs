@@ -62,3 +62,19 @@ pub fn shipped_charter(role: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Whether a charter still asks for the 19.x reply format: not blank, and
+/// either it carries a `PUMP-PLAN-BEGIN` marker or it has no `+++` front
+/// matter line (every v20 charter ends in a TOML reply envelope). A blank
+/// charter is not flagged here; the doctor reports empty charters.
+#[must_use]
+pub fn pre_v20_charter(text: &str) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    text.contains("PUMP-PLAN-BEGIN") || !text.lines().any(|line| line.trim() == "+++")
+}
+
+#[cfg(test)]
+#[path = "shipped_test.rs"]
+mod tests;

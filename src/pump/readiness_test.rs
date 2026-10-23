@@ -269,3 +269,53 @@ fn a_writable_cadence_role_is_one_warning() {
             .any(|name| name.contains("head-writer"))
     );
 }
+
+fn charter_errors(issues: &[Issue]) -> Vec<&str> {
+    errors(issues)
+        .into_iter()
+        .filter(|message| message.starts_with("charter "))
+        .collect()
+}
+
+#[test]
+fn a_pre_v20_pump_planner_charter_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = fresh(tmp.path());
+    space
+        .set_charter(
+            "pump-planner",
+            "Answer with PUMP-PLAN-BEGIN {json} PUMP-PLAN-END",
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    let found = charter_errors(&issues);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("charter pump-planner: no v20 reply envelope"));
+    assert!(found[0].contains("vivi config migrate --write"));
+}
+
+#[test]
+fn the_shipped_pump_planner_charter_is_no_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = fresh(tmp.path());
+    space
+        .set_charter(
+            "pump-planner",
+            crate::mailspace::shipped::PUMP_PLANNER_CHARTER,
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    assert!(charter_errors(&issues).is_empty(), "{issues:?}");
+}
+
+#[test]
+fn a_role_with_no_charter_file_is_no_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let space = fresh(tmp.path());
+    let path = space.dir.join("charters").join("pump-planner.md");
+    if path.exists() {
+        fs::remove_file(&path).unwrap();
+    }
+    let issues = assess(&reopen(tmp.path()));
+    assert!(charter_errors(&issues).is_empty(), "{issues:?}");
+}

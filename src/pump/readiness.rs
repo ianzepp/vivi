@@ -8,6 +8,7 @@
 //! registry and `vivi pump health`, so they never disagree.
 
 use crate::mailspace::Mailspace;
+use crate::mailspace::shipped::pre_v20_charter;
 use crate::pump::config::PumpConfig;
 use crate::routing::{self, Issue, Severity};
 
@@ -19,10 +20,26 @@ pub fn assess(mailspace: &Mailspace) -> Vec<Issue> {
     let mut issues = Vec::new();
     if let Some(cfg) = &mailspace.config.pump {
         config_issues(mailspace, cfg, &mut issues);
+        charter_issues(mailspace, &mut issues);
     }
     issues.extend(routing::validate(&mailspace.config));
     cadence_issues(mailspace, &mut issues);
     dedupe_items(issues)
+}
+
+/// Every pump role's charter must carry the v20 reply envelope; one that
+/// still asks for the 19.x format makes the pump's jobs unparseable.
+fn charter_issues(mailspace: &Mailspace, issues: &mut Vec<Issue>) {
+    for (role, _) in routing::pump_charter_roles(&mailspace.config) {
+        match mailspace.read_charter(&role) {
+            Ok(text) if pre_v20_charter(&text) => issues.push(Issue::error(format!(
+                "charter {role}: no v20 reply envelope (it still asks for the 19.x format); \
+                 run `vivi config migrate --write` to install the shipped charter"
+            ))),
+            Ok(_) => {}
+            Err(err) => issues.push(Issue::error(format!("charter {role}: {err}"))),
+        }
+    }
 }
 
 /// Cadence jobs always run read-only, so a role that has a cadence but would
