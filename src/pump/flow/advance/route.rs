@@ -249,6 +249,19 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
             return Ok(());
         }
         let o = self.outcome;
+        // An earlier route that failed part way already sent this node: reuse
+        // its row so the retry binds it instead of sending a second task.
+        if let Some(row) = self
+            .rows
+            .iter()
+            .find(|r| r.node == node.id && r.state != StepState::Done && r.task != o.task)
+        {
+            self.routed.sent.push(Sent {
+                node: node.id.clone(),
+                task: row.task.clone(),
+            });
+            return Ok(());
+        }
         let body = format!(
             "{STEP_MARKER} {} r{} {}\n\n{}",
             o.need, o.run, node.id, node.label
