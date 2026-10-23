@@ -10,7 +10,7 @@ use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::mail::{MailReader, MailWriter};
-use crate::pump::flow::main_rung::{FAILING, key};
+use crate::pump::flow::main_rung::{FAILING, REPAIRED, key};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -262,5 +262,75 @@ fn a_nonzero_send_without_a_handle_names_the_expectation() -> R {
         "{text}"
     );
     assert_eq!(rig.store.main_state("main-repair-sending:default")?, None);
+    Ok(())
+}
+
+const MERGE: &str = "3333333333333333333333333333333333333333";
+const OLD_TIP: &str = "2222222222222222222222222222222222222222";
+
+impl Rig {
+    fn red_at(&mut self, tip: &str, failing: &[&str]) -> R {
+        report_red(
+            &self.ctx,
+            &self.store,
+            &mut self.mail,
+            "default",
+            tip,
+            &ids(failing),
+            "tail text",
+        )
+    }
+
+    fn repaired(&self) -> R {
+        self.store.set_main_state(&key(REPAIRED, "default"), MERGE)
+    }
+}
+
+#[test]
+fn a_red_on_a_tip_without_the_repair_merge_files_nothing() -> R {
+    let mut rig = rig()?;
+    rig.repaired()?;
+    rig.host.reply("cat-file -e", 0, "");
+    rig.host.reply("merge-base --is-ancestor", 1, "");
+    rig.red_at(OLD_TIP, &["a::t1"])?;
+    assert!(rig.sends().is_empty());
+    assert!(rig.replies().is_empty());
+    assert_eq!(rig.store.main_state(&key(FAILING, "default"))?, None);
+    Ok(())
+}
+
+#[test]
+fn a_red_on_a_tip_with_the_repair_merge_files_a_need() -> R {
+    let mut rig = rig()?;
+    rig.repaired()?;
+    rig.host.reply("cat-file -e", 0, "");
+    rig.host.reply("merge-base --is-ancestor", 0, "");
+    rig.red_at(OLD_TIP, &["a::t1"])?;
+    assert_eq!(rig.sends().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn an_error_on_the_ancestry_check_leaves_the_red_unapplied() -> R {
+    let mut rig = rig()?;
+    rig.repaired()?;
+    rig.host.reply("cat-file -e", 1, "");
+    let err = rig.red_at(OLD_TIP, &["a::t1"]).unwrap_err().to_string();
+    assert!(err.contains(OLD_TIP) && err.contains(MERGE), "{err}");
+    assert!(rig.sends().is_empty());
+    Ok(())
+}
+
+#[test]
+fn no_repaired_key_keeps_todays_behavior() -> R {
+    let mut rig = rig()?;
+    rig.red_at(OLD_TIP, &["a::t1"])?;
+    assert_eq!(rig.sends().len(), 1);
+    assert!(
+        rig.host
+            .commands()
+            .iter()
+            .all(|c| !c.contains("is-ancestor"))
+    );
     Ok(())
 }
