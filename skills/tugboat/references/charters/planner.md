@@ -237,9 +237,11 @@ write a validation novel. The Mind's Hand task is a pointer: goal path + this
 `id`.
 
 These fields map onto Vivi directly. `write_scope` and `done_when` become the
-task body's `write_scope:` and `done_when:` lines (each begins its own line),
-and `depends_on` becomes `--depends-on` edges in the backlog graph. The vivi
-skill's work-graph flow has the exact body format.
+task's front matter: `--write-scope` and `--done-when` flags (each repeatable),
+or `write_scope = [...]` and `done_when = [...]` in a whole-letter body that
+opens with `+++`. `depends_on` becomes `--depends-on` (repeatable) or the front
+matter key `depends_on`. Lines like `done_when:` in the prose are not read. The
+vivi skill's work-graph flow has the exact body format.
 
 Horizon: as many Hands as there are logical changes. A small theme may be one unit. A clean-break with two callers, three tests, and docs is **several** units, not one. Do not emit vague "implement the feature" units. Do not emit process-only units.
 

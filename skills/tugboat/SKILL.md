@@ -988,7 +988,7 @@ many live seats on one provider) are different constraints: the first changes wh
 slug you pick, the second only how many, and neither is a reason to leave dispatchable
 work undispatched.
 
-| Role | Band | Per-task `band:` |
+| Role | Band | Per-task `band` (front matter) |
 | --- | --- | --- |
 | Mind | `P1-S2` | none |
 | Head | `P0-S2` | none — always P0 |
@@ -1002,8 +1002,9 @@ work undispatched.
 A band names a model **at an effort**, not a model: the same model at low and
 at xhigh sits in different P bands, so resolve a band to a slug *and* effort
 from the host's inventory. The role band is the default. The Mind overrides it
-for one assignment with an optional `band:` field in the task body: a bare P
-(`band: P1`) keeps the role's S, a full band (`band: P0-S2`) sets both. The
+for one assignment with the optional `band` key in the task's front matter: a
+bare P (`band = "P1"`) keeps the role's S, a full band (`band = "P0-S2"`) sets
+both. `task send` has no flag for it: put it in a whole-letter body. The
 Mind sets it when filing, from the unit's complexity; the seat never chooses
 its own. The Mind and Heads take no override.
 
@@ -1048,7 +1049,7 @@ selected for work. See [Context economy](#context-economy).
 
 1. Reconciles execution state under Rule 2: **running** (live process), **dispatching** (handle + spawn this turn), **idle** (no process), or **spawn debt** (executable open handle without a live owner). Use the project's occupancy signal when it has one.
 2. Inventories the Mind board by kind ([Board kinds](#board-kinds)): open **needs** (priority backlog), open **wants** (deferred backlog), open **tasks** (active assignment / spawn debt), and **mail** (communication to integrate). Drain needs before wants. Work this mailspace sent to another mailspace's role lists as role `sent`: tracked here, dispatched there.
-3. Consumes the step manifest: `dispatches` are the ready independent implementation units (readiness is computed from the graph, including later-stage and cross-goal items whose named dependencies are met — the `pull_forward` fact); `exceptions` route by reason — `want_requires_promotion` (promotion stays a requested action), `lowered_awaiting_units` (dispatch the units, not the parent), `no_done_when` (back to the Planner), `item_missing` and `untracked_item` (hygiene: `vivi graph audit --repair`), `not_settled` (a `step --apply` on a copy that is not done), `awaiting_acceptance` (a Hand or Auditor reported it done; the detail names who reported and the `done --for mind` that accepts it; its dependents stay blocked), `awaiting_remote` (work handed to another mailspace: never dispatch or re-file it; the receiving mailspace runs it, the report returns as mail after `vivi sync`, and its dependents stay blocked until the Mind closes it). Work held for another mailspace's role mints no node, so it never appears here. Unlowered goals, completed frozen ranges eligible for audit, and spawn debt complete the inventory.
+3. Consumes the step manifest: `dispatches` are the ready independent implementation units (readiness is computed from the graph, including later-stage and cross-goal items whose named dependencies are met — the `pull_forward` fact); `exceptions` route by reason — `want_requires_promotion` (promotion stays a requested action), `lowered_awaiting_units` (dispatch the units, not the parent), `no_done_when` (a task whose front matter has no `done_when`: back to the Planner), `letter_invalid` (an old-format letter with no front matter: re-send it in the new format; the pump will not run it), `item_missing` and `untracked_item` (hygiene: `vivi graph audit --repair`), `not_settled` (a `step --apply` on a copy that is not done), `awaiting_acceptance` (a Hand or Auditor reported it done; the detail names who reported and the `done --for mind` that accepts it; its dependents stay blocked), `awaiting_remote` (work handed to another mailspace: never dispatch or re-file it; the receiving mailspace runs it, the report returns as mail after `vivi sync`, and its dependents stay blocked until the Mind closes it). Work held for another mailspace's role mints no node, so it never appears here. Unlowered goals, completed frozen ranges eligible for audit, and spawn debt complete the inventory.
 4. Checks operator/role **mail**, dirty files; classifies dirt A/B/C. Integrate mail into needs/wants/tasks when it discovers work; do not leave must-do items as chat-only. For every claimed blocker, name the exact affected dependency boundary and separately inventory unaffected work. A blocker with no live repair/diagnostic/decision owner is the highest-priority spawn debt (Rule 4).
 5. Chooses the first material branch below and performs only that coherent batch:
    - **Returned reports:** integrate one completed batch and route only its immediate repairs or successors. Integration means Rule 6 reconcile of paper (handle, commits, scope, validation claim), then **closing each reconciled handle** with `vivi task done --for mind <handle>`, the acceptance that unlocks dependents and joins a bound need (or reopening it) — plus advancing the goal/campaign status records for the landed units (Mind-owned lifecycle, Rule 1) — not re-running product tests. A report is a reply in the Mind's inbox on the handle it answers: close that handle (the one `step` listed as `awaiting_acceptance` and `graph ready` listed under `reported`; either copy's handle resolves). Dispatch a recoverable blocker to the correct Hand, Planner, Head, or project integration seat; unaffected seats remain eligible. Deferred follow-ups become **wants**.
@@ -1234,17 +1235,22 @@ A Hand's task body is labeled fields, not a narrative and not a spawn brief:
 - `goal` or `delivery`: path to the goal/spec;
 - `unit`: the exact reference id in that document;
 - `predecessor`: prior handle and commit, when lineage matters;
-- `write_scope`: files this logical change may touch;
 - **the edit**: which function/seam changes, in one or two lines — not a research question;
-- `done_when`: acceptance for **this** change;
-- optional `band`: a model-band override for this unit (`P1` for a complex
-  unit; see [Model P and S](#model-p-and-s-mind-spawn-pick)) — omit it for the
-  role default;
 - optional `sanity`: one focused check of the touched surface;
 - `do_not`: surfaces and units this bag must not touch;
 - optional `check-first`: if already true, close with evidence.
 
-The worker reads those fields from `vivi task show`. The spawn prompt does not repeat them. A bag that asks the Hand to re-derive architecture, re-read the campaign, or "figure out how this compiles" is unfinished lowering, not a Hand assignment.
+Three more fields are **front matter keys**, not prose lines. Vivi reads
+them from the `+++` block at the top of the letter and ignores a `done_when:`
+line in the prose:
+
+- `write_scope`: files this logical change may touch (send flag `--write-scope`, repeatable);
+- `done_when`: acceptance for **this** change, one list entry per clause (send flag `--done-when`, repeatable); a task without it parks as `no_done_when`;
+- optional `band`: a model-band override for this unit (`band = "P1"` for a
+  complex unit; see [Model P and S](#model-p-and-s-mind-spawn-pick)) — omit it
+  for the role default. There is no send flag: use a whole-letter body.
+
+The worker reads all of them from `vivi task show`. The spawn prompt does not repeat them. A bag that asks the Hand to re-derive architecture, re-read the campaign, or "figure out how this compiles" is unfinished lowering, not a Hand assignment.
 
 Do **not** put the project's integration, suite, or release gate on the Hand. Do not paste the delivery spec. Do not assign a whole theme because landing must be atomic — file the integration gate separately.
 
@@ -1354,18 +1360,27 @@ The role states why it refused. The Mind then corrects the process by routing th
 
 ```bash
 # 1) File the work in Vivi first — this mints the handle.
+# The body file is a whole letter: front matter (done_when, write_scope,
+# optional band) between `+++` lines, then the prose fields. unit.md:
+#   +++
+#   done_when = ["malformed parser input is rejected with the expected error"]
+#   write_scope = ["crates/parser/src/validate.rs", "crates/parser/tests/validate.rs"]
+#   +++
+#
+#   goal: <goal-doc-path>
+#   unit: U-17
+#   predecessor: task-handle-prior commit abc111
+#   edit: reject malformed parser input at validate.rs::parse_input
+#   sanity: cargo test -p parser --test validate
+#   do_not: lexer; release gate
+#   check-first: if already true, close with evidence
 vivi task send --project "$ROOT" \
   --from mind --to hand \
   --subject 'unit U-17: parser input validation' \
-  --body 'goal: <goal-doc-path>
-unit: U-17
-predecessor: task-handle-prior commit abc111
-write_scope: crates/parser/src/validate.rs, crates/parser/tests/validate.rs
-edit: reject malformed parser input at validate.rs::parse_input
-done_when: malformed parser input is rejected with the expected error
-sanity: cargo test -p parser --test validate
-do_not: lexer; release gate
-check-first: if already true, close with evidence'
+  --body-file unit.md
+# Without a band override the flags work too: a prose --body plus
+# --done-when '...' --write-scope crates/parser/src/validate.rs
+# (never mix flags with a body that opens with `+++`).
 
 # 2) Spawn with the pointer only. Filing does not start a Hand.
 # Entire opening prompt:
@@ -1891,17 +1906,21 @@ vivi goal show --project "$ROOT" gol_<id>
 vivi task send --project "$ROOT" \
   --from mind --to hand \
   --subject 'task: implement X feature' \
-  --body 'done_when: 1) … 2) …'
+  --body 'what to build, in prose' \
+  --done-when 'first outcome' \
+  --done-when 'second outcome'
 
 # Need / want → Mind backlog (operator or Head discovers work)
 vivi need send --project "$ROOT" \
   --from operator --to mind \
   --subject 'need: fix auth token refresh on API 401' \
-  --body 'must-do: users stuck after hour. repro: … success: refresh works; no extra login.'
+  --body 'must-do: users stuck after hour. repro: …' \
+  --done-when 'refresh works; no extra login'
 vivi want send --project "$ROOT" \
   --from head-cto --to mind \
   --subject 'want: extract shared retry helper' \
-  --body 'precondition: after auth fix lands. non-urgent cleanup.'
+  --body 'precondition: after auth fix lands. non-urgent cleanup.' \
+  --question 'Should the retry loops share one helper?'
 
 # Decision / question → mail (not a need)
 vivi mail send --project "$ROOT" \
@@ -2006,7 +2025,7 @@ single-repository work.
 A seat's effort comes from its agent definition's `effort:` frontmatter, and
 from the session's effort when the definition sets none. Thinking is inherited
 from the session. A [band](#model-p-and-s-mind-spawn-pick) therefore resolves to
-an agent type plus a model alias, and a per-task `band:` override selects among
+an agent type plus a model alias, and a per-task `band` override selects among
 agent types. A seat spawned from a definition that pins nothing runs at the
 Mind's own model and effort: pin the definitions the fleet uses.
 
@@ -2016,7 +2035,9 @@ assignment lives in the Vivi task body, and a long structured body is fine; Clau
 seats work well from one. A task body carries: kind, unit and the need it
 answers, the defect with the exact code or text, write scope, a proof that
 demonstrates the failing case before the fix (red, then green), `done_when`,
-`do_not`, and the report shape. Every body that describes a defect also carries
+`do_not`, and the report shape. `done_when` and `write_scope` go in the front
+matter (`--done-when`/`--write-scope` or a `+++` body), where step and the pool
+read them. Every body that describes a defect also carries
 a **check-first** clause: reproduce it on current main, and if it does not
 reproduce, or the premise is wrong, report that and stop. In practice a
 meaningful share of defect briefs rest on a wrong premise, and a seat that
@@ -2068,7 +2089,7 @@ standing rulings in the Mind memo so they survive.
   [Vivi skill](../vivi/SKILL.md).
   Mind drains needs before wants; dispatch of work = task + spawn.
 - **Role hierarchy:** Mind, Planner, Hand, Auditor, Triage (project-defined registry reconciliation), optional Hater, Head, Cadence, and `operator@`. A project may add specialized seats; Tugboat does not assume they exist.
-- **Model P + S:** Vivi `model` is a band (`P2-S0`) — a model at an effort, never a model alone. Mind resolves it to a slug and effort from the host's model inventory, and may override the role band per task with `band:`. Not planning P1/P2/P3.
+- **Model P + S:** Vivi `model` is a band (`P2-S0`) — a model at an effort, never a model alone. Mind resolves it to a slug and effort from the host's model inventory, and may override the role band per task with the front matter key `band = "P1"`. Vivi also accepts a role `model` that is a slug listed in the pool's `harness.models` (effort from the role's `thinking`); Tugboat still uses bands. Not planning P1/P2/P3.
 - **Offline fallback:** WAN down → new spawns use the host's local model. Recheck each Mind turn. Do not interrupt in-flight seats.
 - **Memos:** long-term memory for the Mind and Heads only — standing rulings, campaign constants, durable posture. Never handles, dependency lists, loop ids, or in-flight status: the graph, the board, and the scheduler are those authorities. Cadence does not file them.
 - **Shared-workspace rules:** classify dirt A/B/C and never erase foreign work.
