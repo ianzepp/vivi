@@ -1,18 +1,13 @@
-//! Unit readiness and model choice.
+//! Unit satisfaction and the dependency readers.
 //!
-//! `satisfied`, `reserved_paths`, `ready` and `pick_model`.
+//! `satisfied`, `blocked_needs`, `dependency_holds` and `need_landed`.
 
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::pump::config::Lane;
 use crate::pump::host::Ctx;
-use crate::pump::plan::overlaps;
-use crate::pump::priority;
-use crate::pump::state::{State, Status, Unit};
+use crate::pump::state::{State, Status};
 
 /// A unit is satisfied when it merged, found no defect, or was replaced and
 /// every replacement is itself satisfied (recursion depth capped at 6).
@@ -41,130 +36,6 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         | Status::Withdrawn
         | Status::Other(_) => false,
     }
-}
-
-/// Whether `uid` can satisfy an `after` edge for `consumer_need`.
-/// Same-need work shares one isolated branch; an external managed need must
-/// have a verified landing on the configured integration target first.
-#[must_use]
-pub fn dependency_satisfied(
-    st: &State,
-    consumer_target: &str,
-    consumer_need: &str,
-    uid: &str,
-    depth: u32,
-) -> bool {
-    let Some(unit) = st.units.get(uid) else {
-        return false;
-    };
-    if depth > 6 {
-        return false;
-    }
-    if (unit.need != consumer_need || unit.target_id() != consumer_target)
-        && crate::pump::report::landing_required(st, &unit.need)
-        && !crate::pump::need::fully_landed(st, &unit.need).unwrap_or(false)
-    {
-        return false;
-    }
-    match unit.status {
-        Status::Merged | Status::NoDefect => true,
-        Status::Replaced => {
-            !unit.replaced_by.is_empty()
-                && unit.replaced_by.iter().all(|next| {
-                    dependency_satisfied(st, consumer_target, consumer_need, next, depth + 1)
-                })
-        }
-        _ => false,
-    }
-}
-
-/// Paths another session holds for now: one path or glob per line in the
-/// configured `reserved_file` (see `PumpConfig::reserved_path`). Blank lines and lines whose first character is `#`
-/// (checked before trimming) are ignored. The file is read
-/// afresh on every call; an unreadable or absent file holds nothing.
-fn reserved_paths(ctx: &Ctx) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(ctx.cfg.reserved_path(&ctx.project)) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .map(|l| l.trim().to_string())
-        .collect()
-}
-
-/// The needs with a priority level above zero, read from `pump.db` on every
-/// call. A missing database lists nothing.
-#[must_use]
-pub fn priority_needs(ctx: &Ctx) -> BTreeSet<String> {
-    priority::levels(ctx).into_keys().collect()
-}
-
-/// `uids` in dispatch and merge order: fix units first (they are the path
-/// back to a green gate: a `fix_prefix` handle or a unit of a pump-created
-/// gate-fix need, see [`crate::pump::gatefix::fix_ids`]), then units whose need has a priority level, highest
-/// level first, then the rest; stable within each group.
-#[must_use]
-pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
-    let levels = priority::levels(ctx);
-    let fix_ids = crate::pump::gatefix::fix_ids(st);
-    let rank = |uid: &String| -> (u8, Reverse<i64>) {
-        if uid.starts_with(&ctx.cfg.fix_prefix) || fix_ids.contains(uid) {
-            return (0, Reverse(0));
-        }
-        match st.units.get(uid).and_then(|u| levels.get(&u.need)) {
-            Some(level) => (1, Reverse(*level)),
-            None => (2, Reverse(0)),
-        }
-    };
-    uids.sort_by_key(rank);
-    uids
-}
-
-/// The scope entries that are not generated paths for `target`: the files
-/// the agent actually writes, with machine-regenerated paths excluded so
-/// two units rebuilding the same generated file never block each other.
-fn generated_free(ctx: &Ctx, target: &str, scope: &[String]) -> Vec<String> {
-    let generated = ctx.cfg.generated_paths_for(target);
-    scope
-        .iter()
-        .filter(|path| !overlaps(&[(*path).clone()], &generated))
-        .cloned()
-        .collect()
-}
-
-/// A unit is ready to dispatch when it is pending, outside its transient
-/// backoff window, its need has no unlanded dependency, its write scope
-/// overlaps no reserved path, every `after` dependency is satisfied, and no
-/// other unit with an overlapping write scope is busy.
-/// Busy means another agent is inflight; delivered and merging work does not
-/// hold worker capacity. Fix and priority units only clash with fix units.
-#[must_use]
-pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<String>>) -> bool {
-    let Some(u) = st.units.get(uid) else {
-        return false;
-    };
-    if u.status != Status::Pending {
-        return false;
-    }
-    if u.retry_not_before
-        .is_some_and(|not_before| ctx.now() < not_before)
-    {
-        return false;
-    }
-    if holds.contains_key(&u.need) {
-        return false;
-    }
-    let held = reserved_paths(ctx);
-    if !held.is_empty() && overlaps(&generated_free(ctx, u.target_id(), &u.write_scope), &held) {
-        return false;
-    }
-    if u.after
-        .iter()
-        .any(|dep| !dependency_satisfied(st, u.target_id(), &u.need, dep, 0))
-    {
-        return false;
-    }
-    !overlap_busy(ctx, st, uid, u)
 }
 
 /// A row of `vivi graph blocked --json`.
@@ -204,9 +75,8 @@ pub fn blocked_needs(ctx: &Ctx) -> Option<BTreeMap<String, Vec<String>>> {
 }
 
 /// Needs held by an unlanded dependency: `need -> prerequisite handles still
-/// unfinished`, from the raw read in [`blocked_needs`]. Legacy dependencies
-/// count as landed when all units are satisfied; managed need branches require
-/// verified acceptance, target inclusion, and cleanup.
+/// unfinished`, from the raw read in [`blocked_needs`]. A dependency counts as
+/// landed when its need is closed or all its units are satisfied.
 ///
 /// An unreadable answer holds nothing: the pump keeps dispatching rather
 /// than stalling on a broken read.
@@ -250,133 +120,13 @@ fn parse_blocked(text: &str) -> Option<Vec<BlockedRow>> {
     }
 }
 
-/// Whether a graph prerequisite can unblock dependents. Managed branches
-/// require verified landing and cleanup; legacy needs retain unit completion.
+/// Whether a graph prerequisite can unblock dependents: the need is closed or
+/// all its units are satisfied.
 pub(crate) fn need_landed(st: &State, need: &str) -> bool {
-    if crate::pump::report::landing_required(st, need) {
-        return crate::pump::need::fully_landed(st, need).unwrap_or(false);
-    }
     if st.closed_needs.iter().any(|closed| closed == need) {
         return true;
     }
     st.needs.get(need).is_some_and(|record| {
         !record.units.is_empty() && record.units.iter().all(|uid| satisfied(st, uid, 0))
     })
-}
-
-/// Record the dependency hold on a unit in `status`, logging the first tick
-/// of each hold. Returns whether the unit is held. Units in any other status
-/// are left alone.
-pub fn note_hold(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    status: Status,
-    dependency: Option<String>,
-) -> bool {
-    let Some(unit) = st.units.get(uid) else {
-        return false;
-    };
-    if unit.status != status {
-        return false;
-    }
-    let need = unit.need.clone();
-    if unit.held_on == dependency {
-        return dependency.is_some();
-    }
-    let Some(unit) = st.units.get_mut(uid) else {
-        return false;
-    };
-    unit.held_on.clone_from(&dependency);
-    let Some(dependency) = dependency else {
-        return false;
-    };
-    ctx.log(&format!(
-        "hold {uid}: need {need} waits on dependency {dependency} not landed"
-    ));
-    true
-}
-
-/// True when an agent is editing an overlapping write scope. Delivered and
-/// merging units no longer occupy worker space, and the merge thread serializes
-/// their integration; a fix unit ignores overlap against non-fix units.
-fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
-    let fix = is_fix(ctx, uid, u);
-    st.units.iter().any(|(oid, o)| {
-        oid != uid && o.status == Status::Inflight && scopes_clash(ctx, fix, u, oid, o)
-    })
-}
-
-/// True when `u` overlaps the write scope of a unit that earlier in this
-/// dispatch tick was planned to start. Planned starts are not inflight in the
-/// state yet, so [`is_ready`] cannot see them; without this two overlapping
-/// units that are both ready in one tick would run together.
-#[must_use]
-pub fn overlaps_planned<'a>(
-    ctx: &Ctx,
-    uid: &str,
-    u: &Unit,
-    planned: impl IntoIterator<Item = (&'a str, &'a Unit)>,
-) -> bool {
-    let fix = is_fix(ctx, uid, u);
-    planned
-        .into_iter()
-        .any(|(oid, o)| oid != uid && scopes_clash(ctx, fix, u, oid, o))
-}
-
-/// A fix unit, or a unit of a need with a priority level: it only clashes
-/// with fix units.
-fn is_fix(ctx: &Ctx, uid: &str, u: &Unit) -> bool {
-    uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need)
-}
-
-/// Whether `u` and `o` (unit id `oid`) cannot be edited at the same time: same
-/// target, overlapping hand-written write scopes, and not the case of a fix
-/// unit beside a non-fix unit.
-fn scopes_clash(ctx: &Ctx, fix: bool, u: &Unit, oid: &str, o: &Unit) -> bool {
-    if o.target_id() != u.target_id() {
-        return false;
-    }
-    if fix && !oid.starts_with(ctx.cfg.fix_prefix.as_str()) {
-        return false;
-    }
-    overlaps(
-        &generated_free(ctx, u.target_id(), &u.write_scope),
-        &generated_free(ctx, o.target_id(), &o.write_scope),
-    )
-}
-
-/// Choose a dispatch lane for a unit: the last-resort model on the final
-/// attempt when one is configured, otherwise the first lane under its cap that
-/// is not the last attempt's model, then any lane under its cap. An empty
-/// `last_resort` means the final attempt uses the normal lanes. Lane order
-/// alternates with attempt parity. `None` only when every lane is full.
-#[must_use]
-pub fn pick_model(ctx: &Ctx, st: &State, unit: &Unit) -> Option<String> {
-    let mut load: BTreeMap<&str, u32> = BTreeMap::new();
-    for o in st.units.values() {
-        if o.status == Status::Inflight
-            && let Some(m) = o.model.as_deref()
-        {
-            *load.entry(m).or_insert(0) += 1;
-        }
-    }
-    let last = ctx.cfg.dispatch.last_resort.as_str();
-    if unit.attempts >= ctx.cfg.dispatch.max_attempts.saturating_sub(1) && !last.is_empty() {
-        return Some(last.to_string());
-    }
-    let mut lanes: Vec<&Lane> = ctx.cfg.dispatch.lanes.iter().collect();
-    if unit.attempts % 2 == 1 {
-        lanes.reverse();
-    }
-    let last_model = unit.history.last().and_then(|h| h.model.as_deref());
-    for skip_last in [true, false] {
-        for lane in &lanes {
-            let free = load.get(lane.model.as_str()).is_none_or(|n| *n < lane.cap);
-            if free && (!skip_last || Some(lane.model.as_str()) != last_model) {
-                return Some(lane.model.clone());
-            }
-        }
-    }
-    None
 }
