@@ -197,8 +197,10 @@ fn pump_send_opens_a_record_for_a_need_addressed_to_a_third_identity() {
         "operator",
         "--subject",
         "not for the pump",
+        "--done-when",
+        "never.",
         "--body",
-        "done_when: never.",
+        "never.",
         "--project",
         root(&project),
     ]);
@@ -336,8 +338,10 @@ fn send_need(project: &tempfile::TempDir) -> String {
         "mind",
         "--subject",
         "pump visibility",
+        "--done-when",
+        "the pump block renders.",
         "--body",
-        "done_when: the pump block renders.",
+        "the pump block renders.",
         "--project",
         root(project),
     ]);
