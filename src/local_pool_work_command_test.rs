@@ -228,7 +228,8 @@ fn the_named_role_wins_over_the_task_addressee() {
     let task = PoolTask {
         handle: String::from("abcd1234"),
         subject: String::from("step"),
-        body: String::from("pump-step: n r1 merge"),
+        body: vivi::letter::render(&vivi::letter::work::TaskFront::step("n", 1, "merge"), "")
+            .unwrap(),
         addressee: Some(String::from("pump")),
     };
 

@@ -84,7 +84,7 @@ pub(crate) fn send_need(mailspace: &Mailspace, subject: &str, to: &str) -> Strin
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
