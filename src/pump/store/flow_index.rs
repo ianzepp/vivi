@@ -684,3 +684,7 @@ fn parse_list(text: &str) -> Result<Vec<String>, VivariumError> {
 #[cfg(test)]
 #[path = "flow_index_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "flow_round_trip_test.rs"]
+mod round_trip_tests;
