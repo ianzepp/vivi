@@ -3,8 +3,9 @@
 use std::fs;
 
 use super::{SENTINEL_NODE, start};
+use crate::letter::read::step_of;
+use crate::letter::work::StepFront;
 use crate::pump::fixture::{Project, project};
-use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::MailWriter;
@@ -45,15 +46,23 @@ fn the_sentinel_is_sent_before_the_step_with_one_bind() {
     assert_eq!(sends.len(), 2);
     let sentinel = sends[0].to_string();
     let step = sends[1].to_string();
-    assert!(
-        mail.tasks[&sentinel]
-            .body
-            .starts_with(&format!("{SENTINEL_MARKER} {NEED} r1"))
+    assert_eq!(
+        step_of(&mail.tasks[&sentinel].body),
+        Some(StepFront {
+            need: NEED.into(),
+            run: 1,
+            node: None,
+            sentinel: true
+        })
     );
-    assert!(
-        mail.tasks[&step]
-            .body
-            .starts_with(&format!("{STEP_MARKER} {NEED} r1 plan"))
+    assert_eq!(
+        step_of(&mail.tasks[&step].body),
+        Some(StepFront {
+            need: NEED.into(),
+            run: 1,
+            node: Some("plan".into()),
+            sentinel: false
+        })
     );
 
     let binds: Vec<usize> = mail

@@ -78,7 +78,8 @@ fn the_spec_names_the_step_and_asks_for_the_envelope_only() {
             .is_some_and(serde_json::Map::is_empty)
     );
     assert!(
-        got.body.starts_with("pump-step: n1 r2 plan\n"),
+        got.body
+            .starts_with("Correction for pump step n1 r2 plan.\n"),
         "{}",
         got.body
     );
