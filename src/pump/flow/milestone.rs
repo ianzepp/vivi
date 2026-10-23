@@ -3,6 +3,7 @@
 
 use self::prereq::{Prereq, PrereqState, prerequisites};
 use crate::error::VivariumError;
+use crate::letter::work::StepFront;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -114,8 +115,8 @@ impl MailReader for Reader<'_> {
         self.0.last_closed_record(need)
     }
 
-    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
-        self.0.sent_step(subject, first_line)
+    fn sent_step(&self, subject: &str, step: &StepFront) -> Result<Option<String>, VivariumError> {
+        self.0.sent_step(subject, step)
     }
 }
 

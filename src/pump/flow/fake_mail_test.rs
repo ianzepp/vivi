@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
+use crate::letter::read::step_of;
+use crate::letter::work::StepFront;
 use crate::pump::flow::mail::{
     MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
 };
@@ -459,7 +461,6 @@ impl MailReader for FakeMail {
     }
 
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError> {
-        let marker = crate::pump::flow::def::SENTINEL_MARKER;
         Ok(self
             .bound
             .get(need)
@@ -469,7 +470,7 @@ impl MailReader for FakeMail {
                     .filter(|u| {
                         self.tasks
                             .get(*u)
-                            .is_some_and(|t| t.body.starts_with(marker))
+                            .is_some_and(|t| step_of(&t.body).is_some_and(|step| step.sentinel))
                     })
                     .count()
             })
@@ -484,14 +485,14 @@ impl MailReader for FakeMail {
         Ok(self.records.get(need).and_then(|r| r.outcome.clone()))
     }
 
-    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
+    fn sent_step(&self, subject: &str, step: &StepFront) -> Result<Option<String>, VivariumError> {
         Ok(self
             .tasks
             .iter()
             .filter(|(_, task)| {
                 task.from == self.identity
                     && task.subject == subject
-                    && task.body.lines().next().map(str::trim) == Some(first_line.trim())
+                    && step_of(&task.body).as_ref() == Some(step)
                     && task.state.status == TaskStatus::Open
             })
             .map(|(handle, _)| handle.clone())
@@ -654,15 +655,28 @@ fn prerequisites_round_trip_and_last_closed_record_follows_the_record() -> R {
 }
 
 #[test]
-fn sent_step_finds_the_newest_open_task_with_that_subject_and_first_line() -> R {
+fn sent_step_finds_the_newest_open_task_with_that_subject_and_step() -> R {
+    use crate::letter::fixture::step_body;
+    let key = |node: &str| StepFront {
+        need: "n1".into(),
+        run: 1,
+        node: Some(node.into()),
+        sentinel: false,
+    };
     let mut mail = FakeMail::new("pump");
-    let first = mail.send_step("pump", "hand", "s", "line one\nmore", &[])?;
-    let second = mail.send_step("pump", "hand", "s", "line one\nother", &[])?;
-    mail.send_step("pump", "hand", "other subject", "line one", &[])?;
-    mail.send_step("someone", "hand", "s", "line one", &[])?;
-    assert_eq!(mail.sent_step("s", "line one")?, Some(second.clone()));
+    let first = mail.send_step("pump", "hand", "s", &step_body("n1", 1, "a", "more"), &[])?;
+    let second = mail.send_step("pump", "hand", "s", &step_body("n1", 1, "a", "other"), &[])?;
+    mail.send_step(
+        "pump",
+        "hand",
+        "other subject",
+        &step_body("n1", 1, "a", "x"),
+        &[],
+    )?;
+    mail.send_step("someone", "hand", "s", &step_body("n1", 1, "a", "x"), &[])?;
+    assert_eq!(mail.sent_step("s", &key("a"))?, Some(second.clone()));
     mail.close_task(&second, "done", None, None)?;
-    assert_eq!(mail.sent_step("s", "line one")?, Some(first));
-    assert_eq!(mail.sent_step("s", "line two")?, None);
+    assert_eq!(mail.sent_step("s", &key("a"))?, Some(first));
+    assert_eq!(mail.sent_step("s", &key("b"))?, None);
     Ok(())
 }

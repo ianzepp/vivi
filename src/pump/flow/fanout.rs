@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
+use crate::letter::read::step_of;
 use crate::pump::envelope::roles::{Slice, Slicer};
 use crate::pump::envelope::{EnvelopeError, parse};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
@@ -184,7 +185,10 @@ fn adopt_or_send<M: MailWriter + MailReader>(
     fanout: &Option<String>,
 ) -> Result<String, VivariumError> {
     let subject = slice_subject(run, slice);
-    if let Some(task) = mail.sent_step(&subject, &slice_header(run, slice))? {
+    let key = step_of(&slice_body(run, slice)).ok_or_else(|| {
+        VivariumError::Message(format!("slice body for {} has no step", slice.id))
+    })?;
+    if let Some(task) = mail.sent_step(&subject, &key)? {
         let owned_elsewhere = match store.slice_link(&task)? {
             Some(link) => link.fanout != *fanout,
             None => false,
