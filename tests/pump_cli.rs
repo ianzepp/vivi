@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use vivi::mailspace::{Mailspace, PumpAction, PumpActionKind};
+use vivi::pump::flow::index::{RunRow, StepState};
 use vivi::pump::state::{NeedRecord, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
@@ -85,10 +86,9 @@ fn replan_posts_an_action_on_the_open_record_and_refuses_live_work() {
 fn requeue_and_withdraw_post_actions_on_the_open_record() {
     let project = temp_mailspace();
     let handle = send_need(&project);
-    write_pump_status(&project, &handle, Status::Stuck);
-    let unit = format!("{handle}-1");
+    let step = seed_flow_step(&project, &handle);
 
-    let refused = vivi(["pump", "requeue", &unit, "--project", root(&project)]);
+    let refused = vivi(["pump", "requeue", &step, "--project", root(&project)]);
     assert!(!refused.status.success(), "{}", stdout(&refused));
     assert!(
         stderr(&refused).contains("no open pump record"),
@@ -118,7 +118,7 @@ fn requeue_and_withdraw_post_actions_on_the_open_record() {
     assert_success(&vivi([
         "pump",
         "requeue",
-        &unit,
+        &step,
         "--project",
         root(&project),
     ]));
@@ -138,7 +138,7 @@ fn requeue_and_withdraw_post_actions_on_the_open_record() {
         kinds,
         vec![PumpActionKind::Requeue, PumpActionKind::Withdraw]
     );
-    assert_eq!(actions[0].request.unit.as_deref(), Some(unit.as_str()));
+    assert_eq!(actions[0].request.unit.as_deref(), Some(step.as_str()));
     assert_eq!(actions[1].request.reason, "stop");
 
     let closed = vivi([
@@ -263,6 +263,42 @@ fn write_pump_status(project: &tempfile::TempDir, handle: &str, status: Status) 
     );
     let mut store = PumpStore::open(&pump_home(project).join(DB_FILENAME)).unwrap();
     store.save(&state).unwrap();
+}
+
+/// Seed a `live` flow run of `need` holding one step; returns the step task.
+fn seed_flow_step(project: &tempfile::TempDir, need: &str) -> String {
+    let task = format!("{need}-step");
+    let store = PumpStore::open(&pump_home(project).join(DB_FILENAME)).unwrap();
+    let run = RunRow {
+        need: need.to_owned(),
+        run: 1,
+        flow: String::from("build"),
+        flow_version: 2,
+        kind: String::from("build"),
+        entry: String::from("plan"),
+        state: String::from("live"),
+    };
+    store.insert_run(&run).unwrap();
+    store
+        .insert_run_step(&run, &run.step("plan", &task, StepState::Pending))
+        .unwrap();
+    task
+}
+
+#[test]
+fn requeue_help_names_steps_and_job_only() {
+    let help = stdout(&vivi(["pump", "requeue", "--help"]));
+    assert!(help.contains("STEP"), "{help}");
+    assert!(help.contains("--job"), "{help}");
+    for gone in [
+        "--attempts",
+        "--fresh",
+        "--refund-host-failures",
+        "--stuck-since",
+        "--why",
+    ] {
+        assert!(!help.contains(gone), "{gone} is retired: {help}");
+    }
 }
 
 #[test]
