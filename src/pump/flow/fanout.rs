@@ -297,7 +297,7 @@ pub fn mark_exhausted(store: &PumpStore, task: &str) -> Result<(), VivariumError
 /// exhausted, otherwise `None`. A run with no slices is `None`.
 ///
 /// A slice waiting on blocked-scope resolution (`scope-wait` or
-/// `scope-repair`) is neither built nor failed.
+/// `scope-rework`) is neither built nor failed.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when the index or the mailspace cannot be read.
@@ -324,7 +324,7 @@ pub fn settle<M: MailReader>(
         slices += 1;
         let waiting = matches!(
             store.scope_state(&row.task)?,
-            Some(ScopeState::Wait | ScopeState::Repair)
+            Some(ScopeState::Wait | ScopeState::Rework)
         );
         let built = closed && matches!(verdict, Some(VERDICT_MERGED | VERDICT_NO_DEFECT));
         if waiting || !built {

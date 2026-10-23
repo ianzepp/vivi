@@ -161,15 +161,15 @@ fn done_closes_step_then_need_then_sentinel_then_record() -> R {
 #[test]
 fn restart_binds_the_new_sentinel_before_the_old_one_closes() -> R {
     let mut rig = rig()?;
-    let cto = rig.step("cto", "repair")?;
+    let cto = rig.step("cto", "rework")?;
     rig.mail.calls.clear();
 
     let advanced = rig.advance(&cto)?;
     let Some(Finished::Restarted(new_run)) = advanced.finished.first() else {
         panic!("expected a restart, got {:?}", advanced.finished);
     };
-    // restart-repair maps to the declared entry repair1.
-    assert_eq!((new_run.run, new_run.entry.as_str()), (2, "repair1"));
+    // restart-rework maps to the declared entry rework1.
+    assert_eq!((new_run.run, new_run.entry.as_str()), (2, "rework1"));
 
     let new_sentinel = rig
         .store

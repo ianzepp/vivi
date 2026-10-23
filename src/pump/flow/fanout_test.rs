@@ -327,7 +327,7 @@ fn a_scope_wait_slice_keeps_the_fanout_open() -> R {
     let b = r.task_of("B")?;
     r.store.set_scope_state(&b, ScopeState::Wait)?;
     assert_eq!(r.settle()?, None);
-    r.store.set_scope_state(&b, ScopeState::Repair)?;
+    r.store.set_scope_state(&b, ScopeState::Rework)?;
     assert_eq!(r.settle()?, None);
     Ok(())
 }

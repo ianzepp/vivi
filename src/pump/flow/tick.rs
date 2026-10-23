@@ -63,8 +63,8 @@ pub const SIDE_EFFECT_UNCLEAR: &str = "flow-side-effect-unclear";
 pub const STEP_OVERDUE: &str = "flow-step-overdue";
 /// Exception kind: a hand's built envelope carried follow-up work.
 pub const FOLLOW_UP: &str = "flow-follow-up";
-/// Exception kind: a slice needs the slicer to repair the scopes.
-pub const SCOPE_REPAIR: &str = "flow-scope-repair";
+/// Exception kind: a slice needs the slicer to rework the scopes.
+pub const SCOPE_REWORK: &str = "flow-scope-rework";
 /// Exception kind: the need's marks no longer match the run's kind.
 pub const KIND_CHANGED: &str = "flow-kind-changed";
 /// Exception kind: routing refused a collected word.
@@ -604,9 +604,9 @@ where
                 self.store
                     .set_step_state(&step.task, StepState::Waiting, None)
             }
-            Resolution::Repair(reason) => {
-                self.store.set_scope_state(&step.task, ScopeState::Repair)?;
-                self.ctx.exception(SCOPE_REPAIR, &step.task, &reason);
+            Resolution::Rework(reason) => {
+                self.store.set_scope_state(&step.task, ScopeState::Rework)?;
+                self.ctx.exception(SCOPE_REWORK, &step.task, &reason);
                 Ok(())
             }
         }

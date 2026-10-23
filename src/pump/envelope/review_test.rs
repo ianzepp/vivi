@@ -121,13 +121,17 @@ fn judge_and_cto_require_a_reason() {
         "answer = \"residual\"\nreason = ''\n"
     ));
 
-    let repair = "answer = \"repair\"\nreason = 'guard missing'\nnew_fact = 'traced to slice 3'\n";
-    let parsed = parse_for(RoleKind::Cto, &env(repair)).unwrap();
+    let rework = "answer = \"rework\"\nreason = 'guard missing'\nnew_fact = 'traced to slice 3'\n";
+    let parsed = parse_for(RoleKind::Cto, &env(rework)).unwrap();
     assert_eq!(parsed.front["new_fact"], "traced to slice 3");
     assert_eq!(
         answer(RoleKind::Cto, "answer = \"lock\"\nreason = 'done'\n"),
         "lock"
     );
+    assert!(is_err(
+        RoleKind::Cto,
+        "answer = \"repair\"\nreason = 'x'\nnew_fact = 'y'\n"
+    ));
     assert!(is_err(RoleKind::Cto, "answer = \"lock\"\n"));
     assert!(is_err(RoleKind::Cto, "answer = \"done\"\nreason = 'x'\n"));
 }

@@ -211,7 +211,7 @@ pub enum SlicerAnswer {
 pub enum SlicerMode {
     #[default]
     Slice,
-    Repair,
+    Rework,
     Split,
 }
 

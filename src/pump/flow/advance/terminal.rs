@@ -164,7 +164,7 @@ fn sentinel_of(store: &PumpStore, need: &str, run: u32) -> Result<StepRow, Vivar
 }
 
 /// The entry a `restart-<name>` terminal starts: the flow's entry of that
-/// name, else the numbered one (`restart-repair` starts `repair1`).
+/// name, else the numbered one (`restart-rework` starts `rework1`).
 fn entry_for(def: &FlowDef, name: &str) -> String {
     if def.entries.iter().any(|e| e == name) {
         return name.to_string();

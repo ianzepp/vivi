@@ -60,10 +60,10 @@ The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 | researcher | `READY`, `NOT READY`, `NEEDS FURTHER REVIEW` | `open_questions` (list) | the analysis |
 | planner | `planned`, `delivered`, `operator`, `hold`, `design` | `reason` (string; required unless `planned`) | the plan document |
 | admitter | `admitted`, `revise`, `escalate` | `required_changes` (list; non-empty for `revise`), `findings` (list), `reason` (string; required for `escalate`) | the review |
-| slicer | `sliced`, `escalate` | `mode` = `slice`, `repair` or `split`; `[[slice]]` tables {`id`, `title`, `brief`, `target`, `write_scope` (list), `deps` (list)}, at least one for `sliced` and none for `escalate`; split ids are `<old id>.<n>`, two to four of them; `reason` (string; required for `escalate`) | notes |
+| slicer | `sliced`, `escalate` | `mode` = `slice`, `rework` or `split`; `[[slice]]` tables {`id`, `title`, `brief`, `target`, `write_scope` (list), `deps` (list)}, at least one for `sliced` and none for `escalate`; split ids are `<old id>.<n>`, two to four of them; `reason` (string; required for `escalate`) | notes |
 | auditor (verify) | `clean_pass`, `residual`, `block_range`, `block_ship` | `raise_rung` (`need`, `main` or `release`; optional); `[[requirement]]` tables {`id`, `text`, `status` = `SATISFIED`, `PARTIAL`, `MISSING`, `UNVERIFIED` or `NOT_APPLICABLE`, `evidence` (list)}; `[[finding]]` tables {`id`, `content`, `paths` (list), `recheck_trigger`} | the report |
 | judge (auditor, short mode) | `block`, `residual` | `reason` (string; required) | the reasons |
-| head-cto | `research`, `plan`, `slice`, `repair`, `lock` | `reason` (string; required); `new_fact` (string; required for any answer but `lock` from the third run on) | the analysis |
+| head-cto | `research`, `plan`, `slice`, `rework`, `lock` | `reason` (string; required); `new_fact` (string; required for any answer but `lock` from the third run on) | the analysis |
 | merge (a flow merge step: a slice onto the need branch, and the sync step) | `merged`, `conflict` (the worker's claim; the runner's publish receipt and git decide) | `conflicts` (list of paths); `design_change` (bool; the conflict needs a design change); `[[check]]` tables (reported only). No `tip`: the SHA comes from the publish receipt | the conflict resolutions |
 | hand | `built`, `blocked-scope`, `failed` | `change` (list of paths; reported only, and empty means no defect was found); `[[check]]` tables (reported only; the merge job's task rung exit code decides); `deviations` (list); `[[follow_up]]` tables {`paths` (list), `need` (string)}; `remaining` (list); `scope_paths` (list; required for `blocked-scope`); `scope_reason` (string; required for `blocked-scope`); `scope_design` (bool, default false) | the report |
 | head-ceo (cadence prompt; the pump does not parse it) | `reviewed`, `no-op` | `promoted`, `research`, `dropped` (lists of handles) | notes |
@@ -201,7 +201,7 @@ The reasons follow.
 
 ```
 +++
-answer = "repair"
+answer = "rework"
 reason = 'The build passes its rung but the audit found a missing guard.'
 new_fact = 'The auditor traced the missing guard to the slice that merged last.'
 +++

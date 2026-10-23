@@ -139,6 +139,15 @@ fn a_valid_slicer_parses() {
 }
 
 #[test]
+fn slicer_mode_rework_parses_and_repair_is_refused() {
+    let with_mode = |mode: &str| hand(&format!("answer = \"sliced\"\nmode = \"{mode}\"\n{SLICE}"));
+    let parsed = parse_for(RoleKind::Slicer, &with_mode("rework")).unwrap();
+    assert_eq!(parsed.front["mode"], "rework");
+    let err = parse_for(RoleKind::Slicer, &with_mode("repair")).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
+}
+
+#[test]
 fn a_slicer_proof_key_is_refused() {
     let text = hand(&format!(
         "answer = \"sliced\"\n{SLICE}proof = \"cargo test\"\n"
