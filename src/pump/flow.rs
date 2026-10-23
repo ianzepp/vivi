@@ -14,6 +14,7 @@ pub mod scope;
 pub mod slice_dispatch;
 pub mod tick;
 pub mod validate;
+pub mod verify;
 
 #[cfg(test)]
 #[path = "flow/fake_mail_test.rs"]
