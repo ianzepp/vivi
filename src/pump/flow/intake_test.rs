@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{Candidate, register, select};
+use super::{Candidate, RECORD_UNUSABLE, register, select};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
@@ -86,6 +86,14 @@ impl Rig {
             .collect())
     }
 
+    fn exceptions(&self, kind: &str) -> usize {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(kind))
+            .count()
+    }
+
     fn started(&self, needs: &[&str]) -> Result<Vec<bool>, VivariumError> {
         needs
             .iter()
@@ -141,7 +149,7 @@ fn a_repair_need_starts_a_run_at_fix1() -> R {
     let tested = "a".repeat(40);
     rig.open(
         "n1",
-        &format!("kind: repair\ntarget: vivi\ntested: {tested}"),
+        &format!("kind: repair\ntarget: default\ntested: {tested}"),
     )?;
     rig.tick()?;
     let runs = rig.runs("n1")?;
@@ -255,4 +263,70 @@ fn select_repair_picks_do_not_count_toward_the_cap() {
         select(candidates, 0, Some(1), &[]),
         ["fix-a", "fix-b", "n1"]
     );
+}
+
+#[test]
+fn a_closed_need_with_an_open_record_raises_once_and_starts_nothing() -> R {
+    let mut rig = rig(None)?;
+    rig.open("n1", "kind: build")?;
+    rig.mail.close_need_by("n1", "operator");
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.runs("n1")?.is_empty());
+    assert_eq!(rig.exceptions(RECORD_UNUSABLE), 1);
+    let text = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt"))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    assert!(
+        text.contains("the need is done: expected an open need"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_repair_record_without_a_target_raises_once_and_starts_nothing() -> R {
+    let mut rig = rig(None)?;
+    rig.open("n1", "kind: repair")?;
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.runs("n1")?.is_empty());
+    assert_eq!(rig.exceptions(RECORD_UNUSABLE), 1);
+    let text = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt"))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    assert!(text.contains("actual: none"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_repair_record_with_an_unknown_target_raises_once_and_starts_nothing() -> R {
+    let mut rig = rig(None)?;
+    rig.open("n1", "kind: repair\ntarget: nowhere")?;
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.runs("n1")?.is_empty());
+    assert_eq!(rig.exceptions(RECORD_UNUSABLE), 1);
+    let text = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt"))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    assert!(text.contains("actual: nowhere"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_repair_record_with_a_known_target_still_starts() -> R {
+    let mut rig = rig(None)?;
+    rig.open("n1", "kind: repair\ntarget: default")?;
+    rig.tick()?;
+    assert_eq!(rig.runs("n1")?.len(), 1);
+    assert_eq!(rig.exceptions(RECORD_UNUSABLE), 0);
+    Ok(())
+}
+
+#[test]
+fn a_need_addressed_to_a_third_role_with_an_open_record_starts() -> R {
+    let mut rig = rig(None)?;
+    rig.open("n1", "kind: build")?;
+    rig.mail.set_marks("n1", &["addressed-to-hand"]);
+    rig.tick()?;
+    assert_eq!(rig.runs("n1")?, [(1, "plan".into(), "live".into())]);
+    Ok(())
 }

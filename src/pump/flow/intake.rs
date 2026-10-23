@@ -34,6 +34,9 @@ pub const START_STUCK: &str = "flow-run-start-stuck";
 /// Seconds a run may stay `starting` before the alarm.
 const START_STUCK_SECS: u64 = 600;
 
+/// Exception kind: a need has an open pump record the flow cannot act on.
+pub const RECORD_UNUSABLE: &str = "flow-record-unusable";
+
 /// Run states that occupy a slot under the cap or block a new run.
 const RUN_LIVE: &str = "live";
 
@@ -183,11 +186,25 @@ fn candidates<M: FlowMail>(
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
     for (need, date) in mail.open_record_needs()? {
-        if mail.need_state(&need)? != NeedStatus::Open || has_run_in_flight(store, &need)? {
+        if has_run_in_flight(store, &need)? {
+            continue;
+        }
+        let record = MailReader::open_record(mail, &need)?;
+        let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
+        if mail.need_state(&need)? != NeedStatus::Open {
+            raise_once(
+                ctx,
+                RECORD_UNUSABLE,
+                &need,
+                &format!(
+                    "need {need} has open pump record {handle} but the need is done: expected \
+                     an open need; close the record with `vivi pump done {handle}`"
+                ),
+            );
             continue;
         }
         let marks = mail.need_marks(&need)?;
-        let body = MailReader::open_record(mail, &need)?.map(|(_, body)| body);
+        let body = record.map(|(_, body)| body);
         let (flow_kind, _) = kind::of(body.as_deref(), &marks);
         if let Err(error) = load(flow_kind) {
             raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
@@ -198,6 +215,9 @@ fn candidates<M: FlowMail>(
             Some(text) if repair => target_line(text),
             _ => String::new(),
         };
+        if repair && !known_target(ctx, &need, &target) {
+            continue;
+        }
         found.push(Candidate {
             repair,
             target,
@@ -207,6 +227,25 @@ fn candidates<M: FlowMail>(
         });
     }
     Ok(found)
+}
+
+/// Whether a repair record names a configured target; raise once when not.
+fn known_target(ctx: &Ctx, need: &str, target: &str) -> bool {
+    let targets: Vec<String> = ctx.cfg.target_configs().into_keys().collect();
+    if targets.iter().any(|id| id == target) {
+        return true;
+    }
+    let actual = if target.is_empty() { "none" } else { target };
+    raise_once(
+        ctx,
+        RECORD_UNUSABLE,
+        need,
+        &format!(
+            "repair need {need}: expected a `target:` line naming one of {}; actual: {actual}",
+            targets.join(", ")
+        ),
+    );
+    false
 }
 
 fn has_run_in_flight(store: &PumpStore, need: &str) -> Result<bool, VivariumError> {
