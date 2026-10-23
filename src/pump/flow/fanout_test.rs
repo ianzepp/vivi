@@ -4,6 +4,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     BUILT, expand, is_slice_row, mark_exhausted, parse_reply, settle, slice_node, target_of,
+    wait_on,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -355,5 +356,16 @@ fn slice_tasks_are_sent_from_and_to_the_pump_identity() -> R {
         let t = &r.mail.tasks[task];
         assert_eq!((&t.from, &t.to), (&pump, &pump));
     }
+    Ok(())
+}
+
+#[test]
+fn wait_on_adds_every_holder_to_the_task_dependencies() -> R {
+    let mut r = rig()?;
+    let slicer = r.slicer.task.clone();
+    let task = r.mail.send_step("mind", "mind", "wait", "body", &[])?;
+    let holders = vec![slicer, r.sentinel.clone()];
+    wait_on(&mut r.mail, &task, &holders)?;
+    assert_eq!(r.mail.tasks[&task].depends_on, holders);
     Ok(())
 }

@@ -272,6 +272,22 @@ impl SliceEdges for MailspacePort {
     }
 }
 
+/// Make `task` depend on every holder. This is the one place a slice gains a
+/// dependency after its send.
+///
+/// # Errors
+/// Returns [`VivariumError`] when an edge cannot be written.
+pub fn wait_on<M: SliceEdges + ?Sized>(
+    mail: &mut M,
+    task: &str,
+    holders: &[String],
+) -> Result<(), VivariumError> {
+    for holder in holders {
+        mail.add_dependency(task, holder)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 impl SliceEdges for crate::pump::flow::fake_mail::FakeMail {
     fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError> {
