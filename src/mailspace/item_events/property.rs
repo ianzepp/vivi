@@ -30,7 +30,7 @@
 //! where the letter was written. `dependency-added` and
 //! `dependency-removed` change the item's prerequisite edges after it was
 //! sent: per dependency the newest letter by `(instant, Message-ID)` says
-//! whether the edge is there, over the `X-Vivi-Depends-On` headers the item
+//! whether the edge is there, over the `depends_on` front matter key the item
 //! was sent with (see `dependency.rs`).
 //!
 //! As with state events, the From address names a role and the receiver

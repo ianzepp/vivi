@@ -372,8 +372,8 @@ fn repair_mint(mailspace: &Mailspace, item: &AuditItem) -> Result<(), VivariumEr
     Ok(())
 }
 
-/// Report (and with `repair`, make) the edges an item's `X-Vivi-Depends-On`
-/// headers name that the graph lacks.
+/// Report (and with `repair`, make) the edges an item's `depends_on`
+/// front matter names that the graph lacks.
 fn audit_edges(
     mailspace: &Mailspace,
     storage: &Storage,
