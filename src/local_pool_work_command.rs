@@ -43,6 +43,27 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
     }
 }
 
+/// The active `project`-scope rules, read now as the dispatch's snapshot.
+fn load_project_rules(space: &Mailspace) -> Result<String, VivariumError> {
+    let mut details = Vec::new();
+    for rule in space.list_rules(None, false)? {
+        if rule.scope == "project" {
+            details.push(space.show_rule(&rule.handle)?);
+        }
+    }
+    let rows: Vec<(&str, &str, &str)> = details
+        .iter()
+        .map(|d| {
+            (
+                d.rule.scope.as_str(),
+                d.rule.subject.as_str(),
+                d.body.as_str(),
+            )
+        })
+        .collect();
+    Ok(role_dispatch::project_rules_text(&rows))
+}
+
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");
     let space = Mailspace::discover(command.project.as_deref())?;
@@ -332,14 +353,16 @@ fn resolve_dispatch(
             body: &task.body,
         },
     )?;
-    let rules = role.as_ref().map_or(pool_rules.clone(), |role| {
-        role_dispatch::standing_prompt(
+    let rules = match role.as_ref() {
+        Some(role) => role_dispatch::standing_prompt(
             &role.name,
             &role.charter,
             &pool_rules,
+            &load_project_rules(space)?,
             config.bridge.enabled,
-        )
-    });
+        ),
+        None => pool_rules,
+    };
     let role_line = role_line(command, role.as_ref(), &resolved);
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
     let flags = DispatchFlags {

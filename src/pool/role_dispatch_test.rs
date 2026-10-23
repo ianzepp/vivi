@@ -368,14 +368,17 @@ const RULES: &str = "Work the brief. Never weaken a test.\n";
 #[test]
 fn a_blank_charter_leaves_the_pool_rules_byte_for_byte() {
     for charter in ["", "  ", "\n  \n"] {
-        assert_eq!(standing_prompt("auditor", charter, RULES, true), RULES);
-        assert_eq!(standing_prompt("auditor", charter, RULES, false), RULES);
+        assert_eq!(standing_prompt("auditor", charter, RULES, "", true), RULES);
+        assert_eq!(
+            standing_prompt("auditor", charter, RULES, "## r\n\nbody\n", false),
+            RULES
+        );
     }
 }
 
 #[test]
 fn a_charter_gives_the_headings_in_order_over_the_pool_rules() {
-    let prompt = standing_prompt("scribe", "Write the letters.", RULES, false);
+    let prompt = standing_prompt("scribe", "Write the letters.", RULES, "", false);
     assert_eq!(
         prompt,
         "# Standing charter (role scribe)\n\nWrite the letters.\n\n---\n\n\
@@ -392,14 +395,73 @@ fn a_charter_gives_the_headings_in_order_over_the_pool_rules() {
 
 #[test]
 fn the_two_pool_notes_differ() {
-    let bridged = standing_prompt("scribe", "Write the letters.", RULES, true);
-    let unbridged = standing_prompt("scribe", "Write the letters.", RULES, false);
+    let bridged = standing_prompt("scribe", "Write the letters.", RULES, "", true);
+    let unbridged = standing_prompt("scribe", "Write the letters.", RULES, "", false);
     assert_ne!(bridged, unbridged);
     assert!(bridged.contains("MCP server `vivi`"), "got: {bridged}");
     assert!(
         unbridged.contains("no `vivi` command and no mailspace"),
         "got: {unbridged}"
     );
+}
+
+#[test]
+fn the_bridge_note_does_not_tell_the_worker_to_settle_its_handle() {
+    let bridged = standing_prompt("scribe", "Write the letters.", RULES, "", true);
+    assert!(
+        bridged.contains(
+            "report with `reply`; the runner records your result and the pump or Mind \
+             settles the handle."
+        ),
+        "got: {bridged}"
+    );
+    assert!(!bridged.contains("`done`"), "got: {bridged}");
+}
+
+#[test]
+fn project_rules_follow_the_pool_rules_under_their_own_heading() {
+    let prompt = standing_prompt(
+        "scribe",
+        "Write the letters.",
+        RULES,
+        "## r\n\nbody\n",
+        true,
+    );
+    assert!(
+        prompt.ends_with("# Project rules\n\n## r\n\nbody"),
+        "got: {prompt}"
+    );
+    let rule = prompt.find("# Pool rules").unwrap();
+    let project = prompt.find("# Project rules").unwrap();
+    assert!(rule < project);
+    let none = standing_prompt("scribe", "Write the letters.", RULES, " \n", true);
+    assert!(!none.contains("Project rules"), "got: {none}");
+}
+
+#[test]
+fn the_snapshot_holds_project_rules_and_no_local_rules() {
+    let text = project_rules_text(&[
+        ("project", "Never force push", "Do not force push.\n"),
+        ("local", "My secret habit", "Use tabs."),
+        ("project", "Test first", "Write the test."),
+    ]);
+    assert_eq!(
+        text,
+        "## Never force push\n\nDo not force push.\n\n## Test first\n\nWrite the test.\n\n"
+    );
+    assert!(!text.contains("secret"));
+    assert_eq!(project_rules_text(&[("local", "x", "y")]), "");
+    assert_eq!(project_rules_text(&[]), "");
+}
+
+#[test]
+fn the_snapshot_is_capped_with_a_cut_marker_on_a_char_boundary() {
+    let big = "é".repeat(PROJECT_RULES_CAP);
+    let text = project_rules_text(&[("project", "Big", &big)]);
+    assert!(text.ends_with("\n[project rules cut at 8192 bytes]\n"));
+    assert!(text.len() <= PROJECT_RULES_CAP + 64, "len {}", text.len());
+    let small = project_rules_text(&[("project", "Small", "x")]);
+    assert!(!small.contains("cut at"));
 }
 
 #[test]

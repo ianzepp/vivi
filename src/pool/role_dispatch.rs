@@ -236,19 +236,26 @@ fn no_model(role: Option<&RoleFacts>) -> VivariumError {
 }
 
 /// The worker's standing prompt: the role's charter above the pool rules
-/// that bound it, with a note on how the slot reaches the mailspace. A blank
-/// charter leaves the pool rules unchanged.
+/// that bound it, with a note on how the slot reaches the mailspace, then the
+/// project-rule snapshot when it is not blank. A blank charter leaves the pool
+/// rules unchanged.
 #[must_use]
-pub fn standing_prompt(role: &str, charter: &str, pool_rules: &str, bridge: bool) -> String {
+pub fn standing_prompt(
+    role: &str,
+    charter: &str,
+    pool_rules: &str,
+    project_rules: &str,
+    bridge: bool,
+) -> String {
     if charter.trim().is_empty() {
         return pool_rules.to_string();
     }
     let note = if bridge {
         "You run in a pool slot with the vivi tools of the project server \
          (MCP server `vivi`). Your task handle is in your brief: read it \
-         with `show` and `thread`, report with `reply`, and settle your \
-         handle with `done` when the charter says so. The runner also \
-         records your result."
+         with `show` and `thread`, report with `reply`, and report \
+         with `reply`; the runner records your result and the pump or Mind \
+         settles the handle."
     } else {
         "You run in a pool slot with no `vivi` command and no mailspace. \
          Where the charter tells you to read or settle your handle with \
@@ -256,10 +263,42 @@ pub fn standing_prompt(role: &str, charter: &str, pool_rules: &str, bridge: bool
          standard output; the runner records your result and the Mind \
          settles the handle."
     };
-    format!(
+    let prompt = format!(
         "# Standing charter (role {role})\n\n{charter}\n\n---\n\n{note}\n\n\
          # Pool rules (these bound the charter)\n\n{pool_rules}"
+    );
+    if project_rules.trim().is_empty() {
+        return prompt;
+    }
+    format!(
+        "{prompt}\n\n# Project rules\n\n{}",
+        project_rules.trim_end()
     )
+}
+
+/// The most bytes of project rules a standing prompt carries.
+pub const PROJECT_RULES_CAP: usize = 8 * 1024;
+
+/// The project-rule snapshot as prompt text: each `(scope, subject, body)`
+/// whose scope is `project` becomes a `##` section; local rules are left
+/// out. Text past [`PROJECT_RULES_CAP`] is cut at a character boundary and
+/// ends with a cut marker. No project rule gives an empty string.
+#[must_use]
+pub fn project_rules_text(rules: &[(&str, &str, &str)]) -> String {
+    let mut text = String::new();
+    for (_, subject, body) in rules.iter().filter(|(scope, _, _)| *scope == "project") {
+        text.push_str(&format!("## {subject}\n\n{}\n\n", body.trim_end()));
+    }
+    if text.len() <= PROJECT_RULES_CAP {
+        return text;
+    }
+    let mut end = PROJECT_RULES_CAP;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str("\n[project rules cut at 8192 bytes]\n");
+    text
 }
 
 /// The digest seat's window: what one digest run covers and the memo subject
