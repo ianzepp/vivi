@@ -66,13 +66,13 @@ pub fn is_slice_row(row: &StepRow) -> bool {
     row.node.starts_with(SLICE_NODE_PREFIX)
 }
 
-/// The `target:` line of a slice task body, if it has one.
+/// The `target` key of a slice task's front matter, if it has one.
 #[must_use]
-pub fn target_of(body: &str) -> Option<&str> {
-    body.lines()
-        .find_map(|line| line.strip_prefix("target:"))
-        .map(str::trim)
-        .filter(|target| !target.is_empty())
+pub fn target_of(body: &str) -> Option<String> {
+    match crate::letter::read::task_of("", body) {
+        Ok(envelope) => envelope.front.target,
+        Err(_) => None,
+    }
 }
 
 /// Send the slice tasks of `slices` in topological order and index them.

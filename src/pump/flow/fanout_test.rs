@@ -7,6 +7,7 @@ use super::{
     slice_node, target_of, wait_on,
 };
 use crate::error::VivariumError;
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::{Slice, SlicerAnswer, SlicerMode};
@@ -246,7 +247,7 @@ fn expand_binds_with_the_sentinel_and_indexes_rows_and_scope() -> R {
     assert_eq!(r.store.slice_scope(&b)?, Some(vec!["src/B.rs".to_string()]));
     let body = &r.mail.tasks[&a].body;
     assert!(body.starts_with(&format!("{STEP_MARKER} {NEED} r1 slice:A")));
-    assert_eq!(target_of(body), Some("vivi"));
+    assert_eq!(target_of(body), Some("vivi".to_string()));
     assert!(body.contains("brief A"));
     Ok(())
 }
@@ -636,4 +637,15 @@ fn expanded_rows_and_links_carry_the_run_of_the_run_row() -> R {
         assert_eq!(row.run, r.run.run);
     }
     Ok(())
+}
+
+#[test]
+fn target_of_reads_the_front_matter_target() {
+    let front = TaskFront {
+        target: Some("vivi".into()),
+        ..TaskFront::step("n1", 1, "slice:A")
+    };
+    let body = crate::letter::fixture::task_body_with(&front, "x");
+    assert_eq!(target_of(&body), Some("vivi".to_string()));
+    assert_eq!(target_of(&crate::letter::fixture::task_body("x")), None);
 }

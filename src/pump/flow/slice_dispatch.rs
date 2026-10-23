@@ -253,7 +253,7 @@ impl MailspacePort {
 ///
 /// # Errors
 /// Returns [`VivariumError`] when there is no hand role, the task has no
-/// `target:` line or no recorded scope, or a mail, job or index call fails.
+/// target in its front matter or no recorded scope, or a mail, job or index call fails.
 pub fn dispatch<S: JobStore, M: SliceMail>(
     ctx: &Ctx,
     st: &mut S,
@@ -369,8 +369,12 @@ fn hand_spec<M: SliceMail>(
     })?;
     let task_body = mail.task_body(&slice.task)?;
     let target = target_of(&task_body).ok_or_else(|| {
-        VivariumError::Parse(format!("slice task {} has no `target:` line", slice.task))
+        VivariumError::Parse(format!(
+            "slice task {} names no target in its front matter",
+            slice.task
+        ))
     })?;
+    let target = target.as_str();
     let scope = store.slice_scope(&slice.task)?.ok_or_else(|| {
         VivariumError::Parse(format!("slice task {} has no recorded scope", slice.task))
     })?;
