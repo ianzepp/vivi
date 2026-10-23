@@ -50,6 +50,7 @@ mod mermaid;
 mod message_id_test;
 mod pool_record;
 mod pump_action;
+pub mod pump_note;
 mod pump_record;
 mod reply;
 mod report;

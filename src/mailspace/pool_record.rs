@@ -9,7 +9,6 @@ use super::Mailspace;
 use super::thread::{MailspaceThreadMessage, text_body};
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
-use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A task as the pool reads it.
 #[derive(Debug, Clone)]
@@ -37,9 +36,6 @@ pub const ATTEMPT_MARKER: &str = "pump-attempt:";
 /// First line of a pump brief reply on a preset task.
 pub const BRIEF_MARKER: &str = "pump-brief:";
 
-/// The last order stamp handed out by [`marked_line`].
-static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
-
 /// The first line of a pump-marked reply: `<marker> t=<unix micros> <rest>`.
 ///
 /// Thread order has one-second precision, so same-second replies need their
@@ -47,12 +43,7 @@ static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
 /// stamp this process issued, so it strictly increases.
 #[must_use]
 pub fn marked_line(marker: &str, rest: &str) -> String {
-    let now = chrono::Utc::now().timestamp_micros();
-    let stamp = LAST_STAMP
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
-            Some(now.max(last.saturating_add(1)))
-        })
-        .map_or(now, |last| now.max(last.saturating_add(1)));
+    let stamp = super::pump_note::next_stamp();
     format!("{marker} t={stamp} {rest}").trim_end().to_owned()
 }
 
@@ -77,8 +68,13 @@ fn split_stamp(text: &str) -> Option<(i64, &str)> {
     Some((stamp, after.trim_start()))
 }
 
-/// The order stamp on a marked message's first line, when it has one.
+/// The order stamp of a marked message: a note's `pump.t`, else the stamp on
+/// the first line, when it has one.
 fn stamp_of(body: &str) -> Option<i64> {
+    if let Some(note) = super::pump_note::note_of(body) {
+        return Some(note.pump.t);
+    }
+    // TRANSITIONAL (W3-B3): the old first-line stamp, deleted by W3B3-15.
     let first = body.trim_start().lines().next()?;
     let (_, rest) = first.split_once(char::is_whitespace)?;
     split_stamp(rest.trim_start()).map(|(stamp, _)| stamp)
