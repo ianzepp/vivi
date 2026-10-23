@@ -10,6 +10,9 @@ pub mod plain;
 pub mod records;
 pub mod work;
 
+pub use kinds::{Front, Letter, LetterKind, parse_kind};
+pub use message::of_message;
+
 use std::fmt;
 
 use serde::de::DeserializeOwned;
