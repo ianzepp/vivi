@@ -436,11 +436,14 @@ fn the_bridge_note_does_not_tell_the_worker_to_settle_its_handle() {
     let bridged = standing_prompt("scribe", "Write the letters.", RULES, "", true);
     assert!(
         bridged.contains(
-            "report with `reply`; the runner records your result and the pump or Mind \
-             settles the handle."
+            "You run in a pool slot with the vivi tools of the project server \
+             (MCP server `vivi`). Your task handle is in your brief: read it \
+             with `show` and `thread`, report with `reply`; the runner records \
+             your result and the pump or Mind settles the handle."
         ),
         "got: {bridged}"
     );
+    assert_eq!(bridged.matches("report with `reply`").count(), 1);
     assert!(!bridged.contains("`done`"), "got: {bridged}");
 }
 
@@ -488,6 +491,28 @@ fn the_snapshot_is_capped_with_a_cut_marker_on_a_char_boundary() {
     assert!(text.len() <= PROJECT_RULES_CAP + 64, "len {}", text.len());
     let small = project_rules_text(&[("project", "Small", "x")]);
     assert!(!small.contains("cut at"));
+}
+
+#[test]
+fn the_cap_cuts_inside_a_multibyte_character_back_to_a_boundary() {
+    // An odd-length subject followed by three-byte characters puts the byte
+    // at the cap inside a character.
+    let subject = "\u{e9}\u{e9}\u{e9}x";
+    assert_eq!(subject.len() % 2, 1);
+    let big = "\u{20ac}".repeat(PROJECT_RULES_CAP);
+    let full = format!("## {subject}\n\n{big}\n\n");
+    assert!(!full.is_char_boundary(PROJECT_RULES_CAP), "cut must split");
+    let text = project_rules_text(&[("project", subject, &big)]);
+    let marker = "\n[project rules cut at 8192 bytes]\n";
+    assert!(
+        text.ends_with(marker),
+        "got tail: {:?}",
+        &text[text.len() - 40..]
+    );
+    let kept = &text[..text.len() - marker.len()];
+    assert!(kept.len() <= PROJECT_RULES_CAP, "kept {}", kept.len());
+    assert!(full.starts_with(kept));
+    assert!(std::str::from_utf8(text.as_bytes()).is_ok());
 }
 
 #[test]

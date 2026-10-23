@@ -263,9 +263,8 @@ pub fn standing_prompt(
     let note = if bridge {
         "You run in a pool slot with the vivi tools of the project server \
          (MCP server `vivi`). Your task handle is in your brief: read it \
-         with `show` and `thread`, report with `reply`, and report \
-         with `reply`; the runner records your result and the pump or Mind \
-         settles the handle."
+         with `show` and `thread`, report with `reply`; the runner records \
+         your result and the pump or Mind settles the handle."
     } else {
         "You run in a pool slot with no `vivi` command and no mailspace. \
          Where the charter tells you to read or settle your handle with \
