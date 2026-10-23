@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Built on vivi 20.0.0 and its rung commands; the pump gate is gone.
+
+- **vivi 20.0.0.** The `vivi` dependency is v20.0.0.
+- **MCP `pump_gate` removed (breaking).** The tool and its `[pump.gate]`
+  config are gone with vivi 20.
+- **MCP `pump_rungs`.** Operator-only show and set of the pump's rung
+  commands (`task`, `need`, `main`, `release`), per workspace
+  (`[pump.rungs]`) or per `target` (`[pump.targets.<id>.rungs]`), through
+  `RungsConfig`. Same authorization as `pump_control`; `set` is rate limited
+  as a write. The answer is `{target, task, need, main, release, timeout,
+  pools}`; an unknown target is refused.
+- **`create_project` `gate` removed (breaking); `rungs` added.** `rungs` takes
+  the four rung commands plus `timeout` and `pools`, validated before the
+  project is created and written into `[pump.rungs]` after it. A failed write
+  is reported in the answer's `rungs_error` and nothing is rolled back.
+  `branch` is the repository's default branch only.
+- **Pump health.** The answer no longer carries `planner_parked` or
+  `baseline_red` (vivi 20), and the verdict rules follow vivi 20.
+- **Pump identity events.** A done or reopened event from
+  `pump@<host prefix>.local` counts, through the host member's token.
+
 ## 1.11.0
 
 Dependency edges after the send, over MCP.
