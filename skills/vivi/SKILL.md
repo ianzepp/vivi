@@ -57,6 +57,48 @@ consistently:
 | `memo` | Private durable context for one role; not work or communication |
 | `rule` | Project rule shared by every seat; not work and not a private memo |
 
+### Letters
+
+Need, want and task letters are TOML front matter between two `+++` lines,
+then Markdown prose; the send stamps the header `X-Vivi-Format: 1`. Vivi reads
+the front matter and never the prose. Required keys: a need needs a non-empty
+`done_when` list, a want needs a `question`; a task needs neither. Send flags
+build the front matter:
+
+```sh
+vivi need send --from mind --to hand-1 --subject "Add a greeting" \
+  --body "Print hello." \
+  --done-when "running hello.sh prints hello"
+```
+
+Repeat `--done-when` for more clauses. `--target`, `--write-scope` and
+`--depends-on` are optional and repeatable where a list fits; a need may also
+carry `--serves <want>` or `--explores <want>` (never both). `want send` takes
+`--question`. A body whose first non-blank line is `+++` is the whole letter,
+and passing a front-matter flag beside it is refused:
+
+```
++++
+done_when = ["cargo test -p parser --test validate passes"]
+write_scope = ["crates/parser/src/validate.rs"]
+band = "P1"
++++
+
+unit: U-17
+```
+
+```sh
+vivi task send --from mind --to hand --subject 'unit U-17: parser input validation' --body-file unit.md
+```
+
+`task send` has no flags for `from`, `branch`, `with` or `band`: put them in
+the front matter of a whole-letter body. Lines such as `unit:` in the prose are
+free text. A need with no `done_when` is refused at send and nothing is stored.
+A letter with no front matter is history: `show` and `list` read it, but
+`vivi step` reports it as `letter_invalid` and the pump refuses to run it; send
+a new letter instead. The keys of every kind and the role reply envelope are in
+[the letter format](references/envelope.md).
+
 The board aggregates open work. Kind-specific `list` commands orient within one
 queue. `show` loads one handle. Use `dump` only for bounded audits or recovery;
 full dumps are noisy and can hide the current frontier.
@@ -109,10 +151,12 @@ project sets only what is its own.
   `unset = ["pools.studio.size_gib", "identities.reviewer"]` (dotted paths;
   quote a segment that contains a dot: `pools."a.b".x`).
 - **Charters** fall back to the nearest base's `charters/<role>.md`.
-- **Writers** (`vivi pool set`, `vivi role ...`) edit
+- **Writers** (`vivi pool set`, `vivi role ...`, `vivi config set`) edit
   only the project's own file, never a base. A role or pool defined only in a
-  base cannot be changed from the project with the CLI yet; override it by
-  editing the project's file.
+  base is overridden from the project with `vivi config set <dotted.key>
+  <value>`, which writes the override into the project's own file (roles
+  themselves still go through `vivi role ...`; `config set` refuses
+  `identities` keys).
 - `vivi config show` and `vivi config validate` list the merged files and
   which file each pool, role and pump key came from.
 
@@ -246,7 +290,8 @@ and an optional `fix` command.
 Exit codes are 0 for `ok`, 1 for `warn` and 2 for `fail`.
 
 The project checks cover mailspace config and storage, unabsorbed inbox mail,
-open needs without `done_when:`, roles, sync, pools and pump state. Other
+ready items whose front matter has no `done_when` and items that are not valid
+letters (`letter_invalid`), roles, sync, pools and pump state. Other
 findings cover the running binary, installed skill copies, proxy and disk.
 Release, sync-server and local-proxy health checks are read-only probes; if a
 probe is unavailable its finding is skipped or warned. Proxy credential checks
@@ -254,7 +299,7 @@ inspect file presence and permissions only: they never read credential values
 or run `key_cmd`.
 
 For a WAL-mode mailspace whose `mail.sqlite-shm` sidecar is missing, Doctor
-skips the store, unabsorbed-mail and `done_when:` checks. Opening the database
+skips the store, unabsorbed-mail and `done_when` checks. Opening the database
 could create that sidecar, so this limit preserves the read-only guarantee.
 Use `vivi pool doctor` for provider-specific checks; `vivi doctor` does not run
 the pool's live `--test`.
@@ -283,17 +328,40 @@ vivi role pool <role> <pool>
 vivi config show [--resolved] [--json | --porcelain]
 vivi config validate [--json]
 vivi config migrate [--write]
+vivi config set <key> <value>
+vivi config unset <key>
 ```
+
+`config set` parses the value as TOML (a bare word is a string); `config unset`
+removes the key. Every command that writes the project's `mailspace.toml`
+goes through one guard: `config set` and `unset`, `pump target add|remove`,
+`pump rungs set`, `pool add|set|unset|remove|bands`, and `role add|set|pool` and
+`role charter set`. While the pump runs (its lock is held and its mode is
+running) the write is refused with "the pump is running: run vivi pump pause
+first". Before writing, the guard keeps `mailspace.toml.bak.<stamp>` (the last
+10 are kept) and prints `backup <path>`. A write that adds a new validate error
+is rolled back; errors the project already had are not blamed on the write and
+print as `still invalid: ...`. A config that does not load is repaired step by
+step: a write that makes it load is kept, a write that leaves the same load
+error is rolled back, and a write that reaches a different load error is kept.
+`role add` of the pump's hand role (`[pump] to`, else `hand`) defaults
+`kind = hand` when `--kind` is absent.
 
 `vivi config show` is the role -> kind -> pool -> slots -> models ->
 read_only table plus the merge/gate flow. `validate` checks those together
 and also runs at `vivi pump run|once` start. `mailspace init` writes a starter
 `[pump]` table with empty required values. A project missing things the pump
-needs (committer, branch, gate command, shared checks, roles, pools) is **not
-ready**, not invalid: `validate` prints `not ready:` with each missing item and
+needs (the committer name and email, roles and pools, and a task, need and main
+rung for each target; there is no branch, gate-command or shared-checks item) is
+**not ready**, not invalid: `validate` prints `not ready:` with each missing item and
 exits 3 (a wrong value is an error and exits 1; ready exits 0). The pump on a
-not-ready project dispatches nothing, exits cleanly, shows the items in its
-status and `vivi pump health`, and starts by itself once they are supplied. `migrate` is a dry-run diff
+not-ready project dispatches nothing, exits cleanly, and shows the items in its
+status and `vivi pump health`. A fresh `pump.db` starts stopped, so once the
+project is ready it also needs `vivi pump start`.
+A pump role charter that predates the v20 reply envelope is an error
+(`charter <role>: no v20 reply envelope`), and `config migrate --write` fixes it
+by installing the shipped charter. Retired target-level merge keys are named by
+`validate` and removed by `migrate`. `migrate` is a dry-run diff
 unless `--write` (a timestamped `.bak` is kept; comments survive). To upgrade a
 15.0.0 mailspace: `vivi update`, `vivi config migrate`, read the plan, then
 `vivi config migrate --write` and `vivi config validate`. It assigns the hand,
@@ -305,15 +373,16 @@ with the shipped charter when blank; need acceptance audits have no fallback),
 sets `kind = "hand"` on a `[pump] to` role with no kind (another kind is
 reported), adds a `merge` role when absent and sets `kind = "merge"` on a merge
 role of another kind (validate errors on both: only merge- and hand-kind roles
-may publish), reports a merge or auditor charter that is not the shipped one
-(16 jobs use it as the system prompt), renames `split_timeout`, and removes
+may publish), replaces a pump role charter that predates the v20 envelope with the shipped
+one (16 jobs use it as the system prompt), renames `split_timeout`, and removes
 the keys 16 ignores with a reason each: `[pump.planner] run` and `charter`,
 `[pump] priority_file`, `[pump.merge] lanes`, and `[pump.gate] every_merges` and
 `every_seconds` (a behaviour change: the gate runs after every merge batch). For
 local pools it sets the 15.0.0 shared slot root only when the mailspace has no
 id; with an id 15.0.0 slots are not reused and the plan says which pools. Charters
-are written only under `--write`, after a `.bak` of any existing file, and a
-charter that has text is never replaced. `vivi doctor` reports the same pump
+are written only under `--write`, after a `.bak` of any existing file, and only
+a pump role charter that predates the v20 envelope is replaced; any other
+charter with text is left alone. `vivi doctor` reports the same pump
 role requirements as `validate`. The plan
 ends with `review:` lines for what a human has to settle. A second run on a
 migrated file reports no changes.
@@ -339,13 +408,15 @@ document.
 Use `send` to create a project-local record and `mail reply` to continue its
 thread. A work send with `--reply-to` is a captured reply on that thread, not
 a new item: `need list`, `want list`, and the other work lists show a thread
-once, by its root, and `show` reads the whole thread. `--depends-on` on any
-work-kind send (task, need, or want handles)
-creates a graph edge; handles are validated before anything is created, so
-an unknown dependency fails the send. `X-Vivi-Depends-On` headers remain on
-the message and travel with it: whatever files a work letter (local send, pull,
-fetch, resync, `pull --refs`, audit repair) builds the edges its headers name
-for every dependency this mailspace holds as work, with or without `[sync]`.
+once, by its root, and `show` reads the whole thread. Dependencies are the front matter
+`depends_on` list; `--depends-on` on any work-kind send (task, need, or want
+handles) builds that list and creates a graph edge. Handles are validated
+before anything is created, so an unknown dependency fails the send. No
+`X-Vivi-Depends-On` header is written. The front matter travels with the
+letter: whatever files a work letter (local send, pull, fetch, resync,
+`pull --refs`, audit repair) builds the edges its front matter names for every
+dependency this mailspace holds as work, with or without `[sync]`. A letter in
+the old format names none.
 A listed dependency always blocks: a reference this mailspace does not hold
 yet (not yet synced, or unknown) leaves the dependent blocked and reported as
 an exception until the dependency is present and done, and the edge is made
@@ -431,8 +502,8 @@ resolve before anything is written, so an unknown handle fails the whole
 command; a dependency already in the asked state changes nothing and writes
 no letter; an item cannot depend on itself, close a cycle, or change after
 it is done. Per dependency the newest counted letter by (instant,
-Message-ID) controls and wins over the `X-Vivi-Depends-On` header the item
-was sent with, so removing an edge named at send works, add and remove
+Message-ID) controls and wins over the `depends_on` the item
+named at send, so removing an edge named at send works, add and remove
 converge whatever the arrival order, and a later pull or `graph audit
 --repair` never puts a removed edge back. A dependency the member does not
 hold yet waits as an unresolved reference and its edge is made when the letter
@@ -820,11 +891,14 @@ shows no `awaiting` or `reported` row. Work held for another mailspace's role
 shows it. Use `vivi step [--json]` for a mechanical adjudication of the
 backlog into `dispatches` (ready, verifiable work with clause counts) and
 `exceptions` (reason vocabulary: `want_requires_promotion`,
-`lowered_awaiting_units`, `no_done_when`, `item_missing`, `not_settled`,
-`untracked_item`, `awaiting_remote`, `awaiting_acceptance`,
-`awaiting_dependency`). Wants render as
-parked in their exception detail. A clauseless task/need body warns at send
-time, and a duplicate work send (same sender, same subject, still open in the
+`lowered_awaiting_units`, `no_done_when`, `letter_invalid`, `pump_owned`,
+`item_missing`, `not_settled`, `untracked_item`, `awaiting_remote`,
+`awaiting_acceptance`, `awaiting_dependency`). `letter_invalid` is an item in
+the old format or with invalid front matter; `pump_owned` is a pump step task
+(its front matter has a `[step]` table) that the pump runs and closes. Wants
+render as parked in their exception detail. A need without `done_when` is
+refused at send; a task without one sends, and `step` reports `no_done_when`.
+A duplicate work send (same sender, same subject, still open in the
 recipient's folder) warns on stderr without blocking. `vivi step --apply
 <handle>` completes an already-settled item's node and lists transitions under
 `decisions`; applying an item the lifecycle already settled records
@@ -838,13 +912,13 @@ invariant — every work item sent while the graph existed has a node in step
 with its folder state — and reports `missing_node`, `node_state`, `node_kind`,
 `missing_edge`, `foreign_held`, `event_state`, and `orphan_node` findings,
 with a one-line count per class. `missing_edge` is a held open work letter
-whose `X-Vivi-Depends-On` header names held work the graph has no edge from.
+whose front matter `depends_on` names held work the graph has no edge from.
 `foreign_held` is a node still open for work held under another mailspace's
 role. `event_state` is a folder that disagrees with its item's latest event
 letter. A `done` folder under an open or active node is a report awaiting
 acceptance, not `node_state` drift: audit neither reports nor repairs it, and
 `graph complete` is the manual override. `--repair` mints missing nodes and
-edges (from folder state and dependency headers), completes nodes for settled
+edges (from folder state and front matter `depends_on`), completes nodes for settled
 items, settles need mailboxes whose join fired, settles `foreign_held` nodes,
 re-applies the latest event for `event_state`, and corrects kinds.
 `orphan_node` is reported, never repaired. `graph activate` / `need bind`
@@ -871,9 +945,9 @@ it before lowering a multi-unit delivery. The load-bearing rules:
   it. Neither means the code is on main, and Vivi has no merged state. "On
   main" is a **merge task** filed with `--depends-on <unit>`; anything that
   needs the code `--depends-on` the merge task, not the unit.
-- `vivi step` dispatches a ready node only if a line of its body begins with
-  `done_when:` (a `write_scope:` line is reported, not required). One-line
-  compressed forms, bullets, and bold labels do not match.
+- `vivi step` dispatches a ready node only when its front matter has a
+  non-empty `done_when` list (`write_scope` is reported, not required). Prose
+  lines are not read.
 - Per unit, in order: file with `--depends-on` and a valid body, `need bind`
   the need to its units (and their merge tasks), claim the lane, `graph
   activate <handle> --task <handle>`, spawn the seat, and when it reports
@@ -1009,11 +1083,16 @@ Legacy `[pump.dispatch.kinds]` routes unit tasks when the hand role has no pool;
 The old `[pump.merge]` keys `batch`, `lanes`, `need_parallel`, `shared_checks`,
 `checks_for`, `proof_timeout` and `remote_wait`, and the `[pump.need]` table
 (`repair_rounds`), are retired: they are no longer read and a config that still
-carries them parses with them ignored. Convert supported legacy
+carries them parses with them ignored. `vivi config validate` names each
+retired key it finds, also under `[pump.targets.<id>.merge]`, and
+`vivi config migrate --write` removes them. Convert supported legacy
 dispatch and gate routing with
 `vivi config migrate` (dry-run) or `vivi config migrate --write`.
 A role that names a band when its pool has no `[pools.X.bands]` table
 fails `vivi config validate` unless caps or legacy lanes still cover it.
+A role's `model` may also be a model slug listed in the pool's
+`harness.models` instead of a band: its effort then comes from the role's
+`thinking`, else from the first band entry that names that model.
 
 `vivi pool set <name> <key> <value>` writes one (possibly dotted) key on
 `[pools.<name>]`. `vivi pool unset <name> <key>` removes it. There is no
@@ -1022,7 +1101,12 @@ allow-list: any path under that table is settable (`provider`, `slots`,
 `harness.models`, `harness.name`, `harness.run`, `committer.name`,
 `committer.email`, `bridge.enabled`, and the provider tables). Values:
 a decimal integer (`10`), `true` / `false`, a TOML array (`["a", "b"]`),
-or any other string. Comments and unrelated keys are left alone.
+or any other string. Comments and unrelated keys are left alone. Like every
+pool writer (`pool add`, `set`, `unset`, `remove`, `bands`), `set` and `unset`
+go through the config write guard: refused while the pump runs (pause it
+first), a `mailspace.toml.bak.<stamp>` backup kept, and a write that adds a
+new `vivi config validate` error rolled back. They print `backup <path>`
+notes.
 
 ```sh
 vivi pool set glm slots 10
@@ -1037,10 +1121,11 @@ vivi pool unset glm image
 - Porcelain show: `pool <name> <provider> <slots> <free>` — `free` is `-`
   unless `--resolved` (then the live free-slot count)
 - JSON (list is an array; show is one object): `name`, `provider`,
-  `slots`, `free` (`null` unless `--resolved` on show)
+  `slots`, `free` (`null` unless `--resolved` on show), `bands`
+  (`{"P<n>": [{"model", "reasoning"}]}`) and `harness_models`
 - Human list: `<name>  provider=<p>  slots=<n>`
 - Human show: the same line, then optional `free`, `worktree_of`,
-  `models`, `caps`, and `bands`
+  `models`, `caps`, and one `  P<n>: <model> (<reasoning>)` line per band
 
 #### Named pools and `--pool`
 
@@ -1155,9 +1240,9 @@ the `pool_collected` JSON the array `restored`).
 
 `vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>]
 [--budget SECS]` runs a job that publishes nothing, so a review role can have a
-full shell (git, builds, tests) safely. `--from` (or a `from:` body line) is
-required; `--branch` and `--allow-default-branch` are refused with it, and a
-`branch:` body line is ignored (the human output says so). Per-dispatch flag
+full shell (git, builds, tests) safely. `--from` (or the task front matter
+`from` key) is required; `--branch` and `--allow-default-branch` are refused
+with it, and a front matter `branch` is ignored (the human output says so). Per-dispatch flag
 only; no config setting.
 
 - The GitHub token is minted with `contents: read`: the slot cannot push.
@@ -1260,6 +1345,7 @@ scale      created ... | home ... | exists ... | issue ...         as create
 status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE   MODE write|read-only, - with no open dispatch
            capacity POOL FREE                                      per-dispatch pools (worker, runpod): jobs it may start now
 dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST   BRANCH - when read-only; MODE write|read-only; ABANDONED COST: see below
+           refused TASK REASON                                     the dispatch can never work as asked; the pump counts it toward a held job
 wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
            nothing-open                                            already collected
            issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task
@@ -1795,8 +1881,8 @@ from it; units that need another unit's code start `--from` that unit's branch
   slug must be one of the pool's `[harness].models`. Every model, band and
   read-only check runs before any machine is touched.
 - `from` is what to start from (a commit or a branch); `branch` is where to
-  push. Each comes from its flag, else from a `from: <ref>` / `branch: <name>`
-  line in the task body; both are required one way or the other. One rule covers
+  push. Each comes from its flag, else from the task front matter `from` /
+  `branch` key; both are required one way or the other. One rule covers
   three cases: a new branch (`from` = commit), continuing a branch (`from` =
   `branch`), and stacking (`from` = one branch, `branch` = another). On a pool
   that fetches from a remote, an abbreviated commit hash is resolved to the
@@ -1813,13 +1899,11 @@ from it; units that need another unit's code start `--from` that unit's branch
   local fetch mode do not check the branch when dispatching — the job runs, and
   its final push, never forced, ends `push_refused`.
 - Extra refs a job must see besides `from` travel with the dispatch:
-  `--with <ref>`, repeatable, at most 8, or `with: <ref>` lines in the task
-  body. Each is resolved to a commit before a slot is claimed, so an unknown
+  `--with <ref>`, repeatable, at most 8, or the task front matter list
+  `with = ["a", "b"]`. Each is resolved to a commit before a slot is claimed, so an unknown
   ref refuses the dispatch and claims nothing (a worktree pool resolves in its
-  source repository the same way). Body lines follow the same trimming and
-  list-dash rules as `from:`/`branch:` and every `with: <ref>` line counts — a
-  line whose value is empty or holds a space is not a `with` line; when any
-  `--with` is given, the flags win and the body lines are ignored. Duplicates
+  source repository the same way). When any `--with` is given, the flags win
+  and the front matter list is ignored. Duplicates
   are dropped keeping the first; a value that is not a plain ref name, or that
   names `from` or `branch`, is refused. An abbreviated hash is resolved to the
   full hash like `from`, and the job's `with.list` and the dispatch record
@@ -1875,7 +1959,7 @@ from it; units that need another unit's code start `--from` that unit's branch
 A task addressed to a known role is dispatched from that role.
 `vivi pool dispatch --pool <name> <task>` looks the addressee up; an absent or
 unknown addressee is no role at all, and the dispatch then needs `--model` or
-a `band:` line. From the role it takes:
+a front matter `band`. From the role it takes:
 
 - **The charter as the worker's standing prompt.** The rules file the job runs
   under is composed charter first, then the pool note, then the pool rules
@@ -1891,19 +1975,42 @@ a `band:` line. From the role it takes:
   `read_only` flag; else the kind default. Auditor, triage, cadence/steward,
   head, and gate default read-only; hand, merge, and lint write.
 - **The model and reasoning from the band.** The role's `model` field holds a
-  band string such as `P2-S0` (set it with `vivi role set <role> --model P2`),
-  not a model slug. The pool's `bands` table says which model-and-reasoning
-  pair serves each band, and the job runs at that pair.
+  band string such as `P2-S0` (set it with `vivi role set <role> --model P2`)
+  or a model slug listed in the pool's `harness.models`. The pool's `bands`
+  table says which model-and-reasoning pair serves each band, and the job runs
+  at that pair. A slug runs as named, at the role's `thinking`, else at the
+  reasoning of the first band entry that names that model.
 
 Bands: `P0` to `P5` is the intelligence axis (P0 the most capable); the
 optional `-S0` to `-S3` speed suffix is parsed and ignored for now. The
 plain-language gloss: P0 can make complex decisions, P1 understands anything
-inside its area, and P2 executes a tightly constrained scope. A `band:` line
-in the task body overrides the role's band for this one assignment (the first
-one wins; the same trimming rules as `from:`). `--model` and `--read-only`
-remain the overrides: `--model` wins over any band and takes the band's
-reasoning only when the pool's choice for that band names the same model;
-`--read-only` forces read-only on any role.
+inside its area, and P2 executes a tightly constrained scope. The task front
+matter `band` key (`band = "P1"`) overrides the role's band for this one
+assignment (a whole-letter task, example below). `--model` and
+`--read-only` remain the overrides: `--model` wins over any band and takes the band's
+reasoning only when the pool's choice for that band names the same model (or,
+for the role's own slug, the role's `thinking`); `--read-only` forces
+read-only on any role.
+
+A task that sets `band` (or `from`, `branch`, `with`) carries it in front
+matter, and `task send` has no flag for those keys, so send a whole-letter
+body (it opens with `+++`; no front matter flag may go beside it):
+
+```
++++
+done_when = ["cargo test -p parser --test validate passes", "malformed input is rejected with the expected error"]
+write_scope = ["crates/parser/src/validate.rs", "crates/parser/tests/validate.rs"]
+band = "P1"
++++
+
+goal: docs/goal.md
+unit: U-17
+edit: reject malformed input at validate.rs::parse_input
+```
+
+```sh
+vivi task send --from mind --to hand --subject 'unit U-17: parser input validation' --body-file unit.md
+```
 
 The bands table is per pool. Prefer the commands:
 
@@ -1927,8 +2034,8 @@ are reserved for in-band failover, which is **not built**: no failover, no
 health tracking, no retry on another model — the first choice is the only one.
 When the harness template uses a `{reasoning}` placeholder beside `{model}`,
 a job dispatched by band runs at its band's reasoning; a job dispatched with
-`--model` that is not the band's model has no reasoning, and a `{reasoning}`
-harness refuses it.
+`--model` that is neither the band's model nor the role's slug has no
+reasoning, and a `{reasoning}` harness refuses it.
 
 A pool with nothing for the band refuses before a slot is claimed, naming the
 band and the pool (and the bands it does serve): send that job to a pool that
@@ -2427,6 +2534,12 @@ vivi pump priority clear <need>
 vivi pump priority list
 vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--reason TEXT] [--dry-run]
 vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
+vivi pump requeue --job <job-id>    # release a held pool job
+vivi pump target list
+vivi pump target add <id> --path <path> [--remote-url <url>] [--remote <name>] [--main <branch>] [--github-repo <owner/name>] [--rung NAME=CMD]... [--merge KEY=VALUE]...
+vivi pump target remove <id>
+vivi pump rungs show [--target <id>]
+vivi pump rungs set <task|need|main|release> <command> [--target <id>]
 vivi pump replan <need> [--force]
 vivi pump withdraw <need>... --reason TEXT
 vivi pump send --need <need> [--from <id>] [--body TEXT]
@@ -2437,6 +2550,16 @@ vivi pump done <record> [--note TEXT]
 vivi pump reopen <record>
 vivi pump history <need> [--json]
 ```
+
+A fresh **pump.db** starts stopped: run **vivi pump start** to enable the
+pump (the service starts it when registered). **pump target add|remove** and
+**pump rungs set** are config writes: they are refused while the pump runs
+(**vivi pump pause** first) and keep a **mailspace.toml.bak.&lt;stamp&gt;** backup.
+A rung runs on **[pump.rungs] pools** (or the target's own rung pools), and
+those must name a pool before a rung command is accepted: on a fresh project
+both commands are rolled back ("sets a rung command but its effective pools are
+empty") until **vivi pool add** has made a pool and **vivi config set
+pump.rungs.pools '["&lt;pool&gt;"]'** names it.
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
 addressed to the pump's own identity (**[pump] reply_from**, default
@@ -2532,9 +2655,14 @@ exits. It does not cancel or drain pool jobs. Those continue in their pools
 and are reattached on the next startup.
 
 The pump reloads configuration between ticks. Valid routing, pool, dispatch,
-merge, gate, budget, and check changes apply on the next tick. The pump home
-and repository target checkout paths cannot change while the lock is held;
-restart after changing them.
+merge, gate, budget, check, and new-target changes apply on the next tick. A
+change the running pump cannot apply (the pump home, or a running target's
+integration path) keeps the old value, the rest of the reload still applies,
+and one **config-reload-refused** exception names what needs a restart.
+
+A job the pool refuses 3 times is held, with one **job-dispatch-refused**
+exception. Release it with **vivi pump requeue &lt;step-task&gt;** or **vivi pump
+requeue --job &lt;job-id&gt;**, or withdraw the need.
 
 ### Role jobs and pool routing
 
@@ -2550,7 +2678,7 @@ targets must exist, and cycles are configuration errors.
 | Gate | **gate** role | Gate role pool and fallback chain. Read-only. (`[pump.gate]` is retired: an old table parses and is ignored.) |
 | Gate audit | **auditor** role | Auditor role pool and fallback chain, followed by gate-pool candidates; without an auditor role, a built-in read-only auditor uses gate pools. |
 | Need acceptance audit | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
-| Investigation | Configured **auditor** role | Auditor pool and fallback chain. Read-only. |
+| Research | **researcher** role | That role's pool and fallback chain. Read-only. |
 | Promotion | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. |
 | Cadence and digest | The scheduled role | That role's pool and fallback chain. |
 | Reclaim | **reclaim**, or the hand role | Local-provider pools only. |
@@ -2564,6 +2692,10 @@ but its pool list is ignored. Without a hand pool, configured kinds and
 Whole-need planning, need amendments, and split planning all use durable jobs
 for the active pump-planner role and its charter. The worker returns the complete
 plan JSON between **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** in its receipt.
+A pump-role charter that asks for the PUMP-PLAN markers or lacks the v20 reply
+envelope is flagged by **vivi config validate** and replaced by **vivi config
+migrate --write**; flow role replies use the envelope in
+[the envelope reference](references/envelope.md).
 The pump writes it under **plans/** and applies the existing validator. The
 old **[pump.planner].run** and **charter** keys are not executed. Keep
 **split_hard_cap** and **planners_max** for split job limits.
@@ -2661,9 +2793,11 @@ filter; split multiple filters into separate commands.
 An invalid proof in a new plan rejects that plan with **bad-plan**. If proof
 validation fails again just before dispatch, the unit is parked as
 **needs-replan** and the pump requests a planner revision instead of charging
-a hand attempt. Every hand brief ends with a **done_when:** line: all listed
-PROOF commands exit 0 and the configured rules pass, or the reply ends with
-**VERDICT: no-defect** and evidence.
+a hand attempt. A brief no longer ends with a **done_when:** body line: a
+task's **done_when** is a front matter list (`done_when = [...]`), and the
+needs the pump files itself (follow-ups, residual findings) carry it from
+**--done-when**. Proof stays a list of commands that must exit 0 and pass the
+configured rules, or a reply ending with **VERDICT: no-defect** and evidence.
 
 **Plan checks.** Beyond proof validation, the pump runs deterministic checks
 on every plan and revision it ingests, and rejects the plan when one fails.
@@ -2731,12 +2865,13 @@ outbound signal. A due role with a charter and room under the open-work caps
 gets a durable role job. The board shows **next_due_at** and the latest result;
 pump status shows cadence schedules and run results.
 
-Head-ceo investigation needs must carry the **investigate** mark and a body
-line **for: &lt;want-handle&gt;**. The referenced want must be open. The pump sends
-a read-only job to the configured auditor role. The need closes only after a
-recent auditor reply appears on the want thread addressed to head-ceo. The
-default cap is two rounds per want; the head-ceo charter can set
-**investigation-rounds: N**.
+Head-ceo research needs are filed with **vivi need send --mark research
+--explores &lt;want&gt; --done-when "..."**, followed by **vivi pump send --need
+&lt;need&gt;** (the mark is written first; flow intake reads the run kind from it
+when the open pump record appears, and a need with no record never runs). The
+research flow hands the researcher
+the need thread and the want that the need's front matter **explores** names.
+Head-ceo files at most two research needs for one want.
 
 ### Config
 
@@ -2827,7 +2962,7 @@ be empty or name an unknown kind. A configured kind's **max** and
 hand role has no pool, configure kinds and **default_kind** to route unit
 tasks. Configure **[pools.&lt;name&gt;] fallback = "&lt;pool&gt;"** to add
 dispatch candidates. **vivi config validate** requires an active pump-planner role
-with a pool, an active auditor role with a pool, a merge role of kind merge and a hand role of kind hand, and validates role and pool references. Configure a merge role
+with a pool, an active auditor role with a pool, a merge role of kind merge and a hand role of kind hand, and validates role and pool references. A target with no task, need, or main rung is not ready (exit 3), and a pump-role charter that predates the v20 envelope is an error (**vivi config migrate --write** replaces it). Configure a merge role
 with a pool for the live merge pipeline; legacy merge-lane settings do not run
 the live merges.
 
@@ -3181,7 +3316,7 @@ resync` rebuilds it.
 from `vivi sync directory`:
 
 ```sh
-vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ...
+vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ... --done-when "..."
 ```
 
 A remote recipient gets no local delivered copy. The letter is held as a sent
@@ -3315,7 +3450,7 @@ asks the server for letters by the 8 hex characters of their id (100 per
 request; a handle that names nothing visible is reported as missing, not an
 error) and files them through the same checks as a pull, without moving the
 cursor or the floor. `vivi sync pull --refs [--depth N]` follows references
-after a pull: an `X-Vivi-Depends-On` value, or a whole-word 8-hex token in the
+after a pull: a front matter `depends_on` value, or a whole-word 8-hex token in the
 subject or body, that names a letter this mailspace does not hold is looked up
 and filed. Each extra hop (`--depth`, 1 to 3, default 1) scans only what the
 previous hop filed; one invocation looks up at most 500 handles. A token that
@@ -3343,30 +3478,30 @@ visible only to its sender and the addressed mailspace; work items and mail to
 
 ### MCP bridge
 
-`vivi mcp` is a thin stdio bridge to the project server's MCP endpoint
-(`POST /v1/projects/{id}/mcp`). It speaks MCP on stdin/stdout
+`vivi mcp` is a thin stdio bridge to the server's MCP endpoint
+(`POST <server>/v1/mcp`; the project id is not in the URL). It speaks MCP on stdin/stdout
 (newline-delimited JSON-RPC 2.0, the standard stdio transport) and forwards
 each message to that endpoint unchanged. It is a pass-through: it does not
 know the tool list, so `tools/list` and `tools/call` go to the server as they
 are, and new server tools need no new bridge. Nothing but protocol messages is
 written to stdout; diagnostics go to stderr; a notification gets no reply. A
-pool slot needs only the binary, a server URL, a project id, and a credential:
-no local mailspace, no sync, and the bridge never creates `.vivi/`. When the
-server refuses a request after the one allowed renewal (or at once for an API
-key), the bridge answers that request with a JSON-RPC error (code `-32000`,
+pool slot needs only the binary, a server URL, and an API key (a project id
+is optional): no local mailspace, no sync, and the bridge never creates
+`.vivi/`. The bridge sends the project id as the `project` argument of the
+tools that declare one, filling it into a call that leaves it out. There is no
+renewal: when the server refuses a request, a 401 is final, and the bridge
+answers that request with a JSON-RPC error (code `-32000`,
 `data.http_status`) instead of hanging, and keeps serving.
 
-The server's Project MCP tools: `overview`, `list`, `show`, `thread`, `send`,
-`reply`, `done`, `reopen`, `memo`, `graph`. Writes share the server's
-30-per-minute-per-identity send budget; a tool failure is a result with
-`isError: true`.
+`vivi mcp tools` prints the server's live tool set. A tool failure is a result
+with `isError: true`.
 
 **One-shot calls: `vivi mcp tools` and `vivi mcp call`.** An MCP client such
 as Claude Code caches the tool list when its session starts, so a tool a server
 upgrade adds stays invisible until the client restarts. These two subcommands
 need no MCP client: each runs the `initialize` handshake, sends one request,
 prints the answer, and exits. They take the same flags, variables, and
-credentials as the bridge (the flags may come before or after the subcommand);
+credential as the bridge (the flags may come before or after the subcommand);
 bare `vivi mcp` is still the stdio bridge.
 
 ```sh
@@ -3385,39 +3520,22 @@ transport, authentication, HTTP, or JSON-RPC error (the message names the HTTP
 status or the JSON-RPC code and message), or `ARGS_JSON` that is not a JSON
 object, which is refused before any request. Credentials are never printed.
 
-**Flags and environment.** `--server <URL>`, `--project-id <ID>`,
-`--name <NAME>`, and `--key-file <PATH>`, each with a variable:
-`VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`, `VIVI_MCP_NAME`, `VIVI_MCP_KEY_FILE`.
-A flag beats its variable, a variable beats the `[sync]` table. The global
-`--project <ROOT>` still names a mailspace root (used only to find a `[sync]`
-table); it is not the server project id. `VIVI_MCP_API_KEY` is read from the
-environment only — there is no flag — so it does not show in a process list.
+**Flags and environment.** `--server <URL>` and `--project-id <ID>`, each
+with a variable: `VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`. A flag beats its
+variable, a variable beats the `[sync]` table (`server`, `project`). The
+global `--project <ROOT>` names a mailspace root (used only to find a `[sync]`
+table); it is not the server project id.
 
-**Credentials** (either one):
-
-1. A member name and a key file: `--name`/`VIVI_MCP_NAME` plus
-   `--key-file`/`VIVI_MCP_KEY_FILE`, the 32-byte seed file a mailspace keeps
-   at `.vivi/chat/identity.ed25519`. The bridge mints the identity token by
-   the challenge, sign, token route (as `vivi sync` does), renews it once
-   when the server refuses it (401), and renews ahead of time when
-   `token_expires_at` is within 30 seconds.
-2. A project API key in `VIVI_MCP_API_KEY`: sent as the bearer as it is; no
-   minting, no renewal, a 401 is final.
-
-Giving both is an error. With neither, inside a mailspace that has a `[sync]`
-table, `vivi mcp` with no flags uses the `[sync]` server, project, and name
-and the mailspace's own key, so a person can try it.
+**Credential.** A project API key in `VIVI_MCP_API_KEY`, read from the
+environment only (there is no flag, so it does not show in a process list). It
+is sent as the bearer as it is. Mint one with `vivi sync api-key mint`; without
+it the command is refused before any request. There is no member credential
+and no mailspace-key fallback.
 
 **Client configuration.** Claude Code takes a JSON file via `--mcp-config`:
 
 ```json
 {"mcpServers":{"vivi":{"command":"vivi","args":["mcp"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>","VIVI_MCP_API_KEY":"<key from vivi sync api-key mint>"}}}}
-```
-
-The member-name variant:
-
-```json
-{"mcpServers":{"vivi":{"command":"vivi","args":["mcp","--name","<name>","--key-file","<path>"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>"}}}}
 ```
 
 pi connects to stdio MCP servers through its `mcp.json`; the same `command`,

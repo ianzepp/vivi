@@ -166,7 +166,7 @@ fn fields(kind: RoleKind) -> &'static str {
             "repairer: answer = \"built\" | \"failed\"; change (list); [[check]] {cmd, result = pass | fail | skipped, seconds}; deviations (list). No sha, ref, commit or exit code."
         }
         RoleKind::HeadCeo => {
-            "head-ceo: answer = \"reviewed\" | \"no-op\"; promoted, research, dropped (lists of handles)"
+            "head-ceo: answer = \"reviewed\" | \"no-op\"; served, research, dropped (lists of handles)"
         }
     }
 }

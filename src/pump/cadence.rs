@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
-use crate::mailspace::{Mailspace, RoleView};
+use crate::error::VivariumError;
+use crate::mailspace::{Mailspace, RoleView, WantState};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec};
 use crate::pump::state::State;
@@ -244,8 +245,8 @@ fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, Ro
                 continue;
             }
         };
-        let open_wants = match mailspace.list_kind_all(Some(&role.name), "sent", "want") {
-            Ok(wants) => wants.len(),
+        let open_wants = match open_want_count(mailspace, &role.name) {
+            Ok(count) => count,
             Err(error) => {
                 ctx.log(&format!("cadence wants {} failed: {error}", role.name));
                 continue;
@@ -264,6 +265,20 @@ fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, Ro
         );
     }
     scans
+}
+
+/// The role's sent wants whose computed state is open.
+pub(crate) fn open_want_count(mailspace: &Mailspace, role: &str) -> Result<usize, VivariumError> {
+    let wants = mailspace.list_kind_all(Some(role), "sent", "want")?;
+    let states = mailspace.want_states_of(&wants)?;
+    Ok(wants
+        .iter()
+        .filter(|want| {
+            states
+                .get(&want.content_id)
+                .is_none_or(|report| report.state == WantState::Open)
+        })
+        .count())
 }
 
 fn role_scan(
@@ -413,21 +428,23 @@ fn digest_job(
 fn cadence_run_text(role: &RoleView, now: u64) -> String {
     let head_rule = match role.kind.as_deref() {
         Some(kind) if kind.eq_ignore_ascii_case("head") && role.name == "head-ceo" => {
-            "As head-ceo, review open wants. Promote a well-scoped want to a linked need.\n\
+            "As head-ceo, review open wants. A want is done when every need that serves it is done.\n\
+             For a well-scoped want, send one or more needs that serve it, each with its own done_when:\n\
+             `need send --serves <want-handle> --done-when \"<what done means>\"`.\n\
              For an unclear want, file a research need with\n\
              `need send --mark research --explores <want-handle> --done-when \"<what the research must answer>\"`.\n\
              Write the mark before `vivi pump send`. Before filing one, read the open\n\
              needs marked research and skip a want that one of them already\n\
              names in `explores`. File at most two\n\
-             research needs for one want in total; after that, promote or drop it.\n\
-             On the next wake, read the analysis on the want, then promote the want,\n\
+             research needs for one want in total; after that, send serving needs or drop it.\n\
+             On the next wake, read the analysis on the want, then send serving needs,\n\
              drop it, or file another research need within that cap. Do not implement work.\n\
              End your reply with a TOML envelope between `+++` lines:\n\
-             `answer` is `reviewed` or `no-op`; `promoted`, `research` and `dropped`\n\
+             `answer` is `reviewed` or `no-op`; `served`, `research` and `dropped`\n\
              are lists of handles. Example:\n\
              +++\n\
              answer = \"reviewed\"\n\
-             promoted = [\"3f9a1c2e\"]\n\
+             served = [\"3f9a1c2e\"]\n\
              research = []\n\
              dropped = [\"b71d04aa\"]\n\
              +++"

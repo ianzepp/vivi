@@ -150,6 +150,6 @@ fn unknown_keys_refused_for_memo_and_rule() {
 }
 
 #[test]
-fn close_events_are_the_three_verbs() {
-    assert_eq!(CLOSE_EVENTS, ["done", "reopened", "promoted"]);
+fn close_events_are_the_two_verbs() {
+    assert_eq!(CLOSE_EVENTS, ["done", "reopened"]);
 }

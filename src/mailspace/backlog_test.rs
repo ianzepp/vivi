@@ -206,16 +206,26 @@ fn lifecycle_moves_sync_node_state() {
 }
 
 #[test]
-fn promotion_leaves_node_open() {
+fn promotion_is_refused_and_leaves_node_open() {
     let (mailspace, _tmp) = roster();
     let want = send_item(&mailspace, "wants", Some("want"), "later work", Vec::new());
     mailspace
         .backlog_attach("want", &want, "later work", &[])
         .unwrap();
 
-    mailspace
+    let err = mailspace
         .move_item("cto", &want, "needs", None, "want promote", None)
-        .unwrap();
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("a want never becomes a need"), "{err}");
+    assert!(
+        mailspace
+            .list("cto", "wants")
+            .unwrap()
+            .iter()
+            .any(|row| row.handle == want),
+        "the want stays in wants"
+    );
     assert_eq!(node(&mailspace, &want).state, "open");
     assert_eq!(node(&mailspace, &want).readiness, "ready");
 }

@@ -151,7 +151,7 @@ pub enum Command {
         command: DeliveryCommand,
     },
 
-    /// Send and promote project-local wants for later prioritization
+    /// Send project-local wants; the needs that serve a want decide its state
     Want {
         #[command(subcommand)]
         command: WantCommand,

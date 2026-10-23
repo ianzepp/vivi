@@ -102,3 +102,86 @@ fn board_caps_wants_and_counts_hidden() {
     assert_eq!(cto(&board).wants_hidden, 1);
     assert_eq!(board.totals.wants_open, 2);
 }
+
+fn serving_need(mailspace: &Mailspace, want: &str) -> String {
+    let mut front = crate::letter::work::NeedFront::new(vec!["done".to_string()]);
+    front.serves = Some(want.to_string());
+    mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "serving need".into(),
+            body: crate::letter::fixture::need_body_with(&front, "prose"),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+fn close(mailspace: &Mailspace, handle: &str) {
+    mailspace
+        .move_item("ceo", handle, "done", None, "close", None)
+        .unwrap();
+}
+
+#[test]
+fn board_lists_a_want_with_its_open_serving_need() {
+    let (mailspace, _tmp) = roster();
+    let want = send(&mailspace, "wants", "wish");
+    let need = serving_need(&mailspace, &want);
+    let board = mailspace.board(&options()).unwrap();
+    let cto = cto(&board);
+    assert_eq!(cto.wants.len(), 1);
+    assert_eq!(cto.wants[0].handle, want);
+    assert_eq!(cto.wants[0].serving.len(), 1);
+    assert_eq!(cto.wants[0].serving[0].handle, need);
+    assert_eq!(cto.wants[0].serving[0].state, "open");
+    assert_eq!(board.totals.wants_open, 1);
+    let json = serde_json::to_value(&board).unwrap();
+    let want_json = &json["identities"][1]["wants"][0];
+    assert_eq!(want_json["serving"][0]["state"], "open");
+    assert!(json["identities"][1]["needs"][0].get("serving").is_none());
+}
+
+#[test]
+fn board_drops_a_want_when_its_serving_need_closes() {
+    let (mailspace, _tmp) = roster();
+    let want = send(&mailspace, "wants", "wish");
+    let need = serving_need(&mailspace, &want);
+    close(&mailspace, &need);
+    let board = mailspace.board(&options()).unwrap();
+    assert!(cto(&board).wants.is_empty());
+    assert_eq!(board.totals.wants_open, 0);
+}
+
+#[test]
+fn board_brings_back_a_hand_closed_want_that_gets_a_serving_need() {
+    let (mailspace, _tmp) = roster();
+    let want = send(&mailspace, "wants", "wish");
+    close(&mailspace, &want);
+    assert!(cto(&mailspace.board(&options()).unwrap()).wants.is_empty());
+    let need = serving_need(&mailspace, &want);
+    let board = mailspace.board(&options()).unwrap();
+    let cto = cto(&board);
+    assert_eq!(cto.wants.len(), 1);
+    assert_eq!(cto.wants[0].handle, want);
+    assert_eq!(cto.wants[0].serving[0].handle, need);
+    assert_eq!(cto.wants[0].serving[0].state, "open");
+    assert_eq!(board.totals.wants_open, 1);
+}
+
+#[test]
+fn board_task_item_has_no_serving() {
+    let (mailspace, _tmp) = roster();
+    send(&mailspace, "tasks", "do it");
+    let board = mailspace.board(&options()).unwrap();
+    assert!(cto(&board).tasks[0].serving.is_empty());
+    let json = serde_json::to_value(&board).unwrap();
+    assert!(json["identities"][1]["tasks"][0].get("serving").is_none());
+}

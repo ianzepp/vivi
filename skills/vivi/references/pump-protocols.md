@@ -12,6 +12,8 @@ The pump dispatches pending jobs using the current role routing and pool fallbac
 
 ## Planner receipts
 
+In vivi 20, whole-need planning, admission, slicing, auditing, CTO, merge and repair replies are the role envelopes in [envelope](envelope.md). The plan-JSON receipt below applies only to amendments and splits of pre-v20 units.
+
 Board planning, need revisions, and unit splits use the active pump-planner role and its pool; its charter is the planner's system prompt. The pool worker cannot write files in the pump home. It returns the full plan JSON in the task receipt between these exact marker lines:
 
 **PUMP-PLAN-BEGIN**
@@ -33,6 +35,8 @@ The receipt ends with one minified JSON line prefixed **PUMP_MERGE_RESULT=**. Th
 A failed shared check is diagnosed and retried exactly once on the same tree. A timeout (exit 124 or timeout-wrapper kill) is infrastructure uncertainty, not a source defect. A timed-out check whose retry passes is recovered and recorded. If a timeout is not followed by a passing retry, report every source as **undecided** with **why: "shared-check-timeout"** and detail naming the command and timeout. Do not treat a timeout as a source defect or create a repair unit. A non-timeout failure still present after its retry, and that cannot be repaired within write scope, may isolate the defective source as a last-resort diagnosis. Any solo check that times out during isolation is **undecided** with **why: "bisect-check-timeout"**, never a clean result or culprit. Timeout alone never opens quarantine repair work.
 
 ## Need acceptance receipts
+
+In vivi 20 the flow auditor replies with the auditor envelope ([envelope](envelope.md)); the JSON receipt below is the pre-v20 need audit.
 
 Managed need audits are ordinary durable jobs sent to the active Auditor role
 and its pool fallback chain. Their brief names the durable job ID, the full
@@ -105,7 +109,7 @@ An optional external gate runner can provide a result file for a pinned tip unde
 
 - **Promotion** jobs ask the release role, or merge role when no release role exists, to confirm the exact gated tip. The runner alone can publish it to the configured main ref.
 - **Cadence** and **digest** jobs are addressed to the role whose schedule is due. Cadence and digest jobs always run read-only; their output is mail (wants and needs).
-- **Investigation** jobs are read-only auditor jobs created for head-ceo needs marked **investigate** and containing **for: &lt;want-handle&gt;**. The need closes only after the recent auditor report reply lands on that want for head-ceo.
+- **Research** needs are filed by head-ceo with **vivi need send --mark research --explores &lt;want&gt; --done-when "..."**, then **vivi pump send --need &lt;need&gt;** (mark first; the open pump record starts the run). The research flow runs the researcher and posts the analysis on the want.
 - **Reclaim** jobs are local-only cleanup jobs sent to the reclaim role or the hand role. They cannot spill onto remote pools.
 
 ## Retired tooling
