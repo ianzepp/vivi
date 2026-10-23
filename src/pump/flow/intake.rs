@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 use chrono::DateTime;
 
 use crate::error::VivariumError;
+use crate::pump::flow::advance::restart::RUN_RESTARTING;
 use crate::pump::flow::advance::start::{RUN_STARTING, resume, start};
+use crate::pump::flow::advance::terminal::RUN_FINISHING;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::kind;
@@ -34,8 +36,6 @@ const START_STUCK_SECS: u64 = 600;
 
 /// Run states that occupy a slot under the cap or block a new run.
 const RUN_LIVE: &str = "live";
-const RUN_RESTARTING: &str = "restarting";
-const RUN_FINISHING: &str = "finishing";
 
 /// The mark that keeps a need out of intake until N7 retires it.
 const MARK_INVESTIGATE: &str = "investigate";

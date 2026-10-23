@@ -19,7 +19,7 @@ const RECORD_LANDED: &str = "landed";
 /// The pump record outcome of a withdrawn run.
 const RECORD_WITHDRAWN: &str = "withdrawn";
 /// Run state: the terminal is closing the need; neither live nor withdrawn.
-const RUN_FINISHING: &str = "finishing";
+pub(crate) const RUN_FINISHING: &str = "finishing";
 /// Run state: finished and landed.
 const RUN_DONE: &str = "done";
 /// Run state: withdrawn.
