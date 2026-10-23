@@ -72,15 +72,14 @@ fn record_branch(cx: &StartCx<'_>, target: &str, base: &str) -> Result<(), Vivar
         .need_branch(need)?
         .map(|row| row.priors)
         .unwrap_or_default();
-    cx.store.upsert_need_branch(&NeedBranchRow {
-        need: need.clone(),
-        branch: need_branch::branch(need),
-        base: Some(base.to_owned()),
-        status: need_branch::LIVE.to_owned(),
-        run: cx.run.run,
-        target: target.to_owned(),
+    cx.store.upsert_need_branch(&NeedBranchRow::for_run(
+        cx.run,
+        need_branch::branch(need),
+        Some(base.to_owned()),
+        need_branch::LIVE,
+        target,
         priors,
-    })
+    ))
 }
 
 /// The worker brief of an attempt.

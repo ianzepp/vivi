@@ -77,6 +77,7 @@ fn names_are_one_segment_after_their_prefix() {
 #[test]
 fn the_base_is_recorded_once_per_run() {
     let f = fixture();
+    start_run(&f, 1, "plan");
     main_tip(&f.host, MAIN_A);
     assert_eq!(
         record_base(&f.ctx, &f.store, NEED, 1, "default").unwrap(),
@@ -97,6 +98,7 @@ fn the_base_is_recorded_once_per_run() {
 #[test]
 fn a_fresh_row_records_a_new_base_and_keeps_its_priors() {
     let f = fixture();
+    start_run(&f, 2, "plan");
     f.store.upsert_need_branch(&row(FRESH, 2)).unwrap();
     main_tip(&f.host, MAIN_B);
     assert_eq!(
@@ -127,6 +129,7 @@ fn record_base_errors_while_the_old_branch_is_moving() {
 fn tip_is_the_base_until_the_branch_is_pushed() {
     let f = fixture();
     assert_eq!(tip(&f.ctx, &f.store, NEED).unwrap(), None);
+    start_run(&f, 1, "plan");
     main_tip(&f.host, MAIN_A);
     record_base(&f.ctx, &f.store, NEED, 1, "default").unwrap();
     f.host
@@ -268,7 +271,10 @@ fn a_rework_restart_keeps_the_branch_and_moves_the_run() {
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
     let stored = f.store.need_branch(NEED).unwrap().unwrap();
-    assert_eq!((stored.run, stored.status.as_str()), (2, LIVE));
+    assert_eq!(
+        (stored.need.as_str(), stored.run, stored.status.as_str()),
+        (NEED, 2, LIVE)
+    );
     assert_eq!(stored.base.as_deref(), Some(MAIN_A));
     assert!(jobs.0.is_empty());
     assert_eq!(
@@ -346,7 +352,10 @@ fn a_restart_with_no_remote_branch_resets_the_row_at_once() {
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
     let stored = f.store.need_branch(NEED).unwrap().unwrap();
-    assert_eq!((stored.run, stored.status.as_str()), (2, FRESH));
+    assert_eq!(
+        (stored.need.as_str(), stored.run, stored.status.as_str()),
+        (NEED, 2, FRESH)
+    );
     assert_eq!(stored.base, None);
     assert_eq!(stored.priors, vec![prior(NEED, 1)]);
     assert!(jobs.0.is_empty());
