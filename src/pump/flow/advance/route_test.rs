@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 use super::{JoinInput, Routed, route};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, SENTINEL_MARKER, STEP_MARKER};
+use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -446,5 +446,38 @@ fn routing_twice_for_one_task_leaves_one_payload_row() -> R {
     let rows = rig.store.step_payloads_of_run(NEED, 1)?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].payload, json!({"body": "second"}));
+    Ok(())
+}
+
+#[test]
+fn a_rejected_word_names_the_allowed_words() -> R {
+    let mut rig = rig()?;
+    let build = rig.step("build1")?;
+    let routed = rig.route(&with_word(build, "merged"), "")?;
+    let text = routed.rejected.expect("rejected");
+    assert!(text.starts_with("word `merged` is not an answer of node `build1`"));
+    assert!(text.contains("allowed: built, failed"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_word_with_no_edge_names_the_edges_that_exist() -> R {
+    let mut rig = rig()?;
+    let locked = rig.step("locked")?;
+    let err = rig
+        .route(&with_word(locked, "anything"), "")
+        .expect_err("no edge");
+    let text = err.to_string();
+    assert!(text.contains("has no edge for word `anything`"), "{text}");
+    assert!(text.contains("no outgoing edges"), "{text}");
+
+    rig.def.edges.push(FlowEdge {
+        from: "locked".into(),
+        to: "r_slice".into(),
+        words: vec!["x".into(), "y".into()],
+    });
+    let locked = rig.step("locked")?;
+    let err = rig.route(&with_word(locked, "z"), "").expect_err("no edge");
+    assert!(err.to_string().contains("expected one of: x, y"), "{err}");
     Ok(())
 }
