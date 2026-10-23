@@ -1,11 +1,11 @@
 //! `vivi config migrate`: the flow roles (researcher, admitter, slicer) and
 //! their shipped charters.
 
+use crate::mailspace::MailspaceConfig;
 use crate::mailspace::shipped::{
     ADMITTER_CHARTER, ADMITTER_ROLE, RESEARCHER_CHARTER, RESEARCHER_ROLE, SLICER_CHARTER,
     SLICER_ROLE,
 };
-use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::migrate::{Assignment, CharterWrite, MigrateInputs, MigratePlan, NewRole, hand_pool};

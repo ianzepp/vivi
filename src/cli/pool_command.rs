@@ -132,7 +132,7 @@ pub struct PoolDispatchCommand {
     #[arg(long, value_name = "REF", conflicts_with = "read_only")]
     pub publish_ref: Option<String>,
 
-    /// Require the candidate commit to equal this full SHA before publishing (promotion jobs).
+    /// Require the candidate commit to equal this full SHA before publishing (need-branch rename jobs).
     #[arg(
         long,
         value_name = "SHA",

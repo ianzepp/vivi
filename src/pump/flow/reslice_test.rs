@@ -161,7 +161,7 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
         job.body
     );
     assert!(job.body.contains("slice body text"), "{}", job.body);
-    assert_eq!(rig.store.attempts_of(&task)?, 0);
+    assert_eq!(rig.store.last_attempt(&task)?, 0);
     Ok(())
 }
 

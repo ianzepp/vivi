@@ -397,9 +397,8 @@ pub struct PumpExportCommand {
 /// withdraw action on each need's open pump record; the running pump applies
 /// it at its next tick: every unfinished unit of the need (stuck ones
 /// included) is withdrawn, the need joins the closed set so nothing re-plans
-/// or dispatches it, its need-audit, need-merge and landing steps skip it, and
-/// its pump record is closed `withdrawn`. Refused for a need with no open pump
-/// record.
+/// or dispatches it, and its pump record is closed `withdrawn`. Refused for a
+/// need with no open pump record.
 #[derive(Debug, Args)]
 pub struct PumpWithdrawCommand {
     /// Need handles to withdraw

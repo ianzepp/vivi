@@ -446,23 +446,6 @@ impl PumpStore {
     pub fn next_attempt(&self, task: &str) -> Result<u32, VivariumError> {
         Ok(self.last_attempt(task)? + 1)
     }
-
-    /// How many job rows the step task has (counts corrections and requeues).
-    ///
-    /// Kept only until the tests outside this slice's scope move to
-    /// [`Self::last_attempt`]; use that instead.
-    ///
-    /// # Errors
-    /// Returns [`VivariumError`] when the count cannot be read.
-    pub fn attempts_of(&self, task: &str) -> Result<u32, VivariumError> {
-        self.conn
-            .query_row(
-                "SELECT COUNT(*) FROM step_jobs WHERE task = ?1",
-                params![task],
-                |row| row.get(0),
-            )
-            .map_err(db_err("count step attempts"))
-    }
 }
 
 impl PumpStore {

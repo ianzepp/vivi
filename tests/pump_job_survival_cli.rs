@@ -278,7 +278,7 @@ fn flow_merge_main_job_survives_sigkill_and_applies_once() {
     assert_eq!(merge_rows.len(), 1, "{merge_rows:?}");
     assert_eq!(merge_rows[0].state, StepState::Done);
     assert_eq!(merge_rows[0].verdict.as_deref(), Some("merged"));
-    assert_eq!(store.attempts_of(&seeded.step_task).unwrap(), 1);
+    assert_eq!(store.last_attempt(&seeded.step_task).unwrap(), 1);
     assert_eq!(
         task_occurrences(&rig.project, &format!("{} r1 merge", seeded.need), "mind"),
         1,

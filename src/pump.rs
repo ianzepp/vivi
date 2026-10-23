@@ -32,7 +32,6 @@ pub mod plan;
 pub(crate) mod plan_check;
 pub mod planner_jobs;
 pub mod priority;
-pub mod progress;
 pub mod proof;
 pub mod quarantine;
 pub mod ramsweep;

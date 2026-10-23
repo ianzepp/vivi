@@ -31,7 +31,6 @@ pub(super) fn write_meta(tx: &Transaction<'_>, st: &State) -> Result<(), Vivariu
     put(tx, "merges", &st.merges.to_string())?;
     put(tx, "board", &json_or_null(&st.board)?)?;
     put(tx, "extra", &json_or_null(&st.extra)?)?;
-    put(tx, "env_pauses", &json_or_null(&st.env_pauses)?)?;
     put(tx, "rate_limited_at", &json_or_null(&st.rate_limited_at)?)?;
     put(tx, "jobs", &json_or_null(&st.jobs)?)?;
     Ok(())
@@ -193,7 +192,6 @@ pub(super) fn load_meta(conn: &Connection, st: &mut State) -> Result<(), Vivariu
     st.merges = get(conn, "merges")?.map_or(0, |v| v.parse().unwrap_or(0));
     st.board = get_json(conn, "board")?;
     st.extra = get_json(conn, "extra")?;
-    st.env_pauses = get_json(conn, "env_pauses")?;
     st.rate_limited_at = get_json(conn, "rate_limited_at")?;
     st.jobs = get_json(conn, "jobs")?;
     Ok(())

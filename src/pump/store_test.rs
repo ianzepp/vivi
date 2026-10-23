@@ -6,7 +6,7 @@ use std::fs::File;
 use tempfile::tempdir;
 
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus};
-use crate::pump::state::{Attempt, EnvPause, NeedRecord, State, Status, Unit};
+use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// A `state.json` written by the live pump, used as the import fixture.
@@ -39,7 +39,6 @@ fn sample() -> State {
         replaced_by: vec![String::from("u1.1")],
         verdict_text: Some(String::from("ok")),
         kind_reported: true,
-        send_reported: true,
         split_fails: 2,
         split_retry_at: Some(99),
         split_reasks: 1,
@@ -124,7 +123,6 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.merged_at, Some(12));
     assert_eq!(unit.ready_at, Some(8));
     assert_eq!(unit.next_branch_suffix, Some(5));
-    assert!(unit.send_reported);
     assert_eq!(unit.split_fails, 2);
     assert_eq!(unit.split_retry_at, Some(99));
     assert_eq!(unit.split_reasks, 1);
@@ -555,42 +553,12 @@ fn applied_actions_and_the_records_a_need_ran_under_survive_a_state_save() {
 }
 
 #[test]
-fn env_pauses_round_trip_through_pump_db() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join(DB_FILENAME);
-    let empty = PumpStore::open(&path).unwrap();
-    assert!(empty.load().unwrap().env_pauses.is_empty());
-    drop(empty);
-
-    let mut state = State::default();
-    state.env_pauses.insert(
-        String::from("here"),
-        EnvPause {
-            fails: vec![1_700_000_000, 1_700_000_060],
-            evidence: String::from("`pi` not found: bash: line 1: pi: command not found"),
-            probe: Some(String::from("command -v pi")),
-            paused_at: Some(1_700_000_120),
-        },
-    );
-    state.env_pauses.insert(
-        String::from("glm"),
-        EnvPause {
-            fails: vec![1_700_000_000],
-            evidence: String::from("git index.lock held"),
-            ..EnvPause::default()
-        },
-    );
-
-    let mut store = PumpStore::open(&path).unwrap();
-    store.save(&state).unwrap();
-    let back = store.load().unwrap();
-    assert_eq!(back.env_pauses, state.env_pauses);
-    let here = &back.env_pauses["here"];
-    assert_eq!(here.fails, vec![1_700_000_000, 1_700_000_060]);
-    assert_eq!(here.probe.as_deref(), Some("command -v pi"));
-    assert_eq!(here.paused_at, Some(1_700_000_120));
-    assert_eq!(back.env_pauses["glm"].probe, None);
-    assert_eq!(back.env_pauses["glm"].paused_at, None);
+fn retired_unit_and_state_keys_still_load_and_are_written_back() {
+    let json =
+        r#"{"env_pauses":{"here":{"fails":[1]}},"units":{"u1":{"need":"n","send_reported":true}}}"#;
+    let state: State = serde_json::from_str(json).unwrap();
+    assert!(state.extra.contains_key("env_pauses"));
+    assert!(state.units["u1"].extra.contains_key("send_reported"));
 }
 
 /// A store written by a pump before `needs.withdrawn` existed (schema 6, as

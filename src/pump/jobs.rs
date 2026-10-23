@@ -77,9 +77,11 @@ pub struct JobSpec {
     pub budget: u64,
     /// Explicit read-only request; the role can also require this mode.
     pub read_only: bool,
-    /// Unit IDs held by a batch job, used to recover merge state.
+    /// Unit IDs the job carried in the retired batch pipeline; copied into
+    /// the job record, never read by the flow engine.
     pub units: Vec<String>,
-    /// Role jobs whose output branches this merge job integrates.
+    /// Source job ids from the retired merge pipeline; only copied into the
+    /// job record.
     pub source_jobs: Vec<String>,
     /// Job-specific durable inputs used by its collector.
     pub payload: serde_json::Value,

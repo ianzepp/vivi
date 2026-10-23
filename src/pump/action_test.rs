@@ -6,7 +6,7 @@
 use std::fs;
 
 use super::*;
-use crate::mailspace::{PumpActionRequest, PumpRecord, PumpState};
+use crate::mailspace::{PumpActionKind, PumpActionRequest, PumpRecord, PumpState};
 use crate::pump::fixture::{Project, T0, planned, project};
 use crate::pump::state::Unit;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -151,7 +151,10 @@ fn a_recover_letter_for_a_need_with_no_run_is_settled_once_and_changes_no_state(
     let id = post(
         &project,
         &need,
-        &PumpActionRequest::recover(None, "the tip is sound"),
+        &PumpActionRequest {
+            kind: PumpActionKind::Recover,
+            ..PumpActionRequest::withdraw("the tip is sound")
+        },
     );
 
     apply_pending(&ctx, &mut st);

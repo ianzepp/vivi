@@ -30,19 +30,17 @@ pub enum Status {
     Held,
     /// Dispatched to an agent, still running.
     Inflight,
-    /// The agent finished; awaiting merge.
+    /// The agent finished; stored by the retired merge pipeline, which no
+    /// longer picks it up.
     Delivered,
-    /// A dispatched merge job owns it. Its durable job record lets startup
-    /// reattach after a pump restart; units waiting for a free pool stay
-    /// `Delivered`.
+    /// Retired merge-pipeline status: no code sets it. A stored unit keeps it
+    /// and is never dispatched.
     Merging,
     /// Merged into the integration branch.
     Merged,
-    /// Merged into a batch whose shared check failed. The batch is set aside
-    /// on a `vivi/quarantine/<id>` branch and one repair unit works on it
-    /// (`Unit::quarantine` names the id). Not fed to a lane, not dispatched,
-    /// not satisfied; it becomes `Merged` when the repair unit merges, or
-    /// returns to `Delivered` (solo) when the repair unit goes `Stuck`.
+    /// Retired merge-pipeline status: no code sets it. A stored unit keeps it
+    /// (`Unit::quarantine` may still name an id); it is not dispatched and not
+    /// satisfied.
     Quarantined,
     /// The agent looked and found no defect to fix.
     NoDefect,
@@ -260,10 +258,6 @@ pub struct Unit {
     /// The unit's unknown-kind exception was raised already.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kind_reported: bool,
-    /// The unit's config-class task-send exception was raised already; a
-    /// later successful send clears it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub send_reported: bool,
     /// Consecutive split-planner exits that produced no plan. `pump.db`
     /// keeps it in the unit's `extra_json` column.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -372,22 +366,6 @@ pub struct NeedRecord {
     pub waits_on: Vec<String>,
 }
 
-/// One pool's environment-failure bookkeeping (`env_pauses` entry).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EnvPause {
-    /// Epoch seconds of recent host-class failures, kept within the window.
-    pub fails: Vec<u64>,
-    /// The failing fact or command and its stderr, for the exception.
-    pub evidence: String,
-    /// Shell command re-run each tick, e.g. `command -v pi`; `None` resumes
-    /// on the window passing.
-    pub probe: Option<String>,
-    /// Epoch second dispatch to this pool paused; `None` while failures are
-    /// only counted.
-    pub paused_at: Option<u64>,
-}
-
 /// The planner board state (`board`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Board {
@@ -472,9 +450,6 @@ pub struct State {
     /// Planner board state.
     #[serde(default)]
     pub board: Board,
-    /// Pool -> host-class failure bookkeeping and dispatch pause.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env_pauses: BTreeMap<String, EnvPause>,
     /// Epoch seconds when the shared provider-rate-limit burst exception was
     /// last raised; board and split planners share the ten-minute window.
     #[serde(default, skip_serializing_if = "Option::is_none")]

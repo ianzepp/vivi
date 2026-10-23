@@ -230,7 +230,7 @@ fn a_moved_main_on_attempt_one_queues_attempt_two_at_the_new_tip() -> R {
     assert_eq!(again.payload["kind"], serde_json::json!("build"));
     assert_eq!(again.payload["class"], serde_json::json!("merge-main"));
     assert_eq!(rig.step()?.state, StepState::Running);
-    assert_eq!(rig.store.attempts_of(&rig.task)?, 2);
+    assert_eq!(rig.store.last_attempt(&rig.task)?, 2);
     let stored = rig
         .store
         .step_job(&id)?
