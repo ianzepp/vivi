@@ -3,14 +3,12 @@
 
 use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::store::PumpStore;
-
-/// The run state of a run that is in progress.
-const RUN_LIVE: &str = "live";
 
 /// The pump record outcome of a need that landed.
 const LANDED: &str = "landed";
@@ -75,7 +73,7 @@ fn held(store: &PumpStore, handle: &str) -> Result<PrereqState, VivariumError> {
         .runs_of(handle)?
         .into_iter()
         .rev()
-        .find(|run| run.state == RUN_LIVE)
+        .find(|run| run.state == run_state::LIVE)
     else {
         return Ok(PrereqState::Open);
     };

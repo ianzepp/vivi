@@ -22,10 +22,9 @@ use std::collections::BTreeSet;
 
 use crate::error::VivariumError;
 use crate::mailspace::{PumpAction, PumpActionKind};
-use crate::pump::flow::advance::restart::{self as run_restart, RUN_RESTARTING};
-use crate::pump::flow::advance::start::RUN_STARTING;
-use crate::pump::flow::advance::terminal::RUN_FINISHING;
+use crate::pump::flow::advance::restart::{self as run_restart};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
@@ -34,9 +33,6 @@ use crate::pump::store::PumpStore;
 
 /// Exception kind of an operator action the flow cannot apply.
 pub const ACTION_REFUSED: &str = "flow-action-refused";
-
-/// Run state of a run being advanced.
-const RUN_LIVE: &str = "live";
 
 /// The flow node a replan restarts at.
 const REPLAN_ENTRY: &str = "plan";
@@ -55,7 +51,13 @@ fn active_run(store: &PumpStore, need: &str) -> Result<Option<RunRow>, VivariumE
         .runs_of(need)?
         .into_iter()
         .filter(|run| {
-            [RUN_STARTING, RUN_LIVE, RUN_RESTARTING, RUN_FINISHING].contains(&run.state.as_str())
+            [
+                run_state::STARTING,
+                run_state::LIVE,
+                run_state::RESTARTING,
+                run_state::FINISHING,
+            ]
+            .contains(&run.state.as_str())
         })
         .max_by_key(|run| run.run))
 }
@@ -133,7 +135,7 @@ fn apply_one<M: MailWriter + MailReader>(
 ) -> Result<(), VivariumError> {
     match action.request.kind {
         PumpActionKind::Replan => {
-            if run.state != RUN_LIVE {
+            if run.state != run_state::LIVE {
                 return Err(VivariumError::Message(format!(
                     "run r{} is {}, not live",
                     run.run, run.state

@@ -8,6 +8,7 @@ use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::{NodeClass, STEP_MARKER};
 use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
@@ -27,9 +28,6 @@ pub const KIND: &str = "reslice";
 
 /// Exception kind of a reslice job that gave no usable slicer reply.
 pub const RESLICE_FAILED: &str = "flow-reslice-failed";
-
-/// Run state of a live run.
-const RUN_LIVE: &str = "live";
 
 /// What a reslice job asks the slicer to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,12 +315,12 @@ fn checked_identity<S: JobStore>(
     let runs = store.runs_of(&identity.need)?;
     let Some(run) = runs
         .iter()
-        .find(|r| r.run == identity.run && r.state == RUN_LIVE)
+        .find(|r| r.run == identity.run && r.state == run_state::LIVE)
         .cloned()
     else {
         let live: Vec<String> = runs
             .iter()
-            .filter(|r| r.state == RUN_LIVE)
+            .filter(|r| r.state == run_state::LIVE)
             .map(|r| format!("r{}", r.run))
             .collect();
         let found = if live.is_empty() {

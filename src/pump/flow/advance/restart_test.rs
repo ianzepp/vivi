@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use super::{ABANDONED_MARKER, RESTART_STUCK, RUN_RESTARTING, prune_dead_jobs, register, restart};
+use super::{ABANDONED_MARKER, RESTART_STUCK, prune_dead_jobs, register, restart};
 use crate::error::VivariumError;
 use crate::mailspace::marked_payload;
 use crate::pump::config::PumpConfig;
@@ -17,6 +17,7 @@ use crate::pump::flow::def::{STEP_MARKER, VERDICT_SUPERSEDED};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout::SLICE_NODE_PREFIX;
 use crate::pump::flow::handlers::Registry;
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::slice_dispatch::SliceMail;
@@ -197,7 +198,7 @@ fn a_failure_at_any_write_settles_to_one_new_run_through_the_phase() -> R {
         }
         tried += 1;
         assert!(
-            matches!(rig.state_of(1)?.as_str(), RUN_RESTARTING),
+            matches!(rig.state_of(1)?.as_str(), run_state::RESTARTING),
             "write {write}"
         );
         for _ in 0..3 {
@@ -232,7 +233,7 @@ fn a_failure_at_any_write_settles_to_one_new_run_through_the_phase() -> R {
 fn a_restart_that_cannot_finish_raises_the_stuck_alarm_once_after_600_seconds() -> R {
     let mut rig = rig()?;
     // No newer run exists, so the entry is unknown and the resume fails.
-    rig.store.set_run_state(NEED, 1, RUN_RESTARTING)?;
+    rig.store.set_run_state(NEED, 1, run_state::RESTARTING)?;
 
     rig.host.set_now(epoch());
     rig.tick()?;
@@ -243,7 +244,7 @@ fn a_restart_that_cannot_finish_raises_the_stuck_alarm_once_after_600_seconds() 
     rig.tick()?;
     assert_eq!(rig.exceptions().matches(RESTART_STUCK).count(), 1);
     assert!(rig.exceptions().contains("n1 r1"));
-    assert_eq!(rig.state_of(1)?, RUN_RESTARTING);
+    assert_eq!(rig.state_of(1)?, run_state::RESTARTING);
     Ok(())
 }
 

@@ -376,11 +376,10 @@ where
     /// this tick may have landed, restarted or withdrawn it, and an ended run
     /// has no kind left to check and no overdue job to report.
     fn still_live(&self) -> Result<bool, VivariumError> {
-        const RUN_LIVE: &str = "live";
         let rows = self.store.runs_of(&self.run.need)?;
         Ok(rows
             .iter()
-            .any(|row| row.run == self.run.run && row.state == RUN_LIVE))
+            .any(|row| row.run == self.run.run && row.state == run_state::LIVE))
     }
 
     /// Per-step error boundary: a failing unit never ends the run's tick.

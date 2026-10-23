@@ -6,6 +6,7 @@ use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::route::Terminal;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowDef, NodeClass, VERDICT_WITHDRAWN};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
@@ -18,12 +19,6 @@ const VERDICT_DELIVERED: &str = "delivered";
 const RECORD_LANDED: &str = "landed";
 /// The pump record outcome of a withdrawn run.
 const RECORD_WITHDRAWN: &str = "withdrawn";
-/// Run state: the terminal is closing the need; neither live nor withdrawn.
-pub(crate) const RUN_FINISHING: &str = "finishing";
-/// Run state: finished and landed.
-const RUN_DONE: &str = "done";
-/// Run state: withdrawn.
-const RUN_WITHDRAWN: &str = "withdrawn";
 /// The note a need is closed with when its run lands.
 const LANDED_NOTE: &str = "landed by the pump flow";
 
@@ -109,7 +104,7 @@ fn land<M: MailWriter + MailReader>(
 ) -> Result<(), VivariumError> {
     // The run is no longer live, but it is not withdrawn either: a tick
     // that sees the need closed mid-finish must not read a withdrawal.
-    store.set_run_state(need, run, RUN_FINISHING)?;
+    store.set_run_state(need, run, run_state::FINISHING)?;
     // The travelling close goes first, while the record is open. The
     // sentinel closes after it, so the join finds the need already
     // done and the pump's letter is the close every member folds.
@@ -124,7 +119,7 @@ fn land<M: MailWriter + MailReader>(
     if MailReader::open_record(mail, need)?.is_some() {
         mail.close_record(need, RECORD_LANDED)?;
     }
-    store.set_run_state(need, run, RUN_DONE)
+    store.set_run_state(need, run, run_state::DONE)
 }
 
 /// Withdraw a run: close every open task of it, the sentinel last, with
@@ -149,7 +144,7 @@ pub fn withdraw<M: MailWriter + MailReader>(
     if MailReader::open_record(mail, &run.need)?.is_some() {
         mail.close_record(&run.need, RECORD_WITHDRAWN)?;
     }
-    store.set_run_state(&run.need, run.run, RUN_WITHDRAWN)
+    store.set_run_state(&run.need, run.run, run_state::WITHDRAWN)
 }
 
 fn close_row<M: MailWriter>(
