@@ -10,6 +10,7 @@ use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
+use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::JobStore;
 
@@ -59,7 +60,7 @@ impl StepHandler for ResearcherStart {
             want_thread.as_deref(),
         );
         let mut spec = outcome::role_job(cx.ctx, cx.run, step, "researcher", &role.name, &brief);
-        spec.read_only = true;
+        make_read_only(cx.ctx, &mut spec);
         Ok(StartAction::Job(Box::new(spec)))
     }
 }

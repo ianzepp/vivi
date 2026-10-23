@@ -203,6 +203,12 @@ fn the_shipped_registry_picks_the_override_for_rework1_and_not_for_slice() -> R 
         return Err(VivariumError::Other("rework1 did not start a job".into()));
     };
     assert_eq!(job.role, "slicer");
+    assert!(job.read_only);
+    assert_eq!(job.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(
+        job.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
     assert_eq!(job.kind, "flow-rework");
     assert_eq!(job.task.as_deref(), Some("t-rw"));
     Ok(())

@@ -9,6 +9,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
+use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
@@ -47,7 +48,8 @@ struct CtoStart;
 impl StepHandler for CtoStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let brief = brief(cx)?;
-        let spec = role_job(cx.ctx, cx.run, step, "flow-cto", HEAD_CTO_ROLE, &brief);
+        let mut spec = role_job(cx.ctx, cx.run, step, "flow-cto", HEAD_CTO_ROLE, &brief);
+        make_read_only(cx.ctx, &mut spec);
         Ok(StartAction::Job(Box::new(spec)))
     }
 }

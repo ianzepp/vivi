@@ -11,6 +11,7 @@ use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row}
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
+use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::flow::verify_inputs::{
     admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, rung_report,
 };
@@ -32,14 +33,9 @@ struct ReworkStart;
 impl StepHandler for ReworkStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let brief = brief(cx)?;
-        Ok(StartAction::Job(Box::new(outcome::role_job(
-            cx.ctx,
-            cx.run,
-            step,
-            JOB_KIND,
-            SLICER_ROLE,
-            &brief,
-        ))))
+        let mut spec = outcome::role_job(cx.ctx, cx.run, step, JOB_KIND, SLICER_ROLE, &brief);
+        make_read_only(cx.ctx, &mut spec);
+        Ok(StartAction::Job(Box::new(spec)))
     }
 }
 
