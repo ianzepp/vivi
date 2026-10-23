@@ -80,7 +80,10 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for ResearchPost {
 /// Raise the give-up alarm for a research post that failed `n` ticks in a row.
 fn give_up<M: FlowMail>(ctx: &Ctx, mail: &M, run: &RunRow, error: &VivariumError, n: u32) {
     let want = match mail.task_body(&run.need) {
-        Ok(body) => for_want(&body).unwrap_or_default(),
+        Ok(body) => match for_want(&body) {
+            Ok(want) => want.unwrap_or_default(),
+            Err(read) => format!("(unreadable: {read})"),
+        },
         Err(read) => format!("(unreadable: {read})"),
     };
     raise_once(
@@ -104,7 +107,7 @@ fn post_run<S: JobStore, M: FlowMail>(
     run: &RunRow,
 ) -> Result<(), VivariumError> {
     let need = &run.need;
-    let Some(stored) = for_want(&mail.task_body(need)?) else {
+    let Some(stored) = for_want(&mail.task_body(need)?)? else {
         return Ok(());
     };
     let Some(want) = mail.resolve_want(&stored)? else {
