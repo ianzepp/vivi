@@ -1,10 +1,8 @@
 //! Repair flow helpers: attempts, branch names, the repair record lines, attempt facts.
 
 use crate::error::VivariumError;
-use crate::letter::LetterError;
 use crate::letter::read::record_of;
 use crate::letter::records::NoteWord;
-use crate::pump::flow::main_rung::target_line;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::store::PumpStore;
 
@@ -48,8 +46,7 @@ pub(crate) struct RepairRecord {
     pub target: String,
     /// The main tip that was tested, when the record names one.
     pub tested: Option<String>,
-    /// The failing output tail: the body without the `kind:`, `target:` and
-    /// `tested:` lines.
+    /// The failing output tail: the record prose after the front matter.
     pub tail: String,
 }
 
@@ -57,7 +54,7 @@ pub(crate) struct RepairRecord {
 ///
 /// # Errors
 /// Returns [`VivariumError::Parse`] when the front matter does not parse or
-/// names no `target`, or when a body with no front matter has no `target:` line.
+/// names no `target`, or when the body has no front matter.
 pub(crate) fn record(body: &str) -> Result<RepairRecord, VivariumError> {
     match record_of("", body) {
         Ok(envelope) => {
@@ -72,38 +69,8 @@ pub(crate) fn record(body: &str) -> Result<RepairRecord, VivariumError> {
                 tail: envelope.body.trim().to_owned(),
             })
         }
-        Err(LetterError::Legacy { .. }) => legacy_record(body),
         Err(error) => Err(VivariumError::Parse(format!("repair record: {error}"))),
     }
-}
-
-/// TRANSITIONAL (W3-B3): a record with no front matter keeps its `kind:`,
-/// `target:` and `tested:` lines.
-fn legacy_record(body: &str) -> Result<RepairRecord, VivariumError> {
-    let target = target_line(body).ok_or_else(|| {
-        let head: String = body.chars().take(80).collect();
-        VivariumError::Parse(format!(
-            "repair record: expected a `target:` line; actual: none in {head}"
-        ))
-    })?;
-    let mut tested = None;
-    let mut tail = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("kind:") || trimmed.starts_with("target:") {
-            continue;
-        }
-        if let Some(word) = trimmed.strip_prefix("tested:") {
-            tested = Some(word.trim().to_owned()).filter(|word| !word.is_empty());
-        } else {
-            tail.push(line);
-        }
-    }
-    Ok(RepairRecord {
-        target: target.to_owned(),
-        tested,
-        tail: tail.join("\n").trim().to_owned(),
-    })
 }
 
 /// What a fix attempt published.

@@ -334,13 +334,8 @@ fn no_main_rung_configured_runs_no_command() -> R {
 }
 
 #[test]
-fn record_target_reads_the_target_line_and_ignores_a_missing_one() {
-    // legacy body with no front matter (TRANSITIONAL, W3-B3)
-    assert_eq!(
-        record_target("kind: repair\ntarget: x\n").as_deref(),
-        Some("x")
-    );
-    assert_eq!(record_target("kind: repair\n"), None);
+fn record_target_ignores_a_body_without_front_matter() {
+    assert_eq!(record_target("kind: repair\ntarget: x\n"), None);
     assert_eq!(record_target("target:  \n"), None);
 }
 
