@@ -175,23 +175,11 @@ fn retry<S: JobStore, M: FlowMail>(
     let rung = payload_str(lost, "rung")?;
     let tip = payload_str(lost, "tip")?;
     let mut spec = job(cx.ctx, target, rung, tip, step, attempt)?;
-    let mut payload = lost.payload.clone();
-    if let Some(map) = payload.as_object_mut() {
-        map.insert("attempt".to_owned(), serde_json::json!(attempt));
-    }
-    spec.payload = payload;
-    let id = spec.id.clone();
+    spec.payload = lost.payload.clone();
+    let new_row = row.next(&spec.id);
+    new_row.stamp(&cx.run.need, &mut spec.payload);
     jobs::enqueue(cx.st, spec)?;
-    cx.store.insert_step_job(
-        &cx.run.need,
-        &StepJobRow {
-            job: id,
-            run: row.run,
-            node: row.node.clone(),
-            task: row.task.clone(),
-            attempt,
-        },
-    )?;
+    cx.store.insert_step_job(&cx.run.need, &new_row)?;
     cx.store
         .set_step_state(&step.task, StepState::Running, None)
 }
