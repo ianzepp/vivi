@@ -5,20 +5,27 @@
 use std::path::Path;
 
 use serde_json::Value;
-use vivi::mailspace::Mailspace;
+use vivi::VivariumError;
+use vivi::mailspace::{Mailspace, config_edit};
 use vivi::project_create::{MissingItem, ProjectCreated, Readiness};
 use vivi::pump::config::{RUNG_NAMES, RungsConfig};
 use vivi::pump::readiness;
 
 use crate::mcp::tools::ToolError;
 
-/// The rung commands to seed, in `RUNG_NAMES` order.
+/// The rung commands, timeout and pools to seed; commands in `RUNG_NAMES`
+/// order.
 #[derive(Debug, Default)]
-pub(super) struct Rungs(Vec<(&'static str, String)>);
+pub(super) struct Rungs {
+    commands: Vec<(&'static str, String)>,
+    timeout: Option<i64>,
+    pools: Option<Vec<String>>,
+}
 
 impl Rungs {
     /// Parse the `rungs` argument. Absent or null is no rungs; anything that
-    /// is not an object of known rung names to non-blank strings is refused.
+    /// is not an object of known rung names to non-blank strings, plus an
+    /// optional `timeout` and `pools`, is refused.
     pub(super) fn parse(arguments: &Value) -> Result<Self, ToolError> {
         let object = match arguments.get("rungs") {
             None | Some(Value::Null) => return Ok(Self::default()),
@@ -30,9 +37,10 @@ impl Rungs {
             }
         };
         let allowed = RUNG_NAMES.join(", ");
-        if let Some(key) = object.keys().find(|k| !RUNG_NAMES.contains(&k.as_str())) {
+        let known = |k: &str| RUNG_NAMES.contains(&k) || k == "timeout" || k == "pools";
+        if let Some(key) = object.keys().find(|k| !known(k)) {
             return Err(ToolError::new(format!(
-                "unknown rung '{key}'; expected one of {allowed}"
+                "unknown rung '{key}'; expected one of {allowed}, timeout, pools"
             )));
         }
         let mut parsed = Vec::new();
@@ -51,18 +59,26 @@ impl Rungs {
                 }
             }
         }
-        Ok(Self(parsed))
+        Ok(Self {
+            commands: parsed,
+            timeout: parse_timeout(object.get("timeout"))?,
+            pools: parse_pools(object.get("pools"))?,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.commands.is_empty() && self.timeout.is_none() && self.pools.is_none()
     }
 
     /// Write the rungs into the created project and, when any was written,
     /// recompute `created.readiness`. Every rung is attempted. There is no
     /// rollback: the error says the project exists.
     pub(super) fn seed(&self, created: &mut ProjectCreated) -> Result<(), String> {
-        if self.0.is_empty() {
+        if self.is_empty() {
             return Ok(());
         }
-        let errors: Vec<String> = self
-            .0
+        let mut errors: Vec<String> = self
+            .commands
             .iter()
             .filter_map(|(name, command)| {
                 RungsConfig::set(&created.project_root, name, command, None)
@@ -70,6 +86,9 @@ impl Rungs {
                     .map(|e| format!("{name}: {e}"))
             })
             .collect();
+        if let Err(e) = self.write_settings(&created.project_root) {
+            errors.push(format!("timeout/pools: {e}"));
+        }
         let readiness = assess(&created.project_root);
         let mut problems = errors;
         match readiness {
@@ -85,6 +104,72 @@ impl Rungs {
                 problems.join("; ")
             ))
         }
+    }
+}
+
+impl Rungs {
+    /// Write `timeout` and `pools` into `[pump.rungs]` of the project's
+    /// config, format-preserving and under the library's config lock.
+    fn write_settings(&self, root: &Path) -> Result<(), String> {
+        if self.timeout.is_none() && self.pools.is_none() {
+            return Ok(());
+        }
+        let path = root.join(".vivi").join("mailspace.toml");
+        config_edit::apply(&path, |doc| {
+            let pump = implicit_table(doc.as_table_mut(), "pump")?;
+            let rungs = implicit_table(pump, "rungs")?;
+            if let Some(timeout) = self.timeout {
+                rungs["timeout"] = toml_edit::value(timeout);
+            }
+            if let Some(pools) = &self.pools {
+                let array: toml_edit::Array = pools.iter().map(String::as_str).collect();
+                rungs["pools"] = toml_edit::value(array);
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// The child table `key`, created implicit if missing.
+fn implicit_table<'a>(
+    table: &'a mut toml_edit::Table,
+    key: &str,
+) -> Result<&'a mut toml_edit::Table, VivariumError> {
+    let item = table.entry(key).or_insert_with(|| {
+        let mut created = toml_edit::Table::new();
+        created.set_implicit(true);
+        toml_edit::Item::Table(created)
+    });
+    item.as_table_mut()
+        .ok_or_else(|| VivariumError::Config(format!("`{key}` must be a table")))
+}
+
+fn parse_timeout(value: Option<&Value>) -> Result<Option<i64>, ToolError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_i64() {
+            Some(seconds) if seconds >= 1 => Ok(Some(seconds)),
+            _ => Err(ToolError::new(
+                "rungs.timeout must be a whole number of seconds, at least 1".to_owned(),
+            )),
+        },
+    }
+}
+
+fn parse_pools(value: Option<&Value>) -> Result<Option<Vec<String>>, ToolError> {
+    let bad = || ToolError::new("rungs.pools must be an array of non-empty pool names".to_owned());
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| match item.as_str() {
+                Some(name) if !name.trim().is_empty() => Ok(name.to_owned()),
+                _ => Err(bad()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err(bad()),
     }
 }
 

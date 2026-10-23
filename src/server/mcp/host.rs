@@ -118,10 +118,12 @@ pub(super) fn tools_list() -> Value {
                         "task": { "type": "string" },
                         "need": { "type": "string" },
                         "main": { "type": "string" },
-                        "release": { "type": "string" }
+                        "release": { "type": "string" },
+                        "timeout": { "type": "integer", "minimum": 1 },
+                        "pools": { "type": "array", "items": { "type": "string" } }
                     },
                     "additionalProperties": false,
-                    "description": "Rung commands written to [pump.rungs] after the project is made"
+                    "description": "Rung commands, timeout and pools written to [pump.rungs] after the project is made"
                 }
             },
             "required": ["name"],
