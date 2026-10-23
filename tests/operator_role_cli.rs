@@ -123,8 +123,8 @@ fn mailspace_init_provisions_the_merge_role_and_default_charter_idempotently() {
         .collect::<Vec<_>>()
         .join(" ");
     for term in [
-        "frozen base SHA",
-        "PUMP_MERGE_RESULT=",
+        "`pump-job-kind` is `sync`",
+        "`merged` or `conflict`",
         "observed target SHA",
         "expected merged ancestry",
     ] {
