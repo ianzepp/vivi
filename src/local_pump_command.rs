@@ -67,6 +67,17 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             note,
             project,
         } => vivi::pump::flow::answer::run(&project_root(project), step, word, note.as_deref()),
+        PumpSubcommand::Unlock {
+            need,
+            entry,
+            note,
+            project,
+        } => PumpSubcommand::post_unlock(
+            &project_root(project),
+            need,
+            entry.as_deref(),
+            note.as_deref(),
+        ),
         PumpSubcommand::Adopt(cmd) => vivi::pump::adopt::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Send(cmd) => crate::local_pump_record_command::send(cmd),
         PumpSubcommand::List(cmd) => crate::local_pump_record_command::list(cmd),
