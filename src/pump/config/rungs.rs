@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use crate::error::VivariumError;
-use crate::mailspace::config_edit;
-use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace};
+use crate::mailspace::Mailspace;
+use crate::mailspace::config_edit::{self, GuardedWrite};
 
 /// The four rung names, in climbing order.
 pub const RUNG_NAMES: [&str; 4] = ["task", "need", "main", "release"];
@@ -136,13 +136,14 @@ impl RungsConfig {
     /// Set rung `rung` to `command` in `[pump.rungs]`, or in
     /// `[pump.targets.<target>.rungs]` when `target` is given.
     ///
-    /// Fails on an unknown rung name, a blank command, or an unknown target.
+    /// Fails on an unknown rung name, a blank command, an unknown target, a
+    /// running pump, or a write that adds new configuration errors.
     pub fn set(
         project_root: &Path,
         rung: &str,
         command: &str,
         target: Option<&str>,
-    ) -> Result<(), VivariumError> {
+    ) -> Result<GuardedWrite, VivariumError> {
         if !RUNG_NAMES.contains(&rung) {
             return Err(VivariumError::Config(format!(
                 "unknown rung `{rung}`; expected one of {}",
@@ -154,8 +155,7 @@ impl RungsConfig {
                 "the rung command must not be empty".into(),
             ));
         }
-        let path = project_root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
-        config_edit::apply(&path, |doc| {
+        config_edit::guarded(project_root, |doc| {
             let mut keys = vec!["pump"];
             if let Some(id) = target {
                 let known = doc
