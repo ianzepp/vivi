@@ -230,13 +230,8 @@ fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace, task: &str) -> Op
     let unit = st
         .as_ref()
         .and_then(|s| vivi::pool::clean_pump::unit_for(s, Some(task), None));
-    let chosen = vivi::pool::reset::choose_base(
-        space,
-        None,
-        unit,
-        st.as_ref(),
-        vivi::pool::reset::ResetKind::Dispatch,
-    );
+    let chosen =
+        vivi::pool::reset::choose_base(space, None, unit, vivi::pool::reset::ResetKind::Dispatch);
     Some(chosen.name)
 }
 

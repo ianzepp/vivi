@@ -601,7 +601,7 @@ fn recycle(
         });
         return Ok(());
     };
-    let chosen = super::reset::choose_base(space, base, hint, st, super::reset::ResetKind::Recycle);
+    let chosen = super::reset::choose_base(space, base, hint, super::reset::ResetKind::Recycle);
     let (a, s) = clean_work::recycle_lane(
         &handle.id.pool,
         name,
@@ -676,7 +676,6 @@ fn reset_remote_requested(
     let chosen = super::reset::choose_base(
         space,
         Some(requested),
-        None,
         None,
         super::reset::ResetKind::Recycle,
     );

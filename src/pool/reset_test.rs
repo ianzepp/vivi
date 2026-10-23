@@ -4,7 +4,7 @@ use crate::pool::clean_rule::{read_mark, write_mark};
 use crate::pool::local_fixture::{fixture, git};
 use crate::pool::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
 use crate::pool::slot::STATE_READY;
-use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::pump::state::{Attempt, Status, Unit};
 use std::fs;
 
 fn attach_origin(repo: &Path) -> std::path::PathBuf {
@@ -156,43 +156,22 @@ fn choose_base_defaults_to_pump_main_on_recycle() {
         }],
         ..Unit::default()
     };
-    let chosen = choose_base(&space, None, Some(&unit), None, ResetKind::Recycle);
+    let chosen = choose_base(&space, None, Some(&unit), ResetKind::Recycle);
     assert_eq!(chosen.name, "trunk");
     assert_eq!(chosen.why, "default-main");
 }
 
 #[test]
-fn choose_base_uses_next_when_a_dep_is_unlanded() {
+fn choose_base_ignores_an_unfinished_dependency() {
     let (_tmp, space) = pump_space("main");
-    let mut st = State::default();
-    st.units.insert(
-        "dep".into(),
-        Unit {
-            status: Status::Delivered,
-            ..Unit::default()
-        },
-    );
-    let unit = Unit {
+    let bare = Unit {
         after: vec!["dep".into()],
         ..Unit::default()
     };
-    let chosen = choose_base(&space, None, Some(&unit), Some(&st), ResetKind::Dispatch);
-    assert_eq!(chosen.name, "next");
-    assert_eq!(chosen.why, "unlanded-deps");
-}
-
-#[test]
-fn choose_base_prefers_next_over_a_prior_branch_when_deps_are_unlanded() {
-    let (_tmp, space) = pump_space("main");
-    let mut st = State::default();
-    st.units.insert(
-        "dep".into(),
-        Unit {
-            status: Status::Delivered,
-            ..Unit::default()
-        },
-    );
-    let unit = Unit {
+    let chosen = choose_base(&space, None, Some(&bare), ResetKind::Dispatch);
+    assert_eq!(chosen.name, "main");
+    assert_eq!(chosen.why, "default-main");
+    let prior = Unit {
         after: vec!["dep".into()],
         history: vec![Attempt {
             branch: Some("unit/old-a1".into()),
@@ -200,9 +179,9 @@ fn choose_base_prefers_next_over_a_prior_branch_when_deps_are_unlanded() {
         }],
         ..Unit::default()
     };
-    let chosen = choose_base(&space, None, Some(&unit), Some(&st), ResetKind::Dispatch);
-    assert_eq!(chosen.name, "next");
-    assert_eq!(chosen.why, "unlanded-deps");
+    let chosen = choose_base(&space, None, Some(&prior), ResetKind::Dispatch);
+    assert_eq!(chosen.name, "unit/old-a1");
+    assert_eq!(chosen.why, "prior-attempt");
 }
 
 #[test]
@@ -215,7 +194,7 @@ fn choose_base_uses_a_prior_attempt_branch() {
         }],
         ..Unit::default()
     };
-    let chosen = choose_base(&space, None, Some(&unit), None, ResetKind::Dispatch);
+    let chosen = choose_base(&space, None, Some(&unit), ResetKind::Dispatch);
     assert_eq!(chosen.name, "unit/u1-a1");
     assert_eq!(chosen.why, "prior-attempt");
 }
