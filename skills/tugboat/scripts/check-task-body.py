@@ -27,8 +27,7 @@ the front matter as lists, one done_when entry per outcome:
 
 The prose below the fence keeps `key: value` lines (goal, unit, delivery,
 sanity, validation, est_basis, est_work_tokens, cohesion, split_reason).
-A body with no front matter is an old-format letter and FAILs (vivi step
-reports letter_invalid). Front matter is parsed with tomllib (Python 3.11+);
+A body with no front matter FAILs (vivi step reports letter_invalid). Front matter is parsed with tomllib (Python 3.11+);
 older Pythons use a small reader that accepts only `key = "text"`,
 `key = 'text'` and arrays of those strings, and FAILs on anything else.
 
@@ -58,7 +57,7 @@ import sys
 FENCE = "+++"
 REQUIRED_LISTS = ["done_when", "write_scope"]
 NO_FRONT = (
-    "task body has no front matter: it is an old-format letter "
+    "task body has no front matter "
     "(vivi step reports letter_invalid)"
 )
 
