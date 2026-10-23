@@ -19,6 +19,7 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
 
@@ -279,5 +280,42 @@ fn a_restarted_repair_run_publishes_to_fresh_refs() -> R {
     let row = rig.store.need_branch(NEED)?.expect("row");
     assert_eq!(row.run, 2);
     assert_eq!(row.base.as_deref(), Some(MAIN_B));
+    Ok(())
+}
+
+#[test]
+fn attempt_two_brief_says_why_attempt_one_changed_nothing() -> R {
+    let mut rig = rig(true, RECORD)?;
+    let fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    rig.store.insert_step(
+        NEED,
+        &step("fix1", &fix, StepState::Done, Some("unchanged")),
+    )?;
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run: 1,
+        node: "fix1".into(),
+        class: "repairer".into(),
+        task: fix.clone(),
+        payload: serde_json::json!({
+            "job": "j1",
+            "reason": "expected a commit on X from base B; actual: no change",
+        }),
+    })?;
+    main_tip(&rig.host, MAIN_B);
+    let spec = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
+    assert!(spec.body.contains("verdict unchanged"), "{}", spec.body);
+    assert!(
+        spec.body
+            .contains("expected a commit on X from base B; actual: no change"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("(job j1)"), "{}", spec.body);
+    assert!(
+        spec.body.contains("Attempt 1 published nothing."),
+        "{}",
+        spec.body
+    );
     Ok(())
 }

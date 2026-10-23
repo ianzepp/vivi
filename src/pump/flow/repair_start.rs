@@ -122,16 +122,24 @@ fn prior_attempt(cx: &StartCx<'_>) -> Result<String, VivariumError> {
         .collect();
     for step in &first {
         text.push_str(&format!(
-            "- {}: {:?}, verdict {}\n",
+            "- {}: {:?}, verdict {}",
             step.node,
             step.state,
             step.verdict.as_deref().unwrap_or("none")
         ));
+        if let Some(row) = cx.store.step_payload(&step.task)? {
+            if let Some(reason) = row.payload.get("reason").and_then(|v| v.as_str()) {
+                text.push_str(&format!(": {reason}"));
+            }
+            if let Some(job) = row.payload.get("job").and_then(|v| v.as_str()) {
+                text.push_str(&format!(" (job {job})"));
+            }
+        }
+        text.push('\n');
     }
-    if let Some(facts) =
-        repair::latest_facts(cx.store, cx.mail, &cx.ctx.cfg.reply_from, need, run, 1)?
-    {
-        text.push_str(&format!("Facts: {}\n", repair::facts_text(&facts)));
+    match repair::latest_facts(cx.store, cx.mail, &cx.ctx.cfg.reply_from, need, run, 1)? {
+        Some(facts) => text.push_str(&format!("Facts: {}\n", repair::facts_text(&facts))),
+        None => text.push_str("Attempt 1 published nothing.\n"),
     }
     if let Some(rung) = first.iter().find(|s| s.node == repair::rung_node(1)) {
         let replies =
