@@ -228,11 +228,7 @@ impl<'a> World<'a> {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: format!("vivi pool doctor --test: {label} ({})", self.counter),
-            body: crate::letter::render(
-                &crate::letter::work::TaskFront::default(),
-                "Throwaway task of `vivi pool doctor --test`. It lives in a temporary mailspace that is deleted when the test ends.\n",
-            )
-            .map_err(|error| VivariumError::Message(format!("failed to render test task: {error}")))?,
+            body: test_task_body()?,
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
@@ -265,7 +261,7 @@ impl<'a> World<'a> {
         let plan = dispatch::plan_job(
             &config,
             &self.id.pool,
-            (&task, label, ""),
+            (&task, label, &test_task_body()?),
             &flags,
             job::DEFAULT_RULES.to_string(),
             id,
@@ -396,4 +392,13 @@ impl<'a> World<'a> {
         let open = work::open_dispatches(&self.space).map_err(|e| e.to_string())?;
         Ok(open.iter().any(|d| &d.task == task))
     }
+}
+
+/// The front-matter body every stand-in task is sent with.
+fn test_task_body() -> Result<String, VivariumError> {
+    crate::letter::render(
+        &crate::letter::work::TaskFront::default(),
+        "Throwaway task of `vivi pool doctor --test`. It lives in a temporary mailspace that is deleted when the test ends.\n",
+    )
+    .map_err(|error| VivariumError::Message(format!("failed to render test task: {error}")))
 }
