@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use chrono::{DateTime, Utc};
 
-use super::Mailspace;
 use super::config_edit::{self, IdentityPatch};
+use super::{Mailspace, MailspaceConfig};
 use crate::duration::parse_duration_secs;
 use crate::error::VivariumError;
 use crate::role_schedule::{self, LastSignal, ScheduleReport};
@@ -137,6 +137,19 @@ impl LocalIdentity {
             read_only: None,
             models: Vec::new(),
         }
+    }
+}
+
+impl MailspaceConfig {
+    /// The role a name or alias denotes, ignoring ASCII case.
+    pub(crate) fn role_named(&self, name: &str) -> Option<&LocalIdentity> {
+        self.identities.iter().find(|role| {
+            role.name.eq_ignore_ascii_case(name)
+                || role
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(name))
+        })
     }
 }
 
