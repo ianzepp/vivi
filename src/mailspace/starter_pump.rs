@@ -25,10 +25,6 @@ committer_email = ""
 [pump.merge]
 # Checks run after every merge, before the integration branch is promoted.
 shared_checks = []
-
-[pump.gate]
-# Command the read-only gate worker runs on the integration tip.
-command = ""
 "#;
 
 impl Mailspace {

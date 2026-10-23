@@ -361,7 +361,7 @@ fn a_fresh_project_reports_not_ready_with_its_missing_items() {
     assert_eq!(h.verdict, Verdict::Unknown);
     let reasons = h.reasons.join("\n");
     assert!(reasons.contains("not ready: "), "{reasons}");
-    assert!(reasons.contains("pump.gate.command"), "{reasons}");
+    assert!(reasons.contains("pump.committer_name"), "{reasons}");
 }
 
 #[test]

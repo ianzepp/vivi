@@ -12,7 +12,7 @@ use tempfile::tempdir;
 use crate::mailspace::Mailspace;
 use crate::pump::boardpass::BoardPass;
 use crate::pump::config::{
-    BoardConfig, DispatchConfig, GateConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
+    BoardConfig, DispatchConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
 };
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
@@ -44,7 +44,7 @@ const PUMP_TOML: &str = concat!(
     "[pools.here.bands]\nP2 = [{ model = \"m/ok\", reasoning = \"high\" }]\n\n",
     "[pump]\nbranch = \"next\"\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
-    "[pump.merge]\nshared_checks = [\"true\"]\n\n[pump.gate]\ncommand = \"true\"\n\n",
+    "[pump.merge]\nshared_checks = [\"true\"]\n\n",
     "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n\n",
 );
 
@@ -829,10 +829,6 @@ fn dispatch_config() -> PumpConfig {
         merge: MergeConfig {
             shared_checks: Vec::new(),
             ..MergeConfig::default()
-        },
-        gate: GateConfig {
-            pools: vec![String::from("p1")],
-            ..GateConfig::default()
         },
         ..PumpConfig::default()
     }

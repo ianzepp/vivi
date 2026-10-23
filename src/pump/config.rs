@@ -91,8 +91,6 @@ pub struct PumpConfig {
     pub merge: MergeConfig,
     /// Lane RAM disk settings (the `[pump.workspace]` table).
     pub workspace: PumpWorkspace,
-    /// Gate settings (the `[pump.gate]` table).
-    pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
     pub alarm: AlarmConfig,
     /// Need-acceptance settings (the `[pump.need]` table).
@@ -137,7 +135,6 @@ impl Default for PumpConfig {
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             workspace: PumpWorkspace::default(),
-            gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
             need: NeedConfig::default(),
             rungs: RungsConfig::default(),
@@ -149,7 +146,7 @@ impl Default for PumpConfig {
 
 impl PumpConfig {
     /// Effective repository targets. Legacy single-repository fields become
-    /// one `default` target; explicit targets inherit only shared merge/gate
+    /// one `default` target; explicit targets inherit only shared merge
     /// defaults.
     #[must_use]
     pub fn target_configs(&self) -> BTreeMap<String, PumpTarget> {
@@ -165,7 +162,6 @@ impl PumpConfig {
                     promote: self.promote,
                     integration_repo: self.repo.clone(),
                     merge: Some(self.merge.clone()),
-                    gate: Some(self.gate.clone()),
                     ..PumpTarget::default()
                 },
             )]);
@@ -175,7 +171,6 @@ impl PumpConfig {
             .map(|(id, target)| {
                 let mut target = target.clone();
                 target.merge.get_or_insert_with(|| self.merge.clone());
-                target.gate.get_or_insert_with(|| self.gate.clone());
                 (id.clone(), target)
             })
             .collect()
@@ -242,7 +237,6 @@ impl PumpConfig {
         config.main = target.main;
         config.promote = target.promote;
         config.merge = target.merge.unwrap_or_default();
-        config.gate = target.gate.unwrap_or_default();
         Some(config)
     }
 
@@ -307,9 +301,6 @@ pub struct PumpTarget {
     /// Target-specific merge behavior. Omitted fields inherit the legacy
     /// workspace-level merge settings when loaded through `target_configs`.
     pub merge: Option<MergeConfig>,
-    /// Target-specific gate behavior. Omitted fields inherit the legacy
-    /// workspace-level gate settings when loaded through `target_configs`.
-    pub gate: Option<GateConfig>,
     /// Target-specific rung commands. A rung set here wins over the
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
@@ -328,7 +319,6 @@ impl Default for PumpTarget {
             promote: true,
             integration_repo: None,
             merge: None,
-            gate: None,
             rungs: RungsConfig::default(),
         }
     }
@@ -641,65 +631,6 @@ impl Default for Generated {
     }
 }
 
-/// Gate settings (the `[pump.gate]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct GateConfig {
-    /// Gate command run by a read-only gate worker. Required: `validate`
-    /// rejects an empty one.
-    pub command: String,
-    /// Retired: accepted and ignored. A gate is due after every merge batch
-    /// that lands (need e90b0221).
-    pub every_merges: u32,
-    /// Retired: accepted and ignored. A gate is due after every merge batch
-    /// that lands (need e90b0221).
-    pub every_seconds: u64,
-    /// Ordered gate fallback pools after the assigned gate role's pool and its
-    /// configured fallback chain; each must name a `[pools.*]` table.
-    pub pools: Vec<String>,
-    /// Gate worker model.
-    pub model: String,
-    /// Gate worker budget, in seconds.
-    pub budget: u64,
-    /// Directory an external runner drops `<tip>.json` gate results in;
-    /// relative paths join the project root. Absent means pool gates only.
-    pub results_dir: Option<String>,
-    /// Seconds a due gate waits for an external result; >= 1 with results_dir.
-    pub results_wait_seconds: u64,
-    /// Seconds without a consumed external result after which a due gate stops
-    /// waiting; `0` disables the rule. A runner that has produced nothing for
-    /// this long is not running, so the pool gate goes out at once.
-    pub results_idle_seconds: u64,
-    /// Gate-ignored test names, one per line; `#` comments; relative paths resolve from project.
-    pub ignore_file: Option<String>,
-    /// Replans per name after owner units settle but the name still fails; 0 disables.
-    pub max_replans: u32,
-    /// Write HOLD-MERGE while owned reds remain unfixed.
-    pub hold_on_red: bool,
-    /// Need priority floor for bypassing HOLD-MERGE.
-    pub hold_priority_floor: i64,
-}
-
-impl Default for GateConfig {
-    fn default() -> Self {
-        Self {
-            command: String::new(),
-            every_merges: 8,
-            every_seconds: 1800,
-            pools: Vec::new(),
-            model: String::new(),
-            budget: 1800,
-            results_dir: None,
-            results_wait_seconds: 0,
-            results_idle_seconds: 0,
-            ignore_file: None,
-            max_replans: 2,
-            hold_on_red: false,
-            hold_priority_floor: 0,
-        }
-    }
-}
-
 impl PumpConfig {
     /// The pump home: `home` (relative paths join `project`) or
     /// `<project>/.vivi/pump`.
@@ -719,24 +650,6 @@ impl PumpConfig {
             Some(repo) => resolve(project, repo),
             None => self.home_dir(project).join("repo"),
         }
-    }
-
-    /// The external gate results directory, when configured.
-    #[must_use]
-    pub fn results_dir(&self, project: &Path) -> Option<PathBuf> {
-        self.gate
-            .results_dir
-            .as_deref()
-            .map(|dir| resolve(project, dir))
-    }
-
-    /// The gate ignore file, when configured.
-    #[must_use]
-    pub fn ignore_file(&self, project: &Path) -> Option<PathBuf> {
-        self.gate
-            .ignore_file
-            .as_deref()
-            .map(|file| resolve(project, file))
     }
 
     /// The hand-rules file: `hand_rules` (relative paths join `project`), or

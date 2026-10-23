@@ -3,20 +3,20 @@
 //! A finding is one of two kinds. An *error* is a value that is wrong: a bad
 //! number, a path that cannot be read, a name that points at nothing. A
 //! *missing* item is something the pump needs and the config does not yet
-//! say: no committer, no gate command, no pool for the dispatch role. A
+//! say: no committer, no rung command, no pool for the dispatch role. A
 //! project in the second state is "not ready", not broken: filling the items
 //! in makes it ready with no other step.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use super::{GateConfig, MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
+use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
 use crate::VivariumError;
 
 /// One thing the pump needs and the config does not yet say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Missing {
-    /// A short stable name, e.g. `pump.gate.command` or `hand pool`.
+    /// A short stable name, e.g. `pump.committer_name` or `hand pool`.
     pub name: String,
     /// What is missing and how to supply it.
     pub detail: String,
@@ -136,7 +136,7 @@ impl PumpConfig {
             if self.branch.is_empty() {
                 found.absent("pump.branch", "[pump] branch must not be empty");
             }
-            self.validate_merge_and_gate(pools, &mut found);
+            self.validate_merge(&mut found);
         } else {
             let mut target_paths = BTreeSet::new();
             for (id, target) in self.target_configs() {
@@ -146,7 +146,7 @@ impl PumpConfig {
                         "[pump.targets.{id}] path duplicates another configured repository target"
                     ));
                 }
-                validate_target(&id, &target, pools, &mut found);
+                validate_target(&id, &target, &mut found);
             }
         }
         found
@@ -274,7 +274,7 @@ impl PumpConfig {
         }
     }
 
-    fn validate_merge_and_gate(&self, pools: &[String], found: &mut Findings) {
+    fn validate_merge(&self, found: &mut Findings) {
         validate_merge(&self.merge, found);
         if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
             found.absent(
@@ -282,17 +282,6 @@ impl PumpConfig {
                 "[pump.merge] shared_checks must not be empty while promotion is enabled \
                  (promote = true and main set)",
             );
-        }
-        if self.gate.command.trim().is_empty() {
-            found.absent("pump.gate.command", "[pump.gate] command must not be empty");
-        }
-        if self.gate.results_dir.is_some() && self.gate.results_wait_seconds == 0 {
-            found.invalid("[pump.gate] results_dir needs results_wait_seconds >= 1");
-        }
-        for name in &self.gate.pools {
-            if !known(pools, name) {
-                found.invalid(format!("[pump.gate] pools names unknown pool `{name}`"));
-            }
         }
     }
 }
@@ -325,7 +314,7 @@ fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
     validate_checks_for("[pump.merge.checks_for]", &merge.checks_for, found);
 }
 
-fn validate_target(id: &str, target: &PumpTarget, pools: &[String], found: &mut Findings) {
+fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     let prefix = format!("[pump.targets.{id}]");
     if !valid_target_id(id) {
         found.invalid(format!(
@@ -361,14 +350,6 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], found: &mut 
         found.absent(
             format!("pump.targets.{id}.merge.shared_checks"),
             format!("{prefix}.merge shared_checks must not be empty while promotion is enabled"),
-        );
-    }
-    if let Some(gate) = &target.gate {
-        validate_target_gate(id, gate, pools, found);
-    } else {
-        found.absent(
-            format!("pump.targets.{id}.gate.command"),
-            format!("{prefix}.gate command must not be empty"),
         );
     }
 }
@@ -412,26 +393,6 @@ fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Find
         merge.map(|merge| &merge.checks_for).unwrap_or(&empty),
         found,
     );
-}
-
-fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], found: &mut Findings) {
-    let prefix = format!("[pump.targets.{id}.gate]");
-    if gate.command.trim().is_empty() {
-        found.absent(
-            format!("pump.targets.{id}.gate.command"),
-            format!("{prefix} command must not be empty"),
-        );
-    }
-    if gate.results_dir.is_some() && gate.results_wait_seconds == 0 {
-        found.invalid(format!(
-            "{prefix} results_dir needs results_wait_seconds >= 1"
-        ));
-    }
-    for name in &gate.pools {
-        if !known(pools, name) {
-            found.invalid(format!("{prefix} pools names unknown pool `{name}`"));
-        }
-    }
 }
 
 fn validate_rungs(scope: &str, rungs: &RungsConfig, pools: &[String], found: &mut Findings) {

@@ -21,7 +21,7 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 | Unit task | **[pump].to** (the hand role) | The hand role's pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kinds and **default_kind** route the unit. |
 | **planner:board**, **planner:revision**, **planner:split** | Active **pump-planner** role | Its pool and fallback chain. An active pump-planner role with a pool is required when **[pump]** is configured; a role named **planner** is not used. |
 | **merge** | **merge** role | Merge role pool and fallback chain. The live pipeline requires a merge role with a usable pool. |
-| **gate** | **gate** role | Gate role pool and fallback chain, followed by configured **[pump.gate].pools** candidates. The gate job is read-only. |
+| **gate** | **gate** role | Gate role pool and fallback chain. The gate job is read-only. `[pump.gate]` is retired: an old table parses and is ignored. |
 | **audit** | **auditor** role | Auditor role pool and fallback chain, followed by configured gate-pool candidates. If no auditor role exists, the built-in read-only audit fallback uses gate pools. |
 | **need-audit** | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
 | **investigation** | Configured **auditor** role | Auditor role pool and fallback chain. Investigation work is read-only and is not eligible without an auditor role. |

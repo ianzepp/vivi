@@ -601,7 +601,6 @@ fn migrated_text_still_parses_as_a_pump_config() {
     assert_eq!(pump.planner.split_hard_cap, 1500);
     assert_eq!(pump.merge.batch, 4);
     assert_eq!(pump.merge.lanes, 1);
-    assert_eq!(pump.gate.command, "cargo test");
     let errors: Vec<_> = validate(&toml::from_str::<MailspaceConfig>(&after).unwrap())
         .into_iter()
         .filter(|issue| issue.severity == Severity::Error)

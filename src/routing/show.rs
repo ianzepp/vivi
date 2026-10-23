@@ -120,9 +120,6 @@ fn legacy_pool(
     if role.name.eq_ignore_ascii_case("merge") || kind_is(role, "merge") {
         return (Some("(host)".into()), "pump.merge.lanes".into());
     }
-    if role.name.eq_ignore_ascii_case("gate") || kind_is(role, "gate") {
-        return (pump.gate.pools.first().cloned(), "pump.gate.pools".into());
-    }
     (None, "legacy".into())
 }
 
@@ -171,7 +168,6 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
         gate_role: gate.map_or_else(|| "gate".into(), |role| role.name.clone()),
         gate_pool: gate
             .and_then(|role| role.pool.clone())
-            .or_else(|| pump.gate.pools.first().cloned())
             .unwrap_or_else(|| "-".into()),
         promote: pump.promote,
         branch: pump.branch.clone(),

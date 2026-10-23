@@ -447,8 +447,6 @@ cap = 1
 pools = ["glm"]
 [pump.merge]
 lanes = 2
-[pump.gate]
-pools = ["glm"]
 "#);
     let issues = validate(&config);
     assert!(
@@ -593,7 +591,7 @@ slots = 10
 }
 
 #[test]
-fn migrate_assigns_hand_merge_gate_and_folds_caps() {
+fn migrate_assigns_hand_and_merge_and_folds_caps() {
     let raw = r#"
 name = "t"
 [[identities]]
@@ -618,8 +616,6 @@ cap = 2
 pools = ["glm"]
 [pump.merge]
 lanes = 4
-[pump.gate]
-pools = ["glm"]
 "#;
     let config = cfg(raw);
     let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
@@ -635,7 +631,7 @@ pools = ["glm"]
             .any(|row| row.role == "merge" && row.pool == "host"),
         "{plan:?}"
     );
-    assert!(plan.new_roles.iter().any(|role| role.name == "gate"));
+    assert!(!plan.new_roles.iter().any(|role| role.name == "gate"));
     assert!(
         plan.new_pools
             .iter()
@@ -787,7 +783,7 @@ fn faber_fixture_migrates_hand_to_glm_and_merge_to_host() {
             .iter()
             .any(|row| row.role == "merge" && row.pool == "host")
     );
-    assert!(plan.new_roles.iter().any(|role| role.name == "gate"));
+    assert!(!plan.new_roles.iter().any(|role| role.name == "gate"));
     assert!(
         plan.new_pools
             .iter()
