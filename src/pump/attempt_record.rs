@@ -222,7 +222,7 @@ pub(crate) fn sections_tail(text: &str) -> String {
 
 /// The hand's final message from a full pool task receipt.
 #[must_use]
-pub(crate) fn hand_message(text: &str) -> String {
+pub fn hand_message(text: &str) -> String {
     parse_receipt(text).message
 }
 
