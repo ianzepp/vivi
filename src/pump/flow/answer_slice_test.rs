@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use super::{ANSWER_REFUSED, apply_pending};
+use super::{ANSWER_REFUSED, ANSWER_RETRYING, apply_pending};
 use crate::error::VivariumError;
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
@@ -230,7 +230,12 @@ fn a_failed_slice_close_leaves_the_letter_for_the_next_apply() {
 
     assert!(!rig.applied(&id), "a retry is not marked applied");
     assert_eq!(rig.row(&rig.slice).state, StepState::Running);
-    assert_eq!(rig.exceptions(), "", "a retry is not a refusal");
+    let log = rig.exceptions();
+    assert!(
+        !log.contains(ANSWER_REFUSED),
+        "a retry is not a refusal: {log}"
+    );
+    assert_eq!(log.matches(ANSWER_RETRYING).count(), 1, "{log}");
 
     rig.apply().unwrap();
 
@@ -249,7 +254,9 @@ fn a_routing_write_error_on_a_step_is_retried_not_refused() {
     rig.apply().unwrap();
 
     assert!(!rig.applied(&id));
-    assert_eq!(rig.exceptions(), "");
+    let log = rig.exceptions();
+    assert!(!log.contains(ANSWER_REFUSED), "{log}");
+    assert_eq!(log.matches(ANSWER_RETRYING).count(), 1, "{log}");
 
     rig.apply().unwrap();
 
@@ -257,4 +264,67 @@ fn a_routing_write_error_on_a_step_is_retried_not_refused() {
     let row = rig.row(&rig.build);
     assert_eq!(row.state, StepState::Done);
     assert_eq!(row.verdict.as_deref(), Some("built"));
+}
+
+#[test]
+fn a_routing_failure_alarms_once_over_two_ticks_and_stays_unapplied() {
+    let mut rig = rig();
+    let id = rig.post(&rig.build.clone(), "built");
+
+    for _ in 0..2 {
+        rig.mail.fail_at = Some(0);
+        rig.apply().unwrap();
+    }
+
+    assert!(!rig.applied(&id));
+    let log = rig.exceptions();
+    assert_eq!(log.matches(ANSWER_RETRYING).count(), 1, "{log}");
+    assert!(log.contains(&rig.build), "names the step task: {log}");
+    assert!(log.contains("`built`"), "names the word: {log}");
+    assert!(
+        log.contains("routing the answer failed"),
+        "names the error: {log}"
+    );
+    assert!(!log.contains(ANSWER_REFUSED), "{log}");
+}
+
+#[test]
+fn the_fourth_failing_tick_refuses_the_letter_and_marks_it_applied() {
+    let mut rig = rig();
+    let id = rig.post(&rig.build.clone(), "built");
+
+    for tick in 1..=3 {
+        rig.mail.fail_at = Some(0);
+        rig.apply().unwrap();
+        assert!(!rig.applied(&id), "tick {tick} leaves it unapplied");
+    }
+    assert!(!rig.exceptions().contains(ANSWER_REFUSED));
+
+    rig.mail.fail_at = Some(0);
+    rig.apply().unwrap();
+
+    assert!(rig.applied(&id));
+    let log = rig.exceptions();
+    assert_eq!(log.matches(ANSWER_RETRYING).count(), 1, "{log}");
+    assert_eq!(log.matches(ANSWER_REFUSED).count(), 1, "{log}");
+    assert!(log.contains("failed 4 times, more than 3 retries"), "{log}");
+    assert_eq!(rig.row(&rig.build).state, StepState::Running);
+}
+
+#[test]
+fn a_transient_failure_that_clears_on_tick_two_applies_normally() {
+    let mut rig = rig();
+    let id = rig.post(&rig.build.clone(), "built");
+
+    rig.mail.fail_at = Some(0);
+    rig.apply().unwrap();
+    assert!(!rig.applied(&id));
+
+    rig.apply().unwrap();
+
+    assert!(rig.applied(&id));
+    let row = rig.row(&rig.build);
+    assert_eq!(row.state, StepState::Done);
+    assert_eq!(row.verdict.as_deref(), Some("built"));
+    assert!(!rig.exceptions().contains(ANSWER_REFUSED));
 }
