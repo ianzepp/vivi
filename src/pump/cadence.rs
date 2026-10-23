@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
-use crate::mailspace::{Mailspace, RoleView};
+use crate::error::VivariumError;
+use crate::mailspace::{Mailspace, RoleView, WantState};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec};
 use crate::pump::state::State;
@@ -244,8 +245,8 @@ fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, Ro
                 continue;
             }
         };
-        let open_wants = match mailspace.list_kind_all(Some(&role.name), "sent", "want") {
-            Ok(wants) => wants.len(),
+        let open_wants = match open_want_count(mailspace, &role.name) {
+            Ok(count) => count,
             Err(error) => {
                 ctx.log(&format!("cadence wants {} failed: {error}", role.name));
                 continue;
@@ -264,6 +265,20 @@ fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, Ro
         );
     }
     scans
+}
+
+/// The role's sent wants whose computed state is open.
+pub(crate) fn open_want_count(mailspace: &Mailspace, role: &str) -> Result<usize, VivariumError> {
+    let wants = mailspace.list_kind_all(Some(role), "sent", "want")?;
+    let states = mailspace.want_states_of(&wants)?;
+    Ok(wants
+        .iter()
+        .filter(|want| {
+            states
+                .get(&want.content_id)
+                .is_none_or(|report| report.state == WantState::Open)
+        })
+        .count())
 }
 
 fn role_scan(

@@ -1,6 +1,10 @@
 use super::*;
 use chrono::TimeZone;
 
+use crate::letter::fixture::{need_body_with, want_body};
+use crate::letter::work::NeedFront;
+use crate::mailspace::SendRequest;
+
 fn scan(name: &str, kind: Option<&str>, status: &str, cadence: Option<&str>) -> RoleScan {
     RoleScan {
         name: String::from(name),
@@ -228,4 +232,64 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
             "{kind}"
         );
     }
+}
+
+fn space() -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("mind").unwrap();
+    mailspace.add_identity("hand").unwrap();
+    (tmp, mailspace)
+}
+
+fn send(mailspace: &Mailspace, kind: &str, body: String) -> String {
+    mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: format!("{kind} subject"),
+            body,
+            role: format!("{kind}s"),
+            kind: Some(kind.into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+fn want(mailspace: &Mailspace) -> String {
+    send(mailspace, "want", want_body("q", "p"))
+}
+
+fn serving_need(mailspace: &Mailspace, want: &str) -> String {
+    let mut front = NeedFront::new(vec!["done".to_string()]);
+    front.serves = Some(want.to_string());
+    send(mailspace, "need", need_body_with(&front, "prose"))
+}
+
+fn close(mailspace: &Mailspace, handle: &str) {
+    mailspace
+        .move_item("mind", handle, "done", None, "close", None)
+        .unwrap();
+}
+
+#[test]
+fn open_want_count_skips_wants_whose_serving_needs_are_all_done() {
+    let (_tmp, mailspace) = space();
+    let open = want(&mailspace);
+    let served = want(&mailspace);
+    let plain = want(&mailspace);
+    serving_need(&mailspace, &open);
+    let need = serving_need(&mailspace, &served);
+    assert_eq!(open_want_count(&mailspace, "mind").unwrap(), 3);
+
+    close(&mailspace, &need);
+    assert_eq!(open_want_count(&mailspace, "mind").unwrap(), 2);
+
+    close(&mailspace, &plain);
+    assert_eq!(open_want_count(&mailspace, "mind").unwrap(), 1);
 }

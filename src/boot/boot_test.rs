@@ -7,7 +7,12 @@ use super::goals::{bucket, cap_chars, completion_claim, normalize_status, read_g
 use super::handles::{HandleRow, Verdict, apply_verdicts, parse_verdict, triage_slices};
 use super::probe::{ProbeVerdict, parse_output};
 use super::truncate::{Truncation, capped, record};
-use super::{GoalRow, SeatRow, goal_line, human_seconds, pump_state_line, seat_line};
+use super::{
+    GoalRow, SeatRow, collect_wants, goal_line, human_seconds, pump_state_line, seat_line,
+};
+use crate::letter::fixture::{need_body_with, want_body};
+use crate::letter::work::NeedFront;
+use crate::mailspace::{Mailspace, SendRequest};
 
 fn now() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 9, 21, 12, 0, 0)
@@ -318,4 +323,69 @@ fn escaped_pipes_do_not_split_a_cell() {
     let read = read_goal(text);
     assert_eq!(read.register.as_ref().map(|t| t.rows), Some(2));
     assert_eq!(read.frontier.len(), 1);
+}
+
+fn space() -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("mind").unwrap();
+    mailspace.add_identity("hand").unwrap();
+    (tmp, mailspace)
+}
+
+fn send(mailspace: &Mailspace, kind: &str, body: String) -> String {
+    mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: format!("{kind} subject"),
+            body,
+            role: format!("{kind}s"),
+            kind: Some(kind.into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+fn want(mailspace: &Mailspace) -> String {
+    send(mailspace, "want", want_body("q", "p"))
+}
+
+fn serving_need(mailspace: &Mailspace, want: &str) -> String {
+    let mut front = NeedFront::new(vec!["done".to_string()]);
+    front.serves = Some(want.to_string());
+    send(mailspace, "need", need_body_with(&front, "prose"))
+}
+
+fn close(mailspace: &Mailspace, handle: &str) {
+    mailspace
+        .move_item("mind", handle, "done", None, "close", None)
+        .unwrap();
+}
+
+fn boot_want_handles(mailspace: &Mailspace) -> Vec<String> {
+    let mut rows = Vec::new();
+    collect_wants(mailspace, now(), &mut rows).unwrap();
+    rows.into_iter().map(|row| row.handle).collect()
+}
+
+#[test]
+fn boot_lists_a_want_while_a_serving_need_is_open_and_drops_it_when_done() {
+    let (_tmp, mailspace) = space();
+    let open = want(&mailspace);
+    let served = want(&mailspace);
+    serving_need(&mailspace, &open);
+    let need = serving_need(&mailspace, &served);
+    let handles = boot_want_handles(&mailspace);
+    assert!(handles.contains(&open) && handles.contains(&served));
+
+    close(&mailspace, &need);
+    let handles = boot_want_handles(&mailspace);
+    assert!(handles.contains(&open));
+    assert!(!handles.contains(&served));
 }
