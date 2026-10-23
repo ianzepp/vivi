@@ -1,4 +1,6 @@
 use super::*;
+use crate::letter::fixture::{need_body_with, task_body_with};
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::storage::MessageIngestRequest;
 
 fn space() -> (tempfile::TempDir, Mailspace) {
@@ -12,16 +14,29 @@ fn space() -> (tempfile::TempDir, Mailspace) {
 /// A work letter as another mailspace's sender composed it: the headers name
 /// the prerequisites, whatever this mailspace holds.
 fn letter(mailspace: &Mailspace, subject: &str, kind: &str, deps: &[&str]) -> Vec<u8> {
-    let mut headers = format!(
+    let depends_on: Vec<String> = deps.iter().map(ToString::to_string).collect();
+    let done_when = vec![subject.to_string()];
+    let body = if kind == "need" {
+        let mut front = NeedFront::new(done_when);
+        front.depends_on = depends_on;
+        need_body_with(&front, "")
+    } else {
+        task_body_with(
+            &TaskFront {
+                done_when,
+                depends_on,
+                ..TaskFront::default()
+            },
+            "",
+        )
+    };
+    format!(
         "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: {subject}\r\n\
          Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
-         X-Vivi-Kind: {kind}\r\n",
+         X-Vivi-Format: 1\r\nX-Vivi-Kind: {kind}\r\n\r\n{body}",
         domain = mailspace.address_domain()
-    );
-    for dep in deps {
-        headers.push_str(&format!("X-Vivi-Depends-On: {dep}\r\n"));
-    }
-    format!("{headers}\r\ndone_when: {subject}\r\n").into_bytes()
+    )
+    .into_bytes()
 }
 
 /// File a letter under `account` the way a pull does, then attach it. Returns
@@ -543,6 +558,7 @@ fn a_format_one_task_letter_names_its_refs_and_parent_in_front_matter() {
     assert_eq!(parent_ref(&bytes).as_deref(), Some("source@x.test"));
 }
 
+// legacy: flips to letter_invalid in W3B2-39
 #[test]
 fn an_old_letter_still_names_its_refs_in_headers() {
     let bytes = b"From: mind@a.local\r\nTo: hand@a.local\r\nSubject: t\r\n\

@@ -1,5 +1,7 @@
 use super::*;
 use crate::doctor::Status;
+use crate::letter::fixture::{task_body, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::mailspace::{Mailspace, SendRequest};
 
 fn open_mailspace() -> (Mailspace, tempfile::TempDir) {
@@ -108,7 +110,7 @@ fn older_schema_warns() {
 }
 
 #[test]
-fn need_without_done_when_warns() {
+fn ready_item_without_done_when_warns() {
     let (mailspace, tmp) = with_roster();
     let handle = mailspace
         .send(SendRequest {
@@ -116,10 +118,10 @@ fn need_without_done_when_warns() {
             to: vec!["cto".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: "vague need".into(),
-            body: "no clause here".into(),
-            role: "needs".into(),
-            kind: Some("need".into()),
+            subject: "vague task".into(),
+            body: task_body("no clause here"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
             reply_to: None,
             depends_on: Vec::new(),
         })
@@ -134,7 +136,7 @@ fn need_without_done_when_warns() {
 }
 
 #[test]
-fn done_when_matches_step_and_ignores_blocked_needs() {
+fn done_when_matches_step_and_ignores_blocked_items() {
     let (mailspace, tmp) = with_roster();
     let ready = mailspace
         .send(SendRequest {
@@ -142,10 +144,10 @@ fn done_when_matches_step_and_ignores_blocked_needs() {
             to: vec!["cto".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: "ready need".into(),
-            body: "no clause here".into(),
-            role: "needs".into(),
-            kind: Some("need".into()),
+            subject: "ready task".into(),
+            body: task_body("no clause here"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
             reply_to: None,
             depends_on: Vec::new(),
         })
@@ -159,12 +161,18 @@ fn done_when_matches_step_and_ignores_blocked_needs() {
             to: vec!["cto".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: "blocked need".into(),
-            body: "also no clause here".into(),
-            role: "needs".into(),
-            kind: Some("need".into()),
+            subject: "blocked task".into(),
+            body: task_body_with(
+                &TaskFront {
+                    depends_on: vec![ready.clone()],
+                    ..TaskFront::default()
+                },
+                "also no clause here",
+            ),
+            role: "tasks".into(),
+            kind: Some("task".into()),
             reply_to: None,
-            depends_on: vec![ready.clone()],
+            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
