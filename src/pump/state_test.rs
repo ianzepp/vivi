@@ -3,40 +3,34 @@
 use std::collections::BTreeMap;
 use std::fs;
 
+use crate::pump::state::{Board, NeedRecord, State, Status, Unit};
 use serde_json::json;
 use tempfile::tempdir;
 
-use crate::pump::jobs::{JobSpec, JobStatus};
-use crate::pump::state::{Board, NeedRecord, State, Status, Unit};
-
 #[test]
-fn restart_keeps_merging_units_owned_by_dispatched_merge_jobs_only() {
+fn a_load_returns_exactly_what_was_saved() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
     let mut state = State::default();
-    for uid in ["u-live", "u-orphan"] {
-        state.units.insert(
-            uid.to_owned(),
-            Unit {
-                need: String::from("n1"),
-                status: Status::Merging,
-                ..Unit::default()
-            },
-        );
-    }
-    let mut spec = JobSpec::new(
-        String::from("merge-n1"),
-        String::from("merge"),
-        String::from("merge"),
-        String::from("merge n1"),
-        String::from("merge u-live"),
+    state.units.insert(
+        String::from("u-merging"),
+        Unit {
+            need: String::from("n1"),
+            status: Status::Merging,
+            ..Unit::default()
+        },
     );
-    spec.units.push(String::from("u-live"));
-    crate::pump::jobs::enqueue(&mut state, spec).unwrap();
-    state.jobs.get_mut("merge-n1").unwrap().status = JobStatus::Dispatched;
+    state
+        .needs
+        .insert(String::from("n1"), NeedRecord::default());
+    assert!(state.plans_seen.is_empty());
+    state.save(&path).unwrap();
 
-    state.recover_after_restart();
+    let loaded = State::load(&path).unwrap();
 
-    assert_eq!(state.units["u-live"].status, Status::Merging);
-    assert_eq!(state.units["u-orphan"].status, Status::Delivered);
+    assert_eq!(loaded.units["u-merging"].status, Status::Merging);
+    assert!(loaded.plans_seen.is_empty());
+    assert!(loaded.needs.contains_key("n1"));
 }
 
 /// A `state.json` as the pump writes it: one-space indent, `null`s
@@ -247,33 +241,6 @@ fn a_missing_file_loads_as_the_empty_state() {
 }
 
 #[test]
-fn a_unit_left_merging_becomes_delivered_on_load() {
-    let dir = tempdir().unwrap();
-    let raw = json!({
-        "units": {"2499da76-2": {"need": "2499da76", "status": "merging"}},
-        "order": ["2499da76-2"]
-    });
-    let path = write_state(dir.path(), "state.json", &raw.to_string());
-    let st = State::load(&path).unwrap();
-    assert_eq!(st.units["2499da76-2"].status, Status::Delivered);
-}
-
-#[test]
-fn an_empty_plans_seen_is_rebuilt_from_the_needs() {
-    let dir = tempdir().unwrap();
-    let raw = json!({
-        "units": {},
-        "needs": {
-            "9fec06b7": {"verdict": "units", "reason": "one unit", "units": ["9fec06b7-1"]},
-            "84eaff6a": {"verdict": "units", "reason": "two units", "units": ["84eaff6a-1", "84eaff6a-2"]}
-        }
-    });
-    let path = write_state(dir.path(), "state.json", &raw.to_string());
-    let st = State::load(&path).unwrap();
-    assert_eq!(st.plans_seen, vec!["84eaff6a.json", "9fec06b7.json"]);
-}
-
-#[test]
 fn save_then_load_round_trips_and_leaves_no_tmp_file() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested").join("state.json");
@@ -424,13 +391,10 @@ fn the_live_snapshot_round_trips_through_load_and_save() {
     assert_eq!(status_map(&after), status_map(&before));
     assert_eq!(after.counts(), before.counts());
 
-    // The JSON itself is unchanged apart from the merging -> delivered fold
-    // and the empty `outside` / `replaced_by` lists the model always writes.
+    // The JSON itself is unchanged apart from the empty `outside` /
+    // `replaced_by` lists the model always writes.
     let mut want: serde_json::Value = serde_json::from_str(LIVE_SNAPSHOT).unwrap();
     for unit in want["units"].as_object_mut().unwrap().values_mut() {
-        if unit["status"] == "merging" {
-            unit["status"] = json!("delivered");
-        }
         for key in ["outside", "replaced_by"] {
             unit.as_object_mut()
                 .unwrap()

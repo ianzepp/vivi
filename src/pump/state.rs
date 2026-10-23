@@ -500,10 +500,8 @@ impl crate::pump::jobs::JobStore for State {
 impl State {
     /// Load the pump state from `path`.
     ///
-    /// A missing file yields the empty state. Units left `merging` by a
-    /// crashed run fold back to `delivered`, and an empty `plans_seen` with
-    /// known needs is rebuilt as `"<need>.json"` per need — both done
-    /// at startup.
+    /// A missing file yields the empty state. A load never rewrites what it
+    /// reads.
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the file exists but cannot be read or
@@ -516,11 +514,8 @@ impl State {
             }
             Err(err) => return Err(err.into()),
         };
-        let mut state: State = serde_json::from_str(&text).map_err(|err| {
-            VivariumError::Message(format!("pump state {}: {err}", path.display()))
-        })?;
-        state.recover_after_restart();
-        Ok(state)
+        serde_json::from_str(&text)
+            .map_err(|err| VivariumError::Message(format!("pump state {}: {err}", path.display())))
     }
 
     /// Write the state to `path` as pretty JSON with a one-space indent,
@@ -577,32 +572,6 @@ impl State {
             if unit.revision == 0 {
                 unit.revision = 1;
             }
-        }
-    }
-
-    /// Startup repairs: requeue legacy merge rows without a live pool job,
-    /// preserve dispatched merge rows for job recovery, and rebuild an empty
-    /// `plans_seen` from `needs`.
-    pub(crate) fn recover_after_restart(&mut self) {
-        let orphaned: Vec<String> = self
-            .units
-            .iter()
-            .filter(|(uid, unit)| {
-                unit.status == Status::Merging && !crate::pump::jobs::owns_merging_unit(self, uid)
-            })
-            .map(|(uid, _)| uid.clone())
-            .collect();
-        for uid in orphaned {
-            if let Some(unit) = self.units.get_mut(&uid) {
-                unit.status = Status::Delivered;
-            }
-        }
-        if self.plans_seen.is_empty() && !self.needs.is_empty() {
-            self.plans_seen = self
-                .needs
-                .keys()
-                .map(|need| format!("{need}.json"))
-                .collect();
         }
     }
 }

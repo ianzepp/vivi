@@ -667,7 +667,7 @@ fn a_state_file_from_a_previous_run_is_loaded_and_saved_back() {
 }
 
 #[test]
-fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
+fn sqlite_startup_leaves_a_saved_merging_unit_as_it_was() {
     let (_dir, ctx, _host) = setup();
     let path = ctx.home.join(DB_FILENAME);
     let mut st = State::default();
@@ -685,7 +685,7 @@ fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
 
     run_with(&ctx, true).unwrap();
     let recovered = PumpStore::open(&path).unwrap().load().unwrap();
-    assert_eq!(recovered.units["recover-1"].status, Status::Delivered);
+    assert_eq!(recovered.units["recover-1"].status, Status::Merging);
     assert_eq!(recovered.units["done-1"].status, Status::Merged);
     assert_eq!(recovered.units["recover-1"].task.as_deref(), Some("task-1"));
     assert_eq!(
