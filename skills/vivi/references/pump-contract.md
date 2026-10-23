@@ -32,7 +32,7 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 
 Pool fallback is configured in the pool's table. For example, **[pools.workers]** can set **fallback = "backup"**. For unit work, the hand role pool is preferred; when no hand pool is assigned, legacy kind pool lists remain the compatibility route. A configured role pool takes precedence over legacy dispatch kind routing.
 
-Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **[pump.merge].lanes**, **remote_wait**, **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.workspace]** when needed. A source contract test fails if production `src/pump` grows an in-process merger, planner, or git push of refs.
+Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.workspace]** when needed. A source contract test fails if production `src/pump` grows an in-process merger, planner, or git push of refs.
 
 ## Durable pool jobs
 
@@ -58,8 +58,6 @@ The principal unit states are:
 - **stuck**, **needs-replan**, **splitting**, **replaced**, and **withdrawn**: parked, replacement, or operator-managed states; they are not satisfied unless their successors are.
 
 The shared integration merge scheduler queues at most one target-level job at a time. It includes eligible delivered units from unmanaged needs and eligible completed write-role branches, and records the source IDs before dispatch. Managed needs use the separate per-need merge path below. A shared merge worker starts from the integration tip, diagnoses and repairs conflicts and failing checks within each source's write scope, runs configured formatting, shared checks, scope-mapped checks, and unit proofs, then commits a candidate. Isolation among several sources is a last-resort diagnosis tool, not the default action. The worker returns a structured result receipt and does not push the integration ref. The privileged pool runner publishes the candidate; the controller accepts a merge only after checking the worker's clean exit, exact source list, runner publication receipt, current remote ref, and candidate ancestry. The full protocol is in [pump protocols](pump-protocols.md).
-
-**[pump.merge].need_parallel** (default 4, also accepted per target under **[pump.targets.&lt;id&gt;.merge]**, must be >= 1) caps how many per-need unit merge jobs, which run the shared checks, are queued or running at once on one target. Only need-merge jobs count; need branch init and landing jobs are cheap git operations and take no slot, and a finished job whose receipt is not yet applied has freed its slot. Waiting need groups start as slots free, in the unit ranking (fix units first, then need priority level highest first, then the rest). A tick that defers groups logs once per target: `need-merge cap <target>: <active>/<cap> active, <n> waiting`. The shared integration lane is separate.
 
 A fresh mailspace provisions the **merge** role on init. When a local pool already exists, that pool is assigned automatically; otherwise `vivi doctor` fails the **merge pool** check until `vivi role pool merge <pool>` binds one. Without that binding, the pump raises **merge-route-missing** and queues no merge jobs.
 
@@ -94,8 +92,7 @@ The audit receipt supports four verdicts:
   path, and recheck-trigger provenance.
 - **block_range** keeps acceptance pending, creates repair units on the same
   need branch, then reviews only the repair diff under the Auditor policy.
-  **[pump.need].repair_rounds** (default 1) is the cap: a finding that remains
-  blocked after that many repairs is held and escalated.
+  The **[pump.need].repair_rounds** key is retired and ignored.
 - **block_ship** keeps a persistent hold on the need branch and records an
   operator and CTO escalation. It does not authorize landing.
 
@@ -264,9 +261,7 @@ its middle, keeps its head and tail, and is saved in full as
 exception.
 
 **[pump.merge].repair_budget** is an optional wall-clock budget for quarantine
-repair units. When omitted it is **proof_timeout + 300 seconds**. An explicit
-value must be at least **proof_timeout** and at least one second. Repair units
-use this budget instead of **[pump.dispatch].budget**.
+repair units. An explicit value must be at least one second.
 
 A failed shared check gets exactly one retry on the same tree before bisect
 or quarantine. A timeout (exit 124 or the timeout wrapper's kill) is

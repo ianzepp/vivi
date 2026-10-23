@@ -386,7 +386,7 @@ fn a_missing_merge_role_is_added_on_the_host_pool() {
     assert!(
         plan.new_pools
             .iter()
-            .any(|pool| pool.name == "host" && pool.slots == 3),
+            .any(|pool| pool.name == "host" && pool.slots == 1),
         "{plan:?}"
     );
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
@@ -599,8 +599,6 @@ fn migrated_text_still_parses_as_a_pump_config() {
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
     let pump = migrated.pump.expect("pump");
     assert_eq!(pump.planner.split_hard_cap, 1500);
-    assert_eq!(pump.merge.batch, 4);
-    assert_eq!(pump.merge.lanes, 1);
     let errors: Vec<_> = validate(&toml::from_str::<MailspaceConfig>(&after).unwrap())
         .into_iter()
         .filter(|issue| issue.severity == Severity::Error)
@@ -927,13 +925,13 @@ fn the_new_host_pool_copies_the_hand_pool_so_it_can_run_jobs() {
     let host = plan.new_pools.iter().find(|pool| pool.name == "host");
     let host = host.unwrap_or_else(|| panic!("{plan:?}"));
     assert_eq!(host.copy_from.as_deref(), Some("glm"));
-    assert_eq!(host.slots, 3, "slots come from [pump.merge] lanes");
+    assert_eq!(host.slots, 1, "a new host pool starts with one slot");
     let text = render_plan(&plan);
     assert!(text.contains("settings copied from glm"), "{text}");
 
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
     let (glm, host) = (&migrated.pools["glm"], &migrated.pools["host"]);
-    assert_eq!(host.slots, 3);
+    assert_eq!(host.slots, 1);
     assert_eq!(host.provider, "local");
     assert_eq!(host.build_dir, glm.build_dir);
     assert_eq!(host.worktree_source(), glm.worktree_source());

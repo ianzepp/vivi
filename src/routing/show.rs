@@ -116,7 +116,7 @@ fn legacy_pool(
         return (Some(pool.clone()), "pump.dispatch.kinds".into());
     }
     if role.name.eq_ignore_ascii_case("merge") || kind_is(role, "merge") {
-        return (Some("(host)".into()), "pump.merge.lanes".into());
+        return (Some("(host)".into()), "merge role".into());
     }
     (None, "legacy".into())
 }
@@ -160,7 +160,7 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
         merge_pool: merge
             .and_then(|role| role.pool.clone())
             .unwrap_or_else(|| "(host)".into()),
-        merge_lanes: merge_lane_count(routing, pump),
+        merge_lanes: merge_lane_count(routing),
         gate_role: gate.map_or_else(|| "gate".into(), |role| role.name.clone()),
         gate_pool: gate
             .and_then(|role| role.pool.clone())

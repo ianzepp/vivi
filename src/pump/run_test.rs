@@ -11,9 +11,7 @@ use tempfile::tempdir;
 
 use crate::mailspace::Mailspace;
 use crate::pump::boardpass::BoardPass;
-use crate::pump::config::{
-    BoardConfig, DispatchConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
-};
+use crate::pump::config::{BoardConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 use crate::pump::run::{
@@ -821,10 +819,6 @@ fn dispatch_config() -> PumpConfig {
             )]),
             default_kind: String::from("plain"),
             ..DispatchConfig::default()
-        },
-        merge: MergeConfig {
-            shared_checks: Vec::new(),
-            ..MergeConfig::default()
         },
         ..PumpConfig::default()
     }

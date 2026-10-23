@@ -88,8 +88,6 @@ pub struct PumpConfig {
     pub workspace: PumpWorkspace,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
     pub alarm: AlarmConfig,
-    /// Need-acceptance settings (the `[pump.need]` table).
-    pub need: NeedConfig,
     /// Rung settings (the `[pump.rungs]` table).
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
@@ -129,7 +127,6 @@ impl Default for PumpConfig {
             merge: MergeConfig::default(),
             workspace: PumpWorkspace::default(),
             alarm: AlarmConfig::default(),
-            need: NeedConfig::default(),
             rungs: RungsConfig::default(),
             flow: FlowConfig::default(),
             slice: SliceConfig::default(),
@@ -502,57 +499,16 @@ impl Default for DispatchConfig {
     }
 }
 
-/// Need-acceptance settings (the `[pump.need]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct NeedConfig {
-    /// How many `block_range` repair units a finding may receive before the
-    /// pump holds the branch and escalates. Default 1 preserves the previous
-    /// one-repair-then-hold behavior.
-    pub repair_rounds: u32,
-}
-
-impl Default for NeedConfig {
-    fn default() -> Self {
-        Self { repair_rounds: 1 }
-    }
-}
-
 /// Merge settings (the `[pump.merge]` table).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct MergeConfig {
-    /// Jobs merged together at most.
-    pub batch: u32,
-    /// Independent merge lanes per repository target, each with its own
-    /// checkout and build directory. A lane takes the top-ranked delivered
-    /// units when it is idle, so a red lane never blocks the others.
-    pub lanes: u32,
-    /// Most need-merge jobs (the per-need unit merges that run the shared
-    /// checks) active at once per repository target. Waiting need groups
-    /// start in priority order as slots free.
-    pub need_parallel: u32,
     /// Format command run after merging.
     pub format: String,
-    /// Shared checks run after every merge, before the units' own proof.
-    /// `validate` rejects an empty list while promotion is enabled.
-    pub shared_checks: Vec<String>,
-    /// Extra checks for units whose write scope overlaps a glob. Each key is
-    /// a write-scope glob matched like a unit's write scope (`overlaps`),
-    /// each value the commands run after the shared checks and before the
-    /// units' own proof, only for a batch or solo merge with an overlapping
-    /// unit. A failure decides exactly like a shared check.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub checks_for: BTreeMap<String, Vec<String>>,
-    /// Seconds per check command.
-    pub proof_timeout: u64,
-    /// Optional wall-clock budget for quarantine repair units. When absent,
-    /// the effective budget is `proof_timeout` plus repair headroom.
+    /// Optional wall-clock budget for quarantine repair units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_budget: Option<u64>,
-    /// Seconds a remote merger has to claim a batch before this host merges.
-    pub remote_wait: u64,
-    /// Seconds a claimed batch may take.
+    /// Seconds a claimed merge may take.
     pub remote_limit: u64,
     /// Files the merge lane regenerates instead of resolving by hand.
     pub generated: Vec<Generated>,
@@ -561,15 +517,8 @@ pub struct MergeConfig {
 impl Default for MergeConfig {
     fn default() -> Self {
         Self {
-            batch: 8,
-            lanes: 1,
-            need_parallel: 4,
             format: String::new(),
-            shared_checks: Vec::new(),
-            checks_for: BTreeMap::new(),
-            proof_timeout: 300,
             repair_budget: None,
-            remote_wait: 90,
             remote_limit: 1800,
             generated: Vec::new(),
         }

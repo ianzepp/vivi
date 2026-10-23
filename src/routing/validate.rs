@@ -6,7 +6,7 @@ use crate::error::VivariumError;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::bands::parse_band;
 use crate::pool::config::PoolConfig;
-use crate::pump::config::{MergeConfig, PumpConfig};
+use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
 use super::model::{RoleRouting, RoutedRole, from_mailspace};
@@ -401,15 +401,5 @@ fn warn_legacy(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>
                 "[pump.dispatch.lanes] is unused; per-model caps live on [pools.<name>.caps]",
             ));
         }
-    }
-    if pump.merge.lanes != MergeConfig::default().lanes
-        && routing
-            .merge()
-            .and_then(|role| role.pool.as_ref())
-            .is_some()
-    {
-        issues.push(Issue::warning(
-            "[pump.merge] lanes is unused; merge lanes follow the merge role's pool slots",
-        ));
     }
 }

@@ -60,7 +60,10 @@ fn create_prints_the_result_and_registers_the_project() {
 
     assert!(lanes.join("app.git/HEAD").is_file());
     let text = fs::read_to_string(projects.join("app/.vivi/mailspace.toml")).unwrap();
-    assert!(text.contains("branch = \"main\""), "{text}");
+    assert!(
+        !text.contains("branch ="),
+        "no [pump] branch key is written: {text}"
+    );
     let registry = fs::read_to_string(config.join("vivi/pump-service.toml")).unwrap();
     assert!(registry.contains("app"), "{registry}");
     assert!(
