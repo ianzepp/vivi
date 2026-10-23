@@ -350,3 +350,60 @@ fn a_raised_step_picks_the_older_raise_when_the_newest_audit_has_none() -> R {
     assert_eq!(rig.job_ids(), vec![format!("rung-main-{task}-a1")]);
     Ok(())
 }
+
+fn exceptions(rig: &Rig) -> String {
+    std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+const MISSING_TSC: &str = "agent exit 127 in 1s\n\n--- stderr tail\nbash: tsc: command not found\n";
+
+#[test]
+fn an_environment_failure_holds_the_step_without_routing_or_retrying() -> R {
+    let mut rig = rig(config(true))?;
+    let id = first_job(&mut rig)?;
+    rig.finish(&id, JobStatus::Finished, MISSING_TSC)?;
+    rig.tick()?;
+    let step = rig.step()?;
+    assert_eq!(step.state, StepState::Waiting);
+    assert_eq!(step.verdict.as_deref(), Some("operator-hold"));
+    assert_eq!(rig.job_ids(), vec![id]);
+    assert_eq!(rig.store.attempts_of(&step.task)?, 1);
+    let rows = rig.store.steps_of(NEED, 1)?;
+    assert!(rows.iter().all(|row| row.node != "rework1"), "{rows:?}");
+    let text = exceptions(&rig);
+    let env: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("flow-env-failure"))
+        .collect();
+    assert_eq!(env.len(), 1, "{text}");
+    assert!(env[0].contains("tool tsc"), "{text}");
+    assert!(env[0].contains("expected the rung script to run"), "{text}");
+    rig.tick()?;
+    assert_eq!(exceptions(&rig).matches("flow-env-failure").count(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_plain_exit_one_still_answers_fail() -> R {
+    let mut rig = rig(config(true))?;
+    let id = first_job(&mut rig)?;
+    rig.finish(&id, JobStatus::Finished, "boom\nagent exit 1 in 8s")?;
+    rig.tick()?;
+    assert_eq!(rig.step()?.verdict.as_deref(), Some("fail"));
+    assert!(!exceptions(&rig).contains("flow-env-failure"));
+    Ok(())
+}
+
+#[test]
+fn an_unconfigured_rung_error_names_expected_and_actual() -> R {
+    let rig = rig(config(true))?;
+    let step = rig.step()?;
+    let err = job(&rig.ctx, "default", "nosuch", BASE, &step, 1).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("expected a command in [pump.rungs] for target default")
+            && text.contains("actual: not configured"),
+        "{text}"
+    );
+    Ok(())
+}
