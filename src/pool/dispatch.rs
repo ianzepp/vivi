@@ -83,7 +83,8 @@ pub fn new_job_id(task: &str, nanos: u128, pid: u32) -> String {
 /// ([`bridge_brief`]); without it, the task body itself.
 ///
 /// # Errors
-/// Returns an error if the harness or committer is not configured, the model
+/// Returns an error if the committer (or, for a model job, the harness) is not
+/// configured, the model
 /// is not allowed, `from`/`branch` are missing or malformed, or the budget is
 /// out of range.
 pub fn plan_job(
@@ -96,20 +97,20 @@ pub fn plan_job(
 ) -> Result<JobPlan, VivariumError> {
     let (_, _, body) = task;
     validate_source(config, pool)?;
-    let harness = config.harness.as_ref().ok_or_else(|| {
-        VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
-    })?;
     let committer = config.committer.clone().ok_or_else(|| {
         VivariumError::Config(format!(
             "[pools.{pool}.committer] (name, email) is required to dispatch"
         ))
     })?;
-    let reasoning = match flags.command {
-        Some(_) => None,
+    let (harness, reasoning) = match flags.command {
+        Some(_) => (None, None),
         None => {
+            let harness = config.harness.as_ref().ok_or_else(|| {
+                VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
+            })?;
             let reasoning = plan_reasoning(pool, &harness.run, flags)?;
             job::check_model(&flags.model, &harness.models)?;
-            reasoning
+            (Some(harness), reasoning)
         }
     };
     validate_publish_flags(flags)?;
@@ -152,7 +153,7 @@ fn assemble_job_plan(
     flags: &DispatchFlags,
     rules: String,
     job: String,
-    harness: &super::config::PoolHarness,
+    harness: Option<&super::config::PoolHarness>,
     resolved: ResolvedJob,
 ) -> JobPlan {
     let (handle, subject, body) = task;
@@ -190,10 +191,14 @@ fn assemble_job_plan(
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
-        harness_cmd: flags.command.clone().unwrap_or_else(|| {
-            job::render_harness(&harness.run, &flags.model, reasoning.as_deref())
-        }),
-        env_names: harness.env.clone(),
+        harness_cmd: match (&flags.command, harness) {
+            (Some(command), _) => command.clone(),
+            (None, Some(harness)) => {
+                job::render_harness(&harness.run, &flags.model, reasoning.as_deref())
+            }
+            (None, None) => String::new(),
+        },
+        env_names: harness.map(|h| h.env.clone()).unwrap_or_default(),
         committer,
         read_only: flags.read_only,
         facts: config.facts.clone(),
@@ -254,17 +259,24 @@ fn validate_runner_guards(flags: &DispatchFlags) -> Result<(), VivariumError> {
             .and_then(owned_cleanup_segment)
             .is_some_and(|id| !id.is_empty() && !id.contains('/') && valid_publish_ref(id));
         if !valid || !flags.delete_expect.as_deref().is_some_and(full_commit_sha) {
-            return Err(VivariumError::Config("branch cleanup requires one owned refs/heads/vivi/need/<id> or refs/heads/vivi/unit/<attempt> ref and a full expected commit SHA".into()));
+            return Err(VivariumError::Config("branch cleanup requires one owned refs/heads/vivi/need/<id>, refs/heads/vivi/unit/<attempt>, refs/heads/vivi/need-prior/<id>, refs/heads/vivi/repair/<id> or refs/heads/pump/merge-main/<id> ref and a full expected commit SHA".into()));
         }
     }
     Ok(())
 }
 
-/// The single segment after an owned cleanup namespace: need branches and
-/// unit attempt branches are the only refs a pool job may delete.
+/// The single segment after an owned cleanup namespace: need, prior-need,
+/// unit attempt, repair and merge-main scratch branches are the only refs a
+/// pool job may delete.
 fn owned_cleanup_segment(name: &str) -> Option<&str> {
-    name.strip_prefix("refs/heads/vivi/need/")
-        .or_else(|| name.strip_prefix("refs/heads/vivi/unit/"))
+    const PREFIXES: [&str; 5] = [
+        "refs/heads/vivi/need/",
+        "refs/heads/vivi/unit/",
+        "refs/heads/vivi/need-prior/",
+        "refs/heads/vivi/repair/",
+        "refs/heads/pump/merge-main/",
+    ];
+    PREFIXES.iter().find_map(|prefix| name.strip_prefix(prefix))
 }
 
 fn full_commit_sha(value: &str) -> bool {
