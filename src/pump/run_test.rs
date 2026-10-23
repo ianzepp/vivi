@@ -1039,3 +1039,133 @@ fn contexts_built_through_with_parts_carry_an_empty_actor() {
     let (dir, ctx, _host) = setup();
     assert_eq!(ctx.actor, "", "{dir:?}");
 }
+
+/// A running pump on its own thread with a one-second tick and a state that
+/// already holds a pending job. Tests change pump.db through other handles
+/// while the loop waits between ticks.
+struct LiveLoop {
+    home: std::path::PathBuf,
+    done: std::sync::mpsc::Receiver<Result<(), crate::error::VivariumError>>,
+    _thread: thread::JoinHandle<()>,
+}
+
+fn start_loop(ctx: &Ctx, held: &str) -> LiveLoop {
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    let mut st = State::default();
+    let job = planner_job(held, JobStatus::Pending, ctx.now(), None);
+    st.jobs.insert(held.to_owned(), job);
+    store.save(&st).unwrap();
+    store.initialize_control("running").unwrap();
+    drop(store);
+    let (done, outcome) = std::sync::mpsc::channel();
+    let runner = ctx.clone();
+    let thread = thread::spawn(move || {
+        let result = run_with(&runner, false);
+        drop(done.send(result));
+    });
+    LiveLoop {
+        home: ctx.home.clone(),
+        done: outcome,
+        _thread: thread,
+    }
+}
+
+impl LiveLoop {
+    /// Wait until `n` ticks have finished; the loop is then in its between-tick
+    /// wait, which lasts about a second.
+    fn wait_for_ticks(&self, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let cycles = crate::pump::cycle::read(&self.home).unwrap();
+            if cycles.len() >= n && cycles.iter().all(|c| c.is_finished()) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "tick {n} never finished");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn store(&self) -> PumpStore {
+        PumpStore::open(&self.home.join(DB_FILENAME)).unwrap()
+    }
+
+    /// Stop the loop and wait for it to return cleanly.
+    fn stop(&self) {
+        self.store().set_control_mode("stopped").unwrap();
+        let result = self
+            .done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the run loop did not return within 10s of stop");
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    fn job_ids(&self) -> Vec<String> {
+        self.store().load().unwrap().jobs.into_keys().collect()
+    }
+}
+
+fn one_second_tick_ctx(dir: &Path) -> Ctx {
+    let cfg = PumpConfig {
+        tick: 1,
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = test_ctx(dir, cfg);
+    ctx
+}
+
+#[test]
+fn a_change_to_pump_db_between_ticks_is_seen_by_the_next_tick() {
+    let dir = tempdir().unwrap();
+    let ctx = one_second_tick_ctx(dir.path());
+    let pump = start_loop(&ctx, "held-1");
+    pump.wait_for_ticks(1);
+    assert_eq!(pump.job_ids(), vec!["held-1"]);
+
+    // Another handle removes the held job and adds a new one, with no restart.
+    let mut store = pump.store();
+    let mut st = store.load().unwrap();
+    st.jobs.clear();
+    let added = planner_job("added-2", JobStatus::Pending, ctx.now(), None);
+    st.jobs.insert(String::from("added-2"), added);
+    store.save(&st).unwrap();
+    drop(store);
+
+    pump.wait_for_ticks(2);
+    assert_eq!(
+        pump.job_ids(),
+        vec!["added-2"],
+        "the next tick acted on a state older than pump.db"
+    );
+    pump.stop();
+    assert_eq!(pump.job_ids(), vec!["added-2"], "the final save went stale");
+}
+
+#[test]
+fn stop_then_start_between_ticks_does_not_resurrect_removed_state() {
+    let dir = tempdir().unwrap();
+    let ctx = one_second_tick_ctx(dir.path());
+    let pump = start_loop(&ctx, "held-1");
+    pump.wait_for_ticks(1);
+
+    // Faster than the loop's one-second control poll: stop, remove the job,
+    // start again.
+    let mut store = pump.store();
+    store.set_control_mode("stopped").unwrap();
+    let mut st = store.load().unwrap();
+    st.jobs.clear();
+    store.save(&st).unwrap();
+    store.set_control_mode("running").unwrap();
+    drop(store);
+
+    pump.wait_for_ticks(2);
+    assert!(
+        pump.job_ids().is_empty(),
+        "a removed job came back: {:?}",
+        pump.job_ids()
+    );
+    pump.stop();
+    assert!(
+        pump.job_ids().is_empty(),
+        "the final save resurrected a job"
+    );
+}
