@@ -28,11 +28,11 @@ const SECTION_RUNNER_LOG: &str = "runner log tail";
 
 /// The failing command of an attempt and a short excerpt of its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failing {
+struct Failing {
     /// The command that failed, when there is one.
-    pub command: Option<String>,
+    command: Option<String>,
     /// The tail of what it printed.
-    pub excerpt: String,
+    excerpt: String,
 }
 
 /// How one attempt ended, as far as the record is concerned.
@@ -113,12 +113,14 @@ struct Parsed {
 #[must_use]
 pub fn agent_exit(receipt: &str) -> Option<i32> {
     let (_, rest) = receipt.split_once(EXIT_MARKER)?;
-    let digits: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '-')
-        .collect();
+    leading_number(rest, |c| c.is_ascii_digit() || c == '-')
+}
+
+/// The number written by the leading run of characters `keep` accepts.
+fn leading_number<T: std::str::FromStr>(text: &str, keep: impl Fn(char) -> bool) -> Option<T> {
+    let digits: String = text.chars().take_while(|c| keep(*c)).collect();
     match digits.parse() {
-        Ok(code) => Some(code),
+        Ok(number) => Some(number),
         Err(_) => None,
     }
 }
@@ -134,22 +136,14 @@ pub fn agent_secs(text: &str) -> Option<u64> {
     let after = [" in ", " after "]
         .into_iter()
         .find_map(|m| rest.strip_prefix(m))?;
-    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-    match digits.parse() {
-        Ok(secs) => Some(secs),
-        Err(_) => None,
-    }
+    leading_number(after, |c| c.is_ascii_digit())
 }
 
 /// The dispatch time in a task receipt's summary line: the epoch seconds
 /// after `started from `.
 fn started_from(text: &str) -> Option<u64> {
     let (_, rest) = text.split_once(STARTED_MARKER)?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    match digits.parse() {
-        Ok(at) => Some(at),
-        Err(_) => None,
-    }
+    leading_number(rest, |c| c.is_ascii_digit())
 }
 
 /// The joined text of the stderr and runner-log tail sections of a task
@@ -157,19 +151,28 @@ fn started_from(text: &str) -> Option<u64> {
 /// section read this instead of the whole receipt.
 #[must_use]
 pub(crate) fn sections_tail(text: &str) -> String {
-    let mut tail = String::new();
-    let mut sections = text.split("\n\n--- ");
-    sections.next();
-    for section in sections {
-        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
-        if matches!(title.trim(), SECTION_STDERR | SECTION_RUNNER_LOG) {
-            if !tail.is_empty() {
-                tail.push('\n');
+    let mut joined = String::new();
+    for (title, body) in split_sections(text).1 {
+        if matches!(title, SECTION_STDERR | SECTION_RUNNER_LOG) {
+            if !joined.is_empty() {
+                joined.push('\n');
             }
-            tail.push_str(body.trim());
+            joined.push_str(body.trim());
         }
     }
-    tail
+    joined
+}
+
+/// A task receipt split into its summary head and its `(title, body)`
+/// sections, each opened by a `--- <title>` line after a blank line.
+fn split_sections(text: &str) -> (&str, impl Iterator<Item = (&str, &str)>) {
+    let mut parts = text.split("\n\n--- ");
+    let head = parts.next().unwrap_or_default();
+    let sections = parts.map(|section| {
+        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
+        (title.trim(), body)
+    });
+    (head, sections)
 }
 
 /// The hand's final message from a full pool task receipt.
@@ -186,12 +189,10 @@ fn parse_receipt(text: &str) -> Parsed {
         exit: agent_exit(text),
         ..Parsed::default()
     };
-    let mut sections = text.split("\n\n--- ");
-    let head = sections.next().unwrap_or_default();
+    let (head, sections) = split_sections(text);
     let mut found = false;
-    for section in sections {
-        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
-        match title.trim() {
+    for (title, body) in sections {
+        match title {
             SECTION_RECEIPT => {
                 parsed.message = body.trim().to_owned();
                 found = true;
@@ -208,24 +209,17 @@ fn parse_receipt(text: &str) -> Parsed {
 
 /// Everything a record says.
 struct Facts {
-    need: String,
-    task: Option<String>,
+    task: String,
     actor: String,
     role: String,
-    kind: Option<String>,
-    slot: Option<String>,
-    ready_at: Option<u64>,
     start: Option<u64>,
     end: u64,
     agent_secs: Option<u64>,
-    delivered_at: Option<u64>,
-    uid: String,
     attempt: u32,
     model: String,
     pool: String,
     target: String,
     branch: Option<String>,
-    base: String,
     label: String,
     failing: Option<Failing>,
     message: String,
@@ -245,18 +239,12 @@ pub fn post_on_task(
 ) -> bool {
     let receipt = ending.receipt.as_deref().unwrap_or(facts_text);
     let facts = Facts {
-        need: task.to_owned(),
-        task: Some(task.to_owned()),
+        task: task.to_owned(),
         actor: ctx.actor.clone(),
         role: ctx.cfg.to.clone(),
-        kind: None,
-        slot: None,
-        ready_at: None,
         start: started_from(receipt),
         end: ctx.now(),
         agent_secs: agent_secs(receipt),
-        delivered_at: None,
-        uid: task.to_owned(),
         attempt: job
             .payload
             .get("attempt")
@@ -266,7 +254,6 @@ pub fn post_on_task(
         pool: job.pool.clone().unwrap_or_else(|| "?".to_owned()),
         target: job.target.clone().unwrap_or_default(),
         branch: job.branch.clone(),
-        base: String::new(),
         label: ending.label.clone(),
         failing: ending.failing.clone(),
         message: tail(&parse_receipt(receipt).message, FINAL_MESSAGE_CHARS),
@@ -304,17 +291,13 @@ fn compose(facts: &Facts) -> String {
     out.push_str(&header_block(facts));
     out.push_str(&format!(
         "unit: {}  attempt: {}  model: {}  pool: {}  target: {}\n",
-        facts.uid, facts.attempt, facts.model, facts.pool, facts.target
+        facts.task, facts.attempt, facts.model, facts.pool, facts.target
     ));
     out.push_str(&format!(
         "branch: {} (none: the hand left no changes)\n",
         facts.branch.as_deref().unwrap_or("none")
     ));
-    out.push_str(&format!(
-        "task: {}\nbase: {}\n",
-        facts.task.as_deref().unwrap_or("none"),
-        facts.base
-    ));
+    out.push_str(&format!("task: {}\nbase: \n", facts.task));
     if let Some(failing) = &facts.failing {
         out.push_str(&failing_block(failing));
     }
@@ -327,46 +310,42 @@ fn compose(facts: &Facts) -> String {
 /// line per fact, `none` for absent values, decimal epochs.
 fn header_block(facts: &Facts) -> String {
     format!(
-        "attempt: {}-a{}\n\
-         need: {}\n\
-         task: {}\n\
-         actor: {}\n\
-         role: {}\n\
-         kind: {}\n\
-         pool: {}\n\
-         slot: {}\n\
-         model: {}\n\
-         ready-at: {}\n\
-         start: {}\n\
-         end: {}\n\
-         agent-seconds: {}\n\
-         delivered-at: {}\n\
+        "attempt: {task}-a{attempt}\n\
+         need: {need}\n\
+         task: {need}\n\
+         actor: {actor}\n\
+         role: {role}\n\
+         kind: none\n\
+         pool: {pool}\n\
+         slot: none\n\
+         model: {model}\n\
+         ready-at: none\n\
+         start: {start}\n\
+         end: {end}\n\
+         agent-seconds: {secs}\n\
+         delivered-at: none\n\
          merged-at: none\n\
-         outcome: {}\n",
-        facts.uid,
-        facts.attempt,
-        or_none(Some(facts.need.as_str())),
-        or_none(facts.task.as_deref()),
-        or_none(Some(facts.actor.as_str())),
-        or_none(Some(facts.role.as_str())),
-        or_none(facts.kind.as_deref()),
-        or_none(Some(facts.pool.as_str())),
-        or_none(facts.slot.as_deref()),
-        or_none(Some(facts.model.as_str())),
-        num(facts.ready_at),
-        num(facts.start),
-        facts.end,
-        num(facts.agent_secs),
-        num(facts.delivered_at),
-        &facts.label,
+         outcome: {outcome}\n",
+        task = facts.task,
+        attempt = facts.attempt,
+        need = or_none(&facts.task),
+        actor = or_none(&facts.actor),
+        role = or_none(&facts.role),
+        pool = or_none(&facts.pool),
+        model = or_none(&facts.model),
+        start = num(facts.start),
+        end = facts.end,
+        secs = num(facts.agent_secs),
+        outcome = facts.label,
     )
 }
 
-/// A header value: `none` when it is absent or blank.
-fn or_none(value: Option<&str>) -> &str {
-    match value {
-        Some(text) if !text.trim().is_empty() => text,
-        _ => "none",
+/// A header value: `none` when it is blank.
+fn or_none(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "none"
+    } else {
+        value
     }
 }
 
