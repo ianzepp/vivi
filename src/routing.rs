@@ -10,6 +10,7 @@
 mod defaults;
 mod diff;
 mod migrate;
+mod migrate_charters;
 mod migrate_flow_roles;
 mod migrate_keys;
 mod migrate_pool;
@@ -27,6 +28,10 @@ mod tests;
 #[cfg(test)]
 #[path = "routing/migrate_test.rs"]
 mod migrate_tests;
+
+#[cfg(test)]
+#[path = "routing/migrate_charters_test.rs"]
+mod migrate_charters_tests;
 
 pub use defaults::{WRITE_KINDS, default_read_only, is_band_model, resolve_read_only};
 pub use diff::unified_diff;
