@@ -8,10 +8,12 @@ use self::config_workspace::PumpWorkspace;
 
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
+mod flow;
 mod planner;
 mod rungs;
 mod validate;
 
+pub use flow::FlowConfig;
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
 pub use validate::{Findings, Missing};
@@ -98,6 +100,9 @@ pub struct PumpConfig {
     /// Rung settings (the `[pump.rungs]` table).
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
+    /// Flow settings (the `[pump.flow]` table).
+    #[serde(skip_serializing_if = "FlowConfig::is_empty")]
+    pub flow: FlowConfig,
 }
 
 impl Default for PumpConfig {
@@ -133,6 +138,7 @@ impl Default for PumpConfig {
             alarm: AlarmConfig::default(),
             need: NeedConfig::default(),
             rungs: RungsConfig::default(),
+            flow: FlowConfig::default(),
         }
     }
 }
