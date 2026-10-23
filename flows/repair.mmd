@@ -1,7 +1,7 @@
 flowchart TD
   fix1[Repair attempt 1]:::repairer --> a1{attempt 1}
   a1 -->|built| rung1[Main rung on repair branch 1]:::rung-main
-  a1 -->|failed, overtime| fix2
+  a1 -->|failed, overtime, unchanged| fix2
   rung1 --> r1{rung 1}
   r1 -->|pass| merge1[Merge to main 1]:::merge-main
   r1 -->|fail, failed| fix2
@@ -10,7 +10,7 @@ flowchart TD
   m1 -->|conflict, failed| fix2
   fix2[Repair attempt 2, prior context]:::repairer --> a2{attempt 2}
   a2 -->|built| rung2[Main rung on repair branch 2]:::rung-main
-  a2 -->|failed, overtime| unrepaired
+  a2 -->|failed, overtime, unchanged| unrepaired
   rung2 --> r2{rung 2}
   r2 -->|pass| merge2[Merge to main 2]:::merge-main
   r2 -->|fail, failed| unrepaired
