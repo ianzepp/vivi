@@ -51,7 +51,7 @@ struct Action {
 
 /// Cadence job parts for a Mind role: read-only, with a compact pump brief.
 #[must_use]
-pub fn job_parts(_ctx: &Ctx, st: &State, role: &RoleView, now: u64) -> (String, String, String) {
+pub fn job_parts(st: &State, role: &RoleView, now: u64) -> (String, String, String) {
     let subject = format!("oversight {} {}", role.name, now);
     let body = format!(
         "You are the Mind on a cadence oversight wake. Do not implement product work.\n\

@@ -81,8 +81,6 @@ pub struct JobSpec {
     pub units: Vec<String>,
     /// Role jobs whose output branches this merge job integrates.
     pub source_jobs: Vec<String>,
-    /// This write job must be merged and pass the gate before it is settled.
-    pub integration_required: bool,
     /// Job-specific durable inputs used by its collector.
     pub payload: serde_json::Value,
     /// An existing mailspace task this job runs on; dispatch then skips
@@ -127,7 +125,6 @@ impl JobSpec {
             read_only: false,
             units: Vec::new(),
             source_jobs: Vec::new(),
-            integration_required: false,
             payload: serde_json::Value::Object(serde_json::Map::new()),
             task: None,
         }
@@ -205,8 +202,6 @@ pub struct PoolJob {
     pub units: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_jobs: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub integration_required: bool,
     pub payload: serde_json::Value,
     /// The mailspace task handle; absent until task send succeeds.
     pub task: Option<String>,
@@ -219,12 +214,6 @@ pub struct PoolJob {
     /// When the pump applied the result to its own lifecycle state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_at: Option<u64>,
-    /// Integration branch tip after this job's output was merged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merged_tip: Option<String>,
-    /// A decided merge failure that needs a new role attempt or operator action.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub integration_error: Option<String>,
 }
 
 impl From<JobSpec> for PoolJob {
@@ -257,7 +246,6 @@ impl From<JobSpec> for PoolJob {
             read_only: spec.read_only,
             units: spec.units,
             source_jobs: spec.source_jobs,
-            integration_required: spec.integration_required,
             payload: spec.payload,
             task: spec.task,
             pool: None,
@@ -265,8 +253,6 @@ impl From<JobSpec> for PoolJob {
             status: JobStatus::Pending,
             outcome: None,
             applied_at: None,
-            merged_tip: None,
-            integration_error: None,
         }
     }
 }
@@ -381,25 +367,6 @@ pub fn apply_reconcile(
         if let Some(job) = st.jobs_mut().get_mut(&id) {
             if job.status == JobStatus::Dispatched {
                 job.status = status;
-                if job.integration_required && job.integration_error.is_none() {
-                    if outcome.agent_success() == Some(true) {
-                        // The branch may enter the normal merge pipeline.
-                    } else {
-                        let reason = outcome.host_failure().map_or_else(
-                            || {
-                                if outcome.agent_success().is_none() {
-                                    String::from("worker receipt omitted its exit code")
-                                } else {
-                                    String::from("worker exit was unsuccessful")
-                                }
-                            },
-                            |failure| failure.detail,
-                        );
-                        job.integration_error = Some(format!(
-                            "{reason}; write-role branch is not eligible to merge"
-                        ));
-                    }
-                }
                 job.outcome = Some(outcome);
                 changed.push(id);
             }
@@ -447,7 +414,6 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.read_only == spec.read_only
         && job.units == spec.units
         && job.source_jobs == spec.source_jobs
-        && job.integration_required == spec.integration_required
         && job.payload == spec.payload
         // A spec with no task matches a job whose task dispatch assigned later.
         && (spec.task.is_none() || job.task == spec.task)

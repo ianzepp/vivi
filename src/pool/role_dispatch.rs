@@ -126,7 +126,7 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
 /// role publishes only a configured main (`mains`, one branch name per
 /// target), a `vivi/need/<segment>` or `vivi/need-prior/<segment>` branch, or
 /// a `pump/merge-main/<segment>` scratch branch.
-/// Promotion schedulers bind publication to one expected full commit SHA.
+/// A release role binds publication to one expected full commit SHA.
 pub fn validate_publish(
     role: Option<&RoleFacts>,
     publish_ref: Option<&str>,

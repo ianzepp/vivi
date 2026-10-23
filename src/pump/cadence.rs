@@ -371,7 +371,7 @@ fn job_spec(
     let (kind, subject, body) = if is_digest {
         digest_job(ctx, role, scan, cadence_secs, now)
     } else if is_mind {
-        crate::pump::oversight::job_parts(ctx, st, role, now)
+        crate::pump::oversight::job_parts(st, role, now)
     } else {
         (
             String::from("cadence"),
@@ -408,7 +408,6 @@ fn finish_cadence_spec(
     spec.target = branch.as_ref().map(|_| ctx.target_id.clone());
     spec.branch = branch;
     spec.budget = ctx.cfg.dispatch.budget;
-    spec.integration_required = !read_only;
     spec.read_only = read_only;
     spec.payload = serde_json::json!({
         "cadence": role.cadence,

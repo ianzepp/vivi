@@ -51,8 +51,6 @@ fn result_line(actions: &str) -> String {
 
 #[test]
 fn the_mind_brief_carries_compact_pump_state_and_the_allowlist() {
-    let dir = tempfile::tempdir().unwrap();
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let mut st = State::default();
     st.units.insert(
         String::from("u1"),
@@ -61,7 +59,7 @@ fn the_mind_brief_carries_compact_pump_state_and_the_allowlist() {
             ..Unit::default()
         },
     );
-    let (kind, _, body) = job_parts(&ctx, &st, &role(), 1_000);
+    let (kind, _, body) = job_parts(&st, &role(), 1_000);
     assert_eq!(kind, "cadence");
     assert!(body.contains("PUMP-STATE-BEGIN"));
     assert!(body.contains("units pending=1"));

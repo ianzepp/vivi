@@ -106,11 +106,6 @@ pub(super) fn recover_task(ctx: &Ctx, st: &mut impl JobStore, id: &str, task: &s
             receipt: latest.to_owned(),
             at: ctx.now(),
         };
-        if job.integration_required && outcome.agent_success() != Some(true) {
-            job.integration_error.get_or_insert_with(|| {
-                String::from("worker receipt is unsuccessful; branch is not eligible to merge")
-            });
-        }
         job.status = status;
         job.outcome = Some(outcome);
     } else if latest

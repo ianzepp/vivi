@@ -52,8 +52,8 @@ pub(crate) struct Finding {
 
 /// Raise every due stall exception. Each subject (`<kind> <unit>`) is filed
 /// at most once per hour; the raised times live in `st.extra["alarm_raised"]`
-/// so they survive a restart. Call it on the top-level state, outside
-/// `with_target_state`, so `extra` is the workspace one.
+/// so they survive a restart. Call it on the top-level state, so `extra` is
+/// the workspace one.
 pub fn check(ctx: &Ctx, st: &mut State) {
     let now = ctx.now();
     let mut findings = merge_findings(ctx, st, now);
