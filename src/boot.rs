@@ -22,7 +22,7 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::mailspace::{
     DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, RoleView, TaskDumpRequest,
-    TaskDumpStatus,
+    TaskDumpStatus, WantState,
 };
 use crate::role_schedule::{self, ScheduleState};
 use crate::role_status::{self, ProcessState};
@@ -536,8 +536,18 @@ fn collect_wants(
     // The plain role listing carries every field the inventory needs, so boot
     // does not go through `list_wants_with_metadata` for metadata it never
     // shows.
-    for want in mailspace.list_kind(None, "wants", "want")? {
+    let wants = mailspace.list_kind(None, "wants", "want")?;
+    let states = mailspace.want_states_of(&wants)?;
+    for want in wants {
         if want.absorbed_at.is_some() || !mailspace.is_local_account(&want.account) {
+            continue;
+        }
+        // A want's state is computed from its serving needs: a done want is
+        // not open work.
+        if states
+            .get(&want.content_id)
+            .is_some_and(|report| report.state == WantState::Done)
+        {
             continue;
         }
         rows.push(HandleRow::new(

@@ -38,6 +38,7 @@ mod local_rule_command;
 mod local_skills_command;
 mod local_step_command;
 mod local_sync_command;
+mod local_want_show;
 mod local_work_command;
 mod local_work_list;
 mod quiet_pipe;

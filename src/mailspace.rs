@@ -64,6 +64,8 @@ mod step;
 mod tests;
 mod thread;
 mod trace;
+mod want_node;
+pub mod want_state;
 mod watch;
 
 pub use address::{Recipient, prefix_of_domain};
@@ -120,6 +122,7 @@ pub use thread::{
     print_thread_outline,
 };
 pub use trace::{print_trace, print_trace_json};
+pub use want_state::{ServingNeed, WantState, WantStateReport};
 pub use watch::{MailspaceWatchRequest, run_watch};
 
 pub(crate) const MAILSPACE_DIR: &str = ".vivi";

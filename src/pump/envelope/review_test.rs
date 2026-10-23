@@ -160,12 +160,16 @@ fn a_merge_envelope_carries_judgment_only() {
 #[test]
 fn a_head_ceo_envelope_parses() {
     let front =
-        "answer = \"reviewed\"\npromoted = [\"need-12\"]\nresearch = []\ndropped = [\"want-3\"]\n";
+        "answer = \"reviewed\"\nserved = [\"need-12\"]\nresearch = []\ndropped = [\"want-3\"]\n";
     let parsed = parse_for(RoleKind::HeadCeo, &env(front)).unwrap();
-    assert_eq!(parsed.front["promoted"][0], "need-12");
+    assert_eq!(parsed.front["served"][0], "need-12");
     assert_eq!(parsed.front["dropped"][0], "want-3");
     assert_eq!(answer(RoleKind::HeadCeo, "answer = \"no-op\"\n"), "no-op");
     assert!(is_err(RoleKind::HeadCeo, "answer = \"noop\"\n"));
+    assert!(is_err(
+        RoleKind::HeadCeo,
+        "answer = \"reviewed\"\npromoted = [\"need-12\"]\n"
+    ));
 }
 
 /// A minimal valid front matter for any word of any role.
