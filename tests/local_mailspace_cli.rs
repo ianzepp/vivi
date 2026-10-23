@@ -1297,11 +1297,17 @@ fn need_and_want_lists_show_a_thread_only_by_its_root() {
 
         let show = vivi([kind, "show", "--project", p, "--json", &root]);
         assert_success(&show);
-        let messages: Value = serde_json::from_str(&stdout(&show)).unwrap();
+        let shown: Value = serde_json::from_str(&stdout(&show)).unwrap();
+        // `want show --json` is an object `{thread, want_state}`; need show is a bare array.
+        let messages = if kind == "want" {
+            &shown["thread"]
+        } else {
+            &shown
+        };
         assert_eq!(
             messages.as_array().unwrap().len(),
             2,
-            "{kind} thread: {messages}"
+            "{kind} thread: {shown}"
         );
     }
 }
