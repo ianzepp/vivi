@@ -31,6 +31,7 @@ use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx};
+use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::validate::validate;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
@@ -269,8 +270,9 @@ where
         }
         let rows = self.store.steps_of(&need, self.run.run)?;
         for (id, row) in unapplied {
-            if rows.iter().any(|step| step.task == row.task) {
-                self.apply_job(id, row)?;
+            if let Some(step) = rows.iter().find(|step| step.task == row.task) {
+                let result = self.apply_job(id, row);
+                self.step_unit(&row.task, &step.node, "collect", Some(id), result);
             }
         }
         self.release_scope_waits()?;
@@ -279,6 +281,40 @@ where
         self.poll_waiting()?;
         self.check_kind()?;
         self.check_overdue()
+    }
+
+    /// Per-step error boundary: a failing unit never ends the run's tick.
+    /// Failures below [`STEP_ERROR_LIMIT`] ticks in a row go to the run
+    /// boundary; at the limit the step is held for the operator, its job (if
+    /// any) is marked applied, and one alarm is raised.
+    fn step_unit(
+        &mut self,
+        task: &str,
+        node: &str,
+        phase: &str,
+        job: Option<&str>,
+        result: Result<(), VivariumError>,
+    ) {
+        let unit = format!("{} r{}", self.run.need, self.run.run);
+        let key = format!("{unit} {task}");
+        let error = match result {
+            Ok(()) => return step_error::note_success(self.ctx, &key),
+            Err(error) => error,
+        };
+        let n = step_error::note_failure(self.ctx, &key);
+        if n < STEP_ERROR_LIMIT {
+            return boundary(self.ctx, &format!("{unit} {node}"), Err::<(), _>(error));
+        }
+        if let Some(id) = job {
+            jobs::mark_applied(self.st, id, self.ctx.now());
+        }
+        let text = format!(
+            "step {node} task {task} of need {} r{}: expected the {phase} to succeed; actual: {error} on {n} ticks in a row; held for `vivi pump answer {task} <word>`",
+            self.run.need, self.run.run
+        );
+        if let Err(held) = step_error::hold(self.ctx, self.store, task, &text) {
+            boundary(self.ctx, &format!("{unit} {node}"), Err::<(), _>(held));
+        }
     }
 
     // ---- finished jobs -----------------------------------------------------
@@ -344,53 +380,57 @@ where
             if step.state != StepState::Pending {
                 continue;
             }
-            let registry = self.registry;
-            let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-                continue;
-            };
-            let Some(handler) = registry.handler_for(self.def.kind, node) else {
-                continue;
-            };
-            let action = {
-                let cx = StartCx {
-                    ctx: self.ctx,
-                    store: self.store,
-                    mail: &*self.mail,
-                    run: &self.run,
-                    def: &self.def,
-                };
-                handler.start(&cx, &step)?
-            };
-            match action {
-                StartAction::Job(spec) => self.enqueue_job(&step, *spec)?,
-                StartAction::OpenAndWait => {
-                    self.store
-                        .set_step_state(&step.task, StepState::Waiting, None)?;
-                }
-                StartAction::Decide { word } => {
-                    self.advance_word(&step, &word, serde_json::json!({"source": "code"}))?;
-                }
-                StartAction::Answer { word, payload } => {
-                    self.advance_word(&step, &word, payload)?;
-                }
-                StartAction::Fanout {
-                    slicer_step,
-                    slices,
-                } => {
-                    fanout::expand(
-                        self.ctx,
-                        self.store,
-                        self.mail,
-                        &self.run,
-                        &slicer_step,
-                        &slices,
-                    )?;
-                    self.store
-                        .set_step_state(&step.task, StepState::Running, None)?;
-                }
-            }
+            let result = self.start_one(&step);
+            self.step_unit(&step.task, &step.node, "start", None, result);
         }
         Ok(())
+    }
+
+    /// Start one pending step through its registered handler.
+    fn start_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let registry = self.registry;
+        let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
+            return Ok(());
+        };
+        let Some(handler) = registry.handler_for(self.def.kind, node) else {
+            return Ok(());
+        };
+        let action = {
+            let cx = StartCx {
+                ctx: self.ctx,
+                store: self.store,
+                mail: &*self.mail,
+                run: &self.run,
+                def: &self.def,
+            };
+            handler.start(&cx, step)?
+        };
+        match action {
+            StartAction::Job(spec) => self.enqueue_job(step, *spec),
+            StartAction::OpenAndWait => {
+                self.store
+                    .set_step_state(&step.task, StepState::Waiting, None)
+            }
+            StartAction::Decide { word } => {
+                self.advance_word(step, &word, serde_json::json!({"source": "code"}))
+            }
+            StartAction::Answer { word, payload } => self.advance_word(step, &word, payload),
+            StartAction::Fanout {
+                slicer_step,
+                slices,
+            } => {
+                fanout::expand(
+                    self.ctx,
+                    self.store,
+                    self.mail,
+                    &self.run,
+                    &slicer_step,
+                    &slices,
+                )?;
+                self.store
+                    .set_step_state(&step.task, StepState::Running, None)
+            }
+        }
     }
 
     /// Ask each waiting step's handler for an answer. Lock, park and
@@ -406,28 +446,35 @@ where
             {
                 continue;
             }
-            let registry = self.registry;
-            let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-                continue;
-            };
-            let Some(handler) = registry.handler_for(self.def.kind, node) else {
-                continue;
-            };
-            let word = {
-                let cx = StartCx {
-                    ctx: self.ctx,
-                    store: self.store,
-                    mail: &*self.mail,
-                    run: &self.run,
-                    def: &self.def,
-                };
-                handler.poll(&cx, &step)?
-            };
-            if let Some(word) = word {
-                self.advance_word(&step, &word, serde_json::json!({"source": "poll"}))?;
-            }
+            let result = self.poll_one(&step);
+            self.step_unit(&step.task, &step.node, "poll", None, result);
         }
         Ok(())
+    }
+
+    /// Poll one waiting step's handler; an answer advances the step.
+    fn poll_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let registry = self.registry;
+        let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
+            return Ok(());
+        };
+        let Some(handler) = registry.handler_for(self.def.kind, node) else {
+            return Ok(());
+        };
+        let word = {
+            let cx = StartCx {
+                ctx: self.ctx,
+                store: self.store,
+                mail: &*self.mail,
+                run: &self.run,
+                def: &self.def,
+            };
+            handler.poll(&cx, step)?
+        };
+        match word {
+            Some(word) => self.advance_word(step, &word, serde_json::json!({"source": "poll"})),
+            None => Ok(()),
+        }
     }
 
     /// Enqueue a handler's first job for a step and mark the step running.
@@ -551,3 +598,7 @@ mod guard_tests;
 #[cfg(test)]
 #[path = "tick_registry_test.rs"]
 mod registry_tests;
+
+#[cfg(test)]
+#[path = "tick_step_error_test.rs"]
+mod step_error_tests;
