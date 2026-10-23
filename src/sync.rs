@@ -266,6 +266,10 @@ mod events_foreign;
 mod flow;
 
 #[cfg(test)]
+#[path = "sync/flow_join_order_test.rs"]
+mod flow_join_order;
+
+#[cfg(test)]
 #[path = "sync/kept_flow_test.rs"]
 mod kept_flow;
 
