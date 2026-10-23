@@ -65,9 +65,11 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for AuditCollector {
     }
 }
 
-/// File one need per requirement gap (any answer) and, when the answer is
-/// `residual`, one per finding. Returns the handles in filing order. A repeat
-/// with the same keys finds the existing need by subject and files nothing new.
+/// File one need per requirement gap when the answer is `clean_pass` or
+/// `residual`, and one per finding when the answer is `residual`. A blocking
+/// answer (`block_range`, `block_ship`) files nothing: rework owns those gaps.
+/// Returns the handles in filing order. A repeat with the same keys finds the
+/// existing need by subject and files nothing new.
 pub(crate) fn file(
     ctx: &Ctx,
     need: &str,
@@ -78,6 +80,12 @@ pub(crate) fn file(
     let base = format!("{need} r{run} {audit_task}");
     let recipient = ordinary_recipient(ctx);
     let mut handles = Vec::new();
+    if matches!(
+        front.answer,
+        AuditorAnswer::BlockRange | AuditorAnswer::BlockShip
+    ) {
+        return Ok(handles);
+    }
     for requirement in front.requirement.iter().filter(|r| is_gap(r.status)) {
         let key = format!("{base}:requirement:{}", requirement.id);
         let subject = format!("pump: audit requirement gap {need} {}", short_hash(&key));

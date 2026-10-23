@@ -105,7 +105,21 @@ fn block_range_files_no_findings() {
 }
 
 #[test]
-fn gap_is_filed_whatever_the_answer() {
+fn block_range_with_a_missing_requirement_files_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = context(dir.path());
+    let mut blocked = front(AuditorAnswer::BlockRange);
+    blocked.finding.clear();
+    assert!(
+        file(&ctx, "n1", 1, "audit-task", &blocked)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(send_commands(&host).is_empty());
+}
+
+#[test]
+fn block_ship_with_a_gap_files_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, host) = context(dir.path());
     let handles = file(
@@ -116,8 +130,35 @@ fn gap_is_filed_whatever_the_answer() {
         &front(AuditorAnswer::BlockShip),
     )
     .unwrap();
+    assert!(handles.is_empty());
+    assert!(send_commands(&host).is_empty());
+}
+
+#[test]
+fn clean_pass_with_a_gap_files_one_need() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = context(dir.path());
+    let handles = file(
+        &ctx,
+        "n1",
+        1,
+        "audit-task",
+        &front(AuditorAnswer::CleanPass),
+    )
+    .unwrap();
     assert_eq!(handles.len(), 1);
-    assert_eq!(send_commands(&host).len(), 1);
+    let sends = send_commands(&host);
+    assert_eq!(sends.len(), 1);
+    assert!(sends[0].contains("audit requirement gap n1"));
+}
+
+#[test]
+fn residual_with_a_gap_and_a_finding_files_two_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = context(dir.path());
+    let handles = file(&ctx, "n1", 1, "audit-task", &front(AuditorAnswer::Residual)).unwrap();
+    assert_eq!(handles.len(), 2);
+    assert_eq!(send_commands(&host).len(), 2);
 }
 
 #[test]
