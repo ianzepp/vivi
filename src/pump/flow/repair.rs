@@ -150,6 +150,42 @@ pub(crate) fn latest_facts(
     Ok(replies.iter().rev().find_map(|(_, text)| parse_facts(text)))
 }
 
+/// The `tested=<commit>` word that opens a [`RUNG_MARKER`] reply's payload;
+/// `None` when the reply has no such word.
+pub(crate) fn parse_tested(reply: &str) -> Option<String> {
+    let first = reply.trim().lines().next()?;
+    let payload = marked_payload(first, RUNG_MARKER)?;
+    let word = payload.split_whitespace().next()?;
+    let commit = word.strip_prefix("tested=")?.trim_end_matches(';');
+    (!commit.is_empty()).then(|| commit.to_owned())
+}
+
+/// The commit the rung step of `attempt` tested: the newest `rung<N>` step row
+/// of the run, then the newest [`RUNG_MARKER`] reply on its task that `pump`
+/// sent and that names a `tested=` commit. `None` when there is no such reply.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the steps or the replies cannot be read.
+pub(crate) fn tested_commit(
+    store: &PumpStore,
+    mail: &dyn SliceMail,
+    pump: &str,
+    need: &str,
+    run: u32,
+    attempt: u32,
+) -> Result<Option<String>, VivariumError> {
+    let node = rung_node(attempt);
+    let steps = store.steps_of(need, run)?;
+    let Some(step) = steps.iter().rev().find(|step| step.node == node) else {
+        return Ok(None);
+    };
+    let replies = mail.marked_replies_from(&step.task, RUNG_MARKER, pump)?;
+    Ok(replies
+        .iter()
+        .rev()
+        .find_map(|(_, text)| parse_tested(text)))
+}
+
 #[cfg(test)]
 #[path = "repair_test.rs"]
 mod tests;

@@ -21,12 +21,17 @@ const MAIN_RUNG: &str = "main";
 /// Characters of the rung tail a verdict reply keeps.
 const TAIL_CHARS: usize = 2000;
 
+/// The attempt number a repair rung or merge step node carries.
+fn attempt_for(step: &StepRow) -> Result<u32, VivariumError> {
+    repair::attempt_of(&step.node).ok_or_else(|| {
+        VivariumError::Parse(format!("repair step node `{}` has no attempt", step.node))
+    })
+}
+
 /// The target and the attempt facts a repair rung or merge step works from.
 fn inputs(cx: &StartCx<'_>, step: &StepRow) -> Result<(String, AttemptFacts), VivariumError> {
     let need = &cx.run.need;
-    let attempt = repair::attempt_of(&step.node).ok_or_else(|| {
-        VivariumError::Parse(format!("repair step node `{}` has no attempt", step.node))
-    })?;
+    let attempt = attempt_for(step)?;
     let (_, body) = cx
         .mail
         .open_record(need)?
@@ -55,17 +60,28 @@ impl StepHandler for RepairRung {
     }
 }
 
-/// Starts the merge of the attempt's repair branch tip into main.
+/// Starts the merge of the commit the rung step tested into main, cut from the
+/// attempt's base. The newest facts are not re-read for the commit.
 struct RepairMerge;
 
 impl StepHandler for RepairMerge {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let (target, facts) = inputs(cx, step)?;
+        let attempt = attempt_for(step)?;
+        let tested = repair::tested_commit(
+            cx.store,
+            cx.mail,
+            &cx.ctx.cfg.reply_from,
+            &cx.run.need,
+            cx.run.run,
+            attempt,
+        )?
+        .ok_or_else(|| VivariumError::Other(format!("no tested commit for merge{attempt}")))?;
         let spec = merge_main::spec(
             cx.ctx,
             &target,
             &cx.run.need,
-            &facts.commit,
+            &tested,
             &facts.base,
             &step.task,
         )
@@ -87,7 +103,8 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairRungCollector {
         class: &NodeClass,
     ) -> Result<(), VivariumError> {
         if job.status == JobStatus::Finished {
-            let text = verdict_text(&rung_step::answer(job).1);
+            let tip = job.payload.get("tip").and_then(Value::as_str);
+            let text = verdict_text(tip, &rung_step::answer(job).1);
             cx.mail
                 .reply(&step.task, &marked_line(repair::RUNG_MARKER, &text))?;
         }
@@ -95,8 +112,9 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairRungCollector {
     }
 }
 
-/// `exit <code>; failing <ids>; tail: <first 2000 chars>` on one line.
-fn verdict_text(payload: &Value) -> String {
+/// `tested=<tip>; exit <code>; failing <ids>; tail: <first 2000 chars>` on one
+/// line; the `tested=` part is left out when the rung job has no `tip`.
+fn verdict_text(tip: Option<&str>, payload: &Value) -> String {
     let exit = payload
         .get("exit")
         .and_then(Value::as_i64)
@@ -113,8 +131,9 @@ fn verdict_text(payload: &Value) -> String {
         .chars()
         .take(TAIL_CHARS)
         .collect();
+    let tested = tip.map_or_else(String::new, |tip| format!("tested={tip}; "));
     format!(
-        "exit {exit}; failing {}; tail: {}",
+        "{tested}exit {exit}; failing {}; tail: {}",
         failing.join(" "),
         tail.replace('\n', " | ")
     )
