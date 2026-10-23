@@ -1,13 +1,13 @@
-//! The release milestone: waits while the need has an unfinished prerequisite
-//! need, answers `ready` when none is left, and keeps waiting on an unreadable
-//! graph.
+//! The release milestone: answers `ready` once every prerequisite landed,
+//! waits on open ones, alarms on held ones, and holds the step on one closed
+//! without landing.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::fs;
 
 use tempfile::{TempDir, tempdir};
 
-use super::register;
+use super::{MILESTONE_PREREQ_HELD, MILESTONE_UNLANDED, register};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
@@ -18,8 +18,8 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx};
-use crate::pump::flow::tick::tick_with;
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::flow::tick::{OPERATOR_HOLD, tick_with};
+use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -27,7 +27,7 @@ type R = Result<(), VivariumError>;
 type Reg = Registry<Jobs, FakeMail>;
 
 const NEED: &str = "rel1";
-const GRAPH: &str = "graph blocked";
+const DEP: &str = "dep1";
 
 #[derive(Default)]
 struct Jobs {
@@ -47,19 +47,19 @@ impl JobStore for Jobs {
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
-    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     jobs: Jobs,
     registry: Reg,
 }
 
-/// A release run started at its `wait` milestone.
+/// A release run started at its `wait` milestone, depending on `dep1`.
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
+    mail.set_prerequisites(NEED, &[DEP]);
     MailWriter::open_record(&mut mail, NEED, "kind: release")?;
     start(&ctx, &store, &mut mail, NEED, None)?;
     let mut registry = Reg::new();
@@ -67,7 +67,6 @@ fn rig() -> Result<Rig, VivariumError> {
     Ok(Rig {
         _dir: dir,
         ctx,
-        host,
         store,
         mail,
         jobs: Jobs::default(),
@@ -125,60 +124,138 @@ impl Rig {
         let step = self.wait_step()?;
         Ok((handler.start(&cx, &step)?, handler.poll(&cx, &step)?))
     }
+
+    /// The pump's `exceptions.txt`; empty when it was never written.
+    fn exceptions(&self) -> String {
+        match fs::read_to_string(self.ctx.home.join("exceptions.txt")) {
+            Ok(text) => text,
+            Err(_) => String::new(),
+        }
+    }
+
+    fn alarms(&self, kind: &str) -> usize {
+        self.exceptions()
+            .lines()
+            .filter(|line| line.contains(kind))
+            .count()
+    }
+
+    /// The prerequisite closed with a pump record outcome, then done.
+    fn closed_with(&mut self, outcome: &str) -> R {
+        self.mail.open_record(DEP, "kind: build")?;
+        self.mail.close_record(DEP, outcome)?;
+        self.mail.close_need(DEP, "done")
+    }
+
+    /// The prerequisite has a live run of `kind` with one waiting step.
+    fn dep_waiting_at(&self, kind: &str, node: &str) -> R {
+        self.store.insert_run(&RunRow {
+            need: DEP.into(),
+            run: 1,
+            flow: kind.into(),
+            flow_version: 1,
+            kind: kind.into(),
+            entry: node.into(),
+            state: "live".into(),
+        })?;
+        self.store.insert_step(
+            DEP,
+            &StepRow {
+                run: 1,
+                node: node.into(),
+                task: format!("t-{node}"),
+                state: StepState::Waiting,
+                verdict: None,
+            },
+        )
+    }
 }
 
 #[test]
-fn a_blocked_need_keeps_waiting() -> R {
-    let rig = rig()?;
-    rig.host.reply(
-        GRAPH,
-        0,
-        &format!(r#"[{{"source_id":"{NEED}","blocked_by":["dep1"]}}]"#),
-    );
+fn no_prerequisites_is_ready() -> R {
+    let mut rig = rig()?;
+    rig.mail.set_prerequisites(NEED, &[]);
     let (started, polled) = rig.handler()?;
     assert_eq!(started, StartAction::OpenAndWait);
-    assert_eq!(polled, None);
-    Ok(())
-}
-
-#[test]
-fn a_need_absent_from_the_blocked_graph_answers_ready() -> R {
-    let rig = rig()?;
-    rig.host
-        .reply(GRAPH, 0, r#"[{"source_id":"other","blocked_by":["dep1"]}]"#);
-    let (_, polled) = rig.handler()?;
     assert_eq!(polled.as_deref(), Some("ready"));
     Ok(())
 }
 
 #[test]
-fn an_unreadable_graph_keeps_waiting() -> R {
-    let rig = rig()?;
-    rig.host.reply(GRAPH, 1, "error: no such graph");
+fn a_landed_prerequisite_is_ready() -> R {
+    let mut rig = rig()?;
+    rig.closed_with("landed")?;
     let (_, polled) = rig.handler()?;
-    assert_eq!(polled, None);
+    assert_eq!(polled.as_deref(), Some("ready"));
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
 #[test]
-fn a_release_run_waits_while_blocked_then_lands_when_the_graph_clears() -> R {
+fn an_open_prerequisite_waits_without_an_alarm() -> R {
+    let rig = rig()?;
+    let (_, polled) = rig.handler()?;
+    assert_eq!(polled, None);
+    assert_eq!(rig.exceptions(), "");
+    Ok(())
+}
+
+#[test]
+fn a_locked_prerequisite_waits_with_one_held_alarm() -> R {
     let mut rig = rig()?;
-    rig.host.reply(
-        GRAPH,
-        0,
-        &format!(r#"[{{"source_id":"{NEED}","blocked_by":["dep1"]}}]"#),
-    );
+    rig.dep_waiting_at("build", "locked")?;
+    rig.tick()?;
+    rig.tick()?;
+    let step = rig.wait_step()?;
+    assert_eq!(step.state, StepState::Waiting);
+    assert_ne!(step.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(rig.alarms(MILESTONE_PREREQ_HELD), 1, "{}", rig.exceptions());
+    assert!(rig.exceptions().contains("held at locked"));
+    assert_eq!(rig.alarms(MILESTONE_UNLANDED), 0);
+    Ok(())
+}
+
+#[test]
+fn a_repair_need_waiting_at_unrepaired_is_held_and_alarmed() -> R {
+    let mut rig = rig()?;
+    rig.dep_waiting_at("repair", "unrepaired")?;
     rig.tick()?;
     rig.tick()?;
     assert_eq!(rig.wait_step()?.state, StepState::Waiting);
-    assert_eq!(rig.run()?.state, "live");
+    assert_eq!(rig.alarms(MILESTONE_PREREQ_HELD), 1, "{}", rig.exceptions());
+    assert!(rig.exceptions().contains("held at unrepaired"));
+    Ok(())
+}
 
-    rig.host.reply(GRAPH, 0, "[]");
+#[test]
+fn a_withdrawn_prerequisite_holds_the_step_with_one_alarm() -> R {
+    let mut rig = rig()?;
+    rig.closed_with("withdrawn")?;
+    rig.tick()?;
+    rig.tick()?;
+    let step = rig.wait_step()?;
+    assert_eq!(step.state, StepState::Waiting);
+    assert_eq!(step.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(rig.alarms(MILESTONE_UNLANDED), 1, "{}", rig.exceptions());
+    assert!(
+        rig.exceptions().contains(
+            "release rel1 expects dep1 landed on main; actual: closed, outcome `withdrawn`"
+        )
+    );
+    assert_eq!(rig.run()?.state, "live");
+    Ok(())
+}
+
+#[test]
+fn a_done_prerequisite_with_no_record_lets_the_release_land() -> R {
+    let mut rig = rig()?;
+    rig.mail.close_need(DEP, "done")?;
     rig.tick()?;
     let step = rig.wait_step()?;
     assert_eq!(step.state, StepState::Done);
     assert_eq!(step.verdict.as_deref(), Some("ready"));
     rig.tick()?;
     assert_eq!(rig.run()?.state, "done");
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
