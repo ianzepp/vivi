@@ -234,6 +234,10 @@ impl Mailspace {
     ) -> Result<(), VivariumError> {
         let handle = self.storage()?.display_handle(message_id)?;
         self.backlog_attach(kind, &handle, subject, &[])?;
+        if let Ok(parsed) = crate::letter::of_message(letter, "") {
+            let storage = self.storage()?;
+            super::serves::index_front(&storage, message_id, &parsed)?;
+        }
         let refs = depends_on_refs(letter);
         if refs.is_empty() {
             return Ok(());

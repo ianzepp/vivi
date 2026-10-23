@@ -2,6 +2,8 @@
 //! and validated at send, so an invalid letter is refused and nothing is
 //! stored.
 
+use super::super::Mailspace;
+use super::super::serves::canonical_wants;
 use crate::error::VivariumError;
 use crate::letter::{Front, Letter, LetterKind, parse_kind, render};
 
@@ -11,8 +13,7 @@ pub(super) struct WorkLetter {
     pub body: String,
     /// The front matter's `depends_on`, after any merge.
     pub depends_on: Vec<String>,
-    /// The parsed letter; W3B2-13 reads its front matter at attach time.
-    #[allow(dead_code)]
+    /// The parsed letter, with a need's `serves` and `explores` canonical.
     pub letter: Letter,
 }
 
@@ -26,6 +27,7 @@ pub(super) struct WorkLetter {
 /// # Errors
 /// Returns the `LetterError` text when the front matter is invalid.
 pub(super) fn work_letter(
+    mailspace: &Mailspace,
     kind: Option<&str>,
     body: &str,
     depends_on: &[String],
@@ -55,6 +57,13 @@ pub(super) fn work_letter(
         }
     }
     let depends_on = list.clone();
+    if let Front::Need(front) = &mut letter.front
+        && (front.serves.is_some() || front.explores.is_some())
+    {
+        let storage = mailspace.storage()?;
+        canonical_wants(&storage, front)?;
+        merged = true;
+    }
     if merged {
         body = rerender(&letter)?;
     }
