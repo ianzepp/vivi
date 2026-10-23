@@ -94,7 +94,11 @@ pub fn check(ctx: &Ctx, req: &VerifyReq) -> SideEffect {
 }
 
 /// The remote ref's SHA, `None` when the remote does not have the ref.
-fn remote_tip(ctx: &Ctx, remote: &str, remote_ref: &str) -> Result<Option<String>, String> {
+pub(crate) fn remote_tip(
+    ctx: &Ctx,
+    remote: &str,
+    remote_ref: &str,
+) -> Result<Option<String>, String> {
     let out = ctx.git(
         &format!(
             "ls-remote {} {}",
