@@ -109,6 +109,10 @@ impl Mailspace {
     ) -> Result<PumpRecord, VivariumError> {
         let (default_from, to) = self.pump_names();
         let (need_handle, need_subject) = self.resolve_need(storage, need)?;
+        let need_id = storage.resolve_message_token(&need_handle)?;
+        let need_body = crate::extract::extract_text(&storage.read_message(&need_id)?)?;
+        crate::letter::read::need_of(&need_handle, &need_body)
+            .map_err(|error| VivariumError::Message(format!("need {need_handle}: {error}")))?;
         if let Some(open) = self.open_record_of(storage, &need_handle)? {
             return Err(VivariumError::Message(format!(
                 "need {need_handle} already has an open pump record {}; close it with `vivi pump done {}` first",

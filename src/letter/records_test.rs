@@ -345,6 +345,7 @@ fn record_letter_refuses_a_prose_fact_line() {
                     "{reason}"
                 );
                 assert!(reason.contains("between +++ fences"), "{reason}");
+                assert!(reason.contains("need = \"<handle>\""), "{reason}");
             }
             other => panic!("expected Invalid for {body:?}, got {other:?}"),
         }

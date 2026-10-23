@@ -81,7 +81,7 @@ pub fn record_letter(need: &str, body: &str) -> Result<(RecordFront, String), Le
     });
     if fact_line {
         return Err(LetterError::Invalid(
-            "pump record facts go in front matter, not prose lines: write kind = \"..\", target = \"..\" or tested = \"..\" between +++ fences"
+            "pump record facts go in front matter, not prose lines: write need = \"<handle>\" (required) and kind = \"..\", target = \"..\" or tested = \"..\" between +++ fences"
                 .to_string(),
         ));
     }

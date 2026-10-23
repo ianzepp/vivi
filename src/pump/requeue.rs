@@ -350,6 +350,7 @@ fn post_all(
     let open: BTreeSet<String> = mailspace
         .pump_list(None, Some(PumpState::Open))?
         .into_iter()
+        .filter(|record| record.letter_error.is_none())
         .map(|record| record.need)
         .collect();
     let mut targets: Vec<(&str, &str)> = Vec::new();
