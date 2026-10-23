@@ -750,3 +750,51 @@ fn a_job_refused_by_its_first_pool_tries_the_next_candidate() {
     assert_eq!(store.jobs["m1"].status, JobStatus::Dispatched);
     assert_eq!(pool_of(&store, "m1").as_deref(), Some("backup"));
 }
+
+#[test]
+fn a_job_with_a_preset_task_dispatches_without_a_task_send() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 bridge slot-1 model/default unit/task\n",
+    );
+    let mut store = Store::default();
+    let mut job = JobSpec::new("step-hand-1", "merge", "merge", "slice", "brief");
+    job.task = Some(String::from("a1b2c3d4"));
+    enqueue(&mut store, job.clone()).unwrap();
+    assert_eq!(store.jobs["step-hand-1"].task.as_deref(), Some("a1b2c3d4"));
+
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        vec![String::from("step-hand-1")]
+    );
+
+    let stored = &store.jobs["step-hand-1"];
+    assert_eq!(stored.status, JobStatus::Dispatched);
+    assert_eq!(stored.task.as_deref(), Some("a1b2c3d4"));
+    let commands = host.commands();
+    assert!(!commands.iter().any(|c| c.contains("task send")));
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.contains("pool dispatch") && c.contains("a1b2c3d4"))
+    );
+
+    // Re-enqueue is idempotent, and a different preset task is other work.
+    enqueue(&mut store, job.clone()).unwrap();
+    job.task = Some(String::from("ffffffff"));
+    assert!(enqueue(&mut store, job).is_err());
+}
+
+#[test]
+fn a_spec_without_a_task_still_matches_its_dispatched_job() {
+    let mut store = Store::default();
+    let job = spec("plan-board-2");
+    enqueue(&mut store, job.clone()).unwrap();
+    store.jobs.get_mut("plan-board-2").unwrap().task = Some(String::from("a1b2c3d4"));
+    enqueue(&mut store, job).unwrap();
+}

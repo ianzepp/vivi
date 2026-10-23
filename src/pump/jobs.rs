@@ -88,6 +88,9 @@ pub struct JobSpec {
     pub integration_required: bool,
     /// Job-specific durable inputs used by its collector.
     pub payload: serde_json::Value,
+    /// An existing mailspace task this job runs on; dispatch then skips
+    /// `task send` and the pool receives this task as it is.
+    pub task: Option<String>,
 }
 
 impl JobSpec {
@@ -129,6 +132,7 @@ impl JobSpec {
             source_jobs: Vec::new(),
             integration_required: false,
             payload: serde_json::Value::Object(serde_json::Map::new()),
+            task: None,
         }
     }
 }
@@ -264,7 +268,7 @@ impl From<JobSpec> for PoolJob {
             source_jobs: spec.source_jobs,
             integration_required: spec.integration_required,
             payload: spec.payload,
-            task: None,
+            task: spec.task,
             pool: None,
             dispatched_at: None,
             status: JobStatus::Pending,
@@ -585,6 +589,8 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.source_jobs == spec.source_jobs
         && job.integration_required == spec.integration_required
         && job.payload == spec.payload
+        // A spec with no task matches a job whose task dispatch assigned later.
+        && (spec.task.is_none() || job.task == spec.task)
 }
 
 fn validate_id(id: &str) -> Result<(), VivariumError> {
