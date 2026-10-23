@@ -10,11 +10,12 @@ use crate::pump::flow::collect_step::{RunCx, StepCollector, merged_payload};
 use crate::pump::flow::def::{FAILED, NodeClass};
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
+use crate::pump::flow::integration::start::nothing_to_merge;
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
 use crate::pump::flow::verify;
 use crate::pump::jobs::merge_main::{self, MergeMainResult};
 use crate::pump::jobs::rung_result::{self, EnvFailure};
-use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
+use crate::pump::jobs::{self, JobOutcome, JobStatus, JobStore, PoolJob};
 
 /// Times a merge-main step is queued again after main moved or a lost job left
 /// main unchanged; the next failure answers.
@@ -95,7 +96,27 @@ fn failed<S: JobStore, M: FlowMail>(
     job: &PoolJob,
     step: &StepRow,
 ) -> Result<(), VivariumError> {
-    cx.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
+    let need_tip = payload_str(job, "need_tip")?;
+    let main_tip = payload_str(job, "main_tip")?;
+    let status = format!("{:?}", job.status).to_lowercase();
+    let publish = job
+        .outcome
+        .as_ref()
+        .and_then(JobOutcome::runner_publish)
+        .map_or_else(|| "none".to_owned(), |receipt| receipt.state);
+    let reason = format!(
+        "expected main to take {need_tip}; actual: merge-main {status} with publish {publish}"
+    );
+    cx.advance_word(
+        step,
+        FAILED,
+        serde_json::json!({
+            "job": job.id,
+            "reason": reason,
+            "need_tip": need_tip,
+            "main_tip": main_tip,
+        }),
+    )
 }
 
 /// A job the pool lost or timed out: no receipt says what happened to main.
@@ -117,6 +138,14 @@ fn settle_lost<S: JobStore, M: FlowMail>(
     let remote_ref = job.publish_ref.clone().unwrap_or_default();
     let target = job.target.clone().unwrap_or_default();
     let need_tip = payload_str(job, "need_tip")?;
+    let base = cx.store.need_branch(&cx.run.need)?.and_then(|row| row.base);
+    if let Some(base) = base.as_deref().filter(|base| *base == need_tip) {
+        return cx.advance_word(
+            step,
+            FAILED,
+            serde_json::json!({"job": job.id, "reason": nothing_to_merge(need_tip, base)}),
+        );
+    }
     // The push is fast-forward only: a main that moved without the need tip
     // means the merge did not land.
     match verify::ref_contains(cx.ctx, &target, &remote_ref, need_tip) {

@@ -17,7 +17,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::rank::{flow_key, single_flight};
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
@@ -67,14 +67,24 @@ fn tip_of(index: usize) -> String {
     format!("{:040x}", index + 1)
 }
 
-fn queue(ctx: &Ctx, store: &PumpStore, jobs: &mut Jobs) -> Result<(), VivariumError> {
+fn queue(
+    ctx: &Ctx,
+    host: &FakeHost,
+    store: &PumpStore,
+    jobs: &mut Jobs,
+) -> Result<(), VivariumError> {
     let def = load(FlowKind::Build)?;
     let mail = FakeMail::new("mind");
     for (index, (need, kind, _, queued_at)) in NEEDS.iter().enumerate() {
+        host.reply(
+            &format!("ls-remote origin refs/heads/vivi/need/{need}"),
+            0,
+            &format!("{}\trefs/heads/vivi/need/{need}\n", tip_of(index)),
+        );
         store.upsert_need_branch(&NeedBranchRow {
             need: (*need).into(),
             branch: format!("vivi/need/{need}"),
-            base: Some(tip_of(index)),
+            base: Some(format!("{:040x}", index + 101)),
             status: "live".into(),
             run: 1,
             target: "default".into(),
@@ -160,7 +170,7 @@ fn four_verified_needs_merge_in_rank_order_one_at_a_time() -> R {
         &format!("{MAIN}\trefs/heads/main\n"),
     );
     let mut jobs = Jobs::default();
-    queue(&ctx, &store, &mut jobs)?;
+    queue(&ctx, &host, &store, &mut jobs)?;
     assert_eq!(jobs.jobs.len(), 4);
     let priorities: BTreeMap<String, i64> = NEEDS
         .iter()
