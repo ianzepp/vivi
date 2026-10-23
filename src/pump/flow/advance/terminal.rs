@@ -3,11 +3,11 @@
 
 use crate::error::VivariumError;
 use crate::pump::flow::advance::route::Terminal;
+use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::{FlowDef, NodeClass, VERDICT_SUPERSEDED, VERDICT_WITHDRAWN};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
-use crate::pump::flow::run::{SENTINEL_NODE, start};
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
 

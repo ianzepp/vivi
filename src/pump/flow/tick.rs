@@ -22,19 +22,20 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::{FollowUp, Hand, RoleKind};
+use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, guard, route::JoinInput, terminal};
 use crate::pump::flow::answer;
 use crate::pump::flow::collect::{self, Collected};
 use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, FlowNode, NodeClass};
-use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
+use crate::pump::flow::fanout::{
+    self, SliceEdges, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row,
+};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::{Outcome, StartAction, StepHandlers};
-use crate::pump::flow::run::SENTINEL_NODE;
 use crate::pump::flow::scope::{
-    BlockedScope, Resolution, ScopeMail, ScopeState, finish_grant, grant_held, resolve,
-    wait_holders,
+    BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
 use crate::pump::flow::slice_dispatch::{
     self, AttemptResult, DEVIATIONS_MARKER, Retried, SliceMail,
@@ -109,7 +110,7 @@ pub(crate) fn tick_with<S, M>(
 ) -> Result<(), VivariumError>
 where
     S: JobStore,
-    M: MailWriter + SliceMail + ScopeMail,
+    M: MailWriter + SliceMail + SliceEdges,
 {
     let def_for = |run: &RunRow| def_of(run);
     boundary(
@@ -265,7 +266,7 @@ struct Tick<'a, S, M> {
 impl<S, M> Tick<'_, S, M>
 where
     S: JobStore,
-    M: MailWriter + SliceMail + ScopeMail,
+    M: MailWriter + SliceMail + SliceEdges,
 {
     fn run(&mut self, unapplied: &[(String, StepJobRow)]) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
@@ -532,10 +533,7 @@ where
         match result {
             AttemptResult::Built { envelope, .. } => self.built(step, &envelope),
             AttemptResult::NoDefect => {
-                self.mail
-                    .close_task(&step.task, VERDICT_NO_DEFECT, None, None)?;
-                self.store
-                    .set_step_state(&step.task, StepState::Done, Some(VERDICT_NO_DEFECT))
+                fanout::close_slice(self.store, &mut *self.mail, &step.task, VERDICT_NO_DEFECT)
             }
             AttemptResult::Failed => {
                 let retried = slice_dispatch::retry(
