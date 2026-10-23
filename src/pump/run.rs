@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -14,12 +14,15 @@ use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::boardpass::BoardPass;
 use crate::pump::collect;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::tick_steps;
+
+mod reload;
+pub(super) use reload::refresh_config;
 
 /// One pump tick: fold board results, ingest and collect, apply job receipts,
 /// dispatch ready work, request the periodic board pass, and write status.
@@ -349,59 +352,75 @@ pub(crate) fn ensure_repo(ctx: &Ctx) -> Result<(), VivariumError> {
         return ensure_single_repo(ctx);
     }
     for (id, target) in ctx.cfg.target_configs() {
-        let source = ctx.cfg.target_path(&ctx.project, &id).ok_or_else(|| {
-            VivariumError::Config(format!("repository target {id:?} has no path"))
-        })?;
-        if !source.is_dir() {
-            return Err(VivariumError::Config(format!(
-                "repository target {id:?} path {} does not exist",
-                source.display()
-            )));
-        }
-        let quoted_source = shell_quote(&source.to_string_lossy());
-        let probe = ctx.sh(
-            &format!("git -C {quoted_source} rev-parse --show-toplevel"),
-            None,
-            30,
-        );
-        if probe.code != 0 {
-            return Err(VivariumError::Config(format!(
-                "repository target {id:?} path {} is not a Git repository",
-                source.display()
-            )));
-        }
-        let remote_url = target
-            .remote_url
-            .or_else(|| {
-                let out = ctx.sh(
-                    &format!(
-                        "git -C {quoted_source} remote get-url {}",
-                        shell_quote(&target.remote)
-                    ),
-                    None,
-                    30,
-                );
-                (out.code == 0 && !out.text.trim().is_empty()).then(|| out.text.trim().to_owned())
-            })
-            .unwrap_or_else(|| source.to_string_lossy().into_owned());
-        let mut target_cfg = ctx.cfg.for_target(&id).ok_or_else(|| {
-            VivariumError::Config(format!("repository target {id:?} disappeared"))
-        })?;
-        target_cfg.remote_url = Some(remote_url);
-        let repo = ctx.cfg.target_repo_dir(&ctx.project, &id).ok_or_else(|| {
-            VivariumError::Config(format!("repository target {id:?} has no integration path"))
-        })?;
-        let target_ctx = Ctx::with_parts(
-            target_cfg,
-            ctx.host.clone(),
-            ctx.project.clone(),
-            ctx.vivi.clone(),
-            ctx.shell_prefix.clone(),
-            ctx.home.clone(),
-            repo,
-        );
-        ensure_single_repo(&target_ctx)?;
+        ensure_target_repo(ctx, &id, target)?;
     }
+    Ok(())
+}
+
+/// Ensure the integration clone of one named repository target exists.
+///
+/// # Errors
+/// Returns [`VivariumError::Config`] when the target path is missing or not a
+/// Git repository, and [`VivariumError::Message`] when the clone fails.
+pub(in crate::pump) fn ensure_target_repo(
+    ctx: &Ctx,
+    id: &str,
+    target: PumpTarget,
+) -> Result<(), VivariumError> {
+    let source = ctx
+        .cfg
+        .target_path(&ctx.project, &id)
+        .ok_or_else(|| VivariumError::Config(format!("repository target {id:?} has no path")))?;
+    if !source.is_dir() {
+        return Err(VivariumError::Config(format!(
+            "repository target {id:?} path {} does not exist",
+            source.display()
+        )));
+    }
+    let quoted_source = shell_quote(&source.to_string_lossy());
+    let probe = ctx.sh(
+        &format!("git -C {quoted_source} rev-parse --show-toplevel"),
+        None,
+        30,
+    );
+    if probe.code != 0 {
+        return Err(VivariumError::Config(format!(
+            "repository target {id:?} path {} is not a Git repository",
+            source.display()
+        )));
+    }
+    let remote_url = target
+        .remote_url
+        .or_else(|| {
+            let out = ctx.sh(
+                &format!(
+                    "git -C {quoted_source} remote get-url {}",
+                    shell_quote(&target.remote)
+                ),
+                None,
+                30,
+            );
+            (out.code == 0 && !out.text.trim().is_empty()).then(|| out.text.trim().to_owned())
+        })
+        .unwrap_or_else(|| source.to_string_lossy().into_owned());
+    let mut target_cfg = ctx
+        .cfg
+        .for_target(&id)
+        .ok_or_else(|| VivariumError::Config(format!("repository target {id:?} disappeared")))?;
+    target_cfg.remote_url = Some(remote_url);
+    let repo = ctx.cfg.target_repo_dir(&ctx.project, &id).ok_or_else(|| {
+        VivariumError::Config(format!("repository target {id:?} has no integration path"))
+    })?;
+    let target_ctx = Ctx::with_parts(
+        target_cfg,
+        ctx.host.clone(),
+        ctx.project.clone(),
+        ctx.vivi.clone(),
+        ctx.shell_prefix.clone(),
+        ctx.home.clone(),
+        repo,
+    );
+    ensure_single_repo(&target_ctx)?;
     Ok(())
 }
 
@@ -562,100 +581,6 @@ fn epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
-}
-
-/// Refresh the live mailspace config between ticks. The pump home and target
-/// checkout paths stay fixed for the life of the lock; valid pool, routing,
-/// dispatch, merge, gate, budget, and check changes apply to the next tick.
-pub(super) fn refresh_config(
-    ctx: &mut Ctx,
-    fingerprint: &mut Option<Vec<u8>>,
-    last_error: &mut Option<String>,
-) -> bool {
-    let loaded = match load_runtime_config(&ctx.project) {
-        Ok(loaded) => loaded,
-        Err(error) => return report_config_error(ctx, last_error, error.to_string()),
-    };
-    if fingerprint.as_ref() == Some(&loaded.fingerprint) {
-        *last_error = None;
-        return false;
-    }
-    if !runtime_paths_match(ctx, &loaded.cfg) {
-        return report_config_error(
-            ctx,
-            last_error,
-            String::from("pump home or repository target paths changed; restart required"),
-        );
-    }
-    let changed = fingerprint.is_some();
-    ctx.shell_prefix.clone_from(&loaded.cfg.shell_prefix);
-    ctx.cfg = Arc::new(loaded.cfg);
-    ctx.routing = Arc::new(loaded.routing);
-    ctx.pool_sources = Arc::new(loaded.pool_sources);
-    ctx.actor = loaded.actor;
-    ctx.mailspace = loaded.mailspace;
-    *fingerprint = Some(loaded.fingerprint);
-    *last_error = None;
-    if changed {
-        ctx.log("pump config reloaded");
-    }
-    changed
-}
-
-/// Read and validate one complete runtime config snapshot.
-fn load_runtime_config(project: &Path) -> Result<LoadedRuntimeConfig, VivariumError> {
-    let mailspace = Mailspace::discover(Some(project))?;
-    let cfg = pump_config(&mailspace)?;
-    let issues = crate::pump::readiness::assess(&mailspace);
-    crate::routing::require_ok(&issues)?;
-    if let Some(summary) = crate::routing::not_ready_summary(&issues) {
-        return Err(VivariumError::Config(summary));
-    }
-    let fingerprint = serde_json::to_vec(&mailspace.config)
-        .map_err(|error| VivariumError::Message(error.to_string()))?;
-    Ok(LoadedRuntimeConfig {
-        pool_sources: cfg.pool_sources(&mailspace.config, project),
-        routing: crate::routing::from_mailspace(&mailspace.config),
-        actor: actor_string(&mailspace),
-        mailspace: mailspace.mailspace_id().to_string(),
-        cfg,
-        fingerprint,
-    })
-}
-
-struct LoadedRuntimeConfig {
-    cfg: PumpConfig,
-    routing: crate::routing::RoleRouting,
-    pool_sources: BTreeMap<String, PathBuf>,
-    actor: String,
-    mailspace: String,
-    fingerprint: Vec<u8>,
-}
-
-/// Reject live changes that would move the lock or an integration checkout.
-fn runtime_paths_match(ctx: &Ctx, cfg: &PumpConfig) -> bool {
-    if cfg.home_dir(&ctx.project) != ctx.home {
-        return false;
-    }
-    runtime_repo_paths(&ctx.cfg, &ctx.project) == runtime_repo_paths(cfg, &ctx.project)
-}
-
-fn runtime_repo_paths(cfg: &PumpConfig, project: &Path) -> BTreeMap<String, PathBuf> {
-    cfg.target_configs()
-        .keys()
-        .filter_map(|id| {
-            cfg.target_repo_dir(project, id)
-                .map(|path| (id.clone(), path))
-        })
-        .collect()
-}
-
-fn report_config_error(ctx: &Ctx, last_error: &mut Option<String>, error: String) -> bool {
-    if last_error.as_deref() != Some(error.as_str()) {
-        ctx.log(&format!("pump config reload skipped: {error}"));
-    }
-    *last_error = Some(error);
-    false
 }
 
 /// Sleep until the next tick is due in one-second slices, re-reading control
