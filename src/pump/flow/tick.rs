@@ -822,10 +822,10 @@ where
     }
 }
 
-/// The text of a pump-marked reply. The one place both replies are built, so
-/// switching to `pool_record::marked_line` is a one-line change.
+/// The text of a pump-marked reply: `<marker> t=<unix micros> <body>`, so
+/// replies sort in the order they were written.
 fn marked_reply_text(marker: &str, body: &str) -> String {
-    format!("{marker} {body}")
+    crate::mailspace::marked_line(marker, body)
 }
 
 fn merged_payload(sha: &str) -> serde_json::Value {

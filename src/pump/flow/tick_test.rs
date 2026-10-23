@@ -327,7 +327,8 @@ fn a_built_hand_posts_deviations_and_follow_ups_and_stays_open() -> R {
     assert!(
         replies
             .iter()
-            .any(|r| r.starts_with(DEVIATIONS_MARKER) && r.contains("changed a signature"))
+            .any(|r| r.starts_with(&format!("{DEVIATIONS_MARKER} t="))
+                && r.contains("changed a signature"))
     );
     assert!(replies.iter().any(|r| r.starts_with(FOLLOW_UP_MARKER)
         && r.contains("[[follow_up]]")
