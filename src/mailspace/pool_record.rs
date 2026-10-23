@@ -6,9 +6,10 @@
 //! reply is the human-readable receipt. The task itself never moves.
 
 use super::Mailspace;
-use super::thread::text_body;
+use super::thread::{MailspaceThreadMessage, text_body};
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A task as the pool reads it.
 #[derive(Debug, Clone)]
@@ -35,6 +36,74 @@ const ATTEMPT_MARKER: &str = "pump-attempt:";
 
 /// First line of a pump brief reply on a preset task.
 const BRIEF_MARKER: &str = "pump-brief:";
+
+/// The last order stamp handed out by [`marked_line`].
+static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
+
+/// The first line of a pump-marked reply: `<marker> t=<unix micros> <rest>`.
+///
+/// Thread order has one-second precision, so same-second replies need their
+/// own order. The stamp is the clock in microseconds, pushed one past the last
+/// stamp this process issued, so it strictly increases.
+#[must_use]
+pub fn marked_line(marker: &str, rest: &str) -> String {
+    let now = chrono::Utc::now().timestamp_micros();
+    let stamp = LAST_STAMP
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+            Some(now.max(last.saturating_add(1)))
+        })
+        .map_or(now, |last| now.max(last.saturating_add(1)));
+    format!("{marker} t={stamp} {rest}").trim_end().to_owned()
+}
+
+/// The text after `marker` on a marked line, without the `t=` stamp. `None`
+/// when the line does not start with the marker.
+#[must_use]
+pub fn marked_payload<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = line.trim().strip_prefix(marker)?.trim_start();
+    Some(match split_stamp(rest) {
+        Some((_, after)) => after,
+        None => rest,
+    })
+}
+
+/// A leading `t=<digits>` token and the text after it.
+fn split_stamp(text: &str) -> Option<(i64, &str)> {
+    let (token, after) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let stamp = token.strip_prefix("t=")?.parse().ok()?;
+    Some((stamp, after.trim_start()))
+}
+
+/// The order stamp on a marked message's first line, when it has one.
+fn stamp_of(body: &str) -> Option<i64> {
+    let first = body.trim_start().lines().next()?;
+    let (_, rest) = first.split_once(char::is_whitespace)?;
+    split_stamp(rest.trim_start()).map(|(stamp, _)| stamp)
+}
+
+/// Sort marked replies oldest first by `(t, Date, message_id)`. A reply with
+/// no stamp sorts by `Date` and then `message_id`, after any stamped reply
+/// of the same second.
+pub fn order_marked(replies: &mut [MailspaceThreadMessage]) {
+    replies.sort_by_cached_key(|message| {
+        let stamp = stamp_of(&message.body);
+        let second = stamp.map_or_else(|| date_seconds(&message.date), |t| t.div_euclid(1_000_000));
+        (
+            second,
+            stamp.is_none(),
+            stamp.unwrap_or(0),
+            message.date.clone(),
+            message.message_id.clone(),
+        )
+    });
+}
+
+/// Unix seconds of a thread `Date`, 0 when it does not parse.
+fn date_seconds(date: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(date)
+        .or_else(|_| chrono::DateTime::parse_from_rfc2822(date))
+        .map_or(0, |parsed| parsed.timestamp())
+}
 
 /// The marked replies found on one task's thread.
 #[derive(Default)]
@@ -107,7 +176,8 @@ impl Mailspace {
         handle: &str,
         task_id: &str,
     ) -> Result<ThreadReplies, VivariumError> {
-        let thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
+        let mut thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
+        order_marked(&mut thread);
         let mut found = ThreadReplies::default();
         for message in thread {
             if message.event.is_some() || message.message_id == task_id {

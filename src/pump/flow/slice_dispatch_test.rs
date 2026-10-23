@@ -633,12 +633,25 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
             &[],
         )
         .unwrap();
-    port.reply(&task, "pump-deviations: first").unwrap();
-    port.reply(&task, "pump-attempt: not a deviation").unwrap();
-    port.reply(&task, "pump-deviations: second").unwrap();
+    let stamped = |marker: &str, rest: &str| crate::mailspace::marked_line(marker, rest);
+    port.reply(&task, &stamped("pump-deviations:", "first"))
+        .unwrap();
+    port.reply(&task, &stamped("pump-attempt:", "not a deviation"))
+        .unwrap();
+    port.reply(&task, &stamped("pump-deviations:", "second"))
+        .unwrap();
+    port.reply(&task, &stamped("pump-deviations:", "third"))
+        .unwrap();
 
     assert!(port.task_body(&task).unwrap().contains("target: vivi"));
     let found = port.marked_replies(&task, DEVIATIONS_MARKER).unwrap();
     let texts: Vec<&str> = found.iter().map(|(_, text)| text.as_str()).collect();
-    assert_eq!(texts, ["pump-deviations: first", "pump-deviations: second"]);
+    assert_eq!(
+        texts,
+        [
+            "pump-deviations: first",
+            "pump-deviations: second",
+            "pump-deviations: third"
+        ]
+    );
 }

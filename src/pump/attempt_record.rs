@@ -364,7 +364,11 @@ pub fn post_on_task(ctx: &Ctx, task: &str, ending: &Ending, facts_text: &str) ->
         failing: ending.failing.clone(),
         message: tail(&parse_receipt(receipt).message, FINAL_MESSAGE_CHARS),
     };
-    let body = format!("{ATTEMPT_MARKER} {}\n{}", ending.label, compose(&facts));
+    let body = format!(
+        "{}\n{}",
+        crate::mailspace::marked_line(ATTEMPT_MARKER, &ending.label),
+        compose(&facts)
+    );
     let sent = reply_on(
         ctx,
         task,

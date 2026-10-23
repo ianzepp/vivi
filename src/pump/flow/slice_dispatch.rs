@@ -18,7 +18,7 @@
 use serde_json::json;
 
 use crate::error::VivariumError;
-use crate::mailspace::MailspaceThreadMessage;
+use crate::mailspace::{MailspaceThreadMessage, marked_payload, order_marked};
 use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
 use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
@@ -154,11 +154,26 @@ impl SliceMail for MailspacePort {
         marker: &str,
     ) -> Result<Vec<(String, String)>, VivariumError> {
         let (id, thread) = self.thread_of(task)?;
-        Ok(thread
+        let mut found: Vec<MailspaceThreadMessage> = thread
             .into_iter()
             .filter(|message| message.event.is_none() && message.message_id != id)
             .filter(|message| message.body.trim_start().starts_with(marker))
-            .map(|message| (message.date, message.body.trim().to_owned()))
+            .collect();
+        order_marked(&mut found);
+        Ok(found
+            .into_iter()
+            .map(|message| {
+                let text = message.body.trim();
+                let (first, more) = text.split_once('\n').unwrap_or((text, ""));
+                let payload = marked_payload(first, marker).unwrap_or_default();
+                let line = format!("{marker} {payload}").trim_end().to_owned();
+                let text = if more.is_empty() {
+                    line
+                } else {
+                    format!("{line}\n{more}")
+                };
+                (message.date, text)
+            })
             .collect())
     }
 }

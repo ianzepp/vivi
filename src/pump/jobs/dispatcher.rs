@@ -288,12 +288,17 @@ const BRIEF_MARKER: &str = "pump-brief:";
 /// already carries a brief reply for this job id is left alone, so a
 /// deferred dispatch retried on the next tick posts nothing new.
 fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError> {
-    let first = format!("{BRIEF_MARKER} {}", job.id);
+    let first = crate::mailspace::marked_line(BRIEF_MARKER, &job.id);
     let thread = ctx.vivi(
         &format!("mail thread {} --limit 1000", shell_quote(task)),
         60,
     );
-    if thread.code == 0 && thread.text.lines().any(|line| line.trim() == first) {
+    if thread.code == 0
+        && thread
+            .text
+            .lines()
+            .any(|line| crate::mailspace::marked_payload(line, BRIEF_MARKER) == Some(&job.id))
+    {
         return Ok(());
     }
     let dir = ctx.home.join("job-briefs");

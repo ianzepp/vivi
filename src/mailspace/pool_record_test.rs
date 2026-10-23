@@ -129,9 +129,16 @@ fn a_task_with_no_attempt_replies_keeps_its_body() {
 #[test]
 fn attempt_replies_are_appended_in_order() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
-    reply_on_task(&space, &handle, "pump-attempt: first\nfirst body");
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-    reply_on_task(&space, &handle, "pump-attempt: second\nsecond body");
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nfirst body", marked_line("pump-attempt:", "first")),
+    );
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nsecond body", marked_line("pump-attempt:", "second")),
+    );
     let body = space.pool_task(&handle).unwrap().body;
     let heading = body.find("## Earlier attempts").expect("heading");
     let first = body.find("first body").expect("first");
@@ -146,10 +153,17 @@ fn the_attempt_section_is_capped() {
     reply_on_task(
         &space,
         &handle,
-        &format!("pump-attempt: big\nOLDEST\n{}", "x".repeat(20_000)),
+        &format!(
+            "{}\nOLDEST\n{}",
+            marked_line("pump-attempt:", "big"),
+            "x".repeat(20_000)
+        ),
     );
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-    reply_on_task(&space, &handle, "pump-attempt: last\nNEWEST");
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nNEWEST", marked_line("pump-attempt:", "last")),
+    );
     let body = space.pool_task(&handle).unwrap().body;
     assert!(body.contains("[older attempts cut]"), "cut marker");
     assert!(body.contains("NEWEST"), "newest kept");
@@ -160,17 +174,27 @@ fn the_attempt_section_is_capped() {
 #[test]
 fn only_the_newest_brief_is_the_body_with_attempts_after_it() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
-    reply_on_task(&space, &handle, "pump-brief: job-a\nOLD BRIEF");
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-    reply_on_task(&space, &handle, "pump-attempt: first\nattempt body");
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     reply_on_task(
         &space,
         &handle,
-        "pump-brief: job-b\nWRITE SCOPE and envelope",
+        &format!("{}\nOLD BRIEF", marked_line("pump-brief:", "job-a")),
+    );
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nattempt body", marked_line("pump-attempt:", "first")),
+    );
+    reply_on_task(
+        &space,
+        &handle,
+        &format!(
+            "{}\nWRITE SCOPE and envelope",
+            marked_line("pump-brief:", "job-b")
+        ),
     );
     let body = space.pool_task(&handle).unwrap().body;
-    assert!(body.starts_with("pump-brief: job-b"), "{body}");
+    assert!(body.starts_with("pump-brief: t="), "{body}");
+    assert!(body.lines().next().unwrap().ends_with("job-b"), "{body}");
     assert!(!body.contains("OLD BRIEF"), "{body}");
     assert!(!body.contains("do it"), "task body not repeated: {body}");
     let heading = body.find("## Earlier attempts").expect("heading");
@@ -184,4 +208,51 @@ fn a_task_with_no_brief_reply_keeps_its_body() {
     reply_on_task(&space, &handle, "not a pump-brief: reply");
     let body = space.pool_task(&handle).unwrap().body;
     assert!(body.starts_with("do it"), "{body}");
+}
+
+#[test]
+fn same_second_attempts_come_back_in_posting_order() {
+    for _ in 0..20 {
+        let (_tmp, space, handle) = space_with_task("mind", "hand");
+        for n in 1..=3 {
+            reply_on_task(
+                &space,
+                &handle,
+                &format!(
+                    "{}\nbody-{n}",
+                    marked_line("pump-attempt:", &format!("a{n}"))
+                ),
+            );
+        }
+        let body = space.pool_task(&handle).unwrap().body;
+        let at = |n: u32| body.find(&format!("body-{n}")).expect("attempt");
+        assert!(at(1) < at(2) && at(2) < at(3), "{body}");
+    }
+}
+
+#[test]
+fn the_newest_brief_wins_within_one_second() {
+    for _ in 0..20 {
+        let (_tmp, space, handle) = space_with_task("mind", "hand");
+        for job in ["job-a", "job-b", "job-c"] {
+            reply_on_task(
+                &space,
+                &handle,
+                &format!("{}\nBRIEF {job}", marked_line("pump-brief:", job)),
+            );
+        }
+        let body = space.pool_task(&handle).unwrap().body;
+        assert!(body.contains("BRIEF job-c"), "{body}");
+        assert!(!body.contains("BRIEF job-a"), "{body}");
+    }
+}
+
+#[test]
+fn stamps_strictly_increase_and_payload_drops_them() {
+    let a = marked_line("pump-brief:", "j1");
+    let b = marked_line("pump-brief:", "j1");
+    assert_ne!(a, b);
+    assert_eq!(marked_payload(&a, "pump-brief:"), Some("j1"));
+    assert_eq!(marked_payload("pump-brief: j1", "pump-brief:"), Some("j1"));
+    assert_eq!(marked_payload("other: j1", "pump-brief:"), None);
 }
