@@ -8,16 +8,12 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vivi::pump::audit::AuditRun;
 use vivi::pump::jobs::{self, JobSpec, JobStatus};
-use vivi::pump::state::{GateRun, State};
+use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
     ("planner-board", "planner:board", "pump-planner"),
-    ("gate-survival", "gate", "gate"),
-    ("audit-survival", "audit", "auditor"),
-    ("promote-survival", "promote", "release"),
     ("cadence-survival", "cadence", "mind"),
     ("digest-survival", "digest", "digest"),
     ("hand-survival", "hand", "hand"),
@@ -32,15 +28,6 @@ while [ ! -f "$VIVI_TEST_MARKERS/release-workers" ]; do sleep 0.1; done
 case "$kind" in
   planner:board)
     printf '%s\n' 'PUMP-PLAN-BEGIN' '{"need":"planner-survival","verdict":"hold","reason":"recovered once"}' 'PUMP-PLAN-END'
-    ;;
-  gate)
-    printf '%s\n' 'FAILING-BEGIN' 'FAILING-END'
-    ;;
-  audit)
-    printf '%s\n' 'AUDIT-BEGIN' '[{"root_cause":"survived audit","brief":"record the recovered audit","tests":["survival::audit"],"write_scope":["audit.txt"],"proof":["true"]}]' 'AUDIT-END'
-    ;;
-  promote)
-    printf '%s\n' "PUMP_PROMOTE_RESULT={\"status\":\"ready\",\"tip\":\"$VIVI_TEST_TIP\"}"
     ;;
   cadence)
     printf 'cadence survived\n'
@@ -170,9 +157,6 @@ fn local_pool_jobs_survive_sigkill_and_apply_once() {
         let receipt = &job.outcome.as_ref().unwrap().receipt;
         let marker = match job.kind.as_str() {
             "planner:board" => "PUMP-PLAN-BEGIN",
-            "gate" => "FAILING-BEGIN",
-            "audit" => "AUDIT-BEGIN",
-            "promote" => "PUMP_PROMOTE_RESULT=",
             "cadence" => "cadence survived",
             "digest" => "digest survived",
             "hand" => "hand survived",
@@ -184,15 +168,6 @@ fn local_pool_jobs_survive_sigkill_and_apply_once() {
         );
         if pump_applies(&job.kind) {
             assert!(job.applied_at.is_some(), "{id} receipt was not applied");
-        }
-        if job.kind == "promote" {
-            let publication = job.outcome.as_ref().unwrap().runner_publish().unwrap();
-            assert!(publication.succeeded(), "{id}: {publication:?}");
-            assert_eq!(
-                publication.reference, "refs/heads/main",
-                "{id} published the wrong integration ref"
-            );
-            assert_eq!(publication.candidate, publication.remote_sha);
         }
         assert_eq!(
             task_occurrences(&rig.project, &format!("[pump-job:{id}]"), role_for(id)),
@@ -300,24 +275,6 @@ fn ensure_role(config: &mut toml::Value, name: &str, kind: &str, pool: &str, mod
 
 fn seed_state(rig: &Rig) {
     let mut st = State::default();
-    st.baseline = Some(Vec::new());
-    st.last_gate = GateRun {
-        merges: 0,
-        job_id: Some(String::from("gate-survival")),
-        tip: Some(rig.tip.clone()),
-        ..GateRun::default()
-    };
-    st.extra.insert(
-        String::from("audit"),
-        serde_json::to_value(AuditRun {
-            need: String::from("audit-survival"),
-            tip: rig.tip.clone(),
-            job_id: Some(String::from("audit-survival")),
-            ..AuditRun::default()
-        })
-        .unwrap(),
-    );
-
     for (id, kind, role) in WORKERS {
         let mut spec = JobSpec::new(
             *id,
@@ -329,31 +286,12 @@ fn seed_state(rig: &Rig) {
         spec.pool_candidates = vec![String::from("p")];
         spec.local_only = true;
         spec.target = Some(String::from("default"));
-        spec.from_ref = Some(if *kind == "promote" {
-            String::from("main")
-        } else {
-            String::from("next")
-        });
+        spec.from_ref = Some(String::from("next"));
         spec.model = Some(String::from("standin"));
         spec.budget = 60;
-        spec.read_only = matches!(
-            *kind,
-            "planner:board" | "gate" | "audit" | "cadence" | "digest"
-        );
+        spec.read_only = matches!(*kind, "planner:board" | "cadence" | "digest");
         if *kind == "hand" {
             spec.branch = Some(String::from("vivi/unit/hand-survival-a1"));
-        }
-        if *kind == "promote" {
-            spec.branch = Some(String::from("pump/promotion/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/main"));
-            spec.publish_expect = Some(rig.tip.clone());
-            spec.payload = serde_json::json!({
-                "target": "default",
-                "branch": "main",
-                "remote": "origin",
-                "tip": rig.tip.clone(),
-                "failing": [],
-            });
         }
         if *kind == "planner:board" {
             spec.payload = serde_json::json!({
@@ -433,11 +371,10 @@ fn dispatched(rig: &Rig) -> bool {
     })
 }
 
-/// Whether the bare pump still applies this kind's receipt. The gate, audit and
-/// promote appliers went with the old pipeline (N6d-13) and their rows go with
-/// N6d-26; a hand job is a flow slice job whose application to a flow step is
-/// proved tick-level on a real mailspace by the e2e_gate_* tests. Those four
-/// kinds still prove survival: dispatched, handle saved, receipt collected once.
+/// Whether the bare pump still applies this kind's receipt. A hand job is a
+/// flow slice job whose application to a flow step is proved tick-level on a
+/// real mailspace by the e2e_gate_* tests; it still proves survival here:
+/// dispatched, handle saved, receipt collected once.
 fn pump_applies(kind: &str) -> bool {
     matches!(kind, "planner:board" | "cadence" | "digest")
 }
