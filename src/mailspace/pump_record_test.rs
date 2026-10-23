@@ -381,3 +381,130 @@ fn a_need_the_pump_identity_sent_itself_gets_a_record_whoever_it_is_addressed_to
     assert_eq!(other.need, stray);
     assert_eq!(other.status, PumpState::Open);
 }
+
+fn pump_with_targets(mailspace: &mut Mailspace, ids: &[&str]) {
+    let mut pump = crate::pump::config::PumpConfig::default();
+    for id in ids {
+        pump.targets.insert(
+            (*id).to_string(),
+            crate::pump::config::PumpTarget::default(),
+        );
+    }
+    mailspace.config.pump = Some(pump);
+}
+
+fn refused(mailspace: &Mailspace, need: &str, body: &str) -> String {
+    let error = mailspace
+        .pump_send(None, need, Some(body))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        mailspace.pump_list(None, None).unwrap().is_empty(),
+        "a refused send filed a record"
+    );
+    error
+}
+
+#[test]
+fn send_refuses_a_closed_need() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    mailspace
+        .move_item_outcome("mind", &need, "done", Some("finished"), "need done", None)
+        .unwrap();
+    let error = refused(&mailspace, &need, "kind: build");
+    assert!(error.contains("is done"), "{error}");
+    assert!(error.contains("needs an open need"), "{error}");
+}
+
+#[test]
+fn send_refuses_a_kind_line_naming_no_flow_kind() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let error = refused(&mailspace, &need, "kind: frobnicate");
+    assert!(
+        error.contains("build, research, release, repair"),
+        "{error}"
+    );
+    assert!(error.contains("actual: frobnicate"), "{error}");
+}
+
+#[test]
+fn send_refuses_a_repair_record_without_a_known_target() {
+    let (mut mailspace, _tmp) = roster();
+    pump_with_targets(&mut mailspace, &["alpha", "beta"]);
+    let need = send_need(&mailspace, "fix auth");
+    let none = refused(&mailspace, &need, "kind: repair");
+    assert!(none.contains("alpha, beta"), "{none}");
+    assert!(none.contains("actual: none"), "{none}");
+    let empty = refused(&mailspace, &need, "kind: repair\ntarget:");
+    assert!(empty.contains("actual: none"), "{empty}");
+    let unknown = refused(&mailspace, &need, "kind: repair\ntarget: gamma");
+    assert!(unknown.contains("actual: gamma"), "{unknown}");
+}
+
+#[test]
+fn a_repair_mark_makes_the_record_a_repair_record() {
+    let (mut mailspace, _tmp) = roster();
+    pump_with_targets(&mut mailspace, &["alpha"]);
+    let need = send_need(&mailspace, "fix auth");
+    mailspace
+        .set_marks("mind", &need, "need", true, &["repair".to_string()])
+        .unwrap();
+    let error = refused(&mailspace, &need, "no kind line here");
+    assert!(error.contains("actual: none"), "{error}");
+    mailspace
+        .pump_send(None, &need, Some("target: alpha"))
+        .unwrap();
+}
+
+#[test]
+fn send_accepts_valid_build_and_repair_records() {
+    let (mut mailspace, _tmp) = roster();
+    pump_with_targets(&mut mailspace, &["alpha"]);
+    let build = send_need(&mailspace, "build it");
+    mailspace
+        .pump_send(None, &build, Some("kind: build"))
+        .unwrap();
+    let repair = send_need(&mailspace, "repair it");
+    mailspace
+        .pump_send(None, &repair, Some("kind: repair\ntarget: alpha"))
+        .unwrap();
+    assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 2);
+}
+
+#[test]
+fn without_pump_config_a_repair_record_needs_a_target_line_but_any_name() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "repair it");
+    let error = refused(&mailspace, &need, "kind: repair");
+    assert!(error.contains("actual: none"), "{error}");
+    mailspace
+        .pump_send(None, &need, Some("kind: repair\ntarget: anything"))
+        .unwrap();
+}
+
+#[test]
+fn send_accepts_a_need_addressed_to_hand() {
+    let (mut mailspace, _tmp) = roster();
+    mailspace.add_identity("hand").unwrap();
+    let need = mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "for hand".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    assert_eq!(record.status, PumpState::Open);
+}
