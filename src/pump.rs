@@ -31,8 +31,6 @@ pub mod host;
 pub mod jobs;
 pub mod logview;
 pub mod need;
-pub mod need_audit;
-pub mod need_verdict;
 pub mod oversight;
 pub(crate) mod par;
 pub mod plan;
@@ -205,11 +203,3 @@ mod audit_test;
 #[cfg(test)]
 #[path = "pump/ramsweep_test.rs"]
 mod ramsweep_test;
-
-#[cfg(test)]
-#[path = "pump/need_audit_test.rs"]
-mod need_audit_test;
-
-#[cfg(test)]
-#[path = "pump/need_verdict_test.rs"]
-mod need_verdict_test;

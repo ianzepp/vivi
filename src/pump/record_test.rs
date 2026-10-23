@@ -279,23 +279,6 @@ fn a_need_being_planned_or_amended_is_not_given_up_on() {
 }
 
 #[test]
-fn a_need_audit_hold_parks_the_need() {
-    let world = world();
-    let mut st = planned(&world.need, &[("u1", Status::Merged)]);
-    let hold = crate::pump::need_verdict::NeedAuditHold {
-        reason: String::from("blocked finding remains"),
-        ..Default::default()
-    };
-    let verdict = crate::pump::need_verdict::NeedVerdictState {
-        hold: Some(hold),
-        ..Default::default()
-    };
-    crate::pump::need_verdict::set_state(&mut st, "default", &world.need, &verdict).unwrap();
-    let why = reason(&world, &st).unwrap();
-    assert!(why.contains("blocked finding remains"), "{why}");
-}
-
-#[test]
 fn settling_gave_up_closes_only_the_parked_needs_record() {
     let world = world();
     let record = world.mailspace.pump_send(None, &world.need, None).unwrap();

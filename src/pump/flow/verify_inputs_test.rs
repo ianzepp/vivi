@@ -7,7 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread,
-    requirements, rung_report,
+    requirements, rung_report, whole_message_requirements,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::index::{StepRow, StepState};
@@ -256,4 +256,52 @@ fn cto_ruling_is_the_earlier_runs_answer_reason_and_new_fact() {
     let ruling = cto_ruling(&f.store, NEED, 2).unwrap().unwrap();
     assert_eq!(ruling, "answer: rework\nreason: R\nnew_fact: X");
     assert_eq!(cto_ruling(&f.store, NEED, 1).unwrap(), None);
+}
+
+#[test]
+fn a_need_without_done_when_is_audited_against_its_own_messages() {
+    let f = fixture();
+    let ctx = &f.ctx;
+    let thread = serde_json::json!([{
+        "handle": "need-1",
+        "message_id": "mind-root",
+        "from": "operator@local",
+        "subject": "Need",
+        "body": "Rename the en pack rows and every en source together."
+    }, {
+        "handle": "need-1-reply",
+        "message_id": "pump-reply",
+        "from": "mind@local",
+        "subject": "Pump plan",
+        "body": "pump: planned at revision 1"
+    }]);
+    let messages = thread.as_array().unwrap().clone();
+    let requirements = whole_message_requirements(ctx, "need-1", &messages);
+    assert_eq!(requirements.len(), 1, "{requirements:?}");
+    assert_eq!(requirements[0].id, "need-1-r0");
+    assert_eq!(
+        requirements[0].text,
+        "Deliver what need message need-1 asks for (full text in the original need thread)."
+    );
+    assert!(!requirements[0].text.contains("Rename the en pack rows"));
+}
+
+#[test]
+fn a_long_multi_line_message_still_yields_one_short_single_line_requirement() {
+    let f = fixture();
+    let ctx = &f.ctx;
+    let body = format!("first line\n{}", "long detail\n".repeat(1000));
+    let messages = vec![serde_json::json!({
+        "handle": "need-9",
+        "message_id": "mind-root",
+        "from": "operator@local",
+        "subject": "Need",
+        "body": body,
+    })];
+
+    let requirements = whole_message_requirements(ctx, "need-9", &messages);
+
+    assert_eq!(requirements.len(), 1);
+    assert!(!requirements[0].text.contains('\n'));
+    assert!(requirements[0].text.len() < 200);
 }
