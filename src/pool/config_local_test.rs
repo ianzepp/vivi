@@ -85,7 +85,6 @@ fn default_local_root_is_project_relative() {
 }
 
 #[test]
-#[test]
 fn relative_local_root_is_accepted() {
     let config: PoolConfig = toml::from_str(
         r#"
