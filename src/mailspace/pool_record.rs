@@ -70,7 +70,10 @@ pub fn marked_payload<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
 /// A leading `t=<digits>` token and the text after it.
 fn split_stamp(text: &str) -> Option<(i64, &str)> {
     let (token, after) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
-    let stamp = token.strip_prefix("t=")?.parse().ok()?;
+    let stamp = match token.strip_prefix("t=")?.parse() {
+        Ok(stamp) => stamp,
+        Err(_) => return None,
+    };
     Some((stamp, after.trim_start()))
 }
 
