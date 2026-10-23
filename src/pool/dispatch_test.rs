@@ -1,6 +1,18 @@
 use super::*;
+use crate::letter::work::TaskFront;
 use crate::pool::fake_provider::{Fake, claimed, pid, slot};
 use crate::pool::slot::{META_CLAIMED, META_TASK};
+
+/// A task letter whose front matter sets the pool keys.
+fn refs_body(from: Option<&str>, branch: Option<&str>, with: &[&str]) -> String {
+    let front = TaskFront {
+        from: from.map(str::to_string),
+        branch: branch.map(str::to_string),
+        with: with.iter().map(|w| (*w).to_string()).collect(),
+        ..TaskFront::default()
+    };
+    crate::letter::fixture::task_body_with(&front, "do it")
+}
 
 fn config() -> PoolConfig {
     toml::from_str(
@@ -284,7 +296,11 @@ fn from_and_branch_default_to_the_body() {
     let p = plan_job(
         &config(),
         "p",
-        ("t", "s", "do it\nfrom: main\nbranch: factory/body"),
+        (
+            "t",
+            "s",
+            &refs_body(Some("main"), Some("factory/body"), &[]),
+        ),
         &no_flags,
         "r".into(),
         "j".into(),
@@ -564,7 +580,7 @@ fn a_pool_with_no_repository_refuses_to_dispatch_and_names_the_setting() {
     let err = plan_job(
         &c,
         "lanes",
-        ("t", "s", "b\nfrom: a\nbranch: b"),
+        ("t", "s", &refs_body(Some("a"), Some("b"), &[])),
         &flags("m/ok"),
         "r".into(),
         "j".into(),
@@ -629,7 +645,8 @@ fn the_plan_carries_the_with_names_from_flags_or_body() {
         [("review/aaa", ""), ("review/bbb", "")],
         "the commit is filled later, before a slot is claimed"
     );
-    let body = "work\nwith: review/ccc\n- with: review/ddd\n";
+    let body = refs_body(None, None, &["review/ccc", "review/ddd"]);
+    let body = body.as_str();
     let p = plan_job(
         &config(),
         "p",
@@ -699,7 +716,11 @@ fn a_read_only_job_takes_from_from_the_body_and_ignores_a_body_branch() {
     let p = plan_job(
         &config(),
         "p",
-        ("t", "s", "review it\nfrom: main\nbranch: factory/body"),
+        (
+            "t",
+            "s",
+            &refs_body(Some("main"), Some("factory/body"), &[]),
+        ),
         &read_only(None, None),
         "r".into(),
         "j".into(),

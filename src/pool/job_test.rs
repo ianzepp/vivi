@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::letter::work::TaskFront;
 use crate::pool::bridge::Grant;
 
 const SECRET: &str = "ghs_SUPERsecretTOKEN0123456789";
@@ -279,19 +280,29 @@ fn uses_reasoning_follows_the_placeholder() {
     assert!(!uses_reasoning("echo ${reasoning}"));
 }
 
+fn refs_body(from: Option<&str>, branch: Option<&str>, with: &[&str]) -> String {
+    let front = TaskFront {
+        from: from.map(str::to_string),
+        branch: branch.map(str::to_string),
+        with: with.iter().map(|w| (*w).to_string()).collect(),
+        ..TaskFront::default()
+    };
+    crate::letter::fixture::task_body_with(&front, "Do it.")
+}
+
 #[test]
-fn body_lines_supply_from_and_branch() {
-    let refs = body_refs("Do it.\n\nfrom: abc123\n- branch: factory/y\nfrom: ignored\n");
+fn front_matter_supplies_from_and_branch() {
+    let refs = body_refs(&refs_body(Some("abc123"), Some("factory/y"), &[]));
     assert_eq!(refs.from.as_deref(), Some("abc123"));
     assert_eq!(refs.branch.as_deref(), Some("factory/y"));
     assert_eq!(body_refs("nothing here"), BodyRefs::default());
-    assert_eq!(body_refs("from: has spaces here").from, None);
-    assert_eq!(body_refs("FROM:   Main  ").from.as_deref(), Some("Main"));
+    assert_eq!(body_refs(&refs_body(None, None, &[])), BodyRefs::default());
 }
 
 #[test]
 fn flags_beat_body_lines_and_both_are_required() {
-    let body = "from: main\nbranch: factory/body\n";
+    let body = refs_body(Some("main"), Some("factory/body"), &[]);
+    let body = body.as_str();
     let r = resolve_refs(Some("abc"), Some("factory/flag"), body).unwrap();
     assert_eq!(
         (r.from.as_str(), r.branch.as_str()),
@@ -345,8 +356,8 @@ fn refs_must_be_plain_names() {
 
 #[test]
 fn with_flags_beat_the_body_and_body_lines_keep_their_order() {
-    let body = "do it\n- with: review/bbb\n* WITH: review/aaa\n\
-        with: ignored, flags won\nwith:\nwith: two words\nfrom: main\n";
+    let body = refs_body(Some("main"), None, &["review/bbb", "review/aaa"]);
+    let body = body.as_str();
     assert_eq!(
         resolve_with(&[], body, "main", "factory/x").unwrap(),
         ["review/bbb", "review/aaa"]
@@ -375,7 +386,7 @@ fn with_refs_drop_duplicates_and_refuse_the_rest() {
         ["review/a", "review/b"]
     );
     assert_eq!(
-        resolve_with(&[], "with: r/a\nwith: r/a\n", "main", "b").unwrap(),
+        resolve_with(&[], &refs_body(None, None, &["r/a", "r/a"]), "main", "b").unwrap(),
         ["r/a"]
     );
     for (value, needle) in [
@@ -627,10 +638,13 @@ fn a_local_checkout_travels_as_an_action_and_a_start_and_a_fetch_job_has_neither
 fn from_resolves_without_a_branch() {
     assert_eq!(resolve_from(Some("main"), "").unwrap(), "main");
     assert_eq!(
-        resolve_from(None, "x\nfrom: abc123\nbranch: b").unwrap(),
+        resolve_from(None, &refs_body(Some("abc123"), Some("b"), &[])).unwrap(),
         "abc123"
     );
-    assert_eq!(resolve_from(Some("flag"), "from: body").unwrap(), "flag");
+    assert_eq!(
+        resolve_from(Some("flag"), &refs_body(Some("body"), None, &[])).unwrap(),
+        "flag"
+    );
     assert!(
         resolve_from(None, "no refs here")
             .unwrap_err()
