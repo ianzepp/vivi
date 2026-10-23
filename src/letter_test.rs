@@ -97,3 +97,22 @@ fn text_and_list_checks() {
     assert!(is_false(&false));
     assert!(!is_false(&true));
 }
+
+#[test]
+fn an_empty_unknown_kind_names_the_missing_header() {
+    assert_eq!(
+        LetterError::UnknownKind(String::new()).to_string(),
+        "letter has no `X-Vivi-Kind` header: a format-1 letter names its kind (need, want, task, memo, rule, pump, mail or chat)"
+    );
+}
+
+#[test]
+fn parse_letter_keeps_table_lines_in_prose_and_parse_refuses_them() {
+    let text = "+++\nanswer = \"ok\"\n+++\n\n[[check]]\nx";
+    assert!(matches!(
+        parse::<Probe>(text),
+        Err(LetterError::TableBelowFence { line: 5, .. })
+    ));
+    let letter = parse_letter::<Probe>(text).unwrap();
+    assert_eq!(letter.body, "[[check]]\nx");
+}
