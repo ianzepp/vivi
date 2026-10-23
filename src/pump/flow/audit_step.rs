@@ -8,7 +8,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::flow::verify_inputs::{
-    admitted_plan, branch_range, capped, latest_of_class, need_thread, requirements,
+    admitted_plan, audit_context, branch_range, capped, latest_of_class, need_thread, requirements,
 };
 use crate::pump::jobs::JobStore;
 
@@ -92,7 +92,12 @@ fn thread_lines(messages: &[Value]) -> String {
         .join("\n")
 }
 
-/// The prior audit and the rework slices, when this run audited before.
+/// The node of the second audit pass, the only one that reaches into an earlier run.
+const SECOND_PASS_NODE: &str = "audit2";
+
+/// The prior audit and the rework slices, when this run or an earlier one audited.
+/// The current run is searched first. Only audit2 falls back to the newest earlier
+/// run with an audit, because a run restarted at rework1 has none of its own.
 fn second_pass(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
     let rows = cx
         .store
@@ -100,14 +105,27 @@ fn second_pass(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError
         .into_iter()
         .filter(|row| row.task != step.task)
         .collect::<Vec<_>>();
-    let Some(prior) = latest_of_class(&rows, AUDITOR_CLASS) else {
-        return Ok(String::new());
+    let (prior_run, prior) = match latest_of_class(&rows, AUDITOR_CLASS) {
+        Some(prior) => (cx.run.run, prior.clone()),
+        None if step.node == SECOND_PASS_NODE => {
+            let (run, earlier) = audit_context(cx.store, &cx.run.need, cx.run.run)?;
+            match latest_of_class(&earlier, AUDITOR_CLASS) {
+                Some(prior) if run != cx.run.run => (run, prior.clone()),
+                _ => return Ok(String::new()),
+            }
+        }
+        None => return Ok(String::new()),
     };
     let front = serde_json::to_string_pretty(&prior.payload["front"])
         .map_err(|error| VivariumError::Message(format!("encode prior audit front: {error}")))?;
     let body = prior.payload["body"].as_str().unwrap_or("");
+    let source = if prior_run == cx.run.run {
+        String::new()
+    } else {
+        format!(" (run {prior_run})")
+    };
     let mut out = format!(
-        "\n\n## Second pass: prior audit\n\n{}",
+        "\n\n## Second pass: prior audit{source}\n\n{}",
         capped(&format!("{front}\n\n{body}"), PRIOR_CAP)
     );
     out.push_str("\n\n## Rework slices\n\n");
