@@ -203,6 +203,12 @@ impl Rig {
         raised.matches(super::REPAIR_AUDIT_FAILED).count()
     }
 
+    fn gave_up(&self) -> usize {
+        let raised =
+            std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default();
+        raised.matches(super::REPAIR_AUDIT_GAVE_UP).count()
+    }
+
     fn tick(&mut self) -> R {
         for phase in self.registry.phases() {
             phase.run(&self.ctx, &mut self.jobs, &self.store, &mut self.mail)?;
@@ -508,5 +514,26 @@ fn a_bad_run_does_not_stop_the_next_runs_audit() -> R {
     assert!(rig.jobs.jobs.contains_key(&job_id(NEED, 1)));
     assert!(!rig.jobs.jobs.contains_key(&job_id(bad, 1)));
     assert!(!rig.store.applied_action_ids()?.contains(&run_key(bad, 1)));
+    Ok(())
+}
+
+#[test]
+fn a_finding_that_fails_three_ticks_is_given_up_and_the_run_settles() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(TWO_FINDINGS)?;
+    rig.host.reply("need send", 1, "boom\n");
+    rig.tick()?;
+    rig.tick()?;
+    assert!(!rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    assert_eq!(rig.gave_up(), 0);
+    rig.tick()?;
+    let applied = rig.store.applied_action_ids()?;
+    assert!(applied.contains(&format!("{}:F1", run_key(NEED, 1))));
+    assert!(applied.contains(&run_key(NEED, 1)));
+    assert_eq!(rig.gave_up(), 2, "one line per finding");
+    let sends = rig.count("need send");
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), sends);
+    assert_eq!(rig.gave_up(), 2);
     Ok(())
 }
