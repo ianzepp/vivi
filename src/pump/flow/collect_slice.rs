@@ -313,10 +313,16 @@ where
     }
 
     /// The slice rows of this run that wait on holders (`ScopeState::Wait`).
+    /// A row held for the operator (`OPERATOR_HOLD`) is skipped: the hold is
+    /// sticky, and the wait resumes only after the operator lifts it.
     pub(crate) fn scope_wait_rows(&self) -> Result<Vec<StepRow>, VivariumError> {
         let mut rows = Vec::new();
         for step in self.store.steps_of(&self.run.need, self.run.run)? {
-            if is_slice_row(&step) && self.store.scope_state(&step.task)? == Some(ScopeState::Wait)
+            let held =
+                step.state == StepState::Waiting && step.verdict.as_deref() == Some(OPERATOR_HOLD);
+            if is_slice_row(&step)
+                && !held
+                && self.store.scope_state(&step.task)? == Some(ScopeState::Wait)
             {
                 rows.push(step);
             }
