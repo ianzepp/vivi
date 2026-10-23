@@ -16,6 +16,8 @@ use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::flow::rung_step::{self, RungCollector};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob, merge_main};
 
+mod merge;
+
 /// The rung a repair rung step runs.
 const MAIN_RUNG: &str = "main";
 /// Characters of the rung tail a verdict reply keeps.
@@ -151,6 +153,11 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
         FlowKind::Repair,
         NodeClass::RungMain,
         Box::new(RepairRungCollector),
+    );
+    registry.collector(
+        FlowKind::Repair,
+        NodeClass::MergeMain,
+        Box::new(merge::RepairMergeMain),
     );
 }
 
