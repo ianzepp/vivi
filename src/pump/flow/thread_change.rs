@@ -21,6 +21,7 @@ use crate::mailspace::{Mailspace, MailspaceThreadMessage, Recipient};
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::tick::raise_once;
@@ -35,9 +36,6 @@ pub const THREAD_CHANGED: &str = "flow-thread-changed";
 /// Exception kind: the thread check for a run could not be made (an
 /// unparsable date, or the check itself failed).
 pub const THREAD_CHECK_FAILED: &str = "flow-thread-check-failed";
-
-/// The run state of a run that is still being advanced.
-const RUN_LIVE: &str = "live";
 
 /// Registry hook: the thread-change phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
@@ -60,7 +58,7 @@ impl<S, M: FlowMail> TickPhase<S, M> for ThreadChange {
         mail: &mut M,
     ) -> Result<(), VivariumError> {
         let runs: Vec<RunRow> = store
-            .runs_in_state(RUN_LIVE)?
+            .runs_in_state(run_state::LIVE)?
             .into_iter()
             .filter(|run| run.kind == FlowKind::Build.name())
             .collect();

@@ -28,6 +28,7 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, route::Decide};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::fanout;
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
@@ -43,9 +44,6 @@ pub const ANSWER_RETRYING: &str = "flow-answer-retrying";
 
 /// Retries a letter gets in this process before it is refused.
 const MAX_RETRIES: u32 = 3;
-
-/// The run state of a run that is still being advanced.
-const RUN_LIVE: &str = "live";
 
 /// How one answer letter ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -322,7 +320,7 @@ fn live_run(store: &PumpStore, need: &str, run: u32) -> Result<RunRow, String> {
         .into_iter()
         .find(|row| row.run == run)
         .ok_or_else(|| format!("need {need} has no run r{run}"))?;
-    if row.state == RUN_LIVE {
+    if row.state == run_state::LIVE {
         Ok(row)
     } else {
         Err(format!(

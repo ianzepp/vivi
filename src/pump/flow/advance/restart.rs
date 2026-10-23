@@ -10,10 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::VivariumError;
 use crate::mailspace::{marked_line, marked_payload};
-use crate::pump::flow::advance::start::{RUN_STARTING, SENTINEL_NODE, start};
+use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::tick::raise_once;
@@ -21,14 +22,6 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, mark_applied};
 use crate::pump::store::PumpStore;
 
-/// Run state: a restart of this run began and has not finished.
-pub(crate) const RUN_RESTARTING: &str = "restarting";
-/// Run state: replaced by a newer run.
-const RUN_SUPERSEDED: &str = "superseded";
-/// Run state: withdrawn.
-const RUN_WITHDRAWN: &str = "withdrawn";
-/// Run state: a run still being advanced.
-const RUN_LIVE: &str = "live";
 /// Exception kind: a restart stayed unfinished too long.
 pub(crate) const RESTART_STUCK: &str = "flow-run-restart-stuck";
 /// Marker of the reply that lists a dead run's dispatched job ids.
@@ -55,7 +48,7 @@ pub(crate) fn restart<M: MailWriter + MailReader>(
     entry: &str,
 ) -> Result<RunRow, VivariumError> {
     store.set_restart_entry(&old.need, old.run, entry)?;
-    store.set_run_state(&old.need, old.run, RUN_RESTARTING)?;
+    store.set_run_state(&old.need, old.run, run_state::RESTARTING)?;
     let next = start(ctx, store, mail, &old.need, Some(entry))?;
     supersede(store, mail, old)?;
     Ok(next)
@@ -78,10 +71,12 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
     let newer = store
         .runs_of(&old.need)?
         .into_iter()
-        .filter(|row| row.run > old.run && (row.state == RUN_STARTING || row.state == RUN_LIVE))
+        .filter(|row| {
+            row.run > old.run && (row.state == run_state::STARTING || row.state == run_state::LIVE)
+        })
         .max_by_key(|row| row.run);
     match newer {
-        Some(row) if row.state == RUN_STARTING => {
+        Some(row) if row.state == run_state::STARTING => {
             start(ctx, store, mail, &old.need, Some(&row.entry))?;
         }
         Some(_) => {}
@@ -111,7 +106,7 @@ fn supersede<M: MailWriter + MailReader>(
     for row in steps.iter().chain(&sentinels) {
         close_open(store, mail, row)?;
     }
-    store.set_run_state(&old.need, old.run, RUN_SUPERSEDED)
+    store.set_run_state(&old.need, old.run, run_state::SUPERSEDED)
 }
 
 /// Close `row`'s task if it is open; mark a closed task's row done.
@@ -149,7 +144,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Restarts {
         store: &PumpStore,
         mail: &mut M,
     ) -> Result<(), VivariumError> {
-        for run in store.runs_in_state(RUN_RESTARTING)? {
+        for run in store.runs_in_state(run_state::RESTARTING)? {
             resume_one(ctx, store, mail, &run);
         }
         prune_dead_jobs(ctx, st, store, mail)
@@ -204,7 +199,7 @@ impl DeadRun {
 /// Every superseded or withdrawn run with its step rows.
 fn dead_runs(store: &PumpStore) -> Result<Vec<DeadRun>, VivariumError> {
     let mut dead = Vec::new();
-    for state in [RUN_SUPERSEDED, RUN_WITHDRAWN] {
+    for state in [run_state::SUPERSEDED, run_state::WITHDRAWN] {
         for run in store.runs_in_state(state)? {
             let rows = store.steps_of(&run.need, run.run)?;
             dead.push(DeadRun { run, rows });
