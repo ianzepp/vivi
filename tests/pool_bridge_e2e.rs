@@ -77,9 +77,9 @@ fi
 answers=$(mktemp) || exit 4
 {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"harness","version":"0"}}}'
-  printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show","arguments":{"handle":"%s"}}}\n' "$handle"
-  printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reply","arguments":{"handle":"%s","body":"receipt: read the task, checks pass, nothing left undone"}}}\n' "$handle"
-  printf '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"done","arguments":{"handle":"%s"}}}\n' "$handle"
+  printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show","arguments":{"handle":"%s","project":"%s"}}}\n' "$handle" "${VIVI_MCP_PROJECT_ID:-}"
+  printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reply","arguments":{"handle":"%s","body":"receipt: read the task, checks pass, nothing left undone","project":"%s"}}}\n' "$handle" "${VIVI_MCP_PROJECT_ID:-}"
+  printf '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"done","arguments":{"handle":"%s","project":"%s"}}}\n' "$handle" "${VIVI_MCP_PROJECT_ID:-}"
 } | "$vivi_bin" mcp >"$answers" 2>"$answers.err"
 status=$?
 echo "vivi mcp exit $status"
@@ -351,11 +351,10 @@ fn no_file_holds(dir: &Path, secret: &str, key_id: &str, context: &str) {
 
 /// POST one JSON-RPC message to the fake's MCP endpoint as `bearer`.
 fn mcp(server: &ProjectServer, bearer: &str, message: Value) -> Value {
-    let path = format!("/v1/projects/{}/mcp", server.project());
     let reply = project_server::http(
         &server.url(),
         "POST",
-        &path,
+        "/v1/mcp",
         &[
             ("Content-Type", "application/json"),
             ("Authorization", &format!("Bearer {bearer}")),
@@ -368,6 +367,8 @@ fn mcp(server: &ProjectServer, bearer: &str, message: Value) -> Value {
 
 /// One `tools/call` of `name` with `arguments`, as `bearer`.
 fn call(server: &ProjectServer, bearer: &str, id: u64, name: &str, arguments: Value) -> Value {
+    let mut arguments = arguments;
+    arguments["project"] = json!(server.project());
     mcp(
         server,
         bearer,
@@ -507,6 +508,17 @@ fn a_bridge_job_reads_its_task_and_reports_as_the_member() {
             "every tool call bears the job's own key ({})",
             key.key_id
         );
+    }
+    for seen in &calls {
+        assert_eq!(
+            seen.body["params"]["arguments"]["project"].as_str(),
+            Some(server.project()),
+            "every tool call names the project: {}",
+            seen.body
+        );
+    }
+    for seen in &requests {
+        assert_eq!(seen.path, "/v1/mcp", "the server's MCP endpoint");
     }
     let show = &calls[0].body;
     assert_eq!(

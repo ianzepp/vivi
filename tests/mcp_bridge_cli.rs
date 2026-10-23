@@ -403,6 +403,11 @@ fn an_api_key_in_the_environment_serves_without_minting() {
     assert_eq!(refused["error"]["code"], -32000);
     assert_eq!(refused["error"]["data"]["http_status"], 401);
     assert_eq!(server.tokens_minted(), 0, "still no mint after the refusal");
+    let seen = server.mcp_requests();
+    assert!(!seen.is_empty(), "the bridge reached the server");
+    for request in &seen {
+        assert_eq!(request.path, "/v1/mcp", "the server's MCP endpoint");
+    }
 
     let (status, stderr) = bridge.finish();
     assert_eq!(status.code(), Some(0), "{stderr}");
