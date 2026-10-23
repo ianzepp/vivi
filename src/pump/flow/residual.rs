@@ -264,7 +264,10 @@ fn find_outgoing_need(ctx: &Ctx, subject: &str) -> Result<Option<String>, Vivari
         .map(|row| row.handle))
 }
 
-fn parse_need_handle(output: &str) -> Option<String> {
+/// The handle in `need send` output: the third token of the first `created `
+/// line, else the second token of the first `sent ` line. A handle that is
+/// empty or holds whitespace is refused.
+pub(crate) fn parse_need_handle(output: &str) -> Option<String> {
     let token = output
         .lines()
         .find(|line| line.starts_with("created "))

@@ -298,7 +298,8 @@ fn send_need(ctx: &Ctx, run: &RunRow, job: &PoolJob, finding: &Finding) -> Resul
     if out.code != 0 {
         return Err(format!("need send failed: {}", out.text.trim()));
     }
-    need_handle(&out.text).ok_or_else(|| format!("need send gave no handle: {}", out.text.trim()))
+    crate::pump::flow::residual::parse_need_handle(&out.text)
+        .ok_or_else(|| format!("need send gave no handle: {}", out.text.trim()))
 }
 
 /// Run one `vivi` subcommand; an error names the command and its output.
@@ -309,21 +310,6 @@ fn vivi_ok(ctx: &Ctx, command: &str) -> Result<(), String> {
     } else {
         Err(format!("{command} failed: {}", out.text.trim()))
     }
-}
-
-/// The handle in `need send` output: the third token of the `created ` line
-/// (`created <identity> <handle>`), else the second token of a `sent ` line.
-fn need_handle(text: &str) -> Option<String> {
-    let created = text
-        .lines()
-        .find(|line| line.starts_with("created "))
-        .and_then(|line| line.split_whitespace().nth(2));
-    let token = created.or_else(|| {
-        text.lines()
-            .find(|line| line.starts_with("sent "))
-            .and_then(|line| line.split_whitespace().nth(1))
-    });
-    token.map(str::to_owned)
 }
 
 /// Mark one audit key applied.
