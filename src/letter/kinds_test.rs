@@ -200,3 +200,49 @@ fn close_events_take_a_verdict_and_other_events_take_none() {
     let parsed = parse_kind(&marked, &letter("", "x")).unwrap();
     assert_eq!(parsed.front, Front::Event(CloseFront::default()));
 }
+
+#[test]
+fn mail_with_a_role_envelope_is_a_reply() {
+    let text = letter(
+        "answer = \"built\"\nchange = []\ndeviations = []\nremaining = []\n",
+        "done",
+    );
+    let parsed = parse_kind(&LetterKind::Mail, &text).unwrap();
+    assert_eq!(parsed.kind, LetterKind::Reply(RoleKind::Hand));
+    assert_eq!(parsed.prose, "done");
+    assert!(matches!(parsed.front, Front::Reply(ref reply) if reply.answer == "built"));
+}
+
+#[test]
+fn mail_with_keys_that_fit_no_front_is_refused_naming_both() {
+    let err = parse_kind(&LetterKind::Mail, &letter("colour = \"red\"\n", "x"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("colour"), "{err}");
+    assert!(
+        err.contains("(and the front matter is not a role reply envelope)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_role_envelope_that_fails_its_own_rules_is_refused() {
+    let err = parse_kind(
+        &LetterKind::Mail,
+        &letter("answer = \"blocked-scope\"\n", "x"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("(and the front matter is not a role reply envelope)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn every_role_is_listed_once() {
+    let all = RoleKind::ALL;
+    for (index, role) in all.iter().enumerate() {
+        assert!(!all[index + 1..].contains(role), "{role:?} listed twice");
+    }
+}

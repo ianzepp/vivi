@@ -24,6 +24,21 @@ pub enum RoleKind {
 }
 
 impl RoleKind {
+    /// Every role, in declaration order.
+    pub const ALL: [RoleKind; 11] = [
+        Self::Researcher,
+        Self::Planner,
+        Self::Admitter,
+        Self::Slicer,
+        Self::Auditor,
+        Self::Judge,
+        Self::Cto,
+        Self::Merge,
+        Self::Hand,
+        Self::Repairer,
+        Self::HeadCeo,
+    ];
+
     /// The role of a flow step node; `None` for rung, fanout and other
     /// code-run nodes, and for merge-main (a code job, not a role reply).
     pub fn from_class(class: &NodeClass) -> Option<Self> {

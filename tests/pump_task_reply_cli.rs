@@ -44,8 +44,12 @@ fn vivi(tmp: &tempfile::TempDir, args: &[&str]) -> Output {
 }
 
 fn reply(tmp: &tempfile::TempDir, task: &str, extra: &[&str]) -> Output {
+    reply_with(tmp, task, extra, "pump-brief: j1\nthe brief\n")
+}
+
+fn reply_with(tmp: &tempfile::TempDir, task: &str, extra: &[&str], text: &str) -> Output {
     let body = tmp.path().join("body.txt");
-    std::fs::write(&body, "pump-brief: j1\nthe brief\n").unwrap();
+    std::fs::write(&body, text).unwrap();
     let mut args = vec!["mail", "reply", task, "--from", "mind"];
     args.extend_from_slice(extra);
     args.extend(["--body-file", body.to_str().unwrap()]);
@@ -83,6 +87,50 @@ fn a_reply_to_the_pump_identity_lands_on_the_task_thread() {
     assert!(thread.status.success(), "{}", text(&thread.stderr));
     assert!(
         text(&thread.stdout).contains("the brief"),
+        "{}",
+        text(&thread.stdout)
+    );
+}
+
+const HAND_ENVELOPE: &str =
+    "+++\nanswer = \"built\"\nchange = []\ndeviations = []\nremaining = []\n+++\n\nthe report\n";
+
+#[test]
+fn a_hand_envelope_reply_is_accepted_and_stored_unchanged() {
+    let (tmp, mailspace) = project();
+    let task = self_task(&mailspace);
+
+    let out = reply_with(&tmp, &task, &["--to", "mind"], HAND_ENVELOPE);
+
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let thread = vivi(&tmp, &["mail", "thread", &task]);
+    assert!(thread.status.success(), "{}", text(&thread.stderr));
+    let shown = text(&thread.stdout);
+    assert!(shown.contains("answer = \"built\""), "{shown}");
+    assert!(shown.contains("the report"), "{shown}");
+}
+
+#[test]
+fn a_reply_whose_front_matter_fits_no_front_is_refused_and_stores_nothing() {
+    let (tmp, mailspace) = project();
+    let task = self_task(&mailspace);
+
+    let out = reply_with(
+        &tmp,
+        &task,
+        &["--to", "mind"],
+        "+++\ncolour = \"red\"\n+++\n\nthe report\n",
+    );
+
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("colour"),
+        "{}",
+        text(&out.stderr)
+    );
+    let thread = vivi(&tmp, &["mail", "thread", &task]);
+    assert!(
+        !text(&thread.stdout).contains("the report"),
         "{}",
         text(&thread.stdout)
     );

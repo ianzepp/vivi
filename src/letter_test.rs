@@ -146,3 +146,14 @@ fn render_allows_a_fence_inside_a_one_line_value() {
     let text = render(&probe, "p").unwrap();
     assert_eq!(parse::<Probe>(&text).unwrap().front, probe);
 }
+
+#[test]
+fn prose_of_returns_the_prose_after_front_matter_or_the_whole_body() {
+    assert_eq!(
+        prose_of("+++\n+++\n\npump: run r1 started\n"),
+        "pump: run r1 started"
+    );
+    assert_eq!(prose_of("+++\nanswer = \"ok\"\n+++\nbody"), "body");
+    assert_eq!(prose_of("pump: run r1 started"), "pump: run r1 started");
+    assert_eq!(prose_of("+++\nunclosed"), "+++\nunclosed");
+}

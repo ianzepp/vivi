@@ -117,6 +117,24 @@ fn a_reply_by_another_member_restarts_a_live_run_at_plan() -> R {
 }
 
 #[test]
+fn the_run_started_post_is_stored_under_front_matter_and_still_counts() -> R {
+    let mut rig = rig()?;
+    let thread = rig
+        .port
+        .mailspace
+        .thread(&rig.need, false, usize::MAX, usize::MAX)?;
+    let start = thread
+        .iter()
+        .find(|m| crate::letter::prose_of(&m.body).starts_with("pump: run r1 started"))
+        .expect("the run-started post");
+    assert!(start.body.trim_start().starts_with("+++"), "{}", start.body);
+    rig.reply_as("operator")?;
+    rig.phase()?;
+    assert_eq!(rig.runs()?.len(), 2);
+    Ok(())
+}
+
+#[test]
 fn a_reply_by_the_pump_identity_changes_nothing() -> R {
     let mut rig = rig()?;
     rig.reply_as(PUMP)?;
