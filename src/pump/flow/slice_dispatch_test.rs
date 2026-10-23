@@ -300,6 +300,14 @@ fn retry_runs_the_same_task_with_a_new_job_id_and_exhausts_at_the_cap() -> R {
     assert_eq!(rig.job(&second).task, rig.job(&first).task);
     assert_eq!(rig.store.step_job(&second)?.unwrap().attempt, 2);
     assert_eq!(rig.store.last_attempt(&slice.task)?, 2);
+    let payload = &rig.job(&second).payload;
+    assert_eq!(payload["attempt"], 2);
+    assert_eq!(
+        payload["attempt"],
+        rig.store.step_job(&second)?.unwrap().attempt
+    );
+    assert_eq!(payload["node"], "slice:a");
+    assert_eq!(payload["need"], NEED);
     // The failed attempt's record went to the slice task.
     let mails = rig.host.commands();
     let record = format!("mail reply {} ", slice.task);
