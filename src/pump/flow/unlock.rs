@@ -21,17 +21,14 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
-use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// The exception kind raised for an unlock that cannot be applied.
 pub const UNLOCK_REFUSED: &str = "flow-unlock-refused";
 
 /// The exception kind raised once when a run reaches its lock.
 pub const NEED_LOCKED: &str = "flow-need-locked";
-
-/// The run state of a run that is still being advanced.
-const RUN_LIVE: &str = "live";
 
 /// The verdict a released lock step closes with.
 const UNLOCKED: &str = "unlocked";

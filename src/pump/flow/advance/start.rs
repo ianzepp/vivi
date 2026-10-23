@@ -9,17 +9,13 @@ use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
-use crate::pump::store::PumpStore;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// The step-row node name of a run's sentinel task.
 pub const SENTINEL_NODE: &str = "sentinel";
 
 /// The run number at which the alarm fires (an alarm, not a limit).
 const ALARM_RUN: u32 = 4;
-
-/// The run state of a run still being advanced: the value of the store's
-/// `RUN_LIVE`, whose module is private to the store.
-const RUN_LIVE_STATE: &str = "live";
 
 /// The run state of a run whose tasks are still being sent: [`resume`]
 /// finishes it.
@@ -124,13 +120,13 @@ where
         need,
         &format!("pump: run r{number} started ({}, entry {entry})", run.kind),
     )?;
-    store.set_run_state(need, number, RUN_LIVE_STATE)?;
+    store.set_run_state(need, number, RUN_LIVE)?;
 
     if number >= ALARM_RUN {
         ctx.exception("flow-run-4", need, &run4_text(store, need, number)?);
     }
     Ok(RunRow {
-        state: RUN_LIVE_STATE.to_string(),
+        state: RUN_LIVE.to_string(),
         ..run.clone()
     })
 }

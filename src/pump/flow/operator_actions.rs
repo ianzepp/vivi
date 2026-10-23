@@ -30,13 +30,10 @@ use crate::pump::flow::index::{RunRow, StepJobRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
-use crate::pump::store::PumpStore;
+use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// Exception kind of an operator action the flow cannot apply.
 pub const ACTION_REFUSED: &str = "flow-action-refused";
-
-/// Run state of a run being advanced.
-const RUN_LIVE: &str = "live";
 
 /// The flow node a replan restarts at.
 const REPLAN_ENTRY: &str = "plan";
