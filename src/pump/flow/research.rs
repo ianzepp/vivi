@@ -20,7 +20,7 @@ const SECTION_CAP: usize = 24 * 1024;
 const READ_TIMEOUT: u64 = 60;
 
 /// The want a need body explores: the need front's `explores`, read through
-/// the one need reader (an old `for:` line converts there).
+/// the one need reader.
 pub(crate) fn for_want(body: &str) -> Option<String> {
     match crate::letter::read::need_of("", body) {
         Ok(envelope) => envelope.front.explores,
@@ -86,7 +86,7 @@ fn render(
 ) -> String {
     let mut parts = vec![format!("Research request for need {need}.")];
     if let Some(want) = want {
-        parts.push(format!("for: {want}"));
+        parts.push(format!("explores: {want}"));
     }
     parts.push(format!("NEED BODY:\n{}", body.trim()));
     parts.push(format!("NEED THREAD:\n{thread}"));

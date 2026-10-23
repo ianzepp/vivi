@@ -1,4 +1,4 @@
-//! The researcher step handler: the `for:` line and the brief it builds.
+//! The researcher step handler: the `explores` fact and the brief it builds.
 
 use std::sync::Arc;
 
@@ -55,6 +55,13 @@ fn researcher() -> RoutedRole {
         model: None,
         models: Vec::new(),
     }
+}
+
+/// A need body that explores `want` (when given) over `prose`.
+fn need_body(want: Option<&str>, prose: &str) -> String {
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    front.explores = want.map(str::to_owned);
+    crate::letter::fixture::need_body_with(&front, prose)
 }
 
 /// A rig whose need task carries `body`; `with_role` adds the researcher.
@@ -123,14 +130,9 @@ fn start_job(rig: &Rig) -> Result<JobSpec, VivariumError> {
 }
 
 #[test]
-fn for_want_reads_the_first_for_line() {
-    assert_eq!(for_want("x\nfor: w1\nfor: w2"), Some("w1".to_owned()));
-    assert_eq!(for_want("for: <want-1234>"), Some("want-1234".to_owned()));
-    assert_eq!(
-        for_want("  for: `want-1234` "),
-        Some("want-1234".to_owned())
-    );
-    assert_eq!(for_want("no such line\nfor:"), None);
+fn a_legacy_for_line_names_no_want() {
+    assert_eq!(for_want("x\nfor: w1\nfor: w2"), None);
+    assert_eq!(for_want("for: <want-1234>"), None);
     assert_eq!(for_want("plain body"), None);
 }
 
@@ -146,7 +148,7 @@ fn for_want_reads_a_front_matter_explores() {
 
 #[test]
 fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
-    let rig = rig("Look into it.\nfor: w1", true)?;
+    let rig = rig(&need_body(Some("w1"), "Look into it."), true)?;
     rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
     rig.host.reply("want show", 0, "WANT-THREAD-TEXT");
     let spec = start_job(&rig)?;
@@ -159,7 +161,7 @@ fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
     assert_eq!(spec.role, "researcher");
     assert_eq!(spec.kind, "researcher");
     assert_eq!(spec.task.as_deref(), Some("t-step"));
-    assert!(spec.body.contains("for: w1"), "{}", spec.body);
+    assert!(spec.body.contains("explores: w1"), "{}", spec.body);
     assert!(spec.body.contains("Look into it."), "{}", spec.body);
     assert!(spec.body.contains("NEED-THREAD-TEXT"), "{}", spec.body);
     assert!(spec.body.contains("WANT-THREAD-TEXT"), "{}", spec.body);
@@ -168,8 +170,8 @@ fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
 }
 
 #[test]
-fn a_need_without_a_for_line_reads_no_want() -> R {
-    let rig = rig("Look into it.", true)?;
+fn a_need_without_explores_reads_no_want() -> R {
+    let rig = rig(&need_body(None, "Look into it."), true)?;
     rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
     let spec = start_job(&rig)?;
     assert!(!spec.body.contains("WANT THREAD"), "{}", spec.body);
@@ -186,7 +188,7 @@ fn a_need_without_a_for_line_reads_no_want() -> R {
 
 #[test]
 fn a_failing_read_gives_the_notice_line_not_an_error() -> R {
-    let rig = rig("for: w1", true)?;
+    let rig = rig(&need_body(Some("w1"), "Look into it."), true)?;
     rig.host.reply("need show", 1, "boom");
     rig.host.reply("want show", 0, "WANT-THREAD-TEXT");
     let spec = start_job(&rig)?;
@@ -198,7 +200,7 @@ fn a_failing_read_gives_the_notice_line_not_an_error() -> R {
 
 #[test]
 fn no_researcher_role_is_an_error() -> R {
-    let rig = rig("for: w1", false)?;
+    let rig = rig(&need_body(Some("w1"), "Look into it."), false)?;
     let error = start_job(&rig).err().map(|error| error.to_string());
     let text = error.ok_or_else(|| VivariumError::Message(String::from("expected an error")))?;
     assert!(text.contains("researcher"), "{text}");
@@ -207,7 +209,7 @@ fn no_researcher_role_is_an_error() -> R {
 
 #[test]
 fn a_long_thread_keeps_its_newest_text() -> R {
-    let rig = rig("plain", true)?;
+    let rig = rig(&need_body(None, "plain"), true)?;
     let long = format!("OLDEST {} NEWEST", "x".repeat(30 * 1024));
     rig.host.reply("need show", 0, &long);
     let spec = start_job(&rig)?;
