@@ -267,13 +267,18 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
             o.need, o.run, node.id, node.label
         );
         let subject = format!("{} ({} r{})", node.label, o.need, o.run);
-        let task = self.mail.send_step(
-            &self.ctx.cfg.reply_from,
-            &self.ctx.cfg.reply_from,
-            &subject,
-            &body,
-            std::slice::from_ref(&o.task),
-        )?;
+        // A task sent before a crash but never indexed is adopted, not sent twice.
+        let first_line = body.lines().next().unwrap_or_default();
+        let task = match self.mail.sent_step(&subject, first_line)? {
+            Some(task) => task,
+            None => self.mail.send_step(
+                &self.ctx.cfg.reply_from,
+                &self.ctx.cfg.reply_from,
+                &subject,
+                &body,
+                std::slice::from_ref(&o.task),
+            )?,
+        };
         self.store.insert_step(
             &o.need,
             &StepRow {
