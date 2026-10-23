@@ -131,22 +131,50 @@ impl Ended<'_> {
         )
     }
 
-    /// Reply with the reason, then count a failed hand attempt.
+    /// The hand attempt this merge belongs to. A missing, non-numeric or
+    /// out-of-range payload value is a parse error naming the job.
+    fn attempt(&self) -> Result<u32, VivariumError> {
+        let bad = || {
+            VivariumError::Parse(format!(
+                "slice merge job {} has no valid numeric attempt in its payload",
+                self.job.id
+            ))
+        };
+        let value = self
+            .job
+            .payload
+            .get("attempt")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(bad)?;
+        u32::try_from(value).map_err(|_| bad())
+    }
+
+    /// Reply on the slice task once per job: the text carries `job <id>:`, and
+    /// a reply that already names this job is not posted again.
+    fn reply_once<M: FlowMail>(&self, mail: &mut M, reason: &str) -> Result<(), VivariumError> {
+        let key = format!("job {}:", self.job.id);
+        let seen = mail
+            .marked_replies(&self.slice.task, FAILED_MARKER)?
+            .iter()
+            .any(|(_, body)| body.contains(&key));
+        if seen {
+            return Ok(());
+        }
+        mail.reply(
+            &self.slice.task,
+            &marked_line(FAILED_MARKER, &format!("{key} {reason}")),
+        )
+    }
+
+    /// Reply with the reason (once per job), then count a failed hand attempt.
     fn failed<S: JobStore, M: FlowMail>(
         &self,
         st: &mut S,
         mail: &mut M,
         reason: &str,
     ) -> Result<(), VivariumError> {
-        mail.reply(&self.slice.task, &marked_line(FAILED_MARKER, reason))?;
-        let attempt = u32::try_from(
-            self.job
-                .payload
-                .get("attempt")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(1),
-        )
-        .unwrap_or(1);
+        let attempt = self.attempt()?;
+        self.reply_once(mail, reason)?;
         let retried = slice_dispatch::retry(
             self.ctx, st, self.store, &*mail, self.need, self.slice, self.job, attempt,
         )?;
@@ -179,10 +207,7 @@ impl Ended<'_> {
             job.pool.as_deref().unwrap_or("none"),
         );
         raise_once(self.ctx, ENV_FAILURE, &job.id, &text);
-        mail.reply(
-            &self.slice.task,
-            &marked_line(FAILED_MARKER, &format!("environment: {}", env.evidence)),
-        )?;
+        self.reply_once(mail, &format!("environment: {}", env.evidence))?;
         self.store
             .set_step_state(&self.slice.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
