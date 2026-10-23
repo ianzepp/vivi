@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use vivi::pump::audit::AuditRun;
 use vivi::pump::jobs::{self, JobSpec, JobStatus};
-use vivi::pump::state::{GateRun, State, Status, Unit};
+use vivi::pump::state::{GateRun, State};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
@@ -20,17 +20,13 @@ const WORKERS: &[(&str, &str, &str)] = &[
     ("promote-survival", "promote", "release"),
     ("cadence-survival", "cadence", "mind"),
     ("digest-survival", "digest", "digest"),
+    ("hand-survival", "hand", "hand"),
 ];
-const UNIT: &str = "hand-survival";
 const TEST_HARNESS: &str = r#"#!/bin/sh
 set -eu
 brief="$1"
 id=$(sed -n 's/^pump-job-id: //p' "$brief" | head -n 1)
 kind=$(sed -n 's/^pump-job-kind: //p' "$brief" | head -n 1)
-if [ -z "$id" ]; then
-  id="$VIVI_TEST_UNIT_ID"
-  kind=hand
-fi
 printf '%s %s\n' "$kind" "$id" > "$VIVI_TEST_MARKERS/$id.started"
 while [ ! -f "$VIVI_TEST_MARKERS/release-workers" ]; do sleep 0.1; done
 case "$kind" in
@@ -53,7 +49,7 @@ case "$kind" in
     printf 'digest survived\n'
     ;;
   hand)
-    printf '%s\n' 'VERDICT: no-defect'
+    printf '%s\n' '+++' 'answer = "built"' 'change = []' 'deviations = []' 'remaining = []' '+++' 'hand survived'
     ;;
   *)
     printf 'unexpected worker kind: %s\n' "$kind" >&2
@@ -102,16 +98,12 @@ impl Drop for PumpChild {
 }
 
 #[test]
-fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
+fn local_pool_jobs_survive_sigkill_and_apply_once() {
     let rig = scaffold();
     seed_state(&rig);
 
     let mut first = pump_child(&rig);
-    let expected: Vec<String> = WORKERS
-        .iter()
-        .map(|(id, _, _)| (*id).to_owned())
-        .chain(std::iter::once(UNIT.to_owned()))
-        .collect();
+    let expected: Vec<String> = WORKERS.iter().map(|(id, _, _)| (*id).to_owned()).collect();
     let workers_started = wait_until(Duration::from_secs(30), || {
         expected
             .iter()
@@ -150,7 +142,6 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
         assert_eq!(job.status, JobStatus::Dispatched, "{id}");
         assert!(job.task.is_some(), "{id} did not save its task handle");
     }
-    assert_eq!(stopped_state.units[UNIT].status, Status::Inflight);
 
     let mut restarted = pump_child(&rig);
     assert!(
@@ -161,27 +152,6 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
     stop_pump(&rig, &mut restarted);
 
     let final_state = load_state(&rig);
-    assert_eq!(final_state.units[UNIT].status, Status::NoDefect);
-    assert!(
-        final_state.units[UNIT]
-            .verdict_text
-            .as_deref()
-            .is_some_and(|text| text.contains("VERDICT: no-defect"))
-    );
-    assert_eq!(final_state.gates.len(), 1, "gate receipt must apply once");
-    assert_eq!(
-        final_state.promotions.len(),
-        1,
-        "promotion receipt must apply once"
-    );
-    assert!(
-        !final_state.extra.contains_key("audit"),
-        "audit run remains open"
-    );
-    assert!(
-        final_state.units.contains_key("audit-survival-1"),
-        "audit report was not applied"
-    );
     assert_eq!(
         fs::read_to_string(rig.home.join("plans/survival-plan.json")).unwrap(),
         "{\"need\":\"planner-survival\",\"verdict\":\"hold\",\"reason\":\"recovered once\"}"
@@ -205,13 +175,16 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
             "promote" => "PUMP_PROMOTE_RESULT=",
             "cadence" => "cadence survived",
             "digest" => "digest survived",
+            "hand" => "hand survived",
             other => panic!("unexpected seeded job kind {other}"),
         };
         assert!(
             receipt.contains(marker),
             "{id} has the wrong saved receipt: {receipt}"
         );
-        assert!(job.applied_at.is_some(), "{id} receipt was not applied");
+        if pump_applies(&job.kind) {
+            assert!(job.applied_at.is_some(), "{id} receipt was not applied");
+        }
         if job.kind == "promote" {
             let publication = job.outcome.as_ref().unwrap().runner_publish().unwrap();
             assert!(publication.succeeded(), "{id}: {publication:?}");
@@ -227,7 +200,6 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
             "restart sent a duplicate task for {id}"
         );
     }
-    assert_eq!(task_occurrences(&rig.project, UNIT, "hand"), 1);
 }
 
 fn scaffold() -> Rig {
@@ -268,7 +240,7 @@ fn scaffold() -> Rig {
     // `mailspace init` writes a starter [pump]; this test supplies its own.
     parsed.as_table_mut().unwrap().remove("pump");
     let additions = format!(
-        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
+        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
         toml_string(&project.join(".vivi/pump-home")),
         toml_string(&repo),
         toml_string(&bare),
@@ -345,16 +317,6 @@ fn seed_state(rig: &Rig) {
         })
         .unwrap(),
     );
-    let unit = Unit {
-        need: String::new(),
-        title: String::from("survive pump restart"),
-        brief: String::from("Return VERDICT: no-defect after the process restart."),
-        write_scope: vec![String::from("survival.txt")],
-        status: Status::Pending,
-        ..Unit::default()
-    };
-    st.units.insert(UNIT.to_owned(), unit);
-    st.order.push(UNIT.to_owned());
 
     for (id, kind, role) in WORKERS {
         let mut spec = JobSpec::new(
@@ -378,6 +340,9 @@ fn seed_state(rig: &Rig) {
             *kind,
             "planner:board" | "gate" | "audit" | "cadence" | "digest"
         );
+        if *kind == "hand" {
+            spec.branch = Some(String::from("vivi/unit/hand-survival-a1"));
+        }
         if *kind == "promote" {
             spec.branch = Some(String::from("pump/promotion/default/survival"));
             spec.publish_ref = Some(String::from("refs/heads/main"));
@@ -438,7 +403,6 @@ fn pump_child(rig: &Rig) -> PumpChild {
             path(&rig.project),
         ])
         .env("VIVI_TEST_MARKERS", &rig.marker_dir)
-        .env("VIVI_TEST_UNIT_ID", UNIT)
         .env("VIVI_TEST_TIP", &rig.tip)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -466,31 +430,26 @@ fn dispatched(rig: &Rig) -> bool {
             .jobs
             .get(*id)
             .is_some_and(|job| job.status == JobStatus::Dispatched && job.task.is_some())
-    }) && state
-        .units
-        .get(UNIT)
-        .is_some_and(|unit| unit.status == Status::Inflight && unit.task.is_some())
+    })
+}
+
+/// Whether the bare pump still applies this kind's receipt. The gate, audit and
+/// promote appliers went with the old pipeline (N6d-13) and their rows go with
+/// N6d-26; a hand job is a flow slice job whose application to a flow step is
+/// proved tick-level on a real mailspace by the e2e_gate_* tests. Those four
+/// kinds still prove survival: dispatched, handle saved, receipt collected once.
+fn pump_applies(kind: &str) -> bool {
+    matches!(kind, "planner:board" | "cadence" | "digest")
 }
 
 fn applied(rig: &Rig) -> bool {
     let state = load_state(rig);
     WORKERS.iter().all(|(id, _, _)| {
-        state
-            .jobs
-            .get(*id)
-            .is_some_and(|job| job.status == JobStatus::Finished && job.applied_at.is_some())
-    }) && state
-        .units
-        .get(UNIT)
-        .is_some_and(|unit| unit.status == Status::NoDefect)
-        && state.gates.len() == 1
-        && state
-            .promotions
-            .iter()
-            .any(|promotion| promotion.tip == rig.tip)
-        && !state.extra.contains_key("audit")
-        && state.units.contains_key("audit-survival-1")
-        && rig.home.join("plans/survival-plan.json").is_file()
+        state.jobs.get(*id).is_some_and(|job| {
+            job.status == JobStatus::Finished
+                && (!pump_applies(&job.kind) || job.applied_at.is_some())
+        })
+    }) && rig.home.join("plans/survival-plan.json").is_file()
 }
 
 fn load_state(rig: &Rig) -> State {
