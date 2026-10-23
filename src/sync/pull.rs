@@ -17,6 +17,7 @@
 //! project governance: the pull counts it and files it under no role.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -76,7 +77,7 @@ pub struct PullReport {
     /// carried the new epoch was read with a stale cursor and discarded
     /// unfiled; the cursor and floor were reset and the pull re-read from
     /// sequence 0.
-    pub epoch_reset: Option<(Option<u32>, u32)>,
+    pub epoch_reset: Option<(u32, u32)>,
     /// Content ids of the event letters and work items handled since the
     /// last settle, new or already held. Drained by [`settle_events`].
     pub touched: Vec<String>,
@@ -110,17 +111,12 @@ impl PullReport {
         let governance = (self.governance > 0)
             .then(|| format!(", {} governance letter(s)", self.governance))
             .unwrap_or_default();
-        let epoch = self
-            .epoch_reset
-            .as_ref()
-            // A reset always names the epoch it replaced.
-            .and_then(|(old, new)| old.map(|old| (old, *new)))
-            .map_or(String::new(), |(old, new)| {
-                format!(
-                    ", server epoch changed ({old} -> {new}): cursor and floor reset, \
-                     re-read from sequence 0"
-                )
-            });
+        let epoch = self.epoch_reset.map_or(String::new(), |(old, new)| {
+            format!(
+                ", server epoch changed ({old} -> {new}): cursor and floor reset, \
+                 re-read from sequence 0"
+            )
+        });
         let held = self
             .held_note()
             .map(|note| format!(", {note}"))
@@ -147,7 +143,6 @@ impl PullReport {
 
     /// `N refused: id, ...` for the first five, then a tail count; plain
     /// `0 refused` when nothing was refused.
-    #[must_use]
     fn refused_note(&self) -> String {
         if self.refused.is_empty() {
             return "0 refused".to_string();
@@ -166,7 +161,6 @@ impl PullReport {
     /// The summary's tail: `cursor N` plainly, or, when the server's cursor
     /// jumped over letters this member is not shown, where every moved
     /// sequence number went.
-    #[must_use]
     fn cursor_tail(&self) -> String {
         if self.skipped_by_server == 0 {
             return format!("cursor {}", self.cursor);
@@ -336,7 +330,7 @@ fn handle_page(
     state: &mut SyncState,
     report: &mut PullReport,
     page: &Page,
-    dir: &std::path::Path,
+    dir: &Path,
     unsaved: &mut bool,
     progress: &mut dyn FnMut(&PageProgress),
 ) -> Result<bool, VivariumError> {
@@ -443,7 +437,7 @@ fn unresolved(pending: &[(String, String)], dangling: &BTreeMap<String, String>)
 /// The state a pull starts from. A resync replaces the cursor and floor, so
 /// it also replaces an unreadable file instead of failing on it.
 fn load_state(
-    dir: &std::path::Path,
+    dir: &Path,
     settings: &SyncSettings,
     plan: &PullPlan<'_>,
 ) -> Result<SyncState, VivariumError> {
@@ -531,7 +525,7 @@ fn react_epoch(
     page: &Page,
     report: &mut PullReport,
     resets: &mut usize,
-    dir: &std::path::Path,
+    dir: &Path,
 ) -> Result<bool, VivariumError> {
     if page.epoch_unusable && !report.warnings.iter().any(|w| w == UNUSABLE_EPOCH) {
         report.warnings.push(UNUSABLE_EPOCH.into());
@@ -557,7 +551,7 @@ fn react_epoch(
              the re-read covers full history"
         ));
     }
-    report.epoch_reset = Some((Some(old), new));
+    report.epoch_reset = Some((old, new));
     state.since = 0;
     state.floor = Some(Floor::full());
     state.epoch = Some(new);

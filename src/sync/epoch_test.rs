@@ -38,7 +38,7 @@ fn an_epoch_change_mid_life_resets_the_cursor_and_refiles_from_zero() {
 
     let report = world.bob.pull(&world.bob_client);
 
-    assert_eq!(report.epoch_reset, Some((Some(1), 2)));
+    assert_eq!(report.epoch_reset, Some((1, 2)));
     assert!(
         report.summary().contains(
             "server epoch changed (1 -> 2): cursor and floor reset, re-read from sequence 0"
@@ -307,7 +307,7 @@ fn an_epoch_change_between_two_pages_of_one_pull_resets() {
     )
     .unwrap();
 
-    assert_eq!(report.epoch_reset, Some((Some(1), 2)));
+    assert_eq!(report.epoch_reset, Some((1, 2)));
     assert!(report.summary().contains("server epoch changed (1 -> 2)"));
     let sines: Vec<u64> = world.server.lists().iter().map(|l| l.0).collect();
     assert_eq!(sines, [0, 1, 0, 1, 2], "page two's epoch re-read from 0");
