@@ -10,9 +10,10 @@ use crate::pump::flow::collect_step::{RunCx, StepCollector, merged_payload};
 use crate::pump::flow::def::{FAILED, NodeClass};
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
-use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR};
+use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
 use crate::pump::flow::verify::{self, SideEffect, VerifyReq};
 use crate::pump::jobs::merge_main::{self, MergeMainResult};
+use crate::pump::jobs::rung_result::{self, EnvFailure};
 use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
 
 /// Times a merge-main step is queued again after main moved or a lost job left
@@ -31,6 +32,9 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for BuildMergeMain {
         step: &StepRow,
         _class: &NodeClass,
     ) -> Result<(), VivariumError> {
+        if let Some(env) = rung_result::env_failure(job) {
+            return hold_env(cx, job, step, &env);
+        }
         match merge_main::classify(job) {
             None => Ok(()),
             Some(MergeMainResult::Merged(sha)) => {
@@ -48,6 +52,34 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for BuildMergeMain {
             Some(MergeMainResult::Failed) => failed(cx, job, step),
         }
     }
+}
+
+/// The worker could not run git or its checkout failed: the job says nothing
+/// about main. Alarm once, queue nothing, and hold the step for the operator.
+fn hold_env<S: JobStore, M: FlowMail>(
+    cx: &mut RunCx<'_, S, M>,
+    job: &PoolJob,
+    step: &StepRow,
+    env: &EnvFailure,
+) -> Result<(), VivariumError> {
+    raise_once(
+        cx.ctx,
+        rung_result::ENV_FAILURE,
+        &job.id,
+        &format!(
+            "merge-main job {} for step {} ({:?}, tool {}) on target {} pool {}: {}; \
+             answer with `vivi pump answer` (merged, conflict or failed)",
+            job.id,
+            step.task,
+            env.kind,
+            env.tool.as_deref().unwrap_or("none"),
+            job.target.as_deref().unwrap_or("none"),
+            job.pool.as_deref().unwrap_or("none"),
+            env.evidence
+        ),
+    );
+    cx.store
+        .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))
 }
 
 fn conflict<S: JobStore, M: FlowMail>(
