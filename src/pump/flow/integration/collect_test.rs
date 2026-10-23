@@ -265,6 +265,8 @@ fn a_real_conflict_answers_conflict_on_attempt_one() -> R {
 fn a_lost_job_whose_merge_main_already_holds_answers_merged() -> R {
     let mut rig = rig(1)?;
     rig.main_is(MAIN_B);
+    rig.host.reply("cat-file", 0, "");
+    rig.host.reply("merge-base", 0, "");
     rig.finish(1, JobStatus::Lost, "")?;
     rig.tick()?;
     assert_eq!(rig.jobs.jobs.len(), 1);
@@ -278,6 +280,7 @@ fn a_lost_job_whose_merge_main_already_holds_answers_merged() -> R {
 fn a_lost_job_with_main_unchanged_queues_again() -> R {
     let mut rig = rig(1)?;
     rig.main_is(MAIN_A);
+    rig.host.reply("cat-file", 128, "");
     rig.finish(1, JobStatus::Lost, "")?;
     rig.tick()?;
     assert!(
@@ -293,6 +296,7 @@ fn a_lost_job_with_main_unchanged_queues_again() -> R {
 fn a_lost_job_with_main_unchanged_on_attempt_four_answers_failed() -> R {
     let mut rig = rig(4)?;
     rig.main_is(MAIN_A);
+    rig.host.reply("cat-file", 128, "");
     rig.finish(4, JobStatus::Timeout, "")?;
     rig.tick()?;
     assert_eq!(rig.jobs.jobs.len(), 1);
@@ -301,16 +305,61 @@ fn a_lost_job_with_main_unchanged_on_attempt_four_answers_failed() -> R {
 }
 
 #[test]
-fn a_lost_job_with_unclear_git_holds_the_step() -> R {
+fn a_lost_job_on_a_moved_main_without_the_need_tip_queues_again() -> R {
     let mut rig = rig(1)?;
     rig.main_is(MAIN_B);
+    rig.host.reply("cat-file", 128, "");
+    rig.finish(1, JobStatus::Lost, "")?;
+    rig.tick()?;
+    let id = format!("merge-main-{}-{}-a2", rig.task, &MAIN_B[..12]);
+    assert!(
+        rig.jobs.jobs.contains_key(&id),
+        "{:?}",
+        rig.jobs.jobs.keys()
+    );
+    assert_eq!(rig.step()?.state, StepState::Running);
+    Ok(())
+}
+
+#[test]
+fn a_lost_job_whose_need_tip_is_not_an_ancestor_of_main_queues_again() -> R {
+    let mut rig = rig(1)?;
+    rig.main_is(MAIN_B);
+    rig.host.reply("cat-file", 0, "");
     rig.host.reply("merge-base", 1, "");
     rig.finish(1, JobStatus::Lost, "")?;
     rig.tick()?;
-    let step = rig.step()?;
-    assert_eq!(step.state, StepState::Waiting);
-    assert_eq!(step.verdict.as_deref(), Some(OPERATOR_HOLD));
-    assert_eq!(rig.jobs.jobs.len(), 1);
+    let id = format!("merge-main-{}-{}-a2", rig.task, &MAIN_B[..12]);
+    assert!(
+        rig.jobs.jobs.contains_key(&id),
+        "{:?}",
+        rig.jobs.jobs.keys()
+    );
+    assert_eq!(rig.step()?.state, StepState::Running);
+    Ok(())
+}
+
+#[test]
+fn a_lost_job_with_a_failing_fetch_holds_the_step_with_one_alarm() -> R {
+    let mut rig = rig(1)?;
+    rig.main_is(MAIN_B);
+    rig.host.reply("cat-file", 128, "");
+    rig.host.reply("fetch", 1, "network down");
+    rig.finish(1, JobStatus::Lost, "")?;
+    rig.tick()?;
+    held(&rig)?;
+    let text = exceptions(&rig);
+    assert_eq!(
+        text.matches("flow-side-effect-unclear").count(),
+        1,
+        "{text}"
+    );
+    rig.tick()?;
+    held(&rig)?;
+    assert_eq!(
+        exceptions(&rig).matches("flow-side-effect-unclear").count(),
+        1
+    );
     Ok(())
 }
 
