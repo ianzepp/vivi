@@ -7,7 +7,6 @@ use std::fs;
 
 use super::*;
 use crate::mailspace::{PumpActionRequest, PumpRecord, PumpState};
-use crate::pump::board::NeedRow;
 use crate::pump::fixture::{Project, T0, planned, project};
 use crate::pump::state::Unit;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -386,7 +385,7 @@ fn a_new_record_for_a_given_up_need_requeues_its_stuck_units_instead_of_closing_
 }
 
 #[test]
-fn a_new_record_for_a_planner_parked_need_is_planned_again_not_given_up() {
+fn a_new_record_for_a_planner_parked_need_clears_the_park_and_is_not_given_up() {
     let project = project();
     let ctx = project.pump_ctx();
     let need = project.need("fix auth");
@@ -408,14 +407,6 @@ fn a_new_record_for_a_planner_parked_need_is_planned_again_not_given_up() {
     assert!(st.board.planner_failed.is_empty());
     assert!(st.board.planner_fails.is_empty());
     assert_eq!(crate::pump::record::gave_up_reason(&ctx, &st, &need), None);
-    let rows = [NeedRow {
-        handle: need.clone(),
-        date: String::from("2026-10-22"),
-        subject: String::from("fix auth"),
-        marks: Vec::new(),
-    }];
-    crate::pump::board::launch_planners(&ctx, &mut st, &rows);
-    assert!(st.board.planning.contains_key(&need), "planned again");
     assert_eq!(
         project
             .mailspace

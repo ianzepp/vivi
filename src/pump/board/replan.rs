@@ -1,9 +1,9 @@
 //! Board steps that throw a plan away so the need is planned again: a held
-//! need whose prerequisites landed, and a first plan the pump rejected.
+//! need whose prerequisites landed.
 
 use std::fs;
 
-use super::{NeedRow, PLANNER_BACKOFF, plan_path, tail_note};
+use super::{NeedRow, plan_path};
 use crate::pump::host::Ctx;
 use crate::pump::state::State;
 
@@ -46,44 +46,6 @@ pub fn replan_unblocked(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
         ctx.log(&format!(
             "board: prerequisites of held need {} have landed; re-planning",
             row.handle
-        ));
-    }
-}
-
-/// A need whose first plan the pump rejected ([`crate::pump::plan`] records
-/// it `invalid` with the findings) is asked for a new plan: the rejected file
-/// moves to `plans/rejected/`, the need record is dropped, and the relaunch
-/// waits the planner backoff, doubled per rejection. The launch carries the
-/// findings in its prompt. The count is `planner_fails[<need>.invalid]`; past
-/// [`crate::pump::plan::PLAN_REASKS`] the ingest holds the need instead.
-pub fn reask_invalid_plans(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
-    for row in rows {
-        let handle = row.handle.as_str();
-        let due = st.needs.get(handle).is_some_and(|record| {
-            record.verdict == "invalid" && record.units.is_empty() && record.revision <= 1
-        }) && st.board.plan_findings.contains_key(handle);
-        let key = crate::pump::plan::invalid_key(handle);
-        let spent = st.board.planner_fails.get(&key).copied().unwrap_or(0);
-        if !due || spent >= crate::pump::plan::PLAN_REASKS {
-            continue;
-        }
-        forget_plan(ctx, st, handle, "rejected");
-        let spent = spent + 1;
-        st.board.planner_fails.insert(key, spent);
-        let delay = PLANNER_BACKOFF.saturating_mul(1u64 << spent.saturating_sub(1).min(16));
-        st.board
-            .planner_retry_at
-            .insert(handle.to_owned(), ctx.now().saturating_add(delay));
-        let findings = st
-            .board
-            .plan_findings
-            .get(handle)
-            .cloned()
-            .unwrap_or_default();
-        ctx.log(&format!(
-            "board: plan for {handle} rejected; asking the planner again in {delay}s              (re-ask {spent} of {}): {}",
-            crate::pump::plan::PLAN_REASKS,
-            tail_note(&findings, 600)
         ));
     }
 }
