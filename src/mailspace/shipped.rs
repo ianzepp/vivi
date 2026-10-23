@@ -22,6 +22,8 @@ pub const ADMITTER_ROLE: &str = "admitter";
 
 /// The role that cuts an admitted plan into slices.
 pub const SLICER_ROLE: &str = "slicer";
+/// The role that fixes a red main in the repair flow.
+pub const REPAIRER_ROLE: &str = "repairer";
 
 /// The shipped charter of the [`RESEARCHER_ROLE`] role.
 pub const RESEARCHER_CHARTER: &str =
