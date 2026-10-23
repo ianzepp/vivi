@@ -2,6 +2,7 @@
 //! the item — the server shows it by its `X-Vivi-Event` header, whatever
 //! kind its envelope carries — and files as mail whatever kind it carries.
 
+use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, RoleUpdate};
 use crate::sync::events::{role_of, state};
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
@@ -154,7 +155,7 @@ fn put_kind_event(w: &World, id: u64, item: u64, kind: &str) {
 #[test]
 fn an_event_letter_files_as_mail_and_mints_no_node_whatever_kind_it_carries() {
     let w = World::new();
-    w.put(1, "item", "done_when: x\n");
+    w.put(1, "item", &need_body(&["x"], ""));
     w.bob.pull(&w.bob_client);
     assert_eq!(nodes(&w.bob.mailspace), vec![(handle(1), "open".into())]);
 

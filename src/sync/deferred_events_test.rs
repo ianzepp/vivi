@@ -8,6 +8,7 @@
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
+use crate::letter::fixture::need_body;
 use crate::mailspace::{RoleUpdate, SendRequest, with_clock_skew};
 use crate::storage::BACKLOG_GRAPH_CODE;
 
@@ -52,7 +53,7 @@ fn trio() -> Trio {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "skewed clocks".into(),
-            body: "done_when: it works\n".into(),
+            body: need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
