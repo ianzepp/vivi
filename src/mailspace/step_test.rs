@@ -651,6 +651,24 @@ fn front_matter_step_task_is_pump_owned() {
 }
 
 #[test]
+fn job_only_task_is_pump_owned_not_no_done_when() {
+    let (mailspace, _tmp) = roster();
+    let front = TaskFront {
+        job: Some(crate::letter::work::JobFront {
+            id: "j1".into(),
+            kind: "correction".into(),
+            builtin_role: None,
+        }),
+        ..TaskFront::default()
+    };
+    let body = task_body_with(&front, "Correction for pump step.");
+    let task = send_item(&mailspace, "tasks", "task", "job", &body);
+    let exception =
+        exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
+    assert_eq!(exception.reason, "pump_owned");
+}
+
+#[test]
 fn invalid_front_matter_task_is_letter_invalid() {
     let (mailspace, _tmp) = roster();
     let task = file_raw_task(&mailspace, "+++\ndone_when = 5\n+++\nbody\n");
