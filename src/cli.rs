@@ -59,7 +59,8 @@ pub use pump_command::{
     PumpReopenCommand, PumpReplanCommand, PumpRequeueCommand, PumpRunCommand, PumpRungsCommand,
     PumpRungsSetCommand, PumpRungsShowCommand, PumpSendCommand, PumpServiceAddCommand,
     PumpServiceCommand, PumpServiceProjectCommand, PumpShowCommand, PumpStatusCommand,
-    PumpSubcommand, PumpWithdrawCommand,
+    PumpSubcommand, PumpTargetAddCommand, PumpTargetCommand, PumpTargetListCommand,
+    PumpTargetRemoveCommand, PumpWithdrawCommand,
 };
 pub use report_command::{
     ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsCommand, ReportRecordsFormat,

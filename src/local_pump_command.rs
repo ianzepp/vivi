@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use vivi::VivariumError;
 use vivi::cli::{
     PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpRungsCommand, PumpServiceCommand,
-    PumpSubcommand,
+    PumpSubcommand, PumpTargetCommand,
 };
 use vivi::mailspace::{Mailspace, PumpActionRequest};
 use vivi::pump::config::RungsConfig;
+use vivi::pump::config::targets::{self, TargetSpec};
 use vivi::pump::control::PumpMode;
 use vivi::pump::health::{self, HealthOptions};
 use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
@@ -72,6 +73,7 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             PumpPriorityCommand::List(cmd) => priority::run_list(&project_root(&cmd.project)),
         },
         PumpSubcommand::Rungs { command } => pump_rungs(command),
+        PumpSubcommand::Target { command } => pump_target(command),
         PumpSubcommand::Requeue(cmd) => vivi::pump::requeue::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Withdraw(cmd) => {
             vivi::pump::withdraw::run(&project_root(&cmd.project), cmd)
@@ -172,6 +174,65 @@ fn pump_rungs(command: &PumpRungsCommand) -> Result<(), VivariumError> {
             Ok(())
         }
     }
+}
+
+fn pump_target(command: &PumpTargetCommand) -> Result<(), VivariumError> {
+    match command {
+        PumpTargetCommand::List(cmd) => {
+            let rows = targets::list(&project_root(&cmd.project))?;
+            if rows.is_empty() {
+                println!("no pump targets");
+            }
+            for row in rows {
+                let rungs = if row.rungs.is_empty() {
+                    String::from("-")
+                } else {
+                    row.rungs.join(",")
+                };
+                println!(
+                    "{} path={} main={} rungs={rungs}",
+                    row.id, row.path, row.main
+                );
+            }
+            Ok(())
+        }
+        PumpTargetCommand::Add(cmd) => {
+            let spec = TargetSpec {
+                id: cmd.id.clone(),
+                path: cmd.path.clone(),
+                remote_url: cmd.remote_url.clone(),
+                remote: cmd.remote.clone(),
+                main: cmd.main.clone(),
+                github_repo: cmd.github_repo.clone(),
+                rungs: split_all(&cmd.rungs, "rung")?,
+                merge: split_all(&cmd.merge, "merge")?,
+            };
+            let write = targets::add(&project_root(&cmd.project), &spec)?;
+            println!("added pump target {}", cmd.id);
+            for line in write.notes() {
+                eprintln!("{line}");
+            }
+            Ok(())
+        }
+        PumpTargetCommand::Remove(cmd) => {
+            let write = targets::remove(&project_root(&cmd.project), &cmd.id)?;
+            println!(
+                "removed pump target {}; a pump that is already up keeps it until it restarts",
+                cmd.id
+            );
+            for line in write.notes() {
+                eprintln!("{line}");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn split_all(items: &[String], flag: &str) -> Result<Vec<(String, String)>, VivariumError> {
+    items
+        .iter()
+        .map(|item| targets::split_pair(item, flag))
+        .collect()
 }
 
 fn project_root(project: &Option<PathBuf>) -> PathBuf {
