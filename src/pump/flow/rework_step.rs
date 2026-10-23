@@ -12,7 +12,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
 use crate::pump::flow::verify_inputs::{
-    admitted_plan, branch_range, capped, latest_of_class, rung_report,
+    admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, rung_report,
 };
 use crate::pump::jobs::JobStore;
 use crate::pump::store::step_payload::StepPayloadRow;
@@ -47,11 +47,16 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     let need = &cx.run.need;
     let range = branch_range(cx.ctx, cx.store, need)?;
     let plan = admitted_plan(cx.store, need)?;
-    let rows = cx.store.step_payloads_of_run(need, cx.run.run)?;
+    let (context_run, rows) = audit_context(cx.store, need, cx.run.run)?;
     let mut text = format!(
         "mode: rework\nneed: {need}\ntarget: {}\nneed branch: {}\n\n",
         range.target, range.branch
     );
+    if context_run != cx.run.run {
+        text.push_str(&format!(
+            "context: run {context_run} (this run restarted at rework1)\n\n"
+        ));
+    }
     text.push_str(
         "Cut rework slices that go on the existing need branch and fix exactly the findings, \
          requirement gaps and failing rung output below. Do not re-cut merged slices.\n\n",
@@ -61,8 +66,8 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
         Some(plan) => text.push_str(&capped(&plan, PLAN_CAP)),
         None => text.push_str("(no admitted plan recorded)"),
     }
-    text.push_str("\n\n## Slices already merged in this run\n\n");
-    text.push_str(&merged_slices(cx, need)?);
+    text.push_str("\n\n## Slices already merged on the need branch\n\n");
+    text.push_str(&merged_slices(cx, need, context_run)?);
     text.push_str("\n\n## Audit findings and requirement gaps\n\n");
     text.push_str(&audit_section(&rows));
     if let Some(reason) = latest_of_class(&rows, "judge").and_then(|row| front_str(row, "reason")) {
@@ -70,13 +75,22 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     }
     text.push_str("\n\n## Failing rung output\n\n");
     text.push_str(&rung_section(&rows));
+    if context_run != cx.run.run {
+        text.push_str("\n\n## CTO ruling\n\n");
+        match cto_ruling(cx.store, need, cx.run.run)? {
+            Some(ruling) => text.push_str(&ruling),
+            None => text.push_str("(no CTO ruling; an operator unlock restarted the run)"),
+        }
+    }
     Ok(text)
 }
 
-fn merged_slices(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
-    let lines: Vec<String> = cx
-        .store
-        .steps_of(need, cx.run.run)?
+fn merged_slices(cx: &StartCx<'_>, need: &str, context_run: u32) -> Result<String, VivariumError> {
+    let mut steps = cx.store.steps_of(need, cx.run.run)?;
+    if context_run != cx.run.run {
+        steps.extend(cx.store.steps_of(need, context_run)?);
+    }
+    let lines: Vec<String> = steps
         .iter()
         .filter(|row| is_slice_row(row))
         .filter(|row| {

@@ -249,3 +249,73 @@ fn the_rework_brief_carries_the_stored_finding_and_failing_test() -> R {
     assert!(body.contains("exit: 101"), "{body}");
     Ok(())
 }
+
+#[test]
+fn a_rework_restart_run_reads_the_run_that_ended_at_the_cto() -> R {
+    let mut rig = rig()?;
+    rig.seed()?;
+    rig.store
+        .insert_step(NEED, &step("cto", "t-cto", Some("rework")))?;
+    rig.store.record_step_payload(&payload(
+        "cto",
+        "cto",
+        "t-cto",
+        json!({ "front": {
+            "answer": "rework",
+            "reason": "R-WHY",
+            "new_fact": "X-FACT",
+        } }),
+    ))?;
+    rig.run.run = 2;
+    rig.run.entry = "rework1".into();
+    let body = rework_brief(&rig)?;
+    assert!(body.contains("context: run 1"), "{body}");
+    assert!(body.contains("F-77"), "{body}");
+    assert!(body.contains("emit_harness::emit::a"), "{body}");
+    assert!(body.contains("slice:s1 (task t-s1)"), "{body}");
+    assert!(body.contains("## CTO ruling"), "{body}");
+    assert!(body.contains("reason: R-WHY"), "{body}");
+    assert!(body.contains("new_fact: X-FACT"), "{body}");
+
+    Ok(())
+}
+
+#[test]
+fn an_unlock_restart_names_the_missing_cto_ruling() -> R {
+    let mut rig = rig()?;
+    rig.seed()?;
+    rig.run.run = 2;
+    rig.run.entry = "rework1".into();
+    let body = rework_brief(&rig)?;
+    assert!(body.contains("context: run 1"), "{body}");
+    assert!(
+        body.contains("(no CTO ruling; an operator unlock"),
+        "{body}"
+    );
+    Ok(())
+}
+
+fn rework_brief(rig: &Rig) -> Result<String, VivariumError> {
+    let mut registry: Registry<Jobs, FakeMail> = Registry::new();
+    super::register(&mut registry);
+    let def = load(FlowKind::Build)?;
+    let cx = StartCx {
+        ctx: &rig.ctx,
+        store: &rig.store,
+        mail: &rig.mail,
+        run: &rig.run,
+        def: &def,
+    };
+    let node = FlowNode {
+        id: "rework1".into(),
+        class: NodeClass::Slicer,
+        label: String::new(),
+    };
+    let handler = registry
+        .handler_for(FlowKind::Build, &node)
+        .ok_or_else(|| VivariumError::Other("rework1 not registered".into()))?;
+    let StartAction::Job(job) = handler.start(&cx, &step("rework1", "t-rw", None))? else {
+        return Err(VivariumError::Other("rework1 did not start a job".into()));
+    };
+    Ok(job.body.clone())
+}
