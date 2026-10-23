@@ -1,6 +1,5 @@
-//! Unit satisfaction and the dependency readers.
-//!
-//! `satisfied`, `blocked_needs`, `dependency_holds` and `need_landed`.
+//! Unit satisfaction, and which needs the backlog graph still holds on an
+//! unlanded prerequisite.
 
 use std::collections::BTreeMap;
 
