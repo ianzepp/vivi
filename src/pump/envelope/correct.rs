@@ -95,15 +95,10 @@ pub fn enqueue(
     store: &PumpStore,
     need: &str,
     row: &StepJobRow,
-    spec: JobSpec,
+    mut spec: JobSpec,
 ) -> Result<(), VivariumError> {
-    let record = StepJobRow {
-        job: spec.id.clone(),
-        run: row.run,
-        node: row.node.clone(),
-        task: row.task.clone(),
-        attempt: row.attempt,
-    };
+    let record = row.again(&spec.id);
+    record.stamp(need, &mut spec.payload);
     jobs::enqueue(st, spec)?;
     store.insert_step_job(need, &record)
 }

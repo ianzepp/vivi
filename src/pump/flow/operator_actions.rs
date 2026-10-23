@@ -186,17 +186,11 @@ fn requeue(
         )));
     }
     let id = unused_id(st.jobs().keys().collect(), &old.id);
-    jobs::enqueue(st, copy_spec(&old, id.clone()))?;
-    store.insert_step_job(
-        &run.need,
-        &StepJobRow {
-            job: id,
-            run: row.run,
-            node: row.node,
-            task: row.task,
-            attempt: row.attempt,
-        },
-    )?;
+    let again = row.again(&id);
+    let mut spec = copy_spec(&old, id);
+    again.stamp(&run.need, &mut spec.payload);
+    jobs::enqueue(st, spec)?;
+    store.insert_step_job(&run.need, &again)?;
     store.set_step_state(&step.task, StepState::Running, None)
 }
 
