@@ -13,6 +13,7 @@
 //! harness — arrive through [probes](probe) the project declares, so the same
 //! command serves every project and Vivi never learns what a repository is.
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -218,14 +219,14 @@ impl BootReport {
         let (mut rows, blocked) = collect_handles(mailspace, now)?;
         let runs = probe::run_all(&mailspace.root, &mailspace.config.probes);
         handles::apply_verdicts(&mut rows, &probe_verdicts(&runs), &blocked);
-        let open_needs: std::collections::BTreeSet<String> = rows
+        let open_needs: BTreeSet<String> = rows
             .iter()
             .filter(|row| row.kind == "need")
             .map(|row| row.handle.clone())
             .collect();
         let pump = pump::collect(mailspace, &open_needs, opts, now, &mut truncations)?;
         let handles = cap_handles(rows, &mut truncations);
-        let seats = collect_seats(&views, &handles, &mut truncations);
+        let (all_seats, seats) = collect_seats(&views, &handles, &mut truncations);
         let loops = collect_loops(mailspace, &storage, &views, &mut truncations);
         let unabsorbed = collect_unabsorbed(mailspace, now, &mut truncations)?;
         let goals = collect_goals(mailspace, &mut truncations);
@@ -234,8 +235,14 @@ impl BootReport {
         let charters = collect_charters(&views, &handles);
         let triage = handles::triage_slices(&handles);
         let (held_unknown, held_letters) = collect_held_unknown(mailspace, &mut truncations)?;
-        let mut totals = totals(&seats.0, &loops, &unabsorbed, &handles, &goals);
-        totals.held_unknown_role = held_letters;
+        let totals = totals(
+            &all_seats,
+            &loops,
+            &unabsorbed,
+            &handles,
+            &goals,
+            held_letters,
+        );
 
         Ok(Self {
             mailspace: mailspace.config.name.clone(),
@@ -243,7 +250,7 @@ impl BootReport {
             vivi: env!("CARGO_PKG_VERSION").to_string(),
             generated_at: now.to_rfc3339(),
             totals,
-            seats: seats.1,
+            seats,
             loops,
             unabsorbed,
             held_unknown,
@@ -325,20 +332,20 @@ fn collect_seats(
     let all: Vec<SeatRow> = views.iter().map(seat_row).collect();
     let mut shown: Vec<SeatRow> = views
         .iter()
-        .filter(|view| seat_needs_attention(view, handles))
-        .map(seat_row)
+        .zip(&all)
+        .filter(|(view, row)| seat_needs_attention(view, row, handles))
+        .map(|(_, row)| row.clone())
         .collect();
     shown.truncate(CAP_SEATS);
     truncate::record(truncations, "seats: routine roster", shown.len(), all.len());
     (all, shown)
 }
 
-fn seat_needs_attention(view: &RoleView, handles: &[HandleRow]) -> bool {
-    let report = role_status::probe_quick(view.pid, view.host.as_deref(), view.harness.as_deref());
-    if !matches!(report.state, ProcessState::Subagent | ProcessState::NotSet) {
-        return true;
-    }
-    handles.iter().any(|row| addresses_role(row, view))
+/// A seat is routine when its harness is a subagent or it is unbound, and no
+/// open handle addresses it.
+fn seat_needs_attention(view: &RoleView, row: &SeatRow, handles: &[HandleRow]) -> bool {
+    !matches!(row.verdict, Verdict::Unverified | Verdict::Unbound)
+        || handles.iter().any(|handle| addresses_role(handle, view))
 }
 
 fn addresses_role(row: &HandleRow, view: &RoleView) -> bool {
@@ -394,14 +401,12 @@ fn collect_loops(
         .filter_map(|view| loop_row(mailspace, storage, view))
         .collect();
     rows.sort_by(|a, b| b.action_required.cmp(&a.action_required));
-    rows = truncate::capped(rows, CAP_LOOPS, "loops", truncations);
-    rows
+    truncate::capped(rows, CAP_LOOPS, "loops", truncations)
 }
 
 fn loop_row(mailspace: &Mailspace, storage: &Storage, view: &RoleView) -> Option<LoopRow> {
-    let report = match mailspace.schedule_report_with(storage, &view.name) {
-        Ok(report) => report,
-        Err(_) => return None,
+    let Ok(report) = mailspace.schedule_report_with(storage, &view.name) else {
+        return None;
     };
     if matches!(report.state, ScheduleState::None) {
         return None;
@@ -491,13 +496,13 @@ fn collect_open(
     // Unassigned work held for another mailspace's role, and work held for
     // a role name this mailspace does not have, is nobody's handle here.
     // Active delegated needs are added below as local work.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     for record in records
         .into_iter()
         .filter(|record| mailspace.is_local_account(&record.account))
     {
         seen.insert(record.handle.clone());
-        let row = HandleRow::new(
+        rows.push(HandleRow::new(
             &record.handle,
             kind,
             &record.date,
@@ -505,8 +510,7 @@ fn collect_open(
             &record.to,
             &record.subject,
             now,
-        );
-        rows.push(row);
+        ));
     }
     for assigned in mailspace.assigned_work_for_role(None, role, kind)? {
         if seen.insert(assigned.handle.clone()) {
@@ -588,9 +592,8 @@ fn collect_goals(mailspace: &Mailspace, truncations: &mut Vec<Truncation>) -> Ve
     let Ok(goals) = mailspace.goal_list() else {
         return Vec::new();
     };
-    let rows: Vec<GoalRow> = goals
+    truncate::capped(goals, CAP_GOALS, "goals", truncations)
         .into_iter()
-        .take(CAP_GOALS)
         .map(|goal| {
             let read = goal_read(mailspace, &goal.path);
             GoalRow {
@@ -603,14 +606,7 @@ fn collect_goals(mailspace: &Mailspace, truncations: &mut Vec<Truncation>) -> Ve
                 frontier: read.frontier.clone(),
             }
         })
-        .collect();
-    let total = goals_truncation_total(mailspace, rows.len());
-    truncate::record(truncations, "goals", rows.len(), total);
-    rows
-}
-
-fn goals_truncation_total(mailspace: &Mailspace, shown: usize) -> usize {
-    mailspace.goal_list().map_or(shown, |goals| goals.len())
+        .collect()
 }
 
 fn register_summary(tally: &goals::RegisterTally) -> String {
@@ -721,6 +717,7 @@ fn totals(
     unabsorbed: &[MailRow],
     handles: &[HandleRow],
     goals: &[GoalRow],
+    held_unknown_role: usize,
 ) -> BootTotals {
     let seats_with = |verdict: Verdict| seats.iter().filter(|seat| seat.verdict == verdict).count();
     let handles_of = |kind: &str| handles.iter().filter(|row| row.kind == kind).count();
@@ -742,7 +739,7 @@ fn totals(
             .filter(|row| row.verdict == Verdict::Blocked)
             .count(),
         unabsorbed_mail: unabsorbed.len(),
-        held_unknown_role: 0,
+        held_unknown_role,
         goals_registered: goals.len(),
         goals_claim_mismatch: goals
             .iter()
@@ -775,10 +772,6 @@ pub fn seat_line(row: &SeatRow) -> String {
     )
 }
 
-#[cfg(test)]
-#[path = "boot/boot_test.rs"]
-mod tests;
-
 /// A goal row's headline: handle, audit bucket, and document path.
 #[must_use]
 pub fn goal_line(row: &GoalRow) -> String {
@@ -789,3 +782,7 @@ pub fn goal_line(row: &GoalRow) -> String {
         row.path
     )
 }
+
+#[cfg(test)]
+#[path = "boot/boot_test.rs"]
+mod tests;
