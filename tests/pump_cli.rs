@@ -182,6 +182,19 @@ fn requeue_and_withdraw_post_actions_on_the_open_record() {
     );
     assert_eq!(actions[0].request.unit.as_deref(), Some(unit.as_str()));
     assert_eq!(actions[1].request.reason, "stop");
+
+    let closed = vivi([
+        "need",
+        "list",
+        "--for",
+        "mind",
+        "--status",
+        "done",
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&closed);
+    assert!(stdout(&closed).contains(&handle), "{}", stdout(&closed));
 }
 
 #[test]
