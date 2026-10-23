@@ -34,6 +34,7 @@
 use std::collections::BTreeSet;
 
 use crate::mailspace::{Mailspace, PumpAction, PumpActionKind, PumpRecord, PumpState};
+use crate::pump::flow::operator_actions::has_active_run;
 use crate::pump::host::Ctx;
 use crate::pump::record::{self, SUPERSEDED, WITHDRAWN};
 use crate::pump::replan::Outcome;
@@ -59,7 +60,7 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
     revive_new_records(ctx, st, &open);
     let applied: BTreeSet<String> = st.board.actions.keys().cloned().collect();
     let actions = match mailspace.pump_pending_actions(&applied) {
-        Ok(actions) => without_flow_actions(actions),
+        Ok(actions) => without_flow_runs(ctx, without_flow_actions(actions)),
         Err(error) => {
             ctx.log(&format!("pump actions unreadable: {error}"));
             return;
@@ -85,6 +86,35 @@ fn without_flow_actions(actions: Vec<PumpAction>) -> Vec<PumpAction> {
             )
         })
         .collect()
+}
+
+/// Actions on a need with an active flow run belong to the flow's
+/// operator-actions phase: leave them unmarked here. A store that cannot be
+/// read leaves every action for the next tick.
+fn without_flow_runs(ctx: &Ctx, actions: Vec<PumpAction>) -> Vec<PumpAction> {
+    if actions.is_empty() {
+        return actions;
+    }
+    let store = match PumpStore::open_read_only(&ctx.home.join(DB_FILENAME)) {
+        Ok(Some(store)) => store,
+        Ok(None) => return actions,
+        Err(error) => {
+            ctx.log(&format!("actions wait: the run index cannot open: {error}"));
+            return Vec::new();
+        }
+    };
+    let mut kept = Vec::new();
+    for action in actions {
+        match has_active_run(&store, &action.need) {
+            Ok(false) => kept.push(action),
+            Ok(true) => {}
+            Err(error) => ctx.log(&format!(
+                "action {} waits: runs of {} unreadable: {error}",
+                action.id, action.need
+            )),
+        }
+    }
+    kept
 }
 
 /// Apply `actions` (oldest first) to `st` and mark each applied. An action
@@ -264,3 +294,7 @@ fn stuck_units(st: &State, need: &str, record: &str) -> Vec<RequeueRequest> {
 #[cfg(test)]
 #[path = "action_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "action_flow_test.rs"]
+mod flow_tests;

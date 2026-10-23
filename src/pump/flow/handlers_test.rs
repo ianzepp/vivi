@@ -206,27 +206,6 @@ fn phases_come_back_in_registration_order() -> Result<(), VivariumError> {
 }
 
 #[test]
-fn shipped_registry_starts_with_no_handlers() -> Result<(), VivariumError> {
-    let rig = rig()?;
-    struct Jobs(std::collections::BTreeMap<String, crate::pump::jobs::PoolJob>);
-    impl JobStore for Jobs {
-        fn jobs(&self) -> &std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
-            &self.0
-        }
-
-        fn jobs_mut(
-            &mut self,
-        ) -> &mut std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
-            &mut self.0
-        }
-    }
-    let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
-    let plan = node("plan", NodeClass::Planner);
-    assert!(registry.handler_for(FlowKind::Build, &plan).is_none());
-    Ok(())
-}
-
-#[test]
 fn shipped_registers_a_collector_for_every_step_class() -> Result<(), VivariumError> {
     let rig = rig()?;
     struct Jobs(std::collections::BTreeMap<String, crate::pump::jobs::PoolJob>);

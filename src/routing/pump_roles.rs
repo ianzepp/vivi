@@ -45,25 +45,25 @@ pub(super) fn pump_role_checks_of(
     vec![
         collect("pump-planner", |issues| check_planner(routing, issues)),
         collect("researcher", |issues| {
-            check_flow_role(routing, RESEARCHER_ROLE, None, issues);
+            check_flow_role(routing, RESEARCHER_ROLE, FlowAccess::Unchecked, issues);
         }),
         collect("admitter", |issues| {
-            check_flow_role(routing, ADMITTER_ROLE, None, issues);
+            check_flow_role(routing, ADMITTER_ROLE, FlowAccess::ReadOnly, issues);
         }),
         collect("slicer", |issues| {
-            check_flow_role(routing, SLICER_ROLE, None, issues);
+            check_flow_role(routing, SLICER_ROLE, FlowAccess::ReadOnly, issues);
         }),
         collect("repairer", |issues| {
             // Band P0 is set by seeding and not checked here. Only a role of
             // kind repairer may publish `vivi/repair/<segment>`, and it must
             // be able to write.
-            check_flow_role(routing, REPAIRER_ROLE, Some("repairer"), issues);
+            check_flow_role(routing, REPAIRER_ROLE, FlowAccess::Publishes, issues);
         }),
         collect("merge", |issues| check_merge(routing, issues)),
         collect("merge kind", |issues| check_merge_kind(routing, issues)),
         collect("auditor", |issues| check_auditor(routing, issues)),
         collect("head-cto", |issues| {
-            check_flow_role(routing, HEAD_CTO_ROLE, None, issues);
+            check_flow_role(routing, HEAD_CTO_ROLE, FlowAccess::Unchecked, issues);
         }),
         collect("hand kind", |issues| check_hand_kind(pump, routing, issues)),
         // The hand role is left out: the pump names each unit's model itself,
@@ -133,18 +133,25 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     }
 }
 
+/// What a flow role must be able to do, beyond being active and in a pool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlowAccess {
+    /// Nothing more: the pump does not yet refuse its jobs by kind.
+    Unchecked,
+    /// Kind equal to its name, and read-only: the role only answers.
+    ReadOnly,
+    /// Kind equal to its name, and not read-only: the role publishes a branch.
+    Publishes,
+}
+
 /// The flow roles (researcher, admitter, slicer, repairer, head-cto) will run durable jobs like
 /// the planner: each needs an active role assigned to a pool. Until the flow
 /// engine dispatches role steps, a missing role or pool is only a warning;
-/// the pump holds for them once it really uses them. A role that publishes
-/// a branch names its required `kind`: any other kind, or a read-only role,
-/// is an error because its jobs would be refused.
-fn check_flow_role(
-    routing: &RoleRouting,
-    name: &str,
-    required_kind: Option<&str>,
-    issues: &mut Vec<Issue>,
-) {
+/// the pump holds for them once it really uses them. A role the pump
+/// dispatches (admitter, slicer, repairer) must also have kind equal to its
+/// name, and its [`FlowAccess`] must hold: a role that does not is an error
+/// because its jobs would be refused.
+fn check_flow_role(routing: &RoleRouting, name: &str, access: FlowAccess, issues: &mut Vec<Issue>) {
     let Some(role) = routing.lookup(name) else {
         issues.push(Issue::warning(format!(
             "the pump flows need an active {name} role assigned to a pool for durable jobs \
@@ -158,8 +165,8 @@ fn check_flow_role(
             role.name
         )));
     }
-    if let Some(kind) = required_kind {
-        check_publisher(role, kind, issues);
+    if access != FlowAccess::Unchecked {
+        check_dispatched_role(role, name, access, issues);
     }
     if role.pool.is_none() {
         issues.push(Issue::warning(format!(
@@ -170,22 +177,36 @@ fn check_flow_role(
     }
 }
 
-/// A publishing flow role must have the matching kind and must not be
-/// read-only.
-fn check_publisher(role: &RoutedRole, kind: &str, issues: &mut Vec<Issue>) {
-    if !has_kind(role.kind.as_deref(), kind) {
+/// The extra requirements of a flow role the pump dispatches: its kind is its
+/// name, and it can or cannot write as `access` says.
+fn check_dispatched_role(
+    role: &RoutedRole,
+    name: &str,
+    access: FlowAccess,
+    issues: &mut Vec<Issue>,
+) {
+    if !has_kind(role.kind.as_deref(), name) {
         issues.push(Issue::error(format!(
-            "role {} has kind {}; only a {kind}-kind role may publish its branches, so its \
-             jobs would be refused: run `vivi config migrate` or set kind = \"{kind}\"",
+            "role {} has kind {}; the {name} role must have kind = \"{name}\": run `vivi \
+             config migrate` or set kind = \"{name}\"",
             role.name,
             role.kind.as_deref().unwrap_or("none")
         )));
     }
-    if role.read_only == Some(true) {
-        issues.push(Issue::error(format!(
-            "role {} is read-only and cannot publish its {kind} branches",
-            role.name
-        )));
+    match access {
+        FlowAccess::ReadOnly if !role.is_read_only() => {
+            issues.push(Issue::error(format!(
+                "role {} must be read-only: the {name} role only answers, it never writes",
+                role.name
+            )));
+        }
+        FlowAccess::Publishes if role.read_only == Some(true) => {
+            issues.push(Issue::error(format!(
+                "role {} is read-only and cannot publish its {name} branches",
+                role.name
+            )));
+        }
+        _ => {}
     }
 }
 

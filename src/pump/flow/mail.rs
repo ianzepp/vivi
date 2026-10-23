@@ -84,6 +84,9 @@ pub trait MailReader {
     fn bound_units(&self, need: &str) -> Result<Vec<String>, VivariumError>;
     /// How many run sentinels the need has.
     fn sentinel_count(&self, need: &str) -> Result<usize, VivariumError>;
+    /// An OPEN task the pump identity sent with exactly this subject whose
+    /// body starts with this line; the newest when several match.
+    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError>;
 }
 
 /// Listing the pump records that are still open.

@@ -49,15 +49,76 @@ fn text(output: &Output) -> String {
     )
 }
 
+const FLOW_ROLES: [&str; 5] = ["researcher", "admitter", "slicer", "repairer", "head-cto"];
+
+/// Give the flow roles what a ready project has: a local pool that serves a
+/// band with a model, and each flow role assigned to that pool and band.
+fn provision_flow_role_pools(project: &Path) {
+    let root = project.to_str().expect("UTF-8 temp path");
+    let slots = project.join("slots");
+    std::fs::create_dir_all(&slots).unwrap();
+    let config = project.join(".vivi/mailspace.toml");
+    let mut config_text = std::fs::read_to_string(&config).unwrap();
+    config_text.push_str(&format!(
+        "\n[pools.main]\nprovider = \"local\"\nslots = 1\n\
+         [pools.main.local]\nroot = {:?}\n\
+         [pools.main.harness]\nname = \"standin\"\nrun = \"true\"\nmodels = [\"standin\"]\n\
+         [pools.main.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n",
+        slots.to_string_lossy()
+    ));
+    std::fs::write(&config, config_text).unwrap();
+    for role in FLOW_ROLES {
+        let output = vivi(
+            project,
+            &[
+                "role",
+                "set",
+                role,
+                "--pool",
+                "main",
+                "--model",
+                "P2",
+                "--project",
+                root,
+            ],
+        );
+        assert!(output.status.success(), "{}", text(&output));
+    }
+}
+
 #[test]
-fn doctor_clean_project_exits_zero() {
+fn doctor_project_with_flow_role_pools_is_clean() {
     let project = tempfile::tempdir().unwrap();
     init(project.path());
+    provision_flow_role_pools(project.path());
     let root = project.path().to_str().unwrap();
     let output = vivi(project.path(), &["doctor", "--project", root, "--json"]);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let report: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON");
     assert_eq!(report["verdict"], "ok");
+}
+
+#[test]
+fn doctor_fresh_project_warns_for_each_flow_role_without_a_pool() {
+    let project = tempfile::tempdir().unwrap();
+    init(project.path());
+    let root = project.path().to_str().unwrap();
+    let output = vivi(project.path(), &["doctor", "--project", root, "--json"]);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON");
+    assert_eq!(report["verdict"], "warn");
+    let findings = report["findings"].as_array().expect("findings array");
+    for role in FLOW_ROLES {
+        let row = format!("pump role {role}");
+        assert!(
+            findings.iter().any(|finding| {
+                finding["section"] == "roles"
+                    && finding["name"] == row.as_str()
+                    && finding["status"] == "warn"
+            }),
+            "no warn row {row}: {findings:?}"
+        );
+    }
 }
 
 #[test]

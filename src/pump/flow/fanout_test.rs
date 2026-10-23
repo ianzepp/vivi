@@ -3,8 +3,8 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    BUILT, expand, is_slice_row, mark_exhausted, parse_reply, settle, slice_node, target_of,
-    wait_on,
+    BUILT, UNCHANGED, check_batch, expand, is_slice_row, mark_exhausted, parse_reply, settle,
+    slice_node, target_of, wait_on,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -13,9 +13,11 @@ use crate::pump::envelope::roles::{Slice, SlicerAnswer, SlicerMode};
 use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter};
+use crate::pump::flow::reslice::RESLICE_NODE_PREFIX;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -46,7 +48,7 @@ fn rig() -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
-    let mut mail = FakeMail::new("pump");
+    let mut mail = FakeMail::new(&ctx.cfg.reply_from);
     let sentinel = mail.send_step(
         "pump",
         "pump",
@@ -271,6 +273,43 @@ fn expand_refuses_unknown_and_duplicate_ids() -> R {
 }
 
 #[test]
+fn check_batch_refuses_each_graph_error_and_names_it() -> R {
+    let r = rig()?;
+    let check = |slices: &[Slice]| check_batch(&r.store, &r.run, slices);
+    let dup = check(&[slice("A", &[]), slice("A", &[])]).unwrap_err();
+    assert!(dup.contains("`A`") && dup.contains("twice"), "{dup}");
+    let unknown = check(&[slice("A", &["Z"])]).unwrap_err();
+    assert!(
+        unknown.contains("`A`") && unknown.contains("`Z`"),
+        "{unknown}"
+    );
+    let own = check(&[slice("A", &["A"])]).unwrap_err();
+    assert!(own.contains("`A`") && own.contains("itself"), "{own}");
+    let cycle = check(&[slice("C", &[]), slice("A", &["B"]), slice("B", &["A"])]).unwrap_err();
+    assert!(
+        cycle.contains("cycle") && cycle.contains("`A`") && cycle.contains("`B`"),
+        "{cycle}"
+    );
+    assert!(!cycle.contains("`C`"), "{cycle}");
+    Ok(())
+}
+
+#[test]
+fn check_batch_accepts_a_valid_batch_and_an_earlier_slice_dep() -> R {
+    let mut r = rig()?;
+    assert_eq!(
+        check_batch(&r.store, &r.run, &[slice("A", &[]), slice("B", &["A"])]),
+        Ok(())
+    );
+    r.expand(&[slice("A", &[])])?;
+    assert_eq!(
+        check_batch(&r.store, &r.run, &[slice("R1", &["A"])]),
+        Ok(())
+    );
+    Ok(())
+}
+
+#[test]
 fn a_later_fanout_depends_on_slices_the_run_already_sent() -> R {
     let mut r = rig()?;
     r.expand(&[slice("A", &[])])?;
@@ -292,11 +331,32 @@ fn settle_is_none_without_slices_or_while_one_is_open() -> R {
 }
 
 #[test]
-fn settle_built_when_every_slice_is_merged_or_no_defect() -> R {
+fn settle_built_when_one_merged_and_one_is_no_defect() -> R {
     let mut r = rig()?;
     r.expand(&[slice("A", &[]), slice("B", &[])])?;
     r.close("A", "merged")?;
     r.close("B", "no-defect")?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    Ok(())
+}
+
+#[test]
+fn settle_unchanged_when_every_slice_is_no_defect() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &[])])?;
+    r.close("A", "no-defect")?;
+    assert_eq!(r.settle()?, None, "B is still open");
+    r.close("B", "no-defect")?;
+    assert_eq!(r.settle()?, Some(UNCHANGED));
+    Ok(())
+}
+
+#[test]
+fn settle_built_when_every_slice_is_merged() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &[])])?;
+    r.close("A", "merged")?;
+    r.close("B", "merged")?;
     assert_eq!(r.settle()?, Some(BUILT));
     Ok(())
 }
@@ -367,5 +427,185 @@ fn wait_on_adds_every_holder_to_the_task_dependencies() -> R {
     let holders = vec![slicer, r.sentinel.clone()];
     wait_on(&mut r.mail, &task, &holders)?;
     assert_eq!(r.mail.tasks[&task].depends_on, holders);
+    Ok(())
+}
+
+fn slice_tasks_titled(r: &Rig, id: &str) -> Vec<String> {
+    let subject = format!("title {id} ({NEED} r1)");
+    r.mail
+        .tasks
+        .iter()
+        .filter(|(_, task)| task.subject == subject)
+        .map(|(handle, _)| handle.clone())
+        .collect()
+}
+
+fn assert_expanded_once(r: &Rig, ids: &[&str], fanout: Option<&str>) -> R {
+    for id in ids {
+        assert_eq!(slice_tasks_titled(r, id).len(), 1, "one task for {id}");
+        let node = slice_node(id);
+        let rows: Vec<_> = r
+            .store
+            .steps_of(NEED, 1)?
+            .into_iter()
+            .filter(|row| row.node == node)
+            .collect();
+        assert_eq!(rows.len(), 1, "one row for {id}");
+        let link = r.store.slice_link(&rows[0].task)?.expect("link");
+        assert_eq!(link.fanout.as_deref(), fanout);
+        assert!(r.store.slice_scope(&rows[0].task)?.is_some());
+        assert!(r.mail.bound_units(NEED)?.contains(&rows[0].task));
+    }
+    assert_eq!(r.store.slice_links_of_run(NEED, 1)?.len(), ids.len());
+    Ok(())
+}
+
+#[test]
+fn expand_survives_a_failure_at_each_write() -> R {
+    // Writes of one expand of [A, B(A)]: send A, send B, bind.
+    for offset in 0..3 {
+        let mut r = rig()?;
+        r.store.set_open_fanout(NEED, 1, "fan1")?;
+        r.mail.fail_at = Some(r.mail.calls.len() + offset);
+        assert!(r.expand(&[slice("A", &[]), slice("B", &["A"])]).is_err());
+        let tasks = r.expand(&[slice("A", &[]), slice("B", &["A"])])?;
+        assert_eq!(tasks.len(), 2);
+        assert_expanded_once(&r, &["A", "B"], Some("fan1"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn expand_twice_changes_nothing() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    let first = r.expand(&[slice("A", &[]), slice("B", &["A"])])?;
+    let sent = r.mail.calls.len();
+    let second = r.expand(&[slice("A", &[]), slice("B", &["A"])])?;
+    assert_eq!(first, second);
+    assert_eq!(r.mail.calls.len(), sent + 1, "only the idempotent bind");
+    assert_expanded_once(&r, &["A", "B"], Some("fan1"))
+}
+
+#[test]
+fn expand_adopts_a_task_sent_but_never_recorded() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    let a = slice("A", &[]);
+    let orphan = r.mail.send_step(
+        &r.ctx.cfg.reply_from,
+        &r.ctx.cfg.reply_from,
+        &format!("{} ({NEED} r1)", a.title),
+        &format!("{STEP_MARKER} {NEED} r1 slice:A\ntarget: vivi\n\nx"),
+        &[],
+    )?;
+    let tasks = r.expand(&[a])?;
+    assert_eq!(tasks, vec![orphan]);
+    assert_expanded_once(&r, &["A"], Some("fan1"))
+}
+
+#[test]
+fn a_link_holds_the_slice_deps_and_not_the_slicer_task() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    r.expand(&[slice("A", &[]), slice("B", &["A"])])?;
+    let (a, b) = (r.task_of("A")?, r.task_of("B")?);
+    let link_a = r.store.slice_link(&a)?.expect("link a");
+    let link_b = r.store.slice_link(&b)?.expect("link b");
+    assert!(link_a.deps.is_empty());
+    assert_eq!(link_b.deps, vec![a.clone()]);
+    assert!(!link_b.deps.contains(&r.slicer.task));
+    assert!(r.mail.tasks[&b].depends_on.contains(&r.slicer.task));
+    Ok(())
+}
+
+#[test]
+fn settle_answers_for_the_open_fanout_only() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    r.expand(&[slice("A", &[])])?;
+    mark_exhausted(&r.store, &r.task_of("A")?)?;
+    assert_eq!(r.settle()?, Some("failed"));
+
+    r.store.set_open_fanout(NEED, 1, "fan2")?;
+    assert_eq!(r.settle()?, None, "no slice of fan2 yet");
+    r.expand(&[slice("C", &[])])?;
+    assert_eq!(r.settle()?, None);
+    r.close("C", "merged")?;
+    assert_eq!(r.settle()?, Some(BUILT), "fan1's failed slice is ignored");
+
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    assert_eq!(r.settle()?, Some("failed"));
+    Ok(())
+}
+
+#[test]
+fn two_fanouts_of_one_run_keep_their_slices_apart() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    r.store.set_open_fanout(NEED, 1, "fan2")?;
+    r.expand(&[slice("A", &[]), slice("B", &[])])?;
+    assert_eq!(slice_tasks_titled(&r, "A").len(), 2, "fan2 sends its own A");
+    assert_eq!(r.settle()?, None);
+    Ok(())
+}
+
+fn reslice_row(r: &Rig, task: &str, state: StepState, fanout: Option<&str>) -> R {
+    r.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: format!("{RESLICE_NODE_PREFIX}A"),
+            task: task.into(),
+            state,
+            verdict: None,
+        },
+    )?;
+    r.store.link_slice(&SliceLink {
+        task: task.into(),
+        need: NEED.into(),
+        run: 1,
+        fanout: fanout.map(str::to_string),
+        deps: vec![],
+    })
+}
+
+#[test]
+fn an_open_reslice_row_holds_the_fanout() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    reslice_row(&r, "rs1", StepState::Running, None)?;
+    assert_eq!(r.settle()?, None);
+    r.store.set_step_state("rs1", StepState::Done, None)?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    Ok(())
+}
+
+#[test]
+fn a_waiting_reslice_row_holds_and_a_failed_one_does_not() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    reslice_row(&r, "rs1", StepState::Waiting, None)?;
+    assert_eq!(r.settle()?, None);
+    r.store.set_step_state("rs1", StepState::Failed, None)?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    Ok(())
+}
+
+#[test]
+fn a_reslice_row_of_another_fanout_does_not_hold_this_one() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    reslice_row(&r, "rs1", StepState::Running, Some("fan2"))?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    reslice_row(&r, "rs2", StepState::Running, Some("fan1"))?;
+    assert_eq!(r.settle()?, None);
     Ok(())
 }

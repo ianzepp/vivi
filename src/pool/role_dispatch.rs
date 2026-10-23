@@ -22,6 +22,7 @@
 //! rules, with a note on how the slot reaches the mailspace.
 
 use crate::error::VivariumError;
+use crate::mailspace::Mailspace;
 use crate::routing::resolve_read_only;
 
 use super::bands::{self, choose, parse_band};
@@ -263,9 +264,8 @@ pub fn standing_prompt(
     let note = if bridge {
         "You run in a pool slot with the vivi tools of the project server \
          (MCP server `vivi`). Your task handle is in your brief: read it \
-         with `show` and `thread`, report with `reply`, and report \
-         with `reply`; the runner records your result and the pump or Mind \
-         settles the handle."
+         with `show` and `thread`, report with `reply`; the runner records \
+         your result and the pump or Mind settles the handle."
     } else {
         "You run in a pool slot with no `vivi` command and no mailspace. \
          Where the charter tells you to read or settle your handle with \
@@ -313,6 +313,36 @@ pub fn project_rules_text(rules: &[(&str, &str, &str)]) -> String {
     text.truncate(end);
     text.push_str("\n[project rules cut at 8192 bytes]\n");
     text
+}
+
+/// The active `project`-scope rules, read now as a dispatch's snapshot. A
+/// rule that cannot be read is skipped with one warning line on stderr; an
+/// unreadable rule list is still an error.
+///
+/// # Errors
+/// Returns an error when the rules cannot be listed.
+pub fn project_rules_snapshot(space: &Mailspace) -> Result<String, VivariumError> {
+    let mut details = Vec::new();
+    for rule in space.list_rules(None, false)? {
+        if rule.scope != "project" {
+            continue;
+        }
+        match space.show_rule(&rule.handle) {
+            Ok(detail) => details.push(detail),
+            Err(error) => eprintln!("warning: skipping project rule {}: {error}", rule.handle),
+        }
+    }
+    let rows: Vec<(&str, &str, &str)> = details
+        .iter()
+        .map(|d| {
+            (
+                d.rule.scope.as_str(),
+                d.rule.subject.as_str(),
+                d.body.as_str(),
+            )
+        })
+        .collect();
+    Ok(project_rules_text(&rows))
 }
 
 /// The digest seat's window: what one digest run covers and the memo subject
@@ -399,3 +429,7 @@ pub fn digest_run_text(brief: &DigestBrief, project_root: &std::path::Path, role
 #[cfg(test)]
 #[path = "role_dispatch_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "role_dispatch_rules_test.rs"]
+mod rules_tests;

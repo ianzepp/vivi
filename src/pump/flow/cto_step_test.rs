@@ -1,5 +1,7 @@
 //! Tests for the cto step handler.
 
+use std::sync::Arc;
+
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
@@ -11,27 +13,30 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::JobSpec;
+use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::step_payload::StepPayloadRow;
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 const NEED: &str = "need-1";
 
 struct Fixture {
     _dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
 }
 
 fn fixture() -> Fixture {
     let dir = tempdir().expect("tempdir");
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
     Fixture {
         _dir: dir,
         ctx,
+        host,
         store,
         mail: FakeMail::new("mind"),
     }
@@ -251,4 +256,78 @@ fn an_admit2_escalation_names_the_step_and_has_no_block_ship_line() {
     );
     assert!(!spec.body.contains("automatic block-ship"));
     assert!(spec.body.contains("## Failing rung output\n\n(none)"));
+}
+
+fn slice_link(f: &Fixture, task: &str, fanout: &str) {
+    f.store
+        .link_slice(&SliceLink {
+            task: task.into(),
+            need: NEED.into(),
+            run: 1,
+            fanout: Some(fanout.into()),
+            deps: Vec::new(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn an_unchanged_fanout_names_expected_against_actual_and_no_block_ship() {
+    let f = fixture();
+    let run = run_row(1, "plan", "live");
+    f.store.insert_run(&run).unwrap();
+    add_step(&f, 1, "sentinel", StepState::Running, None);
+    add_step(&f, 1, "build1", StepState::Done, Some("unchanged"));
+    add_step(&f, 1, "build2", StepState::Done, Some("unchanged"));
+    slice_link(&f, "t-s1", "t-build1-r1");
+    slice_link(&f, "t-s2", "t-build1-r1");
+    slice_link(&f, "t-s3", "t-build2-r1");
+    let start_tip = "a".repeat(40);
+    f.store
+        .set_fanout_start("t-build2-r1", Some(&start_tip))
+        .unwrap();
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            need: NEED.into(),
+            branch: format!("vivi/need/{NEED}"),
+            base: None,
+            status: "live".into(),
+            run: 1,
+            target: "default".into(),
+            priors: Vec::new(),
+        })
+        .unwrap();
+    f.host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{start_tip}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+    let spec = start(&f, &run);
+    let line = format!(
+        "expected a change on vivi/need/{NEED} in fanout build2 (1 slices); actual: 0 merged, need tip {start_tip} == fanout start {start_tip}"
+    );
+    assert!(spec.body.contains(&line), "{}", spec.body);
+    assert!(
+        !spec.body.contains("block-ship of the need"),
+        "{}",
+        spec.body
+    );
+}
+
+#[test]
+fn an_unchanged_first_fanout_with_no_tips_says_none() {
+    let f = fixture();
+    let run = run_row(1, "plan", "live");
+    f.store.insert_run(&run).unwrap();
+    add_step(&f, 1, "sentinel", StepState::Running, None);
+    add_step(&f, 1, "build1", StepState::Done, Some("unchanged"));
+    slice_link(&f, "t-s1", "t-build1-r1");
+    slice_link(&f, "t-s2", "t-build1-r1");
+    let spec = start(&f, &run);
+    assert!(
+        spec.body.contains(&format!(
+            "expected a change on vivi/need/{NEED} in fanout build1 (2 slices); actual: 0 merged, need tip none == fanout start none"
+        )),
+        "{}",
+        spec.body
+    );
 }

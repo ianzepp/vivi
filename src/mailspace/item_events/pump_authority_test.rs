@@ -101,20 +101,24 @@ fn the_pump_identity_may_close_a_delegated_need() {
 #[test]
 fn the_pump_closes_and_reopens_a_need_another_role_authored() {
     let (_tmp, mailspace) = space();
-    let need = need_of(&mailspace);
-
+    // Without an open record the close logs no event. That close does move
+    // the need to done, and a record needs an open need, so it runs on a
+    // need of its own.
+    let unrecorded = need_of(&mailspace);
     let refused = mailspace
         .move_item_outcome(
             "pumper",
-            &need,
+            &unrecorded,
             "done",
             Some("no record"),
             "need done",
             None,
         )
-        .is_ok_and(|_| mailspace.item_event_state(&need).unwrap().is_some());
+        .is_ok_and(|_| mailspace.item_event_state(&unrecorded).unwrap().is_some());
     assert!(!refused, "no open record: no close event");
 
+    // The record is opened while the need is open, as the pump does.
+    let need = need_of(&mailspace);
     mailspace.pump_send(Some("pump"), &need, None).unwrap();
     mailspace
         .move_item_outcome("pumper", &need, "done", Some("landed"), "need done", None)
