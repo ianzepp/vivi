@@ -563,62 +563,105 @@ fn event_letters(mailspace: &Mailspace, handle: &str) -> Vec<String> {
 }
 
 #[test]
-fn want_promote_writes_a_promoted_event_letter() {
+fn a_want_cannot_move_into_needs() {
     let (_tmp, mailspace) = space();
-    // A want of mind's own: mind holds the delivered copy in `wants`, so the
-    // promotion is the author's move and travels.
+    // A want of mind's own: mind holds the delivered copy in `wants`.
     let (want, _sent) = send(&mailspace, "want", "mind");
 
-    let promoted = mailspace
+    let err = mailspace
         .move_item("mind", &want, "needs", None, "want promote", None)
-        .unwrap();
+        .unwrap_err()
+        .to_string();
 
+    assert!(err.contains("a want never becomes a need"), "{err}");
     assert!(
         mailspace
-            .list("mind", "needs")
+            .list("mind", "wants")
             .unwrap()
             .iter()
-            .any(|row| row.handle == promoted),
-        "the promoted row is in needs"
+            .any(|row| row.handle == want),
+        "the row stays in wants"
     );
-    let state = mailspace.item_event_state(&want).unwrap().unwrap();
-    assert_eq!(state.state, "promoted");
-    assert_eq!(events_of(&mailspace, &want), [("promoted".to_string(), 0)]);
-    let letters = event_letters(&mailspace, &promoted);
-    assert_eq!(letters.len(), 1);
-    assert!(
-        letters[0].contains("X-Vivi-Event: promoted"),
-        "{}",
-        letters[0]
-    );
-    // A promotion is not a close: the backlog node stays open.
-    let node = mailspace
-        .graph_show("backlog")
-        .unwrap()
-        .nodes
-        .into_iter()
-        .find(|node| node.source_id == promoted)
-        .expect("the promoted want has a backlog node");
-    assert_eq!(node.state, "open");
+    assert!(mailspace.list("mind", "needs").unwrap().is_empty());
+    assert_eq!(mailspace.item_event_state(&want).unwrap(), None);
+    assert!(event_letters(&mailspace, &want).is_empty());
 }
 
 #[test]
-fn a_hand_promoting_another_roles_want_stays_a_local_move() {
+fn a_hand_cannot_move_another_roles_want_into_needs() {
     let (_tmp, mailspace) = space();
     let (want, _sent) = send(&mailspace, "want", "hand");
 
-    let moved = mailspace
+    let err = mailspace
         .move_item("hand", &want, "needs", None, "want promote", None)
-        .unwrap();
+        .unwrap_err()
+        .to_string();
 
-    assert_eq!(mailspace.item_event_state(&want).unwrap(), None);
-    assert!(events_of(&mailspace, &want).is_empty());
+    assert!(err.contains("a want never becomes a need"), "{err}");
     assert!(
         mailspace
-            .list("hand", "needs")
+            .list("hand", "wants")
             .unwrap()
             .iter()
-            .any(|row| row.handle == moved),
-        "the reporter's copy still moves"
+            .any(|row| row.handle == want),
+        "the row stays in wants"
     );
+    assert_eq!(mailspace.item_event_state(&want).unwrap(), None);
+    assert!(events_of(&mailspace, &want).is_empty());
+}
+
+/// A need from `mind` to `hand` whose front matter serves `want`'s Message-ID.
+fn send_serving_need(mailspace: &Mailspace, want: &str) -> String {
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(want).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    drop(storage);
+    let mut front = crate::letter::work::NeedFront::new(vec!["it works".to_string()]);
+    front.serves = Some(view.normalized_message_id.unwrap());
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "serving need".into(),
+            body: crate::letter::fixture::need_body_with(&front, ""),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    result
+        .delivered
+        .first()
+        .map_or(result.sent, |delivered| delivered.handle.clone())
+}
+
+#[test]
+fn a_served_want_is_not_closed_by_hand() {
+    let (_tmp, mailspace) = space();
+    let (want, _sent) = send(&mailspace, "want", "mind");
+    let need = send_serving_need(&mailspace, &want);
+
+    for command in ["want done", "want drop"] {
+        let err = mailspace
+            .move_item("mind", &want, "done", None, command, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&need), "{command}: {err}");
+    }
+    assert!(
+        mailspace
+            .list("mind", "wants")
+            .unwrap()
+            .iter()
+            .any(|row| row.handle == want),
+        "the served want stays in wants"
+    );
+
+    // A want nothing serves still closes.
+    let (plain, _sent) = send(&mailspace, "want", "mind");
+    mailspace
+        .move_item("mind", &plain, "done", None, "want done", None)
+        .unwrap();
 }
