@@ -22,7 +22,12 @@ fn edge(from: &str, to: &str, words: &[&str]) -> FlowEdge {
 
 #[test]
 fn shipped_flows_validate() {
-    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+    for kind in [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ] {
         let def = load(kind).unwrap();
         if let Err(found) = validate(&def) {
             panic!("{}: {found:?}", kind.name());

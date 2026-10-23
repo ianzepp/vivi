@@ -13,9 +13,6 @@ use crate::pump::state::State;
 use crate::role_schedule::{self, state_label};
 use crate::routing::resolve_read_only;
 
-mod investigations;
-pub use investigations::InvestigationRun;
-
 /// The `state.extra` key holding the cadence state.
 pub const EXTRA_KEY: &str = "cadence";
 
@@ -93,8 +90,6 @@ pub struct RoleRun {
 pub struct CadenceState {
     #[serde(default)]
     pub runs: BTreeMap<String, RoleRun>,
-    #[serde(default)]
-    pub investigations: BTreeMap<String, InvestigationRun>,
     #[serde(default)]
     pub scans: BTreeMap<String, RoleScan>,
     #[serde(default)]
@@ -186,8 +181,6 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
         }
     };
     let scans = scan_roles(ctx, &mailspace, now);
-    investigations::complete(ctx, st, &mailspace, &mut cadence, now);
-    investigations::prepare(ctx, st, &mailspace, &mut cadence, now);
     for scan in scans.values() {
         let previous = cadence.runs.get(&scan.name);
         if !launchable(scan, previous, now) {
@@ -205,7 +198,7 @@ pub fn prepare_due(ctx: &Ctx, st: &mut State) {
 pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     let cadence = state(st);
     let now = ctx.now();
-    let mut lines: Vec<String> = cadence
+    cadence
         .scans
         .iter()
         .filter(|(_, scan)| scan.cadence.is_some())
@@ -237,9 +230,7 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
                 if scan.read_only { "read-only" } else { "write" }
             )
         })
-        .collect();
-    lines.extend(investigations::status_lines(&cadence));
-    lines
+        .collect()
 }
 
 fn scan_roles(ctx: &Ctx, mailspace: &Mailspace, now: u64) -> BTreeMap<String, RoleScan> {
@@ -450,16 +441,19 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
             "As head-ceo, review open wants. Promote a well-scoped want to a linked need.\n\
              For an unclear want, file a research need with `need send --mark research`\n\
              and a `for: <want-handle>` line. Write the mark before `vivi pump send`.\n\
+             Before filing one, read the open needs marked research and skip a want\n\
+             that one of them already names in its `for:` line. File at most two\n\
+             research needs for one want in total; after that, promote or drop it.\n\
              On the next wake, read the analysis on the want, then promote the want,\n\
-             drop it, or file another research need. Do not implement work.\n\
+             drop it, or file another research need within that cap. Do not implement work.\n\
              End your reply with a TOML envelope between `+++` lines:\n\
              `answer` is `reviewed` or `no-op`; `promoted`, `research` and `dropped`\n\
              are lists of handles. Example:\n\
              +++\n\
              answer = \"reviewed\"\n\
-             promoted = [\"need-12\"]\n\
+             promoted = [\"3f9a1c2e\"]\n\
              research = []\n\
-             dropped = [\"want-3\"]\n\
+             dropped = [\"b71d04aa\"]\n\
              +++"
         }
         Some(kind) if kind.eq_ignore_ascii_case("head") => {

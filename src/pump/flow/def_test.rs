@@ -2,7 +2,7 @@
 
 use super::{FAILED, FlowKind, NodeClass};
 
-const STEP_CLASSES: [&str; 14] = [
+const STEP_CLASSES: [&str; 15] = [
     "researcher",
     "planner",
     "admitter",
@@ -13,6 +13,7 @@ const STEP_CLASSES: [&str; 14] = [
     "merge",
     "merge-main",
     "fanout",
+    "repairer",
     "rung-need",
     "rung-main",
     "rung-release",
@@ -61,6 +62,11 @@ fn join_and_raisecheck_words_follow_the_table() {
         &["verified", "raised", "block", "judge", FAILED]
     );
     assert_eq!(NodeClass::Raisecheck.words(), &["raised", "none"]);
+}
+
+#[test]
+fn repairer_words_include_overtime() {
+    assert_eq!(NodeClass::Repairer.words(), &["built", "overtime", FAILED]);
 }
 
 #[test]

@@ -12,8 +12,13 @@ fn node_class<'a>(def: &'a FlowDef, id: &str) -> &'a NodeClass {
 }
 
 #[test]
-fn all_three_shipped_flows_load() {
-    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+fn all_four_shipped_flows_load() {
+    for kind in [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ] {
         let def = load(kind).unwrap_or_else(|err| panic!("{}: {err}", kind.name()));
         assert_eq!(def.kind, kind);
         for entry in &def.entries {
@@ -70,6 +75,11 @@ fn node_classes_map() {
 }
 
 #[test]
-fn repair_has_no_shipped_flow_yet() {
-    assert!(load(FlowKind::Repair).is_err());
+fn repair_flow_loads_with_entry_fix1() {
+    let def = load(FlowKind::Repair).unwrap();
+    assert_eq!(def.entries, ["fix1"]);
+    assert_eq!(node_class(&def, "unrepaired"), &NodeClass::Lock);
+    assert_eq!(node_class(&def, "fix1"), &NodeClass::Repairer);
+    assert_eq!(node_class(&def, "fix2"), &NodeClass::Repairer);
+    assert!(def.nodes.iter().all(|node| node.class != NodeClass::Cto));
 }

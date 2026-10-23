@@ -68,6 +68,7 @@ pub(crate) fn default_for<'a, S: JobStore + 'a, M: FlowMail + 'a>(
         | NodeClass::Judge
         | NodeClass::Cto
         | NodeClass::Merge
+        | NodeClass::Repairer
         | NodeClass::Fanout => Some(&RoleCollector),
         NodeClass::RungNeed
         | NodeClass::RungMain

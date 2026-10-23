@@ -19,6 +19,7 @@ pub enum RoleKind {
     Cto,
     Merge,
     Hand,
+    Repairer,
     HeadCeo,
 }
 
@@ -35,6 +36,7 @@ impl RoleKind {
             NodeClass::Judge => Self::Judge,
             NodeClass::Cto => Self::Cto,
             NodeClass::Merge => Self::Merge,
+            NodeClass::Repairer => Self::Repairer,
             _ => return None,
         })
     }
@@ -52,6 +54,7 @@ pub struct Parsed {
 pub fn parse_for(kind: RoleKind, text: &str) -> Result<Parsed, EnvelopeError> {
     match kind {
         RoleKind::Hand => parsed::<Hand>(text),
+        RoleKind::Repairer => parsed::<Repairer>(text),
         RoleKind::Slicer => parsed::<Slicer>(text),
         RoleKind::Planner => parsed::<Planner>(text),
         RoleKind::Researcher => parsed::<Researcher>(text),
@@ -162,6 +165,37 @@ impl Validate for Hand {
         if self.scope_reason.as_deref().is_none_or(blank) {
             return Err("answer \"blocked-scope\" requires a `scope_reason`".to_string());
         }
+        Ok(())
+    }
+}
+
+// ---- repairer ------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepairerAnswer {
+    #[serde(rename = "built")]
+    Built,
+    #[serde(rename = "failed")]
+    Failed,
+}
+
+/// A repairer's envelope. `overtime` is the collector's word for a job past
+/// its time cap, never a reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repairer {
+    pub answer: RepairerAnswer,
+    #[serde(default)]
+    pub change: Vec<String>,
+    #[serde(default)]
+    pub check: Vec<Check>,
+    #[serde(default)]
+    pub deviations: Vec<String>,
+}
+
+impl Validate for Repairer {
+    /// No diff cap: a top-tier repairer may need a large fix.
+    fn validate(&self) -> Result<(), String> {
         Ok(())
     }
 }

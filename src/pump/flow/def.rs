@@ -60,6 +60,7 @@ pub enum NodeClass {
     Merge,
     MergeMain,
     Fanout,
+    Repairer,
     RungNeed,
     RungMain,
     RungRelease,
@@ -93,6 +94,7 @@ impl NodeClass {
             "merge" => Self::Merge,
             "merge-main" => Self::MergeMain,
             "fanout" => Self::Fanout,
+            "repairer" => Self::Repairer,
             "rung-need" => Self::RungNeed,
             "rung-main" => Self::RungMain,
             "rung-release" => Self::RungRelease,
@@ -122,6 +124,7 @@ impl NodeClass {
             Self::Merge => "merge".to_string(),
             Self::MergeMain => "merge-main".to_string(),
             Self::Fanout => "fanout".to_string(),
+            Self::Repairer => "repairer".to_string(),
             Self::RungNeed => "rung-need".to_string(),
             Self::RungMain => "rung-main".to_string(),
             Self::RungRelease => "rung-release".to_string(),
@@ -152,6 +155,7 @@ impl NodeClass {
                 | Self::Merge
                 | Self::MergeMain
                 | Self::Fanout
+                | Self::Repairer
                 | Self::RungNeed
                 | Self::RungMain
                 | Self::RungRelease
@@ -179,6 +183,7 @@ impl NodeClass {
             Self::Cto => &["research", "plan", "slice", "rework", "lock", FAILED],
             Self::Merge | Self::MergeMain => &["merged", "conflict", FAILED],
             Self::Fanout => &["built", "unchanged", FAILED],
+            Self::Repairer => &["built", "overtime", FAILED],
             Self::RungNeed | Self::RungMain | Self::RungRelease | Self::RungRaised => {
                 &["pass", "fail", FAILED]
             }

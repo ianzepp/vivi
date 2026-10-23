@@ -12,7 +12,12 @@ use vivi::pump::flow::index::{RunRow, StepRow, StepState};
 use vivi::pump::flow::registry::{self, FLOW_VERSION};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
-const KINDS: [FlowKind; 3] = [FlowKind::Build, FlowKind::Research, FlowKind::Release];
+const KINDS: [FlowKind; 4] = [
+    FlowKind::Build,
+    FlowKind::Research,
+    FlowKind::Release,
+    FlowKind::Repair,
+];
 const NO_DB: &str = "no pump.db here";
 
 type Runs = Vec<(RunRow, Vec<StepRow>)>;
@@ -48,7 +53,7 @@ fn show(
 ) -> Result<(), VivariumError> {
     let kind = FlowKind::parse(kind).ok_or_else(|| {
         VivariumError::Message(format!(
-            "unknown flow kind {kind:?}; expected build, research or release"
+            "unknown flow kind {kind:?}; expected build, research, release or repair"
         ))
     })?;
     let source = registry::shipped(kind).ok_or_else(|| {
