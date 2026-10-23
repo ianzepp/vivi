@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::error::VivariumError;
-use crate::sync::http::{MintedToken, RawResponse};
+use crate::sync::http::RawResponse;
 
 struct Stub {
     bodies: RefCell<Vec<Value>>,
@@ -42,10 +42,6 @@ impl Upstream for Stub {
             .pop_front()
             .expect("scripted answer"))
     }
-
-    fn mint(&self) -> Result<MintedToken, VivariumError> {
-        panic!("an API key never mints");
-    }
 }
 
 fn reply(id: u64, result: &Value) -> RawResponse {
@@ -73,15 +69,15 @@ fn handshake() -> Vec<RawResponse> {
     ]
 }
 
-fn key() -> Credential {
-    Credential::ApiKey("secret-key".into())
+fn key() -> &'static str {
+    "secret-key"
 }
 
 #[test]
 fn connect_initializes_then_notifies() {
     let stub = Stub::new(handshake());
     let credential = key();
-    Client::connect(&stub, &credential).expect("connect");
+    Client::connect(&stub, credential).expect("connect");
     assert_eq!(stub.methods(), ["initialize", "notifications/initialized"]);
     assert!(stub.bodies.borrow()[1].get("id").is_none());
 }
@@ -96,7 +92,7 @@ fn tools_follow_the_cursor() {
     answers.push(reply(3, &json!({ "tools": [{ "name": "b" }] })));
     let stub = Stub::new(answers);
     let credential = key();
-    let mut client = Client::connect(&stub, &credential).expect("connect");
+    let mut client = Client::connect(&stub, credential).expect("connect");
     let tools = client.tools().expect("tools");
     assert_eq!(tools.len(), 2);
     assert_eq!(stub.bodies.borrow()[3]["params"]["cursor"], "p2");
@@ -115,7 +111,7 @@ fn a_json_rpc_error_is_typed() {
     });
     let stub = Stub::new(answers);
     let credential = key();
-    let mut client = Client::connect(&stub, &credential).expect("connect");
+    let mut client = Client::connect(&stub, credential).expect("connect");
     let error = client.call_tool("nope", &json!({})).unwrap_err();
     assert_eq!(
         error,
@@ -137,7 +133,7 @@ fn an_http_refusal_names_the_status() {
             .into_bytes(),
     }]);
     let credential = key();
-    let Err(error) = Client::connect(&stub, &credential) else {
+    let Err(error) = Client::connect(&stub, credential) else {
         panic!("expected a refusal");
     };
     assert!(error.to_string().contains("HTTP 403"), "{error}");
@@ -153,7 +149,7 @@ fn a_sse_reply_is_matched_by_id() {
     });
     let stub = Stub::new(answers);
     let credential = key();
-    let mut client = Client::connect(&stub, &credential).expect("connect");
+    let mut client = Client::connect(&stub, credential).expect("connect");
     let result = client.call_tool("t", &json!({})).expect("call");
     assert_eq!(result["ok"], true);
 }
@@ -182,4 +178,39 @@ fn arguments_must_be_a_json_object() {
     assert!(parse_arguments("[1]").unwrap_err().contains("object"));
     assert!(parse_arguments("\"s\"").unwrap_err().contains("object"));
     assert!(parse_arguments("{nope").unwrap_err().contains("not JSON"));
+}
+
+fn project_tools() -> Vec<Value> {
+    vec![
+        json!({"name": "send", "inputSchema": {"properties": {"project": {"type": "string"}, "to": {}}}}),
+        json!({"name": "ping", "inputSchema": {"properties": {}}}),
+        json!({"name": "bare"}),
+    ]
+}
+
+#[test]
+fn takes_project_reads_the_input_schema() {
+    let tools = project_tools();
+    assert!(takes_project(&tools, "send"));
+    assert!(!takes_project(&tools, "ping"));
+    assert!(!takes_project(&tools, "bare"));
+    assert!(!takes_project(&tools, "missing"));
+}
+
+#[test]
+fn with_project_adds_the_key_and_keeps_the_rest() {
+    let result = with_project(&json!({"to": "bob"}), "abcde-fghjk");
+    assert_eq!(result, json!({"to": "bob", "project": "abcde-fghjk"}));
+}
+
+#[test]
+fn with_project_keeps_an_explicit_project() {
+    let result = with_project(&json!({"project": "mine"}), "abcde-fghjk");
+    assert_eq!(result, json!({"project": "mine"}));
+}
+
+#[test]
+fn with_project_leaves_a_non_object_unchanged() {
+    assert_eq!(with_project(&json!("text"), "p"), json!("text"));
+    assert_eq!(with_project(&json!(null), "p"), json!(null));
 }

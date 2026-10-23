@@ -76,7 +76,7 @@ fn delete(server: &ProjectServer, tail: &str, bearer: Option<&str>) -> HttpReply
 }
 
 fn mcp(server: &ProjectServer, bearer: &str, message: Value, accept: Option<&str>) -> HttpReply {
-    let path = format!("/v1/projects/{}/mcp", server.project());
+    let path = "/v1/mcp".to_string();
     let mut headers: Vec<(String, String)> = vec![
         ("Content-Type".into(), "application/json".into()),
         ("Authorization".into(), format!("Bearer {bearer}")),
@@ -177,10 +177,16 @@ fn challenge_sign_token_then_initialize_list_and_echo() {
         "{expires_at}"
     );
     assert_eq!(server.tokens_minted(), 1);
+    assert_eq!(
+        get(&server, "keys", Some(&token)).status,
+        200,
+        "the minted token is live on the sync side"
+    );
 
+    let key = server.issue_api_key("alice");
     let init = mcp(
         &server,
-        &token,
+        &key,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -202,7 +208,7 @@ fn challenge_sign_token_then_initialize_list_and_echo() {
 
     let list = mcp(
         &server,
-        &token,
+        &key,
         json!({ "jsonrpc": "2.0", "id": "abc", "method": "tools/list" }),
         None,
     );
@@ -216,7 +222,7 @@ fn challenge_sign_token_then_initialize_list_and_echo() {
 
     let echo = mcp(
         &server,
-        &token,
+        &key,
         json!({
             "jsonrpc": "2.0",
             "id": 3,
@@ -234,9 +240,7 @@ fn challenge_sign_token_then_initialize_list_and_echo() {
 #[test]
 fn initialize_echoes_only_supported_protocol_versions() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     for version in ["2024-11-05", "2025-03-26", "2025-11-25"] {
         let reply = mcp(
@@ -272,9 +276,7 @@ fn initialize_echoes_only_supported_protocol_versions() {
 #[test]
 fn ping_answers_an_empty_result_and_unknown_methods_are_32601() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     let pong = mcp(&server, &token, ping(7), None);
     let pong_value: Value = serde_json::from_str(&pong.body).unwrap();
@@ -370,9 +372,7 @@ fn a_name_nobody_registered_cannot_mint_a_token() {
 #[test]
 fn a_notification_is_202_with_an_empty_body() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     let reply = mcp(
         &server,
@@ -389,9 +389,7 @@ fn a_notification_is_202_with_an_empty_body() {
 #[test]
 fn an_event_stream_accept_wraps_the_same_json_in_one_sse_frame() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     let plain = mcp(
         &server,
@@ -429,9 +427,7 @@ fn an_event_stream_accept_wraps_the_same_json_in_one_sse_frame() {
 #[test]
 fn refuse_mcp_next_refuses_once_then_succeeds() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     server.refuse_mcp_next(1);
     let first = mcp(&server, &token, ping(1), None);
@@ -449,9 +445,7 @@ fn refuse_mcp_next_refuses_once_then_succeeds() {
 #[test]
 fn mcp_requests_record_the_bearer_body_and_accept() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     mcp(&server, &token, ping(1), Some("application/json"));
 
@@ -464,16 +458,16 @@ fn mcp_requests_record_the_bearer_body_and_accept() {
 }
 
 #[test]
-fn revoking_all_tokens_disables_every_bearer_on_mcp() {
+fn revoking_all_tokens_disables_every_token() {
     let server = ProjectServer::start();
     let identity = identity();
     server.register("alice", &identity.public_key_pem());
     let token = mint_token(&server, &identity, "alice");
-    assert_eq!(mcp(&server, &token, ping(1), None).status, 200);
+    assert_eq!(get(&server, "keys", Some(&token)).status, 200);
 
     server.revoke_all_tokens();
 
-    assert_eq!(mcp(&server, &token, ping(2), None).status, 401);
+    assert_eq!(get(&server, "keys", Some(&token)).status, 401);
 }
 
 #[test]
@@ -513,7 +507,7 @@ fn api_keys_follow_the_documented_lifecycle() {
         }),
         None,
     );
-    assert_eq!(echoed.status, 200, "an API key works on /mcp");
+    assert_eq!(echoed.status, 200, "an API key works on /v1/mcp");
     let echoed_value: Value = serde_json::from_str(&echoed.body).unwrap();
     assert_eq!(
         echoed_value["result"]["content"][0]["text"],
@@ -620,12 +614,12 @@ fn a_custom_lifetime_still_mints_and_negative_days_do_not_panic() {
 
     server.set_token_lifetime_secs(1);
     let token = mint_token(&server, &identity, "alice");
-    assert_eq!(mcp(&server, &token, ping(1), None).status, 200);
+    assert_eq!(get(&server, "keys", Some(&token)).status, 200);
     assert_eq!(server.tokens_minted(), 1);
 
     server.set_token_lifetime_secs(-10);
     let past = mint_token(&server, &identity, "alice");
-    assert_eq!(mcp(&server, &past, ping(2), None).status, 200);
+    assert_eq!(get(&server, "keys", Some(&past)).status, 200);
     assert_eq!(server.tokens_minted(), 2);
 }
 
@@ -635,10 +629,10 @@ fn another_project_id_is_project_not_found() {
 
     let reply = http(
         &server.url(),
-        "POST",
-        "/v1/projects/other-id/mcp",
-        &[("Content-Type", "application/json")],
-        Some(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }).to_string()),
+        "GET",
+        "/v1/projects/other-id/keys",
+        &[],
+        None,
     );
 
     assert_eq!(reply.status, 404);
@@ -648,9 +642,7 @@ fn another_project_id_is_project_not_found() {
 #[test]
 fn a_batch_is_answered_by_the_array_of_individual_replies() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
 
     let batch = json!([
         ping(7),
@@ -683,15 +675,13 @@ fn a_batch_is_answered_by_the_array_of_individual_replies() {
 #[test]
 fn a_body_that_is_not_json_is_a_32700_parse_error() {
     let server = ProjectServer::start();
-    let identity = identity();
-    server.register("alice", &identity.public_key_pem());
-    let token = mint_token(&server, &identity, "alice");
+    let token = server.issue_api_key("alice");
     let bearer_header = format!("Bearer {token}");
 
     let reply = http(
         &server.url(),
         "POST",
-        &format!("/v1/projects/{}/mcp", server.project()),
+        "/v1/mcp",
         &[
             ("Content-Type", "application/json"),
             ("Authorization", bearer_header.as_str()),

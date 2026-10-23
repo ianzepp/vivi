@@ -19,6 +19,17 @@ use project_server::ProjectServer;
 /// Run `vivi mcp <args>` with an API key for `alice` in the environment,
 /// every other `VIVI_MCP_*` variable cleared, and `stdin` piped in.
 fn run(server: &ProjectServer, key: &str, args: &[&str], stdin: &str) -> Output {
+    run_with_project(server, key, Some(server.project()), args, stdin)
+}
+
+/// `run` with the `VIVI_MCP_PROJECT_ID` environment variable given, or not.
+fn run_with_project(
+    server: &ProjectServer,
+    key: &str,
+    project: Option<&str>,
+    args: &[&str],
+    stdin: &str,
+) -> Output {
     let empty = tempfile::tempdir().expect("empty tempdir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_vivi"));
     command.arg("mcp").args(args).current_dir(empty.path());
@@ -30,10 +41,12 @@ fn run(server: &ProjectServer, key: &str, args: &[&str], stdin: &str) -> Output 
     command
         .env("VIVI_MCP_API_KEY", key)
         .env("VIVI_MCP_SERVER", server.url())
-        .env("VIVI_MCP_PROJECT_ID", server.project())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(project) = project {
+        command.env("VIVI_MCP_PROJECT_ID", project);
+    }
     let mut child = command.spawn().expect("spawn vivi mcp");
     child
         .stdin
@@ -91,6 +104,9 @@ fn call_prints_the_result_text() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stdout(&output), "alice: hi\n");
     assert!(!stderr(&output).contains(&key));
+    for seen in server.mcp_requests() {
+        assert_eq!(seen.path, "/v1/mcp", "the server's MCP endpoint");
+    }
     let methods: Vec<String> = server
         .mcp_requests()
         .iter()
@@ -98,8 +114,117 @@ fn call_prints_the_result_text() {
         .collect();
     assert_eq!(
         methods,
-        ["initialize", "notifications/initialized", "tools/call"]
+        [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/call"
+        ]
     );
+}
+
+fn methods(server: &ProjectServer) -> Vec<String> {
+    server
+        .mcp_requests()
+        .iter()
+        .map(|seen| seen.body["method"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn last_call_arguments(server: &ProjectServer) -> Value {
+    let seen = server.mcp_requests();
+    let call = seen
+        .iter()
+        .rev()
+        .find(|seen| seen.body["method"] == "tools/call")
+        .expect("a tools/call request");
+    call.body["params"]["arguments"].clone()
+}
+
+#[test]
+fn call_injects_the_env_project_for_a_tool_that_takes_one() {
+    let (server, key) = fixture();
+    server.seed_item("t1", "first", "the body");
+    let output = run(&server, &key, &["call", "show", r#"{"handle":"t1"}"#], "");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("subject: first"),
+        "{}",
+        stdout(&output)
+    );
+    assert_eq!(last_call_arguments(&server)["project"], server.project());
+}
+
+#[test]
+fn call_sends_no_project_to_a_tool_that_does_not_take_one() {
+    let (server, key) = fixture();
+    let output = run(&server, &key, &["call", "echo", r#"{"text":"hi"}"#], "");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(last_call_arguments(&server).get("project").is_none());
+}
+
+#[test]
+fn call_keeps_an_explicit_project() {
+    let (server, key) = fixture();
+    server.seed_item("t1", "first", "the body");
+    let arguments = r#"{"project":"other","handle":"t1"}"#;
+    let output = run(&server, &key, &["call", "show", arguments], "");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("this key has no grant on other"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(last_call_arguments(&server)["project"], "other");
+    assert!(!methods(&server).contains(&"tools/list".to_string()));
+}
+
+#[test]
+fn call_uses_the_project_id_flag_without_the_env() {
+    let (server, key) = fixture();
+    server.seed_item("t1", "first", "the body");
+    let id = server.project();
+    let output = run_with_project(
+        &server,
+        &key,
+        None,
+        &["call", "show", r#"{"handle":"t1"}"#, "--project-id", id],
+        "",
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(last_call_arguments(&server)["project"], id);
+}
+
+#[test]
+fn call_with_no_project_anywhere_sends_no_tools_list() {
+    let (server, key) = fixture();
+    server.seed_item("t1", "first", "the body");
+    let output = run_with_project(
+        &server,
+        &key,
+        None,
+        &["call", "show", r#"{"handle":"t1"}"#],
+        "",
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("project is required"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!methods(&server).contains(&"tools/list".to_string()));
+    assert!(last_call_arguments(&server).get("project").is_none());
+}
+
+#[test]
+fn tools_sends_no_project_and_no_call() {
+    let (server, key) = fixture();
+    let output = run(&server, &key, &["tools"], "");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!methods(&server).contains(&"tools/call".to_string()));
+    for seen in server.mcp_requests() {
+        assert!(seen.body.pointer("/params/project").is_none());
+    }
 }
 
 #[test]
@@ -155,7 +280,8 @@ fn call_without_arguments_sends_an_empty_object() {
 #[test]
 fn a_tool_error_exits_1_with_its_text_on_stderr() {
     let (server, key) = fixture();
-    let output = run(&server, &key, &["call", "show", r#"{"handle":"nope"}"#], "");
+    let arguments = format!(r#"{{"handle":"nope","project":"{}"}}"#, server.project());
+    let output = run(&server, &key, &["call", "show", &arguments], "");
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(
         stderr(&output).contains("unknown item: nope"),
@@ -207,14 +333,14 @@ fn bare_mcp_still_parses_as_the_bridge() {
     };
     assert!(command.command.is_none());
 
-    let flagged = Cli::try_parse_from(["vivi", "mcp", "--server", "http://s", "--name", "bob"])
+    let flagged = Cli::try_parse_from(["vivi", "mcp", "--server", "http://s", "--project-id", "p"])
         .expect("bridge flags parse");
     let CliCommand::Mcp(command) = flagged.command else {
         panic!("not the mcp command");
     };
     assert!(command.command.is_none());
     assert_eq!(command.server.as_deref(), Some("http://s"));
-    assert_eq!(command.name.as_deref(), Some("bob"));
+    assert_eq!(command.project_id.as_deref(), Some("p"));
 }
 
 #[test]

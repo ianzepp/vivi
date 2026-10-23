@@ -1,35 +1,34 @@
 //! The `vivi mcp` stdio bridge engine: newline-delimited JSON-RPC 2.0 in,
 //! the project server's answers out, one line each.
 //!
-//! The bridge is a pass-through. It never inspects `method`: a message with
-//! an `id` member is a request and expects an answer, a message without one
-//! is a notification and never gets a reply, so new server tools need no
-//! bridge change. Every valid line is forwarded byte-for-byte to the
-//! project server's MCP endpoint; a line that cannot be served is answered
-//! in-protocol (-32700 / -32600 / -32000) and the session continues. Bearer
-//! tokens live in memory for one serve and are never written anywhere.
+//! The bridge is a pass-through. A message with an `id` member is a request
+//! and expects an answer, a message without one is a notification and never
+//! gets a reply, so new server tools need no bridge change. The one place it
+//! inspects `method` is a `tools/call`: with a configured project, a call of
+//! a tool that takes `project` and carries none gets it filled in (see
+//! [`inject`]). Every other valid line is forwarded byte-for-byte to the
+//! server's MCP endpoint; a line that cannot be served is answered
+//! in-protocol (-32700 / -32600 / -32000) and the session continues. The API
+//! key is held in memory and never written.
 //!
-//! The CLI (flags, environment, the `[sync]` fallback) lives in
+//! The CLI (flags, environment, the mailspace fallback) lives in
 //! [`resolve`] and the binary's command handlers; this module is the engine
 //! and its tests.
 
 use std::io::{BufRead, Write};
 
-use chrono::Utc;
 use serde_json::{Value, json};
 
 use crate::error::VivariumError;
-use crate::sync::SyncSettings;
-use crate::sync::http::{MintedToken, RawResponse, mint_token, project_base_url, send_raw};
-use crate::sync::identity::SyncIdentity;
+use crate::sync::http::{RawResponse, send_raw, server_mcp_url};
 
 pub mod client;
+mod inject;
 pub mod resolve;
 
-/// A member token is renewed when it is within this window of expiry.
-const EXPIRY_SLACK_SECS: i64 = 30;
+use inject::Injector;
 
-/// The status that ends a member request with one renewal and one retry.
+/// The status that names authentication in a failure message.
 const UNAUTHORIZED: u16 = 401;
 
 /// JSON-RPC code for a line that is not JSON.
@@ -42,60 +41,41 @@ const CODE_INVALID_REQUEST: i64 = -32_600;
 /// JSON-RPC code for a request that could not be served.
 const CODE_UNSERVED: i64 = -32_000;
 
-/// How the bridge authenticates to the project server.
-#[derive(Debug, Clone)]
-pub enum Credential {
-    /// A pre-shared API key, sent as the bearer as it is: never minted,
-    /// never renewed, and a 401 is final.
-    ApiKey(String),
-    /// A project member identity: challenge-signed bearers are minted
-    /// lazily, kept in memory only, and renewed near expiry or on a 401.
-    Member(SyncIdentity),
-}
-
-/// Everything one bridge session needs: where the server is and how to
-/// authenticate.
+/// Everything one bridge session needs: where the server is and the API key
+/// presented as the bearer on every forwarded request.
 #[derive(Debug, Clone)]
 pub struct BridgeConfig {
-    /// Sync settings; `server`, `project`, and `name` are used, and
-    /// `mailspace_id` may be empty.
-    pub settings: SyncSettings,
-    /// The credential presented as the bearer on every forwarded request.
-    pub credential: Credential,
+    /// The project server's base URL.
+    pub server: String,
+    /// The API key, sent as the bearer as it is.
+    pub api_key: String,
+    /// The project the bridge fills into tool calls that take one and
+    /// carry none; `None` is a pure pass-through.
+    pub project: Option<String>,
 }
 
 /// The upstream the bridge posts to. A trait so the engine is testable
 /// without sockets: tests script the answers.
 pub trait Upstream {
-    /// POST `body` to the project's MCP endpoint with
+    /// POST `body` to the server's MCP endpoint with
     /// `Authorization: Bearer <bearer>`.
     ///
     /// # Errors
     /// Returns an error only when the server cannot be reached; every HTTP
     /// status comes back inside the [`RawResponse`].
     fn post(&self, bearer: &str, body: &[u8]) -> Result<RawResponse, VivariumError>;
-
-    /// Mint a fresh member bearer.
-    ///
-    /// # Errors
-    /// Returns an error when the mint is refused or the server cannot be
-    /// reached.
-    fn mint(&self) -> Result<MintedToken, VivariumError>;
 }
 
-/// The real upstream: one blocking [`send_raw`] per forwarded message and
-/// [`mint_token`] per bearer.
+/// The real upstream: one blocking [`send_raw`] per forwarded message.
 pub struct HttpUpstream<'a> {
-    settings: &'a SyncSettings,
-    identity: Option<&'a SyncIdentity>,
+    server: &'a str,
 }
 
 impl<'a> HttpUpstream<'a> {
-    /// Build the upstream for `settings`; `identity` is needed only for a
-    /// [`Credential::Member`] mint.
+    /// Build the upstream for the project server at `server`.
     #[must_use]
-    pub fn new(settings: &'a SyncSettings, identity: Option<&'a SyncIdentity>) -> Self {
-        Self { settings, identity }
+    pub fn new(server: &'a str) -> Self {
+        Self { server }
     }
 }
 
@@ -103,7 +83,7 @@ impl Upstream for HttpUpstream<'_> {
     fn post(&self, bearer: &str, body: &[u8]) -> Result<RawResponse, VivariumError> {
         send_raw(
             "POST",
-            &format!("{}/mcp", project_base_url(self.settings)),
+            &server_mcp_url(self.server),
             &[
                 ("Authorization", format!("Bearer {bearer}")),
                 ("Content-Type", "application/json".to_string()),
@@ -111,15 +91,6 @@ impl Upstream for HttpUpstream<'_> {
             ],
             Some(body.to_vec()),
         )
-    }
-
-    fn mint(&self) -> Result<MintedToken, VivariumError> {
-        let identity = self.identity.ok_or_else(|| {
-            VivariumError::Message(
-                "the MCP bridge has no member identity, so it cannot mint a bearer".into(),
-            )
-        })?;
-        mint_token(self.settings, identity)
     }
 }
 
@@ -139,12 +110,15 @@ pub fn serve(
     output: impl Write,
     diag: impl Write,
 ) -> Result<(), VivariumError> {
-    let identity = match &config.credential {
-        Credential::Member(identity) => Some(identity),
-        Credential::ApiKey(_) => None,
-    };
-    let upstream = HttpUpstream::new(&config.settings, identity);
-    serve_with(&upstream, &config.credential, input, output, diag)
+    let upstream = HttpUpstream::new(&config.server);
+    serve_with_project(
+        &upstream,
+        &config.api_key,
+        config.project.as_deref(),
+        input,
+        output,
+        diag,
+    )
 }
 
 /// The engine behind [`serve`], against any [`Upstream`].
@@ -153,37 +127,58 @@ pub fn serve(
 /// Same contract as [`serve`].
 pub fn serve_with(
     upstream: &dyn Upstream,
-    credential: &Credential,
+    api_key: &str,
     input: impl BufRead,
     output: impl Write,
     diag: impl Write,
 ) -> Result<(), VivariumError> {
-    let mut session = Session::new(upstream, credential, output, diag);
+    serve_with_project(upstream, api_key, None, input, output, diag)
+}
+
+/// [`serve_with`] that fills `project` into tool calls that take one and
+/// carry none.
+///
+/// # Errors
+/// Same contract as [`serve`].
+pub fn serve_with_project(
+    upstream: &dyn Upstream,
+    api_key: &str,
+    project: Option<&str>,
+    input: impl BufRead,
+    output: impl Write,
+    diag: impl Write,
+) -> Result<(), VivariumError> {
+    let mut session = Session::new(upstream, api_key, output, diag).with_project(project);
     for line in input.lines() {
         session.handle_line(&line?)?;
     }
     Ok(())
 }
 
-/// One serve pass: the upstream, the credential, the in-memory bearer, and
-/// the two sinks.
+/// One serve pass: the upstream, the API key, and the two sinks.
 struct Session<'a, O: Write, D: Write> {
     upstream: &'a dyn Upstream,
-    credential: &'a Credential,
-    token: Option<MintedToken>,
+    api_key: &'a str,
     output: O,
     diag: D,
+    injector: Injector,
 }
 
 impl<'a, O: Write, D: Write> Session<'a, O, D> {
-    fn new(upstream: &'a dyn Upstream, credential: &'a Credential, output: O, diag: D) -> Self {
+    fn new(upstream: &'a dyn Upstream, api_key: &'a str, output: O, diag: D) -> Self {
         Self {
             upstream,
-            credential,
-            token: None,
+            api_key,
             output,
             diag,
+            injector: Injector::new(None),
         }
+    }
+
+    /// Fill `project` into tool calls that take one and carry none.
+    fn with_project(mut self, project: Option<&str>) -> Self {
+        self.injector = Injector::new(project);
+        self
     }
 
     /// One line: blank lines are skipped, invalid JSON and non-message JSON
@@ -198,91 +193,51 @@ impl<'a, O: Write, D: Write> Session<'a, O, D> {
                 return self.write_json(&parse_error(&error.to_string()));
             }
         };
-        match Kind::classify(&message) {
-            Some(kind) => self.forward(line, kind),
-            None => self.write_json(&invalid_request()),
+        let Some(kind) = Kind::classify(&message) else {
+            return self.write_json(&invalid_request());
+        };
+        let sent = self
+            .injector
+            .apply(self.upstream, self.api_key, line, &message);
+        if let Some(text) = &sent.diag {
+            self.diag_line(text)?;
         }
+        self.forward(&sent.body, kind)
     }
 
     /// Send one message upstream and answer it: a request gets its reply or
     /// a -32000 error, a notification gets silence (failures go to `diag`),
     /// and a batch is answered once with id null.
-    fn forward(&mut self, line: &str, kind: Kind) -> Result<(), VivariumError> {
+    fn forward(&mut self, body: &str, kind: Kind) -> Result<(), VivariumError> {
         match kind {
-            Kind::Request { id } => match self.serve(line.as_bytes()) {
+            Kind::Request { id } => match self.serve(body.as_bytes()) {
                 Ok(outcome) => self.write_outcome(&outcome),
                 Err(failure) => self.write_json(&request_error(Some(&id), &failure)),
             },
             Kind::Notification => {
-                if let Err(failure) = self.serve(line.as_bytes()) {
+                if let Err(failure) = self.serve(body.as_bytes()) {
                     self.diag_line(&failure.message)?;
                 }
                 Ok(())
             }
-            Kind::Batch => match self.serve(line.as_bytes()) {
+            Kind::Batch => match self.serve(body.as_bytes()) {
                 Ok(outcome) => self.write_outcome(&outcome),
                 Err(failure) => self.write_json(&request_error(None, &failure)),
             },
         }
     }
 
-    /// Forward one message body: bearer, POST, and for a member exactly one
-    /// renewal and retry when the server answers 401.
+    /// Forward one message body: bearer, POST, and the reply classified.
     fn serve(&mut self, body: &[u8]) -> Result<Outcome, Failure> {
-        let response = self.post(body)?;
-        if response.status == UNAUTHORIZED && self.is_member() {
-            self.renew()?;
-            return classify_reply(self.post(body)?);
-        }
-        classify_reply(response)
+        classify_reply(self.post(body)?)
     }
 
-    /// One POST with the current bearer: a transport failure is a
+    /// One POST with the API key as the bearer: a transport failure is a
     /// [`Failure`]; every HTTP status comes back.
     fn post(&mut self, body: &[u8]) -> Result<RawResponse, Failure> {
-        let bearer = self.bearer()?;
         self.upstream
-            .post(&bearer, body)
+            .post(self.api_key, body)
             .map_err(|error| Failure::unreachable(&error.to_string()))
-    }
-
-    /// The bearer for the next POST: the API key as given, or the member
-    /// token, minted on first use and renewed when it is within
-    /// [`EXPIRY_SLACK_SECS`] of expiry (or past it).
-    fn bearer(&mut self) -> Result<String, Failure> {
-        match self.credential {
-            Credential::ApiKey(key) => Ok(key.clone()),
-            Credential::Member(_) => {
-                let stale = self.token.as_ref().is_none_or(|token| !token_fresh(token));
-                if stale {
-                    self.mint_into()?;
-                }
-                let Some(token) = self.token.as_ref() else {
-                    return Err(Failure::auth("no bearer token was minted"));
-                };
-                Ok(token.token.clone())
-            }
-        }
-    }
-
-    /// Mint a bearer and keep it in memory only.
-    fn mint_into(&mut self) -> Result<(), Failure> {
-        let minted = self
-            .upstream
-            .mint()
-            .map_err(|error| Failure::auth(&format!("could not mint a bearer token: {error}")))?;
-        self.token = Some(minted);
-        Ok(())
-    }
-
-    /// Discard the bearer and mint a fresh one (the one 401 retry).
-    fn renew(&mut self) -> Result<(), Failure> {
-        self.token = None;
-        self.mint_into()
-    }
-
-    fn is_member(&self) -> bool {
-        matches!(self.credential, Credential::Member(_))
     }
 
     /// Write what a successful forward produced: nothing, or one line per
@@ -365,14 +320,6 @@ impl Failure {
     fn unreachable(error: &str) -> Self {
         Self {
             message: format!("project server unreachable: {error}"),
-            http_status: None,
-        }
-    }
-
-    /// Authentication ended the request: a mint failed.
-    fn auth(reason: &str) -> Self {
-        Self {
-            message: format!("authentication failed: {reason}"),
             http_status: None,
         }
     }
@@ -460,19 +407,6 @@ fn sse_payloads(body: &[u8]) -> Vec<String> {
         payloads.push(data.join("\n"));
     }
     payloads
-}
-
-/// A member token is fresh unless its `expires_at` parses as RFC 3339 and
-/// is within [`EXPIRY_SLACK_SECS`] of now (or past it). An absent or
-/// unparsable expiry keeps the token: nothing better is knowable.
-fn token_fresh(token: &MintedToken) -> bool {
-    let Some(expires_at) = token.expires_at.as_deref() else {
-        return true;
-    };
-    let Ok(at) = chrono::DateTime::parse_from_rfc3339(expires_at) else {
-        return true;
-    };
-    at.timestamp() - Utc::now().timestamp() > EXPIRY_SLACK_SECS
 }
 
 /// The -32700 reply for a line that is not JSON.

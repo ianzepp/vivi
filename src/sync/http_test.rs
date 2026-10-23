@@ -79,6 +79,14 @@ fn project_base_url_joins_the_server_and_the_project_path() {
     );
 }
 
+#[test]
+fn server_mcp_url_is_the_server_with_the_mcp_path() {
+    assert_eq!(
+        server_mcp_url("https://sync.example"),
+        "https://sync.example/v1/mcp"
+    );
+}
+
 fn header<'a>(headers: &'a [(&'static str, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
@@ -514,7 +522,7 @@ fn a_refused_mint_still_names_the_bearer_mint_and_mint_bearer_still_works() {
 #[test]
 fn a_202_with_an_empty_body_is_a_fine_raw_answer() {
     let (port, listener) = serve(1, accepted_empty_server);
-    let url = format!("http://127.0.0.1:{port}/v1/projects/abcde-fghjk/mcp");
+    let url = format!("http://127.0.0.1:{port}/v1/mcp");
 
     let raw = send_raw(
         "POST",
@@ -532,7 +540,7 @@ fn a_202_with_an_empty_body_is_a_fine_raw_answer() {
 #[test]
 fn a_401_json_body_comes_back_as_bytes_with_its_status() {
     let (port, listener) = serve(1, unauthorized_raw_server);
-    let url = format!("http://127.0.0.1:{port}/v1/projects/abcde-fghjk/mcp");
+    let url = format!("http://127.0.0.1:{port}/v1/mcp");
 
     let raw = send_raw("POST", &url, &[], None).unwrap();
 
@@ -546,7 +554,7 @@ fn a_401_json_body_comes_back_as_bytes_with_its_status() {
 #[test]
 fn send_raw_sends_exactly_the_bytes_and_headers_given() {
     let (port, listener) = serve(1, accepted_empty_server);
-    let url = format!("http://127.0.0.1:{port}/v1/projects/abcde-fghjk/mcp");
+    let url = format!("http://127.0.0.1:{port}/v1/mcp");
     let bytes = b"{\"jsonrpc\":\"2.0\",\"id\":1} \xff\x00".to_vec();
 
     let raw = send_raw(
@@ -564,7 +572,7 @@ fn send_raw_sends_exactly_the_bytes_and_headers_given() {
     let seen = listener.join().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].method, "POST");
-    assert_eq!(seen[0].path, "/v1/projects/abcde-fghjk/mcp");
+    assert_eq!(seen[0].path, "/v1/mcp");
     assert_eq!(seen[0].body, bytes, "the request body is the exact bytes");
     let get = |name: &str| {
         seen[0]

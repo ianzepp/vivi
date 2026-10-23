@@ -1,8 +1,8 @@
 //! One-shot MCP client over the bridge's own transport: `vivi mcp tools`
 //! and `vivi mcp call`.
 //!
-//! A [`Client`] reuses the bridge [`Session`]: the same bearer minting and
-//! the one 401 renewal, the same JSON and SSE reply handling. On top of it
+//! A [`Client`] reuses the bridge [`Session`]: the same API key bearer and
+//! the same JSON and SSE reply handling. On top of it
 //! sits the little MCP handshake (`initialize`, then the `initialized`
 //! notification) and a typed request: the `result` of the reply, or a
 //! [`ClientError`] naming the transport failure or the JSON-RPC error.
@@ -16,7 +16,7 @@ use std::io::{self, Sink};
 
 use serde_json::{Value, json};
 
-use super::{Credential, Outcome, Session, Upstream};
+use super::{Outcome, Session, Upstream};
 
 /// The protocol revision offered in `initialize`; the server may answer
 /// with an earlier one it supports.
@@ -64,12 +64,9 @@ impl<'a> Client<'a> {
     /// # Errors
     /// Returns the failure of `initialize` or of the `initialized`
     /// notification.
-    pub fn connect(
-        upstream: &'a dyn Upstream,
-        credential: &'a Credential,
-    ) -> Result<Self, ClientError> {
+    pub fn connect(upstream: &'a dyn Upstream, api_key: &'a str) -> Result<Self, ClientError> {
         let mut client = Self {
-            session: Session::new(upstream, credential, io::sink(), io::sink()),
+            session: Session::new(upstream, api_key, io::sink(), io::sink()),
             next_id: 1,
         };
         client.request(
@@ -212,6 +209,33 @@ pub fn result_text(result: &Value) -> String {
                 .join("\n")
         })
         .unwrap_or_default()
+}
+
+/// Whether the tool called `name` in a `tools/list` array declares a
+/// `project` input property.
+#[must_use]
+pub fn takes_project(tools: &[Value], name: &str) -> bool {
+    tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        .and_then(|tool| tool.get("inputSchema"))
+        .and_then(|schema| schema.get("properties"))
+        .and_then(|properties| properties.get("project"))
+        .is_some()
+}
+
+/// The arguments with `"project": project` added when they carry no
+/// `project` key. An explicit `project` is kept; a non-object comes back
+/// unchanged.
+#[must_use]
+pub fn with_project(arguments: &Value, project: &str) -> Value {
+    let mut arguments = arguments.clone();
+    if let Some(object) = arguments.as_object_mut() {
+        object
+            .entry("project")
+            .or_insert_with(|| Value::String(project.to_string()));
+    }
+    arguments
 }
 
 /// Whether a tool result reports a tool failure.

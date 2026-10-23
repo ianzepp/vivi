@@ -351,11 +351,10 @@ fn no_file_holds(dir: &Path, secret: &str, key_id: &str, context: &str) {
 
 /// POST one JSON-RPC message to the fake's MCP endpoint as `bearer`.
 fn mcp(server: &ProjectServer, bearer: &str, message: Value) -> Value {
-    let path = format!("/v1/projects/{}/mcp", server.project());
     let reply = project_server::http(
         &server.url(),
         "POST",
-        &path,
+        "/v1/mcp",
         &[
             ("Content-Type", "application/json"),
             ("Authorization", &format!("Bearer {bearer}")),
@@ -368,6 +367,8 @@ fn mcp(server: &ProjectServer, bearer: &str, message: Value) -> Value {
 
 /// One `tools/call` of `name` with `arguments`, as `bearer`.
 fn call(server: &ProjectServer, bearer: &str, id: u64, name: &str, arguments: Value) -> Value {
+    let mut arguments = arguments;
+    arguments["project"] = json!(server.project());
     mcp(
         server,
         bearer,
@@ -507,6 +508,22 @@ fn a_bridge_job_reads_its_task_and_reports_as_the_member() {
             "every tool call bears the job's own key ({})",
             key.key_id
         );
+    }
+    for seen in &calls {
+        assert_eq!(
+            seen.body["params"]["arguments"]["project"].as_str(),
+            Some(server.project()),
+            "the bridge filled the project into every tool call: {}",
+            seen.body
+        );
+    }
+    let lists = requests
+        .iter()
+        .filter(|seen| seen.body["method"].as_str() == Some("tools/list"))
+        .count();
+    assert_eq!(lists, 1, "the bridge asked for the tool list once");
+    for seen in &requests {
+        assert_eq!(seen.path, "/v1/mcp", "the server's MCP endpoint");
     }
     let show = &calls[0].body;
     assert_eq!(

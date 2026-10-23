@@ -1,6 +1,7 @@
 //! The `vivi mcp` bridge as a child process against the HTTP fake of the
-//! project server: identity credentials, API keys, token renewal, refusal
-//! before any request, and stdout purity (every line is JSON-RPC 2.0).
+//! project server: API keys (the only credential), a 401 being final,
+//! refusal before any request, and stdout purity (every line is JSON-RPC
+//! 2.0).
 //!
 //! Stdout is read through a thread and a `recv_timeout`, so a hung bridge
 //! fails the test instead of blocking CI.
@@ -177,9 +178,9 @@ fn run_vivi(args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// A scratch mailspace whose own key is registered on the fake as `name`;
-/// its seed file is `.vivi/chat/identity.ed25519`.
-fn mailspace_with_registered_key(server: &ProjectServer, name: &str) -> tempfile::TempDir {
+/// A scratch mailspace plus a `[sync]` table naming the fake as the server
+/// and its project.
+fn mailspace_with_sync_table(server: &ProjectServer) -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("tempdir");
     run_vivi(&[
         "mailspace",
@@ -187,19 +188,10 @@ fn mailspace_with_registered_key(server: &ProjectServer, name: &str) -> tempfile
         "--project",
         &root.path().to_string_lossy(),
     ]);
-    let pem = run_vivi(&["sync", "key", "--project", &root.path().to_string_lossy()]);
-    server.register(name, pem.trim());
-    root
-}
-
-/// The scratch mailspace of [`mailspace_with_registered_key`] plus a
-/// `[sync]` table naming the fake as the server.
-fn mailspace_with_sync_table(server: &ProjectServer, name: &str) -> tempfile::TempDir {
-    let root = mailspace_with_registered_key(server, name);
     let config = root.path().join(".vivi/mailspace.toml");
     let mut text = std::fs::read_to_string(&config).expect("read mailspace.toml");
     text.push_str(&format!(
-        "\n[sync]\nserver = \"{}\"\nproject = \"{}\"\nname = \"{name}\"\n",
+        "\n[sync]\nserver = \"{}\"\nproject = \"{}\"\n",
         server.url(),
         server.project()
     ));
@@ -229,31 +221,18 @@ fn assert_no_token(server: &ProjectServer, stderr: &str, context: &str) {
     }
 }
 
-/// The identity flags every member-credential child run needs, pointing at
-/// the scratch mailspace's seed file.
-fn identity_flags(server: &ProjectServer, key_file: &Path) -> Vec<String> {
-    vec![
-        "--server".to_string(),
-        server.url(),
-        "--project-id".to_string(),
-        server.project().to_string(),
-        "--name".to_string(),
-        "alice".to_string(),
-        "--key-file".to_string(),
-        key_file.to_string_lossy().into_owned(),
-    ]
-}
-
 #[test]
-fn identity_flags_only_in_an_empty_directory_serve_the_pass_through() {
+fn server_flag_and_api_key_only_in_an_empty_directory_serve_the_pass_through() {
     let server = ProjectServer::start();
-    let scratch = mailspace_with_registered_key(&server, "alice");
-    let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
+    let key = server.issue_api_key("alice");
     let empty = tempfile::tempdir().expect("empty tempdir");
 
-    let identity = identity_flags(&server, &key_file);
-    let identity: Vec<&str> = identity.iter().map(String::as_str).collect();
-    let mut bridge = spawn(empty.path(), &identity, &[]);
+    let url = server.url();
+    let mut bridge = spawn(
+        empty.path(),
+        &["--server", url.as_str()],
+        &[("VIVI_MCP_API_KEY", key.as_str())],
+    );
 
     let init = bridge.exchange(&initialize_request(1), "initialize");
     assert_eq!(init["id"], 1);
@@ -282,7 +261,7 @@ fn identity_flags_only_in_an_empty_directory_serve_the_pass_through() {
     );
     assert_eq!(call["result"]["content"][0]["text"], "alice: hello");
 
-    assert_eq!(server.tokens_minted(), 1, "one mint for the whole session");
+    assert_eq!(server.tokens_minted(), 0, "an API key never mints");
     let (status, stderr) = bridge.finish();
     assert_eq!(
         status.code(),
@@ -290,49 +269,21 @@ fn identity_flags_only_in_an_empty_directory_serve_the_pass_through() {
         "exit 0 on closed stdin; stderr:\n{stderr}"
     );
     assert_dir_is_empty(empty.path(), "a run with flags only must create nothing");
-    assert_no_token(&server, &stderr, "identity run");
-}
-
-#[test]
-fn a_401_renews_once_and_the_call_still_is_answered() {
-    let server = ProjectServer::start();
-    let scratch = mailspace_with_registered_key(&server, "alice");
-    let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
-    let empty = tempfile::tempdir().expect("empty tempdir");
-
-    let identity = identity_flags(&server, &key_file);
-    let identity: Vec<&str> = identity.iter().map(String::as_str).collect();
-    let mut bridge = spawn(empty.path(), &identity, &[]);
-    bridge.exchange(&initialize_request(1), "initialize");
-    server.refuse_mcp_next(1);
-
-    let call = bridge.exchange(
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"again"}}}"#,
-        "tools/call after one 401",
-    );
-
-    assert_eq!(call["id"], 2);
-    assert!(call.get("error").is_none(), "{call}");
-    assert_eq!(call["result"]["content"][0]["text"], "alice: again");
-    assert_eq!(
-        server.tokens_minted(),
-        2,
-        "the session's first mint plus the one renewal"
-    );
-    let (status, stderr) = bridge.finish();
-    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert_no_token(&server, &stderr, "api key run");
 }
 
 #[test]
 fn a_server_that_keeps_refusing_answers_errors_and_keeps_serving() {
     let server = ProjectServer::start();
-    let scratch = mailspace_with_registered_key(&server, "alice");
-    let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
+    let key = server.issue_api_key("alice");
     let empty = tempfile::tempdir().expect("empty tempdir");
 
-    let identity = identity_flags(&server, &key_file);
-    let identity: Vec<&str> = identity.iter().map(String::as_str).collect();
-    let mut bridge = spawn(empty.path(), &identity, &[]);
+    let url = server.url();
+    let mut bridge = spawn(
+        empty.path(),
+        &["--server", url.as_str()],
+        &[("VIVI_MCP_API_KEY", key.as_str())],
+    );
     server.refuse_mcp_always();
 
     let numeric = bridge.exchange(
@@ -366,12 +317,7 @@ fn a_server_that_keeps_refusing_answers_errors_and_keeps_serving() {
         Some(0),
         "exit 0 on closed stdin; stderr:\n{stderr}"
     );
-    let requests = server.mcp_requests().len();
-    assert!(
-        server.tokens_minted() <= 2 * requests,
-        "at most two mints per request: {} mints for {requests} requests",
-        server.tokens_minted()
-    );
+    assert_eq!(server.tokens_minted(), 0, "an API key never mints");
 }
 
 #[test]
@@ -403,6 +349,11 @@ fn an_api_key_in_the_environment_serves_without_minting() {
     assert_eq!(refused["error"]["code"], -32000);
     assert_eq!(refused["error"]["data"]["http_status"], 401);
     assert_eq!(server.tokens_minted(), 0, "still no mint after the refusal");
+    let seen = server.mcp_requests();
+    assert!(!seen.is_empty(), "the bridge reached the server");
+    for request in &seen {
+        assert_eq!(request.path, "/v1/mcp", "the server's MCP endpoint");
+    }
 
     let (status, stderr) = bridge.finish();
     assert_eq!(status.code(), Some(0), "{stderr}");
@@ -412,13 +363,14 @@ fn an_api_key_in_the_environment_serves_without_minting() {
 #[test]
 fn inside_a_mailspace_with_a_sync_table_no_flags_are_needed() {
     let server = ProjectServer::start();
-    let root = mailspace_with_sync_table(&server, "alice");
+    let key = server.issue_api_key("alice");
+    let root = mailspace_with_sync_table(&server);
     let empty = tempfile::tempdir().expect("empty tempdir");
 
     let mut bridge = spawn(
         empty.path(),
         &["--project", &root.path().to_string_lossy()],
-        &[],
+        &[("VIVI_MCP_API_KEY", key.as_str())],
     );
 
     let init = bridge.exchange(&initialize_request(1), "initialize from [sync]");
@@ -437,21 +389,13 @@ fn inside_a_mailspace_with_a_sync_table_no_flags_are_needed() {
 #[test]
 fn no_server_anywhere_is_refused_and_names_every_source() {
     let server = ProjectServer::start();
-    let scratch = mailspace_with_registered_key(&server, "alice");
-    let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
+    let key = server.issue_api_key("alice");
     let empty = tempfile::tempdir().expect("empty tempdir");
 
     let output = run_mcp(
         empty.path(),
-        &[
-            "--project-id",
-            server.project(),
-            "--name",
-            "alice",
-            "--key-file",
-            &key_file.to_string_lossy(),
-        ],
-        &[],
+        &["--project-id", server.project()],
+        &[("VIVI_MCP_API_KEY", key.as_str())],
     );
 
     assert!(!output.status.success());
@@ -468,57 +412,187 @@ fn no_server_anywhere_is_refused_and_names_every_source() {
 }
 
 #[test]
-fn an_api_key_plus_a_member_name_is_refused() {
+fn member_credential_flags_are_gone() {
     let server = ProjectServer::start();
     let key = server.issue_api_key("alice");
     let empty = tempfile::tempdir().expect("empty tempdir");
+    let url = server.url();
 
-    let output = run_mcp(
-        empty.path(),
-        &[
-            "--server",
-            &server.url(),
-            "--project-id",
-            server.project(),
-            "--name",
-            "alice",
-        ],
-        &[("VIVI_MCP_API_KEY", key.as_str())],
-    );
+    for flag in [["--name", "alice"], ["--key-file", "/keys/alice.key"]] {
+        let mut args = vec!["--server", url.as_str()];
+        args.extend(flag);
+        let output = run_mcp(empty.path(), &args, &[("VIVI_MCP_API_KEY", key.as_str())]);
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not both"), "{stderr}");
-    assert!(output.stdout.is_empty(), "stdout must stay empty");
+        assert!(!output.status.success(), "{flag:?} must not parse");
+        assert!(output.stdout.is_empty(), "stdout must stay empty");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(flag[0]), "{flag:?}: {stderr}");
+    }
+    assert_eq!(server.requests_seen(), 0, "no request may reach the server");
 }
 
 #[test]
-fn a_missing_key_file_is_refused_before_any_request() {
+fn no_api_key_is_refused_before_any_request() {
     let server = ProjectServer::start();
     let empty = tempfile::tempdir().expect("empty tempdir");
-    let missing = empty.path().join("no-such-key");
 
     let output = run_mcp(
         empty.path(),
-        &[
-            "--server",
-            &server.url(),
-            "--project-id",
-            server.project(),
-            "--name",
-            "alice",
-            "--key-file",
-            &missing.to_string_lossy(),
-        ],
+        &["--server", &server.url(), "--project-id", server.project()],
         &[],
     );
 
     assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "stdout must stay empty");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no-such-key"), "{stderr}");
-    assert!(
-        server.mcp_requests().is_empty(),
-        "no request may reach the server"
+    assert!(stderr.contains("VIVI_MCP_API_KEY"), "{stderr}");
+    assert_eq!(server.requests_seen(), 0, "no request may reach the server");
+}
+
+/// Spawn a bridge for `server` and `key` in an empty directory, with the
+/// project from `VIVI_MCP_PROJECT_ID` when `project` is given.
+fn spawn_for(server: &ProjectServer, key: &str, project: Option<&str>, cwd: &Path) -> Bridge {
+    let url = server.url();
+    let mut envs = vec![("VIVI_MCP_API_KEY", key)];
+    if let Some(project) = project {
+        envs.push(("VIVI_MCP_PROJECT_ID", project));
+    }
+    spawn(cwd, &["--server", url.as_str()], &envs)
+}
+
+fn show_line(id: u64, arguments: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"show","arguments":{arguments}}}}}"#
+    )
+}
+
+fn reply_text(reply: &Value) -> String {
+    reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn a_configured_project_is_filled_into_a_call_that_takes_one() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    bridge.exchange(&initialize_request(1), "initialize");
+    let shown = bridge.exchange(&show_line(2, r#"{"handle":"t1"}"#), "show without project");
+    assert_eq!(shown["id"], 2);
+    assert!(reply_text(&shown).contains("Build it"), "{shown}");
+
+    let sent = server
+        .mcp_requests()
+        .into_iter()
+        .find(|seen| seen.body["params"]["name"] == "show")
+        .expect("the fake saw the show call");
+    assert_eq!(
+        sent.body["params"]["arguments"]["project"],
+        server.project()
     );
-    assert_eq!(server.tokens_minted(), 0);
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn a_tool_without_project_is_forwarded_as_it_was_sent() {
+    let server = ProjectServer::start();
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hello"}}}"#;
+    let echoed = bridge.exchange(line, "echo");
+    assert_eq!(reply_text(&echoed), "alice: hello");
+
+    let sent = server
+        .mcp_requests()
+        .into_iter()
+        .find(|seen| seen.body["params"]["name"] == "echo")
+        .expect("the fake saw the echo call");
+    let expected: Value = serde_json::from_str(line).expect("the sent line is JSON");
+    assert_eq!(sent.body, expected, "echo is forwarded untouched");
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn an_explicit_project_is_kept_and_refused_by_the_server() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    let refused = bridge.exchange(
+        &show_line(2, r#"{"handle":"t1","project":"other"}"#),
+        "show with another project",
+    );
+    assert_eq!(reply_text(&refused), "this key has no grant on other");
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn with_no_project_configured_the_call_is_forwarded_as_it_is() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, None, empty.path());
+
+    let refused = bridge.exchange(&show_line(2, r#"{"handle":"t1"}"#), "show, no project");
+    assert_eq!(reply_text(&refused), "project is required");
+    assert!(
+        server
+            .mcp_requests()
+            .iter()
+            .all(|seen| seen.body["method"] != "tools/list"),
+        "a pass-through bridge asks for no tool list"
+    );
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn stdout_carries_one_reply_per_request_and_never_the_bridges_own_list() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    let mut ids = Vec::new();
+    for id in 2..=4 {
+        let reply = bridge.exchange(&show_line(id, r#"{"handle":"t1"}"#), "show");
+        ids.push(reply["id"].clone());
+    }
+    assert_eq!(ids, [2, 3, 4]);
+    let lists = server
+        .mcp_requests()
+        .iter()
+        .filter(|seen| seen.body["method"] == "tools/list")
+        .count();
+    assert_eq!(lists, 1, "one bridge-private tools/list per session");
+
+    // finish() fails on any stdout line past these three that is not
+    // JSON-RPC, and the channel must be empty of further replies.
+    assert!(
+        bridge
+            .lines
+            .recv_timeout(Duration::from_millis(200))
+            .is_err(),
+        "no extra stdout line"
+    );
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
 }
