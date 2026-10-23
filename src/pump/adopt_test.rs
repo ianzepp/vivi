@@ -23,7 +23,7 @@ fn handles(pairs: &[(String, String)]) -> Vec<&str> {
 }
 
 #[test]
-fn in_flight_needs_are_the_planned_and_planning_ones_that_are_not_finished() {
+fn in_flight_needs_are_the_planned_and_revising_ones_that_are_not_finished() {
     let mut st = state_of(&[
         ("running", &[("r1", Status::Inflight)]),
         ("done", &[("d1", Status::Merged)]),
@@ -33,15 +33,11 @@ fn in_flight_needs_are_the_planned_and_planning_ones_that_are_not_finished() {
     ]);
     st.needs.get_mut("withdrawn").unwrap().withdrawn = true;
     st.closed_needs.push(String::from("closed"));
-    st.board.planning.insert(String::from("planning"), 1);
     st.board
         .revision_planning
         .insert(String::from("revising"), 1);
 
-    assert_eq!(
-        in_flight_needs(&st),
-        vec!["parked", "planning", "revising", "running"]
-    );
+    assert_eq!(in_flight_needs(&st), vec!["parked", "revising", "running"]);
 }
 
 #[test]

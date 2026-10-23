@@ -202,7 +202,6 @@ fn a_state_written_by_pump_py_loads() {
         assert!(st.extra.contains_key(retired), "{retired} falls into extra");
     }
     assert_eq!(st.extra["last_gate"]["pool"], json!("flyfull"));
-    assert!(st.board.planning.is_empty());
     assert_eq!(st.board.replied[0], "f9d8a611:planned");
     assert_eq!(st.closed_needs, vec!["b9ae0618", "e03fba11"]);
     assert_eq!(st.plans_seen, vec!["84eaff6a.json", "9fec06b7.json"]);
@@ -211,27 +210,28 @@ fn a_state_written_by_pump_py_loads() {
 
 #[test]
 fn board_loads_old_shape_and_round_trips_new_fields() {
-    let old: Board = serde_json::from_str(r#"{"planning":{"n1":123}}"#).unwrap();
-    assert_eq!(old.planning.get("n1"), Some(&123));
-    assert!(old.planner_pids.is_empty());
+    // Keys of the retired board planner are ignored on load.
+    let old: Board = serde_json::from_str(
+        r#"{"planning":{"n1":123},"planner_pids":{"n1":7},"planner_failed":["n2"]}"#,
+    )
+    .unwrap();
     assert!(old.planner_fails.is_empty());
     assert!(old.planner_retry_at.is_empty());
-    assert!(old.planner_failed.is_empty());
+    let text = serde_json::to_string(&old).unwrap();
+    assert!(!text.contains("planning"), "{text}");
+    assert!(!text.contains("planner_pids"), "{text}");
+    assert!(!text.contains("planner_failed"), "{text}");
 
     let board = Board {
-        planner_pids: BTreeMap::from([("n1".to_string(), 4242)]),
         planner_fails: BTreeMap::from([("n1".to_string(), 2)]),
         planner_retry_at: BTreeMap::from([("n1".to_string(), 1_800_000_000)]),
-        planner_failed: vec!["n2".to_string()],
         ..Board::default()
     };
 
     let text = serde_json::to_string(&board).unwrap();
     let back: Board = serde_json::from_str(&text).unwrap();
-    assert_eq!(back.planner_pids.get("n1"), Some(&4242));
     assert_eq!(back.planner_fails.get("n1"), Some(&2));
     assert_eq!(back.planner_retry_at.get("n1"), Some(&1_800_000_000));
-    assert_eq!(back.planner_failed, vec!["n2"]);
 }
 
 #[test]
@@ -446,6 +446,8 @@ fn the_live_snapshot_round_trips_through_load_and_save() {
             .entry("transient_retries")
             .or_insert(json!(0));
     }
+    // The retired board planner's empty `planning` map is not written back.
+    want["board"].as_object_mut().unwrap().remove("planning");
     let got: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
     assert_eq!(got, want);

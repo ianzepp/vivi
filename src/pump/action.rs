@@ -169,7 +169,7 @@ fn apply_one(ctx: &Ctx, st: &mut State, action: &PumpAction) -> Option<ActionMar
                         "operator replan: this plan was superseded; a fresh record carries the new plan",
                     ),
                 ),
-                Ok(Outcome::Refused | Outcome::Rearmed) => (String::new(), String::new()),
+                Ok(Outcome::Refused) => (String::new(), String::new()),
                 Err(error) => {
                     ctx.log(&format!(
                         "replan: {need} not applied; the action stays pending: {error}"
@@ -269,7 +269,6 @@ fn revive_new_records(ctx: &Ctx, st: &mut State, open: &[PumpRecord]) {
 
 /// Forget that the planner gave up on `need`.
 fn clear_parked(st: &mut State, need: &str) {
-    st.board.planner_failed.retain(|failed| failed != need);
     st.board.planner_fails.remove(need);
     st.board.planner_retry_at.remove(need);
     st.board

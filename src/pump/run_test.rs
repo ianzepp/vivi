@@ -252,7 +252,6 @@ fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
         planner_job("plan2", JobStatus::Pending, now, None),
     );
     st.board.planner_fails.insert(String::from("n7"), 2);
-    st.board.planner_failed.push(String::from("n8"));
     write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
@@ -268,8 +267,8 @@ fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
         "no failure line in {text}"
     );
     assert!(
-        text.contains("planner-parked n8"),
-        "no parked line in {text}"
+        !text.contains("planner-parked"),
+        "the parked line is gone in {text}"
     );
 }
 

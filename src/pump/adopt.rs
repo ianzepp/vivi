@@ -42,7 +42,6 @@ pub struct AdoptReport {
 #[must_use]
 pub fn in_flight_needs(st: &State) -> Vec<String> {
     let mut needs: BTreeSet<&String> = st.needs.keys().collect();
-    needs.extend(st.board.planning.keys());
     needs.extend(st.board.revision_planning.keys());
     needs
         .into_iter()

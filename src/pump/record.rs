@@ -423,16 +423,8 @@ pub fn settle_gave_up(ctx: &Ctx, st: &State, needs: &[String]) {
 /// `None` while it is still moving, waiting on a planner, or complete.
 #[must_use]
 pub fn gave_up_reason(_ctx: &Ctx, st: &State, need: &str) -> Option<String> {
-    if st.board.planner_failed.iter().any(|failed| failed == need) {
-        return Some(String::from(
-            "the planner exited three times without writing a plan",
-        ));
-    }
     let record = st.needs.get(need)?;
-    if record.amendment_pending
-        || st.board.planning.contains_key(need)
-        || st.board.revision_planning.contains_key(need)
-    {
+    if record.amendment_pending || st.board.revision_planning.contains_key(need) {
         return None;
     }
     let stuck = record.units.iter().find(|uid| {

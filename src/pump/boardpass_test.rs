@@ -216,10 +216,6 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
     }
 
     assert_eq!(st.board.at, ctx.now());
-    assert!(
-        st.board.planning.is_empty(),
-        "the board launches no planner"
-    );
     assert!(st.jobs.is_empty(), "the board queues no planner job");
     assert!(
         !host.commands().iter().any(|cmd| cmd.contains("need show")),

@@ -213,16 +213,6 @@ fn reason(world: &World, st: &State) -> Option<String> {
 }
 
 #[test]
-fn a_planner_that_gave_up_parks_the_need() {
-    let world = world();
-    let mut st = State::default();
-    assert_eq!(reason(&world, &st), None);
-    st.board.planner_failed.push(world.need.clone());
-    let why = reason(&world, &st).unwrap();
-    assert!(why.contains("planner"), "{why}");
-}
-
-#[test]
 fn a_stuck_unit_with_nothing_else_moving_parks_the_need() {
     let world = world();
     let st = planned(

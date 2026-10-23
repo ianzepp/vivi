@@ -132,7 +132,7 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
 }
 
 /// The lines `status.txt` carries for durable planner jobs, their failure
-/// counts, and the parked handles. Empty when the board has nothing to report.
+/// counts. Empty when the board has nothing to report.
 fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     let mut lines = crate::pump::planner_jobs::status_lines(ctx, st);
     if !st.board.planner_fails.is_empty() {
@@ -143,12 +143,6 @@ fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
             .map(|(handle, count)| format!("{handle}={count}"))
             .collect();
         lines.push(format!("planner-failures {}", counts.join(" ")));
-    }
-    if !st.board.planner_failed.is_empty() {
-        lines.push(format!(
-            "planner-parked {}",
-            st.board.planner_failed.join(" ")
-        ));
     }
     lines
 }
