@@ -10,7 +10,9 @@
 //!   record closed);
 //! - `requeue` queues the step's newest job again, as `<job id>-q<n>`, at the
 //!   same attempt; it is refused unless that job is terminal and the step is
-//!   open (a done step is reopened by advance, never here);
+//!   open (a done step is reopened by advance, never here). A Pending job held
+//!   after repeated pool refusals is released in place instead: its hold and
+//!   refusal count clear and the next dispatch offers it to a pool again;
 //! - `recover` is refused: it has no meaning for a flow run;
 //! - `answer` and `unlock` are left alone: other phases apply them.
 //!
@@ -28,7 +30,7 @@ use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
+use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
 /// Exception kind of an operator action the flow cannot apply.
@@ -181,6 +183,13 @@ fn requeue(
     }
     let (old, row) = newest_job(st, store, task)?
         .ok_or_else(|| VivariumError::Message(format!("step {task} has no job to requeue")))?;
+    if old.status == JobStatus::Pending && old.held.is_some() {
+        if let Some(job) = st.jobs_mut().get_mut(&old.id) {
+            job.held = None;
+            job.dispatch_refusals = 0;
+        }
+        return Ok(());
+    }
     if !old.status.is_terminal() {
         return Err(VivariumError::Message(format!(
             "job {} is {:?}, not finished",

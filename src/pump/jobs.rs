@@ -20,7 +20,7 @@ mod recovery;
 pub mod rung;
 pub mod rung_result;
 mod slots;
-pub use dispatcher::dispatch_pending;
+pub use dispatcher::{REFUSAL_LIMIT, dispatch_pending};
 #[cfg(test)]
 use dispatcher::{candidate_pools, dispatch_order, pool_command, send_task};
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
@@ -231,6 +231,14 @@ pub struct PoolJob {
     /// When the pump applied the result to its own lifecycle state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_at: Option<u64>,
+    /// Pool dispatches refused by a `refused` porcelain line since the job
+    /// was queued or last released.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub dispatch_refusals: u32,
+    /// Why the job is held back from dispatch after [`REFUSAL_LIMIT`]
+    /// refusals; cleared by `vivi pump requeue <step task>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 impl From<JobSpec> for PoolJob {
@@ -270,6 +278,8 @@ impl From<JobSpec> for PoolJob {
             status: JobStatus::Pending,
             outcome: None,
             applied_at: None,
+            dispatch_refusals: 0,
+            held: None,
         }
     }
 }
@@ -435,6 +445,10 @@ fn unix_now() -> u64 {
 }
 
 fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
