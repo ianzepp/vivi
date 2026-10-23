@@ -620,7 +620,7 @@ fn a_second_migrate_of_the_written_text_changes_nothing() {
         (without_id(V15), MigrateInputs::default()),
     ] {
         let (plan, after) = migrate_with(&raw, &first);
-        assert_eq!(plan.charters.len(), 2);
+        assert_eq!(plan.charters.len(), 5);
         let second = MigrateInputs {
             legacy_planner_charter: None,
             ..written(&first, &plan)
