@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use vivi::mailspace::{Mailspace, PumpAction, PumpActionKind};
 use vivi::pump::flow::index::{RunRow, StepState};
-use vivi::pump::state::{NeedRecord, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
 #[test]
@@ -35,13 +34,13 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
 }
 
 #[test]
-fn replan_posts_an_action_on_the_open_record_and_refuses_live_work() {
+fn replan_posts_an_action_on_the_open_record() {
     let help = stdout(&vivi(["pump", "--help"]));
     assert!(help.contains("replan"), "{help}");
 
     let project = temp_mailspace();
     let handle = send_need(&project);
-    write_pump_status(&project, &handle, Status::Pending);
+    open_pump_db(&project);
 
     // A replan acts on a dispatch: with no open pump record it is refused.
     let no_record = vivi(["pump", "replan", &handle, "--project", root(&project)]);
@@ -66,20 +65,16 @@ fn replan_posts_an_action_on_the_open_record_and_refuses_live_work() {
     assert_eq!(actions[0].request.kind, PumpActionKind::Replan);
     assert!(!actions[0].request.force);
 
-    write_pump_status(&project, &handle, Status::Inflight);
-    let refused = vivi(["pump", "replan", &handle, "--project", root(&project)]);
-    assert!(!refused.status.success(), "{}", stdout(&refused));
-    assert!(
-        stderr(&refused).contains("inflight"),
-        "{}",
-        stderr(&refused)
-    );
-    assert!(stderr(&refused).contains("--force"), "{}", stderr(&refused));
-    assert_eq!(
-        posted_actions(&project).len(),
-        1,
-        "refusal must not post another action"
-    );
+    let forced = vivi([
+        "pump",
+        "replan",
+        &handle,
+        "--force",
+        "--project",
+        root(&project),
+    ]);
+    assert!(!forced.status.success(), "--force is gone");
+    assert_eq!(posted_actions(&project).len(), 1);
 }
 
 #[test]
@@ -241,28 +236,9 @@ fn send_need(project: &tempfile::TempDir) -> String {
         .unwrap_or_else(|| panic!("no handle in {}", stdout(&out)))
 }
 
-/// Write a `pump.db` whose one unit has `status`.
-fn write_pump_status(project: &tempfile::TempDir, handle: &str, status: Status) {
-    let mut state = State::default();
-    state.needs.insert(
-        handle.to_owned(),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: vec![format!("{handle}-1")],
-            revision: 1,
-            ..NeedRecord::default()
-        },
-    );
-    state.units.insert(
-        format!("{handle}-1"),
-        Unit {
-            need: handle.to_owned(),
-            status,
-            ..Unit::default()
-        },
-    );
-    let mut store = PumpStore::open(&pump_home(project).join(DB_FILENAME)).unwrap();
-    store.save(&state).unwrap();
+/// Create the project's `pump.db`.
+fn open_pump_db(project: &tempfile::TempDir) {
+    PumpStore::open(&pump_home(project).join(DB_FILENAME)).unwrap();
 }
 
 /// Seed a `live` flow run of `need` holding one step; returns the step task.

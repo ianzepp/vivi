@@ -39,9 +39,9 @@ pub enum PumpSubcommand {
     },
     /// Requeue flow steps: posts a requeue on each step's need's open pump record; the pump queues the step's job again at its next tick
     Requeue(PumpRequeueCommand),
-    /// Close one or more needs `withdrawn`, then withdraw every unfinished unit and close their pump record; the pump applies the rest at its next tick
+    /// Close one or more needs `withdrawn` and post a withdraw on each open pump record; the pump closes the record at its next tick
     Withdraw(PumpWithdrawCommand),
-    /// Supersede a need's plan: closes its pump record `superseded`, opens a fresh one and plans it again
+    /// Restart a need's live flow run at plan: posts a replan on the need's open pump record, applied at the pump's next tick
     Replan(PumpReplanCommand),
     /// Answer a flow step by hand: posts the word on the need's open pump record; the pump routes it at its next tick
     Answer {
@@ -233,22 +233,13 @@ pub struct PumpRequeueCommand {
     pub project: Option<PathBuf>,
 }
 
-/// Supersede a need's plan and plan it again from the whole thread. Posts a
-/// replan action on the need's open pump record; the running pump applies it
-/// at its next tick: the plan moves to `plans/superseded/`, the need record
-/// and its replies are forgotten, pending, held, stuck and needs-replan units
-/// are withdrawn and never dispatched, while merged units stay merged and live
-/// work finishes on its own. The open record is closed `superseded` and a
-/// fresh one opened. Refuses while any unit is inflight, delivered, merging,
-/// quarantined or splitting, or while a planner runs for the need, unless
-/// `--force`, and when the need has no open pump record.
+/// Restart a need's live flow run at its plan step. Posts a replan action on
+/// the need's open pump record; the running pump applies it at its next tick.
+/// Refused when the need has no open pump record.
 #[derive(Debug, Args)]
 pub struct PumpReplanCommand {
     /// Need handle to replan
     pub need: String,
-    /// Replan even while units are inflight, delivered, merging, quarantined or splitting, or a planner runs
-    #[arg(long)]
-    pub force: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -374,10 +365,8 @@ pub struct PumpOnceCommand {
 
 /// Stop needs. Closes each need `withdrawn` (as the pump identity, so the
 /// close syncs), then posts a withdraw action on its open pump record; the
-/// running pump applies it at its next tick: every unfinished unit of the need (stuck ones
-/// included) is withdrawn, the need joins the closed set so nothing re-plans
-/// or dispatches it, and its pump record is closed `withdrawn`. Refused for a
-/// need with no open pump record.
+/// running pump applies it at its next tick and closes the record
+/// `withdrawn`. Refused for a need with no open pump record.
 #[derive(Debug, Args)]
 pub struct PumpWithdrawCommand {
     /// Need handles to withdraw
