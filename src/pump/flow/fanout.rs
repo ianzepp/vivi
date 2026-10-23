@@ -31,6 +31,8 @@ pub const SLICES_INVALID: &str = "flow-slices-invalid";
 
 /// The word the fanout answers when every slice is built.
 pub const BUILT: &str = "built";
+/// The fanout word when every settled slice closed no-defect: nothing merged.
+pub const UNCHANGED: &str = "unchanged";
 
 /// A slice task closed because its work merged onto the need branch.
 pub const VERDICT_MERGED: &str = "merged";
@@ -443,8 +445,10 @@ pub fn mark_exhausted(store: &PumpStore, task: &str) -> Result<(), VivariumError
 }
 
 /// Where the run's fanout stands: `Some("built")` when every slice task is
-/// closed `merged` or `no-defect`, `Some("failed")` when any slice is
-/// exhausted, otherwise `None`. A run with no slices is `None`.
+/// closed `merged` or `no-defect` and at least one closed `merged`,
+/// `Some("unchanged")` when every slice closed `no-defect` (nothing merged),
+/// `Some("failed")` when any slice is exhausted, otherwise `None`. A run with
+/// no slices is `None`.
 ///
 /// A slice waiting on blocked-scope resolution (`scope-wait` or
 /// `scope-rework`) is neither built nor failed.
@@ -468,6 +472,7 @@ pub fn settle<M: MailReader>(
         }
     }
     let mut slices = 0;
+    let mut merged = 0;
     let mut unsettled = false;
     for row in store.steps_of(&run.need, run.run)? {
         if !is_slice_row(&row) || !in_fanout(store, &row, open.as_deref())? {
@@ -491,11 +496,17 @@ pub fn settle<M: MailReader>(
         if waiting || !built {
             unsettled = true;
         }
+        if closed && verdict == Some(VERDICT_MERGED) {
+            merged += 1;
+        }
     }
     if reslice_open(store, run, open.as_deref())? {
         return Ok(None);
     }
-    Ok((slices > 0 && !unsettled).then_some(BUILT))
+    if slices == 0 || unsettled {
+        return Ok(None);
+    }
+    Ok(Some(if merged > 0 { BUILT } else { UNCHANGED }))
 }
 
 /// True when a slicer job on one slice of `fanout` is still open: a reslice
@@ -536,3 +547,7 @@ mod merged_tests;
 #[cfg(test)]
 #[path = "fanout_tick_test.rs"]
 mod tick_tests;
+
+#[cfg(test)]
+#[path = "fanout_unchanged_test.rs"]
+mod unchanged_tests;

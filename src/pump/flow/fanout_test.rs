@@ -3,8 +3,8 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    BUILT, check_batch, expand, is_slice_row, mark_exhausted, parse_reply, settle, slice_node,
-    target_of, wait_on,
+    BUILT, UNCHANGED, check_batch, expand, is_slice_row, mark_exhausted, parse_reply, settle,
+    slice_node, target_of, wait_on,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -331,11 +331,32 @@ fn settle_is_none_without_slices_or_while_one_is_open() -> R {
 }
 
 #[test]
-fn settle_built_when_every_slice_is_merged_or_no_defect() -> R {
+fn settle_built_when_one_merged_and_one_is_no_defect() -> R {
     let mut r = rig()?;
     r.expand(&[slice("A", &[]), slice("B", &[])])?;
     r.close("A", "merged")?;
     r.close("B", "no-defect")?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    Ok(())
+}
+
+#[test]
+fn settle_unchanged_when_every_slice_is_no_defect() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &[])])?;
+    r.close("A", "no-defect")?;
+    assert_eq!(r.settle()?, None, "B is still open");
+    r.close("B", "no-defect")?;
+    assert_eq!(r.settle()?, Some(UNCHANGED));
+    Ok(())
+}
+
+#[test]
+fn settle_built_when_every_slice_is_merged() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &[])])?;
+    r.close("A", "merged")?;
+    r.close("B", "merged")?;
     assert_eq!(r.settle()?, Some(BUILT));
     Ok(())
 }
