@@ -41,8 +41,6 @@ pub struct Signals {
     pub quarantined: usize,
     pub needs_replan: usize,
     pub planner_parked: usize,
-    /// Failing baseline test names.
-    pub red: usize,
     /// `stall-*` exceptions inside the window.
     pub stall_exceptions: usize,
 }
@@ -111,9 +109,6 @@ fn degraded_reasons(s: &Signals) -> Vec<String> {
     }
     if s.planner_parked > 0 {
         out.push(format!("{} needs planner-parked", s.planner_parked));
-    }
-    if s.red > 0 {
-        out.push(format!("baseline red: {} failing", s.red));
     }
     if s.stall_exceptions > 0 {
         out.push(format!("{} stall exceptions in window", s.stall_exceptions));

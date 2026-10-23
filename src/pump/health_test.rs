@@ -83,20 +83,18 @@ fn a_paused_pump_is_degraded_never_stalled() {
 }
 
 #[test]
-fn parked_work_and_red_and_stalls_each_give_a_reason() {
+fn parked_work_and_stalls_each_give_a_reason() {
     let (verdict, reasons) = decide(&Signals {
         stuck: 2,
         quarantined: 1,
         needs_replan: 1,
         planner_parked: 1,
-        red: 3,
         stall_exceptions: 1,
         ..running()
     });
     assert_eq!(verdict, Verdict::Degraded);
-    assert_eq!(reasons.len(), 6, "{reasons:?}");
+    assert_eq!(reasons.len(), 5, "{reasons:?}");
     assert!(reasons.contains(&String::from("2 units stuck")));
-    assert!(reasons.contains(&String::from("baseline red: 3 failing")));
 }
 
 #[test]
@@ -246,7 +244,6 @@ fn unit(need: &str, status: Status, since: u64) -> Unit {
 fn saved_state(now: u64) -> State {
     let mut st = State {
         merges: 1,
-        baseline: Some(Vec::new()),
         ..State::default()
     };
     let mut merged = unit("n1", Status::Merged, now - 50);
