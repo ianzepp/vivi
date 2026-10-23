@@ -312,7 +312,7 @@ fn read_work(kind: &str, handle: &str, body: &str) -> Result<WorkRead, crate::le
             let envelope = crate::letter::read::task_of(handle, body)?;
             Ok(WorkRead {
                 write_scope: !envelope.front.write_scope.is_empty(),
-                pump_owned: envelope.front.step.is_some(),
+                pump_owned: envelope.front.step.is_some() || envelope.front.job.is_some(),
                 done_when: envelope.front.done_when,
                 prose: envelope.body,
             })
