@@ -60,6 +60,7 @@ mod held;
 pub(in crate::mailspace) mod join_guard;
 mod property;
 mod property_emit;
+mod pump_authority;
 
 pub(super) use dependency::copy_nodes;
 pub(super) use held::{HeldItem, held_item};
@@ -465,6 +466,7 @@ impl Mailspace {
         }
         if item.delegation.history {
             return role.eq_ignore_ascii_case("operator")
+                || self.remote_pump_speaks(item, from_addr, id)
                 || self.delegation_speaks(item, from_addr, at, id);
         }
         prefix_of_domain(&domain).is_some()
@@ -556,6 +558,7 @@ impl Mailspace {
     /// member owns an item's state.
     pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
         self.item_author(item).as_deref() == Some(identity)
+            || self.pump_controls(item, identity)
             || if item.delegation.history {
                 self.identity_is_operator(identity)
                     || self.active_delegate_identity(item).as_deref() == Some(identity)
