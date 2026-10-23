@@ -23,7 +23,7 @@ pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), Vivariu
     if command.json {
         print_json(&board)?;
     } else {
-        print_board(&board);
+        print_board(&mailspace, &board);
     }
     write_watermark(command)?;
     Ok(())
@@ -68,7 +68,7 @@ fn print_json(board: &Board) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn print_board(board: &Board) {
+fn print_board(mailspace: &Mailspace, board: &Board) {
     println!("mailspace {}", board.name);
     println!("root      {}", board.root.display());
     println!(
@@ -83,7 +83,7 @@ fn print_board(board: &Board) {
     }
     print_board_goals(&board.goals);
     for identity in &board.identities {
-        print_identity(identity);
+        print_identity(mailspace, identity);
     }
     if let Some(graphs) = &board.graphs {
         print_board_graphs(graphs);
@@ -160,7 +160,7 @@ fn print_board_graphs(graphs: &[BoardGraph]) {
     }
 }
 
-fn print_identity(identity: &IdentityBoard) {
+fn print_identity(mailspace: &Mailspace, identity: &IdentityBoard) {
     println!();
     println!(
         "{} <{}>  actionable:{}  tasks:{}  needs:{}  wants:{}",
@@ -190,9 +190,11 @@ fn print_identity(identity: &IdentityBoard) {
         );
     }
     print_schedule_line(&identity.schedule, identity.last_auto_run.as_deref());
-    print_items("tasks", &identity.tasks);
-    print_items("needs", &identity.needs);
-    print_items("wants", &identity.wants);
+    print_items("tasks", &identity.tasks, |_| 0);
+    print_items("needs", &identity.needs, |handle| {
+        vivi::pump::flow::mail::read::run_count(mailspace, handle)
+    });
+    print_items("wants", &identity.wants, |_| 0);
     if identity.wants_hidden > 0 {
         println!("  wants hidden by cap: {}", identity.wants_hidden);
     }
@@ -256,14 +258,22 @@ fn print_schedule_line(schedule: &ScheduleReport, last_auto_run: Option<&str>) {
     println!();
 }
 
-fn print_items(label: &str, items: &[BoardItem]) {
+/// One block of board lines. `runs` gives a handle's flow run count; a
+/// nonzero count is appended as `rN`.
+fn print_items(label: &str, items: &[BoardItem], runs: impl Fn(&str) -> usize) {
     if items.is_empty() {
         return;
     }
     println!("{label}:");
     for item in items {
+        let count = runs(&item.handle);
+        let suffix = if count > 0 {
+            format!("  r{count}")
+        } else {
+            String::new()
+        };
         println!(
-            "  {}  {}  {}  {}",
+            "  {}  {}  {}  {}{suffix}",
             item.handle, item.date, item.from, item.subject
         );
     }
