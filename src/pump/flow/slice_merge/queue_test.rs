@@ -263,6 +263,7 @@ fn a_slice_already_on_the_need_branch_closes_merged_without_a_job() -> R {
         0,
         &format!("{NEED_TIP}\trefs/heads/vivi/need/n1\n"),
     );
+    rig.host.reply("cat-file -e", 0, "");
     rig.host.reply("merge-base --is-ancestor", 0, "");
     rig.tick()?;
     assert!(rig.merges("n1").is_empty());
@@ -277,7 +278,7 @@ fn a_slice_already_on_the_need_branch_closes_merged_without_a_job() -> R {
 }
 
 #[test]
-fn a_slice_not_on_the_need_branch_enqueues_one_job() -> R {
+fn a_slice_absent_from_the_pump_repo_enqueues_one_job() -> R {
     let mut rig = rig()?;
     rig.run_row("n1", "live")?;
     rig.slice("n1", "A", true)?;
@@ -286,6 +287,24 @@ fn a_slice_not_on_the_need_branch_enqueues_one_job() -> R {
         0,
         &format!("{NEED_TIP}\trefs/heads/vivi/need/n1\n"),
     );
+    rig.host
+        .reply("cat-file -e", 128, "fatal: Not a valid object name");
+    rig.tick()?;
+    assert_eq!(rig.merges("n1").len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_slice_present_but_not_an_ancestor_enqueues_one_job() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    rig.slice("n1", "A", true)?;
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/n1",
+        0,
+        &format!("{NEED_TIP}\trefs/heads/vivi/need/n1\n"),
+    );
+    rig.host.reply("cat-file -e", 0, "");
     rig.host.reply("merge-base --is-ancestor", 1, "");
     rig.tick()?;
     assert_eq!(rig.merges("n1").len(), 1);

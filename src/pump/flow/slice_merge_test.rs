@@ -88,6 +88,9 @@ fn rig() -> Result<Rig, VivariumError> {
         &format!("{MAIN}\trefs/heads/main\n"),
     );
     host.reply("ls-remote origin refs/heads/vivi/need/", 0, "");
+    // A remote pool: a hand commit is absent from the pump repo until it is
+    // merged onto the need branch and fetched.
+    host.reply("cat-file -e", 128, "fatal: Not a valid object name");
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, "kind: build")?;
     let mut registry = Registry::<Jobs, FakeMail>::new();
