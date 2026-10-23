@@ -45,9 +45,8 @@ fn state_with(units: &[(&str, Status)]) -> State {
 }
 
 #[test]
-fn a_restart_leaves_quarantined_units_alone() {
-    let mut st = state_with(&[("u1", Status::Quarantined), ("u2", Status::Merging)]);
-    st.recover_after_restart();
+fn quarantined_units_are_counted_and_named() {
+    let st = state_with(&[("u1", Status::Quarantined), ("u2", Status::Delivered)]);
     assert_eq!(st.units["u1"].status, Status::Quarantined);
     assert_eq!(st.units["u2"].status, Status::Delivered);
     assert_eq!(st.counts().get("quarantined"), Some(&1));

@@ -326,12 +326,11 @@ fn run_with_lock_policy(
     } else {
         store.load()?
     };
-    // Reattach pool jobs before repairing stale merge states so a dispatched
-    // merge remains owned by its durable job after a pump restart.
+    // Reattach pool jobs so a dispatched job stays owned by its durable record
+    // after a pump restart.
     if !ctx.mailspace.is_empty() {
         crate::pump::jobs::recover_dispatched(ctx, &mut st)?;
     }
-    st.recover_after_restart();
     reconcile_closed_board_needs(ctx, &mut st);
     plan::ingest(ctx, &mut st);
     store.save(&st)?;

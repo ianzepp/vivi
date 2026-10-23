@@ -300,19 +300,6 @@ pub fn has_unsettled_kind_for_target(st: &impl JobStore, kind: &str, target: &st
     })
 }
 
-/// Preserve a `merging` unit only while a dispatched merge job owns it.
-#[must_use]
-pub fn owns_merging_unit(st: &impl JobStore, uid: &str) -> bool {
-    st.jobs().values().any(|job| {
-        job.kind == "merge"
-            && job.units.iter().any(|unit| unit == uid)
-            && matches!(
-                job.status,
-                JobStatus::Pending | JobStatus::Dispatched | JobStatus::Finished
-            )
-    })
-}
-
 /// Read the saved outcome after the collector has transitioned a job.
 #[must_use]
 pub fn completion<'a>(st: &'a impl JobStore, id: &str) -> Option<&'a JobOutcome> {
