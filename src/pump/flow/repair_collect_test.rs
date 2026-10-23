@@ -122,6 +122,14 @@ impl Rig {
         });
     }
 
+    fn host_lines(&self) -> Vec<String> {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn tick(&mut self) -> R {
         tick_with(
             &self.ctx,
@@ -276,5 +284,69 @@ fn a_refused_push_answers_failed_naming_it() -> R {
     let reason = payload["reason"].as_str().unwrap();
     assert!(reason.contains("push_refused"), "{reason}");
     assert!(reason.contains(BRANCH), "{reason}");
+    Ok(())
+}
+
+fn exit_receipt(code: i32, stderr: &str) -> String {
+    format!(
+        "pool result j1: finished\npool p  slot s1  model m\nfrom main  default\n\
+         agent exit {code} in 12s, job 20s, started from 1234567890\n\n\
+         --- receipt\nnothing\n\n--- stderr tail\n{stderr}\n\n--- runner log tail\nlog line"
+    )
+}
+
+#[test]
+fn a_lost_job_reruns_on_a_fresh_branch_and_publish_ref() -> R {
+    let mut rig = rig()?;
+    rig.jobs.jobs.get_mut("fix-j1").unwrap().branch = Some(BRANCH.into());
+    rig.end(JobStatus::Lost, None);
+    rig.tick()?;
+    let first = rig.jobs.jobs["fix-j1"].publish_ref.clone().unwrap();
+    let second = &rig.jobs.jobs["fix-j1-a2"];
+    let fresh = second.publish_ref.clone().unwrap();
+    assert!(fresh.ends_with("-t2"), "{fresh}");
+    assert_ne!(fresh, first);
+    assert_eq!(second.branch.as_deref(), Some(&format!("{BRANCH}-t2")[..]));
+    assert_eq!(fresh, format!("refs/heads/{BRANCH}-t2"));
+    Ok(())
+}
+
+#[test]
+fn an_agent_exit_127_holds_the_step_with_one_env_alarm() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(exit_receipt(127, "")));
+    rig.tick()?;
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.state, StepState::Waiting);
+    assert_eq!(fix.verdict.as_deref(), Some("operator-hold"));
+    assert!(rig.step("fix2").is_err(), "no fix2 row");
+    assert_eq!(rig.jobs.jobs.len(), 1, "no rerun job");
+    let env = rig
+        .host_lines()
+        .into_iter()
+        .filter(|line| line.contains("flow-env-failure"))
+        .count();
+    assert_eq!(env, 1);
+    Ok(())
+}
+
+#[test]
+fn a_command_not_found_in_the_stderr_tail_alone_is_not_held() -> R {
+    let mut rig = rig()?;
+    rig.end(
+        JobStatus::Finished,
+        Some(exit_receipt(1, "sh: foo: command not found")),
+    );
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_ne!(fix.verdict.as_deref(), Some("operator-hold"));
+    assert_eq!(fix.state, StepState::Running, "collected as an empty reply");
+    assert_eq!(rig.jobs.jobs.len(), 2, "retried as today");
+    assert!(
+        !rig.host_lines()
+            .iter()
+            .any(|line| line.contains("flow-env-failure"))
+    );
     Ok(())
 }
