@@ -290,6 +290,10 @@ fn head_ceo_cadence_text_files_research_needs_and_asks_for_the_envelope() {
     assert!(text.contains("`reviewed` or `no-op`"));
     assert!(text.contains("promoted"));
     assert!(text.contains("Do not implement work."));
+    assert!(text.contains("`for:` line"));
+    assert!(text.contains("at most two"));
+    assert!(!text.contains("need-12"));
+    assert!(!text.contains("want-3"));
     assert!(!text.contains("investigat"));
     assert!(!text.contains("investigate"));
 }

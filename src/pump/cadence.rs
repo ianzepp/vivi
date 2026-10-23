@@ -450,16 +450,19 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
             "As head-ceo, review open wants. Promote a well-scoped want to a linked need.\n\
              For an unclear want, file a research need with `need send --mark research`\n\
              and a `for: <want-handle>` line. Write the mark before `vivi pump send`.\n\
+             Before filing one, read the open needs marked research and skip a want\n\
+             that one of them already names in its `for:` line. File at most two\n\
+             research needs for one want in total; after that, promote or drop it.\n\
              On the next wake, read the analysis on the want, then promote the want,\n\
-             drop it, or file another research need. Do not implement work.\n\
+             drop it, or file another research need within that cap. Do not implement work.\n\
              End your reply with a TOML envelope between `+++` lines:\n\
              `answer` is `reviewed` or `no-op`; `promoted`, `research` and `dropped`\n\
              are lists of handles. Example:\n\
              +++\n\
              answer = \"reviewed\"\n\
-             promoted = [\"need-12\"]\n\
+             promoted = [\"3f9a1c2e\"]\n\
              research = []\n\
-             dropped = [\"want-3\"]\n\
+             dropped = [\"b71d04aa\"]\n\
              +++"
         }
         Some(kind) if kind.eq_ignore_ascii_case("head") => {
