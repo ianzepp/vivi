@@ -105,7 +105,7 @@ An optional external gate runner can provide a result file for a pinned tip unde
 ## Other role jobs
 
 - **Promotion** jobs ask the release role, or merge role when no release role exists, to confirm the exact gated tip. The runner alone can publish it to the configured main ref.
-- **Cadence** and **digest** jobs are addressed to the role whose schedule is due. A writable role branch must pass the shared merge and gate path before its job is settled.
+- **Cadence** and **digest** jobs are addressed to the role whose schedule is due. Cadence and digest jobs always run read-only; their output is mail (wants and needs).
 - **Investigation** jobs are read-only auditor jobs created for head-ceo needs marked **investigate** and containing **for: &lt;want-handle&gt;**. The need closes only after the recent auditor report reply lands on that want for head-ceo.
 - **Reclaim** jobs are local-only cleanup jobs sent to the reclaim role or the hand role. They cannot spill onto remote pools.
 
