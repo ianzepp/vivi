@@ -7,7 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{job_id, register, run_key};
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -132,7 +133,7 @@ impl Rig {
             base: BASE.into(),
         });
         self.mail
-            .reply(task, &marked_line(repair::ATTEMPT_MARKER, &text))?;
+            .reply(task, &note_body(NoteWord::RepairAttempt, None, &text)?)?;
         Ok(())
     }
 

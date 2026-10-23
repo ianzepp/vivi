@@ -6,7 +6,8 @@
 use serde_json::Value;
 
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -124,7 +125,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairRungCollector {
             let tip = job.payload.get("tip").and_then(Value::as_str);
             let text = verdict_text(tip, &rung_step::answer(job).1);
             cx.mail
-                .reply(&step.task, &marked_line(repair::RUNG_MARKER, &text))?;
+                .reply(&step.task, &note_body(NoteWord::RepairRung, None, &text)?)?;
         }
         RungCollector.collect(cx, job, row, step, class)
     }

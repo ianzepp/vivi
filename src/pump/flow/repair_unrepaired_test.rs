@@ -9,7 +9,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{MAIN_UNREPAIRED, Unrepaired};
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -255,7 +256,7 @@ fn the_alarm_names_each_attempt_word_and_what_it_published() -> R {
     };
     rig.mail.reply(
         &fix2,
-        &marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts)),
+        &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
     )?;
     assert_eq!(poll(&rig)?, None);
     let log = exceptions(&rig);

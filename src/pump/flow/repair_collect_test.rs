@@ -187,7 +187,10 @@ fn a_built_job_with_a_pushed_branch_posts_the_attempt_facts_and_routes_to_the_ru
     assert_eq!(fix.verdict.as_deref(), Some("built"));
     assert_eq!(rig.step("rung1")?.state, StepState::Pending);
     let replies = &rig.mail.tasks[&fix.task].replies;
-    let facts = replies.iter().find_map(|reply| repair::parse_facts(reply));
+    let facts = replies
+        .iter()
+        .filter_map(|reply| crate::mailspace::pump_note::note_of(reply))
+        .find_map(|note| repair::parse_facts(&note.prose));
     assert_eq!(
         facts,
         Some(AttemptFacts {

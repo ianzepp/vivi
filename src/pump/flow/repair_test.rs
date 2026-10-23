@@ -3,11 +3,12 @@
 use tempfile::tempdir;
 
 use super::{
-    ATTEMPT_MARKER, ATTEMPT_SECS, AttemptFacts, attempt_of, branch, facts_text, fix_node,
-    latest_facts, parse_facts, record, rung_node,
+    ATTEMPT_SECS, AttemptFacts, attempt_of, branch, facts_text, fix_node, latest_facts,
+    parse_facts, record, rung_node,
 };
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
@@ -120,7 +121,7 @@ fn the_tail_excludes_kind_target_and_tested_lines() -> R {
 }
 
 #[test]
-fn facts_round_trip_through_a_marked_line() {
+fn facts_round_trip_through_a_note() {
     let want = facts(&"c".repeat(40));
     let text = facts_text(&want);
     assert_eq!(
@@ -131,10 +132,9 @@ fn facts_round_trip_through_a_marked_line() {
             "b".repeat(40)
         )
     );
-    let stamped = marked_line(ATTEMPT_MARKER, &text);
-    assert_eq!(parse_facts(&stamped), Some(want.clone()));
-    assert_eq!(parse_facts(&format!("{ATTEMPT_MARKER} {text}")), Some(want));
-    assert_eq!(parse_facts("pump-repair-attempt: branch=x commit=y"), None);
+    assert_eq!(parse_facts(&text), Some(want.clone()));
+    assert_eq!(parse_facts(&format!("{text}\nmore prose")), Some(want));
+    assert_eq!(parse_facts("branch=x commit=y"), None);
     assert_eq!(parse_facts("something else"), None);
 }
 
@@ -149,7 +149,7 @@ fn step(node: &str, task: &str) -> StepRow {
 }
 
 fn stamped(commit: &str) -> String {
-    marked_line(ATTEMPT_MARKER, &facts_text(&facts(commit)))
+    note_body(NoteWord::RepairAttempt, None, &facts_text(&facts(commit))).expect("note body")
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn latest_facts_picks_the_newest_fix_row_and_reply() -> R {
     mail.reply(&old, &stamped(&"1".repeat(40)))?;
     mail.reply(&new, "chatter")?;
     mail.reply(&new, &stamped(&"2".repeat(40)))?;
-    mail.reply(&new, &marked_line(ATTEMPT_MARKER, "garbled"))?;
+    mail.reply(&new, &note_body(NoteWord::RepairAttempt, None, "garbled")?)?;
     let got = latest_facts(&store, &mail, "pump", NEED, 1, 1)?;
     assert_eq!(got.map(|f| f.commit), Some("2".repeat(40)));
     assert_eq!(latest_facts(&store, &mail, "pump", NEED, 1, 2)?, None);
