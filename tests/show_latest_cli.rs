@@ -7,13 +7,13 @@ use std::process::{Command, Output};
 use std::thread::sleep;
 use std::time::Duration;
 
-const ROOT_BODY: &str = "done_when: it works\nROOT-BODY-MARKER-7f3a91cd";
+const ROOT_BODY: &str = "ROOT-BODY-MARKER-7f3a91cd";
 /// Bodies keep the composer's CRLF line endings, so assertions match on the
 /// unique single-line markers, never across a line break.
 const ROOT_MARKER: &str = "ROOT-BODY-MARKER-7f3a91cd";
 const FIRST_REPLY: &str = "FIRST-REPLY-MARKER-b42de801";
 const SECOND_REPLY: &str = "SECOND-REPLY-MARKER-09cfee57";
-const NEED_BODY: &str = "done_when: units land\nNEED-BODY-MARKER-53a7d2c0";
+const NEED_BODY: &str = "NEED-BODY-MARKER-53a7d2c0";
 const NEED_MARKER: &str = "NEED-BODY-MARKER-53a7d2c0";
 const NEED_REPLY: &str = "NEED-REPLY-MARKER-e841ba6f";
 const WANT_BODY: &str = "WANT-BODY-MARKER-17d9c4a2";
@@ -56,6 +56,12 @@ fn project() -> tempfile::TempDir {
 
 /// The handle of the recipient's copy of a send.
 fn send(p: &Path, kind: &str, subject: &str, body: &str) -> String {
+    // The flag each kind needs for its front matter.
+    let (flag, value) = match kind {
+        "need" => ("--done-when", "units land"),
+        "want" => ("--question", "what lands"),
+        _ => ("--done-when", "it works"),
+    };
     let out = ok(
         p,
         &[
@@ -67,6 +73,8 @@ fn send(p: &Path, kind: &str, subject: &str, body: &str) -> String {
             "hand",
             "--subject",
             subject,
+            flag,
+            value,
             "--body",
             body,
         ],
@@ -115,7 +123,7 @@ fn latest_prints_only_the_newest_reply_of_three() {
     let latest = ok(p, &["task", "show", &task, "--latest"]);
     assert!(latest.contains(SECOND_REPLY), "{latest}");
     assert!(!latest.contains(ROOT_MARKER), "{latest}");
-    assert!(!latest.contains("done_when: it works"), "{latest}");
+    assert!(!latest.contains("it works"), "{latest}");
     assert!(!latest.contains(FIRST_REPLY), "{latest}");
     assert!(!latest.contains("Thread ("), "{latest}");
     assert!(latest.contains("## "), "{latest}");

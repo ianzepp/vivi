@@ -64,7 +64,15 @@ fn setup(project: &Path) -> String {
         "--subject",
         "Edge case",
         "--body",
-        "do it\nfrom: main\nbranch: factory/x\n",
+        &vivi::letter::render(
+            &vivi::letter::work::TaskFront {
+                from: Some("main".to_string()),
+                branch: Some("factory/x".to_string()),
+                ..vivi::letter::work::TaskFront::default()
+            },
+            "do it",
+        )
+        .expect("a rendered task letter"),
     ]);
     let out = String::from_utf8_lossy(&sent.stdout).into_owned();
     out.lines()
