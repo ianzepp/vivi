@@ -2,7 +2,7 @@
 
 use super::super::pump_slots::LocalSlotMark;
 use super::gate::PumpView;
-use super::{PumpExceptionRow, PumpGateRow, PumpPoolRow, PumpSnapshot, PumpSources, PumpUnitRow};
+use super::{PumpExceptionRow, PumpPoolRow, PumpSnapshot, PumpSources, PumpUnitRow};
 use crate::pool::config::PoolConfig;
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::RoutedRole;
@@ -25,8 +25,6 @@ fn full(sources: &PumpSources<'_>) -> PumpSnapshot {
     let mut snap = PumpSnapshot {
         pools: pool_rows(sources),
         lanes: lanes(sources.status_txt),
-        last_promote: last_promote(sources.status_txt),
-        gate_pending: sources.state.and_then(|state| gate_row(state, sources.now)),
         needs_ready: needs_ready(sources),
         exceptions: exception_rows(sources),
         ..PumpSnapshot::default()
@@ -54,12 +52,10 @@ fn own(mut snap: PumpSnapshot, role: Option<&str>, here: Option<&LocalSlotMark>)
     snap.merge_queue.clear();
     snap.oldest_wait = None;
     snap.held.clear();
-    snap.gate_pending = None;
     snap.needs_ready.clear();
     snap.stuck.retain(|row| mine(row, role, here));
     snap.exceptions.clear();
     snap.lanes.clear();
-    snap.last_promote = None;
     snap.pools.clear();
     snap
 }
@@ -226,23 +222,6 @@ fn take(rows: &[PumpUnitRow], keep: impl Fn(&PumpUnitRow) -> bool) -> Vec<PumpUn
     rows.iter().filter(|row| keep(row)).cloned().collect()
 }
 
-fn gate_row(state: &State, now: u64) -> Option<PumpGateRow> {
-    let run = if state.last_gate.task.is_some() {
-        &state.last_gate
-    } else {
-        state
-            .target_states
-            .values()
-            .find(|target| target.last_gate.task.is_some())
-            .map(|target| &target.last_gate)?
-    };
-    Some(PumpGateRow {
-        task: run.task.clone(),
-        pool: run.pool.clone(),
-        age: (run.at > 0).then(|| age_label(now.saturating_sub(run.at))),
-    })
-}
-
 fn needs_ready(sources: &PumpSources<'_>) -> Vec<String> {
     let mut ready: Vec<String> = sources
         .complete_needs
@@ -280,14 +259,6 @@ fn lanes(status: Option<&str>) -> Vec<String> {
         .filter(|line| line.starts_with("lane "))
         .map(str::to_string)
         .collect()
-}
-
-fn last_promote(status: Option<&str>) -> Option<String> {
-    status
-        .unwrap_or("")
-        .lines()
-        .find(|line| line.starts_with("last promote "))
-        .map(|line| line.trim_start_matches("last promote ").to_string())
 }
 
 fn pool_rows(sources: &PumpSources<'_>) -> Vec<PumpPoolRow> {

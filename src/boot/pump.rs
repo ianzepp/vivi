@@ -80,14 +80,10 @@ pub struct PumpSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_wait: Option<String>,
     pub held: Vec<PumpUnitRow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gate_pending: Option<PumpGateRow>,
     pub needs_ready: Vec<String>,
     pub stuck: Vec<PumpUnitRow>,
     pub exceptions: Vec<PumpExceptionRow>,
     pub lanes: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_promote: Option<String>,
     pub pools: Vec<PumpPoolRow>,
 }
 
@@ -125,17 +121,6 @@ pub struct PumpUnitRow {
     pub base_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_sha: Option<String>,
-}
-
-/// An in-progress gate.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct PumpGateRow {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub age: Option<String>,
 }
 
 /// One pump exception.
