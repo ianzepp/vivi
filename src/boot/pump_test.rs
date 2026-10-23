@@ -10,7 +10,7 @@ use super::{PumpSources, build_snapshot, default_view};
 use crate::boot::pump_slots::{self, LocalSlotMark};
 use crate::pool::config::PoolConfig;
 use crate::pump::report::{self, PumpRead};
-use crate::pump::state::{GateRun, NeedRecord, State, Status, Unit};
+use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
@@ -104,12 +104,6 @@ fn state() -> State {
         String::from("u-held"),
         String::from("u-stuck"),
     ];
-    st.last_gate = GateRun {
-        at: 900,
-        task: Some(String::from("g1")),
-        pool: Some(String::from("lanes")),
-        ..GateRun::default()
-    };
     st.closed_needs = vec![String::from("need-ready")];
     st
 }
@@ -197,8 +191,7 @@ fn full_snapshot_lists_inflight_queue_held_stuck_and_pools() {
         String::from("u-stuck"),
         String::from("needs a person"),
     )];
-    let status =
-        "last promote 2h ago (deadbeef)\nlane default/0 idle\nlane default/1 busy 1 units 3m\n";
+    let status = "lane default/0 idle\nlane default/1 busy 1 units 3m\n";
     let src = sources(
         &routing,
         &pools,
@@ -231,11 +224,6 @@ fn full_snapshot_lists_inflight_queue_held_stuck_and_pools() {
     assert_eq!(snap.stuck.len(), 1);
     assert_eq!(snap.exceptions.len(), 1);
     assert_eq!(snap.lanes.len(), 2);
-    assert_eq!(snap.last_promote.as_deref(), Some("2h ago (deadbeef)"));
-    assert_eq!(
-        snap.gate_pending.as_ref().unwrap().task.as_deref(),
-        Some("g1")
-    );
     assert!(snap.needs_ready.contains(&String::from("need1")));
     assert_eq!(snap.pools.len(), 2);
     let lanes = snap.pools.iter().find(|p| p.name == "lanes").unwrap();
@@ -290,11 +278,7 @@ fn a_fixture_pump_db_and_status_txt_feed_the_builder() {
     let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
     store.save(&state()).unwrap();
     crate::pump::store::append_exception(&home, 40, "stuck", "u-stuck", "parked");
-    fs::write(
-        home.join("status.txt"),
-        "last promote never\nlane default/0 idle\n",
-    )
-    .unwrap();
+    fs::write(home.join("status.txt"), "lane default/0 idle\n").unwrap();
     let PumpRead::Ready(loaded) = report::read(&home).unwrap() else {
         panic!("expected a readable pump.db");
     };
@@ -320,7 +304,6 @@ fn a_fixture_pump_db_and_status_txt_feed_the_builder() {
     };
     let snap = build_snapshot(&src, PumpView::Full, None, None);
     assert_eq!(snap.inflight.len(), 1);
-    assert_eq!(snap.last_promote.as_deref(), Some("never"));
     assert_eq!(snap.exceptions.len(), 1);
     assert_eq!(snap.exceptions[0].kind, "stuck");
 }
