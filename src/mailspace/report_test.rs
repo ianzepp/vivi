@@ -19,6 +19,31 @@ fn space() -> (tempfile::TempDir, Mailspace) {
     (tmp, mailspace)
 }
 
+/// A `kind` letter that says `lands` is done and depends on `depends_on`.
+fn work_body(kind: &str, depends_on: &[&str]) -> String {
+    use crate::letter::fixture::{need_body_with, task_body_with};
+    use crate::letter::work::{NeedFront, TaskFront};
+    let depends_on: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
+    let done_when = vec![String::from("lands")];
+    match kind {
+        "need" => need_body_with(
+            &NeedFront {
+                depends_on,
+                ..NeedFront::new(done_when)
+            },
+            "lands\n",
+        ),
+        _ => task_body_with(
+            &TaskFront {
+                depends_on,
+                done_when,
+                ..TaskFront::default()
+            },
+            "lands\n",
+        ),
+    }
+}
+
 /// Send `kind` work from the mind to the hand; the hand's handle.
 fn send(mailspace: &Mailspace, kind: &str, subject: &str, depends_on: &[&str]) -> String {
     mailspace
@@ -28,11 +53,11 @@ fn send(mailspace: &Mailspace, kind: &str, subject: &str, depends_on: &[&str]) -
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: lands\n".into(),
+            body: work_body(kind, depends_on),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: depends_on.iter().map(ToString::to_string).collect(),
+            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -346,9 +371,11 @@ fn foreign_task(mailspace: &Mailspace) -> (String, String) {
     let letter = format!(
         "From: alice@a1b2c3d4.local\r\nTo: {}, {}\r\nSubject: elsewhere\r\n\
          Message-ID: <elsewhere@a1b2c3d4.local>\r\nX-Vivi-Kind: task\r\n\
-         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\ndone_when: lands\r\n",
+         X-Vivi-Format: 1\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{}",
         mailspace.address_for("hand"),
         mailspace.address_for("mind"),
+        crate::letter::fixture::body_for("task", "lands\n").replace('\n', "\r\n"),
     );
     let delivery = mailspace.deliver_raw(letter.as_bytes(), "tasks").unwrap();
     let handle_of = |identity: &str| {
@@ -453,8 +480,10 @@ fn with_no_author_role_and_no_mind_step_names_the_manual_path() {
     let letter = format!(
         "From: alice@a1b2c3d4.local\r\nTo: {}\r\nSubject: elsewhere\r\n\
          Message-ID: <elsewhere@a1b2c3d4.local>\r\nX-Vivi-Kind: task\r\n\
-         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\ndone_when: lands\r\n",
+         X-Vivi-Format: 1\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{}",
         mailspace.address_for("hand"),
+        crate::letter::fixture::body_for("task", "lands\n").replace('\n', "\r\n"),
     );
     let handle = mailspace
         .deliver_raw(letter.as_bytes(), "tasks")
