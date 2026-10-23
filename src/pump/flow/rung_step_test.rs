@@ -16,6 +16,7 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -47,6 +48,7 @@ struct Rig {
     mail: FakeMail,
     jobs: Jobs,
     registry: Reg,
+    node: &'static str,
 }
 
 fn config(rungs: bool) -> PumpConfig {
@@ -54,6 +56,7 @@ fn config(rungs: bool) -> PumpConfig {
     if rungs {
         cfg.rungs = RungsConfig {
             need: Some(String::from("cargo test")),
+            main: Some(String::from("cargo test --all")),
             timeout: Some(900),
             pools: vec![String::from("build-pool")],
             ..RungsConfig::default()
@@ -64,6 +67,11 @@ fn config(rungs: bool) -> PumpConfig {
 
 /// A build run with a pending `test1` (need-rung) step and a live need branch.
 fn rig(cfg: PumpConfig) -> Result<Rig, VivariumError> {
+    rig_at(cfg, STEP_NODE)
+}
+
+/// As [`rig`], with the pending rung step on `node`.
+fn rig_at(cfg: PumpConfig, node: &'static str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
@@ -74,14 +82,14 @@ fn rig(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         "mind",
         "mind",
         "rung",
-        &format!("pump-step: {NEED} r1 {STEP_NODE}"),
+        &format!("pump-step: {NEED} r1 {node}"),
         &[],
     )?;
     store.insert_step(
         NEED,
         &StepRow {
             run: 1,
-            node: STEP_NODE.into(),
+            node: node.into(),
             task,
             state: StepState::Pending,
             verdict: None,
@@ -105,6 +113,7 @@ fn rig(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         mail,
         jobs: Jobs::default(),
         registry,
+        node,
     })
 }
 
@@ -123,7 +132,7 @@ impl Rig {
         self.store
             .steps_of(NEED, 1)?
             .into_iter()
-            .find(|row| row.node == STEP_NODE)
+            .find(|row| row.node == self.node)
             .ok_or_else(|| VivariumError::Message("no rung step".into()))
     }
 
@@ -275,5 +284,51 @@ fn a_step_with_no_need_branch_tip_holds_an_error_on_the_run() -> R {
     rig.tick()?;
     assert!(rig.jobs.jobs.is_empty());
     assert_eq!(rig.step()?.state, StepState::Pending);
+    Ok(())
+}
+
+/// Store an auditor payload for the run, naming `raise_rung` when given.
+fn audit_payload(rig: &Rig, raise: Option<&str>) -> R {
+    let front = raise.map_or_else(
+        || serde_json::json!({}),
+        |rung| serde_json::json!({ "raise_rung": rung }),
+    );
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run: 1,
+        node: "audit1".into(),
+        class: "auditor".into(),
+        task: "t-audit".into(),
+        payload: serde_json::json!({ "front": front, "body": "" }),
+    })
+}
+
+#[test]
+fn a_raised_step_runs_the_rung_the_audit_named() -> R {
+    let mut rig = rig_at(config(true), "raise1")?;
+    audit_payload(&rig, Some("main"))?;
+    rig.tick()?;
+    let task = rig.step()?.task;
+    let id = format!("rung-main-{task}-a1");
+    assert_eq!(rig.job_ids(), vec![id.clone()]);
+    assert_eq!(
+        rig.jobs.jobs[&id].command.as_deref(),
+        Some("cargo test --all")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_raised_step_without_a_named_rung_runs_the_need_rung() -> R {
+    let mut bare = rig_at(config(true), "raise1")?;
+    bare.tick()?;
+    let task = bare.step()?.task;
+    assert_eq!(bare.job_ids(), vec![format!("rung-need-{task}-a1")]);
+
+    let mut none = rig_at(config(true), "raise1")?;
+    audit_payload(&none, None)?;
+    none.tick()?;
+    let task = none.step()?.task;
+    assert_eq!(none.job_ids(), vec![format!("rung-need-{task}-a1")]);
     Ok(())
 }

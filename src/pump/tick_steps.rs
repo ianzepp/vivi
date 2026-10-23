@@ -49,13 +49,8 @@ pub(crate) fn should_raise(key: &str, text: &str, now: u64) -> bool {
     fresh
 }
 
-/// Queue the need pipeline's audit, landing and merge jobs.
+/// Queue the need pipeline's landing and merge jobs.
 pub(super) fn need_dispatch_phase(ctx: &Ctx, st: &mut State) {
-    soft_step(
-        ctx,
-        "dispatch-audits",
-        crate::pump::need_pipeline::dispatch_audits(ctx, st),
-    );
     soft_step(
         ctx,
         "dispatch-landings",
@@ -68,7 +63,7 @@ pub(super) fn need_dispatch_phase(ctx: &Ctx, st: &mut State) {
     );
 }
 
-/// Fold finished need audits, landings and freezes back into the state.
+/// Fold finished need landings and freezes back into the state.
 pub(super) fn need_collect_phase(ctx: &Ctx, st: &mut State) {
     soft_step(
         ctx,
@@ -77,17 +72,24 @@ pub(super) fn need_collect_phase(ctx: &Ctx, st: &mut State) {
     );
     soft_step(
         ctx,
-        "collect-audits",
-        crate::pump::need_pipeline::collect_audits(ctx, st),
-    );
-    soft_step(
-        ctx,
         "collect-landings",
         crate::pump::need_landing::collect_completed(ctx, st),
     );
-    soft_step(
-        ctx,
-        "refresh-default-merges",
-        crate::pump::need_pipeline::refresh_default_merges(st),
-    );
+    soft_step(ctx, "refresh-default-merges", refresh_default_merges(st));
+}
+
+/// Default-target unit counters advance only after verified need publication.
+fn refresh_default_merges(st: &mut State) -> Result<(), VivariumError> {
+    let mut integrated = 0u64;
+    for unit in st.units.values().filter(|unit| {
+        unit.target_id() == "default" && unit.status == crate::pump::state::Status::Merged
+    }) {
+        let published = crate::pump::need::get(st, "default", &unit.need)?
+            .is_none_or(|record| record.landing_receipt.is_some());
+        if published {
+            integrated += 1;
+        }
+    }
+    st.merges = st.merges.max(integrated);
+    Ok(())
 }

@@ -16,7 +16,7 @@
 //! | `X-Vivi-Pump-Force` | replan: `1` replans past live work |
 //! | `X-Vivi-Pump-Target` | recover: only this target's branch |
 //! | `X-Vivi-Pump-Step` | answer: the flow step task being answered |
-//! | `X-Vivi-Pump-Word` | answer: the answer word; the note is the body |
+//! | `X-Vivi-Pump-Word` | answer: the answer word; the note is the body; unlock: the entry to restart at |
 //!
 //! Posting writes the letter and one `pump action` / `posted` event in one
 //! store transaction. The pump finds unapplied actions from those events
@@ -68,6 +68,8 @@ pub enum PumpActionKind {
     Recover,
     /// Answer a flow step by hand; applied by the flow engine, not the old pump.
     Answer,
+    /// Release a locked flow run; applied by the flow engine, not the old pump.
+    Unlock,
 }
 
 impl PumpActionKind {
@@ -80,6 +82,7 @@ impl PumpActionKind {
             Self::Replan => "replan",
             Self::Recover => "recover",
             Self::Answer => "answer",
+            Self::Unlock => "unlock",
         }
     }
 
@@ -90,6 +93,7 @@ impl PumpActionKind {
             "replan" => Some(Self::Replan),
             "recover" => Some(Self::Recover),
             "answer" => Some(Self::Answer),
+            "unlock" => Some(Self::Unlock),
             _ => None,
         }
     }
@@ -113,7 +117,7 @@ pub struct PumpActionRequest {
     pub target: Option<String>,
     /// Answer: the flow step task.
     pub step: Option<String>,
-    /// Answer: the answer word.
+    /// Answer: the answer word. Unlock: the entry to restart at.
     pub word: Option<String>,
     /// Why; the letter's body.
     pub reason: String,
@@ -187,6 +191,16 @@ impl PumpActionRequest {
             step: Some(step.to_string()),
             word: Some(word.trim().to_string()),
             ..Self::new(PumpActionKind::Answer, note)
+        }
+    }
+
+    /// Unlock a locked flow run; `entry` is the flow entry to restart at
+    /// (the flow's first entry when `None`) and `note` is the body.
+    #[must_use]
+    pub fn unlock(entry: Option<&str>, note: &str) -> Self {
+        Self {
+            word: entry.map(|entry| entry.trim().to_string()),
+            ..Self::new(PumpActionKind::Unlock, note)
         }
     }
 

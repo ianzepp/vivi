@@ -1,8 +1,11 @@
 //! `vivi pump`: the pump as a state machine.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand, ValueEnum};
+
+use crate::VivariumError;
+use crate::mailspace::{Mailspace, PumpActionRequest};
 
 #[derive(Debug, Subcommand)]
 pub enum PumpSubcommand {
@@ -64,6 +67,20 @@ pub enum PumpSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Unlock a need whose flow run is locked: posts the unlock on the need's open pump record; the pump restarts the run at its next tick. Default entry is the flow's first entry (plan for build, fix1 for repair); a reply on the need never releases a lock
+    Unlock {
+        /// Need handle
+        need: String,
+        /// Flow entry to restart at (default: the flow's first entry)
+        #[arg(long, value_name = "ENTRY")]
+        entry: Option<String>,
+        /// Free text recorded with the unlock
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+        /// Project root that owns .vivi/ (also accepted globally)
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// File a pump record: one dispatch of one need, addressed to the pump
     Send(PumpSendCommand),
     /// Open a pump record for every need the pump has in flight and no record for (the vivi 19 upgrade step)
@@ -83,6 +100,29 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpServiceCommand,
     },
+}
+
+impl PumpSubcommand {
+    /// Post an unlock action on the need's open pump record (`pump unlock`).
+    ///
+    /// # Errors
+    /// Returns an error if the mailspace cannot be found, the need has no
+    /// open pump record, or the post fails.
+    pub fn post_unlock(
+        project: &Path,
+        need: &str,
+        entry: Option<&str>,
+        note: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        let mailspace = Mailspace::discover(Some(project))?;
+        let request = PumpActionRequest::unlock(entry, note.unwrap_or_default());
+        let posted = mailspace.pump_post_action(None, need, &request)?;
+        println!(
+            "unlock posted on {} for need {}; the pump applies it at its next tick",
+            posted.record, need
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Args)]
