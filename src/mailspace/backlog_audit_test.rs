@@ -231,3 +231,106 @@ fn audit_flags_orphan_node_for_deleted_item() {
         report.findings
     );
 }
+
+fn send_served_want(mailspace: &Mailspace) -> (String, String) {
+    let want = send_item(mailspace, "wants", "want", "a want");
+    let mut front = crate::letter::work::NeedFront::new(vec!["done".to_string()]);
+    front.serves = Some(want.clone());
+    let need = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "serving need".into(),
+            body: crate::letter::fixture::need_body_with(&front, ""),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    (want, need)
+}
+
+fn want_node_state(mailspace: &Mailspace) -> String {
+    mailspace
+        .graph_show("backlog")
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|node| node.kind == "want")
+        .expect("a want node")
+        .state
+}
+
+fn set_want_node(mailspace: &Mailspace, state: &str) {
+    let show = mailspace.graph_show("backlog").unwrap();
+    let node = show.nodes.iter().find(|n| n.kind == "want").unwrap();
+    let storage = mailspace.storage().unwrap();
+    let graph = storage
+        .work_graph_by_code(crate::storage::BACKLOG_GRAPH_CODE)
+        .unwrap()
+        .unwrap();
+    storage
+        .set_work_graph_node_state(&graph.handle, &node.handle, state, Some("via=test"))
+        .unwrap();
+}
+
+#[test]
+fn a_served_done_want_is_not_drift_and_repair_leaves_its_node_done() {
+    let (mailspace, _tmp) = roster();
+    let (want, need) = send_served_want(&mailspace);
+    mailspace
+        .move_item("ceo", &need, "done", None, "close", None)
+        .unwrap();
+    assert_eq!(
+        mailspace.want_state(&want).unwrap().state,
+        crate::mailspace::WantState::Done
+    );
+    assert_eq!(want_node_state(&mailspace), "done");
+
+    let report = mailspace.backlog_audit(false).unwrap();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+    let repaired = mailspace.backlog_audit(true).unwrap();
+    assert!(repaired.findings.is_empty(), "{:?}", repaired.findings);
+    assert_eq!(want_node_state(&mailspace), "done");
+    assert_eq!(
+        mailspace.want_state(&want).unwrap().state,
+        crate::mailspace::WantState::Done
+    );
+}
+
+#[test]
+fn a_want_node_that_disagrees_with_the_computed_state_is_drift_and_repair_follows_it() {
+    let (mailspace, _tmp) = roster();
+    let (_want, need) = send_served_want(&mailspace);
+    // The serving need is open, so the want is open; its node says done.
+    set_want_node(&mailspace, "done");
+    let report = mailspace.backlog_audit(false).unwrap();
+    assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+    assert_eq!(report.findings[0].class, "node_state");
+    assert_eq!(report.findings[0].kind, "want");
+    assert!(
+        report.findings[0]
+            .detail
+            .contains("computed state is 'open'"),
+        "{}",
+        report.findings[0].detail
+    );
+    mailspace.backlog_audit(true).unwrap();
+    assert_eq!(want_node_state(&mailspace), "open");
+
+    // The need closes and the node is knocked open: repair completes it.
+    mailspace
+        .move_item("ceo", &need, "done", None, "close", None)
+        .unwrap();
+    set_want_node(&mailspace, "open");
+    let drift = mailspace.backlog_audit(false).unwrap();
+    assert_eq!(drift.findings.len(), 1, "{:?}", drift.findings);
+    mailspace.backlog_audit(true).unwrap();
+    assert_eq!(want_node_state(&mailspace), "done");
+    assert!(mailspace.backlog_audit(false).unwrap().findings.is_empty());
+}

@@ -245,6 +245,10 @@ mod serves_index_test;
 mod want_state_sync_test;
 
 #[cfg(test)]
+#[path = "sync/withdraw_sync_test.rs"]
+mod withdraw_sync_test;
+
+#[cfg(test)]
 #[path = "sync/events_test.rs"]
 mod events;
 
