@@ -14,6 +14,7 @@ mod migrate_flow_roles;
 mod migrate_keys;
 mod migrate_pool;
 mod model;
+mod pump_charters;
 mod pump_models;
 mod pump_roles;
 mod show;
@@ -36,6 +37,7 @@ pub use migrate::{
 pub use model::{
     RoleRouting, RoutedPool, RoutedRole, choose_model, from_mailspace, lanes_for, merge_lane_count,
 };
+pub use pump_charters::pump_charter_roles;
 pub use pump_roles::{PumpRoleCheck, pump_role_checks};
 pub use show::{ConfigOverview, FlowOverview, RoleRow, overview, render_text};
 pub use validate::{
