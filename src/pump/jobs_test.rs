@@ -3,10 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
-    branch_sources_pending, candidate_pools, dispatch_order, dispatch_pending, enqueue,
-    enqueue_promotion, integration_error, mark_applied, mark_gated, mark_merged, pool_command,
-    recover_dispatched, send_task,
+    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, candidate_pools,
+    dispatch_order, dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
+    send_task,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::ProbeHost;
@@ -384,12 +383,11 @@ fn finished_write_job_with_nonzero_exit_never_enters_the_merge_queue() {
 
     apply_reconcile(&ctx, &mut store, &seen);
 
-    assert!(integration_error(&store, "cadence-role-a1").is_some());
-    assert!(branch_sources_pending(&store, "default").is_empty());
+    assert!(store.jobs["cadence-role-a1"].integration_error.is_some());
 }
 
 #[test]
-fn write_role_job_is_not_applied_until_its_merge_and_gate_receipts() {
+fn write_role_job_is_applied_once_when_it_finishes() {
     let mut store = Store::default();
     let mut spec = JobSpec::new("cadence-role-a1", "cadence", "cadence", "run", "brief");
     spec.integration_required = true;
@@ -403,21 +401,9 @@ fn write_role_job_is_not_applied_until_its_merge_and_gate_receipts() {
     });
     store.jobs.insert(job.id.clone(), job);
 
-    assert!(!branch_landed(&store, "cadence-role-a1"));
-    assert!(!mark_applied(&mut store, "cadence-role-a1", 11));
-    mark_merged(
-        &mut store,
-        &[String::from("cadence-role-a1")],
-        "0123456789012345678901234567890123456789",
-    );
-    assert!(!branch_landed(&store, "cadence-role-a1"));
-    mark_gated(
-        &mut store,
-        &[String::from("cadence-role-a1")],
-        "0123456789012345678901234567890123456789",
-    );
-    assert!(branch_landed(&store, "cadence-role-a1"));
-    assert!(mark_applied(&mut store, "cadence-role-a1", 12));
+    assert!(mark_applied(&mut store, "cadence-role-a1", 11));
+    assert!(!mark_applied(&mut store, "cadence-role-a1", 12));
+    assert_eq!(store.jobs["cadence-role-a1"].applied_at, Some(11));
 }
 
 #[test]
@@ -455,93 +441,6 @@ fn pool_command_names_the_job_role_only_when_it_has_one() {
     assert!(pool_command(&job, "local", "a1b2c3d4").contains("--role merge"));
     job.role = String::new();
     assert!(!pool_command(&job, "local", "a1b2c3d4").contains("--role"));
-}
-
-#[test]
-fn promotion_job_binds_an_exact_green_candidate_to_main_on_a_scratch_branch() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut config = PumpConfig::default();
-    config.branch = String::from("next");
-    config.main = String::from("main");
-    let (ctx, _) = test_ctx(dir.path(), config);
-    let ctx = ctx.with_routing(RoleRouting {
-        roles: vec![RoutedRole {
-            name: String::from("release"),
-            kind: Some(String::from("release")),
-            status: String::from("active"),
-            pool: Some(String::from("local")),
-            read_only: Some(false),
-            model: None,
-            models: Vec::new(),
-        }],
-        pools: BTreeMap::from([(String::from("local"), routed_pool())]),
-    });
-    let mut store = Store::default();
-    let tip = "0123456789012345678901234567890123456789";
-    let id = enqueue_promotion(&ctx, &mut store, "default", tip, &[])
-        .unwrap()
-        .unwrap();
-    let job = &store.jobs[&id];
-
-    assert_eq!(job.publish_ref.as_deref(), Some("refs/heads/main"));
-    assert_eq!(job.publish_expect.as_deref(), Some(tip));
-    assert_eq!(job.from_ref.as_deref(), Some(tip));
-    assert_ne!(job.branch.as_deref(), Some("main"));
-    assert!(!job.allow_default_branch);
-    assert!(job.body.contains("Do not push"));
-}
-
-#[test]
-fn promotion_falls_back_to_active_merge_when_release_is_unavailable() {
-    let dir = tempfile::tempdir().unwrap();
-    let (ctx, _) = test_ctx(dir.path(), PumpConfig::default());
-    let ctx = ctx.with_routing(RoleRouting {
-        roles: vec![
-            RoutedRole {
-                name: String::from("release"),
-                kind: Some(String::from("release")),
-                status: String::from("paused"),
-                pool: Some(String::from("local")),
-                read_only: Some(false),
-                model: None,
-                models: Vec::new(),
-            },
-            RoutedRole {
-                name: String::from("merge"),
-                kind: Some(String::from("merge")),
-                status: String::from("active"),
-                pool: Some(String::from("local")),
-                read_only: Some(false),
-                model: None,
-                models: Vec::new(),
-            },
-        ],
-        pools: BTreeMap::from([(String::from("local"), routed_pool())]),
-    });
-    let mut store = Store::default();
-
-    let id = enqueue_promotion(
-        &ctx,
-        &mut store,
-        "default",
-        "0123456789012345678901234567890123456789",
-        &[],
-    )
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(store.jobs[&id].role, "merge");
-}
-
-fn routed_pool() -> RoutedPool {
-    RoutedPool {
-        slots: 1,
-        provider: String::from("local"),
-        fallback: None,
-        caps: BTreeMap::new(),
-        models: Vec::new(),
-        has_bands: false,
-    }
 }
 
 #[test]

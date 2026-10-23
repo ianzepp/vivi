@@ -488,17 +488,6 @@ fn complete_runs(ctx: &Ctx, st: &mut State, cadence: &mut CadenceState, now: u64
             continue;
         };
         let success = outcome.state == "finished" && outcome.agent_success() == Some(true);
-        if success && run.branch.is_some() {
-            if let Some(error) = jobs::integration_error(st, &run.job) {
-                finish_failed_run(run, now, &format!("integration-failed: {error}"));
-                apply.push(run.job.clone());
-                continue;
-            }
-            if !jobs::branch_landed(st, &run.job) {
-                run.outcome = Some(String::from("awaiting-merge-gate"));
-                continue;
-            }
-        }
         let ended_at = if run.branch.is_some() {
             now
         } else {
@@ -532,12 +521,6 @@ fn settle_completed_runs(ctx: &Ctx, st: &mut State, ids: Vec<String>, now: u64) 
             crate::pump::oversight::apply(ctx, st, &id);
         }
     }
-}
-
-fn finish_failed_run(run: &mut RoleRun, at: u64, outcome: &str) {
-    run.ended_at = Some(at);
-    run.outcome = Some(outcome.to_string());
-    run.retry_at = Some(at.saturating_add(backoff_secs(run.attempt)));
 }
 
 fn next_attempt(previous: Option<&RoleRun>) -> u32 {

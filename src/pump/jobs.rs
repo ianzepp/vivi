@@ -14,7 +14,6 @@ use crate::pump::host::Ctx;
 
 mod brief;
 mod dispatcher;
-mod gate_sources;
 pub mod merge_main;
 mod receipts;
 mod recovery;
@@ -24,10 +23,6 @@ mod slots;
 pub use dispatcher::{candidate_pools, dispatch_pending};
 #[cfg(test)]
 use dispatcher::{dispatch_order, pool_command, send_task};
-pub use gate_sources::{
-    mark_gate_attempted, mark_gated, mark_integration_failed, mark_merged,
-    sources_need_gate_attempt, sources_waiting_for_gate,
-};
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
 pub(crate) use slots::{parse_created_handle, slots};
@@ -227,12 +222,6 @@ pub struct PoolJob {
     /// Integration branch tip after this job's output was merged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_tip: Option<String>,
-    /// Tip that passed the gate covering the merge.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gated_tip: Option<String>,
-    /// Last integration tip checked by a gate, including a red result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gate_attempted_tip: Option<String>,
     /// A decided merge failure that needs a new role attempt or operator action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_error: Option<String>,
@@ -277,8 +266,6 @@ impl From<JobSpec> for PoolJob {
             outcome: None,
             applied_at: None,
             merged_tip: None,
-            gated_tip: None,
-            gate_attempted_tip: None,
             integration_error: None,
         }
     }
@@ -309,79 +296,6 @@ pub fn enqueue(st: &mut impl JobStore, spec: JobSpec) -> Result<(), VivariumErro
     Ok(())
 }
 
-/// Queue a fast-forward-only promotion on a merge/release pool role.
-pub fn enqueue_promotion(
-    ctx: &Ctx,
-    st: &mut impl JobStore,
-    target: &str,
-    tip: &str,
-    failing: &[String],
-) -> Result<Option<String>, VivariumError> {
-    let can_publish = |role: &&crate::routing::RoutedRole| {
-        role.status == "active" && ctx.routing.pool_of(role).is_some()
-    };
-    let role = ctx
-        .routing
-        .lookup("release")
-        .filter(can_publish)
-        .or_else(|| {
-            ctx.routing
-                .merge()
-                .filter(|role| role.status == "active" && ctx.routing.pool_of(role).is_some())
-        });
-    let Some(role) = role else {
-        ctx.log("promotion queued nowhere: no release or merge role is configured");
-        return Ok(None);
-    };
-    let Some(target_ctx) = ctx.for_target(target) else {
-        return Err(VivariumError::Config(format!(
-            "cannot promote unknown repository target {target:?}"
-        )));
-    };
-    let short: String = tip.chars().take(12).collect();
-    let id = format!("promote-{}-{short}", safe_component(target));
-    let subject = format!("fast-forward {} to {}", target_ctx.cfg.main, &short);
-    let remote = target_ctx.cfg.remote.clone();
-    let runner_branch = format!("pump/promotion/{}/{}", safe_component(target), short);
-    let body = format!(
-        "The green integration tip is `{tip}`. Confirm your checkout HEAD is exactly that commit and the worktree is clean. Do not push or change branches. If HEAD differs, report `blocked`. Otherwise report `ready`; after your clean exit, the privileged pool runner may publish only this exact SHA to `{remote}` `refs/heads/{}`. The controller requires the runner's actual publish receipt and independently verifies the remote ref. End your receipt with one minified JSON line prefixed `PUMP_PROMOTE_RESULT=` and containing `{{\"status\":\"ready|blocked\",\"tip\":\"{tip}\"}}`. The pool runner branch is only scratch output; do not push the promotion result there.\n\nGreen gate failing names at this tip: {}",
-        target_ctx.cfg.main,
-        if failing.is_empty() {
-            "(not recorded)".to_owned()
-        } else {
-            failing.join(", ")
-        },
-    );
-    let mut spec = JobSpec::new(id.clone(), "promote", &role.name, subject, body);
-    spec.target = Some(target.to_owned());
-    spec.from_ref = Some(tip.to_owned());
-    spec.branch = Some(runner_branch);
-    spec.publish_ref = Some(format!("refs/heads/{}", target_ctx.cfg.main));
-    spec.publish_expect = Some(tip.to_owned());
-    spec.budget = target_ctx.cfg.dispatch.budget;
-    spec.payload = serde_json::json!({
-        "target": target,
-        "branch": target_ctx.cfg.main,
-        "remote": target_ctx.cfg.remote,
-        "tip": tip,
-        "failing": failing,
-    });
-    enqueue(st, spec)?;
-    Ok(Some(id))
-}
-
-fn safe_component(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
 /// Whether a reconcile pass has dispatched jobs that need pool polling.
 #[must_use]
 pub fn has_dispatched(st: &impl JobStore) -> bool {
@@ -419,62 +333,13 @@ pub fn completion<'a>(st: &'a impl JobStore, id: &str) -> Option<&'a JobOutcome>
     st.jobs().get(id)?.outcome.as_ref()
 }
 
-/// Whether a role job's output is clear of the common merge and gate pipeline.
-#[must_use]
-pub fn branch_landed(st: &impl JobStore, id: &str) -> bool {
-    st.jobs()
-        .get(id)
-        .is_some_and(|job| !job.integration_required || job.gated_tip.is_some())
-}
-
-/// Decided branch-integration failure, if one ended the merge pipeline.
-#[must_use]
-pub fn integration_error<'a>(st: &'a impl JobStore, id: &str) -> Option<&'a str> {
-    st.jobs().get(id)?.integration_error.as_deref()
-}
-
-/// A role branch ready to enter the common merge pipeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchSource {
-    pub job_id: String,
-    pub role: String,
-    pub branch: String,
-    pub subject: String,
-}
-
-/// Integration branches from completed write jobs that have not merged yet.
-#[must_use]
-pub fn branch_sources_pending(st: &impl JobStore, target: &str) -> Vec<BranchSource> {
-    st.jobs()
-        .values()
-        .filter(|job| {
-            job.integration_required
-                && job.target.as_deref() == Some(target)
-                && job.branch.is_some()
-                && job.status == JobStatus::Finished
-                && job.outcome.as_ref().and_then(JobOutcome::agent_success) == Some(true)
-                && job.merged_tip.is_none()
-                && job.integration_error.is_none()
-        })
-        .map(|job| BranchSource {
-            job_id: job.id.clone(),
-            role: job.role.clone(),
-            branch: job.branch.clone().unwrap_or_default(),
-            subject: job.subject.clone(),
-        })
-        .collect()
-}
-
 /// Mark a terminal result applied while keeping its receipt available to the
 /// owning scheduler.
 pub fn mark_applied(st: &mut impl JobStore, id: &str, at: u64) -> bool {
     let Some(job) = st.jobs_mut().get_mut(id) else {
         return false;
     };
-    if !job.status.is_terminal()
-        || job.applied_at.is_some()
-        || (job.integration_required && job.gated_tip.is_none() && job.integration_error.is_none())
-    {
+    if !job.status.is_terminal() || job.applied_at.is_some() {
         return false;
     }
     job.applied_at = Some(at);
