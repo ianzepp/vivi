@@ -296,3 +296,22 @@ fn a_reply_that_keeps_failing_is_given_up_on_the_third_tick() -> R {
     assert_eq!(rig.exceptions("flow-research-post-failed"), 1);
     Ok(())
 }
+
+#[test]
+fn a_need_that_does_not_parse_fails_the_post_and_alarms_once() -> R {
+    let mut rig = rig(true)?;
+    rig.need = rig
+        .mail
+        .send_step("mind", "mind", "prose need", "for: w1\nprose only", &[])?;
+    rig.land("research", ENVELOPE)?;
+    for _ in 0..2 {
+        assert!(rig.tick().is_err());
+        assert!(!rig.marked()?);
+        assert_eq!(rig.exceptions("flow-research-post-failed"), 0);
+    }
+    rig.tick()?;
+    assert!(rig.marked()?);
+    assert!(rig.replies().is_empty());
+    assert_eq!(rig.exceptions("flow-research-post-failed"), 1);
+    Ok(())
+}

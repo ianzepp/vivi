@@ -21,10 +21,15 @@ const READ_TIMEOUT: u64 = 60;
 
 /// The want a need body explores: the need front's `explores`, read through
 /// the one need reader.
-pub(crate) fn for_want(body: &str) -> Option<String> {
+///
+/// # Errors
+///
+/// Returns the letter error text when the need body does not parse, so the
+/// research step and the research post fail loudly instead of skipping.
+pub(crate) fn for_want(body: &str) -> Result<Option<String>, VivariumError> {
     match crate::letter::read::need_of("", body) {
-        Ok(envelope) => envelope.front.explores,
-        Err(_) => None,
+        Ok(envelope) => Ok(envelope.front.explores),
+        Err(error) => Err(VivariumError::Message(error.to_string())),
     }
 }
 
@@ -55,7 +60,7 @@ impl StepHandler for ResearcherStart {
         })?;
         let need = &cx.run.need;
         let body = cx.mail.task_body(need)?;
-        let want = own_want(cx, for_want(&body))?;
+        let want = own_want(cx, for_want(&body)?)?;
         let thread = section(
             cx.ctx,
             &format!("need show {} --newest 40", shell_quote(need)),
