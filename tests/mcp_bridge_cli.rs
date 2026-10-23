@@ -448,3 +448,151 @@ fn no_api_key_is_refused_before_any_request() {
     assert!(stderr.contains("VIVI_MCP_API_KEY"), "{stderr}");
     assert_eq!(server.requests_seen(), 0, "no request may reach the server");
 }
+
+/// Spawn a bridge for `server` and `key` in an empty directory, with the
+/// project from `VIVI_MCP_PROJECT_ID` when `project` is given.
+fn spawn_for(server: &ProjectServer, key: &str, project: Option<&str>, cwd: &Path) -> Bridge {
+    let url = server.url();
+    let mut envs = vec![("VIVI_MCP_API_KEY", key)];
+    if let Some(project) = project {
+        envs.push(("VIVI_MCP_PROJECT_ID", project));
+    }
+    spawn(cwd, &["--server", url.as_str()], &envs)
+}
+
+fn show_line(id: u64, arguments: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"show","arguments":{arguments}}}}}"#
+    )
+}
+
+fn reply_text(reply: &Value) -> String {
+    reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn a_configured_project_is_filled_into_a_call_that_takes_one() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    bridge.exchange(&initialize_request(1), "initialize");
+    let shown = bridge.exchange(&show_line(2, r#"{"handle":"t1"}"#), "show without project");
+    assert_eq!(shown["id"], 2);
+    assert!(reply_text(&shown).contains("Build it"), "{shown}");
+
+    let sent = server
+        .mcp_requests()
+        .into_iter()
+        .find(|seen| seen.body["params"]["name"] == "show")
+        .expect("the fake saw the show call");
+    assert_eq!(
+        sent.body["params"]["arguments"]["project"],
+        server.project()
+    );
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn a_tool_without_project_is_forwarded_as_it_was_sent() {
+    let server = ProjectServer::start();
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hello"}}}"#;
+    let echoed = bridge.exchange(line, "echo");
+    assert_eq!(reply_text(&echoed), "alice: hello");
+
+    let sent = server
+        .mcp_requests()
+        .into_iter()
+        .find(|seen| seen.body["params"]["name"] == "echo")
+        .expect("the fake saw the echo call");
+    let expected: Value = serde_json::from_str(line).expect("the sent line is JSON");
+    assert_eq!(sent.body, expected, "echo is forwarded untouched");
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn an_explicit_project_is_kept_and_refused_by_the_server() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    let refused = bridge.exchange(
+        &show_line(2, r#"{"handle":"t1","project":"other"}"#),
+        "show with another project",
+    );
+    assert_eq!(reply_text(&refused), "this key has no grant on other");
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn with_no_project_configured_the_call_is_forwarded_as_it_is() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, None, empty.path());
+
+    let refused = bridge.exchange(&show_line(2, r#"{"handle":"t1"}"#), "show, no project");
+    assert_eq!(reply_text(&refused), "project is required");
+    assert!(
+        server
+            .mcp_requests()
+            .iter()
+            .all(|seen| seen.body["method"] != "tools/list"),
+        "a pass-through bridge asks for no tool list"
+    );
+
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+#[test]
+fn stdout_carries_one_reply_per_request_and_never_the_bridges_own_list() {
+    let server = ProjectServer::start();
+    server.seed_item("t1", "Build it", "do the thing");
+    let key = server.issue_api_key("alice");
+    let empty = tempfile::tempdir().expect("empty tempdir");
+    let mut bridge = spawn_for(&server, &key, Some(server.project()), empty.path());
+
+    let mut ids = Vec::new();
+    for id in 2..=4 {
+        let reply = bridge.exchange(&show_line(id, r#"{"handle":"t1"}"#), "show");
+        ids.push(reply["id"].clone());
+    }
+    assert_eq!(ids, [2, 3, 4]);
+    let lists = server
+        .mcp_requests()
+        .iter()
+        .filter(|seen| seen.body["method"] == "tools/list")
+        .count();
+    assert_eq!(lists, 1, "one bridge-private tools/list per session");
+
+    // finish() fails on any stdout line past these three that is not
+    // JSON-RPC, and the channel must be empty of further replies.
+    assert!(
+        bridge
+            .lines
+            .recv_timeout(Duration::from_millis(200))
+            .is_err(),
+        "no extra stdout line"
+    );
+    let (status, stderr) = bridge.finish();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}

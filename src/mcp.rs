@@ -1,10 +1,12 @@
 //! The `vivi mcp` stdio bridge engine: newline-delimited JSON-RPC 2.0 in,
 //! the project server's answers out, one line each.
 //!
-//! The bridge is a pass-through. It never inspects `method`: a message with
-//! an `id` member is a request and expects an answer, a message without one
-//! is a notification and never gets a reply, so new server tools need no
-//! bridge change. Every valid line is forwarded byte-for-byte to the
+//! The bridge is a pass-through. A message with an `id` member is a request
+//! and expects an answer, a message without one is a notification and never
+//! gets a reply, so new server tools need no bridge change. The one place it
+//! inspects `method` is a `tools/call`: with a configured project, a call of
+//! a tool that takes `project` and carries none gets it filled in (see
+//! [`inject`]). Every other valid line is forwarded byte-for-byte to the
 //! server's MCP endpoint; a line that cannot be served is answered
 //! in-protocol (-32700 / -32600 / -32000) and the session continues. The API
 //! key is held in memory and never written.
@@ -21,7 +23,10 @@ use crate::error::VivariumError;
 use crate::sync::http::{RawResponse, send_raw, server_mcp_url};
 
 pub mod client;
+mod inject;
 pub mod resolve;
+
+use inject::Injector;
 
 /// The status that names authentication in a failure message.
 const UNAUTHORIZED: u16 = 401;
@@ -44,6 +49,9 @@ pub struct BridgeConfig {
     pub server: String,
     /// The API key, sent as the bearer as it is.
     pub api_key: String,
+    /// The project the bridge fills into tool calls that take one and
+    /// carry none; `None` is a pure pass-through.
+    pub project: Option<String>,
 }
 
 /// The upstream the bridge posts to. A trait so the engine is testable
@@ -103,7 +111,14 @@ pub fn serve(
     diag: impl Write,
 ) -> Result<(), VivariumError> {
     let upstream = HttpUpstream::new(&config.server);
-    serve_with(&upstream, &config.api_key, input, output, diag)
+    serve_with_project(
+        &upstream,
+        &config.api_key,
+        config.project.as_deref(),
+        input,
+        output,
+        diag,
+    )
 }
 
 /// The engine behind [`serve`], against any [`Upstream`].
@@ -117,7 +132,23 @@ pub fn serve_with(
     output: impl Write,
     diag: impl Write,
 ) -> Result<(), VivariumError> {
-    let mut session = Session::new(upstream, api_key, output, diag);
+    serve_with_project(upstream, api_key, None, input, output, diag)
+}
+
+/// [`serve_with`] that fills `project` into tool calls that take one and
+/// carry none.
+///
+/// # Errors
+/// Same contract as [`serve`].
+pub fn serve_with_project(
+    upstream: &dyn Upstream,
+    api_key: &str,
+    project: Option<&str>,
+    input: impl BufRead,
+    output: impl Write,
+    diag: impl Write,
+) -> Result<(), VivariumError> {
+    let mut session = Session::new(upstream, api_key, output, diag).with_project(project);
     for line in input.lines() {
         session.handle_line(&line?)?;
     }
@@ -130,6 +161,7 @@ struct Session<'a, O: Write, D: Write> {
     api_key: &'a str,
     output: O,
     diag: D,
+    injector: Injector,
 }
 
 impl<'a, O: Write, D: Write> Session<'a, O, D> {
@@ -139,7 +171,14 @@ impl<'a, O: Write, D: Write> Session<'a, O, D> {
             api_key,
             output,
             diag,
+            injector: Injector::new(None),
         }
+    }
+
+    /// Fill `project` into tool calls that take one and carry none.
+    fn with_project(mut self, project: Option<&str>) -> Self {
+        self.injector = Injector::new(project);
+        self
     }
 
     /// One line: blank lines are skipped, invalid JSON and non-message JSON
@@ -154,28 +193,34 @@ impl<'a, O: Write, D: Write> Session<'a, O, D> {
                 return self.write_json(&parse_error(&error.to_string()));
             }
         };
-        match Kind::classify(&message) {
-            Some(kind) => self.forward(line, kind),
-            None => self.write_json(&invalid_request()),
+        let Some(kind) = Kind::classify(&message) else {
+            return self.write_json(&invalid_request());
+        };
+        let sent = self
+            .injector
+            .apply(self.upstream, self.api_key, line, &message);
+        if let Some(text) = &sent.diag {
+            self.diag_line(text)?;
         }
+        self.forward(&sent.body, kind)
     }
 
     /// Send one message upstream and answer it: a request gets its reply or
     /// a -32000 error, a notification gets silence (failures go to `diag`),
     /// and a batch is answered once with id null.
-    fn forward(&mut self, line: &str, kind: Kind) -> Result<(), VivariumError> {
+    fn forward(&mut self, body: &str, kind: Kind) -> Result<(), VivariumError> {
         match kind {
-            Kind::Request { id } => match self.serve(line.as_bytes()) {
+            Kind::Request { id } => match self.serve(body.as_bytes()) {
                 Ok(outcome) => self.write_outcome(&outcome),
                 Err(failure) => self.write_json(&request_error(Some(&id), &failure)),
             },
             Kind::Notification => {
-                if let Err(failure) = self.serve(line.as_bytes()) {
+                if let Err(failure) = self.serve(body.as_bytes()) {
                     self.diag_line(&failure.message)?;
                 }
                 Ok(())
             }
-            Kind::Batch => match self.serve(line.as_bytes()) {
+            Kind::Batch => match self.serve(body.as_bytes()) {
                 Ok(outcome) => self.write_outcome(&outcome),
                 Err(failure) => self.write_json(&request_error(None, &failure)),
             },

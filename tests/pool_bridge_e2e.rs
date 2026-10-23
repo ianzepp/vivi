@@ -77,9 +77,9 @@ fi
 answers=$(mktemp) || exit 4
 {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"harness","version":"0"}}}'
-  printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show","arguments":{"handle":"%s","project":"%s"}}}\n' "$handle" "${VIVI_MCP_PROJECT_ID:-}"
-  printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reply","arguments":{"handle":"%s","body":"receipt: read the task, checks pass, nothing left undone","project":"%s"}}}\n' "$handle" "${VIVI_MCP_PROJECT_ID:-}"
-  printf '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"done","arguments":{"handle":"%s","project":"%s"}}}\n' "$handle" "${VIVI_MCP_PROJECT_ID:-}"
+  printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show","arguments":{"handle":"%s"}}}\n' "$handle"
+  printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reply","arguments":{"handle":"%s","body":"receipt: read the task, checks pass, nothing left undone"}}}\n' "$handle"
+  printf '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"done","arguments":{"handle":"%s"}}}\n' "$handle"
 } | "$vivi_bin" mcp >"$answers" 2>"$answers.err"
 status=$?
 echo "vivi mcp exit $status"
@@ -513,10 +513,15 @@ fn a_bridge_job_reads_its_task_and_reports_as_the_member() {
         assert_eq!(
             seen.body["params"]["arguments"]["project"].as_str(),
             Some(server.project()),
-            "every tool call names the project: {}",
+            "the bridge filled the project into every tool call: {}",
             seen.body
         );
     }
+    let lists = requests
+        .iter()
+        .filter(|seen| seen.body["method"].as_str() == Some("tools/list"))
+        .count();
+    assert_eq!(lists, 1, "the bridge asked for the tool list once");
     for seen in &requests {
         assert_eq!(seen.path, "/v1/mcp", "the server's MCP endpoint");
     }
