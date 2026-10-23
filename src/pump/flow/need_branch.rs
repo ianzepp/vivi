@@ -144,13 +144,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for BranchRestarts {
     ) -> Result<(), VivariumError> {
         let mut first_error = None;
         for run in store.live_runs()? {
-            let Some(row) = store.need_branch(&run.need)? else {
-                continue;
-            };
-            if row.run >= run.run {
-                continue;
-            }
-            if let Err(error) = restart(ctx, st, store, &run, row) {
+            if let Err(error) = restart_run(ctx, st, store, &run) {
                 ctx.log(&format!(
                     "need branch restart of {} r{} failed: {error}",
                     run.need, run.run
@@ -160,6 +154,22 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for BranchRestarts {
         }
         first_error.map_or(Ok(()), Err)
     }
+}
+
+/// Restart the need branch of one live run when its row belongs to an older run.
+fn restart_run<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    run: &RunRow,
+) -> Result<(), VivariumError> {
+    let Some(row) = store.need_branch(&run.need)? else {
+        return Ok(());
+    };
+    if row.run >= run.run {
+        return Ok(());
+    }
+    restart(ctx, st, store, run, row)
 }
 
 fn restart<S: JobStore>(

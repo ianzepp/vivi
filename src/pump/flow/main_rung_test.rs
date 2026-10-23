@@ -11,7 +11,7 @@ use super::{
     key, last_green,
 };
 use crate::error::VivariumError;
-use crate::pump::config::{PumpConfig, RungsConfig};
+use crate::pump::config::{PumpConfig, PumpTarget, RungsConfig};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::TickPhase;
 use crate::pump::flow::mail::MailWriter;
@@ -362,5 +362,95 @@ fn a_finished_job_for_an_unconfigured_target_is_applied_with_one_exception() -> 
     assert!(lines[0].contains("expected target gone configured with a main rung"));
     assert!(lines[0].contains(&format!("configured [{TARGET}]")));
     assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
+    Ok(())
+}
+
+/// Two targets with a main rung: `alpha` first, then `beta`, each with its own main ref name.
+fn two_target_rig() -> Result<Rig, VivariumError> {
+    let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    let mut cfg = PumpConfig {
+        rungs: RungsConfig {
+            main: Some(String::from("cargo test")),
+            timeout: Some(900),
+            pools: vec![String::from("build-pool")],
+            ..RungsConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    for (name, main) in [("alpha", "alpha-main"), ("beta", "beta-main")] {
+        cfg.targets.insert(
+            name.to_owned(),
+            PumpTarget {
+                path: name.to_owned(),
+                branch: String::from("next"),
+                main: main.to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    host.reply("alpha-main", 1, "fatal: unable to access the remote");
+    host.reply("beta-main", 0, &format!("{TIP}\trefs/heads/beta-main\n"));
+    Ok(Rig {
+        _dir: dir,
+        ctx,
+        host,
+        store,
+        mail: FakeMail::new("pump"),
+        jobs: Jobs::default(),
+    })
+}
+
+fn main_jobs_of(rig: &Rig, target: &str) -> usize {
+    rig.jobs
+        .jobs
+        .values()
+        .filter(|job| job.payload[PAYLOAD_KEY] == serde_json::json!(target))
+        .count()
+}
+
+#[test]
+fn an_unreachable_target_does_not_block_the_next_targets_schedule() -> R {
+    let mut rig = two_target_rig()?;
+    let Err(VivariumError::Other(text)) = rig.run() else {
+        return Err(VivariumError::Message("expected the first error".into()));
+    };
+    assert!(text.contains("ls-remote exit 1"), "{text}");
+    assert_eq!(main_jobs_of(&rig, "alpha"), 0);
+    assert_eq!(main_jobs_of(&rig, "beta"), 1);
+    assert!(
+        rig.host
+            .logs()
+            .iter()
+            .any(|line| line.contains("main rung of target alpha failed")),
+        "{:?}",
+        rig.host.logs()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failing_collect_does_not_block_the_next_targets_collect_and_schedule() -> R {
+    let mut rig = two_target_rig()?;
+    rig.store
+        .set_main_state(&key(LOST, "alpha"), &format!("{TIP} many"))?;
+    let mut spec = rung::spec(&rig.ctx, "alpha", "main", TIP, "main-step", 1)
+        .ok_or_else(|| VivariumError::Message("no main rung".into()))?;
+    spec.payload[PAYLOAD_KEY] = serde_json::json!("alpha");
+    let mut lost = PoolJob::from(spec);
+    lost.status = JobStatus::Lost;
+    lost.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: String::new(),
+        at: 1,
+    });
+    rig.jobs.jobs.insert(lost.id.clone(), lost);
+    let Err(VivariumError::Parse(text)) = rig.run() else {
+        return Err(VivariumError::Message("expected the first error".into()));
+    };
+    assert!(text.contains("main-lost:alpha"), "{text}");
+    assert_eq!(main_jobs_of(&rig, "beta"), 1);
     Ok(())
 }
