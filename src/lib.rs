@@ -14,6 +14,7 @@ pub mod duration;
 pub mod error;
 pub mod extract;
 pub mod judgment;
+pub mod letter;
 pub mod mailspace;
 pub mod mcp;
 pub mod message;
