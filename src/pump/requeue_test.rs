@@ -300,23 +300,6 @@ fn run_requeue_posts_an_action_on_the_needs_open_record() {
     assert_eq!(actions[0].request.unit.as_deref(), Some("u1"));
     assert_eq!(actions[0].request.reason, "operator requeue");
     assert_eq!(actions[0].request.attempts, None);
-
-    // End to end without a running pump: the next tick flips the unit.
-    let host = FakeHost::new();
-    host.set_now(T0);
-    host.reply("ls-remote", 0, "");
-    let mut ctx = project.pump_ctx();
-    ctx.host = host;
-    let mut st = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .load()
-        .unwrap();
-    crate::pump::action::apply_pending(&ctx, &mut st);
-    let unit = &st.units["u1"];
-    assert_eq!(unit.status, Status::Pending);
-    assert_eq!(unit.task, None);
-    assert_eq!(unit.attempts, 1, "no branch exists, so no bump");
 }
 
 #[test]

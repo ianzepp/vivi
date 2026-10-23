@@ -1,9 +1,7 @@
-//! Operator replan, withdraw and requeue on a need with an active flow run.
+//! Operator replan, withdraw and requeue letters: the flow owns every one.
 //!
-//! The old pump applies these action letters to the old pipeline; a need the
-//! flow engine runs must have them go to the flow instead. This tick phase
-//! reads the letters the flow has not applied and, for each one whose need has
-//! an active run (`has_active_run`):
+//! This tick phase reads the action letters the flow has not applied. For a
+//! need with an active run (`active_run`):
 //!
 //! - `replan` restarts the live run at `plan`;
 //! - `withdraw` closes the need's pump record (the tick withdraws a run whose
@@ -12,12 +10,18 @@
 //!   same attempt; it is refused unless that job is terminal and the step is
 //!   open (a done step is reopened by advance, never here). A Pending job held
 //!   after repeated pool refusals is released in place instead: its hold and
-//!   refusal count clear and the next dispatch offers it to a pool again;
-//! - `answer` and `unlock` are left alone: other phases apply them.
+//!   refusal count clear and the next dispatch offers it to a pool again.
 //!
-//! Every letter is applied or refused exactly once: its id goes into
+//! For a need with no active run (none, or a done, locked or withdrawn one):
+//!
+//! - `withdraw` closes the need's open pump record `withdrawn`;
+//! - `requeue` and `replan` are refused: there is no run to act on, and a
+//!   locked run is opened with `vivi pump unlock <need>`.
+//!
+//! `answer` and `unlock` are left alone: other phases apply them.
+//!
+//! Every other letter is applied or refused exactly once: its id goes into
 //! `applied_actions` either way, and a refusal raises `flow-action-refused`.
-//! Letters of needs with no active run are left for the old pump.
 
 use std::collections::BTreeSet;
 
@@ -37,14 +41,6 @@ pub const ACTION_REFUSED: &str = "flow-action-refused";
 
 /// The flow node a replan restarts at.
 const REPLAN_ENTRY: &str = "plan";
-
-/// Whether `need` has a run the flow engine is working on.
-///
-/// # Errors
-/// Returns a [`VivariumError`] when the run index cannot be read.
-pub(crate) fn has_active_run(store: &PumpStore, need: &str) -> Result<bool, VivariumError> {
-    Ok(active_run(store, need)?.is_some())
-}
 
 /// The newest run of `need` in an active state.
 fn active_run(store: &PumpStore, need: &str) -> Result<Option<RunRow>, VivariumError> {
@@ -82,10 +78,17 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for OperatorActions {
         };
         let applied = store.applied_action_ids()?;
         for action in mailspace.pump_pending_actions(&applied)? {
-            let Some(run) = run_for(store, &action)? else {
+            if matches!(
+                action.request.kind,
+                PumpActionKind::Answer | PumpActionKind::Unlock
+            ) {
                 continue;
+            }
+            let result = match active_run(store, &action.need)? {
+                Some(run) => apply_one(ctx, st, store, mail, &run, &action),
+                None => apply_without_run(mail, &action),
             };
-            match apply_one(ctx, st, store, mail, &run, &action) {
+            match result {
                 Ok(()) => ctx.log(&format!(
                     "operator action applied: {} on {}",
                     action.request.kind.as_str(),
@@ -104,16 +107,6 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
     registry.phase(Box::new(OperatorActions));
 }
 
-/// The active run a flow-owned action applies to; None leaves the letter alone.
-fn run_for(store: &PumpStore, action: &PumpAction) -> Result<Option<RunRow>, VivariumError> {
-    match action.request.kind {
-        PumpActionKind::Replan | PumpActionKind::Withdraw | PumpActionKind::Requeue => {
-            active_run(store, &action.need)
-        }
-        PumpActionKind::Answer | PumpActionKind::Unlock => Ok(None),
-    }
-}
-
 /// The alarm text of a refused action.
 fn refusal(action: &PumpAction, error: &VivariumError) -> String {
     format!(
@@ -122,6 +115,20 @@ fn refusal(action: &PumpAction, error: &VivariumError) -> String {
         action.id,
         action.need
     )
+}
+
+/// Apply one action to a need with no active run: a withdraw closes its
+/// record, everything else is refused.
+fn apply_without_run<M: MailWriter>(
+    mail: &mut M,
+    action: &PumpAction,
+) -> Result<(), VivariumError> {
+    match action.request.kind {
+        PumpActionKind::Withdraw => mail.close_record(&action.need, "withdrawn"),
+        _ => Err(VivariumError::Message(
+            "no active flow run (use `vivi pump unlock <need>` for a locked run)".into(),
+        )),
+    }
 }
 
 /// Apply one action to the need's active run.
