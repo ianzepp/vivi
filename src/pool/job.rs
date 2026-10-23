@@ -16,6 +16,7 @@ use super::bridge::Grant;
 use super::config::PoolCommitter;
 use super::github::Secret;
 use crate::error::VivariumError;
+use crate::letter::work::TaskFront;
 
 /// The generic job runner, embedded in the binary.
 pub const RUNNER: &str = include_str!("job-run.sh");
@@ -87,37 +88,30 @@ pub fn render_harness(run: &str, model: &str, reasoning: Option<&str>) -> String
         .replace("{mcp_config}", AGENT_MCP)
 }
 
-/// `from:` and `branch:` lines found in a task body.
+/// The `from` and `branch` keys of a task's front matter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BodyRefs {
     pub from: Option<String>,
     pub branch: Option<String>,
 }
 
-/// Read `from: <ref>` and `branch: <ref>` lines from a task body. The first
-/// of each wins; surrounding whitespace and a leading list dash are ignored.
-#[must_use]
-pub fn body_refs(body: &str) -> BodyRefs {
-    let mut refs = BodyRefs::default();
-    for (key, value) in ref_lines(body) {
-        match key.to_ascii_lowercase().as_str() {
-            "from" if refs.from.is_none() => refs.from = Some(value.to_string()),
-            "branch" if refs.branch.is_none() => refs.branch = Some(value.to_string()),
-            _ => {}
-        }
+/// The task front matter of a body (old bodies go through the transitional
+/// reader); a body that does not read as a task letter has none.
+pub(crate) fn task_front(body: &str) -> TaskFront {
+    match crate::letter::read::task_of("", body) {
+        Ok(envelope) => envelope.front,
+        Err(_) => TaskFront::default(),
     }
-    refs
 }
 
-/// The `key: value` lines of a task body whose value is one word: lines are
-/// trimmed and a leading list dash is ignored.
-fn ref_lines(body: &str) -> impl Iterator<Item = (&str, &str)> {
-    body.lines().filter_map(|line| {
-        let line = line.trim().trim_start_matches(['-', '*']).trim();
-        let (key, value) = line.split_once(':')?;
-        let value = value.trim();
-        (!value.is_empty() && !value.contains(char::is_whitespace)).then_some((key.trim(), value))
-    })
+/// Read the `from` and `branch` keys of a task's front matter.
+#[must_use]
+pub fn body_refs(body: &str) -> BodyRefs {
+    let front = task_front(body);
+    BodyRefs {
+        from: front.from,
+        branch: front.branch,
+    }
 }
 
 /// Where to start and where to push, after flags and body are merged. A
@@ -128,7 +122,7 @@ pub struct Refs {
     pub branch: String,
 }
 
-/// An extra ref a job may read (`--with`, a `with:` body line) and the commit
+/// An extra ref a job may read (`--with`, a `with` front matter key) and the commit
 /// it resolved to. `commit` is empty until resolution, which happens before
 /// any slot is claimed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,18 +171,14 @@ pub fn resolve_refs(
     Ok(Refs { from, branch })
 }
 
-/// Every `with: <ref>` line of a task body, in order: the same trimming and
-/// list-dash rules as [`body_refs`], but every line counts.
+/// Every `with` value of a task's front matter, in order.
 #[must_use]
 pub fn body_with_refs(body: &str) -> Vec<String> {
-    ref_lines(body)
-        .filter(|(key, _)| key.eq_ignore_ascii_case("with"))
-        .map(|(_, value)| value.to_string())
-        .collect()
+    task_front(body).with
 }
 
 /// The extra refs a job may read: the `--with` flags when any are given, else
-/// every `with: <ref>` body line in order. Duplicates are dropped keeping the
+/// every `with` front matter value in order. Duplicates are dropped keeping the
 /// first, at most [`WITH_LIMIT`] are kept, and each value must be a plain ref
 /// that is neither the start ref (`from`) nor the push target (`branch`).
 ///
@@ -249,7 +239,7 @@ fn check_with(value: &str, from: &str, branch: &str) -> Result<(), VivariumError
 
 fn missing(what: &str) -> VivariumError {
     VivariumError::Message(format!(
-        "no {what}: pass --{what} or put a `{what}: <ref>` line in the task body"
+        "no {what}: pass --{what} or set `{what}` in the task front matter"
     ))
 }
 
