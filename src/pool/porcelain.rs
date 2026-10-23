@@ -37,7 +37,7 @@
 //!                nothing-open
 //! pool doctor    check POOL STATUS GROUP NAME DETAIL FIX MILLIS
 //!                summary POOL OK WARN FAIL SKIPPED                 (one per pool)
-//! pool clean     cleaned POOL SLOT KIND BYTES PATH NOTE            KIND: build|worktree|target|branch|orphan|lane-build|reset
+//! pool clean     cleaned POOL SLOT KIND BYTES PATH NOTE            KIND: build|reset
 //!                would POOL SLOT KIND BYTES PATH NOTE              (dry-run)
 //!                skipped POOL SLOT KIND REASON
 //!                disk FREE_BYTES

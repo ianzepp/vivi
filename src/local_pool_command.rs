@@ -391,22 +391,17 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// Reclaim free-slot build output and recycle work lanes whose units are
-/// merged into the merge lane (not main).
+/// Reclaim free-slot build output; with `--base`, reset free remote slots.
 fn clean(command: &PoolCleanCommand) -> Result<(), VivariumError> {
-    let report = if let Some(request) = command.after_merged_request.as_deref() {
-        clean::after_merged_request(request, command.project.as_deref())?
-    } else {
-        let space = Mailspace::discover(command.project.as_deref())?;
-        clean::clean_mailspace(
-            &space,
-            &clean::CleanOptions {
-                dry_run: command.dry_run,
-                pool: command.pool.clone(),
-                base: command.base.clone(),
-            },
-        )?
-    };
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let report = clean::clean_mailspace(
+        &space,
+        &clean::CleanOptions {
+            dry_run: command.dry_run,
+            pool: command.pool.clone(),
+            base: command.base.clone(),
+        },
+    )?;
     print_clean(command.porcelain, command.dry_run, &report);
     match &report.refused {
         Some(msg) => Err(VivariumError::Message(msg.clone())),
