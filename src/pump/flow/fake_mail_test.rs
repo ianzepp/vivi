@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
-use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
+use crate::pump::flow::mail::{
+    MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
+};
 
 /// One recorded port call, in call order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +83,7 @@ struct FakeRecord {
     handle: String,
     body: String,
     outcome: Option<String>,
+    opened: u32,
 }
 
 /// The in-memory mailspace port.
@@ -95,6 +98,9 @@ pub(crate) struct FakeMail {
     close_notes: BTreeMap<String, String>,
     records: BTreeMap<String, FakeRecord>,
     next: u32,
+    opened_count: u32,
+    /// Fail the write that would be recorded as call `n` (0-based), once.
+    pub fail_at: Option<usize>,
 }
 
 impl FakeMail {
@@ -147,6 +153,30 @@ impl FakeMail {
     /// Position of the first call matching `pred`, for order assertions.
     pub fn position(&self, pred: impl Fn(&Call) -> bool) -> Option<usize> {
         self.calls.iter().position(pred)
+    }
+
+    /// The needs with an open pump record, each with its open order as a
+    /// zero-padded 8-digit string, oldest first.
+    pub fn open_record_needs(&self) -> Vec<(String, String)> {
+        let mut open: Vec<(&String, u32)> = self
+            .records
+            .iter()
+            .filter(|(_, r)| r.outcome.is_none())
+            .map(|(need, r)| (need, r.opened))
+            .collect();
+        open.sort_by_key(|(_, opened)| *opened);
+        open.into_iter()
+            .map(|(need, opened)| (need.clone(), format!("{opened:08}")))
+            .collect()
+    }
+
+    /// Consume an injected failure when it is due at the next write.
+    fn injected(&mut self) -> Result<(), VivariumError> {
+        if self.fail_at == Some(self.calls.len()) {
+            self.fail_at = None;
+            return Err(VivariumError::Message("fake mail: injected failure".into()));
+        }
+        Ok(())
     }
 
     fn close_inner(
@@ -211,6 +241,7 @@ impl MailWriter for FakeMail {
         body: &str,
         depends_on: &[String],
     ) -> Result<String, VivariumError> {
+        self.injected()?;
         self.next += 1;
         let handle = format!("t{:04}", self.next);
         self.tasks.insert(
@@ -241,6 +272,7 @@ impl MailWriter for FakeMail {
     }
 
     fn bind(&mut self, need: &str, units: &[String]) -> Result<(), VivariumError> {
+        self.injected()?;
         for unit in units {
             self.require_task(unit)?;
         }
@@ -258,6 +290,7 @@ impl MailWriter for FakeMail {
     }
 
     fn reply(&mut self, handle: &str, body: &str) -> Result<(), VivariumError> {
+        self.injected()?;
         self.require_task(handle)?;
         if let Some(task) = self.tasks.get_mut(handle) {
             task.replies.push(body.to_string());
@@ -270,6 +303,7 @@ impl MailWriter for FakeMail {
     }
 
     fn post_to_need_audience(&mut self, need: &str, body: &str) -> Result<(), VivariumError> {
+        self.injected()?;
         self.calls.push(Call::PostToNeed {
             need: need.to_string(),
             body: body.to_string(),
@@ -284,6 +318,7 @@ impl MailWriter for FakeMail {
         branch: Option<&str>,
         commit: Option<&str>,
     ) -> Result<(), VivariumError> {
+        self.injected()?;
         self.require_task(handle)?;
         self.calls.push(Call::CloseTask {
             handle: handle.to_string(),
@@ -295,6 +330,7 @@ impl MailWriter for FakeMail {
     }
 
     fn reopen_task(&mut self, handle: &str) -> Result<(), VivariumError> {
+        self.injected()?;
         self.require_task(handle)?;
         self.calls.push(Call::ReopenTask {
             handle: handle.to_string(),
@@ -323,6 +359,7 @@ impl MailWriter for FakeMail {
     }
 
     fn close_need(&mut self, need: &str, note: &str) -> Result<(), VivariumError> {
+        self.injected()?;
         self.calls.push(Call::CloseNeed {
             need: need.to_string(),
             note: note.to_string(),
@@ -339,14 +376,17 @@ impl MailWriter for FakeMail {
     }
 
     fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
+        self.injected()?;
         self.next += 1;
         let handle = format!("r{:04}", self.next);
+        self.opened_count += 1;
         self.records.insert(
             need.to_string(),
             FakeRecord {
                 handle: handle.clone(),
                 body: body.to_string(),
                 outcome: None,
+                opened: self.opened_count,
             },
         );
         self.calls.push(Call::OpenRecord {
@@ -356,6 +396,7 @@ impl MailWriter for FakeMail {
     }
 
     fn close_record(&mut self, need: &str, outcome: &str) -> Result<(), VivariumError> {
+        self.injected()?;
         let record = self
             .records
             .get_mut(need)
@@ -414,6 +455,12 @@ impl MailReader for FakeMail {
                     .count()
             })
             .unwrap_or(0))
+    }
+}
+
+impl OpenRecords for FakeMail {
+    fn open_record_needs(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        Ok(FakeMail::open_record_needs(self))
     }
 }
 
@@ -511,5 +558,41 @@ fn sentinels_marks_and_records() -> R {
     mail.close_record("n1", "landed")?;
     assert!(MailReader::open_record(&mail, "n1")?.is_none());
     assert_eq!(mail.record_outcome("n1"), Some("landed"));
+    Ok(())
+}
+
+#[test]
+fn fail_at_fails_one_write_and_records_nothing() -> R {
+    let mut mail = FakeMail::new("pump");
+    step(&mut mail, "a")?;
+    mail.fail_at = Some(1);
+    assert!(step(&mut mail, "b").is_err());
+    assert_eq!(mail.calls.len(), 1);
+    assert_eq!(mail.tasks.len(), 1);
+    let c = step(&mut mail, "c")?;
+    assert_eq!(c, "t0002");
+    assert_eq!(mail.calls.len(), 2);
+    assert_eq!(mail.fail_at, None);
+    Ok(())
+}
+
+#[test]
+fn open_record_needs_lists_open_records_oldest_first() -> R {
+    let mut mail = FakeMail::new("pump");
+    assert!(OpenRecords::open_record_needs(&mail)?.is_empty());
+    MailWriter::open_record(&mut mail, "n2", "x")?;
+    MailWriter::open_record(&mut mail, "n1", "y")?;
+    assert_eq!(
+        OpenRecords::open_record_needs(&mail)?,
+        vec![
+            ("n2".to_string(), "00000001".to_string()),
+            ("n1".to_string(), "00000002".to_string())
+        ]
+    );
+    mail.close_record("n2", "landed")?;
+    assert_eq!(
+        mail.open_record_needs(),
+        vec![("n1".to_string(), "00000002".to_string())]
+    );
     Ok(())
 }

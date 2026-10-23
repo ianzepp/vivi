@@ -3,7 +3,7 @@
 use super::{run_count, sentinel_count_of};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::project;
-use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskStatus};
 
 /// A task from `mind` to `elsewhere`; the handle `elsewhere` holds.
 fn send_task(mailspace: &Mailspace, subject: &str, body: &str) -> String {
@@ -121,4 +121,7 @@ fn need_state_marks_and_open_record_are_read() {
     let (handle, body) = port.open_record(&need).unwrap().expect("an open record");
     assert_eq!(handle, record.handle);
     assert!(body.contains("kind: release"));
+    let listed = port.open_record_needs().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].0, need);
 }
