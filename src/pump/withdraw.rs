@@ -8,8 +8,7 @@
 //! ([`crate::pump::action`]):
 //!
 //! - every unfinished unit of the need is withdrawn, stuck ones included;
-//! - the need joins `closed_needs`, so nothing re-plans or dispatches it and
-//!   the need-audit, need-merge and landing steps skip it;
+//! - the need joins `closed_needs`, so nothing re-plans or dispatches it;
 //! - the need record is flagged `withdrawn`, so the amendment scan never
 //!   reopens or revises it on a later thread change;
 //! - an exception of kind `need-withdrawn` records the act;

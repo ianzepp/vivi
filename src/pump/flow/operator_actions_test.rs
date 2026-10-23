@@ -7,7 +7,7 @@ use std::fs;
 
 use super::{ACTION_REFUSED, has_active_run, register};
 use crate::error::VivariumError;
-use crate::mailspace::PumpActionRequest;
+use crate::mailspace::{PumpActionKind, PumpActionRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::STEP_MARKER;
@@ -247,7 +247,10 @@ fn an_action_on_a_need_without_a_run_is_left_for_the_old_pump() -> R {
 #[test]
 fn a_recover_on_a_need_with_a_live_run_is_refused_once_and_spent() -> R {
     let mut rig = rig()?;
-    let id = rig.post(&PumpActionRequest::recover(None, "adopt"))?;
+    let id = rig.post(&PumpActionRequest {
+        kind: PumpActionKind::Recover,
+        ..PumpActionRequest::withdraw("adopt")
+    })?;
     rig.phase()?;
     rig.phase()?;
 

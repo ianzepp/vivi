@@ -12,7 +12,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::pump::config::PumpConfig;
-use crate::pump::progress::LaneProgress;
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The outcome of running one command.
@@ -103,9 +102,6 @@ pub struct Ctx {
     pub vivi: String,
     /// Prepended to every shell command (`""` means none).
     pub shell_prefix: String,
-    /// Set on a merge lane's context: its log lines carry the lane name and
-    /// its steps feed the lane status.
-    pub lane: Option<Arc<LaneProgress>>,
     /// Role → pool map. Empty means the pump uses only the legacy tables.
     pub routing: Arc<RoleRouting>,
     /// Pool name -> the local repository a `local` worktree pool commits unit
@@ -142,7 +138,6 @@ impl Ctx {
             target_id: String::from("default"),
             vivi,
             shell_prefix,
-            lane: None,
             routing: Arc::new(RoleRouting::default()),
             pool_sources: Arc::new(BTreeMap::new()),
             actor: String::new(),
@@ -211,26 +206,6 @@ impl Ctx {
         Some(target)
     }
 
-    /// The same context working in another checkout of the same repository:
-    /// a merge lane's own clone.
-    #[must_use]
-    pub fn with_repo(&self, repo: PathBuf) -> Ctx {
-        Ctx {
-            repo,
-            ..self.clone()
-        }
-    }
-
-    /// The same context as a merge lane thread: every log line it writes
-    /// starts with `lane <name>: ` and [`Ctx::step`] updates `progress`.
-    #[must_use]
-    pub fn with_lane(&self, progress: Arc<LaneProgress>) -> Ctx {
-        Ctx {
-            lane: Some(progress),
-            ..self.clone()
-        }
-    }
-
     /// Run `cmd` through the host with `shell_prefix` applied:
     /// `"<prefix>; <cmd>"`, or just `<cmd>` when the prefix is empty.
     #[must_use]
@@ -263,19 +238,7 @@ impl Ctx {
 
     /// Append a log line via the host.
     pub fn log(&self, line: &str) {
-        match &self.lane {
-            Some(lane) => self.host.log(&format!("{}{line}", lane.prefix())),
-            None => self.host.log(line),
-        }
-    }
-
-    /// Log `line` and, on a lane context, record it as the lane's current
-    /// step for the status file.
-    pub fn step(&self, line: &str) {
-        if let Some(lane) = &self.lane {
-            lane.set_step(line, self.now());
-        }
-        self.log(line);
+        self.host.log(line);
     }
 
     /// Current epoch seconds via the host.

@@ -54,7 +54,7 @@ struct Snapshot {
     steps: Vec<Vec<StepRow>>,
     steps_by_task: Vec<Option<StepRow>>,
     jobs: Vec<Option<StepJobRow>>,
-    attempts: Vec<(u32, u32, u32)>,
+    attempts: Vec<(u32, u32)>,
     scopes: Vec<ScopeRead>,
     open_fanouts: Vec<Option<String>>,
     links: Vec<Vec<SliceLink>>,
@@ -324,7 +324,6 @@ fn snapshot(store: &PumpStore) -> Snapshot {
             (
                 store.last_attempt(t).expect("last"),
                 store.next_attempt(t).expect("next"),
-                store.attempts_of(t).expect("count"),
             )
         })
         .collect();
@@ -397,7 +396,7 @@ fn the_whole_flow_index_survives_a_reopen_unchanged() {
     for (table, rows) in &written.raw {
         assert!(!rows.is_empty(), "table {table} has no rows");
     }
-    assert_eq!(written.attempts[2], (2, 3, 3), "attempts of t-s1");
+    assert_eq!(written.attempts[2], (2, 3), "attempts of t-s1");
     assert_eq!(
         written.main_state,
         [Some(s("abc123")), Some(s("yes")), None]
