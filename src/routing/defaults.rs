@@ -7,8 +7,17 @@ use crate::pool::bands::parse_band;
 pub const WRITE_KINDS: [&str; 3] = ["hand", "merge", "lint"];
 
 /// Kinds that default to read-only. Compared case-insensitively.
-const READ_ONLY_KINDS: [&str; 7] = [
-    "auditor", "triage", "cadence", "steward", "head", "gate", "digest",
+const READ_ONLY_KINDS: [&str; 10] = [
+    "auditor",
+    "triage",
+    "cadence",
+    "steward",
+    "head",
+    "gate",
+    "digest",
+    "researcher",
+    "admitter",
+    "slicer",
 ];
 
 /// Whether a role of `kind` is read-only unless the role sets `read_only`.
@@ -36,3 +45,7 @@ pub fn resolve_read_only(flag: bool, role_flag: Option<bool>, kind: Option<&str>
     }
     role_flag.unwrap_or_else(|| default_read_only(kind))
 }
+
+#[cfg(test)]
+#[path = "defaults_test.rs"]
+mod tests;
