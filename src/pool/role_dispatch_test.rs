@@ -366,14 +366,23 @@ root = "~/lanes"
 const RULES: &str = "Work the brief. Never weaken a test.\n";
 
 #[test]
-fn a_blank_charter_leaves_the_pool_rules_byte_for_byte() {
+fn a_blank_charter_gives_the_pool_rules_then_the_project_rules() {
     for charter in ["", "  ", "\n  \n"] {
         assert_eq!(standing_prompt("auditor", charter, RULES, "", true), RULES);
         assert_eq!(
             standing_prompt("auditor", charter, RULES, "## r\n\nbody\n", false),
-            RULES
+            format!("{RULES}\n\n# Project rules\n\n## r\n\nbody")
         );
     }
+}
+
+#[test]
+fn project_rules_follow_the_base_when_there_is_no_role() {
+    assert_eq!(with_project_rules(RULES, "  \n"), RULES);
+    assert_eq!(
+        with_project_rules(RULES, "## r\n\nbody\n"),
+        format!("{RULES}\n\n# Project rules\n\n## r\n\nbody")
+    );
 }
 
 #[test]

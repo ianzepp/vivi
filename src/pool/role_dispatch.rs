@@ -237,8 +237,8 @@ fn no_model(role: Option<&RoleFacts>) -> VivariumError {
 
 /// The worker's standing prompt: the role's charter above the pool rules
 /// that bound it, with a note on how the slot reaches the mailspace, then the
-/// project-rule snapshot when it is not blank. A blank charter leaves the pool
-/// rules unchanged.
+/// project-rule snapshot when it is not blank. A blank charter gives the pool
+/// rules followed by the project rules.
 #[must_use]
 pub fn standing_prompt(
     role: &str,
@@ -248,7 +248,7 @@ pub fn standing_prompt(
     bridge: bool,
 ) -> String {
     if charter.trim().is_empty() {
-        return pool_rules.to_string();
+        return with_project_rules(pool_rules, project_rules);
     }
     let note = if bridge {
         "You run in a pool slot with the vivi tools of the project server \
@@ -267,13 +267,17 @@ pub fn standing_prompt(
         "# Standing charter (role {role})\n\n{charter}\n\n---\n\n{note}\n\n\
          # Pool rules (these bound the charter)\n\n{pool_rules}"
     );
+    with_project_rules(&prompt, project_rules)
+}
+
+/// `base` followed by the `# Project rules` section, or `base` unchanged when
+/// the project rules are blank.
+#[must_use]
+pub fn with_project_rules(base: &str, project_rules: &str) -> String {
     if project_rules.trim().is_empty() {
-        return prompt;
+        return base.to_string();
     }
-    format!(
-        "{prompt}\n\n# Project rules\n\n{}",
-        project_rules.trim_end()
-    )
+    format!("{base}\n\n# Project rules\n\n{}", project_rules.trim_end())
 }
 
 /// The most bytes of project rules a standing prompt carries.
