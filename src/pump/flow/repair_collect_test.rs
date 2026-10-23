@@ -350,3 +350,29 @@ fn a_command_not_found_in_the_stderr_tail_alone_is_not_held() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn a_shell_marker_host_fact_alone_is_not_held() -> R {
+    let mut rig = rig()?;
+    let stderr = "sh: foo: command not found";
+    let text = exit_receipt(1, stderr);
+    let job = &mut rig.jobs.jobs.get_mut("fix-j1").unwrap();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: text,
+        at: 0,
+    });
+    let host = job.outcome.as_ref().unwrap().host_failure().unwrap();
+    assert_eq!(host.class, "shell_marker");
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_ne!(fix.verdict.as_deref(), Some("operator-hold"));
+    assert!(
+        !rig.host_lines()
+            .iter()
+            .any(|line| line.contains("flow-env-failure"))
+    );
+    Ok(())
+}

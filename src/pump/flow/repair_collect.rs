@@ -11,14 +11,12 @@ use crate::mailspace::marked_line;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::collect::{self, Collected};
+use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
 use crate::pump::flow::def::{FAILED, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
-use crate::pump::flow::index::StepState;
 use crate::pump::flow::index::{StepJobRow, StepRow};
 use crate::pump::flow::repair::{self, AttemptFacts};
-use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
-use crate::pump::jobs::rung_result::{self, ENV_FAILURE};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 
 /// The answer word of a repairer job that ran past its time cap.
@@ -55,8 +53,8 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairerCollector {
         if job.status == JobStatus::Timeout && !is_correction {
             return cx.advance_word(step, OVERTIME, json!({"job": job.id}));
         }
-        if !is_correction && let Some(fact) = env_fact(job) {
-            return hold_env(cx, job, step, &fact);
+        if !is_correction && let Some(env) = runner_env_failure(job) {
+            return cx.hold_role_env(job, step, &env);
         }
         match collect::collect(cx.ctx, cx.mail, job, row, class, "") {
             Collected::Outcome(word, payload) if word == "built" => built(cx, job, step, payload),
@@ -79,51 +77,6 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairerCollector {
             Collected::Correct { error } => cx.correct(job, row, RoleKind::Repairer, &error),
         }
     }
-}
-
-/// The host-failure classes that come from runner facts. The other classes
-/// scan stderr text, which the agent can influence.
-const RUNNER_CLASSES: [&str; 3] = ["push_outcome", "agent_exit", "facts_exit"];
-
-/// A runner-level environment fact of a repairer job: a host failure the
-/// runner itself reports, or the agent binary exiting 126 or 127. Text markers
-/// in the stderr tail never count. The evidence text, when there is a fact.
-fn env_fact(job: &PoolJob) -> Option<String> {
-    let host = job
-        .outcome
-        .as_ref()
-        .and_then(|outcome| outcome.host_failure())
-        .filter(|failure| RUNNER_CLASSES.contains(&failure.class.as_str()));
-    if let Some(failure) = host {
-        return Some(failure.detail);
-    }
-    match rung_result::parse(job).exit {
-        Some(code @ (126 | 127)) => Some(format!("agent exit {code}")),
-        _ => None,
-    }
-}
-
-/// The repairer could not run: alarm once and hold the step for the
-/// operator. Not an attempt, and no word.
-fn hold_env<S: JobStore, M: FlowMail>(
-    cx: &mut RunCx<'_, S, M>,
-    job: &PoolJob,
-    step: &StepRow,
-    fact: &str,
-) -> Result<(), VivariumError> {
-    let task = &step.task;
-    raise_once(
-        cx.ctx,
-        ENV_FAILURE,
-        &job.id,
-        &format!(
-            "repairer job {} for step {task}: expected the agent to run; actual: {fact}; \
-             answer with vivi pump answer {task} built|failed",
-            job.id
-        ),
-    );
-    cx.store
-        .set_step_state(task, StepState::Waiting, Some(OPERATOR_HOLD))
 }
 
 /// A `built` envelope: the publish receipt decides whether it holds.
