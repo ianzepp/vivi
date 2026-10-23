@@ -25,7 +25,11 @@ Prose report.
 - The envelope opens the final message. Leading blank lines are allowed; nothing
   else may come before the first fence.
 - There are exactly two `+++` fence lines: one opens the front matter and one
-  closes it. Do not use `+++` anywhere else in the reply.
+  closes it. Do not use `+++` anywhere else in the reply. A third fence line
+  (three plus signs) is refused.
+- Every `[[table]]` goes above the closing fence. A `[[follow_up]]` or
+  `[[check]]` table written below the closing fence is prose, not data, and the
+  reply is refused.
 - The front matter is TOML with typed fields. Unknown keys are refused, so a
   misspelled or invented key is an error, not a note. Use only the keys listed
   for your role.
@@ -65,7 +69,7 @@ The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 | judge (auditor, short mode) | `block`, `residual` | `reason` (string; required) | the reasons |
 | head-cto | `research`, `plan`, `slice`, `rework`, `lock` | `reason` (string; required); `new_fact` (string; required for any answer but `lock` from the third run on) | the analysis |
 | merge (a flow merge step: a slice onto the need branch, and the sync step) | `merged`, `conflict` (the worker's claim; the runner's publish receipt and git decide) | `conflicts` (list of paths); `design_change` (bool; the conflict needs a design change); `[[check]]` tables (reported only). No `tip`: the SHA comes from the publish receipt | the conflict resolutions |
-| hand | `built`, `blocked-scope`, `failed` | `change` (list of paths; reported only, and empty means no defect was found); `[[check]]` tables (reported only; the merge job's task rung exit code decides); `deviations` (list); `[[follow_up]]` tables {`paths` (list), `need` (string)}; `remaining` (list); `scope_paths` (list; required for `blocked-scope`); `scope_reason` (string; required for `blocked-scope`); `scope_design` (bool, default false) | the report |
+| hand | `built`, `blocked-scope`, `failed` | `change` (list of paths; reported only: no-defect is decided by the runner from the push result `no_changes`, never by an empty list); `[[check]]` tables (reported only; the merge job's task rung exit code decides); `deviations` (list); `[[follow_up]]` tables {`paths` (list), `need` (string), `optional` (bool, default false)}; a required follow-up goes to the slicer, an optional one is only posted; `remaining` (list); `scope_paths` (list; required for `blocked-scope`); `scope_reason` (string; required for `blocked-scope`); `scope_design` (bool, default false) | the report |
 | head-ceo (cadence prompt; the pump does not parse it) | `reviewed`, `no-op` | `promoted`, `research`, `dropped` (lists of handles) | notes |
 
 ## Examples, one per role
@@ -276,12 +280,16 @@ scope_design = false
 Nothing was changed. The function is not reachable from my file.
 ```
 
-A hand that finds no defect answers `built` with an empty `change`:
+A hand that finds no defect still answers `built` and lists the files it looked at in `change` only if it changed them. An empty `change` does not say "no defect": the runner decides that from the push result `no_changes`. An optional follow-up is only posted, not sliced:
 
 ```
 +++
 answer = "built"
-change = []
+
+[[follow_up]]
+paths = ["src/other.rs"]
+need = 'The old caller could use a clearer name.'
+optional = true
 +++
 The reported defect does not reproduce: the guard is already in place.
 ```
@@ -304,6 +312,7 @@ The pump checks the envelope before it acts on the reply. Refusals are:
 
 - no opening fence, or text before it;
 - a missing closing fence, or a third fence;
+- a `[[follow_up]]` or `[[check]]` table written below the closing fence;
 - front matter that is not valid TOML;
 - an unknown key;
 - an `answer` word that is not one of the role's words;
