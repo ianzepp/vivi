@@ -3,9 +3,9 @@
 
 use super::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskState, TaskStatus};
 use crate::error::VivariumError;
-use crate::mailspace::{Mailspace, PumpState, folded_marks};
+use crate::mailspace::{Mailspace, PumpState, held_item, is_done, newest_move, sorted_marks};
 use crate::pump::flow::def::SENTINEL_MARKER;
-use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
+use crate::storage::{Storage, StoredMessageView};
 
 /// How many run sentinels `need` has: the bound tasks whose body starts with
 /// the sentinel marker. This is the Q1 run count, derived from mail alone.
@@ -41,11 +41,7 @@ impl MailReader for MailspacePort {
         let storage = self.mailspace.storage()?;
         let item = held_item(&storage, handle)?;
         let moved = newest_move(&item.events);
-        let done = match moved {
-            Some(event) => event.to_role.as_deref() == Some("done"),
-            None => item.rows.iter().any(|row| row.local_role == "done"),
-        };
-        if !done {
+        if !is_done(&item) {
             return Ok(TaskState {
                 status: TaskStatus::Open,
                 closer: None,
@@ -62,11 +58,7 @@ impl MailReader for MailspacePort {
     fn need_state(&self, need: &str) -> Result<NeedStatus, VivariumError> {
         let storage = self.mailspace.storage()?;
         let item = held_item(&storage, need)?;
-        let done = match newest_move(&item.events) {
-            Some(event) => event.to_role.as_deref() == Some("done"),
-            None => item.rows.iter().any(|row| row.local_role == "done"),
-        };
-        Ok(if done {
+        Ok(if is_done(&item) {
             NeedStatus::Done
         } else {
             NeedStatus::Open
@@ -75,9 +67,7 @@ impl MailReader for MailspacePort {
 
     fn need_marks(&self, need: &str) -> Result<Vec<String>, VivariumError> {
         let storage = self.mailspace.storage()?;
-        let mut events = held_item(&storage, need)?.events;
-        events.sort_by(|a, b| (&a.occurred_at, a.event_id).cmp(&(&b.occurred_at, b.event_id)));
-        Ok(folded_marks(&events))
+        Ok(sorted_marks(&held_item(&storage, need)?))
     }
 
     fn open_record(&self, need: &str) -> Result<Option<(String, String)>, VivariumError> {
@@ -154,25 +144,6 @@ impl OpenRecords for MailspacePort {
     }
 }
 
-/// Every live row of one item and every event logged against those rows.
-struct HeldItem {
-    rows: Vec<StoredMessageView>,
-    events: Vec<MailspaceEvent>,
-}
-
-fn held_item(storage: &Storage, handle: &str) -> Result<HeldItem, VivariumError> {
-    let message_id = storage.resolve_message_token(handle)?;
-    let view = storage
-        .message_by_id(&message_id)?
-        .ok_or_else(|| VivariumError::Message(format!("message not found: {handle}")))?;
-    let rows = storage.live_messages_for_content(&view.content_id)?;
-    let mut events = Vec::new();
-    for row in &rows {
-        events.extend(storage.list_mailspace_events(&row.message_id)?);
-    }
-    Ok(HeldItem { rows, events })
-}
-
 /// The handle `send_step` hands back for a sent copy: the recipient's copy
 /// of the same content, or the sent copy itself when nobody local holds one.
 fn delivered_handle(storage: &Storage, sent: &StoredMessageView) -> Result<String, VivariumError> {
@@ -181,14 +152,6 @@ fn delivered_handle(storage: &Storage, sent: &StoredMessageView) -> Result<Strin
         .into_iter()
         .find(|row| row.local_role != "sent")
         .map_or_else(|| sent.handle.clone(), |row| row.handle))
-}
-
-/// The newest folder move of the item, close or reopen alike.
-fn newest_move(events: &[MailspaceEvent]) -> Option<&MailspaceEvent> {
-    events
-        .iter()
-        .filter(|event| event.event_type == "moved" && event.to_role.is_some())
-        .max_by(|a, b| (&a.occurred_at, a.event_id).cmp(&(&b.occurred_at, b.event_id)))
 }
 
 /// The verdict the close recorded, from whichever row carries it.

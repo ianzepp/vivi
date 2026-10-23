@@ -39,6 +39,7 @@ mod holding;
 mod identity;
 pub mod inherit;
 mod item_events;
+mod item_facts;
 mod kind;
 mod lifecycle;
 mod marks;
@@ -92,6 +93,7 @@ pub(crate) use item_events::EVENT_HEADER;
 #[cfg(test)]
 pub(crate) use item_events::with_clock_skew;
 pub use item_events::{EventTally, ItemEventKind, ItemEventState};
+pub(crate) use item_facts::{held_item, is_done, newest_move, sorted_marks};
 pub(crate) use kind::effective_kind;
 pub use lifecycle::{
     AbsorbConfig, CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult,

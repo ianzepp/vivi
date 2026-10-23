@@ -461,25 +461,12 @@ pub(super) fn in_write_batch<T>(
 /// Whether a need is closed, and its folded marks, read from the events of
 /// every live row of the item (the newest folder move decides closed).
 fn need_facts(storage: &Storage, need: &str) -> Result<(bool, Vec<String>), VivariumError> {
-    let message_id = storage.resolve_message_token(need)?;
-    let view = storage
-        .message_by_id(&message_id)?
+    let item = super::item_facts::held_item_if_present(storage, need)?
         .ok_or_else(|| VivariumError::Message(format!("unknown need '{need}'")))?;
-    let rows = storage.live_messages_for_content(&view.content_id)?;
-    let mut events = Vec::new();
-    for row in &rows {
-        events.extend(storage.list_mailspace_events(&row.message_id)?);
-    }
-    let newest_move = events
-        .iter()
-        .filter(|event| event.event_type == "moved" && event.to_role.is_some())
-        .max_by(|a, b| (&a.occurred_at, a.event_id).cmp(&(&b.occurred_at, b.event_id)));
-    let done = match newest_move {
-        Some(event) => event.to_role.as_deref() == Some("done"),
-        None => rows.iter().any(|row| row.local_role == "done"),
-    };
-    events.sort_by(|a, b| (&a.occurred_at, a.event_id).cmp(&(&b.occurred_at, b.event_id)));
-    Ok((done, super::marks::folded_marks(&events)))
+    Ok((
+        super::item_facts::is_done(&item),
+        super::item_facts::sorted_marks(&item),
+    ))
 }
 
 /// The close note: the newest `pump done` note, cleared by a later reopen.
