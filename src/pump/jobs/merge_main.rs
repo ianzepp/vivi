@@ -67,7 +67,7 @@ pub fn spec(
     job.target = Some(target.to_owned());
     job.from_ref = Some(main_tip.to_owned());
     job.branch = Some(format!(
-        "pump/merge-main/{}/{}",
+        "pump/merge-main/{}-{}",
         ref_safe(target),
         ref_safe(&id)
     ));

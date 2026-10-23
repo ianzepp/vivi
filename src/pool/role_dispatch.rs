@@ -120,7 +120,8 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release
-/// roles, or to a hand job publishing only its unit-namespace branch.
+/// roles, to a hand job publishing only its unit-namespace branch, or to a
+/// repairer job publishing only one `vivi/repair/<segment>` branch.
 /// Promotion schedulers bind publication to one expected full commit SHA.
 pub fn validate_publish(
     role: Option<&RoleFacts>,
@@ -144,6 +145,9 @@ pub fn validate_publish(
             "release publication requires an exact expected commit SHA".into(),
         )),
         Some(kind) if kind.eq_ignore_ascii_case("hand") && unit_publish_ref(reference) => Ok(()),
+        Some(kind) if kind.eq_ignore_ascii_case("repairer") && repair_publish_ref(reference) => {
+            Ok(())
+        }
         _ => Err(VivariumError::Config(format!(
             "role {} is not authorized to publish {reference}",
             role.map_or("(none)", |role| role.name.as_str())
@@ -154,6 +158,12 @@ pub fn validate_publish(
 fn unit_publish_ref(reference: &str) -> bool {
     reference
         .strip_prefix("refs/heads/vivi/unit/")
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+}
+
+fn repair_publish_ref(reference: &str) -> bool {
+    reference
+        .strip_prefix("refs/heads/vivi/repair/")
         .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
 }
 
