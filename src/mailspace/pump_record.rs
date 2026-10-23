@@ -120,6 +120,7 @@ impl Mailspace {
                 || format!("Dispatch of need {need_handle}."),
                 str::to_string,
             );
+        self.check_actionable(storage, &need_handle, &body)?;
         let extras = [(PUMP_NEED_HEADER.to_string(), need_handle.clone())];
         let result = self.send_with_extras(
             SendRequest {
@@ -142,6 +143,56 @@ impl Mailspace {
             .ok_or_else(|| VivariumError::Message("the pump record was not delivered".into()))?;
         let row = self.record_row(storage, &delivered.handle)?;
         self.record_of(storage, &row)
+    }
+
+    /// Refuse a record the flow could not act on: a closed need, a `kind:`
+    /// line naming no flow kind, or a repair record without a known target.
+    fn check_actionable(
+        &self,
+        storage: &Storage,
+        need: &str,
+        body: &str,
+    ) -> Result<(), VivariumError> {
+        let (done, marks) = need_facts(storage, need)?;
+        if done {
+            return Err(VivariumError::Message(format!(
+                "need {need} is done: a pump record needs an open need"
+            )));
+        }
+        let (kind, unknown) = crate::pump::flow::kind::of(Some(body), &marks);
+        if let Some(word) = unknown {
+            return Err(VivariumError::Message(format!(
+                "pump record for need {need}: expected a `kind:` line naming one of build, research, release, repair; actual: {word}"
+            )));
+        }
+        if kind != crate::pump::flow::def::FlowKind::Repair {
+            return Ok(());
+        }
+        let target = body
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("target:"))
+            .map(str::trim)
+            .filter(|word| !word.is_empty());
+        let known: Option<Vec<String>> = self
+            .config
+            .pump
+            .as_ref()
+            .map(|pump| pump.target_configs().into_keys().collect());
+        let listed = known
+            .as_ref()
+            .map_or_else(|| "a configured target".to_string(), |ids| ids.join(", "));
+        let accepted = target.is_some_and(|word| {
+            known
+                .as_ref()
+                .is_none_or(|ids| ids.iter().any(|id| id == word))
+        });
+        if accepted {
+            return Ok(());
+        }
+        Err(VivariumError::Message(format!(
+            "repair record for need {need}: expected a `target:` line naming one of {listed}; actual: {}",
+            target.unwrap_or("none")
+        )))
     }
 
     /// The open pump record of `need`, when it has one.
@@ -405,6 +456,30 @@ pub(super) fn in_write_batch<T>(
             Err(error)
         }
     }
+}
+
+/// Whether a need is closed, and its folded marks, read from the events of
+/// every live row of the item (the newest folder move decides closed).
+fn need_facts(storage: &Storage, need: &str) -> Result<(bool, Vec<String>), VivariumError> {
+    let message_id = storage.resolve_message_token(need)?;
+    let view = storage
+        .message_by_id(&message_id)?
+        .ok_or_else(|| VivariumError::Message(format!("unknown need '{need}'")))?;
+    let rows = storage.live_messages_for_content(&view.content_id)?;
+    let mut events = Vec::new();
+    for row in &rows {
+        events.extend(storage.list_mailspace_events(&row.message_id)?);
+    }
+    let newest_move = events
+        .iter()
+        .filter(|event| event.event_type == "moved" && event.to_role.is_some())
+        .max_by(|a, b| (&a.occurred_at, a.event_id).cmp(&(&b.occurred_at, b.event_id)));
+    let done = match newest_move {
+        Some(event) => event.to_role.as_deref() == Some("done"),
+        None => rows.iter().any(|row| row.local_role == "done"),
+    };
+    events.sort_by(|a, b| (&a.occurred_at, a.event_id).cmp(&(&b.occurred_at, b.event_id)));
+    Ok((done, super::marks::folded_marks(&events)))
 }
 
 /// The close note: the newest `pump done` note, cleared by a later reopen.

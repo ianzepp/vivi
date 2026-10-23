@@ -198,6 +198,33 @@ fn split_mode_needs_two_to_four_numbered_ids() {
     assert!(parse_for(RoleKind::Slicer, &one).is_err());
 }
 
+#[test]
+fn a_follow_up_optional_flag_parses_and_defaults_to_false() {
+    let text = hand(
+        "answer = \"built\"\n\n[[follow_up]]\npaths = [\"src/a.rs\"]\nneed = 'a'\noptional = true\n\n\
+         [[follow_up]]\npaths = [\"src/b.rs\"]\nneed = 'b'\n",
+    );
+    let parsed = parse_for(RoleKind::Hand, &text).unwrap();
+    assert_eq!(parsed.front["follow_up"][0]["optional"], true);
+    assert_eq!(parsed.front["follow_up"][1].get("optional"), None);
+}
+
+#[test]
+fn a_non_optional_follow_up_serializes_without_the_optional_key() {
+    let row = super::FollowUp {
+        paths: vec!["src/a.rs".to_string()],
+        need: "a".to_string(),
+        optional: false,
+    };
+    let json = serde_json::to_value(&row).unwrap();
+    assert_eq!(json.as_object().unwrap().len(), 2);
+    let optional = super::FollowUp {
+        optional: true,
+        ..row
+    };
+    assert_eq!(serde_json::to_value(&optional).unwrap()["optional"], true);
+}
+
 const REPAIRER_BUILT: &str = "answer = \"built\"\nchange = [\"src/a.rs\"]\n\
     [[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\nseconds = 12\n";
 

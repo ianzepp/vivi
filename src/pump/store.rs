@@ -16,6 +16,7 @@ use crate::error::VivariumError;
 
 mod codec;
 mod flow_index;
+pub mod flow_links;
 mod main_state;
 mod need_branch;
 mod priority;
@@ -494,6 +495,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         .map_err(db_err("create schema"))?;
     drop_request_queues(conn)?;
     flow_index::ensure_tables(conn)?;
+    flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {

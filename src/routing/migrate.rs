@@ -6,13 +6,17 @@ use toml_edit::{DocumentMut, Item, Table};
 
 use crate::mailspace::config_edit::{IdentityPatch, insert_identity, patch_identity};
 use crate::mailspace::shipped::{
-    AUDITOR_CHARTER, MERGE_CHARTER, PUMP_PLANNER_CHARTER, PUMP_PLANNER_ROLE,
+    ADMITTER_ROLE, AUDITOR_CHARTER, MERGE_CHARTER, PUMP_PLANNER_CHARTER, PUMP_PLANNER_ROLE,
+    RESEARCHER_ROLE, SLICER_ROLE,
 };
 use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
 use super::migrate_keys::{apply_removals, apply_roots, plan_pool_roots, plan_removals};
+
+/// The flow roles take no band from the hand role.
+const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
 
 /// One planned file change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,13 +223,22 @@ fn plan_pump(
 }
 
 /// New pump roles start at the hand role's band, so the pool serves them as
-/// it serves the hand. A hand with no band leaves them without one.
+/// it serves the hand. A hand with no band leaves them without one. The flow
+/// roles take no band from the hand: each one gets a review line asking the
+/// operator to set its own.
 fn inherit_hand_band(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) {
     let band = find_role(config, &pump.to)
         .and_then(|role| role.model.clone())
         .filter(|model| is_band_model(model));
     for role in &mut plan.new_roles {
-        role.model.clone_from(&band);
+        if FLOW_ROLES.contains(&role.name.as_str()) {
+            plan.review.push(format!(
+                "set a band for {0}: `vivi role set {0} --model <band>`",
+                role.name
+            ));
+        } else {
+            role.model.clone_from(&band);
+        }
     }
 }
 

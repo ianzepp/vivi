@@ -95,11 +95,7 @@ fn rig() -> Result<Rig, VivariumError> {
     })?;
     start(&ctx, &store, &mut mail, NEED, Some("slice"))?;
     let mut registry: Reg = handlers::shipped(&ctx);
-    registry.handler(
-        FlowKind::Build,
-        NodeClass::Slicer,
-        Box::new(Answer("sliced")),
-    );
+    registry.node_handler(FlowKind::Build, "slice", Box::new(Answer("sliced")));
     registry.handler(
         FlowKind::Build,
         NodeClass::Fanout,

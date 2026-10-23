@@ -20,11 +20,11 @@ pub const DEFAULT_HAND_RULES: &str = "You are a Hand: one unit of work, alone on
 
 Rules:
 - Read AGENTS.md at the repository root first.
-- First reproduce the defect or confirm the gap on this checkout. If it does not reproduce, or the work is already done, change NOTHING and end your reply with the line `VERDICT: no-defect` and your evidence.
-- Change only the files in WRITE SCOPE. If the work truly needs another file, say which and why in your reply, and keep the change minimal.
-- If the failure depends on a file outside WRITE SCOPE, include `OUT-OF-SCOPE: <repo-relative/path>` in your final report and explain why. Do not change that file.
+- Change only the files in WRITE SCOPE. If the work truly needs another file, change nothing and answer `blocked-scope` with `scope_paths` naming the file (and `scope_design = true` only when it needs a real design choice, not just a missing line).
+- Never ask: take the first reasonable choice that fits the brief and the settled decisions, do it, and record it in `deviations`.
+- Run the checks the brief names. Never answer `built` with a known failing check.
+- A `[[follow_up]]` entry goes inside the front matter, with `optional = true` when it is nice to have.
 - Do NOT run `git commit` or `git push`: the runner commits what you leave in the checkout. Scratch files go under /tmp.
-- Run every PROOF command and make it pass.
 - Never weaken, delete, ignore or cfg-gate a test to make it pass.
 - Aim to finish in 5 minutes. Hard stop at 9 minutes. If you cannot finish, leave the tree in the best passing state and say exactly what is left.
 ";

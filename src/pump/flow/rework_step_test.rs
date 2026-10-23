@@ -171,7 +171,7 @@ fn the_shipped_registry_picks_the_override_for_rework1_and_not_for_slice() -> R 
     let rig = rig()?;
     rig.seed()?;
     let mut registry = shipped::<Jobs, FakeMail>(&rig.ctx);
-    registry.handler(FlowKind::Build, NodeClass::Slicer, Box::new(Marker));
+    registry.node_handler(FlowKind::Build, "slice", Box::new(Marker));
     let def = load(FlowKind::Build)?;
     let cx = StartCx {
         ctx: &rig.ctx,

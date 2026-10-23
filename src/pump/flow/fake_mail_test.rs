@@ -483,6 +483,20 @@ impl MailReader for FakeMail {
     fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
         Ok(self.records.get(need).and_then(|r| r.outcome.clone()))
     }
+
+    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
+        Ok(self
+            .tasks
+            .iter()
+            .filter(|(_, task)| {
+                task.from == self.identity
+                    && task.subject == subject
+                    && task.body.lines().next().map(str::trim) == Some(first_line.trim())
+                    && task.state.status == TaskStatus::Open
+            })
+            .map(|(handle, _)| handle.clone())
+            .max())
+    }
 }
 
 impl OpenRecords for FakeMail {
@@ -636,5 +650,19 @@ fn prerequisites_round_trip_and_last_closed_record_follows_the_record() -> R {
     assert_eq!(mail.last_closed_record("n1")?, None);
     mail.close_record("n1", "landed")?;
     assert_eq!(mail.last_closed_record("n1")?, Some("landed".to_string()));
+    Ok(())
+}
+
+#[test]
+fn sent_step_finds_the_newest_open_task_with_that_subject_and_first_line() -> R {
+    let mut mail = FakeMail::new("pump");
+    let first = mail.send_step("pump", "hand", "s", "line one\nmore", &[])?;
+    let second = mail.send_step("pump", "hand", "s", "line one\nother", &[])?;
+    mail.send_step("pump", "hand", "other subject", "line one", &[])?;
+    mail.send_step("someone", "hand", "s", "line one", &[])?;
+    assert_eq!(mail.sent_step("s", "line one")?, Some(second.clone()));
+    mail.close_task(&second, "done", None, None)?;
+    assert_eq!(mail.sent_step("s", "line one")?, Some(first));
+    assert_eq!(mail.sent_step("s", "line two")?, None);
     Ok(())
 }

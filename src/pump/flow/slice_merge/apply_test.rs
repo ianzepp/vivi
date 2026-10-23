@@ -17,7 +17,7 @@ use crate::pump::flow::slice_merge::spec::KIND;
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
@@ -73,6 +73,15 @@ fn rig() -> Result<Rig, VivariumError> {
         kind: "build".into(),
         entry: "plan".into(),
         state: "live".into(),
+    })?;
+    store.upsert_need_branch(&NeedBranchRow {
+        need: NEED.into(),
+        branch: format!("vivi/need/{NEED}"),
+        base: Some(BEFORE.into()),
+        status: "live".into(),
+        run: 1,
+        target: "default".into(),
+        priors: Vec::new(),
     })?;
     Ok(Rig {
         _dir: dir,

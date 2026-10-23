@@ -456,7 +456,7 @@ fn a_rejected_word_names_the_allowed_words() -> R {
     let routed = rig.route(&with_word(build, "merged"), "")?;
     let text = routed.rejected.expect("rejected");
     assert!(text.starts_with("word `merged` is not an answer of node `build1`"));
-    assert!(text.contains("allowed: built, failed"), "{text}");
+    assert!(text.contains("allowed: built, unchanged, failed"), "{text}");
     Ok(())
 }
 

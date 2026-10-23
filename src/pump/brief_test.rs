@@ -45,12 +45,21 @@ fn the_default_rules_name_no_project_specific_tool() {
     }
     // The generic bullets survive the port.
     assert!(DEFAULT_HAND_RULES.contains("Read AGENTS.md"));
-    assert!(DEFAULT_HAND_RULES.contains("VERDICT: no-defect"));
     assert!(DEFAULT_HAND_RULES.contains("Change only the files in WRITE SCOPE"));
-    assert!(DEFAULT_HAND_RULES.contains("OUT-OF-SCOPE: <repo-relative/path>"));
+    assert!(DEFAULT_HAND_RULES.contains("blocked-scope"));
+    assert!(DEFAULT_HAND_RULES.contains("scope_paths"));
+    assert!(DEFAULT_HAND_RULES.contains("deviations"));
+    assert!(DEFAULT_HAND_RULES.contains("optional = true"));
+    assert!(DEFAULT_HAND_RULES.contains("Never answer `built` with a known failing check"));
     assert!(DEFAULT_HAND_RULES.contains("git commit"));
-    assert!(DEFAULT_HAND_RULES.contains("Run every PROOF command and make it pass"));
     assert!(DEFAULT_HAND_RULES.contains("cfg-gate"));
+    // The old pipeline's words are gone from the rules.
+    for gone in ["VERDICT: no-defect", "OUT-OF-SCOPE:", "PROOF"] {
+        assert!(
+            !DEFAULT_HAND_RULES.contains(gone),
+            "default rules still say {gone}"
+        );
+    }
     assert!(DEFAULT_HAND_RULES.contains("Hard stop"));
 }
 

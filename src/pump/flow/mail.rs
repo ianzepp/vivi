@@ -95,6 +95,9 @@ pub trait MailReader {
     /// # Errors
     /// Returns an error when the pump records cannot be read.
     fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError>;
+    /// An OPEN task the pump identity sent with exactly this subject whose
+    /// body starts with this line; the newest when several match.
+    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError>;
 }
 
 /// Listing the pump records that are still open.
