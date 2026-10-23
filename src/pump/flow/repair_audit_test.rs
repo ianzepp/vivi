@@ -1,6 +1,7 @@
 //! The repair audit phase: one auditor job per landed repair run.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
@@ -13,8 +14,8 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::repair::{self, AttemptFacts};
-use crate::pump::host::{Ctx, test_ctx};
-use crate::pump::jobs::{JobStore, PoolJob};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::{RoleRouting, RoutedRole};
 
@@ -42,6 +43,7 @@ impl JobStore for Jobs {
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     jobs: Jobs,
@@ -64,12 +66,13 @@ fn with_auditor_route(ctx: Ctx) -> Ctx {
 
 fn rig(with_auditor: bool) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut registry = Registry::new();
     register(&mut registry);
     Ok(Rig {
         _dir: dir,
+        host,
         ctx: if with_auditor {
             with_auditor_route(ctx)
         } else {
@@ -124,6 +127,41 @@ impl Rig {
             target: "vivi".into(),
             priors: Vec::new(),
         })
+    }
+
+    /// End the queued audit job with `status` and `receipt`.
+    fn end_audit(&mut self, status: JobStatus, receipt: &str) {
+        let job = self.jobs.jobs.get_mut(&job_id(NEED, 1)).expect("audit job");
+        job.status = status;
+        job.outcome = Some(JobOutcome {
+            state: "finished".into(),
+            detail: String::new(),
+            receipt: receipt.into(),
+            at: 1,
+        });
+    }
+
+    /// Land a repair run, queue its audit and end it with `receipt`.
+    fn audited(&mut self, receipt: &str) -> R {
+        self.land("repair", true)?;
+        self.tick()?;
+        self.end_audit(JobStatus::Finished, receipt);
+        self.host.reply("need send", 0, "created mind n9\n");
+        Ok(())
+    }
+
+    fn count(&self, fragment: &str) -> usize {
+        self.host
+            .commands()
+            .iter()
+            .filter(|command| command.contains(fragment))
+            .count()
+    }
+
+    fn alarms(&self) -> usize {
+        let raised =
+            std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default();
+        raised.matches(super::REPAIR_AUDIT_FAILED).count()
     }
 
     fn tick(&mut self) -> R {
@@ -237,5 +275,114 @@ fn an_unreadable_open_record_names_the_range_only() -> R {
     let job = &rig.jobs.jobs[&job_id(NEED, 1)];
     assert_eq!(job.target.as_deref(), Some("vivi"));
     assert!(!job.body.contains("Failing output"), "{}", job.body);
+    Ok(())
+}
+
+const TWO_FINDINGS: &str = "+++\nanswer = \"residual\"\n\n\
+    [[finding]]\nid = \"F1\"\ncontent = 'Counted twice.'\npaths = [\"src/a.rs\"]\n\
+    recheck_trigger = 'Any change.'\n\n\
+    [[finding]]\nid = \"weakened-test-1\"\ncontent = 'A test was ignored.'\n\
+    recheck_trigger = 'Any change.'\n+++\nreport\n";
+
+#[test]
+fn findings_file_one_need_each_and_a_weakened_test_gets_top_priority() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(TWO_FINDINGS)?;
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), 2);
+    assert_eq!(rig.count("pump send --need n9"), 2);
+    assert_eq!(rig.count("pump priority set n9 100"), 1);
+    assert_eq!(rig.count("pump priority"), 1);
+    let sent = rig.host.commands();
+    let first = sent
+        .iter()
+        .find(|c| c.contains("need send"))
+        .expect("need send");
+    assert!(first.contains("repair audit n1 r1: F1"), "{first}");
+    assert!(first.contains("src/a.rs"), "{first}");
+    assert!(first.contains(&format!("{BASE}..{COMMIT}")), "{first}");
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    assert!(
+        rig.store
+            .applied_action_ids()?
+            .contains(&format!("{}:F1", run_key(NEED, 1)))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_second_phase_run_files_nothing_more() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(TWO_FINDINGS)?;
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), 2);
+    assert_eq!(rig.count("pump send"), 2);
+    Ok(())
+}
+
+#[test]
+fn a_clean_pass_files_nothing_and_marks_the_key() -> R {
+    let mut rig = rig(true)?;
+    rig.audited("+++\nanswer = \"clean_pass\"\n+++\nall good\n")?;
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), 0);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
+fn a_lost_job_raises_one_alarm_and_files_nothing() -> R {
+    let mut rig = rig(true)?;
+    rig.land("repair", true)?;
+    rig.tick()?;
+    rig.end_audit(JobStatus::Lost, "");
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), 0);
+    assert_eq!(rig.alarms(), 1);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
+fn an_unparseable_reply_raises_one_alarm_and_marks_the_key() -> R {
+    let mut rig = rig(true)?;
+    rig.audited("no envelope here")?;
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), 0);
+    assert_eq!(rig.alarms(), 1);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
+fn a_failed_need_send_alarms_once_keeps_the_run_open_and_retries() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(TWO_FINDINGS)?;
+    rig.host.reply("need send", 1, "boom\n");
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.alarms(), 2, "once per finding");
+    assert!(!rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    rig.host.reply("need send", 0, "created mind n9\n");
+    rig.tick()?;
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    assert_eq!(rig.count("pump send --need n9"), 2);
+    Ok(())
+}
+
+#[test]
+fn a_failed_pump_send_retries_without_filing_the_need_twice() -> R {
+    let mut rig = rig(true)?;
+    rig.audited(TWO_FINDINGS)?;
+    rig.host.reply("pump send", 1, "no\n");
+    rig.tick()?;
+    let filed = rig.count("need send");
+    assert_eq!(filed, 2);
+    rig.host.reply("pump send", 0, "ok\n");
+    rig.tick()?;
+    assert_eq!(rig.count("need send"), filed);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
     Ok(())
 }
