@@ -89,10 +89,10 @@ vivi want set-priority <handle> --for mind --priority P1 --reason "..."
 This orders the want queue: `want list` sorts by priority, rank, and creation
 time. It does not reorder the pump planner queue.
 
-Promote the want after the operator accepts the report:
+Send a need that serves the want after the operator accepts the report:
 
 ```sh
-vivi want promote --for mind <handle> --note "root cause attached"
+vivi need send --from mind --to mind --serves <handle> --subject "fix: ..." --done-when "the bug no longer reproduces"
 ```
 
 Promotion carries the original bug and the auditor's reply into the need. The

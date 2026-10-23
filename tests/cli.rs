@@ -1017,26 +1017,8 @@ fn parses_delivery_close_merge_commit() {
 }
 
 #[test]
-fn parses_want_promote() {
-    let cli = Cli::try_parse_from(["vivi", "want", "promote", "abc123", "--for", "ceo"]).unwrap();
-
-    match cli.command {
-        Command::Want {
-            command:
-                WantCommand::Promote {
-                    handle,
-                    for_identity,
-                    note,
-                    project,
-                },
-        } => {
-            assert_eq!(handle, "abc123");
-            assert_eq!(for_identity, "ceo");
-            assert_eq!(note, None);
-            assert_eq!(project, None);
-        }
-        other => panic!("unexpected command: {other:?}"),
-    }
+fn want_promote_no_longer_parses() {
+    assert!(Cli::try_parse_from(["vivi", "want", "promote", "abc123", "--for", "ceo"]).is_err());
 }
 
 #[test]

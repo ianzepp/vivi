@@ -1036,7 +1036,7 @@ fn want_done_drop_and_status_lists_closed_wants() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn want_promotes_to_need_and_done_without_polluting_task_done() {
+fn want_done_does_not_pollute_task_or_need_done() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
 
@@ -1086,33 +1086,8 @@ fn want_promotes_to_need_and_done_without_polluting_task_done() {
     assert_eq!(want_item["kind"], "want");
     assert_eq!(want_item["status"], "open");
 
-    let promoted = vivi([
-        "want",
-        "promote",
-        "--project",
-        project.path().to_str().unwrap(),
-        &want_handle,
-        "--for",
-        "ceo",
-        "--note",
-        "Prioritize next cycle.",
-    ]);
-    assert_success(&promoted);
-    assert!(stdout(&promoted).contains(&format!("promoted {want_handle}")));
-
-    let need_list = vivi([
-        "need",
-        "list",
-        "--project",
-        project.path().to_str().unwrap(),
-        "--for",
-        "ceo",
-    ]);
-    assert_success(&need_list);
-    assert!(stdout(&need_list).contains(&want_handle));
-
     let done = vivi([
-        "need",
+        "want",
         "done",
         "--project",
         project.path().to_str().unwrap(),
@@ -1138,22 +1113,6 @@ fn want_promotes_to_need_and_done_without_polluting_task_done() {
     assert_success(&done_tasks);
     assert!(!stdout(&done_tasks).contains(&want_handle));
 
-    let default_need_dump = vivi([
-        "need",
-        "dump",
-        "--project",
-        project.path().to_str().unwrap(),
-        "--for",
-        "ceo",
-        "--json",
-    ]);
-    assert_success(&default_need_dump);
-    let default_need_stdout = stdout(&default_need_dump);
-    assert!(
-        !default_need_stdout.contains(&want_handle),
-        "{default_need_stdout}"
-    );
-
     let done_needs = vivi([
         "need",
         "dump",
@@ -1168,19 +1127,7 @@ fn want_promotes_to_need_and_done_without_polluting_task_done() {
     assert_success(&done_needs);
     let done_needs_stdout = stdout(&done_needs);
     assert!(
-        done_needs_stdout.contains(&want_handle),
-        "{done_needs_stdout}"
-    );
-    assert!(
-        done_needs_stdout.contains("\"command\": \"want promote\""),
-        "{done_needs_stdout}"
-    );
-    assert!(
-        done_needs_stdout.contains("\"command\": \"need done\""),
-        "{done_needs_stdout}"
-    );
-    assert!(
-        done_needs_stdout.contains("\"kind\": \"need\""),
+        !done_needs_stdout.contains(&want_handle),
         "{done_needs_stdout}"
     );
 }
@@ -4053,16 +4000,12 @@ fn step_manifest_reports_dispatches_and_exceptions() {
         .iter()
         .find(|e| e["item"] == want)
         .unwrap_or_else(|| panic!("no exception for {want}: {manifest}"));
-    assert_eq!(exception["reason"], "want_requires_promotion");
+    assert_eq!(exception["reason"], "want_parked");
 
     let text = vivi(["step", "--project", project_s]);
     assert_success(&text);
     assert!(stdout(&text).contains("unit A"), "{}", stdout(&text));
-    assert!(
-        stdout(&text).contains("want_requires_promotion"),
-        "{}",
-        stdout(&text)
-    );
+    assert!(stdout(&text).contains("want_parked"), "{}", stdout(&text));
 }
 
 fn vivi<I, S>(args: I) -> Output

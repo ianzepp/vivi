@@ -324,8 +324,8 @@ fn want_exception(node: &GraphNodeView) -> StepException {
     exception(
         node,
         "want",
-        "want_requires_promotion",
-        "parked: wants never dispatch before explicit promotion",
+        "want_parked",
+        "wants never dispatch: send a need that serves it (vivi need send --serves <want>)",
     )
 }
 
