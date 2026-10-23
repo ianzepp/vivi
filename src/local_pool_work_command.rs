@@ -337,7 +337,7 @@ fn resolve_dispatch(
     }
     // An addressee that is not a known local role is no role at all, not an
     // error: the dispatch then runs without one.
-    let role = role_facts(space, task);
+    let role = role_facts(space, task, command.role.as_deref());
     role_dispatch::validate_publish(
         role.as_ref(),
         command.publish_ref.as_deref(),
@@ -410,7 +410,7 @@ fn resolve_command_dispatch(
     task: &PoolTask,
     pool_rules: String,
 ) -> Result<(DispatchFlags, String, String), VivariumError> {
-    let role = role_facts(space, task);
+    let role = role_facts(space, task, command.role.as_deref());
     role_dispatch::validate_publish(
         role.as_ref(),
         command.publish_ref.as_deref(),
@@ -444,9 +444,26 @@ fn dispatch_need_kind(
     Ok((need, kind))
 }
 
-/// Resolve the normal addressee role, or the shipped Auditor charter named
-/// by an internal pump job when the mailspace has no auditor identity.
-fn role_facts(space: &Mailspace, task: &PoolTask) -> Option<RoleFacts> {
+/// Resolve the role a dispatch runs as: the `--role` name first (so a step
+/// task addressed to the pump identity still runs as the role it names),
+/// then the shipped Auditor charter named by an internal pump job when the
+/// mailspace has no auditor identity, then the task addressee. A name that is
+/// not a known local role is no role at all, never the addressee instead.
+fn role_facts(space: &Mailspace, task: &PoolTask, named: Option<&str>) -> Option<RoleFacts> {
+    let named = named.map(str::trim).filter(|name| !name.is_empty());
+    let known = |name: &str| match space.role_view(name) {
+        Ok(view) => Some(RoleFacts {
+            name: view.name,
+            kind: view.kind,
+            band: view.model,
+            charter: view.charter,
+            read_only: view.read_only,
+        }),
+        Err(_) => None,
+    };
+    if let Some(facts) = named.and_then(known) {
+        return Some(facts);
+    }
     if task
         .body
         .lines()
@@ -454,18 +471,10 @@ fn role_facts(space: &Mailspace, task: &PoolTask) -> Option<RoleFacts> {
     {
         return Some(RoleFacts::builtin_auditor());
     }
-    task.addressee
-        .as_deref()
-        .and_then(|name| match space.role_view(name) {
-            Ok(view) => Some(RoleFacts {
-                name: view.name,
-                kind: view.kind,
-                band: view.model,
-                charter: view.charter,
-                read_only: view.read_only,
-            }),
-            Err(_) => None,
-        })
+    if named.is_some() {
+        return None;
+    }
+    task.addressee.as_deref().and_then(known)
 }
 
 fn source_need(space: &Mailspace, task: &str) -> Result<Option<String>, VivariumError> {
