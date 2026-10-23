@@ -216,7 +216,8 @@ fn show_role(
 
 fn add_role(args: &AddRoleArgs<'_>) -> Result<(), VivariumError> {
     let mut mailspace = Mailspace::discover(args.project)?;
-    let update = build_add_update(args);
+    let default_kind = default_add_kind(&mailspace, args);
+    let update = build_add_update(args, default_kind);
     let root = mailspace.root.clone();
     let config = mailspace.config_path();
     let (address, write) =
@@ -238,12 +239,30 @@ pub(crate) fn report_adopted(mailspace: &Mailspace, role: &str) -> Result<(), Vi
     Ok(())
 }
 
+/// The kind a `role add` gives when `--kind` is absent: the pump's hand role
+/// (`[pump] to`, `hand` when there is no `[pump]` table) is a hand. Every other
+/// role gets none.
+fn default_add_kind<'a>(mailspace: &Mailspace, args: &AddRoleArgs<'a>) -> Option<&'a str> {
+    if args.kind.is_some() {
+        return None;
+    }
+    let hand = mailspace
+        .config
+        .pump
+        .as_ref()
+        .map_or("hand", |pump| pump.to.as_str());
+    (args.name == hand).then_some("hand")
+}
+
 /// Build the full-field `RoleUpdate` for a `role add`. No clears and no
 /// pid/host: those are self-set live-process bindings, set later via
 /// `role set`, not at roster-creation time.
-fn build_add_update(args: &AddRoleArgs<'_>) -> RoleUpdate {
+fn build_add_update(args: &AddRoleArgs<'_>, default_kind: Option<&str>) -> RoleUpdate {
     RoleUpdate {
-        kind: args.kind.map(|value| Some(value.to_string())),
+        kind: args
+            .kind
+            .or(default_kind)
+            .map(|value| Some(value.to_string())),
         status: args.status.map(str::to_string),
         harness: args.harness.map(|value| Some(value.to_string())),
         provider: args.provider.map(|value| Some(value.to_string())),
