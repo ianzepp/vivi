@@ -37,7 +37,7 @@ fn task_request() -> SendRequest {
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: "task one".into(),
-        body: "do the thing\n".into(),
+        body: crate::letter::fixture::body_for("task", "do the thing\n"),
         role: "tasks".into(),
         kind: Some("task".into()),
         reply_to: None,

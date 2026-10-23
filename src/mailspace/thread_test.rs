@@ -50,7 +50,7 @@ fn thread_bodies_come_back_with_lf_line_ends() {
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: "multi".into(),
-        body: body.into(),
+        body: crate::letter::fixture::body_for("task", body),
         role: "tasks".into(),
         kind: Some("task".into()),
         reply_to,

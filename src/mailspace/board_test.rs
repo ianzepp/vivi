@@ -17,7 +17,7 @@ fn send(mailspace: &Mailspace, role: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "body".into(),
+            body: crate::letter::fixture::body_for(role.trim_end_matches('s'), "body"),
             role: role.into(),
             kind: Some(role.trim_end_matches('s').into()),
             reply_to: None,
