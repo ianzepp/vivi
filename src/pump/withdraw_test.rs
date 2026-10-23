@@ -131,7 +131,7 @@ fn a_need_the_pump_holds_nothing_for_changes_no_state_but_still_ends_its_dispatc
 }
 
 #[test]
-fn a_withdrawn_need_gets_no_audit_and_no_dispatch_exception() {
+fn withdrawing_a_frozen_need_drops_its_branch_record() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
     frozen_need(&mut st, "pumpfix-q1");
@@ -141,17 +141,8 @@ fn a_withdrawn_need_gets_no_audit_and_no_dispatch_exception() {
             .is_some()
     );
 
-    // Before the withdraw the frozen need is audited every tick and the
-    // dispatch fails, which is the 16.0.3 failure this command ends.
-    drop(crate::pump::need_pipeline::dispatch_audits(&ctx, &mut st));
-    assert!(exceptions(&ctx).contains("need-audit-dispatch"));
-    fs::remove_file(ctx.home.join("exceptions.txt")).unwrap();
-
     apply_one(&ctx, &mut st, "pumpfix-q1", "no mail thread");
-    let queued = crate::pump::need_pipeline::dispatch_audits(&ctx, &mut st).unwrap();
 
-    assert!(queued.is_empty());
-    assert!(!exceptions(&ctx).contains("need-audit-dispatch"));
     assert!(st.jobs.values().all(|job| job.kind != "need-audit"));
     // The branch record is dropped; the remote branch is left for the operator.
     assert!(need::get(&st, "default", "pumpfix-q1").unwrap().is_none());

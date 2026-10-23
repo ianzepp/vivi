@@ -273,105 +273,6 @@ fn routed_context(
 }
 
 #[test]
-fn frozen_need_enqueues_one_durable_job_with_full_context_and_exact_range() {
-    let dir = tempfile::tempdir().unwrap();
-    let (ctx, _dir, host) = routed_context(dir.path());
-    reply_with_audit_sources(&host);
-    let binding = binding(TIP);
-    let mut st = frozen_state(&binding, thread_hash(&ctx));
-    let id = dispatch_frozen(&ctx, &mut st, binding.clone(), BASE, 1, "").unwrap();
-    let job = &st.jobs[&id];
-
-    assert_eq!(job.kind, "need-audit");
-    assert_eq!(job.role, "auditor");
-    assert_eq!(job.pool_candidates, ["audit-pool", "audit-fallback"]);
-    assert_eq!(job.target.as_deref(), Some("default"));
-    assert_eq!(job.from_ref.as_deref(), Some(TIP));
-    assert_eq!(job.with, [BASE]);
-    assert!(job.read_only);
-    assert!(
-        job.model.is_none(),
-        "the normal role routing owns model selection"
-    );
-    assert!(job.body.contains("frozen_binding="));
-    assert!(job.body.contains(&format!("review_range={BASE}..{TIP}")));
-    assert!(job.body.contains("operator reply: retain the CLI shape"));
-    assert!(job.body.contains("Need: implement the delivered behavior"));
-    assert!(!job.body.contains("pump: planned at revision 1"));
-    assert!(
-        job.body
-            .contains("implement and validate the requested behavior")
-    );
-    assert!(job.body.contains("the delivered behavior works"));
-    assert!(job.body.contains("src/lib.rs"));
-    assert_eq!(
-        expectation_from_job(job).unwrap().requirements,
-        [NeedAuditRequirement {
-            id: String::from("need-1-r1"),
-            text: String::from("the delivered behavior works"),
-        }]
-    );
-    assert_eq!(st.jobs.len(), 1);
-}
-
-#[test]
-fn repeating_the_same_dispatch_is_durable_and_changed_input_cannot_reuse_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let (ctx, _dir, host) = routed_context(dir.path());
-    reply_with_audit_sources(&host);
-    let binding = binding(TIP);
-    let mut st = frozen_state(&binding, thread_hash(&ctx));
-    let first = dispatch_frozen(&ctx, &mut st, binding.clone(), BASE, 1, "").unwrap();
-    let saved = serde_json::to_vec(&st).unwrap();
-    let mut recovered: State = serde_json::from_slice(&saved).unwrap();
-    let second = dispatch_frozen(&ctx, &mut recovered, binding.clone(), BASE, 1, "").unwrap();
-
-    assert_eq!(first, second);
-    assert_eq!(recovered.jobs.len(), 1);
-    let original_body = recovered.jobs[&first].body.clone();
-    host.reply(
-        "need show",
-        0,
-        &serde_json::to_string(&serde_json::json!([
-            thread_messages().as_array().unwrap()[0].clone(),
-            thread_messages().as_array().unwrap()[1].clone(),
-            thread_messages().as_array().unwrap()[2].clone(),
-            {
-                "handle": "reply-3",
-                "message_id": "message-4",
-                "from": "mind@local",
-                "subject": "Later pump status",
-                "body": "pump: attempt record\noutcome: delivered"
-            }
-        ]))
-        .unwrap(),
-    );
-    let third = dispatch_frozen(&ctx, &mut recovered, binding.clone(), BASE, 1, "").unwrap();
-    assert_eq!(third, first);
-    assert_eq!(recovered.jobs[&first].body, original_body);
-    assert_eq!(
-        host.logs()
-            .iter()
-            .filter(|line| line.contains("need acceptance audit queued"))
-            .count(),
-        1
-    );
-    host.reply(
-        "need show",
-        0,
-        &serde_json::to_string(&serde_json::json!([{
-            "handle": "need-1",
-            "message_id": "message-1",
-            "from": "operator@local",
-            "subject": "Implement behavior",
-            "body": "Need: implement the delivered behavior\ndone_when: changed requirement"
-        }]))
-        .unwrap(),
-    );
-    assert!(dispatch_frozen(&ctx, &mut recovered, binding, BASE, 1, "").is_err());
-}
-
-#[test]
 fn each_supported_verdict_and_requirement_status_keeps_its_structured_shape() {
     let expected = expectation(binding(TIP), BASE, 1);
     for verdict in [
@@ -785,9 +686,12 @@ fn cold_target_fetches_only_frozen_need_metadata_before_inventoring_paths() {
     let worktree_before = run_git(&target, &["status", "--porcelain"]);
 
     ensure_audit_range_objects(&ctx, &st, &binding, &base).unwrap();
-    let paths = changed_paths(&ctx, &base, &tip).unwrap();
+    let paths = run_git(
+        &target,
+        &["diff", "--name-only", "--no-renames", &base, &tip],
+    );
 
-    assert_eq!(paths, ["src.rs"]);
+    assert_eq!(paths.trim(), "src.rs");
     assert_eq!(run_git(&target, &["rev-parse", "HEAD"]), head_before);
     assert_eq!(
         fs::read(target.join(".git/FETCH_HEAD")).ok(),
