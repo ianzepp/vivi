@@ -37,11 +37,6 @@ pub struct Signals {
     /// Age of `status.txt`.
     pub status_age: Option<u64>,
     pub stale_after: u64,
-    pub stuck: usize,
-    pub quarantined: usize,
-    pub needs_replan: usize,
-    /// `stall-*` exceptions inside the window.
-    pub stall_exceptions: usize,
 }
 
 /// The verdict and one reason line per finding. `ok` has no reasons.
@@ -95,19 +90,6 @@ fn degraded_reasons(s: &Signals) -> Vec<String> {
         )),
         None => out.push(String::from("writer state unknown")),
         _ => {}
-    }
-    let counts = [
-        (s.stuck, "stuck"),
-        (s.quarantined, "quarantined"),
-        (s.needs_replan, "needs-replan"),
-    ];
-    for (count, state) in counts {
-        if count > 0 {
-            out.push(format!("{count} units {state}"));
-        }
-    }
-    if s.stall_exceptions > 0 {
-        out.push(format!("{} stall exceptions in window", s.stall_exceptions));
     }
     out
 }
