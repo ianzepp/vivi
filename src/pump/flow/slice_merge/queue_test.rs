@@ -1,6 +1,7 @@
 //! Tests for the one-slice-merge-per-need queue.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
@@ -206,15 +207,30 @@ fn a_pending_merge_of_a_superseded_run_is_removed() -> R {
     rig.store.set_run_state("n1", 1, "superseded")?;
     rig.tick()?;
     assert!(rig.merges("n1").is_empty());
-    assert!(
-        rig.host
-            .logs()
-            .iter()
-            .any(|line| line.contains("removed pending job hand-A-merge-t1")),
-        "{:?}",
-        rig.host.logs()
-    );
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(raised.matches("flow-job-stale").count(), 1, "{raised}");
+    assert!(raised.contains("hand-A-merge-t1"), "{raised}");
+    assert!(raised.contains("n1 r1"), "{raised}");
     assert_eq!(rig.state(&slice)?, Some(StepState::Running));
+    Ok(())
+}
+
+#[test]
+fn a_pending_merge_with_no_payload_run_is_dropped_with_one_exception() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    let slice = rig.slice("n1", "A", true)?;
+    let mut spec = JobSpec::new("merge-no-run", KIND, "merge", "s", "b");
+    spec.task = Some(slice.task.clone());
+    spec.payload = serde_json::json!({ "need": "n1", "task": slice.task });
+    rig.jobs.jobs.insert(spec.id.clone(), PoolJob::from(spec));
+    rig.tick()?;
+    rig.tick()?;
+    assert!(!rig.jobs.jobs.contains_key("merge-no-run"));
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(raised.matches("flow-job-stale").count(), 1, "{raised}");
+    assert!(raised.contains("merge-no-run"), "{raised}");
+    assert!(raised.contains("`run`"), "{raised}");
     Ok(())
 }
 
