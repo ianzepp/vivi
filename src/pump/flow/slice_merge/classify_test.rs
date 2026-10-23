@@ -1,4 +1,5 @@
 use super::{SliceMergeResult, classify};
+use crate::pump::jobs::rung_result::{EnvKind, env_failure};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 
 const SHA: &str = "2222222222222222222222222222222222222222";
@@ -113,4 +114,47 @@ fn a_refused_publish_is_unclear() {
         "agent exit 0 in 9s\nrunner publish: push_refused refs/heads/vivi/need/n1 {CAND} x"
     );
     assert_eq!(finished(&receipt), Some(SliceMergeResult::Unclear));
+}
+
+const NO_TSC: &str = "agent exit 127 in 1s\n\n--- stderr tail\nbash: tsc: command not found\n";
+
+#[test]
+fn a_missing_tool_is_an_environment_failure_not_red() {
+    let Some(SliceMergeResult::Env(env)) = finished(NO_TSC) else {
+        panic!("expected an environment failure");
+    };
+    assert_eq!(env.kind, EnvKind::ToolMissing);
+    assert_eq!(env.tool.as_deref(), Some("tsc"));
+}
+
+#[test]
+fn a_conflict_receipt_stays_a_conflict_even_with_a_shell_marker() {
+    let receipt = format!("CONFLICT (content): Merge conflict in a.rs\n{NO_TSC}");
+    assert_eq!(
+        finished(&receipt),
+        Some(SliceMergeResult::Conflict(vec![String::from("a.rs")]))
+    );
+}
+
+#[test]
+fn a_setup_failure_outcome_on_a_lost_job_is_an_environment_failure() {
+    let mut lost = job(JobStatus::Lost, "finished", Some(""));
+    if let Some(outcome) = lost.outcome.as_mut() {
+        outcome.detail = String::from("checkout_failed no such ref");
+    }
+    let expected = env_failure(&lost).expect("env failure");
+    assert_eq!(expected.kind, EnvKind::HostSetup);
+    assert_eq!(classify(&lost), Some(SliceMergeResult::Env(expected)));
+}
+
+#[test]
+fn a_setup_failure_with_no_agent_exit_is_an_environment_failure() {
+    let mut done = job(JobStatus::Finished, "finished", Some(""));
+    if let Some(outcome) = done.outcome.as_mut() {
+        outcome.detail = String::from("fetch_failed network down");
+    }
+    assert!(matches!(
+        classify(&done),
+        Some(SliceMergeResult::Env(env)) if env.kind == EnvKind::HostSetup
+    ));
 }

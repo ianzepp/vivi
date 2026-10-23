@@ -365,3 +365,39 @@ fn an_unclear_receipt_git_cannot_settle_holds_the_slice_for_the_operator() -> R 
     assert!(rig.merge_job(1).applied_at.is_some());
     Ok(())
 }
+
+const NO_TSC: &str = "agent exit 127 in 1s\n\n--- stderr tail\nbash: tsc: command not found\n";
+
+#[test]
+fn an_environment_failure_alarms_once_and_holds_the_slice() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, NO_TSC, 1)?;
+    let hands = rig.hand_jobs();
+    rig.apply()?;
+    rig.apply()?;
+    let row = rig.row(&slice)?;
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(rig.closes(), 0);
+    assert_eq!(rig.hand_jobs(), hands, "no hand attempt is queued");
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(raised.matches("flow-env-failure").count(), 1, "{raised}");
+    assert!(raised.contains("tsc"), "{raised}");
+    assert!(raised.contains("command not found"), "{raised}");
+    let replies = rig.replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(replies[0].contains("environment: "), "{replies:?}");
+    assert!(rig.merge_job(1).applied_at.is_some());
+    Ok(())
+}
+
+#[test]
+fn an_environment_failure_on_the_last_attempt_does_not_exhaust_the_slice() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, NO_TSC, 2)?;
+    rig.apply()?;
+    let row = rig.row(&slice)?;
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    Ok(())
+}

@@ -4,7 +4,9 @@
 //! published sha. A conflict, a red formatter or task rung, or a merge that
 //! left no change is a failed attempt: the pump replies on the slice task and
 //! retries the hand through [`slice_dispatch::retry`], which exhausts the
-//! slice after `MAX_ATTEMPTS`. A result the receipt cannot settle goes to git.
+//! slice after `MAX_ATTEMPTS`. An environment failure (a missing tool, a host
+//! setup failure) is never retried: the pump alarms once and holds the slice.
+//! A result the receipt cannot settle goes to git.
 
 use crate::error::VivariumError;
 use crate::mailspace::marked_line;
@@ -18,6 +20,7 @@ use crate::pump::flow::slice_merge::spec::KIND;
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
+use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
@@ -101,6 +104,7 @@ fn apply<S: JobStore, M: FlowMail>(
         SliceMergeResult::Red(tail) => {
             ended.failed(st, mail, &format!("format or task rung failed\n{tail}"))?;
         }
+        SliceMergeResult::Env(env) => ended.environment(mail, &env)?,
         SliceMergeResult::Unclear => ended.unclear(st, mail)?,
     }
     jobs::mark_applied(st, &job.id, ctx.now());
@@ -153,6 +157,34 @@ impl Ended<'_> {
             ));
         }
         Ok(())
+    }
+
+    /// The worker could not run the job: alarm once, reply once and hold the
+    /// slice for the operator. No hand attempt is used or queued.
+    fn environment<M: FlowMail>(
+        &self,
+        mail: &mut M,
+        env: &EnvFailure,
+    ) -> Result<(), VivariumError> {
+        let job = self.job;
+        let tool = env.tool.as_deref().unwrap_or("none named");
+        let text = format!(
+            "slice merge job {} of slice {} ({}) hit an environment failure ({:?}, tool {tool}): {}; target {}, pool {}; fix the worker, then answer with `vivi pump answer`",
+            job.id,
+            self.slice.node,
+            self.slice.task,
+            env.kind,
+            env.evidence,
+            job.target.as_deref().unwrap_or("none"),
+            job.pool.as_deref().unwrap_or("none"),
+        );
+        raise_once(self.ctx, ENV_FAILURE, &job.id, &text);
+        mail.reply(
+            &self.slice.task,
+            &marked_line(FAILED_MARKER, &format!("environment: {}", env.evidence)),
+        )?;
+        self.store
+            .set_step_state(&self.slice.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
 
     /// The receipt did not settle it: git decides.

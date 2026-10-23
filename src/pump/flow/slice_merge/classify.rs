@@ -7,7 +7,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::pump::jobs::{JobStatus, PoolJob, rung_result};
+use crate::pump::jobs::rung_result::{self, EnvFailure};
+use crate::pump::jobs::{JobStatus, PoolJob};
 
 /// What a finished slice merge job turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,9 @@ pub(crate) enum SliceMergeResult {
     Conflict(Vec<String>),
     /// The formatter or the task rung failed; carries the failure tail.
     Red(String),
+    /// The worker lacked a tool or its host setup failed: the job says
+    /// nothing about the code, so the pump holds instead of retrying.
+    Env(EnvFailure),
     /// The receipt does not settle it (timeout, lost, no publish line).
     Unclear,
 }
@@ -30,7 +34,7 @@ const CONFLICT_MARK: &str = "Merge conflict in ";
 pub(crate) fn classify(job: &PoolJob) -> Option<SliceMergeResult> {
     match job.status {
         JobStatus::Pending | JobStatus::Dispatched => None,
-        JobStatus::Timeout | JobStatus::Lost => Some(SliceMergeResult::Unclear),
+        JobStatus::Timeout | JobStatus::Lost => Some(unsettled(job)),
         JobStatus::Finished => Some(finished(job)),
     }
 }
@@ -40,19 +44,27 @@ fn finished(job: &PoolJob) -> SliceMergeResult {
         return SliceMergeResult::Unclear;
     };
     if matches!(outcome.state.as_str(), "timeout" | "lost") {
-        return SliceMergeResult::Unclear;
+        return unsettled(job);
     }
     if outcome.agent_success() == Some(false) {
-        return if outcome.receipt.contains("CONFLICT") {
-            SliceMergeResult::Conflict(conflict_paths(&outcome.receipt))
-        } else {
-            SliceMergeResult::Red(rung_result::parse(job).tail)
-        };
+        if outcome.receipt.contains("CONFLICT") {
+            return SliceMergeResult::Conflict(conflict_paths(&outcome.receipt));
+        }
+        return rung_result::env_failure(job).map_or_else(
+            || SliceMergeResult::Red(rung_result::parse(job).tail),
+            SliceMergeResult::Env,
+        );
     }
     match outcome.runner_publish() {
         Some(publish) if publish.succeeded() => SliceMergeResult::Merged(publish.remote_sha),
-        _ => SliceMergeResult::Unclear,
+        _ => unsettled(job),
     }
+}
+
+/// A job the receipt cannot settle: an environment failure when its facts
+/// show one (a setup failure carries an outcome), otherwise unclear.
+fn unsettled(job: &PoolJob) -> SliceMergeResult {
+    rung_result::env_failure(job).map_or(SliceMergeResult::Unclear, SliceMergeResult::Env)
 }
 
 fn conflict_paths(receipt: &str) -> Vec<String> {
