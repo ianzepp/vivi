@@ -23,7 +23,7 @@ const EXIT_FAILURE: i32 = 2;
 
 pub(crate) fn handle_mcp_command(command: &McpCommand) -> Result<(), VivariumError> {
     let Some(one_shot) = &command.command else {
-        return serve_quietly(&bridge_config(command)?);
+        return serve_quietly(&bridge_config(command)?.0);
     };
     let code = match run_one_shot(command, one_shot) {
         Ok(code) => code,
@@ -51,7 +51,7 @@ fn run_one_shot(command: &McpCommand, one_shot: &McpSubcommand) -> Result<i32, S
             ..
         } => Some(read_arguments(args_json.as_deref(), args_file.as_deref())?),
     };
-    let config = bridge_config(command).map_err(|error| error.to_string())?;
+    let (config, project) = bridge_config(command).map_err(|error| error.to_string())?;
     let upstream = HttpUpstream::new(&config.server);
     let mut mcp = Client::connect(&upstream, &config.api_key).map_err(|e| e.to_string())?;
     match (one_shot, arguments) {
@@ -66,12 +66,36 @@ fn run_one_shot(command: &McpCommand, one_shot: &McpSubcommand) -> Result<i32, S
             Ok(0)
         }
         (McpSubcommand::Call { tool, json, .. }, Some(arguments)) => {
+            let arguments = project_arguments(&mut mcp, tool, arguments, project.as_deref())?;
             let result = mcp
                 .call_tool(tool, &arguments)
                 .map_err(|error| error.to_string())?;
             print_call_result(&result, *json)
         }
         (McpSubcommand::Call { .. }, None) => Err("no arguments were read".into()),
+    }
+}
+
+/// The arguments of a `call`, with the resolved project added when the
+/// tool takes one and the arguments carry none. With no project, or an
+/// explicit `project`, no `tools/list` is sent.
+fn project_arguments(
+    mcp: &mut Client<'_>,
+    tool: &str,
+    arguments: Value,
+    project: Option<&str>,
+) -> Result<Value, String> {
+    let Some(project) = project else {
+        return Ok(arguments);
+    };
+    if arguments.get("project").is_some() {
+        return Ok(arguments);
+    }
+    let tools = mcp.tools().map_err(|error| error.to_string())?;
+    if client::takes_project(&tools, tool) {
+        Ok(client::with_project(&arguments, project))
+    } else {
+        Ok(arguments)
     }
 }
 
@@ -121,8 +145,8 @@ fn read_arguments(inline: Option<&str>, file: Option<&str>) -> Result<Value, Str
 }
 
 /// Resolve flags, environment, and the mailspace fallback into the API key
-/// credential and the server settings.
-fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
+/// credential and the server settings, and the project id if one resolved.
+fn bridge_config(command: &McpCommand) -> Result<(BridgeConfig, Option<String>), VivariumError> {
     let flags = McpFlags {
         server: command.server.clone(),
         project_id: command.project_id.clone(),
@@ -134,10 +158,11 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
     };
     let mailspace_lookup = || mailspace_source(command.project.as_deref());
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
-    Ok(BridgeConfig {
+    let config = BridgeConfig {
         server: resolved.server,
         api_key: resolved.api_key,
-    })
+    };
+    Ok((config, resolved.project))
 }
 
 /// Serve one session. A write to a stdout whose reader is gone ends the
