@@ -29,6 +29,7 @@ type R = Result<(), VivariumError>;
 const NEED: &str = "n1";
 const BASE: &str = "1111111111111111111111111111111111111111";
 const COMMIT: &str = "2222222222222222222222222222222222222222";
+const NEWER: &str = "3333333333333333333333333333333333333333";
 
 #[derive(Default)]
 struct Jobs {
@@ -122,6 +123,34 @@ impl Rig {
         )
     }
 
+    /// A `rung1` step row whose task carries a rung verdict reply from `who`
+    /// (the pump when `None`) that tested `commit`.
+    fn post_tested(&mut self, commit: &str, who: Option<&str>) -> R {
+        let rung = self.add_step("rung1", StepState::Done)?;
+        let body = marked_line(repair::RUNG_MARKER, &format!("tested={commit}; exit 0"));
+        match who {
+            Some(who) => self.mail.foreign_reply(&rung.task, who, &body),
+            None => self.mail.reply(&rung.task, &body)?,
+        }
+        Ok(())
+    }
+
+    /// A newer attempt facts reply on fix1 that names `commit`.
+    fn post_newer_facts(&mut self, commit: &str, who: Option<&str>) -> R {
+        let facts = AttemptFacts {
+            branch: repair::branch(NEED, 1, 1),
+            commit: commit.into(),
+            base: BASE.into(),
+        };
+        let task = self.fix1()?.task;
+        let body = marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts));
+        match who {
+            Some(who) => self.mail.foreign_reply(&task, who, &body),
+            None => self.mail.reply(&task, &body)?,
+        }
+        Ok(())
+    }
+
     /// A step row of `node` with its own task.
     fn add_step(&mut self, node: &str, state: StepState) -> Result<StepRow, VivariumError> {
         let task = self.mail.send_step(
@@ -202,6 +231,7 @@ fn rung1_starts_a_main_rung_job_at_the_attempt_commit() -> R {
 #[test]
 fn merge1_starts_a_merge_cut_from_the_attempt_base() -> R {
     let mut rig = rig(true)?;
+    rig.post_tested(COMMIT, None)?;
     let merge = rig.add_step("merge1", StepState::Pending)?;
     let spec = job(rig.action(&RepairMerge, &merge)?);
     assert_eq!(spec.kind, "merge");
@@ -217,6 +247,10 @@ fn no_published_attempt_is_an_error() -> R {
     let mut rig = rig(false)?;
     let rung = rig.add_step("rung1", StepState::Pending)?;
     let merge = rig.add_step("merge1", StepState::Pending)?;
+    rig.mail.reply(
+        &rung.task,
+        &marked_line(repair::RUNG_MARKER, "tested=x; exit 0"),
+    )?;
     for (handler, step) in [
         (&RepairRung as &dyn StepHandler, &rung),
         (&RepairMerge, &merge),
@@ -268,5 +302,47 @@ fn the_rung_collector_posts_the_verdict_reply_before_advancing() -> R {
         .find(|reply| reply.starts_with(repair::RUNG_MARKER))
         .unwrap_or_else(|| panic!("no rung verdict reply: {replies:?}"));
     assert!(verdict.contains("exit 1"), "{verdict}");
+    assert_eq!(repair::parse_tested(verdict).as_deref(), Some(COMMIT));
     Ok(())
+}
+
+#[test]
+fn a_newer_facts_reply_does_not_change_the_merge_commit() -> R {
+    for sender in [None, Some("intruder")] {
+        let mut rig = rig(true)?;
+        rig.post_tested(COMMIT, None)?;
+        rig.post_newer_facts(NEWER, sender)?;
+        let merge = rig.add_step("merge1", StepState::Pending)?;
+        let spec = job(rig.action(&RepairMerge, &merge)?);
+        assert_eq!(spec.publish_contains.as_deref(), Some(COMMIT));
+        assert_eq!(spec.from_ref.as_deref(), Some(BASE));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_merge_without_a_tested_reply_is_an_error() -> R {
+    let mut rig = rig(true)?;
+    let merge = rig.add_step("merge1", StepState::Pending)?;
+    let err = rig.action(&RepairMerge, &merge).unwrap_err();
+    assert!(
+        err.to_string().contains("no tested commit for merge1"),
+        "{err}"
+    );
+    rig.post_tested(COMMIT, Some("intruder"))?;
+    let err = rig.action(&RepairMerge, &merge).unwrap_err();
+    assert!(
+        err.to_string().contains("no tested commit for merge1"),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn parse_tested_reads_the_first_word_only() {
+    let tested = |text: &str| repair::parse_tested(&marked_line(repair::RUNG_MARKER, text));
+    assert_eq!(tested("tested=abc; exit 0").as_deref(), Some("abc"));
+    assert_eq!(tested("exit 0; tail: tested=zzz"), None);
+    assert_eq!(tested("tested=; exit 0"), None);
+    assert_eq!(repair::parse_tested("other: tested=abc"), None);
 }
