@@ -56,15 +56,28 @@ fn step_of_reads_step_sentinel_plain_and_need() {
 }
 
 #[test]
-fn legacy_prose_bodies_still_read() {
-    let need = need_of("n", "done_when: ships\nfor: <w1>\n").unwrap();
-    assert_eq!(need.front.done_when, vec!["ships"]);
-    assert_eq!(need.front.explores.as_deref(), Some("w1"));
-    assert_eq!(want_of("w", "a question").unwrap().body, "a question");
-    let task = task_of("t", "pump-step: n1 r2 plan\nfrom: main\n").unwrap();
-    assert_eq!(task.front.from.as_deref(), Some("main"));
-    assert_eq!(
-        step_of("pump-step: n1 r2 plan").map(|s| s.node),
-        Some(Some("plan".to_string()))
+fn legacy_prose_bodies_are_refused_naming_the_handle() {
+    for (kind, got) in [
+        ("need", need_of("n9", "done_when: ships\nfor: <w1>\n").err()),
+        ("want", want_of("n9", "a question").err()),
+        (
+            "task",
+            task_of("n9", "pump-step: n1 r2 plan\nfrom: main\n").err(),
+        ),
+    ] {
+        assert_eq!(
+            got,
+            Some(LetterError::Legacy {
+                handle: "n9".to_string(),
+                kind: kind.to_string(),
+            })
+        );
+    }
+    assert!(
+        task_of("n9", "x")
+            .unwrap_err()
+            .to_string()
+            .contains("letter n9")
     );
+    assert_eq!(step_of("pump-step: n1 r2 plan"), None);
 }
