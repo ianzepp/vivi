@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{KIND, Mode, Reslices, request};
+use super::{KIND, Mode, RESLICE_FAILED, Reslices, request};
 use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
@@ -15,7 +15,10 @@ use crate::pump::flow::handlers::TickPhase;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::step_error::STEP_ERROR_HELD;
+use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -347,5 +350,102 @@ fn a_duplicate_id_split_reply_exhausts_the_slice_and_marks_the_job_applied() -> 
     let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
     assert!(job.applied_at.is_some());
     assert!(slice_task_of(&rig, "A.1").is_err());
+    Ok(())
+}
+
+// ---- env failures and persistent errors ----
+
+fn agent_receipt(exit: i32, message: &str, stderr: &str) -> String {
+    format!(
+        "pool result j1: finished\npool p  slot s1  model m\nfrom main  default\n\
+         push: none\nagent exit {exit} in 12s, job 20s, started from 1234567890\n\n\
+         --- receipt\n{message}\n\n--- stderr tail\n{stderr}\n\n--- runner log tail\nlog line"
+    )
+}
+
+fn end_job_receipt(rig: &mut Rig, task: &str, receipt: String) {
+    let job = rig
+        .jobs
+        .jobs
+        .get_mut(&format!("reslice-{task}-a1"))
+        .expect("job");
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt,
+        at: 0,
+    });
+}
+
+fn exceptions(rig: &Rig) -> String {
+    std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+fn count_of(rig: &Rig, kind: &str) -> usize {
+    exceptions(rig)
+        .lines()
+        .filter(|line| line.contains(kind))
+        .count()
+}
+
+#[test]
+fn an_agent_exit_127_holds_the_reslice_row_and_exhausts_nothing() -> R {
+    let (mut rig, task) = phase_rig()?;
+    let text = agent_receipt(127, "", "bash: claude: command not found");
+    end_job_receipt(&mut rig, &task, text);
+
+    run_phase(&mut rig)?;
+
+    let row = rig.store.step_by_task(&task)?.expect("row");
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(count_of(&rig, ENV_FAILURE), 1, "{}", exceptions(&rig));
+    assert_eq!(count_of(&rig, RESLICE_FAILED), 0);
+    let old = rig.store.step_by_task(&rig.slice.task)?.expect("slice");
+    assert_ne!(old.state, StepState::Failed);
+    assert_eq!(verdict(&rig, &task)?, None);
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert!(job.applied_at.is_some());
+    Ok(())
+}
+
+#[test]
+fn a_missing_tool_in_the_stderr_tail_of_an_exit_one_is_not_held() -> R {
+    let (mut rig, task) = phase_rig()?;
+    let text = agent_receipt(1, "no envelope", "bash: cargo: command not found");
+    end_job_receipt(&mut rig, &task, text);
+
+    run_phase(&mut rig)?;
+
+    let row = rig.store.step_by_task(&task)?.expect("row");
+    assert_ne!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(count_of(&rig, ENV_FAILURE), 0);
+    assert_eq!(count_of(&rig, RESLICE_FAILED), 1);
+    let old = rig.store.step_by_task(&rig.slice.task)?.expect("slice");
+    assert_eq!(old.state, StepState::Failed);
+    Ok(())
+}
+
+#[test]
+fn a_store_that_keeps_failing_holds_the_row_after_three_ticks() -> R {
+    let (mut rig, task) = phase_rig()?;
+    end_job(&mut rig, &task, JobStatus::Finished, SPLIT_REPLY);
+    rusqlite::Connection::open(rig._dir.path().join(DB_FILENAME))
+        .and_then(|conn| conn.execute_batch("DROP TABLE flow_runs"))
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    let id = format!("reslice-{task}-a1");
+
+    for _ in 0..2 {
+        assert!(run_phase(&mut rig).is_err());
+        assert!(rig.jobs.jobs[&id].applied_at.is_none());
+    }
+    run_phase(&mut rig)?;
+
+    assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    let row = rig.store.step_by_task(&task)?.expect("row");
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(count_of(&rig, STEP_ERROR_HELD), 1, "{}", exceptions(&rig));
     Ok(())
 }
