@@ -13,12 +13,24 @@ use crate::mailspace::marked_line;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::kind;
-use crate::pump::flow::mail::{MailReader, MailWriter};
+use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus};
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
 
 /// Marker of the reply naming a later red main rung on an open repair need.
 pub(crate) const RED_MARKER: &str = "pump-main-red:";
+
+/// Main-state key (per target): the tip whose repair need is being sent.
+/// Written before `need send`; cleared once the need's record is open.
+const SENDING: &str = "main-repair-sending";
+
+/// Main-state key (per target): the handle of the repair need this module
+/// filed, written right after the handle is parsed, before the record opens.
+const FILED: &str = "main-repair-need";
+
+/// Alarm: a repair need may have been sent but its handle is unknown.
+pub(crate) const REPAIR_NEED_UNKNOWN: &str = "flow-repair-need-unknown";
 
 /// The open repair need for a target: the first need whose open record reads
 /// as a repair run and names the target.
@@ -60,21 +72,98 @@ pub(crate) fn report_red<M: FlowMail>(
             .map_err(|e| VivariumError::Message(format!("bad {state_key} state: {e}")))?,
         None => BTreeSet::new(),
     };
-    match find_repair_need(&*mail, target)? {
-        Some(_) if previous == *failing => return Ok(()),
+    let existing = match resume_filed(store, mail, target, tip)? {
+        Resumed::Opened => return store_failing(store, &state_key, failing),
+        Resumed::Open(need) => Some(need),
+        Resumed::None => find_repair_need(&*mail, target)?,
+    };
+    match existing {
         Some(need) => {
+            store.clear_main_state(&key(SENDING, target))?;
+            if previous == *failing {
+                return Ok(());
+            }
             let rest = format!("tested {tip}\n{}", body_tail(failing, tail));
             mail.reply(&need, &marked_line(RED_MARKER, &rest))?;
         }
         None => {
-            let need = file_need(ctx, target, tip, failing, tail)?;
-            let record = format!("kind: repair\ntarget: {target}\ntested: {tip}\n");
-            MailWriter::open_record(mail, &need, &record)?;
+            let Some(need) = file_need(ctx, store, target, tip, failing, tail)? else {
+                return Ok(());
+            };
+            open_filed(store, mail, target, tip, &need)?;
         }
     }
+    store_failing(store, &state_key, failing)
+}
+
+/// Remember the failing set this target last reported.
+fn store_failing(
+    store: &PumpStore,
+    state_key: &str,
+    failing: &BTreeSet<String>,
+) -> Result<(), VivariumError> {
     let json = serde_json::to_string(failing)
         .map_err(|e| VivariumError::Message(format!("cannot store the failing set: {e}")))?;
-    store.set_main_state(&state_key, &json)
+    store.set_main_state(state_key, &json)
+}
+
+/// What the recorded filing state says about this target.
+enum Resumed {
+    /// Nothing recorded, or the recorded need is closed (keys cleared).
+    None,
+    /// The recorded need is open and has its record.
+    Open(String),
+    /// The recorded need was open without a record; the record is open now.
+    Opened,
+}
+
+/// Resume an earlier filing: a recorded handle whose need is still open is
+/// this target's repair need (its record is opened when missing); one whose
+/// need is closed is forgotten, together with the sending marker.
+fn resume_filed<M: FlowMail>(
+    store: &PumpStore,
+    mail: &mut M,
+    target: &str,
+    tip: &str,
+) -> Result<Resumed, VivariumError> {
+    let Some(need) = store.main_state(&key(FILED, target))? else {
+        return Ok(Resumed::None);
+    };
+    if mail.need_state(&need)? != NeedStatus::Open {
+        store.clear_main_state(&key(FILED, target))?;
+        store.clear_main_state(&key(SENDING, target))?;
+        return Ok(Resumed::None);
+    }
+    if MailReader::open_record(&*mail, &need)?.is_some() {
+        return Ok(Resumed::Open(need));
+    }
+    open_filed(store, mail, target, tip, &need)?;
+    Ok(Resumed::Opened)
+}
+
+/// Open the pump record on a filed repair need, then drop the sending marker.
+fn open_filed<M: FlowMail>(
+    store: &PumpStore,
+    mail: &mut M,
+    target: &str,
+    tip: &str,
+    need: &str,
+) -> Result<(), VivariumError> {
+    let record = format!("kind: repair\ntarget: {target}\ntested: {tip}\n");
+    MailWriter::open_record(mail, need, &record)?;
+    store.clear_main_state(&key(SENDING, target))
+}
+
+/// Raise the unknown-handle alarm: the send may have landed.
+fn alarm_unknown(ctx: &Ctx, target: &str, tip: &str, detail: &str) {
+    raise_once(
+        ctx,
+        REPAIR_NEED_UNKNOWN,
+        target,
+        &format!(
+            "repair need for target {target} at {tip} may have been sent but its handle is unknown ({detail}); no second need is filed: find the need and open a repair record on it that names the target"
+        ),
+    );
 }
 
 /// The failing ids, one per line, then the tail.
@@ -87,14 +176,22 @@ fn body_tail(failing: &BTreeSet<String>, tail: &str) -> String {
     text
 }
 
-/// Send the repair need (marked `repair`) and return its handle.
+/// Send the repair need (marked `repair`) and return its handle. The sending
+/// marker is written first and the handle is recorded as soon as it parses.
+/// `None` means the send may have landed with an unknown handle: the alarm is
+/// raised and nothing is sent again.
 fn file_need(
     ctx: &Ctx,
+    store: &PumpStore,
     target: &str,
     tip: &str,
     failing: &BTreeSet<String>,
     tail: &str,
-) -> Result<String, VivariumError> {
+) -> Result<Option<String>, VivariumError> {
+    if let Some(sent_tip) = store.main_state(&key(SENDING, target))? {
+        alarm_unknown(ctx, target, &sent_tip, "an earlier send left no handle");
+        return Ok(None);
+    }
     let short: String = tip.chars().take(8).collect();
     let safe: String = target
         .chars()
@@ -118,16 +215,25 @@ fn file_need(
         shell_quote(&subject),
         shell_quote(&path.display().to_string()),
     );
+    store.set_main_state(&key(SENDING, target), tip)?;
     let out = ctx.vivi(&args, 60);
+    let last = out.text.lines().last().unwrap_or("").trim();
+    if out.code == 124 {
+        alarm_unknown(ctx, target, tip, &format!("the send timed out: {last}"));
+        return Ok(None);
+    }
     if out.code != 0 {
+        store.clear_main_state(&key(SENDING, target))?;
         return Err(VivariumError::Message(format!(
-            "repair need send failed: {}",
-            out.text.lines().last().unwrap_or("").trim()
+            "repair need send failed: {last}"
         )));
     }
-    need_handle(&out.text).ok_or_else(|| {
-        VivariumError::Message("repair need send gave no handle in its output".into())
-    })
+    let Some(need) = need_handle(&out.text) else {
+        alarm_unknown(ctx, target, tip, &format!("unparsed send output: {last}"));
+        return Ok(None);
+    };
+    store.set_main_state(&key(FILED, target), &need)?;
+    Ok(Some(need))
 }
 
 /// The handle from `need send` output: the third token of the first

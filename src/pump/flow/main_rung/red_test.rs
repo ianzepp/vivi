@@ -167,3 +167,65 @@ fn a_failed_need_send_is_an_error_and_stores_nothing() -> R {
     assert_eq!(rig.store.main_state(&key(FAILING, "default"))?, None);
     Ok(())
 }
+
+impl Rig {
+    fn alarms(&self, kind: &str) -> usize {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(kind))
+            .count()
+    }
+}
+
+#[test]
+fn a_failed_open_record_resumes_on_the_same_need_without_a_second_send() -> R {
+    let mut rig = rig()?;
+    rig.mail.fail_at = Some(rig.mail.calls.len());
+    assert!(rig.red("default", &["a::t1"]).is_err());
+    assert_eq!(rig.sends().len(), 1);
+    assert!(MailReader::open_record(&rig.mail, &rig.need)?.is_none());
+    rig.red("default", &["a::t1"])?;
+    assert_eq!(rig.sends().len(), 1);
+    let (_, body) = MailReader::open_record(&rig.mail, &rig.need)?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    assert!(body.contains("target: default"), "{body}");
+    assert_eq!(
+        rig.store.main_state(&key(FAILING, "default"))?,
+        Some("[\"a::t1\"]".to_string())
+    );
+    assert_eq!(rig.store.main_state("main-repair-sending:default")?, None);
+    Ok(())
+}
+
+#[test]
+fn an_unparseable_send_output_raises_one_alarm_and_files_once() -> R {
+    let mut rig = rig()?;
+    rig.host.reply("need send", 0, "ok but no handle\n");
+    rig.red("default", &["a::t1"])?;
+    rig.red("default", &["a::t1"])?;
+    assert_eq!(rig.sends().len(), 1);
+    assert_eq!(rig.alarms("flow-repair-need-unknown"), 1);
+    assert_eq!(rig.store.main_state(&key(FAILING, "default"))?, None);
+    Ok(())
+}
+
+#[test]
+fn a_closed_recorded_need_files_a_new_one() -> R {
+    let mut rig = rig()?;
+    rig.red("default", &["a::t1"])?;
+    let first = rig.need.clone();
+    rig.mail.close_need_by(&first, "pump");
+    MailWriter::close_record(&mut rig.mail, &first, "landed")?;
+    let second = rig.mail.send_step("pump", "pump", "repair2", "need", &[])?;
+    rig.host
+        .reply("need send", 0, &format!("created need {second}\n"));
+    rig.red("default", &["a::t1"])?;
+    assert_eq!(rig.sends().len(), 2);
+    assert!(MailReader::open_record(&rig.mail, &second)?.is_some());
+    assert_eq!(
+        find_repair_need(&rig.mail, "default")?.as_deref(),
+        Some(second.as_str())
+    );
+    Ok(())
+}
