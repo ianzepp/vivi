@@ -6,7 +6,7 @@
 //!
 //! | header | value |
 //! | --- | --- |
-//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw`, `replan` or `recover` |
+//! | `X-Vivi-Pump-Action` | `requeue`, `withdraw`, `replan`, `recover` or `answer` |
 //! | `X-Vivi-Pump-Record` | the record the action was posted on |
 //! | `X-Vivi-Need` | the need that record covers |
 //! | `X-Vivi-Pump-Unit` | requeue: the unit to requeue |
@@ -15,6 +15,8 @@
 //! | `X-Vivi-Pump-Refund` | requeue: `1` refunds transient failures |
 //! | `X-Vivi-Pump-Force` | replan: `1` replans past live work |
 //! | `X-Vivi-Pump-Target` | recover: only this target's branch |
+//! | `X-Vivi-Pump-Step` | answer: the flow step task being answered |
+//! | `X-Vivi-Pump-Word` | answer: the answer word; the note is the body |
 //!
 //! Posting writes the letter and one `pump action` / `posted` event in one
 //! store transaction. The pump finds unapplied actions from those events
@@ -32,6 +34,7 @@ use serde::Serialize;
 use super::pump_record::{PumpState, header_value, in_write_batch};
 use super::{Mailspace, SendRequest};
 use crate::error::VivariumError;
+use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
 
 /// The header naming the action.
@@ -44,6 +47,8 @@ const FRESH_HEADER: &str = "X-Vivi-Pump-Fresh";
 const REFUND_HEADER: &str = "X-Vivi-Pump-Refund";
 const FORCE_HEADER: &str = "X-Vivi-Pump-Force";
 const TARGET_HEADER: &str = "X-Vivi-Pump-Target";
+const STEP_HEADER: &str = "X-Vivi-Pump-Step";
+const WORD_HEADER: &str = "X-Vivi-Pump-Word";
 
 /// The event command and type every posted action logs.
 const EVENT_COMMAND: &str = "pump action";
@@ -61,6 +66,8 @@ pub enum PumpActionKind {
     Replan,
     /// Release a need branch held `unverified`, adopting the remote tip.
     Recover,
+    /// Answer a flow step by hand; applied by the flow engine, not the old pump.
+    Answer,
 }
 
 impl PumpActionKind {
@@ -72,6 +79,7 @@ impl PumpActionKind {
             Self::Withdraw => "withdraw",
             Self::Replan => "replan",
             Self::Recover => "recover",
+            Self::Answer => "answer",
         }
     }
 
@@ -81,6 +89,7 @@ impl PumpActionKind {
             "withdraw" => Some(Self::Withdraw),
             "replan" => Some(Self::Replan),
             "recover" => Some(Self::Recover),
+            "answer" => Some(Self::Answer),
             _ => None,
         }
     }
@@ -102,6 +111,10 @@ pub struct PumpActionRequest {
     pub force: bool,
     /// Recover: only this target's need branch; every held target when absent.
     pub target: Option<String>,
+    /// Answer: the flow step task.
+    pub step: Option<String>,
+    /// Answer: the answer word.
+    pub word: Option<String>,
     /// Why; the letter's body.
     pub reason: String,
 }
@@ -116,6 +129,8 @@ impl PumpActionRequest {
             refund: false,
             force: false,
             target: None,
+            step: None,
+            word: None,
             reason: reason.trim().to_string(),
         }
     }
@@ -165,6 +180,16 @@ impl PumpActionRequest {
         }
     }
 
+    /// Answer the flow step task `step` with `word`; `note` is the body.
+    #[must_use]
+    pub fn answer(step: &str, word: &str, note: &str) -> Self {
+        Self {
+            step: Some(step.to_string()),
+            word: Some(word.trim().to_string()),
+            ..Self::new(PumpActionKind::Answer, note)
+        }
+    }
+
     /// The headers the letter carries, besides the record and need headers.
     fn headers(&self) -> Vec<(String, String)> {
         let mut headers = vec![(PUMP_ACTION_HEADER.to_string(), self.kind.as_str().into())];
@@ -176,6 +201,12 @@ impl PumpActionRequest {
         }
         if let Some(target) = &self.target {
             headers.push((TARGET_HEADER.into(), target.clone()));
+        }
+        if let Some(step) = &self.step {
+            headers.push((STEP_HEADER.into(), step.clone()));
+        }
+        if let Some(word) = &self.word {
+            headers.push((WORD_HEADER.into(), word.clone()));
         }
         for (name, set) in [
             (FRESH_HEADER, self.fresh),
@@ -201,6 +232,8 @@ impl PumpActionRequest {
             refund: flag(REFUND_HEADER),
             force: flag(FORCE_HEADER),
             target: header_value(data, TARGET_HEADER).filter(|target| !target.is_empty()),
+            step: header_value(data, STEP_HEADER).filter(|step| !step.is_empty()),
+            word: header_value(data, WORD_HEADER).filter(|word| !word.is_empty()),
             reason: body.trim().to_string(),
         })
     }
@@ -260,6 +293,37 @@ impl Mailspace {
         let storage = self.storage()?;
         in_write_batch(&storage, || {
             self.post_checked(&storage, from, need, request)
+        })
+    }
+
+    /// Post an operator answer to the flow step task `step_task`, on the
+    /// open pump record of the need the step belongs to.
+    ///
+    /// The need is read from the step task's own body (`pump-step: <need> ...`
+    /// or `pump-run-sentinel: <need> ...`); a task that is neither is refused.
+    /// The note (may be empty) is the letter's body.
+    ///
+    /// # Errors
+    /// Returns an error if the task does not resolve, is not a pump step or
+    /// run sentinel, its need has no open pump record, the word is blank, or
+    /// the send fails.
+    pub fn pump_post_answer(
+        &self,
+        from: Option<&str>,
+        step_task: &str,
+        word: &str,
+        note: &str,
+    ) -> Result<PumpAction, VivariumError> {
+        if word.trim().is_empty() {
+            return Err(VivariumError::Message(
+                "an answer action names the word to answer".into(),
+            ));
+        }
+        let storage = self.storage()?;
+        in_write_batch(&storage, || {
+            let need = step_need(&storage, step_task)?;
+            let request = PumpActionRequest::answer(step_task, word, note);
+            self.post_checked(&storage, from, &need, &request)
         })
     }
 
@@ -420,6 +484,26 @@ impl Mailspace {
             request,
         }))
     }
+}
+
+/// The need a pump step task or run sentinel belongs to, read from its body.
+fn step_need(storage: &Storage, task: &str) -> Result<String, VivariumError> {
+    let message_id = storage
+        .resolve_message_token(task)
+        .map_err(|error| VivariumError::Message(format!("unknown task '{task}': {error}")))?;
+    let body = crate::extract::extract_text(&storage.read_message(&message_id)?)?;
+    let body = body.trim_start();
+    [STEP_MARKER, SENTINEL_MARKER]
+        .iter()
+        .find_map(|marker| body.strip_prefix(marker))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            VivariumError::Message(format!(
+                "{task} is not a pump step task: its body starts with neither \
+                 `{STEP_MARKER}` nor `{SENTINEL_MARKER}`"
+            ))
+        })
 }
 
 #[cfg(test)]

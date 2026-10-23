@@ -190,3 +190,42 @@ fn gate_kind_check_covers_declared_kinds() {
     assert!(!is_gate_kind("task"));
     assert!(!is_gate_kind("urgent"));
 }
+
+#[test]
+fn rhombus_join_class_keeps_decision_kind_and_class() {
+    let g = parse_flowchart("flowchart TD\nj{all done}:::join\nj --> z\n").unwrap();
+    let j = g.nodes.iter().find(|n| n.source_id == "j").unwrap();
+    assert_eq!(j.kind, "decision");
+    assert_eq!(j.class.as_deref(), Some("join"));
+}
+
+#[test]
+fn hyphenated_classes_are_kept_inline_and_on_class_lines() {
+    let src = "flowchart TD\n\
+        a[need]:::rung-need --> b[plan]\n\
+        b --> c[redo]\n\
+        class c restart-plan\n";
+    let g = parse_flowchart(src).unwrap();
+    let find = |id: &str| g.nodes.iter().find(|n| n.source_id == id).unwrap();
+    assert_eq!(find("a").class.as_deref(), Some("rung-need"));
+    assert_eq!(find("a").kind, "task");
+    assert_eq!(find("b").class, None);
+    assert_eq!(find("c").class.as_deref(), Some("restart-plan"));
+    assert_eq!(find("c").kind, "task");
+}
+
+#[test]
+fn gate_class_sets_kind_and_class_on_class_lines() {
+    let g = parse_flowchart("flowchart TD\na --> b\nclass b stub\n").unwrap();
+    let b = g.nodes.iter().find(|n| n.source_id == "b").unwrap();
+    assert_eq!(b.kind, "stub");
+    assert_eq!(b.class.as_deref(), Some("stub"));
+}
+
+#[test]
+fn classless_chart_serializes_without_class_field() {
+    let g = parse_flowchart("flowchart TD\na[one] --> b{two}\n").unwrap();
+    let json = serde_json::to_string(&g).unwrap();
+    assert!(!json.contains("class"), "{json}");
+    assert!(json.contains(r#""kind":"decision""#), "{json}");
+}

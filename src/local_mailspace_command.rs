@@ -52,6 +52,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Role { command } => crate::local_role_command::handle_role_command(command),
         Command::Cycle { command } => handle_cycle_command(command),
         Command::Trace(command) => handle_trace_command(command),
+        Command::Flow { command } => crate::local_flow_command::handle_flow_command(command),
         Command::Graph { command } => crate::local_graph_command::handle_graph_command(command),
         Command::Skills { command } => crate::local_skills_command::handle_skills_command(command),
         Command::Step {

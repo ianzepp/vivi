@@ -241,6 +241,9 @@ enum Sent {
     Failed(VivariumError),
     /// The task could not be created.
     NoTask,
+    /// A preset task's `pump-brief:` reply could not be posted, so the job
+    /// is not dispatched on this pool.
+    BriefUnsent,
     /// The task exists (`fresh` when this call created it) and `pool dispatch`
     /// answered.
     Dispatched {
@@ -255,7 +258,13 @@ enum Sent {
 /// task when it has none, then run `pool dispatch` for it on `pool`.
 fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
     let (task, fresh) = match &snapshot.task {
-        Some(task) => (task.clone(), false),
+        Some(task) => {
+            if let Err(error) = post_brief(ctx, snapshot, task) {
+                ctx.log(&format!("job brief post failed {}: {error}", snapshot.id));
+                return Sent::BriefUnsent;
+            }
+            (task.clone(), false)
+        }
         None => match send_task(ctx, snapshot) {
             Ok(Some(task)) => (task, true),
             Ok(None) => return Sent::NoTask,
@@ -268,6 +277,39 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
         fresh,
         code: output.code,
         text: output.text,
+    }
+}
+
+/// First line of the reply that carries a preset-task job's brief.
+const BRIEF_MARKER: &str = "pump-brief:";
+
+/// Post the job brief on its preset `task` as one `pump-brief: <job id>`
+/// reply from the pump identity, so any pool reads it from mail. A task that
+/// already carries a brief reply for this job id is left alone, so a
+/// deferred dispatch retried on the next tick posts nothing new.
+fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError> {
+    let first = crate::mailspace::marked_line(BRIEF_MARKER, &job.id);
+    let thread = ctx.vivi(
+        &format!("mail thread {} --limit 1000", shell_quote(task)),
+        60,
+    );
+    if thread.code == 0
+        && thread
+            .text
+            .lines()
+            .any(|line| crate::mailspace::marked_payload(line, BRIEF_MARKER) == Some(&job.id))
+    {
+        return Ok(());
+    }
+    let dir = ctx.home.join("job-briefs");
+    fs::create_dir_all(&dir)?;
+    let body = fit_brief(ctx, job, &dir, format!("{first}\n{}", job.body))?;
+    if crate::pump::record::reply_on(ctx, task, &job.id, "brief", &body) {
+        Ok(())
+    } else {
+        Err(VivariumError::Message(format!(
+            "reply on task {task} failed"
+        )))
     }
 }
 
@@ -284,7 +326,7 @@ fn apply_dispatch(
 ) -> Result<bool, VivariumError> {
     let (task, fresh, code, text) = match sent {
         Sent::Failed(error) => return Err(error),
-        Sent::NoTask => return Ok(false),
+        Sent::NoTask | Sent::BriefUnsent => return Ok(false),
         Sent::Dispatched {
             task,
             fresh,

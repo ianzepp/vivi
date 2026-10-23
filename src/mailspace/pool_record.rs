@@ -6,9 +6,10 @@
 //! reply is the human-readable receipt. The task itself never moves.
 
 use super::Mailspace;
-use super::thread::text_body;
+use super::thread::{MailspaceThreadMessage, text_body};
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A task as the pool reads it.
 #[derive(Debug, Clone)]
@@ -29,6 +30,99 @@ pub struct PoolEventRow {
     pub event_type: String,
     pub note: String,
 }
+
+/// First line of a pump attempt-context reply on a slice task.
+const ATTEMPT_MARKER: &str = "pump-attempt:";
+
+/// First line of a pump brief reply on a preset task.
+const BRIEF_MARKER: &str = "pump-brief:";
+
+/// The last order stamp handed out by [`marked_line`].
+static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
+
+/// The first line of a pump-marked reply: `<marker> t=<unix micros> <rest>`.
+///
+/// Thread order has one-second precision, so same-second replies need their
+/// own order. The stamp is the clock in microseconds, pushed one past the last
+/// stamp this process issued, so it strictly increases.
+#[must_use]
+pub fn marked_line(marker: &str, rest: &str) -> String {
+    let now = chrono::Utc::now().timestamp_micros();
+    let stamp = LAST_STAMP
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+            Some(now.max(last.saturating_add(1)))
+        })
+        .map_or(now, |last| now.max(last.saturating_add(1)));
+    format!("{marker} t={stamp} {rest}").trim_end().to_owned()
+}
+
+/// The text after `marker` on a marked line, without the `t=` stamp. `None`
+/// when the line does not start with the marker.
+#[must_use]
+pub fn marked_payload<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = line.trim().strip_prefix(marker)?.trim_start();
+    Some(match split_stamp(rest) {
+        Some((_, after)) => after,
+        None => rest,
+    })
+}
+
+/// A leading `t=<digits>` token and the text after it.
+fn split_stamp(text: &str) -> Option<(i64, &str)> {
+    let (token, after) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let stamp = match token.strip_prefix("t=")?.parse() {
+        Ok(stamp) => stamp,
+        Err(_) => return None,
+    };
+    Some((stamp, after.trim_start()))
+}
+
+/// The order stamp on a marked message's first line, when it has one.
+fn stamp_of(body: &str) -> Option<i64> {
+    let first = body.trim_start().lines().next()?;
+    let (_, rest) = first.split_once(char::is_whitespace)?;
+    split_stamp(rest.trim_start()).map(|(stamp, _)| stamp)
+}
+
+/// Sort marked replies oldest first by `(t, Date, message_id)`. A reply with
+/// no stamp sorts by `Date` and then `message_id`, after any stamped reply
+/// of the same second.
+pub fn order_marked(replies: &mut [MailspaceThreadMessage]) {
+    replies.sort_by_cached_key(|message| {
+        let stamp = stamp_of(&message.body);
+        let second = stamp.map_or_else(|| date_seconds(&message.date), |t| t.div_euclid(1_000_000));
+        (
+            second,
+            stamp.is_none(),
+            stamp.unwrap_or(0),
+            message.date.clone(),
+            message.message_id.clone(),
+        )
+    });
+}
+
+/// Unix seconds of a thread `Date`, 0 when it does not parse.
+fn date_seconds(date: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(date)
+        .or_else(|_| chrono::DateTime::parse_from_rfc2822(date))
+        .map_or(0, |parsed| parsed.timestamp())
+}
+
+/// The marked replies found on one task's thread.
+#[derive(Default)]
+struct ThreadReplies {
+    briefs: Vec<String>,
+    attempts: Vec<String>,
+}
+
+/// Heading under which a task's earlier attempts are appended to its body.
+const ATTEMPTS_HEADING: &str = "## Earlier attempts";
+
+/// Most bytes of attempt replies appended to a task body.
+const ATTEMPTS_CAP: usize = 8 * 1024;
+
+/// Line that opens the attempt text when older replies were cut.
+const ATTEMPTS_CUT: &str = "[older attempts cut]";
 
 /// Event types the pool writes.
 pub const POOL_EVENT_TYPES: [&str; 2] = ["pool_dispatched", "pool_collected"];
@@ -54,6 +148,16 @@ impl Mailspace {
             )));
         }
         let data = storage.read_message(&id)?;
+        let handle = storage.display_handle(&id)?;
+        let thread = self.marked_thread_replies(&handle, &id)?;
+        // A preset-task job carries its brief as a reply; the newest brief
+        // replaces the task body, which it already contains.
+        let body = thread
+            .briefs
+            .into_iter()
+            .next_back()
+            .unwrap_or_else(|| text_body(&data));
+        let body = with_attempts(body, thread.attempts);
         // The copy is held under the recipient's account; a recipient that
         // is not a known local role leaves no addressee.
         let addressee = match self.resolve_identity(&view.account) {
@@ -63,9 +167,33 @@ impl Mailspace {
         Ok(PoolTask {
             handle: storage.display_handle(&id)?,
             subject: view.subject,
-            body: text_body(&data),
+            body,
             addressee,
         })
+    }
+
+    /// The `pump-brief:` and `pump-attempt:` replies on a task's thread,
+    /// each oldest first.
+    fn marked_thread_replies(
+        &self,
+        handle: &str,
+        task_id: &str,
+    ) -> Result<ThreadReplies, VivariumError> {
+        let mut thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
+        order_marked(&mut thread);
+        let mut found = ThreadReplies::default();
+        for message in thread {
+            if message.event.is_some() || message.message_id == task_id {
+                continue;
+            }
+            let body = message.body.trim();
+            if body.starts_with(ATTEMPT_MARKER) {
+                found.attempts.push(body.to_owned());
+            } else if body.starts_with(BRIEF_MARKER) {
+                found.briefs.push(body.to_owned());
+            }
+        }
+        Ok(found)
     }
 
     /// The display handle of any item, for matching against pool events.
@@ -129,6 +257,26 @@ impl Mailspace {
         })?;
         Ok(())
     }
+}
+
+/// `body` with the attempt replies appended under a heading, newest last. A
+/// task with none is unchanged. Past the cap the oldest text is dropped and
+/// a cut marker opens the section.
+fn with_attempts(body: String, replies: Vec<String>) -> String {
+    if replies.is_empty() {
+        return body;
+    }
+    let joined = replies.join("\n\n");
+    let section = if joined.len() > ATTEMPTS_CAP {
+        let mut start = joined.len() - ATTEMPTS_CAP;
+        while !joined.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("{ATTEMPTS_CUT}\n{}", &joined[start..])
+    } else {
+        joined
+    };
+    format!("{}\n\n{ATTEMPTS_HEADING}\n\n{section}\n", body.trim_end())
 }
 
 fn pool_event(

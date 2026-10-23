@@ -10,13 +10,7 @@ use vivi::mailspace::{
 
 pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumError> {
     match command {
-        NeedCommand::Send(command) => send_local_item(
-            &command.send,
-            "needs",
-            "need",
-            "created",
-            &command.depends_on,
-        )?,
+        NeedCommand::Send(command) => send_need(command)?,
         NeedCommand::Watch(command) => {
             crate::local_mailspace_command::run_watch(&command.common, "need")?;
         }
@@ -455,6 +449,42 @@ fn dump_work_items(
     )
 }
 
+/// Send a need, then write any `--mark` slugs as the sending identity.
+///
+/// The slugs are validated before anything is sent. The need letter goes
+/// first and the mark letters second, so a mark never travels ahead of its
+/// need.
+fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> {
+    vivi::mailspace::validate_marks_filter(&command.marks)?;
+    let result = send_local_item_sent(
+        &command.send,
+        "needs",
+        "need",
+        "created",
+        &command.depends_on,
+    )?;
+    if command.marks.is_empty() {
+        return Ok(());
+    }
+    let mailspace = Mailspace::discover(command.send.project.as_deref())?;
+    // The sender's own copy first: it is the copy whose mark letters travel.
+    // Then each local recipient's copy, which is the one `need list` shows.
+    let mut targets = vec![(command.send.from.as_str(), result.sent.as_str())];
+    targets.extend(
+        result
+            .delivered
+            .iter()
+            .map(|copy| (copy.identity.as_str(), copy.handle.as_str())),
+    );
+    for (identity, handle) in targets {
+        let writes = mailspace.set_marks(identity, handle, "need", true, &command.marks)?;
+        for write in writes {
+            print_mark(&write.handle, &write.slug, true, write.changed);
+        }
+    }
+    Ok(())
+}
+
 fn send_local_item(
     command: &LocalSendCommand,
     role: &str,
@@ -462,6 +492,17 @@ fn send_local_item(
     verb: &str,
     depends_on: &[String],
 ) -> Result<(), VivariumError> {
+    send_local_item_sent(command, role, kind, verb, depends_on).map(|_| ())
+}
+
+/// Send one local item and return the handle of the sender's own copy.
+fn send_local_item_sent(
+    command: &LocalSendCommand,
+    role: &str,
+    kind: &str,
+    verb: &str,
+    depends_on: &[String],
+) -> Result<vivi::mailspace::DeliveryResult, VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
     let body =
         vivi::mailspace::read_body_input(command.body.as_deref(), command.body_file.as_deref())?;
@@ -492,7 +533,7 @@ fn send_local_item(
              no_done_when"
         );
     }
-    Ok(())
+    Ok(result)
 }
 
 fn move_item(
@@ -668,6 +709,10 @@ fn show_need(
             .collect::<Vec<_>>()
             .join("  ");
         println!("  units    {rendered}");
+    }
+    let runs = vivi::pump::flow::mail::read::run_count(&mailspace, handle);
+    if runs > 0 {
+        println!("  runs: {runs}");
     }
     print_pump_need(&mailspace, handle, registry_open);
     Ok(())

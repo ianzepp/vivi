@@ -342,6 +342,10 @@ pub struct NeedSendCommand {
     /// Need or want handle this need depends on (repeatable)
     #[arg(long = "depends-on")]
     pub depends_on: Vec<String>,
+
+    /// Mark slug to write on the new need, as the sending identity (repeatable)
+    #[arg(long = "mark")]
+    pub marks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Parser)]

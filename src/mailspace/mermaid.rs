@@ -41,6 +41,9 @@ pub struct MermaidNode {
     pub label: String,
     pub subgraph: Option<String>,
     pub kind: String,
+    /// Every `:::class` / `class X name` seen on the node, gate kind or not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// Directed edge: `to` requires `from` when the style is `solid`; `dotted`
@@ -212,12 +215,12 @@ fn apply_class_kinds(
     assignments: &[(Vec<String>, String)],
 ) {
     for (ids, class) in assignments {
-        if !is_gate_kind(class) {
-            continue;
-        }
         for id in ids {
             if let Some(node) = nodes.get_mut(id) {
-                node.kind = class.clone();
+                if is_gate_kind(class) {
+                    node.kind = class.clone();
+                }
+                node.class = Some(class.clone());
             }
         }
     }
@@ -236,6 +239,7 @@ fn parse_node_line(
         shape.label.as_deref().unwrap_or(&shape.id),
         current_subgraph(subgraph_stack),
         shape.kind.as_deref(),
+        shape.class.as_deref(),
     );
     Ok(())
 }
@@ -266,6 +270,7 @@ fn parse_edge_line(
             from.label.as_deref().unwrap_or(&from.id),
             current_subgraph(subgraph_stack),
             from.kind.as_deref(),
+            from.class.as_deref(),
         );
         ensure_node(
             nodes,
@@ -273,6 +278,7 @@ fn parse_edge_line(
             to.label.as_deref().unwrap_or(&to.id),
             current_subgraph(subgraph_stack),
             to.kind.as_deref(),
+            to.class.as_deref(),
         );
         let key = (from.id.clone(), to.id.clone());
         if edge_set.insert(key) {
@@ -375,6 +381,7 @@ struct ParsedShape {
     id: String,
     label: Option<String>,
     kind: Option<String>,
+    class: Option<String>,
 }
 
 /// Parse `id`, `id[label]`, `id{label}`, `id([label])`, each with an
@@ -389,6 +396,7 @@ fn parse_shape(raw: &str, line_no: usize) -> Result<ParsedShape, VivariumError> 
             id,
             label: None,
             kind: None,
+            class: None,
         });
     }
     if let Some(after) = rest.strip_prefix("([") {
@@ -419,17 +427,26 @@ fn finish_shape(
     line_no: usize,
 ) -> Result<ParsedShape, VivariumError> {
     let trailing = trailing.trim();
-    let kind = if trailing.is_empty() {
-        None
+    let (kind, class) = if trailing.is_empty() {
+        (None, None)
     } else if let Some(class) = trailing.strip_prefix(":::") {
-        is_gate_kind(class.trim()).then(|| class.trim().to_string())
+        let class = class.trim();
+        (
+            is_gate_kind(class).then(|| class.to_string()),
+            (!class.is_empty()).then(|| class.to_string()),
+        )
     } else {
         return Err(parse_err(
             line_no,
             &format!("unexpected text '{trailing}' after node shape; {SUBSET_HINT}"),
         ));
     };
-    Ok(ParsedShape { id, label, kind })
+    Ok(ParsedShape {
+        id,
+        label,
+        kind,
+        class,
+    })
 }
 
 fn split_id(raw: &str, line_no: usize) -> Result<(String, &str), VivariumError> {
@@ -500,6 +517,7 @@ fn ensure_node(
     label: &str,
     subgraph: Option<String>,
     kind: Option<&str>,
+    class: Option<&str>,
 ) {
     nodes
         .entry(source_id.to_string())
@@ -513,12 +531,16 @@ fn ensure_node(
             if existing.kind == "task" && kind.is_some_and(|k| is_gate_kind(k)) {
                 existing.kind = kind.unwrap_or("task").to_string();
             }
+            if existing.class.is_none() {
+                existing.class = class.map(str::to_string);
+            }
         })
         .or_insert_with(|| MermaidNode {
             source_id: source_id.to_string(),
             label: label.to_string(),
             subgraph,
             kind: kind.unwrap_or("task").to_string(),
+            class: class.map(str::to_string),
         });
 }
 
