@@ -19,7 +19,7 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: it works".into(),
+            body: crate::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -265,7 +265,10 @@ fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     assert!(error.contains("no open pump record"), "{error}");
 
     mailspace.pump_send(None, &need, None).unwrap();
-    let plain = send_task(&mailspace, "just a task");
+    let plain = send_task(
+        &mailspace,
+        &crate::letter::fixture::task_body("just a task"),
+    );
     let error = mailspace
         .pump_post_answer(None, &plain, "planned", "")
         .unwrap_err()
