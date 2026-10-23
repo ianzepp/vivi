@@ -913,7 +913,8 @@ fn the_pump_role_checks_name_each_requirement_for_doctor() {
             "slicer",
             "merge",
             "merge kind",
-            "auditor"
+            "auditor",
+            "head-cto"
         ]
     );
     let none: MailspaceConfig = toml::from_str("name = \"t\"\n").unwrap();
