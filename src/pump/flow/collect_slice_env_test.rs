@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -104,7 +106,13 @@ fn ended(
         "mind",
         "mind",
         "slice a",
-        &format!("pump-step: {NEED} r1 slice:a\ntarget: default\n\ntitle a\n\nbrief a"),
+        &task_body_with(
+            &TaskFront {
+                target: Some("default".into()),
+                ..TaskFront::step(NEED, 1, "slice:a")
+            },
+            "title a\n\nbrief a",
+        ),
         &[],
     )?;
     let slice = StepRow {

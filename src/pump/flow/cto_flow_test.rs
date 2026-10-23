@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -437,8 +438,8 @@ fn a_cto_rework_restart_briefs_rework1_and_audit2_from_run_one() -> R {
     let slice_task = rig.mail.send_step(
         "mind",
         "mind",
-        "pump-step: n1 r1 slice:a",
-        "pump-step: n1 r1 slice:a",
+        "slice a",
+        &step_body(NEED, 1, "slice:a", ""),
         &[],
     )?;
     rig.mail.close_task(&slice_task, "merged", None, None)?;
