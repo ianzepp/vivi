@@ -16,7 +16,6 @@ fn create(command: &ProjectCreateCommand) -> Result<(), VivariumError> {
         &command.git_url_prefix,
     );
     request.pool.clone_from(&command.pool);
-    request.gate.clone_from(&command.gate);
     request.branch.clone_from(&command.branch);
     request.pump = !command.no_pump;
     request.serve = !command.no_serve;

@@ -33,9 +33,6 @@ pub struct ProjectCreateCommand {
     /// from a base config above the projects root)
     #[arg(long)]
     pub pool: Option<String>,
-    /// Pump gate command (`[pump.gate] command`)
-    #[arg(long)]
-    pub gate: Option<String>,
     /// Integration branch (`[pump] branch`) and the new repo's default branch
     #[arg(long, default_value = "main")]
     pub branch: String,

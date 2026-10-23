@@ -36,11 +36,6 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpPriorityCommand,
     },
-    /// Show or set the gate command (`[pump.gate] command`)
-    Gate {
-        #[command(subcommand)]
-        command: PumpGateCommand,
-    },
     /// Show or set the proof rung commands (`[pump.rungs]`)
     Rungs {
         #[command(subcommand)]
@@ -155,23 +150,6 @@ pub struct PumpPrioritySetCommand {
 pub struct PumpPriorityClearCommand {
     /// Need handle
     pub need: String,
-    /// Project root that owns .vivi/ (also accepted globally)
-    #[arg(long)]
-    pub project: Option<PathBuf>,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum PumpGateCommand {
-    /// Print the current gate command
-    Show(PumpControlCommand),
-    /// Set the gate command in this project's mailspace.toml
-    Set(PumpGateSetCommand),
-}
-
-#[derive(Debug, Args)]
-pub struct PumpGateSetCommand {
-    /// Shell command the gate runs; must not be blank
-    pub command: String,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
