@@ -17,12 +17,24 @@ use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slic
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::TaskStatus;
+use crate::pump::flow::reslice::{self, Mode};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
 use crate::pump::flow::slice_dispatch::{self, AttemptResult, DEVIATIONS_MARKER, Retried};
 use crate::pump::flow::tick::{FOLLOW_UP, FOLLOW_UP_MARKER, SCOPE_REWORK};
-use crate::pump::jobs::{JobStore, PoolJob};
+use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
+
+/// Characters of a timed-out hand's receipt passed to the split job.
+const RECEIPT_TAIL: usize = 2000;
+
+/// The last `max` characters of `text`.
+fn tail_of(text: &str, max: usize) -> &str {
+    let skip = text.chars().count().saturating_sub(max);
+    text.char_indices()
+        .nth(skip)
+        .map_or("", |(at, _)| &text[at..])
+}
 
 /// Something done for a slice whose hand job built.
 pub(crate) trait BuiltHook<S, M> {
@@ -118,6 +130,7 @@ where
             AttemptResult::NoDefect => {
                 fanout::close_slice(self.store, &mut *self.mail, &step.task, VERDICT_NO_DEFECT)
             }
+            AttemptResult::Failed if hand.status == JobStatus::Timeout => self.split(step, hand),
             AttemptResult::Failed => {
                 let retried = slice_dispatch::retry(
                     self.ctx,
@@ -156,9 +169,60 @@ where
             Resolution::Rework(reason) => {
                 self.store.set_scope_state(&step.task, ScopeState::Rework)?;
                 self.ctx.exception(SCOPE_REWORK, &step.task, &reason);
-                Ok(())
+                self.rework(step, request)
             }
         }
+    }
+
+    /// A timed-out hand goes to a split job instead of a retry.
+    fn split(&mut self, step: &StepRow, hand: &PoolJob) -> Result<(), VivariumError> {
+        let tail = hand
+            .outcome
+            .as_ref()
+            .map_or("", |outcome| tail_of(&outcome.receipt, RECEIPT_TAIL));
+        let input = format!(
+            "job: {}\nbudget: {}\nreceipt tail:\n{tail}\n",
+            hand.id, hand.budget
+        );
+        reslice::request(
+            self.ctx,
+            self.st,
+            self.store,
+            self.mail,
+            &self.run,
+            step,
+            Mode::Split,
+            &input,
+        )
+        .map(|_| ())
+    }
+
+    /// A blocked-scope request that needs a re-slice goes to a rework job, with
+    /// the run's open scopes so the slicer can place the work.
+    fn rework(&mut self, step: &StepRow, request: &BlockedScope) -> Result<(), VivariumError> {
+        let scopes: String = self
+            .store
+            .open_scopes_of_run(&step.task, self.run.run)?
+            .iter()
+            .map(|(task, scope)| format!("{task}: {}\n", scope.join(", ")))
+            .collect();
+        let input = format!(
+            "blocked-scope request:\npaths: {}\nreason: {}\ndesign: {}\n\nopen scopes of this run:\n{scopes}",
+            request.paths.join(", "),
+            request.reason,
+            request.design
+        );
+        reslice::request(
+            self.ctx,
+            self.st,
+            self.store,
+            self.mail,
+            &self.run,
+            step,
+            Mode::Rework,
+            &input,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn redispatch(&mut self, step: &StepRow, attempt: u32) -> Result<(), VivariumError> {
@@ -216,3 +280,7 @@ where
 #[cfg(test)]
 #[path = "collect_slice_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "collect_slice_reslice_test.rs"]
+mod reslice_tests;
