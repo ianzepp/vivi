@@ -79,6 +79,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for MainRung {
         mail: &mut M,
     ) -> Result<(), VivariumError> {
         let mut configured = Vec::new();
+        let mut first_error = None;
         for target in ctx.cfg.target_configs().keys() {
             if ctx
                 .cfg
@@ -89,12 +90,26 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for MainRung {
                 continue;
             }
             configured.push(target.clone());
-            collect(ctx, st, store, mail, target)?;
-            schedule::schedule(ctx, st, store, mail, target)?;
+            if let Err(error) = run_target(ctx, st, store, mail, target) {
+                ctx.log(&format!("main rung of target {target} failed: {error}"));
+                first_error.get_or_insert(error);
+            }
         }
         retire_unknown(ctx, st, &configured);
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
+}
+
+/// Collect the finished main rung jobs of one target, then schedule its next run.
+fn run_target<S: JobStore, M: FlowMail>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    mail: &mut M,
+    target: &str,
+) -> Result<(), VivariumError> {
+    collect(ctx, st, store, mail, target)?;
+    schedule::schedule(ctx, st, store, mail, target).map(|_| ())
 }
 
 /// Raise once and mark applied every finished, unapplied main rung job whose
