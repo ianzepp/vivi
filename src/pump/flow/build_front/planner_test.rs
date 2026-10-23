@@ -54,7 +54,7 @@ fn rig(with_role: bool, run_no: u32) -> Result<Rig, VivariumError> {
         need: NEED.into(),
         run: run_no,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "plan".into(),
         state: "live".into(),

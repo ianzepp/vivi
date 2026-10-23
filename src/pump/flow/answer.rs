@@ -28,12 +28,13 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, route::Decide};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::fanout;
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
-use crate::pump::store::{PumpStore, RUN_LIVE};
+use crate::pump::store::PumpStore;
 
 /// The exception kind raised for an answer that cannot be applied.
 pub const ANSWER_REFUSED: &str = "flow-answer-refused";
@@ -319,7 +320,7 @@ fn live_run(store: &PumpStore, need: &str, run: u32) -> Result<RunRow, String> {
         .into_iter()
         .find(|row| row.run == run)
         .ok_or_else(|| format!("need {need} has no run r{run}"))?;
-    if row.state == RUN_LIVE {
+    if row.state == run_state::LIVE {
         Ok(row)
     } else {
         Err(format!(

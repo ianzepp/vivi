@@ -13,6 +13,7 @@ use crate::error::VivariumError;
 use crate::pump::flow::fanout::is_slice_row;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::RunRow;
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::need_branch::{self, DELETING, PRUNED, RENAMING};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::{Ctx, shell_quote};
@@ -24,9 +25,6 @@ pub const PRUNE_FAILED: &str = "flow-prune-failed";
 
 /// Id prefix of every cleanup job.
 const JOB_PREFIX: &str = "prune-";
-
-/// Run state of a landed run.
-const RUN_DONE: &str = "done";
 
 /// The ls-remote patterns that cover every namespace a need can own.
 const NAMESPACES: [&str; 2] = ["refs/heads/vivi/*", "refs/heads/pump/merge-main/*"];
@@ -47,7 +45,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Prune {
     ) -> Result<(), VivariumError> {
         report_failed(ctx, st);
         let mut seen: Vec<String> = Vec::new();
-        for run in store.runs_in_state(RUN_DONE)? {
+        for run in store.runs_in_state(run_state::DONE)? {
             if seen.contains(&run.need) {
                 continue;
             }
@@ -77,7 +75,7 @@ fn prune_need(
         return Ok(());
     }
     let runs = store.runs_of(need)?;
-    if runs.last().is_none_or(|run| run.state != RUN_DONE) {
+    if runs.last().is_none_or(|run| run.state != run_state::DONE) {
         return Ok(());
     }
     let refs = owned_refs(ctx, store, &row, need, &runs)?;

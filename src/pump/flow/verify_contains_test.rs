@@ -1,10 +1,10 @@
-//! `ref_contains` tests over the fake host.
+//! `ref_contains` and `commit_contains` tests over the fake host.
 
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use super::ref_contains;
+use super::{commit_contains, ref_contains};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 
@@ -95,4 +95,53 @@ fn an_unknown_target_or_bad_sha_is_an_error() {
     let (_dir, ctx, _host) = setup();
     assert!(ref_contains(&ctx, "nope", REF, WANT).is_err());
     assert!(ref_contains(&ctx, "default", REF, "not-a-sha").is_err());
+}
+
+#[test]
+fn commit_contains_equal_commits_need_no_git() {
+    let (_dir, ctx, host) = setup();
+    assert_eq!(commit_contains(&ctx, "default", REF, TIP, TIP), Ok(true));
+    assert!(host.commands().is_empty());
+}
+
+#[test]
+fn commit_contains_an_ancestor_is_true() {
+    let (_dir, ctx, host) = setup();
+    host.reply("cat-file -e", 0, "");
+    host.reply("merge-base --is-ancestor", 0, "");
+    assert_eq!(commit_contains(&ctx, "default", REF, TIP, WANT), Ok(true));
+    assert!(host.commands().iter().any(|c| c.contains("fetch")));
+}
+
+#[test]
+fn commit_contains_a_non_ancestor_is_false() {
+    let (_dir, ctx, host) = setup();
+    host.reply("cat-file -e", 0, "");
+    host.reply("merge-base --is-ancestor", 1, "");
+    assert_eq!(commit_contains(&ctx, "default", REF, TIP, WANT), Ok(false));
+}
+
+#[test]
+fn commit_contains_an_absent_commit_is_an_error() {
+    let (_dir, ctx, host) = setup();
+    host.reply("cat-file -e", 128, "fatal: Not a valid object name");
+    let err = commit_contains(&ctx, "default", REF, TIP, WANT).unwrap_err();
+    assert!(err.contains("not in the local object store"), "{err}");
+    assert!(host.commands().iter().all(|c| !c.contains("merge-base")));
+}
+
+#[test]
+fn commit_contains_git_failures_and_bad_input_are_errors() {
+    let (_dir, ctx, host) = setup();
+    host.reply("fetch", 1, "no route");
+    let err = commit_contains(&ctx, "default", REF, TIP, WANT).unwrap_err();
+    assert!(err.contains("fetch"), "{err}");
+    assert!(commit_contains(&ctx, "nope", REF, TIP, WANT).is_err());
+    assert!(commit_contains(&ctx, "default", REF, TIP, "not-a-sha").is_err());
+
+    let (_dir, ctx, host) = setup();
+    host.reply("cat-file -e", 0, "");
+    host.reply("merge-base --is-ancestor", 128, "fatal: bad object");
+    let err = commit_contains(&ctx, "default", REF, TIP, WANT).unwrap_err();
+    assert!(err.contains("merge-base"), "{err}");
 }

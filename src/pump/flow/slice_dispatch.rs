@@ -15,8 +15,6 @@
 //! attempt number ([`retry`]), up to [`MAX_ATTEMPTS`]. A blocked-scope answer
 //! and an envelope correction use no attempt ([`redispatch_scope`]).
 
-use serde_json::json;
-
 use crate::error::VivariumError;
 use crate::mailspace::{MailspaceThreadMessage, marked_payload, order_marked};
 use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
@@ -27,7 +25,7 @@ use crate::pump::envelope::parse;
 use crate::pump::envelope::roles::{CheckResult, Hand, HandAnswer};
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
-use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
+use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailspacePort, TaskStatus};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
@@ -340,21 +338,14 @@ fn enqueue_hand<S: JobStore, M: SliceMail>(
     scope_round: Option<u32>,
 ) -> Result<String, VivariumError> {
     let id = job_id(&slice.task, attempt, scope_round);
+    let row = slice.job(&id, attempt);
     if !st.jobs().contains_key(&id) {
-        let spec = hand_spec(ctx, store, mail, need, slice, attempt, &id, scope_round)?;
+        let mut spec = hand_spec(ctx, store, mail, need, slice, attempt, &id, scope_round)?;
+        row.stamp(need, &mut spec.payload);
         jobs::enqueue(st, spec)?;
     }
     if store.step_job(&id)?.is_none() {
-        store.insert_step_job(
-            need,
-            &StepJobRow {
-                job: id.clone(),
-                run: slice.run,
-                node: slice.node.clone(),
-                task: slice.task.clone(),
-                attempt,
-            },
-        )?;
+        store.insert_step_job(need, &row)?;
     }
     store.set_step_state(&slice.task, StepState::Running, None)?;
     Ok(id)
@@ -409,13 +400,6 @@ fn hand_spec<M: SliceMail>(
     spec.publish_ref = Some(format!("refs/heads/{branch}"));
     spec.branch = Some(branch);
     spec.budget = cfg.dispatch.budget;
-    spec.payload = json!({
-        "need": need,
-        "run": slice.run,
-        "node": slice.node,
-        "task": slice.task,
-        "attempt": attempt,
-    });
     Ok(spec)
 }
 

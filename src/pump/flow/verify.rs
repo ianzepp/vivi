@@ -237,6 +237,35 @@ pub(crate) fn ref_contains(
     Ok(is_ancestor(&tctx, sha, &tip)?.then_some(tip))
 }
 
+/// Whether commit `tip` holds commit `sha`: true when they are equal or `sha`
+/// is an ancestor of `tip`. Fetches `remote_ref` first so both commits are
+/// local. A commit still absent afterwards is an error, not a plain "no".
+pub(crate) fn commit_contains(
+    ctx: &Ctx,
+    target: &str,
+    remote_ref: &str,
+    tip: &str,
+    sha: &str,
+) -> Result<bool, String> {
+    let Some(tctx) = ctx.for_target(target) else {
+        return Err(format!("unknown target {target}"));
+    };
+    if !valid_sha(tip) || !valid_sha(sha) {
+        return Err(String::from("tip or sha is not a commit SHA"));
+    }
+    if tip == sha {
+        return Ok(true);
+    }
+    let remote = tctx.cfg.remote.clone();
+    fetch(&tctx, &remote, remote_ref)?;
+    for commit in [tip, sha] {
+        if !commit_present(&tctx, commit) {
+            return Err(format!("commit {commit} is not in the local object store"));
+        }
+    }
+    is_ancestor(&tctx, sha, tip)
+}
+
 #[cfg(test)]
 #[path = "verify_test.rs"]
 mod tests;

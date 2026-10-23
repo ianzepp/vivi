@@ -38,7 +38,7 @@ fn rig() -> Result<Rig, VivariumError> {
         need: NEED.into(),
         run: 1,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "plan".into(),
         state: "live".into(),
@@ -479,5 +479,26 @@ fn a_word_with_no_edge_names_the_edges_that_exist() -> R {
     let locked = rig.step("locked")?;
     let err = rig.route(&with_word(locked, "z"), "").expect_err("no edge");
     assert!(err.to_string().contains("expected one of: x, y"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn routing_an_outcome_whose_run_row_is_missing_errors_and_sends_nothing() -> R {
+    let mut rig = rig()?;
+    let build = rig.step("build1")?;
+    rig.mail.calls.clear();
+
+    let mut stray = with_word(build.clone(), "built");
+    stray.run = 9;
+    let err = rig.route(&stray, "").expect_err("no run r9");
+    assert!(err.to_string().contains("expected run r9"), "{err}");
+    assert!(
+        !rig.mail
+            .calls
+            .iter()
+            .any(|call| matches!(call, Call::SendStep { .. })),
+        "a step was sent for a missing run"
+    );
+    assert_eq!(rig.store.steps_of(NEED, 9)?.len(), 0);
     Ok(())
 }

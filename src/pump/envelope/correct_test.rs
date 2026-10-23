@@ -144,6 +144,12 @@ fn enqueue_records_the_job_under_the_steps_own_task_and_attempt() {
     assert_eq!(recorded.task, "t1");
     assert_eq!(recorded.node, "plan");
     assert_eq!(recorded.attempt, 2);
+    let payload = &jobs.jobs["j1-c1"].payload;
+    assert_eq!(payload["attempt"], 2);
+    assert_eq!(payload["task"], "t1");
+    assert_eq!(payload["node"], "plan");
+    assert_eq!(payload["run"], 2);
+    assert_eq!(payload["need"], "n1");
 }
 
 #[test]

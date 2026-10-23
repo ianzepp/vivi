@@ -69,7 +69,7 @@ fn rig() -> Result<Rig, VivariumError> {
         need: NEED.into(),
         run: 1,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "plan".into(),
         state: "live".into(),
@@ -503,5 +503,39 @@ fn an_absent_result_names_the_hand_sha_the_tip_and_before() -> R {
         replies[0].contains(&format!("ref tip {BEFORE}, before {BEFORE}")),
         "{replies:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_payload_run_that_is_not_the_live_run_raises_stale_and_applies() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, &published(), 1)?;
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-merge-1") {
+        job.payload["run"] = serde_json::json!(2);
+    }
+    rig.apply()?;
+    rig.apply()?;
+    assert_eq!(rig.closes(), 0);
+    assert!(rig.merge_job(1).applied_at.is_some());
+    assert_eq!(rig.row(&slice)?.state, StepState::Running);
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(raised.matches("flow-job-stale").count(), 1, "{raised}");
+    assert!(raised.contains("hand-merge-1"), "{raised}");
+    assert!(raised.contains("expected live run n1 r2"), "{raised}");
+    assert!(raised.contains("live runs of n1: 1"), "{raised}");
+    Ok(())
+}
+
+#[test]
+fn a_closed_slice_is_the_expected_end_and_raises_nothing() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice(JobStatus::Finished, &published(), 1)?;
+    rig.store
+        .set_step_state(&slice.task, StepState::Done, Some("merged"))?;
+    rig.apply()?;
+    assert_eq!(rig.closes(), 0);
+    assert!(rig.merge_job(1).applied_at.is_some());
+    let raised = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!raised.contains("flow-job-stale"), "{raised}");
     Ok(())
 }

@@ -2,7 +2,7 @@
 //!
 //! A green main rung for a target whose repair need waits at `unrepaired`
 //! answers that step `green` through `advance`, which lands the need. A repair
-//! run at any other node whose tested tip is already on main is landed outside
+//! run at any other node whose green tip holds its tested tip is landed outside
 //! the flow: its need closes and the run is withdrawn.
 
 use serde_json::json;
@@ -16,7 +16,7 @@ use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::flow::mail::MailReader;
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::flow::repair;
-use crate::pump::flow::tick::{OPERATOR_HOLD, WORD_REJECTED};
+use crate::pump::flow::tick::{OPERATOR_HOLD, WORD_REJECTED, raise_once};
 use crate::pump::flow::verify;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
@@ -24,9 +24,12 @@ use crate::pump::store::PumpStore;
 /// The repair flow node that waits for a green main rung.
 pub(crate) const UNREPAIRED_NODE: &str = "unrepaired";
 
+/// Exception kind: git could not say whether the green tip holds the tested tip.
+pub(crate) const GREEN_CHECK_FAILED: &str = "flow-green-check-failed";
+
 /// Answer `green` on every unrepaired step of a live repair run for `target`.
-/// A repair run with no open unrepaired step whose `tested:` tip main already
-/// contains is landed outside the flow: the need closes with a note naming the
+/// A repair run with no open unrepaired step whose `tested:` tip the green tip
+/// holds is landed outside the flow: the need closes with a note naming the
 /// green tip and the run is withdrawn (an in-flight job's result is ignored).
 ///
 /// Returns the answered step tasks and the needs closed outside the flow.
@@ -80,8 +83,8 @@ pub(crate) fn answer_green<M: FlowMail>(
     Ok(answered)
 }
 
-/// Close the repair need and withdraw its run when main contains the tested
-/// tip. Returns true when the need was closed.
+/// Close the repair need and withdraw its run when the green tip holds the
+/// tested tip. Returns true when the need was closed.
 fn land_outside_flow<M: FlowMail>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -99,19 +102,24 @@ fn land_outside_flow<M: FlowMail>(
     let Some(tctx) = ctx.for_target(target) else {
         return Ok(false);
     };
-    match verify::ref_contains(ctx, target, &tctx.cfg.main, &tested) {
-        Ok(Some(_)) => {
+    match verify::commit_contains(ctx, target, &tctx.cfg.main, tip, &tested) {
+        Ok(true) => {
             let note = format!("main green at {tip} outside the flow (tested {tested})");
             mail.close_need(&run.need, &note)?;
             withdraw(store, mail, run)?;
             Ok(true)
         }
-        Ok(None) => Ok(false),
+        Ok(false) => Ok(false),
         Err(reason) => {
-            ctx.log(&format!(
-                "main rung: cannot tell if main holds {tested} for {}: {reason}",
-                run.need
-            ));
+            raise_once(
+                ctx,
+                GREEN_CHECK_FAILED,
+                &run.need,
+                &format!(
+                    "repair need {}: expected git to tell if green tip {tip} holds tested {tested}; actual: {reason}",
+                    run.need
+                ),
+            );
             Ok(false)
         }
     }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{INTERVAL_SECS, schedule};
+use super::{INTERVAL_SECS, MAIN_REF_MISSING, schedule};
 use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -272,5 +272,25 @@ fn a_job_id_that_already_exists_is_an_error() -> R {
         return Err(VivariumError::Message("expected an error".into()));
     };
     assert!(text.contains(&id), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_missing_main_ref_raises_once() -> R {
+    let mut rig = rig(true)?;
+    rig.host.reply("ls-remote", 0, "");
+    assert_eq!(rig.schedule()?, None);
+    assert_eq!(rig.schedule()?, None);
+    let lines: Vec<String> = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(MAIN_REF_MISSING))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains(&format!(
+        "main rung for target {TARGET}: expected main on origin; actual: absent"
+    )));
+    assert!(rig.jobs.jobs.is_empty());
     Ok(())
 }

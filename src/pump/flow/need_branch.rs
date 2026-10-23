@@ -93,15 +93,15 @@ pub fn record_base(
     let base = ls_remote(&target_ctx, &main)?.ok_or_else(|| {
         VivariumError::Other(format!("main ref {main} does not exist on target {target}"))
     })?;
-    store.upsert_need_branch(&NeedBranchRow {
-        need: need.to_owned(),
-        branch: branch(need),
-        base: Some(base.clone()),
-        status: LIVE.to_owned(),
-        run,
-        target: target.to_owned(),
-        priors: existing.map(|row| row.priors).unwrap_or_default(),
-    })?;
+    let run_row = store.run_row(need, run)?;
+    store.upsert_need_branch(&NeedBranchRow::for_run(
+        &run_row,
+        branch(need),
+        Some(base.clone()),
+        LIVE,
+        target,
+        existing.map(|row| row.priors).unwrap_or_default(),
+    ))?;
     Ok(base)
 }
 
@@ -170,10 +170,14 @@ fn restart<S: JobStore>(
     row: NeedBranchRow,
 ) -> Result<(), VivariumError> {
     match row.status.as_str() {
-        LIVE if run.entry == REWORK_ENTRY => store.upsert_need_branch(&NeedBranchRow {
-            run: run.run,
-            ..row
-        }),
+        LIVE if run.entry == REWORK_ENTRY => store.upsert_need_branch(&NeedBranchRow::for_run(
+            run,
+            row.branch,
+            row.base,
+            &row.status,
+            &row.target,
+            row.priors,
+        )),
         LIVE => begin_rename(ctx, st, store, run, &row),
         RENAMING => continue_rename(ctx, st, store, run, &row),
         DELETING => continue_delete(ctx, st, store, run, &row),
@@ -242,20 +246,19 @@ fn no_merge_role(ctx: &Ctx, row: &NeedBranchRow) {
 fn reset(
     store: &PumpStore,
     row: &NeedBranchRow,
-    run: u32,
+    run: &RunRow,
     prior_name: Option<String>,
 ) -> Result<(), VivariumError> {
     let mut priors = row.priors.clone();
     priors.extend(prior_name.filter(|name| !priors.contains(name)));
-    store.upsert_need_branch(&NeedBranchRow {
-        need: row.need.clone(),
-        branch: row.branch.clone(),
-        base: None,
-        status: FRESH.to_owned(),
+    store.upsert_need_branch(&NeedBranchRow::for_run(
         run,
-        target: row.target.clone(),
+        row.branch.clone(),
+        None,
+        FRESH,
+        &row.target,
         priors,
-    })
+    ))
 }
 
 fn old_tip(ctx: &Ctx, row: &NeedBranchRow) -> Result<Option<String>, VivariumError> {
@@ -273,7 +276,7 @@ fn begin_rename<S: JobStore>(
     row: &NeedBranchRow,
 ) -> Result<(), VivariumError> {
     let Some(tip) = old_tip(ctx, row)? else {
-        return reset(store, row, run.run, None);
+        return reset(store, row, run, None);
     };
     let name = prior(&row.need, row.run);
     let Some(mut spec) = command_job(
@@ -370,7 +373,7 @@ fn continue_delete<S: JobStore>(
     let Some(job) = st.jobs().get(&id).cloned() else {
         return match old_tip(ctx, row)? {
             Some(tip) => enqueue_cut(ctx, st, store, row, &tip),
-            None => reset(store, row, run.run, Some(prior(&row.need, row.run))),
+            None => reset(store, row, run, Some(prior(&row.need, row.run))),
         };
     };
     if !job.status.is_terminal() {
@@ -380,7 +383,7 @@ fn continue_delete<S: JobStore>(
     if finished_with(&job, |out| {
         out.runner_delete().is_some_and(|d| d.succeeded())
     }) {
-        return reset(store, row, run.run, Some(prior(&row.need, row.run)));
+        return reset(store, row, run, Some(prior(&row.need, row.run)));
     }
     raise_failed(
         ctx,

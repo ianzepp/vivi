@@ -14,6 +14,7 @@ use crate::mailspace::{PumpAction, PumpActionKind};
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -21,8 +22,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
+use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
-use crate::pump::store::{PumpStore, RUN_LIVE};
 
 /// The exception kind raised for an unlock that cannot be applied.
 pub const UNLOCK_REFUSED: &str = "flow-unlock-refused";
@@ -141,7 +142,7 @@ fn apply_one<M: MailWriter + MailReader>(
         .map_err(|error| format!("cannot read the run index: {error}"))?;
     let run = runs
         .into_iter()
-        .rfind(|row| row.state == RUN_LIVE)
+        .rfind(|row| row.state == run_state::LIVE)
         .ok_or_else(|| format!("need {need} has no live run"))?;
     let def = flow_of(&run)?;
     let row = locked_step(store, need, &run, &def)?;

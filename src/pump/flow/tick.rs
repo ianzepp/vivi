@@ -27,7 +27,9 @@ use crate::pump::flow::cto_step::unchanged_text;
 use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
-use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::index::{
+    FLOW_VERSION_NUMBER, RunRow, StepJobRow, StepRow, StepState, run_state,
+};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
@@ -61,6 +63,15 @@ pub const SCOPE_REWORK: &str = "flow-scope-rework";
 pub const KIND_CHANGED: &str = "flow-kind-changed";
 /// Exception kind: routing refused a collected word.
 pub const WORD_REJECTED: &str = "flow-word-rejected";
+/// Exception kind: a finished step job belongs to a run that cannot apply it.
+pub const JOB_ORPHANED: &str = "flow-job-orphaned";
+/// Exception kind: a finished step job is not its step's newest attempt.
+pub const STALE_ATTEMPT: &str = "flow-stale-attempt";
+/// Exception kind: a run was stored under another flow version than the
+/// loaded definition.
+pub const FLOW_VERSION_STALE: &str = "flow-version-stale";
+/// Exception kind: a step row names a node the loaded flow does not have.
+pub const NODE_UNKNOWN: &str = "flow-node-unknown";
 
 /// Seconds a run may stay `finishing` before the alarm.
 const FINISHING_STUCK_SECS: u64 = 600;
@@ -105,7 +116,7 @@ where
     S: JobStore,
     M: FlowMail,
 {
-    let def_for = |run: &RunRow| def_of(run);
+    let def_for = |run: &RunRow| def_of(ctx, run);
     let decide = |node: &FlowNode, inputs: &[JoinInput]| registry.decide(store, node, inputs);
     boundary(
         ctx,
@@ -118,7 +129,7 @@ where
     let unapplied = unapplied_step_jobs(st, store)?;
     for run in store.live_runs()? {
         let unit = format!("{} r{}", run.need, run.run);
-        let result = def_of(&run).and_then(|def| {
+        let result = def_of(ctx, &run).and_then(|def| {
             RunCx {
                 ctx,
                 st: &mut *st,
@@ -133,6 +144,8 @@ where
         });
         boundary(ctx, &unit, result);
     }
+    let left = unapplied_step_jobs(st, store)?;
+    settle_orphans(ctx, st, store, &left);
     for phase in registry.phases() {
         boundary(ctx, phase.name(), phase.run(ctx, st, store, mail));
     }
@@ -163,13 +176,28 @@ fn validate_once(ctx: &Ctx) {
     }
 }
 
-fn def_of(run: &RunRow) -> Result<FlowDef, VivariumError> {
+/// The loaded definition of a run's flow. A run stored under another flow
+/// version is held: raised once, never applied on the wrong definition.
+fn def_of(ctx: &Ctx, run: &RunRow) -> Result<FlowDef, VivariumError> {
     let kind = FlowKind::parse(&run.kind).ok_or_else(|| {
         VivariumError::Parse(format!(
             "need {} r{}: unknown flow kind `{}`",
             run.need, run.run, run.kind
         ))
     })?;
+    if run.flow_version != FLOW_VERSION_NUMBER {
+        let text = format!(
+            "need {} r{}: expected flow version {FLOW_VERSION_NUMBER}; actual: stored {}",
+            run.need, run.run, run.flow_version
+        );
+        raise_once(
+            ctx,
+            FLOW_VERSION_STALE,
+            &format!("{} r{}", run.need, run.run),
+            &text,
+        );
+        return Err(VivariumError::Parse(text));
+    }
     load(kind)
 }
 
@@ -249,6 +277,63 @@ fn unapplied_step_jobs<S: JobStore>(
     Ok(found)
 }
 
+/// Settle finished step jobs that no live run applied. A run in a state that
+/// resolves on its own (`live`, `starting`, `finishing`, `restarting`) keeps
+/// its jobs; a `superseded` or `withdrawn` run is a dead run's expected late
+/// result (logged); a `done` run or an unknown state is raised once.
+fn settle_orphans<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    left: &[(String, StepJobRow)],
+) {
+    for (id, row) in left {
+        let (run, state) = match orphan_state(store, row) {
+            Ok(found) => found,
+            Err(error) => {
+                boundary(ctx, &format!("job {id}"), Err::<(), _>(error));
+                continue;
+            }
+        };
+        if matches!(
+            state.as_str(),
+            run_state::LIVE | run_state::STARTING | run_state::FINISHING | run_state::RESTARTING
+        ) {
+            continue;
+        }
+        jobs::mark_applied(st, id, ctx.now());
+        if matches!(state.as_str(), run_state::SUPERSEDED | run_state::WITHDRAWN) {
+            ctx.log(&format!(
+                "flow tick: job {id} step {} of r{run} ({state}) applied late; ignored",
+                row.task
+            ));
+            continue;
+        }
+        raise_once(
+            ctx,
+            JOB_ORPHANED,
+            id,
+            &format!(
+                "job {id} step {}: expected run r{run} live; actual: {state}; result not applied",
+                row.task
+            ),
+        );
+    }
+}
+
+/// The run number and stored run state a step job's step belongs to.
+fn orphan_state(store: &PumpStore, row: &StepJobRow) -> Result<(u32, String), VivariumError> {
+    let Some((need, run)) = store.step_run_of(&row.task)? else {
+        return Ok((row.run, String::from("no step row")));
+    };
+    let state = store
+        .runs_of(&need)?
+        .into_iter()
+        .find(|candidate| candidate.run == run)
+        .map_or_else(|| String::from("no run row"), |candidate| candidate.state);
+    Ok((run, state))
+}
+
 impl<S, M> RunCx<'_, S, M>
 where
     S: JobStore,
@@ -276,7 +361,10 @@ where
                 self.step_unit(&row.task, &step.node, "collect", Some(id), result);
             }
         }
-        self.release_scope_waits()?;
+        for step in self.scope_wait_rows()? {
+            let result = self.release_one(&step);
+            self.step_unit(&step.task, &step.node, "release", None, result);
+        }
         self.settle_fanouts()?;
         self.start_steps()?;
         self.poll_waiting()?;
@@ -291,11 +379,10 @@ where
     /// this tick may have landed, restarted or withdrawn it, and an ended run
     /// has no kind left to check and no overdue job to report.
     fn still_live(&self) -> Result<bool, VivariumError> {
-        const RUN_LIVE: &str = "live";
         let rows = self.store.runs_of(&self.run.need)?;
         Ok(rows
             .iter()
-            .any(|row| row.run == self.run.run && row.state == RUN_LIVE))
+            .any(|row| row.run == self.run.run && row.state == run_state::LIVE))
     }
 
     /// Per-step error boundary: a failing unit never ends the run's tick.
@@ -338,6 +425,20 @@ where
         let Some(job) = self.st.jobs().get(id).cloned() else {
             return Ok(());
         };
+        let newest = self.store.last_attempt(&row.task)?;
+        if row.attempt < newest {
+            jobs::mark_applied(self.st, id, self.ctx.now());
+            raise_once(
+                self.ctx,
+                STALE_ATTEMPT,
+                id,
+                &format!(
+                    "job {id} step {}: expected attempt {newest}; actual: attempt {}; result ignored",
+                    row.task, row.attempt
+                ),
+            );
+            return Ok(());
+        }
         let step = self.store.step_by_task(&row.task)?;
         if let Some(step) = step.filter(|s| {
             matches!(
@@ -359,23 +460,59 @@ where
                     )));
                 };
                 collector.collect(self, &job, row, &step, &class)?;
+            } else {
+                let text = self.node_unknown_text(&row.task, &step.node, Some(id));
+                raise_once(self.ctx, NODE_UNKNOWN, &row.task, &text);
             }
         }
         jobs::mark_applied(self.st, id, self.ctx.now());
         Ok(())
     }
 
+    /// The text of a step whose node the loaded flow does not have.
+    fn node_unknown_text(&self, task: &str, node: &str, job: Option<&str>) -> String {
+        let tail = job.map_or_else(String::new, |id| format!("; job {id} not applied"));
+        format!(
+            "step {task}: expected node {node} in the {} flow (version {}); actual: not in the definition{tail}",
+            self.def.kind.name(),
+            self.run.flow_version
+        )
+    }
+
     // ---- fanouts, new steps, alarms ---------------------------------------
 
     fn settle_fanouts(&mut self) -> Result<(), VivariumError> {
-        let Some(word) = fanout::settle(self.store, &*self.mail, &self.run)? else {
-            return Ok(());
+        let word = match fanout::settle(self.store, &*self.mail, &self.run) {
+            Ok(Some(word)) => word,
+            Ok(None) => return Ok(()),
+            Err(error) => return self.settle_failed(error),
         };
         for step in self.open_rows()? {
             if self.class_of(&step.node) == Some(NodeClass::Fanout) {
-                let payload = self.fanout_payload(&step, word)?;
-                self.advance_word(&step, word, payload)?;
+                let result = self
+                    .fanout_payload(&step, word)
+                    .and_then(|payload| self.advance_word(&step, word, payload));
+                self.step_unit(&step.task, &step.node, "settle", None, result);
             }
+        }
+        Ok(())
+    }
+
+    /// A failed `fanout::settle` belongs to the open fanout step; with none
+    /// open it goes to the run boundary.
+    fn settle_failed(&mut self, error: VivariumError) -> Result<(), VivariumError> {
+        let open = self.store.open_fanout(&self.run.need, self.run.run)?;
+        let step = match open {
+            Some(task) => self.store.step_by_task(&task)?,
+            None => None,
+        };
+        match step {
+            Some(step) => self.step_unit(&step.task, &step.node, "settle", None, Err(error)),
+            None => boundary(
+                self.ctx,
+                &format!("{} r{}", self.run.need, self.run.run),
+                Err::<(), _>(error),
+            ),
         }
         Ok(())
     }
@@ -426,7 +563,9 @@ where
     fn start_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
         let registry = self.registry;
         let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-            return Ok(());
+            return Err(VivariumError::Parse(
+                self.node_unknown_text(&step.task, &step.node, None),
+            ));
         };
         let Some(handler) = registry.handler_for(self.def.kind, node) else {
             return Ok(());
@@ -492,7 +631,9 @@ where
     fn poll_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
         let registry = self.registry;
         let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-            return Ok(());
+            return Err(VivariumError::Parse(
+                self.node_unknown_text(&step.task, &step.node, None),
+            ));
         };
         let Some(handler) = registry.handler_for(self.def.kind, node) else {
             return Ok(());
@@ -518,41 +659,22 @@ where
         if spec.task.is_none() {
             spec.task = Some(step.task.clone());
         }
-        let mut payload = match std::mem::take(&mut spec.payload) {
-            serde_json::Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        for (key, value) in [
-            ("need", serde_json::json!(self.run.need)),
-            ("run", serde_json::json!(self.run.run)),
-            ("node", serde_json::json!(step.node)),
-            ("task", serde_json::json!(step.task)),
-            ("attempt", serde_json::json!(1)),
-            ("kind", serde_json::json!(self.run.kind)),
-            (
-                "class",
+        let id = spec.id.clone();
+        let row = step.job(&id, self.store.next_attempt(&step.task)?);
+        row.stamp(&self.run.need, &mut spec.payload);
+        if let Some(map) = spec.payload.as_object_mut() {
+            map.insert("kind".to_owned(), serde_json::json!(self.run.kind));
+            map.insert(
+                "class".to_owned(),
                 serde_json::json!(
                     self.class_of(&step.node)
                         .map(|class| class.name())
                         .unwrap_or_default()
                 ),
-            ),
-        ] {
-            payload.insert(key.to_owned(), value);
+            );
         }
-        spec.payload = serde_json::Value::Object(payload);
-        let id = spec.id.clone();
         jobs::enqueue(self.st, spec)?;
-        self.store.insert_step_job(
-            &self.run.need,
-            &StepJobRow {
-                job: id,
-                run: self.run.run,
-                node: step.node.clone(),
-                task: step.task.clone(),
-                attempt: 1,
-            },
-        )?;
+        self.store.insert_step_job(&self.run.need, &row)?;
         self.store
             .set_step_state(&step.task, StepState::Running, None)
     }

@@ -1,11 +1,12 @@
 //! Idempotent run start: each write of `start` fails once, the `starting`
 //! run is resumed, and the need ends with one run and no duplicate tasks.
 
-use super::{RUN_STARTING, SENTINEL_NODE, resume, start};
+use super::{SENTINEL_NODE, resume, start};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::def::SENTINEL_MARKER;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::mail::MailReader;
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -36,7 +37,7 @@ fn a_failure_at_any_write_resumes_to_one_live_run() {
         );
         let runs = store.runs_of(NEED).unwrap();
         assert_eq!(runs.len(), 1, "write {write}");
-        assert_eq!(runs[0].state, RUN_STARTING, "write {write}");
+        assert_eq!(runs[0].state, run_state::STARTING, "write {write}");
 
         let row = resume(&ctx, &store, &mut mail, &runs[0]).unwrap();
         assert_eq!(row.state, "live", "write {write}");
