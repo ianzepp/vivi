@@ -34,7 +34,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairMergeMain {
         }
         match merge_main::classify(job) {
             None => Ok(()),
-            Some(MergeMainResult::Merged(sha)) => land(cx, job, step, &sha),
+            Some(MergeMainResult::Merged(sha)) => land(cx, job, step, &sha, &sha),
             Some(MergeMainResult::Conflict) => {
                 let reason = if merge_main::main_moved(job) {
                     "main moved"
@@ -48,19 +48,21 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairMergeMain {
     }
 }
 
-/// Record the landed repair merge for its target, then answer merged.
+/// Record `recorded` as the repair commit for the job's target, then answer
+/// merged with `sha` (the main commit that landed it).
 fn land<S: JobStore, M: FlowMail>(
     cx: &mut RunCx<'_, S, M>,
     job: &PoolJob,
     step: &StepRow,
     sha: &str,
+    recorded: &str,
 ) -> Result<(), VivariumError> {
     let target = job
         .target
         .as_deref()
         .ok_or_else(|| VivariumError::Parse(format!("merge-main job {} has no target", job.id)))?;
     cx.store
-        .set_main_state(&main_rung::key(main_rung::REPAIRED, target), sha)?;
+        .set_main_state(&main_rung::key(main_rung::REPAIRED, target), recorded)?;
     cx.advance_word(step, "merged", merged_payload(cx.ctx, job, sha))
 }
 
@@ -132,7 +134,9 @@ fn settle<S: JobStore, M: FlowMail>(
     let need_tip = payload_str(job, "need_tip")?;
     let base = payload_str(job, "main_tip")?;
     match verify::ref_contains(cx.ctx, &target, &publish_ref, need_tip) {
-        Ok(Some(tip)) => land(cx, job, step, &tip),
+        // Main holds the repair, but its tip may be a later commit: record the
+        // repair commit itself, which every later main holding the repair contains.
+        Ok(Some(tip)) => land(cx, job, step, &tip, need_tip),
         Ok(None) => match main_now(cx, &target) {
             Ok(now) if now != base => {
                 let reason = format!("main moved from {base} to {now} without {need_tip}");
