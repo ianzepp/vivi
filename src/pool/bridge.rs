@@ -167,6 +167,8 @@ pub fn revoke_pool(space: &Mailspace, pool: &str) -> Result<Vec<String>, Vivariu
 /// harness such as Claude Code applies in an MCP config), never the key
 /// itself. The runner copies it into the agent's home as `mcp.json`; a
 /// harness template names the file with the `{mcp_config}` placeholder.
+/// `VIVI_MCP_PROJECT_ID` is the project the bridge fills into the model's
+/// tool calls that take one and carry none; it is not part of the URL.
 #[must_use]
 pub fn mcp_config_json(server: &str, project_id: &str) -> String {
     serde_json::json!({
