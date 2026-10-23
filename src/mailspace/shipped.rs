@@ -40,6 +40,13 @@ pub const SLICER_CHARTER: &str = include_str!("../../skills/vivi/references/char
 pub const REPAIRER_CHARTER: &str =
     include_str!("../../skills/vivi/references/charters/repairer.md");
 
+/// The role the build flow sends its CTO step to.
+pub const HEAD_CTO_ROLE: &str = "head-cto";
+
+/// The shipped charter of the [`HEAD_CTO_ROLE`] role.
+pub const HEAD_CTO_CHARTER: &str =
+    include_str!("../../skills/tugboat/references/charters/head-cto.md");
+
 /// The shipped charter text for a shipped role name, or `None` for any other.
 #[must_use]
 pub fn shipped_charter(role: &str) -> Option<&'static str> {
@@ -51,6 +58,7 @@ pub fn shipped_charter(role: &str) -> Option<&'static str> {
         ADMITTER_ROLE => Some(ADMITTER_CHARTER),
         SLICER_ROLE => Some(SLICER_CHARTER),
         REPAIRER_ROLE => Some(REPAIRER_CHARTER),
+        HEAD_CTO_ROLE => Some(HEAD_CTO_CHARTER),
         _ => None,
     }
 }

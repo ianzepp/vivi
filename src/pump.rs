@@ -35,7 +35,6 @@ pub mod merge;
 pub mod need;
 pub mod need_audit;
 pub mod need_landing;
-pub(crate) mod need_pipeline;
 pub mod need_verdict;
 pub mod oversight;
 pub(crate) mod par;

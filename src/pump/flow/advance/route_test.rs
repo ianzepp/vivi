@@ -401,3 +401,50 @@ fn a_retried_route_reuses_the_step_an_earlier_partial_route_sent() -> R {
     assert_eq!(closes, 1);
     Ok(())
 }
+
+#[test]
+fn a_routed_step_records_its_payload_under_its_task_and_class() -> R {
+    let mut rig = rig()?;
+    let audit = rig.step("audit1")?;
+    let mut out = with_word(audit.clone(), "residual");
+    out.payload = json!({"front": {"answer": "residual", "raise_rung": "main"}, "body": "x"});
+
+    rig.route(&out, "")?;
+    let row = rig.store.step_payload(&audit.task)?.expect("payload row");
+    assert_eq!(row.class, "auditor");
+    assert_eq!(row.node, "audit1");
+    assert_eq!((row.need.as_str(), row.run), (NEED, 1));
+    assert_eq!(row.payload, out.payload);
+    Ok(())
+}
+
+#[test]
+fn a_rejected_word_records_no_payload() -> R {
+    let mut rig = rig()?;
+    let build = rig.step("build1")?;
+    let mut out = with_word(build.clone(), "merged");
+    out.payload = json!({"body": "x"});
+
+    let routed = rig.route(&out, "")?;
+    assert!(routed.rejected.is_some());
+    assert!(rig.store.step_payload(&build.task)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn routing_twice_for_one_task_leaves_one_payload_row() -> R {
+    let mut rig = rig()?;
+    let build = rig.step("build1")?;
+    rig.mail.calls.clear();
+    rig.mail.fail_at = Some(1);
+    let mut out = with_word(build.clone(), "built");
+    out.payload = json!({"body": "first"});
+    assert!(rig.route(&out, "").is_err());
+    out.payload = json!({"body": "second"});
+    rig.route(&out, "")?;
+
+    let rows = rig.store.step_payloads_of_run(NEED, 1)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].payload, json!({"body": "second"}));
+    Ok(())
+}

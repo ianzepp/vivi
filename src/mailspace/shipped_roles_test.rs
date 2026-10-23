@@ -92,7 +92,7 @@ fn an_existing_charter_is_never_replaced() {
 }
 
 #[test]
-fn shipped_charter_covers_the_seven_shipped_roles() {
+fn shipped_charter_covers_the_eight_shipped_roles() {
     for name in [
         "pump-planner",
         "merge",
@@ -101,6 +101,7 @@ fn shipped_charter_covers_the_seven_shipped_roles() {
         "admitter",
         "slicer",
         "repairer",
+        "head-cto",
     ] {
         assert!(
             shipped_charter(name).is_some_and(|text| !text.is_empty()),
@@ -108,4 +109,34 @@ fn shipped_charter_covers_the_seven_shipped_roles() {
         );
     }
     assert!(shipped_charter("hand").is_none());
+}
+
+#[test]
+fn head_cto_is_created_read_only_with_its_shipped_charter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = Mailspace::init(Some(tmp.path())).unwrap();
+    add_local_pool(tmp.path(), "workers");
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    mailspace.ensure_flow_roles().unwrap();
+    let view = mailspace.role_view("head-cto").unwrap();
+    assert_eq!(view.kind.as_deref(), Some("head-cto"));
+    assert_eq!(view.read_only, Some(true));
+    assert_eq!(view.pool.as_deref(), Some("workers"));
+    assert_eq!(Some(view.charter.as_str()), shipped_charter("head-cto"));
+}
+
+#[test]
+fn an_existing_head_cto_charter_is_left_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = Mailspace::init(Some(tmp.path())).unwrap();
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    mailspace
+        .add_role("head-cto", RoleUpdate::default())
+        .unwrap();
+    mailspace.set_charter("head-cto", "my own cto").unwrap();
+    mailspace.ensure_flow_roles().unwrap();
+    assert_eq!(
+        mailspace.role_view("head-cto").unwrap().charter,
+        "my own cto"
+    );
 }
