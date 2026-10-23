@@ -10,6 +10,7 @@ pub mod mail;
 pub mod outcome;
 pub mod registry;
 pub mod run;
+pub mod scope;
 pub mod slice_dispatch;
 pub mod tick;
 pub mod validate;

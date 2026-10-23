@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{PumpStore, db_err};
 use crate::error::VivariumError;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::scope::ScopeState;
 
 /// The run state of a run that is still being advanced. Any other value is a
 /// finished run.
@@ -46,7 +47,11 @@ CREATE TABLE IF NOT EXISTS step_jobs (
 CREATE INDEX IF NOT EXISTS step_jobs_task ON step_jobs (task);
 CREATE TABLE IF NOT EXISTS slice_scope (
     task TEXT NOT NULL PRIMARY KEY,
-    write_scope_json TEXT NOT NULL
+    run INTEGER NOT NULL,
+    write_scope_json TEXT NOT NULL,
+    scope_requests INTEGER NOT NULL DEFAULT 0,
+    scope_state TEXT NOT NULL DEFAULT 'none',
+    holders TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS need_branches (
     need TEXT NOT NULL PRIMARY KEY,
@@ -339,6 +344,188 @@ impl PumpStore {
             )
             .map_err(db_err("count step attempts"))
     }
+}
+
+impl PumpStore {
+    /// Store the write scope of a slice task of `run`.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written or the task
+    /// already has a scope.
+    pub fn insert_slice_scope(
+        &self,
+        task: &str,
+        run: u32,
+        write_scope: &[String],
+    ) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "INSERT INTO slice_scope (task, run, write_scope_json) VALUES (?1, ?2, ?3)",
+                params![task, run, json_list(write_scope)?],
+            )
+            .map_err(db_err("insert slice scope"))?;
+        Ok(())
+    }
+
+    /// The current (possibly widened) write scope of a slice task.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be read.
+    pub fn slice_scope(&self, task: &str) -> Result<Option<Vec<String>>, VivariumError> {
+        self.scope_text(task, "write_scope_json")?
+            .map(|text| parse_list(&text))
+            .transpose()
+    }
+
+    /// Add `paths` to a slice's write scope; paths already present are kept once.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the task has no scope row or the update fails.
+    pub fn widen_slice_scope(&self, task: &str, paths: &[String]) -> Result<(), VivariumError> {
+        let mut scope = self.slice_scope(task)?.ok_or_else(|| no_scope(task))?;
+        for path in paths {
+            if !scope.contains(path) {
+                scope.push(path.clone());
+            }
+        }
+        self.update_scope_column(task, "write_scope_json", &json_list(&scope)?)
+    }
+
+    /// Count one more blocked-scope request on the task; returns the new count.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the task has no scope row or the update fails.
+    pub fn bump_scope_requests(&self, task: &str) -> Result<u32, VivariumError> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE slice_scope SET scope_requests = scope_requests + 1 WHERE task = ?1",
+                params![task],
+            )
+            .map_err(db_err("bump scope requests"))?;
+        if changed == 0 {
+            return Err(no_scope(task));
+        }
+        self.conn
+            .query_row(
+                "SELECT scope_requests FROM slice_scope WHERE task = ?1",
+                params![task],
+                |row| row.get(0),
+            )
+            .map_err(db_err("read scope requests"))
+    }
+
+    /// Set the blocked-scope state of a slice task.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the task has no scope row or the update fails.
+    pub fn set_scope_state(&self, task: &str, state: ScopeState) -> Result<(), VivariumError> {
+        self.update_scope_column(task, "scope_state", state.word())
+    }
+
+    /// The blocked-scope state of a slice task.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be read.
+    pub fn scope_state(&self, task: &str) -> Result<Option<ScopeState>, VivariumError> {
+        self.scope_text(task, "scope_state")?
+            .map(|word| ScopeState::parse(&word))
+            .transpose()
+    }
+
+    /// Record the slice tasks a blocked slice waits on.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the task has no scope row or the update fails.
+    pub fn set_scope_holders(&self, task: &str, holders: &[String]) -> Result<(), VivariumError> {
+        self.update_scope_column(task, "holders", &json_list(holders)?)
+    }
+
+    /// The slice tasks a blocked slice waits on.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be read.
+    pub fn scope_holders(&self, task: &str) -> Result<Vec<String>, VivariumError> {
+        self.scope_text(task, "holders")?
+            .map_or_else(|| Ok(Vec::new()), |text| parse_list(&text))
+    }
+
+    /// The write scopes of the other slices of `task`'s run whose step is not
+    /// closed (any state but done or failed), as `(task, write scope)` pairs.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the rows cannot be read.
+    pub fn open_scopes_of_run(
+        &self,
+        task: &str,
+        run: u32,
+    ) -> Result<Vec<(String, Vec<String>)>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT s.task, s.write_scope_json FROM slice_scope s \
+                 JOIN flow_steps f ON f.task = s.task \
+                 WHERE s.task != ?1 AND s.run = ?2 AND f.run = ?2 \
+                   AND f.need = (SELECT need FROM flow_steps WHERE task = ?1) \
+                   AND f.state NOT IN ('done', 'failed') \
+                 ORDER BY f.rowid",
+            )
+            .map_err(db_err("read open slice scopes"))?;
+        let rows = stmt
+            .query_map(params![task, run], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(db_err("read open slice scopes"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err("read open slice scopes"))?;
+        rows.into_iter()
+            .map(|(task, text)| Ok((task, parse_list(&text)?)))
+            .collect()
+    }
+
+    fn scope_text(&self, task: &str, column: &str) -> Result<Option<String>, VivariumError> {
+        self.conn
+            .query_row(
+                &format!("SELECT {column} FROM slice_scope WHERE task = ?1"),
+                params![task],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err("read slice scope"))
+    }
+
+    fn update_scope_column(
+        &self,
+        task: &str,
+        column: &str,
+        value: &str,
+    ) -> Result<(), VivariumError> {
+        let changed = self
+            .conn
+            .execute(
+                &format!("UPDATE slice_scope SET {column} = ?2 WHERE task = ?1"),
+                params![task, value],
+            )
+            .map_err(db_err("update slice scope"))?;
+        if changed == 0 {
+            return Err(no_scope(task));
+        }
+        Ok(())
+    }
+}
+
+fn no_scope(task: &str) -> VivariumError {
+    VivariumError::Other(format!("pump.db slice_scope: no scope for task {task}"))
+}
+
+fn json_list(items: &[String]) -> Result<String, VivariumError> {
+    serde_json::to_string(items)
+        .map_err(|e| VivariumError::Other(format!("pump.db slice_scope: encode list: {e}")))
+}
+
+fn parse_list(text: &str) -> Result<Vec<String>, VivariumError> {
+    serde_json::from_str(text)
+        .map_err(|e| VivariumError::Other(format!("pump.db slice_scope: decode list: {e}")))
 }
 
 #[cfg(test)]
