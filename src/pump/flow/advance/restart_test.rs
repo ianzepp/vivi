@@ -8,8 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use super::{RESTART_STUCK, RUN_RESTARTING, register, restart};
+use super::{ABANDONED_MARKER, RESTART_STUCK, RUN_RESTARTING, prune_dead_jobs, register, restart};
 use crate::error::VivariumError;
+use crate::mailspace::marked_payload;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::{STEP_MARKER, VERDICT_SUPERSEDED};
@@ -18,6 +19,7 @@ use crate::pump::flow::fanout::SLICE_NODE_PREFIX;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, enqueue};
@@ -295,5 +297,96 @@ fn the_phase_removes_pending_jobs_of_dead_runs_only() -> R {
 
     let left: Vec<&str> = rig.jobs.jobs.keys().map(String::as_str).collect();
     assert_eq!(left, vec!["j-new-pending", "j-old-running"]);
+    Ok(())
+}
+
+#[test]
+fn dead_runs_list_their_dispatched_jobs_once_and_late_results_close_out_quietly() -> R {
+    let mut rig = rig()?;
+    let dead_task = rig.store.steps_of(NEED, 1)?[0].task.clone();
+    let sentinel = rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|r| r.node == SENTINEL_NODE)
+        .map(|r| r.task)
+        .unwrap_or_default();
+    rig.add_job("j-pending", &dead_task, 1)?;
+    rig.add_job("j-flying", &dead_task, 1)?;
+    if let Some(job) = rig.jobs.jobs.get_mut("j-flying") {
+        job.status = JobStatus::Dispatched;
+    }
+    // Withdraw the run; a live run of another need keeps its own finished job.
+    rig.store.set_run_state(NEED, 1, "withdrawn")?;
+    MailWriter::open_record(&mut rig.mail, "n2", "record")?;
+    rig.store.insert_run(&RunRow {
+        need: "n2".into(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    })?;
+    let live_task = rig.mail.send_step("pump", "pump", "plan", "live", &[])?;
+    rig.store.insert_step(
+        "n2",
+        &StepRow {
+            run: 1,
+            node: "plan".into(),
+            task: live_task.clone(),
+            state: StepState::Running,
+            verdict: None,
+        },
+    )?;
+    let mut spec = JobSpec::new("j-live", "planner", "pump-planner", "s", "b");
+    spec.task = Some(live_task.clone());
+    enqueue(&mut rig.jobs, spec)?;
+    rig.store.insert_step_job(
+        "n2",
+        &StepJobRow {
+            job: "j-live".into(),
+            run: 1,
+            node: "plan".into(),
+            task: live_task.clone(),
+            attempt: 1,
+        },
+    )?;
+    if let Some(job) = rig.jobs.jobs.get_mut("j-live") {
+        job.status = JobStatus::Dispatched;
+    }
+    let abandoned = |rig: &Rig| -> Result<Vec<(String, String)>, VivariumError> {
+        rig.mail.marked_replies(&sentinel, ABANDONED_MARKER)
+    };
+
+    rig.tick()?;
+    assert!(!rig.jobs.jobs.contains_key("j-pending"));
+    let replies = abandoned(&rig)?;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        marked_payload(&replies[0].1, ABANDONED_MARKER),
+        Some("j-flying")
+    );
+
+    let calls = rig.mail.calls.len();
+    rig.tick()?;
+    assert_eq!(abandoned(&rig)?.len(), 1);
+    assert_eq!(rig.mail.calls.len(), calls);
+
+    if let Some(job) = rig.jobs.jobs.get_mut("j-flying") {
+        job.status = JobStatus::Finished;
+    }
+    rig.tick()?;
+    assert!(rig.jobs.jobs["j-flying"].applied_at.is_some());
+    // The live run's finished job is not this phase's business (the live-run
+    // loop owns it), so call the phase alone.
+    if let Some(job) = rig.jobs.jobs.get_mut("j-live") {
+        job.status = JobStatus::Finished;
+    }
+    prune_dead_jobs(&rig.ctx, &mut rig.jobs, &rig.store, &mut rig.mail)?;
+    assert!(rig.jobs.jobs["j-live"].applied_at.is_none());
+    assert_eq!(rig.mail.calls.len(), calls);
+    assert_eq!(abandoned(&rig)?.len(), 1);
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }

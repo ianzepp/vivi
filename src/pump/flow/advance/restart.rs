@@ -6,9 +6,10 @@
 //! write leaves the old run `restarting`; the [`Restarts`] tick phase resumes
 //! it and drops the old run's queued jobs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::VivariumError;
+use crate::mailspace::{marked_line, marked_payload};
 use crate::pump::flow::advance::start::{RUN_STARTING, SENTINEL_NODE, start};
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
@@ -17,7 +18,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobStatus, JobStore};
+use crate::pump::jobs::{JobStatus, JobStore, mark_applied};
 use crate::pump::store::PumpStore;
 
 /// Run state: a restart of this run began and has not finished.
@@ -30,6 +31,8 @@ const RUN_WITHDRAWN: &str = "withdrawn";
 const RUN_LIVE: &str = "live";
 /// Exception kind: a restart stayed unfinished too long.
 pub(crate) const RESTART_STUCK: &str = "flow-run-restart-stuck";
+/// Marker of the reply that lists a dead run's dispatched job ids.
+pub(crate) const ABANDONED_MARKER: &str = "pump-abandoned:";
 /// Seconds a run may stay `restarting` before the alarm.
 const RESTART_STUCK_SECS: u64 = 600;
 
@@ -141,7 +144,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Restarts {
         for run in store.runs_in_state(RUN_RESTARTING)? {
             resume_one(ctx, store, mail, &run);
         }
-        prune_dead_jobs(ctx, st, store)
+        prune_dead_jobs(ctx, st, store, mail)
     }
 }
 
@@ -174,31 +177,73 @@ fn resume_one<M: MailWriter + MailReader>(
     }
 }
 
-/// Remove every Pending job whose step belongs to a superseded or withdrawn
-/// run. Dispatched jobs finish on their own; their results are ignored because
-/// their step rows are closed.
-fn prune_dead_jobs<S: JobStore>(
-    ctx: &Ctx,
-    st: &mut S,
-    store: &PumpStore,
-) -> Result<(), VivariumError> {
-    let mut dead: BTreeSet<String> = BTreeSet::new();
+/// A superseded or withdrawn run with its step rows.
+struct DeadRun {
+    run: RunRow,
+    rows: Vec<StepRow>,
+}
+
+impl DeadRun {
+    /// The task of the run's sentinel row, if it has one.
+    fn sentinel(&self) -> Option<&str> {
+        self.rows
+            .iter()
+            .find(|r| r.node == SENTINEL_NODE)
+            .map(|r| r.task.as_str())
+    }
+}
+
+/// Every superseded or withdrawn run with its step rows.
+fn dead_runs(store: &PumpStore) -> Result<Vec<DeadRun>, VivariumError> {
+    let mut dead = Vec::new();
     for state in [RUN_SUPERSEDED, RUN_WITHDRAWN] {
         for run in store.runs_in_state(state)? {
             let rows = store.steps_of(&run.need, run.run)?;
-            dead.extend(rows.into_iter().map(|r| r.task));
+            dead.push(DeadRun { run, rows });
         }
     }
+    Ok(dead)
+}
+
+/// Account for the jobs of dead runs.
+///
+/// Pending jobs are removed. Dispatched jobs finish on their own: there is no
+/// `vivi pool cancel` verb, so the slot of a running job cannot be freed here.
+/// Their ids are listed once on the run's sentinel (`pump-abandoned:`), and
+/// their late terminal results are marked applied with one log line, so nothing
+/// is posted, raised or opened for them. Jobs of other runs, and jobs with no
+/// step-job row, are untouched.
+fn prune_dead_jobs<S: JobStore, M: FlowMail>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    mail: &mut M,
+) -> Result<(), VivariumError> {
+    let dead = dead_runs(store)?;
     if dead.is_empty() {
         return Ok(());
     }
+    let mut owner: BTreeMap<&str, usize> = BTreeMap::new();
+    for (at, d) in dead.iter().enumerate() {
+        owner.extend(d.rows.iter().map(|r| (r.task.as_str(), at)));
+    }
     let mut doomed = Vec::new();
+    let mut ended = Vec::new();
+    let mut flying: Vec<Vec<String>> = vec![Vec::new(); dead.len()];
     for (id, job) in st.jobs() {
-        if job.status == JobStatus::Pending
-            && let Some(row) = store.step_job(id)?
-            && dead.contains(&row.task)
-        {
-            doomed.push(id.clone());
+        let Some(row) = store.step_job(id)? else {
+            continue;
+        };
+        let Some(&at) = owner.get(row.task.as_str()) else {
+            continue;
+        };
+        match job.status {
+            JobStatus::Pending => doomed.push(id.clone()),
+            JobStatus::Dispatched => flying[at].push(id.clone()),
+            status if job.applied_at.is_none() => {
+                ended.push((id.clone(), at, format!("{status:?}")))
+            }
+            _ => {}
         }
     }
     for id in doomed {
@@ -208,7 +253,49 @@ fn prune_dead_jobs<S: JobStore>(
             ));
         }
     }
+    for (id, at, status) in ended {
+        if mark_applied(st, &id, ctx.now()) {
+            let run = &dead[at].run;
+            ctx.log(&format!(
+                "abandoned job {id} of {} r{} ended {status}",
+                run.need, run.run
+            ));
+        }
+    }
+    for (d, ids) in dead.iter().zip(flying) {
+        if let Err(error) = list_abandoned(mail, d, ids) {
+            ctx.log(&format!(
+                "flow tick: abandoned list of {} r{} failed: {error}",
+                d.run.need, d.run.run
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Post the dispatched `ids` of `dead` on its sentinel as one
+/// `pump-abandoned:` reply, leaving out ids an earlier reply already lists.
+fn list_abandoned<M: FlowMail>(
+    mail: &mut M,
+    dead: &DeadRun,
+    mut ids: Vec<String>,
+) -> Result<(), VivariumError> {
+    let Some(sentinel) = dead.sentinel() else {
+        return Ok(());
+    };
+    if ids.is_empty() {
+        return Ok(());
+    }
+    for (_, text) in mail.marked_replies(sentinel, ABANDONED_MARKER)? {
+        let listed = marked_payload(&text, ABANDONED_MARKER).unwrap_or_default();
+        let listed: BTreeSet<&str> = listed.split_whitespace().collect();
+        ids.retain(|id| !listed.contains(id.as_str()));
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    ids.sort();
+    mail.reply(sentinel, &marked_line(ABANDONED_MARKER, &ids.join(" ")))
 }
 
 #[cfg(test)]
