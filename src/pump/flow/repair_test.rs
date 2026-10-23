@@ -123,9 +123,27 @@ fn latest_facts_picks_the_newest_fix_row_and_reply() -> R {
     mail.reply(&new, "chatter")?;
     mail.reply(&new, &stamped(&"2".repeat(40)))?;
     mail.reply(&new, &marked_line(ATTEMPT_MARKER, "garbled"))?;
-    let got = latest_facts(&store, &mail, NEED, 1, 1)?;
+    let got = latest_facts(&store, &mail, "pump", NEED, 1, 1)?;
     assert_eq!(got.map(|f| f.commit), Some("2".repeat(40)));
-    assert_eq!(latest_facts(&store, &mail, NEED, 1, 2)?, None);
-    assert_eq!(latest_facts(&store, &mail, NEED, 2, 1)?, None);
+    assert_eq!(latest_facts(&store, &mail, "pump", NEED, 1, 2)?, None);
+    assert_eq!(latest_facts(&store, &mail, "pump", NEED, 2, 1)?, None);
+    Ok(())
+}
+
+#[test]
+fn latest_facts_reads_only_the_pump_identity() -> R {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let mut mail = FakeMail::new("pump");
+    let task = mail.send_step("pump", "pump", "fix", "body", &[])?;
+    let only_foreign = mail.send_step("pump", "pump", "fix", "body", &[])?;
+    store.insert_step(NEED, &step("fix1", &task))?;
+    store.insert_step(NEED, &step("fix2", &only_foreign))?;
+    mail.reply(&task, &stamped(&"1".repeat(40)))?;
+    mail.foreign_reply(&task, "mallory", &stamped(&"9".repeat(40)));
+    mail.foreign_reply(&only_foreign, "mallory", &stamped(&"9".repeat(40)));
+    let got = latest_facts(&store, &mail, "pump", NEED, 1, 1)?;
+    assert_eq!(got.map(|f| f.commit), Some("1".repeat(40)));
+    assert_eq!(latest_facts(&store, &mail, "pump", NEED, 1, 2)?, None);
     Ok(())
 }
