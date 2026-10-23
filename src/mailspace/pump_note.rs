@@ -61,6 +61,24 @@ pub fn note_body(
         .map_err(|err| VivariumError::Message(format!("pump note: {err}")))
 }
 
+/// The body of a brief note: the `[job]` table of `job`, a fresh stamp and
+/// `prose` below the front matter.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the letter does not render.
+pub fn brief_body(job: JobFront, prose: &str) -> Result<String, VivariumError> {
+    let front = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::Brief,
+            t: next_stamp(),
+            reference: None,
+        }),
+        job: Some(job),
+    };
+    crate::letter::render(&front, prose)
+        .map_err(|err| VivariumError::Message(format!("pump brief: {err}")))
+}
+
 /// The pump note `body` is, or `None` for plain mail, an invalid letter or a
 /// letter with no `[pump]` table.
 #[must_use]

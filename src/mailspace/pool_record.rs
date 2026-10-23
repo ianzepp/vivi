@@ -34,7 +34,7 @@ pub struct PoolEventRow {
 /// First line of a pump attempt-context reply on a slice task.
 pub const ATTEMPT_MARKER: &str = "pump-attempt:";
 
-/// First line of a pump brief reply on a preset task.
+/// First line of a pump brief reply on a preset task (old form).
 pub const BRIEF_MARKER: &str = "pump-brief:";
 
 /// The first line of a pump-marked reply: `<marker> t=<unix micros> <rest>`.
@@ -108,7 +108,7 @@ fn date_seconds(date: &str) -> i64 {
 /// The marked replies found on one task's thread.
 #[derive(Default)]
 struct ThreadReplies {
-    briefs: Vec<String>,
+    briefs: Vec<super::pump_note::Note>,
     attempts: Vec<String>,
 }
 
@@ -121,21 +121,22 @@ const ATTEMPTS_CAP: usize = 8 * 1024;
 /// Line that opens the attempt text when older replies were cut.
 const ATTEMPTS_CUT: &str = "[older attempts cut]";
 
-/// The task letter with `brief` as its prose: the task's own front matter
-/// stays, the brief's marker line is dropped. A task body that does not parse
-/// as a task letter is replaced by the brief unchanged, so the dispatcher's
-/// refusal names the task.
-fn briefed_body(task_body: &str, brief: &str) -> String {
-    let prose = match brief.split_once('\n') {
-        Some((first, rest)) if first.starts_with(BRIEF_MARKER) => rest.trim_start_matches('\n'),
-        _ => brief,
-    };
+/// The task letter a brief note turns the task into: the task's own front
+/// matter with `job` set to the note's job, over the note's prose. A task body
+/// that does not parse as a task letter is replaced by the note's prose, so the
+/// dispatcher's refusal names the task.
+fn briefed_body(task_body: &str, note: &super::pump_note::Note) -> String {
+    let prose = note.prose.trim_start_matches('\n');
     match crate::letter::read::task_of("", task_body) {
-        Ok(envelope) => match crate::letter::render(&envelope.front, prose) {
-            Ok(rendered) => rendered,
-            Err(_) => brief.to_owned(),
-        },
-        Err(_) => brief.to_owned(),
+        Ok(envelope) => {
+            let mut front = envelope.front;
+            front.job = note.job.clone();
+            match crate::letter::render(&front, prose) {
+                Ok(rendered) => rendered,
+                Err(_) => prose.to_owned(),
+            }
+        }
+        Err(_) => prose.to_owned(),
     }
 }
 
@@ -187,7 +188,7 @@ impl Mailspace {
         })
     }
 
-    /// The `pump-brief:` replies and the attempt notes on a task's thread,
+    /// The brief notes and the attempt notes on a task's thread,
     /// each oldest first.
     fn marked_thread_replies(
         &self,
@@ -203,11 +204,11 @@ impl Mailspace {
             }
             let body = message.body.trim();
             if let Some(note) = super::pump_note::note_of(body) {
-                if note.pump.note == NoteWord::Attempt {
-                    found.attempts.push(note.prose.trim().to_owned());
+                match note.pump.note {
+                    NoteWord::Attempt => found.attempts.push(note.prose.trim().to_owned()),
+                    NoteWord::Brief => found.briefs.push(note),
+                    _ => {}
                 }
-            } else if body.starts_with(BRIEF_MARKER) {
-                found.briefs.push(body.to_owned());
             }
         }
         Ok(found)

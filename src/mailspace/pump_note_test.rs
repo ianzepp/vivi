@@ -40,6 +40,20 @@ fn a_brief_note_is_refused() {
 }
 
 #[test]
+fn a_brief_body_round_trips_with_its_job() {
+    let job = JobFront {
+        id: "h1".into(),
+        kind: "merge".into(),
+        builtin_role: Some("hand".into()),
+    };
+    let note = note_of(&brief_body(job.clone(), "WRITE SCOPE: a.rs").unwrap()).expect("a note");
+    assert_eq!(note.pump.note, NoteWord::Brief);
+    assert_eq!(note.pump.reference, None);
+    assert_eq!(note.job, Some(job));
+    assert_eq!(note.prose.trim(), "WRITE SCOPE: a.rs");
+}
+
+#[test]
 fn plain_prose_and_an_empty_front_are_not_notes() {
     assert_eq!(note_of("pump-attempt: t=1 hello"), None);
     assert_eq!(note_of("just words"), None);
