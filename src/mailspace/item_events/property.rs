@@ -673,6 +673,47 @@ fn item_node(
     Ok(None)
 }
 
+/// The content ids of the held needs that carry a `bound` letter naming any of
+/// `units` (normalized `Message-ID`s). A unit that arrives after the letter
+/// that names it settles those needs again. The letters are found by a scan
+/// of the held mail; a letter that names no unit is never parsed.
+pub(super) fn needs_naming_units(
+    storage: &Storage,
+    units: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<String>, VivariumError> {
+    let mut needs = std::collections::BTreeSet::new();
+    if units.is_empty() {
+        return Ok(needs);
+    }
+    let marker = EVENT_UNIT_HEADER.to_ascii_lowercase().into_bytes();
+    let mut seen = std::collections::BTreeSet::new();
+    for view in storage.list_messages()? {
+        if !seen.insert(view.content_id.clone()) {
+            continue;
+        }
+        let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
+            continue;
+        };
+        if !bytes
+            .to_ascii_lowercase()
+            .windows(marker.len())
+            .any(|window| window == marker.as_slice())
+        {
+            continue;
+        }
+        let Some(event) = parse_property_event(&bytes) else {
+            continue;
+        };
+        if event.kind != PropertyKind::Bound || !event.units.iter().any(|id| units.contains(id)) {
+            continue;
+        }
+        if let Some(need) = storage.live_message_by_rfc_id(&event.of)? {
+            needs.insert(need.content_id);
+        }
+    }
+    Ok(needs)
+}
+
 /// The node handles of the units `event` binds here: held as work with a
 /// backlog node, and named by a letter newer than the unit's controlling
 /// bind — the newest `bound` letter that moved it, wherever that bind was
