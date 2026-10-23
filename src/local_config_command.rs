@@ -126,6 +126,7 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
     let mailspace = Mailspace::discover(project)?;
     let origins = origins_of(&mailspace)?;
     let mut issues = vivi::pump::readiness::assess(&mailspace);
+    issues.extend(missing_rung_issues(&mailspace));
     issues.extend(retired_key_warnings(&mailspace)?);
     issues.extend(
         origins
@@ -151,6 +152,23 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
         std::process::exit(NOT_READY_EXIT);
     }
     Ok(())
+}
+
+/// One not-ready item per required rung (`task`, `need`, `main`) a pumped
+/// project has not set. Only `config validate` asks: the pump's own readiness
+/// does not hold on rungs.
+fn missing_rung_issues(mailspace: &Mailspace) -> Vec<vivi::routing::Issue> {
+    mailspace
+        .config
+        .pump
+        .iter()
+        .flat_map(vivi::pump::config::PumpConfig::missing_rungs)
+        .map(|missing| vivi::routing::Issue {
+            severity: vivi::routing::Severity::NotReady,
+            message: missing.detail,
+            item: Some(missing.name),
+        })
+        .collect()
 }
 
 /// One warning per retired key the project file still carries, from the same

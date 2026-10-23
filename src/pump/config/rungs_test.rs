@@ -266,3 +266,42 @@ fn a_target_inheriting_a_command_without_pools_is_reported_alone() {
         "{errors:?}"
     );
 }
+
+fn missing_names(cfg: &PumpConfig) -> Vec<String> {
+    cfg.missing_rungs().into_iter().map(|m| m.name).collect()
+}
+
+#[test]
+fn missing_rungs_reports_all_three_when_no_rungs_are_set() {
+    let cfg = PumpConfig::default();
+    assert_eq!(
+        missing_names(&cfg),
+        ["pump.rungs.task", "pump.rungs.need", "pump.rungs.main"]
+    );
+    assert!(cfg.missing_rungs()[0].detail.contains("task is not set"));
+}
+
+#[test]
+fn missing_rungs_is_empty_when_the_workspace_sets_them_all() {
+    let cfg = pump("[rungs]\ntask = \"t\"\nneed = \"n\"\nmain = \"m\"\n");
+    assert!(cfg.missing_rungs().is_empty());
+}
+
+#[test]
+fn missing_rungs_counts_what_a_target_inherits() {
+    let cfg = pump(concat!(
+        "[rungs]\ntask = \"t\"\nneed = \"n\"\nmain = \"m\"\n",
+        "[targets.web]\npath = \"web\"\n",
+        "[targets.web.rungs]\npools = [\"own\"]\n",
+    ));
+    assert!(cfg.missing_rungs().is_empty());
+}
+
+#[test]
+fn missing_rungs_names_the_target_that_lacks_main() {
+    let cfg = pump(concat!(
+        "[targets.web]\npath = \"web\"\n",
+        "[targets.web.rungs]\ntask = \"t\"\nneed = \"n\"\npools = [\"own\"]\n",
+    ));
+    assert_eq!(missing_names(&cfg), ["pump.targets.web.rungs.main"]);
+}

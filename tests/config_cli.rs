@@ -122,6 +122,11 @@ model = "m/a"
 cap = 1
 [pump.dispatch.kinds.plain]
 pools = ["glm"]
+[pump.rungs]
+task = "true"
+need = "true"
+main = "true"
+pools = ["glm"]
 "#,
     );
     let root = dir.path().to_str().unwrap();
@@ -483,4 +488,29 @@ fn config_migrate_removes_each_retired_key_with_its_reason() {
         assert!(!after.contains(gone), "{gone} still in:\n{after}");
     }
     assert!(after.contains("repo = \"/tmp/other\""), "{after}");
+}
+
+#[test]
+fn config_validate_names_a_missing_task_rung_and_exits_3() {
+    let dir = project_with(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[pools.glm]
+provider = "local"
+slots = 2
+[pump]
+[pump.rungs]
+need = "true"
+main = "true"
+pools = ["glm"]
+"#,
+    );
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(text.contains("- pump.rungs.task:"), "{text}");
+    assert!(!text.contains("- pump.rungs.need:"), "{text}");
+    assert!(!text.contains("- pump.rungs.main:"), "{text}");
 }
