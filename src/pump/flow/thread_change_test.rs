@@ -5,7 +5,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use super::{THREAD_CHANGED, ThreadChange};
+use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
 use crate::error::VivariumError;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
@@ -163,5 +163,45 @@ fn a_reply_after_merge_main_started_raises_and_does_not_restart() -> R {
     rig.phase()?;
     assert_eq!(rig.runs()?, [(1, "plan".into(), "live".into())]);
     assert_eq!(rig.exceptions().matches(THREAD_CHANGED).count(), 1);
+    Ok(())
+}
+
+/// Corrupt the stored date of every letter the pump sent, the run-start post
+/// included.
+fn corrupt_pump_dates(rig: &Rig) {
+    let db = rig.ctx.project.join(".vivi").join("mail.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE message_metadata SET date = 'last tuesday' WHERE from_addr LIKE '%mind%'",
+            [],
+        )
+        .unwrap();
+    assert!(changed > 0, "no pump letter to corrupt");
+}
+
+#[test]
+fn an_unparsable_start_date_raises_once_and_restarts_nothing() -> R {
+    let mut rig = rig()?;
+    rig.reply_as("operator")?;
+    corrupt_pump_dates(&rig);
+    rig.phase()?;
+    rig.phase()?;
+    assert_eq!(rig.runs()?, [(1, "plan".into(), "live".into())]);
+    let raised = rig.exceptions();
+    assert_eq!(raised.matches(THREAD_CHECK_FAILED).count(), 1, "{raised}");
+    assert!(raised.contains("last tuesday"), "{raised}");
+    assert!(raised.contains(&rig.need), "{raised}");
+    assert_eq!(raised.matches(THREAD_CHANGED).count(), 0, "{raised}");
+    Ok(())
+}
+
+#[test]
+fn a_valid_run_raises_no_check_failure() -> R {
+    let mut rig = rig()?;
+    rig.phase()?;
+    rig.phase()?;
+    assert_eq!(rig.runs()?, [(1, "plan".into(), "live".into())]);
+    assert_eq!(rig.exceptions().matches(THREAD_CHECK_FAILED).count(), 0);
     Ok(())
 }

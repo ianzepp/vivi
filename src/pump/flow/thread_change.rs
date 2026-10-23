@@ -32,6 +32,10 @@ use crate::pump::store::PumpStore;
 /// Exception kind: a reply arrived on a run that is too far along to restart.
 pub const THREAD_CHANGED: &str = "flow-thread-changed";
 
+/// Exception kind: the thread check for a run could not be made (an
+/// unparsable date, or the check itself failed).
+pub const THREAD_CHECK_FAILED: &str = "flow-thread-check-failed";
+
 /// The run state of a run that is still being advanced.
 const RUN_LIVE: &str = "live";
 
@@ -69,10 +73,21 @@ impl<S, M: FlowMail> TickPhase<S, M> for ThreadChange {
         let def = load(FlowKind::Build)?;
         for run in &runs {
             if let Err(error) = check_run(ctx, store, mail, &mailspace, &def, run) {
+                let text = format!(
+                    "need {} run r{}: the thread-change check failed and the run is skipped: \
+                     {error}",
+                    run.need, run.run
+                );
                 ctx.log(&format!(
                     "thread-change: {} r{} failed: {error}",
                     run.need, run.run
                 ));
+                raise_once(
+                    ctx,
+                    THREAD_CHECK_FAILED,
+                    &format!("{} r{}", run.need, run.run),
+                    &text,
+                );
             }
         }
         Ok(())
@@ -89,7 +104,7 @@ fn check_run<M: FlowMail>(
     run: &RunRow,
 ) -> Result<(), VivariumError> {
     let thread = mailspace.thread(&run.need, false, usize::MAX, usize::MAX)?;
-    let Some(change) = change_since_start(ctx, mailspace, &thread, run) else {
+    let Some(change) = change_since_start(ctx, mailspace, &thread, run)? else {
         return Ok(());
     };
     let rows = store.steps_of(&run.need, run.run)?;
@@ -112,26 +127,33 @@ fn check_run<M: FlowMail>(
 }
 
 /// The first reply on `thread` newer than the run's start post that is neither
-/// the pump's, an event, nor a pump record or action letter.
+/// the pump's, an event, nor a pump record or action letter. A date that does
+/// not parse is an error naming the date text.
 fn change_since_start<'a>(
     ctx: &Ctx,
     mailspace: &Mailspace,
     thread: &'a [MailspaceThreadMessage],
     run: &RunRow,
-) -> Option<&'a MailspaceThreadMessage> {
+) -> Result<Option<&'a MailspaceThreadMessage>, VivariumError> {
     let pump = ctx.cfg.reply_from.as_str();
     let is_pump = |m: &MailspaceThreadMessage| matches!(mailspace.classify_recipient(&m.from), Ok(Recipient::Local(id)) if id == pump);
     let start = format!("pump: run r{} started", run.run);
-    let started = thread
+    let Some(started) = thread
         .iter()
-        .find(|m| is_pump(m) && m.event.is_none() && m.body.trim_start().starts_with(&start))?;
+        .find(|m| is_pump(m) && m.event.is_none() && m.body.trim_start().starts_with(&start))
+    else {
+        return Ok(None);
+    };
     let at = epoch(&started.date)?;
-    thread.iter().find(|m| {
-        m.event.is_none()
-            && !is_pump(m)
-            && !is_pump_letter(m)
-            && epoch(&m.date).is_some_and(|date| date > at)
-    })
+    for message in thread {
+        if message.event.is_some() || is_pump(message) || is_pump_letter(message) {
+            continue;
+        }
+        if epoch(&message.date)? > at {
+            return Ok(Some(message));
+        }
+    }
+    Ok(None)
 }
 
 /// A pump record or a posted action letter, never a reply on the thread.
@@ -140,11 +162,10 @@ fn is_pump_letter(message: &MailspaceThreadMessage) -> bool {
         || (message.subject.starts_with("pump ") && message.subject.ends_with(" action"))
 }
 
-fn epoch(date: &str) -> Option<i64> {
-    match DateTime::parse_from_rfc3339(date) {
-        Ok(parsed) => Some(parsed.timestamp()),
-        Err(_) => None,
-    }
+fn epoch(date: &str) -> Result<i64, VivariumError> {
+    DateTime::parse_from_rfc3339(date)
+        .map(|parsed| parsed.timestamp())
+        .map_err(|error| VivariumError::Parse(format!("thread date {date:?}: {error}")))
 }
 
 /// True when the run waits at a lock or any merge step has begun.
