@@ -28,7 +28,6 @@ fn task(space: &mut Mailspace, subject: &str) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered[0]

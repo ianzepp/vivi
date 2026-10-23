@@ -21,7 +21,6 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -124,7 +123,6 @@ fn unknown_need_and_non_need_are_refused() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -191,7 +189,6 @@ fn pump_config_names_the_sender_and_the_pump_identity() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -303,7 +300,6 @@ fn send_admits_a_need_addressed_to_a_third_identity() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -332,7 +328,6 @@ fn a_need_copied_to_the_pump_identity_is_plannable() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -358,7 +353,6 @@ fn a_need_the_pump_identity_sent_itself_gets_a_record_whoever_it_is_addressed_to
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap()
             .delivered
@@ -499,7 +493,6 @@ fn send_accepts_a_need_addressed_to_hand() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

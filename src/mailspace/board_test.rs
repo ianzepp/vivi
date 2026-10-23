@@ -21,7 +21,6 @@ fn send(mailspace: &Mailspace, role: &str, subject: &str) -> String {
             role: role.into(),
             kind: Some(role.trim_end_matches('s').into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

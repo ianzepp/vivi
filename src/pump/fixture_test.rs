@@ -88,7 +88,6 @@ pub(crate) fn send_need(mailspace: &Mailspace, subject: &str, to: &str) -> Strin
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

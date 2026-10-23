@@ -29,7 +29,6 @@ fn send(mailspace: &Mailspace, role: &str, kind: &str, body: &str) -> String {
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

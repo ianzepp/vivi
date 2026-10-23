@@ -157,7 +157,6 @@ fn an_event_applied_by_pull_wakes_the_assignees_watcher() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let task = sent

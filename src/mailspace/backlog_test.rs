@@ -29,7 +29,6 @@ fn send_item(
             role: role.into(),
             kind: kind.map(str::to_string),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -180,7 +179,6 @@ fn send_rejects_unknown_dep_before_creating_anything() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap_err();
     assert!(err.to_string().contains("deadbeef"), "{err}");
@@ -457,7 +455,6 @@ fn join_settle_moves_every_recipient_copy() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let copies: Vec<String> = result.delivered.iter().map(|d| d.handle.clone()).collect();
@@ -514,7 +511,6 @@ fn dependency_edges_canonicalize_across_copies() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let copies: Vec<String> = result.delivered.iter().map(|d| d.handle.clone()).collect();
@@ -550,7 +546,6 @@ fn completing_any_copy_unlocks_dependents_of_the_other() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let copies: Vec<String> = result.delivered.iter().map(|d| d.handle.clone()).collect();

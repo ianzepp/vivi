@@ -311,7 +311,6 @@ fn file_delivery(
         role: "needs".into(),
         kind: Some("need".into()),
         reply_to: None,
-        depends_on: Vec::new(),
     })?;
     let handle = result
         .delivered

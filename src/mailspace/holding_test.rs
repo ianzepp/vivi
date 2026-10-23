@@ -47,7 +47,6 @@ fn send_work(
         role,
         kind: Some(kind.into()),
         reply_to: None,
-        depends_on: Vec::new(),
     })?;
     // The item is the delivered copy when there is one, else the sent copy.
     Ok(result
@@ -151,7 +150,6 @@ fn only_work_sent_copies_are_dependencies() {
             role: "inbox".into(),
             kind: Some("mail".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .sent;
@@ -241,7 +239,6 @@ fn a_local_sent_copy_of_local_work_still_reopens_its_delivered_copy() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = result.delivered[0].handle.clone();

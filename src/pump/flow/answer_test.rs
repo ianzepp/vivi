@@ -46,7 +46,6 @@ fn rig(state: StepState) -> Rig {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -242,7 +241,6 @@ fn the_run_sentinel_and_an_unindexed_task_are_refused() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

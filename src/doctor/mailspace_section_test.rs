@@ -123,7 +123,6 @@ fn ready_item_without_done_when_warns() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -149,7 +148,6 @@ fn done_when_matches_step_and_ignores_blocked_items() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -172,7 +170,6 @@ fn done_when_matches_step_and_ignores_blocked_items() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

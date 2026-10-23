@@ -272,7 +272,6 @@ pub struct SendRequest {
     pub role: String,
     pub kind: Option<String>,
     pub reply_to: Option<String>,
-    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -764,7 +764,6 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         role: "tasks".into(),
         kind: Some("task".into()),
         reply_to: command.send.reply_to.clone(),
-        depends_on: sugared.depends_on,
     })?;
     for delivered in &result.delivered {
         println!("created {} {}", delivered.identity, delivered.handle);
@@ -796,7 +795,6 @@ fn send_local_mail(command: &LocalSendCommand) -> Result<(), VivariumError> {
         role: "inbox".into(),
         kind: Some("mail".into()),
         reply_to: command.reply_to.clone(),
-        depends_on: Vec::new(),
     })?;
     for delivered in result.delivered {
         println!("delivered {} {}", delivered.identity, delivered.handle);

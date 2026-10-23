@@ -24,7 +24,6 @@ fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let delivered = result
@@ -357,7 +356,6 @@ fn the_event_letter_goes_to_the_items_recipients_minus_the_sender() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
 

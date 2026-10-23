@@ -57,7 +57,6 @@ fn send(mailspace: &Mailspace, kind: &str, subject: &str, depends_on: &[&str]) -
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

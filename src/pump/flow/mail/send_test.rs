@@ -48,6 +48,59 @@ fn a_step_sent_with_a_dependency_has_the_edge_in_the_backlog() {
 }
 
 #[test]
+fn the_depends_on_parameter_is_merged_into_the_front_matter_without_duplicates() {
+    let p = project();
+    let port = port(&p);
+    let first = port
+        .send_step("mind", "operator", "first", &task_body("x"), &[])
+        .unwrap();
+    let second = port
+        .send_step(
+            "mind",
+            "operator",
+            "second",
+            &body_with_deps("task", "y", std::slice::from_ref(&first)),
+            std::slice::from_ref(&first),
+        )
+        .unwrap();
+    let deps = p.mailspace.backlog_dependencies(&second).unwrap();
+    assert_eq!(deps.len(), 1, "{deps:?}");
+    let third = port
+        .send_step(
+            "mind",
+            "operator",
+            "third",
+            &task_body("z"),
+            std::slice::from_ref(&first),
+        )
+        .unwrap();
+    let edges: Vec<(String, String)> = p
+        .mailspace
+        .graph_show("backlog")
+        .unwrap()
+        .edges
+        .into_iter()
+        .map(|edge| (edge.from_source_id, edge.to_source_id))
+        .collect();
+    assert_eq!(edges.len(), 2, "{edges:?}");
+    assert!(edges.contains(&(first.clone(), second)), "{edges:?}");
+    assert!(edges.contains(&(first, third)), "{edges:?}");
+}
+
+#[test]
+fn a_step_body_without_front_matter_is_an_error() {
+    let p = project();
+    let err = port(&p)
+        .send_step("mind", "operator", "prose", "just prose", &[])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("step task body must open with front matter"),
+        "{err}"
+    );
+}
+
+#[test]
 fn one_bind_writes_one_bound_letter_naming_every_unit() {
     let p = project();
     let port = port(&p);

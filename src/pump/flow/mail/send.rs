@@ -6,6 +6,7 @@
 
 use super::MailspacePort;
 use crate::error::VivariumError;
+use crate::letter::work::TaskFront;
 use crate::mailspace::{Recipient, SendRequest};
 
 impl MailspacePort {
@@ -23,17 +24,17 @@ impl MailspacePort {
         body: &str,
         depends_on: &[String],
     ) -> Result<String, VivariumError> {
+        let body = with_dependencies(body, depends_on)?;
         let result = self.mailspace.send(SendRequest {
             from: from.into(),
             to: vec![to.into()],
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: body.into(),
+            body,
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: depends_on.to_vec(),
         })?;
         Ok(result
             .delivered
@@ -128,6 +129,20 @@ impl MailspacePort {
             }
         }
     }
+}
+
+/// Merge `depends_on` into the step task body's front matter (no duplicates).
+fn with_dependencies(body: &str, depends_on: &[String]) -> Result<String, VivariumError> {
+    let mut letter = crate::letter::parse_letter::<TaskFront>(body).map_err(|err| {
+        VivariumError::Message(format!("step task body must open with front matter: {err}"))
+    })?;
+    for dep in depends_on {
+        if !letter.front.depends_on.contains(dep) {
+            letter.front.depends_on.push(dep.clone());
+        }
+    }
+    crate::letter::render(&letter.front, &letter.body)
+        .map_err(|err| VivariumError::Message(err.to_string()))
 }
 
 #[cfg(test)]

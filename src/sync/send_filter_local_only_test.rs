@@ -46,7 +46,6 @@ fn send_item_to_own_hand(co: &Checkout, role: &str, kind: &str, subject: &str) -
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

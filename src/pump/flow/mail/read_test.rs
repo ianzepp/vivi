@@ -21,7 +21,6 @@ fn send_task(mailspace: &Mailspace, subject: &str, body: &str) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -140,7 +139,6 @@ fn prerequisites_and_last_closed_record_are_read() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

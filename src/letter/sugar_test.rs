@@ -21,7 +21,6 @@ fn need_flags_build_front_matter_with_the_body_as_prose() {
         ..Sugar::default()
     };
     let sugared = apply("need", "do it", &sugar).unwrap();
-    assert!(sugared.depends_on.is_empty());
     let parsed = parse_letter::<NeedFront>(&sugared.body).unwrap();
     assert_eq!(parsed.front.done_when, vec![s("a"), s("b")]);
     assert_eq!(parsed.front.target.as_deref(), Some("vivi"));
@@ -69,7 +68,6 @@ fn task_flags_build_front_matter() {
     assert_eq!(parsed.front.target.as_deref(), Some("t"));
     assert_eq!(parsed.front.write_scope, vec![s("a"), s("b")]);
     assert_eq!(parsed.front.depends_on, vec![s("t1")]);
-    assert!(sugared.depends_on.is_empty());
 }
 
 #[test]
@@ -124,7 +122,6 @@ fn whole_letter_is_taken_unchanged() {
     let body = need_body(&["done"], "prose");
     let sugared = apply("need", &body, &Sugar::default()).unwrap();
     assert_eq!(sugared.body, body);
-    assert!(sugared.depends_on.is_empty());
 }
 
 #[test]
@@ -200,14 +197,41 @@ fn whole_letter_with_broken_front_matter_names_the_fence_problem() {
 }
 
 #[test]
-fn prose_without_front_flags_keeps_depends_on_for_the_send() {
+fn prose_with_only_depends_on_builds_the_front_matter() {
     let sugar = Sugar {
         depends_on: vec![s("n1")],
         ..Sugar::default()
     };
-    let sugared = apply("need", "prose", &sugar).unwrap();
+    let sugared = apply("task", "prose", &sugar).unwrap();
+    let parsed = parse_letter::<TaskFront>(&sugared.body).unwrap();
+    assert_eq!(parsed.front.depends_on, vec![s("n1")]);
+    assert_eq!(parsed.body.trim(), "prose");
+}
+
+#[test]
+fn a_need_with_only_depends_on_is_told_to_pass_done_when() {
+    let sugar = Sugar {
+        depends_on: vec![s("n1")],
+        ..Sugar::default()
+    };
+    let err = apply("need", "prose", &sugar).unwrap_err().to_string();
+    assert!(err.contains("need has no done_when"), "{err}");
+}
+
+#[test]
+fn a_want_with_only_depends_on_is_told_to_pass_question() {
+    let sugar = Sugar {
+        depends_on: vec![s("n1")],
+        ..Sugar::default()
+    };
+    let err = apply("want", "prose", &sugar).unwrap_err().to_string();
+    assert!(err.contains("want has no question"), "{err}");
+}
+
+#[test]
+fn prose_with_no_flag_is_sent_unchanged() {
+    let sugared = apply("need", "prose", &Sugar::default()).unwrap();
     assert_eq!(sugared.body, "prose");
-    assert_eq!(sugared.depends_on, vec![s("n1")]);
 }
 
 #[test]

@@ -154,7 +154,6 @@ fn the_authors_absorb_of_its_sent_row_names_done_and_members_seal_done() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .sent;
@@ -215,7 +214,6 @@ fn converged_row(push_first: &str) -> (String, bool) {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .sent;

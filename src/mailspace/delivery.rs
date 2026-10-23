@@ -62,15 +62,11 @@ impl Mailspace {
                 "Bcc is not supported for local mailspace delivery in v1".into(),
             ));
         }
-        let work_letter = compose::work_letter(
-            self,
-            request.kind.as_deref(),
-            &request.body,
-            &request.depends_on,
-        )?;
+        let work_letter = compose::work_letter(self, request.kind.as_deref(), &request.body)?;
         let depends_on = work_letter
             .as_ref()
-            .map_or_else(|| request.depends_on.clone(), |w| w.depends_on.clone());
+            .map(|w| w.depends_on.clone())
+            .unwrap_or_default();
         if let Some(work) = &work_letter {
             request.body.clone_from(&work.body);
         }
@@ -246,10 +242,6 @@ impl Mailspace {
         }
         if work_letter {
             eml = add_header(&eml, FORMAT_HEADER, FORMAT_VERSION)?;
-        } else {
-            for dependency in &request.depends_on {
-                eml = add_header(&eml, "X-Vivi-Depends-On", dependency)?;
-            }
         }
         for (name, value) in extras {
             eml = add_header(&eml, name, value)?;

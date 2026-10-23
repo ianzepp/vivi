@@ -240,7 +240,6 @@ fn send_need_from(p: &Project, from: &str, subject: &str) -> String {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

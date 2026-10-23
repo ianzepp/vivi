@@ -227,7 +227,6 @@ fn tasks_and_wants_travel_with_their_kind() {
                 role: role.into(),
                 kind: Some(kind.into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
     }

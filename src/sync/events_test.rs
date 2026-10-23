@@ -49,7 +49,6 @@ fn send_item(from: &Checkout, to: &str, subject: &str, role: &str, kind: &str) -
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

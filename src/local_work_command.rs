@@ -495,7 +495,6 @@ fn send_local_item_sent(
         role: role.into(),
         kind: Some(kind.into()),
         reply_to: command.reply_to.clone(),
-        depends_on: sugared.depends_on,
     })?;
     for delivered in &result.delivered {
         println!("{verb} {} {}", delivered.identity, delivered.handle);

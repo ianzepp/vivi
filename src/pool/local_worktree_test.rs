@@ -187,7 +187,6 @@ impl Rig {
                 role: "tasks".into(),
                 kind: Some("task".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
         sent.delivered[0].handle.clone()

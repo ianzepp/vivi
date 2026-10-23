@@ -44,7 +44,6 @@ fn reopening_a_need_resets_its_active_lead_time_window() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let need = sent.delivered[0].handle.clone();
@@ -98,7 +97,6 @@ fn a_reopen_without_a_valid_timestamp_has_unavailable_lead_time() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let need = sent.delivered[0].handle.clone();

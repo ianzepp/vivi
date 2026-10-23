@@ -318,7 +318,6 @@ impl Mailspace {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: Some(request.source_handle.clone()),
-            depends_on: Vec::new(),
         })?;
         self.record_tasked_source(&actor, &source, &result, &source_kind)?;
         if source_kind == "need" {

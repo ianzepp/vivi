@@ -44,7 +44,6 @@ fn task_of(mailspace: &Mailspace) -> (String, String) {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let delivered = result
