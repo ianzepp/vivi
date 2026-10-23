@@ -12,11 +12,11 @@ use crate::error::VivariumError;
 use crate::mailspace::marked_line;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
-use crate::pump::flow::index::{JOB_STALE, RunRow, StepRow, StepState};
+use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, Retried};
 use crate::pump::flow::slice_merge::classify::{SliceMergeResult, classify};
-use crate::pump::flow::slice_merge::queue::{live_identity, stale_text};
+use crate::pump::flow::slice_merge::queue::{JobRun, classify_job, stale_text};
 use crate::pump::flow::slice_merge::spec::KIND;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
@@ -42,7 +42,6 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
     store: &PumpStore,
     mail: &mut M,
 ) -> Result<(), VivariumError> {
-    let runs = store.live_runs()?;
     let finished: Vec<PoolJob> = st
         .jobs()
         .values()
@@ -50,7 +49,7 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
         .cloned()
         .collect();
     for job in finished {
-        match apply(ctx, st, store, mail, &runs, &job) {
+        match apply(ctx, st, store, mail, &job) {
             Ok(()) => step_error::note_success(ctx, &job.id),
             Err(error) => give_up_or_alarm(ctx, st, store, &job, &error)?,
         }
@@ -93,12 +92,10 @@ fn apply<S: JobStore, M: FlowMail>(
     st: &mut S,
     store: &PumpStore,
     mail: &mut M,
-    runs: &[RunRow],
     job: &PoolJob,
 ) -> Result<(), VivariumError> {
-    let identity = match live_identity(job, runs) {
-        Ok(identity) => identity,
-        Err(reason) => return settle_stale(ctx, st, job, &reason),
+    let Some(identity) = live_identity(ctx, st, store, job)? else {
+        return Ok(());
     };
     let need = identity.need.clone();
     let slice = match job.task.as_deref() {
@@ -144,6 +141,32 @@ fn apply<S: JobStore, M: FlowMail>(
     }
     jobs::mark_applied(st, &job.id, ctx.now());
     Ok(())
+}
+
+/// The job's payload identity when it names a live run. A superseded or
+/// withdrawn run is the expected end: log, mark applied, give `None`. A stale
+/// identity raises once, is marked applied, and gives `None`.
+fn live_identity<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    job: &PoolJob,
+) -> Result<Option<PayloadIdentity>, VivariumError> {
+    match classify_job(job, store)? {
+        JobRun::Live(identity) => Ok(Some(identity)),
+        JobRun::Dead(identity, state) => {
+            ctx.log(&format!(
+                "slice merge: job {} of {} r{} ({state}) needs no apply",
+                job.id, identity.need, identity.run
+            ));
+            jobs::mark_applied(st, &job.id, ctx.now());
+            Ok(None)
+        }
+        JobRun::Stale(reason) => {
+            settle_stale(ctx, st, job, &reason)?;
+            Ok(None)
+        }
+    }
 }
 
 /// A stale job names a run or slice that is not the live one: raise once, then
