@@ -4,7 +4,8 @@
 //! `for: <want>` line nor see the job store, so the post is a tick phase over
 //! `done` research runs. The pump.db `applied_actions` set is the durable
 //! done-marker: the key is written only after the reply succeeded, so a failed
-//! reply is tried again on the next tick.
+//! reply is tried again on the next tick. One run that fails does not stop the
+//! runs after it: the first error is returned once all of them were tried.
 
 use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
@@ -38,6 +39,7 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for ResearchPost {
         mail: &mut M,
     ) -> Result<(), VivariumError> {
         let applied = store.applied_action_ids()?;
+        let mut first_error = None;
         for run in store.runs_in_state(RUN_DONE)? {
             if run.kind != KIND_RESEARCH {
                 continue;
@@ -46,10 +48,20 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for ResearchPost {
             if applied.contains(&key) {
                 continue;
             }
-            post_run(ctx, st, store, mail, &run)?;
-            store.mark_action_applied(&key, ctx.now())?;
+            match post_run(ctx, st, store, mail, &run) {
+                Ok(()) => {
+                    store.mark_action_applied(&key, ctx.now())?;
+                }
+                Err(error) => {
+                    ctx.log(&format!(
+                        "research-post: {} r{} failed: {error}",
+                        run.need, run.run
+                    ));
+                    first_error.get_or_insert(error);
+                }
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 

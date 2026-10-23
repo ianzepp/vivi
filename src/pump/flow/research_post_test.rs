@@ -211,3 +211,27 @@ fn a_failed_reply_is_retried_on_the_next_tick() -> R {
     assert!(rig.marked()?);
     Ok(())
 }
+
+#[test]
+fn a_bad_run_does_not_stop_the_runs_after_it() -> R {
+    let mut rig = rig("for: {want}")?;
+    rig.land("research", ENVELOPE)?;
+    // "a-missing" sorts before the real need and has no task in the fake mail.
+    rig.store.insert_run(&RunRow {
+        need: "a-missing".into(),
+        run: 1,
+        flow: "research".into(),
+        flow_version: 1,
+        kind: "research".into(),
+        entry: "research".into(),
+        state: "done".into(),
+    })?;
+    assert!(rig.tick().is_err());
+    let replies = rig.replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].0, rig.want);
+    assert!(rig.marked()?);
+    let applied = rig.store.applied_action_ids()?;
+    assert!(!applied.contains("research-post:a-missing:r1"));
+    Ok(())
+}
