@@ -39,8 +39,6 @@ pub struct FlowOverview {
     pub merge_lanes: u32,
     pub gate_role: String,
     pub gate_pool: String,
-    pub promote: bool,
-    pub branch: String,
     pub main: String,
 }
 
@@ -152,8 +150,6 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
             merge_lanes: 0,
             gate_role: "-".into(),
             gate_pool: "-".into(),
-            promote: false,
-            branch: "-".into(),
             main: "-".into(),
         };
     };
@@ -169,8 +165,6 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
         gate_pool: gate
             .and_then(|role| role.pool.clone())
             .unwrap_or_else(|| "-".into()),
-        promote: pump.promote,
-        branch: pump.branch.clone(),
         main: pump.main.clone(),
     }
 }
@@ -204,14 +198,12 @@ pub fn render_text(overview: &ConfigOverview) -> String {
 
 fn flow_text(flow: &FlowOverview) -> String {
     format!(
-        "flow: {} @ {} ({} lanes) → shared checks → {} @ {} → {} {} → {}",
+        "flow: {} @ {} ({} lanes) → shared checks → {} @ {} → {}",
         flow.merge_role,
         flow.merge_pool,
         flow.merge_lanes,
         flow.gate_role,
         flow.gate_pool,
-        flow.branch,
-        if flow.promote { "promote" } else { "hold" },
         flow.main
     )
 }

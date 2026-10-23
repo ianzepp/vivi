@@ -17,7 +17,6 @@ const T0: u64 = 1_000_000;
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
-        branch: String::from("next"),
         ..PumpConfig::default()
     };
     let (ctx, host) = test_ctx(dir.path(), cfg);
@@ -28,7 +27,6 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 fn response_setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
-        branch: String::from("next"),
         planner: PlannerConfig {
             planners_max: 2,
             ..PlannerConfig::default()

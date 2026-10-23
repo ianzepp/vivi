@@ -54,10 +54,8 @@ fn a_fresh_project_is_not_ready_and_has_no_errors() {
     assert!(!is_ready(&issues));
     let names = items(&issues);
     for expected in [
-        "pump.branch",
         "pump.committer_name",
         "pump.committer_email",
-        "pump.merge.shared_checks",
         "hand pool",
         "merge pool",
         "pump-planner pool",
@@ -202,22 +200,15 @@ fn filling_in_the_missing_items_makes_the_project_ready_with_no_other_step() {
     assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
     assert_eq!(
         items(&issues),
-        [
-            "pump.committer_name",
-            "pump.committer_email",
-            "pump.branch",
-            "pump.merge.shared_checks"
-        ],
+        ["pump.committer_name", "pump.committer_email"],
         "{issues:?}"
     );
     edit(tmp.path(), |text| {
-        text.replace("branch = \"\"", "branch = \"next\"")
-            .replace("committer_name = \"\"", "committer_name = \"T\"")
+        text.replace("committer_name = \"\"", "committer_name = \"T\"")
             .replace(
                 "committer_email = \"\"",
                 "committer_email = \"t@example.com\"",
             )
-            .replace("shared_checks = []", "shared_checks = [\"true\"]")
     });
     let issues = assess(&reopen(tmp.path()));
     assert!(is_ready(&issues), "{issues:?}");

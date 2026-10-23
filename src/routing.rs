@@ -3,8 +3,8 @@
 //! A role may name a pool, an optional read-only flag, and a model, a band,
 //! or a list of models. Pool capacity is `slots`; optional `[pools.X.caps]`
 //! holds per-model caps inside that pool. When a role has no `pool`, the
-//! pump falls back to the older `[pump.dispatch]` / `[pump.merge]` /
-//! `[pump.gate]` tables and warns.
+//! pump falls back to the older `[pump.dispatch]` / `[pump.merge]` tables and
+//! warns.
 #![allow(clippy::missing_errors_doc)]
 
 mod defaults;

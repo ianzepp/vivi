@@ -23,7 +23,6 @@ fn hand_message_reads_the_receipt_section_only() {
 
 fn config() -> PumpConfig {
     PumpConfig {
-        branch: String::from("next"),
         board: BoardConfig {
             from: vec![String::from("operator@x")],
             ..BoardConfig::default()

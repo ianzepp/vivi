@@ -438,12 +438,12 @@ fn ensure_single_repo(ctx: &Ctx) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// `git clone -o <remote> --branch <branch> <url> <repo>`, quoted.
+/// `git clone -o <remote> --branch <main> <url> <repo>`, quoted.
 fn clone_command(ctx: &Ctx, url: &str) -> String {
     format!(
         "git clone -q -o {} --branch {} {} {}",
         shell_quote(&ctx.cfg.remote),
-        shell_quote(&ctx.cfg.branch),
+        shell_quote(&ctx.cfg.main),
         shell_quote(url),
         shell_quote(&ctx.repo.to_string_lossy())
     )
