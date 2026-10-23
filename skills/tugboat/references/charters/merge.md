@@ -115,10 +115,11 @@ assignment in the task body. Do not list the class board.
 
 ## Flow merge steps (reply envelope)
 
-This section applies to the pump flow's merge steps: merging one slice onto the
-need branch, and sync mode below. It replaces the `PUMP_MERGE_RESULT=` line and
-the `ANSWER:` line for those steps only. The older job kinds above keep their
-own markers.
+This section applies to the pump flow's sync step only (sync mode below).
+Merging a slice onto the need branch is a model-free pump job
+(`pump-job-kind: slice-merge`) and never reaches this charter. The envelope
+replaces the `PUMP_MERGE_RESULT=` line and the `ANSWER:` line for the sync step
+only. The older job kinds above keep their own markers.
 
 Your final reply opens with a TOML front-matter envelope between two `+++`
 lines; the pump reads it and nothing else. The prose below it holds the conflict

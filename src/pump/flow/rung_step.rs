@@ -15,6 +15,8 @@ use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob, rung, rung_
 const NEED_RUNG: &str = "need";
 /// Attempts a rung step makes before a lost or timed-out job answers `failed`.
 const MAX_ATTEMPTS: u32 = 2;
+/// The class of the audit step whose payload may name a raised rung.
+const AUDITOR_CLASS: &str = "auditor";
 
 /// The rung job for `step`: [`rung::spec`] bound to the step task. N6 and N7
 /// call this for rung-main (main tip, repair branch tip).
@@ -39,23 +41,47 @@ pub(crate) fn job(
     Ok(spec)
 }
 
-/// Starts a need-rung or raised-rung step at the need-branch tip.
+/// Starts a need-rung step at the need-branch tip.
 struct RungStart;
+
+/// Starts a rung-raised step: the rung the newest audit named, else `need`.
+struct RaisedStart;
 
 impl StepHandler for RungStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
-        let need = &cx.run.need;
-        let row = cx.store.need_branch(need)?.ok_or_else(|| {
-            VivariumError::Other(format!("need {need} has no need branch to run a rung on"))
-        })?;
-        let tip = need_branch::tip(cx.ctx, cx.store, need)?.ok_or_else(|| {
-            VivariumError::Other(format!("need branch of {need} has no tip to run a rung on"))
-        })?;
-        // A raised step runs the rung named by a stored `raise_rung` once N5
-        // records it; until then it runs `need`.
-        let spec = job(cx.ctx, &row.target, NEED_RUNG, &tip, step, 1)?;
-        Ok(StartAction::Job(Box::new(spec)))
+        start_rung(cx, step, NEED_RUNG)
     }
+}
+
+impl StepHandler for RaisedStart {
+    fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        let raised = cx
+            .store
+            .step_payloads_of_run(&cx.run.need, cx.run.run)?
+            .into_iter()
+            .rev()
+            .find(|row| row.class == AUDITOR_CLASS)
+            .and_then(|row| {
+                row.payload["front"]["raise_rung"]
+                    .as_str()
+                    .filter(|rung| !rung.is_empty())
+                    .map(str::to_owned)
+            });
+        start_rung(cx, step, raised.as_deref().unwrap_or(NEED_RUNG))
+    }
+}
+
+/// The rung job for `rung` at the tip of the need branch.
+fn start_rung(cx: &StartCx<'_>, step: &StepRow, rung: &str) -> Result<StartAction, VivariumError> {
+    let need = &cx.run.need;
+    let row = cx.store.need_branch(need)?.ok_or_else(|| {
+        VivariumError::Other(format!("need {need} has no need branch to run a rung on"))
+    })?;
+    let tip = need_branch::tip(cx.ctx, cx.store, need)?.ok_or_else(|| {
+        VivariumError::Other(format!("need branch of {need} has no tip to run a rung on"))
+    })?;
+    let spec = job(cx.ctx, &row.target, rung, &tip, step, 1)?;
+    Ok(StartAction::Job(Box::new(spec)))
 }
 
 /// Collects a rung job: the exit status decides `pass` or `fail`; a lost or
@@ -141,7 +167,11 @@ fn retry<S: JobStore, M: FlowMail>(
 /// Register the build flow's rung handlers and the collector of every rung class.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     registry.handler(FlowKind::Build, NodeClass::RungNeed, Box::new(RungStart));
-    registry.handler(FlowKind::Build, NodeClass::RungRaised, Box::new(RungStart));
+    registry.handler(
+        FlowKind::Build,
+        NodeClass::RungRaised,
+        Box::new(RaisedStart),
+    );
     for class in [
         NodeClass::RungNeed,
         NodeClass::RungMain,

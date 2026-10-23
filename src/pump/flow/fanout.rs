@@ -345,6 +345,25 @@ pub fn close_slice<M: MailWriter>(
     store.set_step_state(task, StepState::Done, Some(verdict))
 }
 
+/// Close a slice task as merged, carrying the need-branch `branch` and the
+/// merged `commit`, and mark its step row done with [`VERDICT_MERGED`].
+///
+/// This is the merged counterpart of [`close_slice`]: the slice merge job
+/// publishes the need branch, and the fanout records where the work landed.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the close or the index write fails.
+pub fn close_slice_merged<M: MailWriter>(
+    store: &PumpStore,
+    mail: &mut M,
+    task: &str,
+    branch: &str,
+    commit: &str,
+) -> Result<(), VivariumError> {
+    mail.close_task(task, VERDICT_MERGED, Some(branch), Some(commit))?;
+    store.set_step_state(task, StepState::Done, Some(VERDICT_MERGED))
+}
+
 /// The mailspace write a slice's dependency edge needs.
 pub trait SliceEdges {
     /// Make `task` depend on `depends_on`, after both were sent.
@@ -480,3 +499,7 @@ fn in_fanout(
 #[cfg(test)]
 #[path = "fanout_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fanout_merged_test.rs"]
+mod merged_tests;

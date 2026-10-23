@@ -83,6 +83,53 @@ pub fn spec(
     Some(job)
 }
 
+/// The same job under attempt number `attempt`: the id gains `-a<attempt>` and
+/// the scratch branch is recomputed from the new id exactly as `spec` builds
+/// it, so a retry of the same merge against the same main tip is a distinct
+/// job. Everything else is unchanged.
+#[must_use]
+pub fn with_attempt(mut job: JobSpec, target: &str, attempt: u32) -> JobSpec {
+    job.id = format!("{}-a{attempt}", job.id);
+    job.branch = Some(format!(
+        "pump/merge-main/{}-{}",
+        ref_safe(target),
+        ref_safe(&job.id)
+    ));
+    job
+}
+
+/// True when a finished merge-main job lost the compare-and-swap because main
+/// moved after the observed tip.
+///
+/// `classify` reports two different things as `Conflict`: a real merge
+/// conflict (the merge command exits non-zero and the receipt carries
+/// `CONFLICT`) and a moved main (the merge command succeeded, then the runner
+/// publish ended `not_ancestor` or `push_refused`). Only the second is true
+/// here; the engine retries it against the new main tip instead of handing the
+/// need to the sync stage. A job that is not finished, or has no usable
+/// outcome, is false.
+#[must_use]
+pub fn main_moved(job: &PoolJob) -> bool {
+    if job.status != JobStatus::Finished {
+        return false;
+    }
+    let Some(outcome) = &job.outcome else {
+        return false;
+    };
+    if matches!(outcome.state.as_str(), "timeout" | "lost")
+        || outcome.agent_success() == Some(false)
+        || outcome
+            .runner_publish()
+            .is_some_and(|publish| publish.succeeded())
+    {
+        return false;
+    }
+    matches!(
+        publish_state(&outcome.receipt).as_deref(),
+        Some("not_ancestor" | "push_refused")
+    )
+}
+
 /// Map a name to one ref segment: ASCII alphanumerics, `-` and `_` are kept
 /// and everything else becomes `-`.
 pub(crate) fn ref_safe(text: &str) -> String {

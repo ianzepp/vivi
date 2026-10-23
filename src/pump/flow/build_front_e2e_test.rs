@@ -87,7 +87,12 @@ fn rig() -> Result<Rig, VivariumError> {
         &format!("{BASE}\trefs/heads/main\n"),
     );
     host.reply("ls-remote origin refs/heads/vivi/need/", 0, "");
-    host.reply("need show", 0, "the thread of the need\n");
+    // The audit brief reads the full need thread as JSON.
+    let thread = serde_json::json!([
+        {"handle": need, "message_id": "m1", "from": "operator@local",
+         "subject": "Need", "body": "build something in two slices"}
+    ]);
+    host.reply("need show", 0, &thread.to_string());
     let mut ctx = p.pump_ctx();
     let mut routing = (*ctx.routing).clone();
     routing.roles.push(role("admitter", "admitter", Some(true)));
@@ -299,13 +304,12 @@ fn intake_to_a_settled_fanout_opens_audit_and_test() -> R {
     assert_eq!(build1.state, StepState::Done);
     assert_eq!(build1.verdict.as_deref(), Some("built"));
 
-    // Routing opened audit1 and test1. The audit handler belongs to N5, so
-    // audit1 stays Pending with no job; test1 is a rung step and runs its
-    // configured command.
+    // Routing opened audit1 and test1. N5's audit handler starts the audit
+    // job; test1 is a rung step and runs its configured command.
     let audit1 = rig.step("audit1")?.expect("audit1 opened");
     let test1 = rig.step("test1")?.expect("test1 opened");
-    assert_eq!(audit1.state, StepState::Pending);
-    assert!(rig.open_job("audit1")?.is_none());
+    assert_eq!(audit1.state, StepState::Running);
+    assert!(rig.open_job("audit1")?.is_some());
     assert_eq!(test1.state, StepState::Running);
     assert!(rig.open_job("test1")?.is_some());
 

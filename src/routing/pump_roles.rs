@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 
 use crate::mailspace::MailspaceConfig;
-use crate::mailspace::shipped::{ADMITTER_ROLE, PUMP_PLANNER_ROLE, RESEARCHER_ROLE, SLICER_ROLE};
+use crate::mailspace::shipped::{
+    ADMITTER_ROLE, HEAD_CTO_ROLE, PUMP_PLANNER_ROLE, RESEARCHER_ROLE, SLICER_ROLE,
+};
 use crate::pool::config::PoolConfig;
 use crate::pump::config::PumpConfig;
 
@@ -16,7 +18,7 @@ use super::validate::Issue;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpRoleCheck {
     /// What the requirement is about: `pump-planner`, `researcher`,
-    /// `admitter`, `slicer`, `merge`, `merge kind`, `auditor`, `hand kind`, or
+    /// `admitter`, `slicer`, `merge`, `merge kind`, `auditor`, `head-cto`, `hand kind`, or
     /// a role's `<role> model` (the role's pool can run its jobs).
     pub name: &'static str,
     /// Empty when the requirement is met. An issue is an error, or a
@@ -53,6 +55,9 @@ pub(super) fn pump_role_checks_of(
         collect("merge", |issues| check_merge(routing, issues)),
         collect("merge kind", |issues| check_merge_kind(routing, issues)),
         collect("auditor", |issues| check_auditor(routing, issues)),
+        collect("head-cto", |issues| {
+            check_flow_role(routing, HEAD_CTO_ROLE, false, issues);
+        }),
         collect("hand kind", |issues| check_hand_kind(pump, routing, issues)),
         // The hand role is left out: the pump names each unit's model itself,
         // from the pool's caps, so a hand needs no band.
@@ -73,6 +78,9 @@ pub(super) fn pump_role_checks_of(
         }),
         collect("auditor model", |issues| {
             check_role_runs(routing.auditor(), pools, issues);
+        }),
+        collect("head-cto model", |issues| {
+            check_flow_role_runs(routing.lookup(HEAD_CTO_ROLE), pools, issues);
         }),
         collect("gate model", |issues| {
             check_role_runs(routing.gate(), pools, issues);
@@ -115,7 +123,7 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     }
 }
 
-/// The flow roles (researcher, admitter, slicer) will run durable jobs like
+/// The flow roles (researcher, admitter, slicer, head-cto) will run durable jobs like
 /// the planner: each needs an active role assigned to a pool. Until the flow
 /// engine dispatches role steps, a missing role or pool is only a warning;
 /// the pump holds for them once it really uses them. A `dispatched` role

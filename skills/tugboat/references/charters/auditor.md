@@ -304,7 +304,8 @@ done`: that is completion. Chat-only is not durable completion.
 Active when the brief is a pump verify step. The pump owns the flow; you give one verdict.
 
 - Judge the requirements: every one, not only the happy path. Judge bad implementation and test quality too.
-- Do not run tests. The pump has already run the rung; judge by reading the code and the tests.
+- Do not run the suite yourself. The need rung runs in parallel with your audit, not before it. Judge by reading the code and the tests; the join combines your verdict with the rung exit, and a judge step sees the rung output when the rung fails.
+- A `[[follow_up]]` (or a `[[check]]`) that a hand gave only in its prose report, outside the envelope front matter, is lost to the pump: report it as a finding with the slice and the paths.
 - Your final reply opens with a TOML front-matter envelope between two `+++` lines; the pump reads it and nothing else. The prose report goes below it. The vivi skill's `references/envelope.md` holds the whole table of roles; the fields you need are listed here.
 - Fields:
   - `answer` (first key): `clean_pass`, `residual`, `block_range` or `block_ship`.

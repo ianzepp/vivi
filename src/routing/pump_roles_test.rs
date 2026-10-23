@@ -144,3 +144,22 @@ fn the_researcher_has_no_kind_requirement_yet() {
     let issues = check_of(&config_with_kind("researcher", "hand", ""), "researcher").issues;
     assert!(issues.is_empty(), "{issues:?}");
 }
+
+#[test]
+fn a_missing_head_cto_or_one_without_a_pool_is_a_warning() {
+    let missing = config(&[("hand", "pool = \"p\"")]);
+    let check = check_of(&missing, "head-cto");
+    assert_eq!(check.issues.len(), 1, "{:?}", check.issues);
+    assert_eq!(check.issues[0].severity, Severity::Warning);
+    assert!(check.issues[0].message.contains("head-cto"));
+
+    let no_pool = config(&[("head-cto", "")]);
+    let check = check_of(&no_pool, "head-cto");
+    assert_eq!(check.issues.len(), 1, "{:?}", check.issues);
+    assert_eq!(check.issues[0].severity, Severity::Warning);
+    assert!(check.issues[0].message.contains("must name a pool"));
+
+    let ready = config(&[("head-cto", "pool = \"p\"\nmodel = \"P2\"")]);
+    assert!(check_of(&ready, "head-cto").issues.is_empty());
+    assert!(check_of(&ready, "head-cto model").issues.is_empty());
+}
