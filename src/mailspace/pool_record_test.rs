@@ -98,3 +98,61 @@ fn the_addressee_is_the_role_the_task_copy_is_held_under() {
     let task = space.pool_task(&handle).unwrap();
     assert_eq!(task.addressee, None);
 }
+
+fn reply_on_task(space: &Mailspace, handle: &str, body: &str) {
+    space
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "attempt".into(),
+            body: body.into(),
+            role: "tasks".into(),
+            kind: None,
+            reply_to: Some(handle.into()),
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_task_with_no_attempt_replies_keeps_its_body() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    let before = space.pool_task(&handle).unwrap().body;
+    reply_on_task(&space, &handle, "an ordinary reply, not an attempt");
+    let task = space.pool_task(&handle).unwrap();
+    assert!(!task.body.contains("Earlier attempts"), "{}", task.body);
+    assert_eq!(task.body, before);
+}
+
+#[test]
+fn attempt_replies_are_appended_in_order() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(&space, &handle, "pump-attempt: first\nfirst body");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    reply_on_task(&space, &handle, "pump-attempt: second\nsecond body");
+    let body = space.pool_task(&handle).unwrap().body;
+    let heading = body.find("## Earlier attempts").expect("heading");
+    let first = body.find("first body").expect("first");
+    let second = body.find("second body").expect("second");
+    assert!(body.starts_with("do it"), "{body}");
+    assert!(heading < first && first < second, "{body}");
+}
+
+#[test]
+fn the_attempt_section_is_capped() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("pump-attempt: big\nOLDEST\n{}", "x".repeat(20_000)),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    reply_on_task(&space, &handle, "pump-attempt: last\nNEWEST");
+    let body = space.pool_task(&handle).unwrap().body;
+    assert!(body.contains("[older attempts cut]"), "cut marker");
+    assert!(body.contains("NEWEST"), "newest kept");
+    assert!(!body.contains("OLDEST"), "oldest dropped");
+    assert!(body.len() < 8 * 1024 + 512, "{}", body.len());
+}
