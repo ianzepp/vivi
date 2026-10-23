@@ -14,6 +14,7 @@ use crate::error::VivariumError;
 
 mod guard;
 mod identity;
+mod keys;
 mod pool;
 
 #[cfg(test)]
@@ -22,6 +23,7 @@ mod tests;
 
 pub use guard::{GuardedWrite, guard_file, guarded};
 pub use identity::{IdentityPatch, insert_identity, patch_identity, rename_identity};
+pub use keys::{SetKey, parse_key, parse_value, set_in, set_key, unset_in, unset_key, value_type};
 pub use pool::{
     PoolAdd, remove_pool, set_band, set_pool_key, unset_band, unset_pool_key, upsert_pool,
 };
