@@ -92,9 +92,6 @@ pub(super) fn pump_role_checks_of(
         collect("head-cto model", |issues| {
             check_flow_role_runs(routing.lookup(HEAD_CTO_ROLE), pools, issues);
         }),
-        collect("gate model", |issues| {
-            check_role_runs(routing.gate(), pools, issues);
-        }),
     ]
 }
 

@@ -133,13 +133,8 @@ fn print_porcelain(view: &vivi::routing::ConfigOverview, origins: &ConfigOrigins
     }
     let flow = &view.flow;
     println!(
-        "flow {} {} {} {} {} {}",
-        flow.merge_role,
-        flow.merge_pool,
-        flow.merge_lanes,
-        flow.gate_role,
-        flow.gate_pool,
-        flow.main
+        "flow {} {} {} {}",
+        flow.merge_role, flow.merge_pool, flow.merge_lanes, flow.main
     );
 }
 

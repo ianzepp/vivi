@@ -26,7 +26,7 @@ const BASE_TOML: &str = concat!(
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
     "[pump.dispatch]\nlanes = [{ model = \"m\", cap = CAP }]\n\n",
     "[[identities]]\nname = \"operator\"\n\n",
-    "[[identities]]\nname = \"hand\"\nkind = \"hand\"\n\n",
+    "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n\n",
     "[[identities]]\nname = \"mind\"\n\n",
 );
 
