@@ -7,7 +7,10 @@ use tempfile::{TempDir, tempdir};
 
 use super::{job_id, register, run_key};
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::fixture::repair_record_body;
+use crate::letter::records::{NoteWord, RecordFront, RecordKind};
+use crate::letter::render;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -132,7 +135,7 @@ impl Rig {
             base: BASE.into(),
         });
         self.mail
-            .reply(task, &marked_line(repair::ATTEMPT_MARKER, &text))?;
+            .reply(task, &note_body(NoteWord::RepairAttempt, None, &text)?)?;
         Ok(())
     }
 
@@ -248,7 +251,7 @@ fn an_open_record_adds_the_tested_tip_and_the_failing_tail() -> R {
     let mut rig = rig(true)?;
     rig.mail.open_record(
         NEED,
-        "kind: repair\ntarget: other\ntested: abc123\nthe failing tail",
+        &repair_record_body(NEED, "other", Some("abc123"), "the failing tail"),
     )?;
     rig.land("repair", true)?;
     rig.tick()?;
@@ -363,7 +366,14 @@ fn no_auditor_role_raises_once_and_marks_the_key() -> R {
 #[test]
 fn an_unreadable_open_record_names_the_range_only() -> R {
     let mut rig = rig(true)?;
-    rig.mail.open_record(NEED, "kind: repair\nno target here")?;
+    let front = RecordFront {
+        need: NEED.into(),
+        kind: Some(RecordKind::Repair),
+        target: None,
+        tested: None,
+    };
+    let body = render(&front, "no target here").unwrap();
+    rig.mail.open_record(NEED, &body)?;
     rig.land("repair", true)?;
     rig.tick()?;
     let job = &rig.jobs.jobs[&job_id(NEED, 1)];

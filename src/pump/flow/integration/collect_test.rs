@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::BuildMergeMain;
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
+use crate::letter::fixture::{record_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -79,7 +79,7 @@ fn rig(attempt: u32) -> Result<Rig, VivariumError> {
     let ctx = with_merge_route(ctx);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     start(&ctx, &store, &mut mail, NEED, Some("plan"))?;
     let task = mail.send_step("mind", "mind", "merge", &step_body(NEED, 1, NODE, ""), &[])?;
     store.insert_step(

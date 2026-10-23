@@ -126,8 +126,9 @@ fn doctor_warns_for_a_ready_need_and_json_matches_exit_status() {
     let project = tempfile::tempdir().unwrap();
     init(project.path());
     let root = project.path().to_str().unwrap();
-    // A ready need whose front matter declares no done_when: the send gate
-    // refuses to write one, so it arrives as a raw letter.
+    // A ready need that declares no done_when: the send gate refuses to write
+    // one, so it arrives as a raw old-format letter (prose body, no front
+    // matter), the one shape the raw delivery gate still admits.
     let identities = vivi(
         project.path(),
         &["mailspace", "identity", "list", "--project", root],
@@ -144,8 +145,8 @@ fn doctor_warns_for_a_ready_need_and_json_matches_exit_status() {
     std::fs::write(
         &letter,
         format!(
-            "From: {}\r\nTo: {}\r\nSubject: missing done_when\r\nX-Vivi-Kind: need\r\n\
-             X-Vivi-Format: 1\r\n\r\n+++\ndone_when = []\n+++\n\na ready need without a done_when entry\n",
+            "From: {}\r\nTo: {}\r\nSubject: missing done_when\r\nX-Vivi-Kind: need\r\n\r\n\
+             a ready need without a done_when entry\n",
             address("mind"),
             address("cto"),
         ),

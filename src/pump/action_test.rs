@@ -6,7 +6,7 @@
 use std::fs;
 
 use super::*;
-use crate::mailspace::{PumpActionKind, PumpActionRequest, PumpRecord, PumpState};
+use crate::mailspace::{PumpActionRequest, PumpRecord, PumpState};
 use crate::pump::fixture::{Project, T0, planned, project};
 use crate::pump::state::Unit;
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -135,43 +135,6 @@ fn an_applied_withdraw_closes_the_record_withdrawn_once() {
     assert_eq!(records[0].status, PumpState::Done);
     assert_eq!(records[0].outcome.as_deref(), Some("withdrawn"));
     assert!(st.board.actions[&id].owes.is_empty(), "the close was paid");
-
-    let before = project.host.logs().len();
-    apply_pending(&ctx, &mut st);
-    assert_eq!(project.host.logs().len(), before, "applied again");
-}
-
-#[test]
-fn a_recover_letter_for_a_need_with_no_run_is_settled_once_and_changes_no_state() {
-    let project = project();
-    let ctx = project.pump_ctx();
-    let need = project.need("fix auth");
-    let record = open_record(&project, &need);
-    let mut st = planned(&need, &[("u1", Status::Stuck), ("u2", Status::Merged)]);
-    let id = post(
-        &project,
-        &need,
-        &PumpActionRequest {
-            kind: PumpActionKind::Recover,
-            ..PumpActionRequest::withdraw("the tip is sound")
-        },
-    );
-
-    apply_pending(&ctx, &mut st);
-
-    assert_eq!(st.board.actions[&id].kind, "recover");
-    assert!(
-        st.board.actions[&id].owes.is_empty(),
-        "recover owes no close"
-    );
-    assert!(logged(&project, "recover is retired"));
-    assert_eq!(st.units["u1"].status, Status::Stuck, "recover moved u1");
-    assert_eq!(st.units["u2"].status, Status::Merged, "recover moved u2");
-    assert!(st.closed_needs.is_empty(), "recover closed the need");
-    let records = history(&project, &need);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].handle, record.handle);
-    assert_eq!(records[0].status, PumpState::Open);
 
     let before = project.host.logs().len();
     apply_pending(&ctx, &mut st);
@@ -492,4 +455,31 @@ fn an_unlock_action_is_neither_applied_nor_marked_by_the_old_pump() {
     );
     assert!(!saved(&project).board.actions.contains_key(&id));
     assert_eq!(st.units["u1"].status, Status::Stuck);
+}
+
+#[test]
+fn legacy_open_records_are_not_new_dispatches_of_need_empty() {
+    let project = project();
+    let ctx = project.pump_ctx();
+    let legacy = |handle: &str| PumpRecord {
+        handle: handle.to_owned(),
+        kind: String::from("pump"),
+        need: String::new(),
+        status: PumpState::Open,
+        from: String::new(),
+        to: String::new(),
+        date: String::new(),
+        subject: String::new(),
+        outcome: None,
+        letter_error: Some(format!("pump record {handle}: old format")),
+    };
+    let mut st = State::default();
+    st.board.planner_fails.insert(String::new(), 3);
+
+    revive_new_records(&ctx, &mut st, &[legacy("aaa"), legacy("bbb")]);
+    revive_new_records(&ctx, &mut st, &[legacy("bbb"), legacy("aaa")]);
+
+    assert!(!logged(&project, "is a new dispatch of need"));
+    assert!(st.board.records.is_empty(), "{:?}", st.board.records);
+    assert_eq!(st.board.planner_fails.get(""), Some(&3));
 }

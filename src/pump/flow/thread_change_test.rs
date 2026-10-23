@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
+use crate::letter::fixture::{record_body, step_body};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::handlers::TickPhase;
@@ -38,7 +38,7 @@ fn rig() -> Result<Rig, VivariumError> {
         mailspace: p.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    MailWriter::open_record(&mut port, &need, "kind: build")?;
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build"))?;
     start(&ctx, &store, &mut port, &need, Some("plan"))?;
     Ok(Rig {
         _project: p,
@@ -111,6 +111,24 @@ fn a_reply_by_another_member_restarts_a_live_run_at_plan() -> R {
     assert_eq!(runs[1], (2, "plan".into(), "live".into()));
     assert_eq!(rig.exceptions(), "");
     // The next pass sees the reply as older than run 2's start: no third run.
+    rig.phase()?;
+    assert_eq!(rig.runs()?.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn the_run_started_post_is_stored_as_written_and_still_counts() -> R {
+    let mut rig = rig()?;
+    let thread = rig
+        .port
+        .mailspace
+        .thread(&rig.need, false, usize::MAX, usize::MAX)?;
+    let start = thread
+        .iter()
+        .find(|m| crate::letter::prose_of(&m.body).starts_with("pump: run r1 started"))
+        .expect("the run-started post");
+    assert!(!start.body.contains("+++"), "{}", start.body);
+    rig.reply_as("operator")?;
     rig.phase()?;
     assert_eq!(rig.runs()?.len(), 2);
     Ok(())

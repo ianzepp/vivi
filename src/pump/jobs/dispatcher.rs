@@ -8,6 +8,8 @@ use std::path::Path;
 
 use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
+use crate::letter::work::{JobFront, TaskFront};
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
@@ -241,26 +243,34 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
     }
 }
 
-/// Post the job brief on its preset `task` as one `pump-brief: <job id>`
-/// reply from the pump identity, so any pool reads it from mail. A task that
-/// already carries a brief reply for this job id is left alone, so a
-/// deferred dispatch retried on the next tick posts nothing new.
+/// Post the job brief on its preset `task` as one brief note from the pump
+/// identity, so any pool reads it from mail. A task that already carries a
+/// brief note for this job id is left alone, so a deferred dispatch retried on
+/// the next tick posts nothing new.
 fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError> {
-    let first = crate::mailspace::marked_line(crate::mailspace::BRIEF_MARKER, &job.id);
     let thread = ctx.vivi(
-        &format!("mail thread {} --limit 1000", shell_quote(task)),
+        &format!("mail thread {} --limit 1000 --json", shell_quote(task)),
         60,
     );
     if thread.code == 0
-        && thread.text.lines().any(|line| {
-            crate::mailspace::marked_payload(line, crate::mailspace::BRIEF_MARKER) == Some(&job.id)
+        && recovery::bodies_of(&thread.text).iter().any(|body| {
+            crate::mailspace::pump_note::note_of(body).is_some_and(|note| {
+                note.pump.note == NoteWord::Brief
+                    && note.job.is_some_and(|front| front.id == job.id)
+            })
         })
     {
         return Ok(());
     }
     let dir = ctx.home.join("job-briefs");
     fs::create_dir_all(&dir)?;
-    let body = fit_brief(ctx, job, &dir, format!("{first}\n{}", job.body))?;
+    let prose = fit_brief(ctx, job, &dir, job.body.clone())?;
+    let front = JobFront {
+        id: job.id.clone(),
+        kind: job.kind.clone(),
+        builtin_role: job.builtin_role.clone(),
+    };
+    let body = crate::mailspace::pump_note::brief_body(front, &prose)?;
     if crate::pump::record::reply_on_task(ctx, task, &job.id, "brief", &body) {
         Ok(())
     } else {
@@ -369,16 +379,16 @@ pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, Viva
     let dir = ctx.home.join("job-briefs");
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.txt", job.id));
-    let body = format!(
-        "pump-job-id: {}\npump-job-kind: {}\n{}{}\n{}",
-        job.id,
-        job.kind,
-        job.builtin_role
-            .as_deref()
-            .map_or(String::new(), |role| format!("pump-builtin-role: {role}\n")),
-        "",
-        job.body,
-    );
+    let front = TaskFront {
+        job: Some(JobFront {
+            id: job.id.clone(),
+            kind: job.kind.clone(),
+            builtin_role: job.builtin_role.clone(),
+        }),
+        ..TaskFront::default()
+    };
+    let body = crate::letter::render(&front, &job.body)
+        .map_err(|err| VivariumError::Message(format!("job {} brief: {err}", job.id)))?;
     let body = fit_brief(ctx, job, &dir, body)?;
     fs::write(&path, body)?;
     let subject = format!("[pump-job:{}] {}", job.id, job.subject);

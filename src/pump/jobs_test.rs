@@ -325,7 +325,23 @@ fn recovery_finds_a_task_created_before_the_last_state_save() {
     host.reply(
         "task show a1b2c3d4 --json",
         0,
-        r#"{"messages":[{"body":"pump-job-id: plan-board-1"}]}"#,
+        &serde_json::json!({
+            "messages": [{
+                "body": crate::letter::render(
+                    &crate::letter::work::TaskFront {
+                        job: Some(crate::letter::work::JobFront {
+                            id: String::from("plan-board-1"),
+                            kind: String::from("planner:board"),
+                            builtin_role: None,
+                        }),
+                        ..Default::default()
+                    },
+                    "write a plan",
+                )
+                .unwrap(),
+            }],
+        })
+        .to_string(),
     );
     host.reply(
         "task show a1b2c3d4 --latest",
@@ -491,6 +507,29 @@ fn a_brief_under_the_cap_is_sent_whole() {
     assert!(sent.ends_with("a short brief"));
     assert!(!ctx.home.join("job-briefs/planner-small.full.txt").exists());
     assert!(!ctx.home.join("exceptions.txt").exists());
+}
+
+#[test]
+fn a_sent_job_brief_carries_the_job_front_matter() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    let mut spec = JobSpec::new("audit-1", "auditor:range", "auditor", "audit", "look at it");
+    spec.builtin_role = Some(String::from("auditor"));
+    let mut store = Store::default();
+    enqueue(&mut store, spec).unwrap();
+    let job = store.jobs["audit-1"].clone();
+
+    send_task(&ctx, &job).unwrap();
+
+    let sent = std::fs::read_to_string(ctx.home.join("job-briefs/audit-1.txt")).unwrap();
+    let envelope = crate::letter::read::task_of("", &sent).unwrap();
+    let front = envelope.front.job.unwrap();
+    assert_eq!(front.id, "audit-1");
+    assert_eq!(front.kind, "auditor:range");
+    assert_eq!(front.builtin_role.as_deref(), Some("auditor"));
+    assert!(!sent.contains("pump-job-"));
+    assert!(sent.ends_with("look at it"));
 }
 
 fn queued(id: &str, body: &str) -> PoolJob {
@@ -734,20 +773,26 @@ fn a_preset_task_job_posts_one_brief_before_it_dispatches() {
     assert!(reply < dispatch, "{commands:?}");
     assert!(commands[reply].contains("t1"), "{commands:?}");
     let brief = brief.expect("brief file written");
-    let first = brief.lines().next().unwrap();
-    assert!(first.starts_with("pump-brief: t="), "{brief}");
-    assert!(first.ends_with(" h1"), "{brief}");
-    assert!(brief.contains("WRITE SCOPE: a.rs"), "{brief}");
+    let note = crate::mailspace::pump_note::note_of(&brief).expect("a brief note");
+    assert_eq!(note.pump.note, crate::letter::records::NoteWord::Brief);
+    assert_eq!(note.job.expect("a [job] table").id, "h1");
+    assert!(note.prose.contains("WRITE SCOPE: a.rs"), "{brief}");
 }
 
 #[test]
 fn a_task_that_already_has_this_jobs_brief_gets_no_second_one() {
+    let brief = crate::mailspace::pump_note::brief_body(
+        crate::letter::work::JobFront {
+            id: "h1".into(),
+            kind: "merge".into(),
+            builtin_role: None,
+        },
+        "WRITE SCOPE",
+    )
+    .unwrap();
+    let thread = serde_json::json!({"messages": [{"body": brief}]}).to_string();
     let (commands, _) = dispatch_brief_job(Some("t1"), |host| {
-        host.reply(
-            "mail thread",
-            0,
-            "From: pump\n\npump-brief: t=1761100000123456 h1\nWRITE SCOPE\n",
-        );
+        host.reply("mail thread", 0, &thread);
     });
     assert_eq!(replies_in(&commands), 0, "{commands:?}");
     assert!(commands.iter().any(|c| c.contains("pool dispatch")));

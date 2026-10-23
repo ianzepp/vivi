@@ -72,7 +72,11 @@ fn research_rig() -> Result<(Rig, String), VivariumError> {
         mailspace: project.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    MailWriter::open_record(&mut port, &need, "kind: research")?;
+    MailWriter::open_record(
+        &mut port,
+        &need,
+        &crate::letter::fixture::record_body(&need, "research"),
+    )?;
     start(&ctx, &store, &mut port, &need, Some("research"))?;
     let registry = shipped::<Jobs, MailspacePort>(&ctx);
     let rig = Rig {
@@ -119,7 +123,7 @@ fn research_replies(rig: &Rig, want: &str) -> Result<Vec<String>, VivariumError>
         .thread(want, false, 50, 8)?
         .into_iter()
         .map(|message| message.body)
-        .filter(|body| body.starts_with("pump: research"))
+        .filter(|body| crate::letter::prose_of(body).starts_with("pump: research"))
         .collect())
 }
 

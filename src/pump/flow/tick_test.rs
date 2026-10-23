@@ -10,13 +10,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    FINISHING_STUCK, FLOW_VERSION_STALE, FOLLOW_UP, FOLLOW_UP_MARKER, JOB_ORPHANED, KIND_CHANGED,
-    NODE_UNKNOWN, OPERATOR_HOLD, RUN_ERROR, SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STALE_ATTEMPT,
-    STEP_OVERDUE, VALIDATED, tick_with,
+    FINISHING_STUCK, FLOW_VERSION_STALE, FOLLOW_UP, JOB_ORPHANED, KIND_CHANGED, NODE_UNKNOWN,
+    OPERATOR_HOLD, RUN_ERROR, SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STALE_ATTEMPT, STEP_OVERDUE,
+    VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
-use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::fixture::{record_body, step_body, task_body_with};
+use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
+use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -31,7 +33,7 @@ use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::registry;
 use crate::pump::flow::scope::ScopeState;
-use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
+use crate::pump::flow::slice_dispatch;
 use crate::pump::flow::validate::validate;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
@@ -84,10 +86,10 @@ fn seed_need_branch(store: &PumpStore) -> R {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
-    rig_with("kind: build")
+    rig_with("build")
 }
 
-fn rig_with(record: &str) -> Result<Rig, VivariumError> {
+fn rig_with(kind: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let mut routing = (*ctx.routing).clone();
@@ -104,7 +106,7 @@ fn rig_with(record: &str) -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, record)?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, kind))?;
     Ok(Rig {
         _dir: dir,
         ctx,
@@ -350,15 +352,13 @@ fn a_built_hand_posts_deviations_and_follow_ups_and_stays_open() -> R {
     rig.tick()?;
 
     let replies = &rig.mail.tasks[&slice.task].replies;
-    assert!(
+    let note = |word| {
         replies
             .iter()
-            .any(|r| r.starts_with(&format!("{DEVIATIONS_MARKER} t="))
-                && r.contains("changed a signature"))
-    );
-    assert!(replies.iter().any(|r| r.starts_with(FOLLOW_UP_MARKER)
-        && r.contains("[[follow_up]]")
-        && r.contains("src/b.rs")));
+            .find_map(|r| note_of(r).filter(|n| n.pump.note == word))
+    };
+    assert!(note(NoteWord::Deviations).is_some_and(|n| n.prose.contains("changed a signature")));
+    assert!(note(NoteWord::FollowUp).is_some_and(|n| n.prose.contains("src/b.rs")));
     assert_eq!(rig.count(FOLLOW_UP), 1);
     assert_eq!(rig.mail.tasks[&slice.task].state.status, TaskStatus::Open);
     assert!(rig.jobs.jobs[&id].applied_at.is_some());
@@ -579,7 +579,7 @@ fn an_overdue_job_alarms_once_naming_its_evidence() -> R {
 
 #[test]
 fn a_kind_change_alarms_once_and_changes_nothing() -> R {
-    let mut rig = rig_with("a record without a kind line")?;
+    let mut rig = rig_with("")?;
     rig.start("plan")?;
     rig.mail.set_marks(NEED, &["research"]);
     rig.tick()?;
@@ -591,7 +591,7 @@ fn a_kind_change_alarms_once_and_changes_nothing() -> R {
 
 #[test]
 fn the_landing_tick_of_a_record_kind_run_raises_no_kind_alarm() -> R {
-    let mut rig = rig_with("kind: research")?;
+    let mut rig = rig_with("research")?;
     rig.start("research")?;
     rig.role_job(
         "research",
@@ -606,7 +606,7 @@ fn the_landing_tick_of_a_record_kind_run_raises_no_kind_alarm() -> R {
 
 #[test]
 fn a_real_kind_change_on_a_live_record_kind_run_still_alarms_once() -> R {
-    let mut rig = rig_with("a record without a kind line")?;
+    let mut rig = rig_with("")?;
     rig.mail.set_marks(NEED, &["research"]);
     rig.start("research")?;
     assert_eq!(rig.store.runs_of(NEED)?[0].kind, "research");
@@ -620,7 +620,7 @@ fn a_real_kind_change_on_a_live_record_kind_run_still_alarms_once() -> R {
 
 #[test]
 fn a_record_closed_without_landing_raises_no_kind_alarm() -> R {
-    let mut rig = rig_with("kind: research")?;
+    let mut rig = rig_with("research")?;
     rig.start("research")?;
     rig.mail.close_need_by(NEED, "operator");
     rig.tick()?;

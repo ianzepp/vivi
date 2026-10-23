@@ -5,6 +5,7 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::repair_record_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::route::JoinInput;
@@ -39,7 +40,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("pump");
-    let body = format!("kind: repair\ntarget: vivi\ntested: {TESTED}\nmain is red");
+    let body = repair_record_body(NEED, "vivi", Some(TESTED), "main is red");
     MailWriter::open_record(&mut mail, NEED, &body)?;
     start(&ctx, &store, &mut mail, NEED, Some("fix1"))?;
     Ok(Rig {

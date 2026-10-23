@@ -7,8 +7,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::{RepairMerge, RepairRung, register};
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
-use crate::mailspace::marked_line;
+use crate::letter::fixture::{repair_record_body, step_body};
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::{note_body, note_of};
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::FlowKind;
@@ -79,7 +80,11 @@ fn rig(facts: bool) -> Result<Rig, VivariumError> {
     ctx = ctx.with_routing(routing);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: repair\ntarget: default")?;
+    MailWriter::open_record(
+        &mut mail,
+        NEED,
+        &repair_record_body(NEED, "default", None, ""),
+    )?;
     start(&ctx, &store, &mut mail, NEED, Some("fix1"))?;
     let mut rig = Rig {
         _dir: dir,
@@ -120,7 +125,7 @@ impl Rig {
         let task = self.fix1()?.task;
         self.mail.reply(
             &task,
-            &marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts)),
+            &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
         )
     }
 
@@ -128,7 +133,11 @@ impl Rig {
     /// (the pump when `None`) that tested `commit`.
     fn post_tested(&mut self, commit: &str, who: Option<&str>) -> R {
         let rung = self.add_step("rung1", StepState::Done)?;
-        let body = marked_line(repair::RUNG_MARKER, &format!("tested={commit}; exit 0"));
+        let body = note_body(
+            NoteWord::RepairRung,
+            None,
+            &format!("tested={commit}; exit 0"),
+        )?;
         match who {
             Some(who) => self.mail.foreign_reply(&rung.task, who, &body),
             None => self.mail.reply(&rung.task, &body)?,
@@ -144,7 +153,7 @@ impl Rig {
             base: BASE.into(),
         };
         let task = self.fix1()?.task;
-        let body = marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts));
+        let body = note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?;
         match who {
             Some(who) => self.mail.foreign_reply(&task, who, &body),
             None => self.mail.reply(&task, &body)?,
@@ -246,7 +255,7 @@ fn no_published_attempt_is_an_error() -> R {
     let merge = rig.add_step("merge1", StepState::Pending)?;
     rig.mail.reply(
         &rung.task,
-        &marked_line(repair::RUNG_MARKER, "tested=x; exit 0"),
+        &note_body(NoteWord::RepairRung, None, "tested=x; exit 0")?,
     )?;
     for (handler, step) in [
         (&RepairRung as &dyn StepHandler, &rung),
@@ -296,10 +305,14 @@ fn the_rung_collector_posts_the_verdict_reply_before_advancing() -> R {
     let replies = &rig.mail.tasks[&rung.task].replies;
     let verdict = replies
         .iter()
-        .find(|reply| reply.starts_with(repair::RUNG_MARKER))
+        .filter_map(|reply| note_of(reply))
+        .find(|note| note.pump.note == NoteWord::RepairRung)
         .unwrap_or_else(|| panic!("no rung verdict reply: {replies:?}"));
-    assert!(verdict.contains("exit 1"), "{verdict}");
-    assert_eq!(repair::parse_tested(verdict).as_deref(), Some(COMMIT));
+    assert!(verdict.prose.contains("exit 1"), "{}", verdict.prose);
+    assert_eq!(
+        repair::parse_tested(&verdict.prose).as_deref(),
+        Some(COMMIT)
+    );
     Ok(())
 }
 
@@ -384,7 +397,7 @@ fn an_environment_failure_posts_no_verdict_and_holds_the_rung() -> R {
     assert!(
         replies
             .iter()
-            .all(|reply| !reply.starts_with(repair::RUNG_MARKER)),
+            .all(|reply| note_of(reply).is_none_or(|note| note.pump.note != NoteWord::RepairRung)),
         "{replies:?}"
     );
     let text = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
@@ -412,7 +425,7 @@ fn step_errors_name_what_was_expected_and_what_was_found() -> R {
 
 #[test]
 fn parse_tested_reads_the_first_word_only() {
-    let tested = |text: &str| repair::parse_tested(&marked_line(repair::RUNG_MARKER, text));
+    let tested = |text: &str| repair::parse_tested(text);
     assert_eq!(tested("tested=abc; exit 0").as_deref(), Some("abc"));
     assert_eq!(tested("exit 0; tail: tested=zzz"), None);
     assert_eq!(tested("tested=; exit 0"), None);

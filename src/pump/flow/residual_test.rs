@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::file;
 use crate::error::VivariumError;
+use crate::letter::fixture::record_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::review::{
     Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus,
@@ -252,7 +253,7 @@ fn the_shipped_registry_files_residual_needs_from_a_build_audit() -> Result<(), 
 
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, "n1", "kind: build")?;
+    MailWriter::open_record(&mut mail, "n1", &record_body("n1", "build"))?;
     start(&ctx, &store, &mut mail, "n1", Some("plan"))?;
     let task = mail.send_step(
         "mind",

@@ -3,11 +3,11 @@
 //! `flows/repair.mmd`, each driven only by finishing the pool job and ticking.
 
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::e2e_rig::{Rig, agent_receipt, env_receipt, push_receipt, rig};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
-use crate::pump::flow::repair;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::jobs::JobStatus;
@@ -36,7 +36,9 @@ fn config() -> PumpConfig {
 /// A repair run at `fix1` with a repairer, merge and auditor roles and a main
 /// at `MAIN_A`.
 fn start() -> Result<Rig, VivariumError> {
-    let record = format!("kind: repair\ntarget: default\ntested: {TESTED}\n\nFAILED a::b\n");
+    let record = format!(
+        "+++\nkind = \"repair\"\ntarget = \"default\"\ntested = \"{TESTED}\"\n+++\nFAILED a::b\n"
+    );
     let mut rig = rig(config(), &record, "fix1")?;
     let mut routing = (*rig.ctx.routing).clone();
     for (name, read_only) in [("merge", false), ("auditor", true)] {
@@ -224,7 +226,7 @@ fn rung1_exit_127_holds_the_rung_with_one_alarm_and_no_verdict() -> R {
     assert_eq!(rung.verdict.as_deref(), Some(OPERATOR_HOLD));
     let replies = rig
         .port
-        .marked_replies_from(&rung.task, repair::RUNG_MARKER, "mind")?;
+        .notes_from(&rung.task, NoteWord::RepairRung, "mind")?;
     assert!(replies.is_empty(), "{replies:?}");
     let text = rig.exceptions();
     assert_eq!(kinds(&rig), ["flow-env-failure"], "{text}");

@@ -502,11 +502,14 @@ fn role_facts(space: &Mailspace, task: &PoolTask, named: Option<&str>) -> Option
     if let Some(facts) = named.and_then(known) {
         return Some(facts);
     }
-    if task
-        .body
-        .lines()
-        .any(|line| line.trim() == "pump-builtin-role: auditor")
-    {
+    let builtin_auditor = match vivi::letter::read::task_of(&task.handle, &task.body) {
+        Ok(envelope) => envelope
+            .front
+            .job
+            .is_some_and(|job| job.builtin_role.as_deref() == Some("auditor")),
+        Err(_) => false,
+    };
+    if builtin_auditor {
         return Some(RoleFacts::builtin_auditor());
     }
     if named.is_some() {

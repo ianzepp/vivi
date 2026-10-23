@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::letter::{Validate, check_text, is_false};
+use crate::letter::sugar::opens_with_fence;
+use crate::letter::work::JobFront;
+use crate::letter::{LetterError, Validate, check_text, is_false, parse_letter};
 use crate::pump::flow::def::FlowKind;
 
 /// The flow a pump record asks for.
@@ -50,11 +52,47 @@ impl Validate for RecordFront {
         if let Some(tested) = &self.tested {
             check_text("tested", tested)?;
             if self.kind != Some(RecordKind::Repair) {
-                return Err("`tested` is only read on a record with kind = \"repair\"".to_string());
+                return Err("`tested` is only read on a record with kind = \"repair\": add kind = \"repair\""
+                        .to_string());
             }
         }
         Ok(())
     }
+}
+
+/// The record front and prose a `pump send` body stands for. A body that opens
+/// with front matter is parsed and validated as a [`RecordFront`], its `need`
+/// as written. A prose body gets `need` as its front and the prose as the body.
+///
+/// # Errors
+/// Returns the `LetterError` when front matter does not parse or validate, or
+/// when a prose line starts with `kind:`, `target:` or `tested:`: those facts
+/// go in front matter.
+pub fn record_letter(need: &str, body: &str) -> Result<(RecordFront, String), LetterError> {
+    if opens_with_fence(body) {
+        let envelope = parse_letter::<RecordFront>(body)?;
+        return Ok((envelope.front, envelope.body));
+    }
+    let fact_line = body.lines().any(|line| {
+        let line = line.trim_start();
+        ["kind:", "target:", "tested:"]
+            .iter()
+            .any(|key| line.starts_with(key))
+    });
+    if fact_line {
+        return Err(LetterError::Invalid(
+            "pump record facts go in front matter, not prose lines: write need = \"<handle>\" (required) and kind = \"..\", target = \"..\" or tested = \"..\" between +++ fences"
+                .to_string(),
+        ));
+    }
+    let front = RecordFront {
+        need: need.to_string(),
+        kind: None,
+        target: None,
+        tested: None,
+    };
+    front.validate().map_err(LetterError::Invalid)?;
+    Ok((front, body.trim().to_string()))
 }
 
 /// What an operator action reply asks the pump to do.
@@ -194,10 +232,29 @@ pub struct PumpNote {
 pub struct MailFront {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pump: Option<PumpNote>,
+    /// The pump job a brief note carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobFront>,
 }
 
 impl Validate for MailFront {
     fn validate(&self) -> Result<(), String> {
+        let brief = self
+            .pump
+            .as_ref()
+            .is_some_and(|pump| pump.note == NoteWord::Brief);
+        match (&self.job, brief) {
+            (Some(_), false) => {
+                return Err(
+                    "`job` is only read on a brief note (pump.note = \"brief\")".to_string()
+                );
+            }
+            (None, true) => return Err("a brief note carries a `[job]` table".to_string()),
+            _ => {}
+        }
+        if let Some(job) = &self.job {
+            job.validate()?;
+        }
         let Some(pump) = &self.pump else {
             return Ok(());
         };

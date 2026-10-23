@@ -208,6 +208,7 @@ fn mail_round_trips_empty_and_noted() {
             t: 1_700_000_000_000_000,
             reference: Some("job-1 reason text".to_string()),
         }),
+        job: None,
     };
     assert_eq!(round_trip(&noted), noted);
     let bare = MailFront {
@@ -216,6 +217,7 @@ fn mail_round_trips_empty_and_noted() {
             t: 5,
             reference: None,
         }),
+        job: None,
     };
     assert_eq!(round_trip(&bare), bare);
 }
@@ -240,6 +242,11 @@ fn every_note_word_round_trips() {
                 note,
                 t: 1,
                 reference: None,
+            }),
+            job: (note == NoteWord::Brief).then(|| JobFront {
+                id: "j1".to_string(),
+                kind: "build".to_string(),
+                builtin_role: None,
             }),
         };
         assert_eq!(round_trip(&front), front);
@@ -273,4 +280,93 @@ fn mail_refusals() {
         "+++\n[pump]\nnote = \"attempt\"\nt = 1\nref = \" \"\n+++\n",
         &["pump.ref"],
     );
+}
+
+#[test]
+fn brief_note_carries_a_job() {
+    let brief = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::Brief,
+            t: 9,
+            reference: None,
+        }),
+        job: Some(JobFront {
+            id: "j1".to_string(),
+            kind: "build".to_string(),
+            builtin_role: Some("hand".to_string()),
+        }),
+    };
+    assert_eq!(round_trip(&brief), brief);
+    invalid_naming::<MailFront>(
+        "+++\n[pump]\nnote = \"attempt\"\nt = 1\n[job]\nid = \"j\"\nkind = \"k\"\n+++\n",
+        &["job", "brief"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[job]\nid = \"j\"\nkind = \"k\"\n+++\n",
+        &["job", "brief"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[pump]\nnote = \"brief\"\nt = 1\n+++\n",
+        &["brief", "[job]"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[pump]\nnote = \"brief\"\nt = 1\n[job]\nid = \" \"\nkind = \"k\"\n+++\n",
+        &["job.id"],
+    );
+}
+
+#[test]
+fn record_letter_takes_a_prose_body_as_the_prose() {
+    let (front, prose) = record_letter("n1", "  Fix it.\nmore  ").unwrap();
+    assert_eq!(
+        front,
+        RecordFront {
+            need: "n1".to_string(),
+            kind: None,
+            target: None,
+            tested: None,
+        }
+    );
+    assert_eq!(prose, "Fix it.\nmore");
+}
+
+#[test]
+fn record_letter_refuses_a_prose_fact_line() {
+    for body in [
+        "kind: repair",
+        "Fix it.\n  target: alpha\nmore",
+        "tested: abc",
+        "kind:\nbody",
+    ] {
+        match record_letter("n1", body) {
+            Err(LetterError::Invalid(reason)) => {
+                assert!(
+                    reason.contains("pump record facts go in front matter, not prose lines"),
+                    "{reason}"
+                );
+                assert!(reason.contains("between +++ fences"), "{reason}");
+                assert!(reason.contains("need = \"<handle>\""), "{reason}");
+            }
+            other => panic!("expected Invalid for {body:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn record_letter_takes_a_front_matter_body_as_written() {
+    let text = render(
+        &RecordFront {
+            need: "other".to_string(),
+            kind: Some(RecordKind::Research),
+            target: None,
+            tested: None,
+        },
+        "prose",
+    )
+    .unwrap();
+    let (front, prose) = record_letter("n1", &text).unwrap();
+    assert_eq!(front.need, "other");
+    assert_eq!(front.kind, Some(RecordKind::Research));
+    assert_eq!(prose, "prose");
+    assert!(record_letter("n1", "+++\nneed = \"x\"\nbogus = 1\n+++\n").is_err());
 }

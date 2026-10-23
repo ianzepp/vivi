@@ -7,6 +7,8 @@ use tempfile::{TempDir, tempdir};
 use super::{UNREPAIRED_NODE, answer_green};
 use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
+use crate::letter::records::{RecordFront, RecordKind};
+use crate::letter::render;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -120,12 +122,19 @@ impl Rig {
                 verdict: None,
             },
         )?;
-        let tested = tested.map_or(String::new(), |sha| format!("\ntested: {sha}"));
-        MailWriter::open_record(
-            &mut self.mail,
-            need,
-            &format!("kind: {kind}\ntarget: {target}{tested}"),
-        )?;
+        let kind = match kind {
+            "build" => RecordKind::Build,
+            "repair" => RecordKind::Repair,
+            other => panic!("unknown record kind {other:?}"),
+        };
+        let front = RecordFront {
+            need: need.into(),
+            kind: Some(kind),
+            target: Some(target.into()),
+            tested: tested.map(ToString::to_string),
+        };
+        let body = render(&front, "").unwrap();
+        MailWriter::open_record(&mut self.mail, need, &body)?;
         Ok(task)
     }
 

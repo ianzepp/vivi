@@ -130,20 +130,21 @@ fn start_job(rig: &Rig) -> Result<JobSpec, VivariumError> {
 }
 
 #[test]
-fn a_legacy_for_line_names_no_want() {
-    assert_eq!(for_want("x\nfor: w1\nfor: w2"), None);
-    assert_eq!(for_want("for: <want-1234>"), None);
-    assert_eq!(for_want("plain body"), None);
+fn a_body_with_no_front_matter_is_an_error() {
+    assert!(for_want("x\nfor: w1\nfor: w2").is_err());
+    assert!(for_want("for: <want-1234>").is_err());
+    assert!(for_want("plain body").is_err());
 }
 
 #[test]
-fn for_want_reads_a_front_matter_explores() {
+fn for_want_reads_a_front_matter_explores() -> R {
     let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
     front.explores = Some(String::from("want-9"));
     let body = crate::letter::fixture::need_body_with(&front, "Look into it.");
-    assert_eq!(for_want(&body), Some("want-9".to_owned()));
+    assert_eq!(for_want(&body)?, Some("want-9".to_owned()));
     let plain = crate::letter::fixture::need_body(&["answered"], "Look into it.");
-    assert_eq!(for_want(&plain), None);
+    assert_eq!(for_want(&plain)?, None);
+    Ok(())
 }
 
 #[test]
@@ -195,6 +196,15 @@ fn a_failing_read_gives_the_notice_line_not_an_error() -> R {
     assert!(spec.body.contains("could not be read"), "{}", spec.body);
     assert!(!spec.body.contains("boom"), "{}", spec.body);
     assert!(spec.body.contains("WANT-THREAD-TEXT"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn a_need_that_does_not_parse_fails_the_research_step() -> R {
+    let rig = rig("for: w1\nprose only", true)?;
+    let error = start_job(&rig).err().map(|error| error.to_string());
+    let text = error.ok_or_else(|| VivariumError::Message(String::from("expected an error")))?;
+    assert!(text.contains("need"), "{text}");
     Ok(())
 }
 

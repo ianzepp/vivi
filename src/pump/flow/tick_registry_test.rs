@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{OPERATOR_HOLD, tick_with};
 use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
+use crate::letter::fixture::{record_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -51,12 +51,12 @@ struct Rig {
     jobs: Jobs,
 }
 
-fn rig(record: &str) -> Result<Rig, VivariumError> {
+fn rig(kind: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, record)?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, kind))?;
     Ok(Rig {
         _dir: dir,
         ctx,
@@ -188,7 +188,7 @@ fn slice_count(rig: &Rig) -> Result<usize, VivariumError> {
 
 #[test]
 fn a_fanout_handler_expands_its_slices_and_the_step_runs() -> R {
-    let mut rig = rig("kind: build")?;
+    let mut rig = rig("build")?;
     rig.start("plan")?;
     // `build1` is not an entry: give the run a pending fanout row directly.
     let task = rig.mail.send_step(
@@ -231,7 +231,7 @@ fn a_fanout_handler_expands_its_slices_and_the_step_runs() -> R {
 
 #[test]
 fn a_waiting_step_is_polled_and_its_answer_advances_it() -> R {
-    let mut rig = rig("kind: release")?;
+    let mut rig = rig("release")?;
     rig.start("wait")?;
     let polls = log();
     let mut registry = Reg::new();
@@ -250,7 +250,7 @@ fn a_waiting_step_is_polled_and_its_answer_advances_it() -> R {
 
 #[test]
 fn a_held_step_is_not_polled() -> R {
-    let mut rig = rig("kind: release")?;
+    let mut rig = rig("release")?;
     rig.start("wait")?;
     let task = rig.row("wait")?.task;
     rig.store
@@ -273,7 +273,7 @@ fn a_held_step_is_not_polled() -> R {
 
 #[test]
 fn a_registered_phase_runs_once_per_tick_after_the_live_runs() -> R {
-    let mut rig = rig("kind: build")?;
+    let mut rig = rig("build")?;
     rig.start("plan")?;
     let notes = log();
     let mut registry = Reg::new();
@@ -299,7 +299,7 @@ fn a_registered_phase_runs_once_per_tick_after_the_live_runs() -> R {
 
 #[test]
 fn an_enqueued_step_job_carries_the_run_kind_and_node_class() -> R {
-    let mut rig = rig("kind: build")?;
+    let mut rig = rig("build")?;
     rig.start("plan")?;
     let mut registry = Reg::new();
     registry.handler(

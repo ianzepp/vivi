@@ -1,7 +1,7 @@
 //! Pump records: the `pump` item kind, a sibling of task, need and want.
 //!
 //! One dispatch is one pump record. A record names exactly one need (the
-//! `X-Vivi-Need` header), is addressed to the pump's own identity (`[pump]
+//! `need` of its [`RecordFront`] front matter), is addressed to the pump's own identity (`[pump]
 //! reply_from`, the identity the pump reads needs as and replies as), and
 //! covers that dispatch end to end. An open record alone admits a need: the
 //! need's own addressee plays no part. Redispatching the same need is a new
@@ -22,10 +22,8 @@ use super::event_log::log_move_event;
 use super::thread::MailspaceThreadMessage;
 use super::{Mailspace, SendRequest};
 use crate::error::VivariumError;
+use crate::letter::records::{RecordFront, record_letter};
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
-
-/// The letter header naming the one need a pump record covers.
-pub const PUMP_NEED_HEADER: &str = "X-Vivi-Need";
 
 /// Where a pump record stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -61,6 +59,10 @@ pub struct PumpRecord {
     /// The close note of a done record; reopening clears it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// Why the stored letter did not parse as a record (it names the handle);
+    /// `need` is empty then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub letter_error: Option<String>,
 }
 
 impl Mailspace {
@@ -107,6 +109,10 @@ impl Mailspace {
     ) -> Result<PumpRecord, VivariumError> {
         let (default_from, to) = self.pump_names();
         let (need_handle, need_subject) = self.resolve_need(storage, need)?;
+        let need_id = storage.resolve_message_token(&need_handle)?;
+        let need_body = crate::extract::extract_text(&storage.read_message(&need_id)?)?;
+        crate::letter::read::need_of(&need_handle, &need_body)
+            .map_err(|error| VivariumError::Message(format!("need {need_handle}: {error}")))?;
         if let Some(open) = self.open_record_of(storage, &need_handle)? {
             return Err(VivariumError::Message(format!(
                 "need {need_handle} already has an open pump record {}; close it with `vivi pump done {}` first",
@@ -120,22 +126,32 @@ impl Mailspace {
                 || format!("Dispatch of need {need_handle}."),
                 str::to_string,
             );
-        self.check_actionable(storage, &need_handle, &body)?;
-        let extras = [(PUMP_NEED_HEADER.to_string(), need_handle.clone())];
-        let result = self.send_with_extras(
-            SendRequest {
-                from: from.map_or(default_from, str::to_string),
-                to: vec![to],
-                cc: Vec::new(),
-                bcc: Vec::new(),
-                subject: format!("pump {need_handle}: {need_subject}"),
-                body,
-                role: "pumps".into(),
-                kind: Some("pump".into()),
-                reply_to: None,
-            },
-            &extras,
-        )?;
+        let (mut front, prose) = record_letter(&need_handle, &body)
+            .map_err(|error| VivariumError::Message(error.to_string()))?;
+        if front.need != need_handle {
+            let (named, _) = self.resolve_need(storage, &front.need)?;
+            if named != need_handle {
+                return Err(VivariumError::Message(format!(
+                    "pump record front matter names need {}, not {need_handle}",
+                    front.need
+                )));
+            }
+        }
+        front.need.clone_from(&need_handle);
+        let letter = crate::letter::render(&front, &prose)
+            .map_err(|error| VivariumError::Message(error.to_string()))?;
+        self.check_actionable(storage, &front, &letter)?;
+        let result = self.send(SendRequest {
+            from: from.map_or(default_from, str::to_string),
+            to: vec![to],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: format!("pump {need_handle}: {need_subject}"),
+            body: letter,
+            role: "pumps".into(),
+            kind: Some("pump".into()),
+            reply_to: None,
+        })?;
         let delivered = result
             .delivered
             .first()
@@ -144,32 +160,28 @@ impl Mailspace {
         self.record_of(storage, &row)
     }
 
-    /// Refuse a record the flow could not act on: a closed need, a `kind:`
-    /// line naming no flow kind, or a repair record without a known target.
+    /// Refuse a record the flow could not act on: a closed need, or a repair
+    /// record without a known target.
     fn check_actionable(
         &self,
         storage: &Storage,
-        need: &str,
-        body: &str,
+        front: &RecordFront,
+        rendered: &str,
     ) -> Result<(), VivariumError> {
+        let need = &front.need;
         let (done, marks) = need_facts(storage, need)?;
         if done {
             return Err(VivariumError::Message(format!(
                 "need {need} is done: a pump record needs an open need"
             )));
         }
-        let (kind, unknown) = crate::pump::flow::kind::of(Some(body), &marks);
-        if let Some(word) = unknown {
-            return Err(VivariumError::Message(format!(
-                "pump record for need {need}: expected a `kind:` line naming one of build, research, release, repair; actual: {word}"
-            )));
-        }
+        let kind = crate::pump::flow::kind::of(Some(rendered), &marks);
         if kind != crate::pump::flow::def::FlowKind::Repair {
             return Ok(());
         }
-        let target = body
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("target:"))
+        let target = front
+            .target
+            .as_deref()
             .map(str::trim)
             .filter(|word| !word.is_empty());
         let known: Option<Vec<String>> = self
@@ -189,7 +201,7 @@ impl Mailspace {
             return Ok(());
         }
         Err(VivariumError::Message(format!(
-            "repair record for need {need}: expected a `target:` line naming one of {listed}; actual: {}",
+            "repair record for need {need}: expected `target` in the record front matter naming one of {listed}; actual: {}",
             target.unwrap_or("none")
         )))
     }
@@ -417,10 +429,16 @@ impl Mailspace {
             PumpState::Open
         };
         let events = storage.list_mailspace_events(&row.message_id)?;
+        let handle = storage.display_handle(&row.message_id)?;
+        let body = crate::extract::extract_text(&data)?;
+        let (need, letter_error) = match crate::letter::read::record_of(&handle, &body) {
+            Ok(envelope) => (envelope.front.need, None),
+            Err(error) => (String::new(), Some(error.to_string())),
+        };
         Ok(PumpRecord {
-            handle: storage.display_handle(&row.message_id)?,
+            handle,
             kind: "pump".into(),
-            need: header_value(&data, PUMP_NEED_HEADER).unwrap_or_default(),
+            need,
             status,
             from: row.from_addr.clone(),
             to: row.to_addr.clone(),
@@ -429,6 +447,7 @@ impl Mailspace {
             outcome: (status == PumpState::Done)
                 .then(|| outcome_of(&events))
                 .flatten(),
+            letter_error,
         })
     }
 }
@@ -479,25 +498,6 @@ fn outcome_of(events: &[MailspaceEvent]) -> Option<String> {
         }
     }
     outcome
-}
-
-/// One header's value from a letter's header block, if present.
-pub(super) fn header_value(data: &[u8], name: &str) -> Option<String> {
-    let Ok(raw) = std::str::from_utf8(data) else {
-        return None;
-    };
-    for line in raw.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() {
-            return None;
-        }
-        if let Some((key, value)) = line.split_once(':')
-            && key.eq_ignore_ascii_case(name)
-        {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

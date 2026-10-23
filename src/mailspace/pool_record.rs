@@ -8,8 +8,8 @@
 use super::Mailspace;
 use super::thread::{MailspaceThreadMessage, text_body};
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
-use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A task as the pool reads it.
 #[derive(Debug, Clone)]
@@ -31,87 +31,19 @@ pub struct PoolEventRow {
     pub note: String,
 }
 
-/// First line of a pump attempt-context reply on a slice task.
-pub const ATTEMPT_MARKER: &str = "pump-attempt:";
-
-/// First line of a pump brief reply on a preset task.
-pub const BRIEF_MARKER: &str = "pump-brief:";
-
-/// The last order stamp handed out by [`marked_line`].
-static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
-
-/// The first line of a pump-marked reply: `<marker> t=<unix micros> <rest>`.
-///
-/// Thread order has one-second precision, so same-second replies need their
-/// own order. The stamp is the clock in microseconds, pushed one past the last
-/// stamp this process issued, so it strictly increases.
-#[must_use]
-pub fn marked_line(marker: &str, rest: &str) -> String {
-    let now = chrono::Utc::now().timestamp_micros();
-    let stamp = LAST_STAMP
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
-            Some(now.max(last.saturating_add(1)))
-        })
-        .map_or(now, |last| now.max(last.saturating_add(1)));
-    format!("{marker} t={stamp} {rest}").trim_end().to_owned()
-}
-
-/// The text after `marker` on a marked line, without the `t=` stamp. `None`
-/// when the line does not start with the marker.
-#[must_use]
-pub fn marked_payload<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
-    let rest = line.trim().strip_prefix(marker)?.trim_start();
-    Some(match split_stamp(rest) {
-        Some((_, after)) => after,
-        None => rest,
-    })
-}
-
-/// A leading `t=<digits>` token and the text after it.
-fn split_stamp(text: &str) -> Option<(i64, &str)> {
-    let (token, after) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
-    let stamp = match token.strip_prefix("t=")?.parse() {
-        Ok(stamp) => stamp,
-        Err(_) => return None,
-    };
-    Some((stamp, after.trim_start()))
-}
-
-/// The order stamp on a marked message's first line, when it has one.
-fn stamp_of(body: &str) -> Option<i64> {
-    let first = body.trim_start().lines().next()?;
-    let (_, rest) = first.split_once(char::is_whitespace)?;
-    split_stamp(rest.trim_start()).map(|(stamp, _)| stamp)
-}
-
-/// Sort marked replies oldest first by `(t, Date, message_id)`. A reply with
-/// no stamp sorts by `Date` and then `message_id`, after any stamped reply
-/// of the same second.
-pub fn order_marked(replies: &mut [MailspaceThreadMessage]) {
+/// Sort a thread's messages oldest first by `(pump.t, Date, message_id)`. A
+/// message that is not a pump note sorts first, by `Date` and `message_id`.
+pub fn order_notes(replies: &mut [MailspaceThreadMessage]) {
     replies.sort_by_cached_key(|message| {
-        let stamp = stamp_of(&message.body);
-        let second = stamp.map_or_else(|| date_seconds(&message.date), |t| t.div_euclid(1_000_000));
-        (
-            second,
-            stamp.is_none(),
-            stamp.unwrap_or(0),
-            message.date.clone(),
-            message.message_id.clone(),
-        )
+        let stamp = super::pump_note::note_of(&message.body).map(|note| note.pump.t);
+        (stamp, message.date.clone(), message.message_id.clone())
     });
-}
-
-/// Unix seconds of a thread `Date`, 0 when it does not parse.
-fn date_seconds(date: &str) -> i64 {
-    chrono::DateTime::parse_from_rfc3339(date)
-        .or_else(|_| chrono::DateTime::parse_from_rfc2822(date))
-        .map_or(0, |parsed| parsed.timestamp())
 }
 
 /// The marked replies found on one task's thread.
 #[derive(Default)]
 struct ThreadReplies {
-    briefs: Vec<String>,
+    briefs: Vec<super::pump_note::Note>,
     attempts: Vec<String>,
 }
 
@@ -124,21 +56,22 @@ const ATTEMPTS_CAP: usize = 8 * 1024;
 /// Line that opens the attempt text when older replies were cut.
 const ATTEMPTS_CUT: &str = "[older attempts cut]";
 
-/// The task letter with `brief` as its prose: the task's own front matter
-/// stays, the brief's marker line is dropped. A task body that does not parse
-/// as a task letter is replaced by the brief unchanged, so the dispatcher's
-/// refusal names the task.
-fn briefed_body(task_body: &str, brief: &str) -> String {
-    let prose = match brief.split_once('\n') {
-        Some((first, rest)) if first.starts_with(BRIEF_MARKER) => rest.trim_start_matches('\n'),
-        _ => brief,
-    };
+/// The task letter a brief note turns the task into: the task's own front
+/// matter with `job` set to the note's job, over the note's prose. A task body
+/// that does not parse as a task letter is replaced by the note's prose, so the
+/// dispatcher's refusal names the task.
+fn briefed_body(task_body: &str, note: &super::pump_note::Note) -> String {
+    let prose = note.prose.trim_start_matches('\n');
     match crate::letter::read::task_of("", task_body) {
-        Ok(envelope) => match crate::letter::render(&envelope.front, prose) {
-            Ok(rendered) => rendered,
-            Err(_) => brief.to_owned(),
-        },
-        Err(_) => brief.to_owned(),
+        Ok(envelope) => {
+            let mut front = envelope.front;
+            front.job = note.job.clone();
+            match crate::letter::render(&front, prose) {
+                Ok(rendered) => rendered,
+                Err(_) => prose.to_owned(),
+            }
+        }
+        Err(_) => prose.to_owned(),
     }
 }
 
@@ -190,7 +123,7 @@ impl Mailspace {
         })
     }
 
-    /// The `pump-brief:` and `pump-attempt:` replies on a task's thread,
+    /// The brief notes and the attempt notes on a task's thread,
     /// each oldest first.
     fn marked_thread_replies(
         &self,
@@ -198,17 +131,19 @@ impl Mailspace {
         task_id: &str,
     ) -> Result<ThreadReplies, VivariumError> {
         let mut thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
-        order_marked(&mut thread);
+        order_notes(&mut thread);
         let mut found = ThreadReplies::default();
         for message in thread {
             if message.event.is_some() || message.message_id == task_id {
                 continue;
             }
             let body = message.body.trim();
-            if body.starts_with(ATTEMPT_MARKER) {
-                found.attempts.push(body.to_owned());
-            } else if body.starts_with(BRIEF_MARKER) {
-                found.briefs.push(body.to_owned());
+            if let Some(note) = super::pump_note::note_of(body) {
+                match note.pump.note {
+                    NoteWord::Attempt => found.attempts.push(note.prose.trim().to_owned()),
+                    NoteWord::Brief => found.briefs.push(note),
+                    _ => {}
+                }
             }
         }
         Ok(found)

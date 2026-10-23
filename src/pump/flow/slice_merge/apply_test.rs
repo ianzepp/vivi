@@ -6,10 +6,12 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{FAILED_MARKER, run};
+use super::run;
 use crate::error::VivariumError;
 use crate::letter::fixture::task_body_with;
+use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
+use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -191,7 +193,10 @@ impl Rig {
             .calls
             .iter()
             .filter_map(|call| match call {
-                Call::Reply { body, .. } if body.starts_with(FAILED_MARKER) => Some(body.as_str()),
+                Call::Reply { body, .. } => {
+                    note_of(body).filter(|n| n.pump.note == NoteWord::SliceMerge)?;
+                    Some(body.as_str())
+                }
                 _ => None,
             })
             .collect()

@@ -5,9 +5,9 @@
 //! `[pump.flow] max_live_runs` cap allows, at most one repair-kind run per
 //! target. Repair-kind runs neither count toward the cap nor wait for it. The addressee of the need plays no part.
 //!
-//! Assumption: the target of a repair-kind need is read from a `target:` line
-//! of the open pump record body, which N6 writes together with the
-//! `kind: repair` line.
+//! Assumption: the target of a repair-kind need is read from the `target` of
+//! the open pump record's front matter, which is written together with
+//! `kind = "repair"`.
 
 use std::collections::BTreeMap;
 
@@ -36,6 +36,10 @@ const START_STUCK_SECS: u64 = 600;
 
 /// Exception kind: a need has an open pump record the flow cannot act on.
 pub const RECORD_UNUSABLE: &str = "flow-record-unusable";
+
+/// Exception kind: a pump record, a need root letter or an operator action
+/// letter is a legacy or invalid letter. The pump starts no run on it.
+pub const LETTER_INVALID: &str = "flow-letter-invalid";
 
 /// Registry hook: the intake phase.
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
@@ -182,6 +186,12 @@ fn candidates<M: FlowMail>(
 ) -> Result<Vec<Candidate>, VivariumError> {
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
+    for (handle, text) in mail.unreadable_records()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
+    for (handle, text) in mail.unreadable_actions()? {
+        raise_once(ctx, LETTER_INVALID, &handle, &text);
+    }
     for (need, date) in mail.open_record_needs()? {
         if has_run_in_flight(store, &need)? {
             continue;
@@ -200,9 +210,13 @@ fn candidates<M: FlowMail>(
             );
             continue;
         }
+        if let Some(text) = mail.need_letter_error(&need)? {
+            raise_once(ctx, LETTER_INVALID, &need, &text);
+            continue;
+        }
         let marks = mail.need_marks(&need)?;
         let body = record.map(|(_, body)| body);
-        let (flow_kind, _) = kind::of(body.as_deref(), &marks);
+        let flow_kind = kind::of(body.as_deref(), &marks);
         if let Err(error) = load(flow_kind) {
             raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
             continue;
@@ -238,7 +252,7 @@ fn known_target(ctx: &Ctx, need: &str, target: &str) -> bool {
         RECORD_UNUSABLE,
         need,
         &format!(
-            "repair need {need}: expected a `target:` line naming one of {}; actual: {actual}",
+            "repair need {need}: expected a `target` in the record front matter naming one of {}; actual: {actual}",
             targets.join(", ")
         ),
     );
@@ -260,9 +274,9 @@ fn target_of<M: FlowMail>(mail: &M, need: &str) -> Result<String, VivariumError>
         .unwrap_or_default())
 }
 
-/// The `target:` line of a record body; empty when absent.
+/// The target a record body names; empty when absent.
 fn target_line(body: &str) -> String {
-    record_target(body).unwrap_or_default().to_owned()
+    record_target(body).unwrap_or_default()
 }
 
 /// Epoch seconds of an RFC 3339 or RFC 2822 date; `u64::MAX` when neither parses.

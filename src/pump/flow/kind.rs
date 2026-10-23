@@ -1,24 +1,24 @@
-//! The flow kind of a need: record kind line, then marks.
+//! The flow kind of a need: the record front matter kind, then marks.
 
 use super::def::FlowKind;
+use crate::letter::read::record_of;
 
 /// The kind of a need's runs.
 ///
-/// A `kind: <word>` line in the open record body wins when the word is a
-/// kind. Otherwise the marks decide: `research`, then `release`, then
-/// `repair`, else build. The second value is the record's word when it named
-/// no kind, so the caller can raise `flow-kind-unknown`.
+/// The `kind` of the open record's front matter wins. A body that fails to
+/// parse, or a record with no kind, falls to the marks: `research`, then
+/// `release`, then `repair`, else build.
 #[must_use]
-pub fn of(record_body: Option<&str>, marks: &[String]) -> (FlowKind, Option<String>) {
-    let mut unknown = None;
-    if let Some(word) = record_body.and_then(kind_line) {
-        match FlowKind::parse(word) {
-            Some(kind) => return (kind, None),
-            None => unknown = Some(word.to_string()),
+pub fn of(record_body: Option<&str>, marks: &[String]) -> FlowKind {
+    if let Some(body) = record_body {
+        if let Ok(envelope) = record_of("", body) {
+            if let Some(kind) = envelope.front.kind {
+                return kind.flow_kind();
+            }
         }
     }
     let has = |mark: &str| marks.iter().any(|m| m == mark);
-    let kind = if has("research") {
+    if has("research") {
         FlowKind::Research
     } else if has("release") {
         FlowKind::Release
@@ -26,15 +26,7 @@ pub fn of(record_body: Option<&str>, marks: &[String]) -> (FlowKind, Option<Stri
         FlowKind::Repair
     } else {
         FlowKind::Build
-    };
-    (kind, unknown)
-}
-
-fn kind_line(body: &str) -> Option<&str> {
-    body.lines()
-        .find_map(|line| line.trim().strip_prefix("kind:"))
-        .map(str::trim)
-        .filter(|word| !word.is_empty())
+    }
 }
 
 #[cfg(test)]

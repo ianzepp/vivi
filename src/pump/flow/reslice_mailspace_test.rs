@@ -58,7 +58,11 @@ fn a_repeated_request_with_multi_line_input_sends_nothing() -> R {
         mailspace: p.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    MailWriter::open_record(&mut port, &need, "kind: build")?;
+    MailWriter::open_record(
+        &mut port,
+        &need,
+        &crate::letter::fixture::record_body(&need, "build"),
+    )?;
     let run = start(&ctx, &store, &mut port, &need, Some("plan"))?;
 
     let slice_task = port.send_step(

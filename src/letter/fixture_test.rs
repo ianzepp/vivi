@@ -1,6 +1,7 @@
 //! Test-only letter bodies: well-formed front matter plus prose, so tests that
 //! need a stored need, want or task body do not hand-write TOML.
 
+use crate::letter::records::{RecordFront, RecordKind};
 use crate::letter::render;
 use crate::letter::work::{NeedFront, TaskFront, WantFront};
 
@@ -79,4 +80,54 @@ pub(crate) fn body_with_deps(kind: &str, prose: &str, deps: &[String]) -> String
         }
         _ => prose.to_string(),
     }
+}
+
+/// A pump record body for `need`; `kind` is "" (none), build, research,
+/// release or repair, and anything else panics. The prose is empty.
+pub(crate) fn record_body(need: &str, kind: &str) -> String {
+    let kind = match kind {
+        "" => None,
+        "build" => Some(RecordKind::Build),
+        "research" => Some(RecordKind::Research),
+        "release" => Some(RecordKind::Release),
+        "repair" => Some(RecordKind::Repair),
+        other => panic!("unknown record kind {other:?}"),
+    };
+    let front = RecordFront {
+        need: need.to_string(),
+        kind,
+        target: None,
+        tested: None,
+    };
+    render(&front, "").unwrap()
+}
+
+/// A pump record body of kind repair.
+pub(crate) fn repair_record_body(
+    need: &str,
+    target: &str,
+    tested: Option<&str>,
+    prose: &str,
+) -> String {
+    let front = RecordFront {
+        need: need.to_string(),
+        kind: Some(RecordKind::Repair),
+        target: Some(target.to_string()),
+        tested: tested.map(ToString::to_string),
+    };
+    render(&front, prose).unwrap()
+}
+
+/// `body` with the line `need = "<need>"` right after its opening `+++` line,
+/// for rigs that build the need themselves; a body that does not open with
+/// front matter is returned unchanged.
+pub(crate) fn record_with_need(body: &str, need: &str) -> String {
+    let Some((first, rest)) = body.split_once('\n') else {
+        return body.to_string();
+    };
+    if first.trim() != "+++" {
+        return body.to_string();
+    }
+    let line = toml::Value::String(need.to_string());
+    format!("{first}\nneed = {line}\n{rest}")
 }

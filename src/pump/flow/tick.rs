@@ -40,8 +40,6 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// Marker on a follow-up reply posted on a built slice task.
-pub const FOLLOW_UP_MARKER: &str = "pump-follow-up:";
 /// Verdict a step carries while it waits for `vivi pump answer`.
 pub const OPERATOR_HOLD: &str = "operator-hold";
 
@@ -689,7 +687,7 @@ where
             return Ok(());
         };
         let marks = self.mail.need_marks(&need)?;
-        let (now_kind, _) = kind::of(Some(&body), &marks);
+        let now_kind = kind::of(Some(&body), &marks);
         if now_kind.name() != self.run.kind {
             raise_once(
                 self.ctx,

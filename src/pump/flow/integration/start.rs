@@ -103,7 +103,7 @@ impl StepHandler for SyncStart {
         let tips = tips(cx)?;
         let need = &cx.run.need;
         let brief = format!(
-            "pump-job-kind: sync\n\nMerge main ({main}) into the need branch at {tip}, \
+            "Merge main ({main}) into the need branch at {tip}, \
              resolve any conflicts, and publish the result to the need branch. \
              Answer with the merge envelope.\n",
             main = tips.main_tip,

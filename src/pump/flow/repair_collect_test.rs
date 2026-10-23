@@ -7,6 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::register;
 use crate::error::VivariumError;
+use crate::letter::fixture::repair_record_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -59,7 +60,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, "kind: repair\ntarget: vivi")?;
+    MailWriter::open_record(&mut mail, NEED, &repair_record_body(NEED, "vivi", None, ""))?;
     start(&ctx, &store, &mut mail, NEED, Some("fix1"))?;
     let mut registry = Registry::new();
     register(&mut registry);
@@ -187,7 +188,10 @@ fn a_built_job_with_a_pushed_branch_posts_the_attempt_facts_and_routes_to_the_ru
     assert_eq!(fix.verdict.as_deref(), Some("built"));
     assert_eq!(rig.step("rung1")?.state, StepState::Pending);
     let replies = &rig.mail.tasks[&fix.task].replies;
-    let facts = replies.iter().find_map(|reply| repair::parse_facts(reply));
+    let facts = replies
+        .iter()
+        .filter_map(|reply| crate::mailspace::pump_note::note_of(reply))
+        .find_map(|note| repair::parse_facts(&note.prose));
     assert_eq!(
         facts,
         Some(AttemptFacts {

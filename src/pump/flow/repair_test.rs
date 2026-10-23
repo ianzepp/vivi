@@ -3,11 +3,12 @@
 use tempfile::tempdir;
 
 use super::{
-    ATTEMPT_MARKER, ATTEMPT_SECS, AttemptFacts, attempt_of, branch, facts_text, fix_node,
-    latest_facts, parse_facts, record, rung_node,
+    ATTEMPT_SECS, AttemptFacts, attempt_of, branch, facts_text, fix_node, latest_facts,
+    parse_facts, record, rung_node,
 };
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
@@ -54,51 +55,46 @@ fn the_branch_is_one_segment_after_the_prefix() {
 }
 
 #[test]
-fn a_record_gives_target_tested_and_the_tail() -> R {
-    let body =
-        "kind: repair\ntarget: default\ntested: 1234abcd\n\nthread 'x' panicked\nFAILED a::b\n";
-    let rec = record(body)?;
+fn a_front_matter_record_gives_target_tested_and_the_tail() -> R {
+    use crate::letter::fixture::{record_body, repair_record_body};
+    let body = repair_record_body(
+        NEED,
+        "default",
+        Some("1234abcd"),
+        "\nthread 'x' panicked\nFAILED a::b\n",
+    );
+    let rec = record(&body)?;
     assert_eq!(rec.target, "default");
     assert_eq!(rec.tested.as_deref(), Some("1234abcd"));
     assert_eq!(rec.tail, "thread 'x' panicked\nFAILED a::b");
+    let untested = record(&repair_record_body(NEED, "vivi", None, "boom"))?;
+    assert_eq!(untested.tested, None);
+    let err = record(&record_body(NEED, "")).unwrap_err();
+    assert!(
+        matches!(err, VivariumError::Parse(text) if text.contains("expected `target` in the record front matter"))
+    );
     Ok(())
 }
 
 #[test]
 fn tested_is_optional_and_target_is_required() -> R {
-    let rec = record("kind: repair\ntarget: vivi\nboom\n")?;
+    use crate::letter::fixture::{record_body, repair_record_body};
+    let rec = record(&repair_record_body(NEED, "vivi", None, "boom"))?;
     assert_eq!(rec.tested, None);
     assert_eq!(rec.tail, "boom");
-    let err = record("kind: repair\ntested: abc\nboom\n").unwrap_err();
+    let err = record(&record_body(NEED, "repair")).unwrap_err();
     assert!(matches!(err, VivariumError::Parse(text) if text.contains("target")));
-    assert!(record("target:\n").is_err());
     Ok(())
 }
 
 #[test]
-fn a_padded_target_line_is_trimmed() -> R {
-    assert_eq!(record("  target:  x  \nboom\n")?.target, "x");
-    Ok(())
+fn a_body_without_front_matter_is_refused() {
+    let err = record("kind: repair\ntarget: x\nboom\n").unwrap_err();
+    assert!(matches!(err, VivariumError::Parse(text) if text.starts_with("repair record:")));
 }
 
 #[test]
-fn a_blank_target_names_expected_and_actual() {
-    let err = record("kind: repair\ntarget:   \nboom\n").unwrap_err();
-    assert!(
-        matches!(err, VivariumError::Parse(text) if text.contains("expected a `target:` line")
-            && text.contains("actual: none in kind: repair"))
-    );
-}
-
-#[test]
-fn the_tail_excludes_kind_target_and_tested_lines() -> R {
-    let rec = record("kind: repair\n  target: x\ntested: abc\nline one\nline two\n")?;
-    assert_eq!(rec.tail, "line one\nline two");
-    Ok(())
-}
-
-#[test]
-fn facts_round_trip_through_a_marked_line() {
+fn facts_round_trip_through_a_note() {
     let want = facts(&"c".repeat(40));
     let text = facts_text(&want);
     assert_eq!(
@@ -109,10 +105,9 @@ fn facts_round_trip_through_a_marked_line() {
             "b".repeat(40)
         )
     );
-    let stamped = marked_line(ATTEMPT_MARKER, &text);
-    assert_eq!(parse_facts(&stamped), Some(want.clone()));
-    assert_eq!(parse_facts(&format!("{ATTEMPT_MARKER} {text}")), Some(want));
-    assert_eq!(parse_facts("pump-repair-attempt: branch=x commit=y"), None);
+    assert_eq!(parse_facts(&text), Some(want.clone()));
+    assert_eq!(parse_facts(&format!("{text}\nmore prose")), Some(want));
+    assert_eq!(parse_facts("branch=x commit=y"), None);
     assert_eq!(parse_facts("something else"), None);
 }
 
@@ -127,7 +122,7 @@ fn step(node: &str, task: &str) -> StepRow {
 }
 
 fn stamped(commit: &str) -> String {
-    marked_line(ATTEMPT_MARKER, &facts_text(&facts(commit)))
+    note_body(NoteWord::RepairAttempt, None, &facts_text(&facts(commit))).expect("note body")
 }
 
 #[test]
@@ -144,7 +139,7 @@ fn latest_facts_picks_the_newest_fix_row_and_reply() -> R {
     mail.reply(&old, &stamped(&"1".repeat(40)))?;
     mail.reply(&new, "chatter")?;
     mail.reply(&new, &stamped(&"2".repeat(40)))?;
-    mail.reply(&new, &marked_line(ATTEMPT_MARKER, "garbled"))?;
+    mail.reply(&new, &note_body(NoteWord::RepairAttempt, None, "garbled")?)?;
     let got = latest_facts(&store, &mail, "pump", NEED, 1, 1)?;
     assert_eq!(got.map(|f| f.commit), Some("2".repeat(40)));
     assert_eq!(latest_facts(&store, &mail, "pump", NEED, 1, 2)?, None);

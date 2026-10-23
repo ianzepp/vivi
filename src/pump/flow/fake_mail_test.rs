@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::read::step_of;
+use crate::letter::read::{record_of, step_of};
+use crate::letter::records::record_letter;
 use crate::letter::work::StepFront;
 use crate::pump::flow::mail::{
     MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
@@ -103,6 +104,8 @@ pub(crate) struct FakeMail {
     close_notes: BTreeMap<String, String>,
     records: BTreeMap<String, FakeRecord>,
     prerequisites: BTreeMap<String, Vec<String>>,
+    need_letter_errors: BTreeMap<String, String>,
+    unreadable_actions: Vec<(String, String)>,
     next: u32,
     opened_count: u32,
     /// Fail the write that would be recorded as call `n` (0-based), once.
@@ -123,6 +126,34 @@ impl FakeMail {
             need.to_string(),
             marks.iter().map(|m| (*m).to_string()).collect(),
         );
+    }
+
+    /// Store a pump record body verbatim, as an old pump left it (no letter
+    /// check, no rewrite). It is open and listed after the existing ones.
+    pub fn raw_record(&mut self, need: &str, body: &str) {
+        self.next += 1;
+        self.opened_count += 1;
+        self.records.insert(
+            need.to_string(),
+            FakeRecord {
+                handle: format!("r{:04}", self.next),
+                body: body.to_string(),
+                outcome: None,
+                opened: self.opened_count,
+            },
+        );
+    }
+
+    /// Make the root letter of `need` read as a legacy or invalid letter.
+    pub fn set_need_letter_error(&mut self, need: &str, text: &str) {
+        self.need_letter_errors
+            .insert(need.to_string(), text.to_string());
+    }
+
+    /// Post an operator action letter that does not parse.
+    pub fn add_unreadable_action(&mut self, handle: &str, text: &str) {
+        self.unreadable_actions
+            .push((handle.to_string(), text.to_string()));
     }
 
     /// Set the handles a need depends on.
@@ -183,7 +214,7 @@ impl FakeMail {
         let mut open: Vec<(&String, u32)> = self
             .records
             .iter()
-            .filter(|(_, r)| r.outcome.is_none())
+            .filter(|(_, r)| r.outcome.is_none() && record_of(&r.handle, &r.body).is_ok())
             .map(|(need, r)| (need, r.opened))
             .collect();
         open.sort_by_key(|(_, opened)| *opened);
@@ -399,6 +430,16 @@ impl MailWriter for FakeMail {
 
     fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
         self.injected()?;
+        let (front, prose) =
+            record_letter(need, body).map_err(|error| VivariumError::Message(error.to_string()))?;
+        if front.need != need {
+            return Err(VivariumError::Message(format!(
+                "pump record front matter names need {}, not {need}",
+                front.need
+            )));
+        }
+        let stored = crate::letter::render(&front, &prose)
+            .map_err(|error| VivariumError::Message(error.to_string()))?;
         self.next += 1;
         let handle = format!("r{:04}", self.next);
         self.opened_count += 1;
@@ -406,7 +447,7 @@ impl MailWriter for FakeMail {
             need.to_string(),
             FakeRecord {
                 handle: handle.clone(),
-                body: body.to_string(),
+                body: stored,
                 outcome: None,
                 opened: self.opened_count,
             },
@@ -505,6 +546,31 @@ impl OpenRecords for FakeMail {
     fn open_record_needs(&self) -> Result<Vec<(String, String)>, VivariumError> {
         Ok(FakeMail::open_record_needs(self))
     }
+
+    fn unreadable_records(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        let mut open: Vec<&FakeRecord> = self
+            .records
+            .values()
+            .filter(|r| r.outcome.is_none())
+            .collect();
+        open.sort_by_key(|r| r.opened);
+        Ok(open
+            .into_iter()
+            .filter_map(|r| {
+                record_of(&r.handle, &r.body)
+                    .err()
+                    .map(|error| (r.handle.clone(), error.to_string()))
+            })
+            .collect())
+    }
+
+    fn need_letter_error(&self, need: &str) -> Result<Option<String>, VivariumError> {
+        Ok(self.need_letter_errors.get(need).cloned())
+    }
+
+    fn unreadable_actions(&self) -> Result<Vec<(String, String)>, VivariumError> {
+        Ok(self.unreadable_actions.clone())
+    }
 }
 
 type R = Result<(), VivariumError>;
@@ -593,10 +659,13 @@ fn sentinels_marks_and_records() -> R {
     mail.set_marks("n1", &["kind-fix"]);
     assert_eq!(mail.need_marks("n1")?, vec!["kind-fix".to_string()]);
     assert!(MailReader::open_record(&mail, "n1")?.is_none());
-    let handle = MailWriter::open_record(&mut mail, "n1", "kind: fix")?;
+    let handle = MailWriter::open_record(&mut mail, "n1", "")?;
+    let (stored, body) = MailReader::open_record(&mail, "n1")?
+        .ok_or_else(|| VivariumError::Message("no record".into()))?;
+    assert_eq!(stored, handle);
     assert_eq!(
-        MailReader::open_record(&mail, "n1")?,
-        Some((handle, "kind: fix".to_string()))
+        record_of(&handle, &body).map(|e| e.front.need).as_deref(),
+        Ok("n1")
     );
     mail.close_record("n1", "landed")?;
     assert!(MailReader::open_record(&mail, "n1")?.is_none());

@@ -65,7 +65,7 @@ fn role(name: &str, read_only: Option<bool>) -> RoutedRole {
 /// A build need at `plan`, with every role the flow needs routed and main at
 /// [`MAIN`].
 fn build() -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", "plan")?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", "plan")?;
     let mut routing = (*rig.ctx.routing).clone();
     routing.roles.push(role("admitter", Some(true)));
     routing.roles.push(role("slicer", Some(true)));
@@ -84,7 +84,7 @@ fn build() -> Result<Rig, VivariumError> {
         .reply("cat-file -e", 128, "fatal: Not a valid object name");
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "build something in two slices"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "build something in two slices")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

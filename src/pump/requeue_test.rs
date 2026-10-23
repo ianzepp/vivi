@@ -628,3 +628,59 @@ fn requeue_job_refuses_a_job_that_is_not_held_or_unknown() {
     assert!(error.to_string().contains("unknown job: nope"), "{error}");
     assert!(store.take_job_releases().unwrap().is_empty());
 }
+
+/// Plant an open pump record in the old form: it lists with no need and a
+/// letter error.
+fn plant_legacy_record(project: &Project, need: &str, id: &str) {
+    let raw = format!(
+        "From: {}\r\nTo: {}\r\nSubject: pump old {id}\r\nMessage-ID: <{id}@x.test>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: pump\r\nX-Vivi-Need: {need}\r\n\
+         \r\nDispatch of an old record.\r\n",
+        project.mailspace.address_for("operator"),
+        project.mailspace.address_for("mind"),
+    );
+    let sent = project
+        .mailspace
+        .deliver_raw(raw.as_bytes(), "pumps")
+        .unwrap();
+    let storage = project.mailspace.storage().unwrap();
+    let message_id = storage
+        .resolve_message_token(&sent.delivered[0].handle)
+        .unwrap();
+    let view = storage.message_by_id(&message_id).unwrap().unwrap();
+    storage
+        .append_mailspace_event(&crate::storage::MailspaceEventInput {
+            command: "pump send".into(),
+            event_type: "delivered".into(),
+            actor_identity: Some("operator".into()),
+            account: "mind".into(),
+            message_id: view.message_id.clone(),
+            content_id: view.content_id.clone(),
+            from_role: None,
+            to_role: Some("pumps".into()),
+            from_identity: Some("operator".into()),
+            to_identity: Some("mind".into()),
+            subject: view.subject.clone(),
+            note: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_legacy_record_never_counts_as_the_open_record_of_need_empty() {
+    let project = project();
+    let need = project.need("fix auth");
+    plant_legacy_record(&project, &need, "old-one");
+    let open = project
+        .mailspace
+        .pump_list(None, Some(crate::mailspace::PumpState::Open))
+        .unwrap();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert!(open[0].letter_error.is_some(), "{open:?}");
+    seed_units(&project, &[("u1", stuck_of(""))]);
+
+    let error = run(project.root(), &command(&["u1"])).unwrap_err();
+
+    assert!(error.to_string().contains("no open pump record"), "{error}");
+    assert!(posted(&project).is_empty());
+}

@@ -9,7 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::VivariumError;
-use crate::mailspace::{marked_line, marked_payload};
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
 use crate::pump::flow::fanout::{close_slice, is_slice_row};
@@ -24,8 +25,6 @@ use crate::pump::store::PumpStore;
 
 /// Exception kind: a restart stayed unfinished too long.
 pub(crate) const RESTART_STUCK: &str = "flow-run-restart-stuck";
-/// Marker of the reply that lists a dead run's dispatched job ids.
-pub(crate) const ABANDONED_MARKER: &str = "pump-abandoned:";
 /// Seconds a run may stay `restarting` before the alarm.
 const RESTART_STUCK_SECS: u64 = 600;
 
@@ -277,7 +276,7 @@ fn prune_dead_jobs<S: JobStore, M: FlowMail>(
 }
 
 /// Post the dispatched `ids` of `dead` on its sentinel as one
-/// `pump-abandoned:` reply, leaving out ids an earlier reply already lists.
+/// abandoned note, leaving out ids an earlier reply already lists.
 fn list_abandoned<M: FlowMail>(
     mail: &mut M,
     dead: &DeadRun,
@@ -289,16 +288,18 @@ fn list_abandoned<M: FlowMail>(
     if ids.is_empty() {
         return Ok(());
     }
-    for (_, text) in mail.marked_replies(sentinel, ABANDONED_MARKER)? {
-        let listed = marked_payload(&text, ABANDONED_MARKER).unwrap_or_default();
-        let listed: BTreeSet<&str> = listed.split_whitespace().collect();
+    for (_, note) in mail.notes(sentinel, NoteWord::Abandoned)? {
+        let listed: BTreeSet<&str> = note.prose.split_whitespace().collect();
         ids.retain(|id| !listed.contains(id.as_str()));
     }
     if ids.is_empty() {
         return Ok(());
     }
     ids.sort();
-    mail.reply(sentinel, &marked_line(ABANDONED_MARKER, &ids.join(" ")))
+    mail.reply(
+        sentinel,
+        &note_body(NoteWord::Abandoned, None, &ids.join(" "))?,
+    )
 }
 
 #[cfg(test)]

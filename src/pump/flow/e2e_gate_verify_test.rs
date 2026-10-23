@@ -71,7 +71,7 @@ fn config() -> PumpConfig {
 /// [`BASE`], with main at [`MAIN`], a merge role routed and the fanout stubbed
 /// to answer `fanout`.
 fn build(fanout: &'static str) -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", "slice")?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", "slice")?;
     let mut routing = (*rig.ctx.routing).clone();
     routing.roles.push(RoutedRole {
         name: String::from("merge"),
@@ -105,7 +105,7 @@ fn build(fanout: &'static str) -> Result<Rig, VivariumError> {
     rig.git("main", MAIN);
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

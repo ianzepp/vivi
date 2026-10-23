@@ -136,10 +136,13 @@ fn change_since_start<'a>(
     let pump = ctx.cfg.reply_from.as_str();
     let is_pump = |m: &MailspaceThreadMessage| matches!(mailspace.classify_recipient(&m.from), Ok(Recipient::Local(id)) if id == pump);
     let start = format!("pump: run r{} started", run.run);
-    let Some(started) = thread
-        .iter()
-        .find(|m| is_pump(m) && m.event.is_none() && m.body.trim_start().starts_with(&start))
-    else {
+    let Some(started) = thread.iter().find(|m| {
+        is_pump(m)
+            && m.event.is_none()
+            && crate::letter::prose_of(&m.body)
+                .trim_start()
+                .starts_with(&start)
+    }) else {
         return Ok(None);
     };
     let at = epoch(&started.date)?;

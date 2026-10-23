@@ -70,7 +70,7 @@ fn brief(
     out.push_str("\n\n## Need thread\n\n");
     out.push_str(&capped(&thread_lines(&messages), THREAD_CAP));
     out.push_str("\n\n## Requirements to account for\n\n");
-    for requirement in requirements(cx.ctx, need, &messages) {
+    for requirement in requirements(cx.ctx, need, &messages)? {
         out.push_str(&format!("- {}: {}\n", requirement.id, requirement.text));
     }
     out.push_str(&second_pass(cx, step)?);

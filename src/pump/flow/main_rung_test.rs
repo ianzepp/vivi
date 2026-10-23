@@ -334,10 +334,17 @@ fn no_main_rung_configured_runs_no_command() -> R {
 }
 
 #[test]
-fn record_target_reads_the_target_line_and_ignores_a_missing_one() {
-    assert_eq!(record_target("kind: repair\ntarget: x\n"), Some("x"));
-    assert_eq!(record_target("kind: repair\n"), None);
+fn record_target_ignores_a_body_without_front_matter() {
+    assert_eq!(record_target("kind: repair\ntarget: x\n"), None);
     assert_eq!(record_target("target:  \n"), None);
+}
+
+#[test]
+fn record_target_reads_the_front_matter() {
+    let body = crate::letter::fixture::repair_record_body("abcd1234", "vivi", None, "boom");
+    assert_eq!(record_target(&body).as_deref(), Some("vivi"));
+    let none = crate::letter::fixture::record_body("abcd1234", "");
+    assert_eq!(record_target(&none), None);
 }
 
 #[test]

@@ -232,7 +232,11 @@ fn the_owners_flow_with_no_sync_is_letters_all_the_way() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|m| m["body"].as_str().unwrap().trim().to_string())
+        .map(|m| {
+            vivi::letter::prose_of(m["body"].as_str().unwrap())
+                .trim()
+                .to_string()
+        })
         .collect();
     assert_eq!(bodies.len(), 7, "{bodies:?}");
     for wanted in ["please reopen N", "reopening on the audit"] {

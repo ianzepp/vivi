@@ -406,21 +406,31 @@ fn send_refuses_a_closed_need() {
     mailspace
         .move_item_outcome("mind", &need, "done", Some("finished"), "need done", None)
         .unwrap();
-    let error = refused(&mailspace, &need, "kind: build");
+    let error = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::record_body(&need, "build"),
+    );
     assert!(error.contains("is done"), "{error}");
     assert!(error.contains("needs an open need"), "{error}");
 }
 
+fn front_body(need: &str, lines: &str) -> String {
+    format!("+++\nneed = \"{need}\"\n{lines}+++\n")
+}
+
 #[test]
-fn send_refuses_a_kind_line_naming_no_flow_kind() {
+fn send_refuses_a_front_matter_kind_naming_no_flow_kind() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
-    let error = refused(&mailspace, &need, "kind: frobnicate");
-    assert!(
-        error.contains("build, research, release, repair"),
-        "{error}"
+    let error = refused(
+        &mailspace,
+        &need,
+        &front_body(&need, "kind = \"frobnicate\"\n"),
     );
-    assert!(error.contains("actual: frobnicate"), "{error}");
+    assert!(error.contains("front matter line 3"), "{error}");
+    assert!(error.contains("unknown variant `frobnicate`"), "{error}");
+    assert!(error.contains("`build`, `research`"), "{error}");
 }
 
 #[test]
@@ -428,13 +438,38 @@ fn send_refuses_a_repair_record_without_a_known_target() {
     let (mut mailspace, _tmp) = roster();
     pump_with_targets(&mut mailspace, &["alpha", "beta"]);
     let need = send_need(&mailspace, "fix auth");
-    let none = refused(&mailspace, &need, "kind: repair");
+    let none = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::record_body(&need, "repair"),
+    );
     assert!(none.contains("alpha, beta"), "{none}");
     assert!(none.contains("actual: none"), "{none}");
-    let empty = refused(&mailspace, &need, "kind: repair\ntarget:");
-    assert!(empty.contains("actual: none"), "{empty}");
-    let unknown = refused(&mailspace, &need, "kind: repair\ntarget: gamma");
+    let empty = refused(
+        &mailspace,
+        &need,
+        &front_body(&need, "kind = \"repair\"\ntarget = \"\"\n"),
+    );
+    assert!(empty.contains("target"), "{empty}");
+    let unknown = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::repair_record_body(&need, "gamma", None, ""),
+    );
     assert!(unknown.contains("actual: gamma"), "{unknown}");
+}
+
+#[test]
+fn send_refuses_a_prose_fact_line() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    for body in ["kind: repair", "Fix it.\ntarget: alpha", "tested: abc"] {
+        let error = refused(&mailspace, &need, body);
+        assert!(
+            error.contains("pump record facts go in front matter, not prose lines"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -447,9 +482,8 @@ fn a_repair_mark_makes_the_record_a_repair_record() {
         .unwrap();
     let error = refused(&mailspace, &need, "no kind line here");
     assert!(error.contains("actual: none"), "{error}");
-    mailspace
-        .pump_send(None, &need, Some("target: alpha"))
-        .unwrap();
+    let body = front_body(&need, "target = \"alpha\"\n");
+    mailspace.pump_send(None, &need, Some(&body)).unwrap();
 }
 
 #[test]
@@ -457,25 +491,26 @@ fn send_accepts_valid_build_and_repair_records() {
     let (mut mailspace, _tmp) = roster();
     pump_with_targets(&mut mailspace, &["alpha"]);
     let build = send_need(&mailspace, "build it");
-    mailspace
-        .pump_send(None, &build, Some("kind: build"))
-        .unwrap();
+    let body = crate::letter::fixture::record_body(&build, "build");
+    mailspace.pump_send(None, &build, Some(&body)).unwrap();
     let repair = send_need(&mailspace, "repair it");
-    mailspace
-        .pump_send(None, &repair, Some("kind: repair\ntarget: alpha"))
-        .unwrap();
+    let body = crate::letter::fixture::repair_record_body(&repair, "alpha", None, "");
+    mailspace.pump_send(None, &repair, Some(&body)).unwrap();
     assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 2);
 }
 
 #[test]
-fn without_pump_config_a_repair_record_needs_a_target_line_but_any_name() {
+fn without_pump_config_a_repair_record_needs_a_target_but_any_name() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "repair it");
-    let error = refused(&mailspace, &need, "kind: repair");
+    let error = refused(
+        &mailspace,
+        &need,
+        &crate::letter::fixture::record_body(&need, "repair"),
+    );
     assert!(error.contains("actual: none"), "{error}");
-    mailspace
-        .pump_send(None, &need, Some("kind: repair\ntarget: anything"))
-        .unwrap();
+    let body = crate::letter::fixture::repair_record_body(&need, "anything", None, "");
+    mailspace.pump_send(None, &need, Some(&body)).unwrap();
 }
 
 #[test]
@@ -500,4 +535,104 @@ fn send_accepts_a_need_addressed_to_hand() {
         .handle;
     let record = mailspace.pump_send(None, &need, None).unwrap();
     assert_eq!(record.status, PumpState::Open);
+}
+
+#[test]
+fn a_record_has_no_need_header_and_its_body_parses_as_a_record_front() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&record.handle).unwrap();
+    let raw = String::from_utf8(storage.read_message(&id).unwrap()).unwrap();
+    assert!(!raw.contains("X-Vivi-Need"), "{raw}");
+    let (shown, body) = mailspace.pump_show(&record.handle).unwrap();
+    let envelope = crate::letter::read::record_of(&shown.handle, &body).unwrap();
+    assert_eq!(envelope.front.need, need);
+    assert_eq!(envelope.body, format!("Dispatch of need {need}."));
+}
+
+#[test]
+fn a_full_front_matter_body_is_accepted_and_a_need_mismatch_refused() {
+    let (mailspace, _tmp) = roster();
+    let first = send_need(&mailspace, "fix auth");
+    let second = send_need(&mailspace, "fix mail");
+    let body = crate::letter::fixture::record_body(&first, "build");
+    let record = mailspace.pump_send(None, &first, Some(&body)).unwrap();
+    assert_eq!(record.need, first);
+    let (_, stored) = mailspace.pump_show(&record.handle).unwrap();
+    let front = crate::letter::read::record_of("", &stored).unwrap().front;
+    assert_eq!(front.kind, Some(crate::letter::records::RecordKind::Build));
+    let error = mailspace
+        .pump_send(None, &second, Some(&body))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("names need"), "{error}");
+    assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 1);
+    assert!(error.contains(&format!("not {second}")), "{error}");
+}
+
+#[test]
+fn a_record_in_the_old_form_lists_with_no_need_and_a_letter_error_naming_it() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let raw = format!(
+        "From: {}\r\nTo: {}\r\nSubject: pump old\r\nMessage-ID: <pump-old@x.test>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: pump\r\nX-Vivi-Need: {need}\r\n\
+         \r\nDispatch of an old record.\r\n",
+        mailspace.address_for("operator"),
+        mailspace.address_for("mind"),
+    );
+    let sent = mailspace.deliver_raw(raw.as_bytes(), "pumps").unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage
+        .resolve_message_token(&sent.delivered[0].handle)
+        .unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    storage
+        .append_mailspace_event(&crate::storage::MailspaceEventInput {
+            command: "pump send".into(),
+            event_type: "delivered".into(),
+            actor_identity: Some("operator".into()),
+            account: "mind".into(),
+            message_id: view.message_id.clone(),
+            content_id: view.content_id.clone(),
+            from_role: None,
+            to_role: Some("pumps".into()),
+            from_identity: Some("operator".into()),
+            to_identity: Some("mind".into()),
+            subject: view.subject.clone(),
+            note: None,
+        })
+        .unwrap();
+    drop(storage);
+    let listed = mailspace.pump_list(None, None).unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].need, "");
+    let error = listed[0].letter_error.as_deref().unwrap();
+    assert!(error.contains(&listed[0].handle), "{error}");
+    assert!(error.contains("old format"), "{error}");
+    assert!(!sent.delivered.is_empty());
+}
+
+#[test]
+fn send_refuses_a_legacy_need_and_stores_no_record() {
+    let (mailspace, _tmp) = roster();
+    let letter = format!(
+        "From: {}\r\nTo: {}\r\nSubject: old need\r\nMessage-ID: <old-need@x.test>\r\n\
+         X-Vivi-Kind: need\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\ndone_when: it works\r\n",
+        mailspace.address_for("operator"),
+        mailspace.address_for("mind"),
+    );
+    let handle = mailspace
+        .deliver_raw(letter.as_bytes(), "needs")
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let error = mailspace.pump_send(None, &handle, None).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains(&format!("need {handle}: ")), "{text}");
+    assert!(text.contains("old format"), "{text}");
+    assert!(mailspace.pump_list(None, None).unwrap().is_empty());
 }

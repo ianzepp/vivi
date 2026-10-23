@@ -28,7 +28,11 @@ const PARKED_ALARM: &str = "flow-need-parked";
 /// A build run started at `plan`, with an admitter and a slicer routed and the
 /// need thread readable.
 fn build() -> Result<Rig, VivariumError> {
-    let mut rig = rig(PumpConfig::default(), "kind: build", "plan")?;
+    let mut rig = rig(
+        PumpConfig::default(),
+        "+++\nkind = \"build\"\n+++\n",
+        "plan",
+    )?;
     let mut routing = (*rig.ctx.routing).clone();
     for (name, kind, read_only) in [
         ("admitter", "admitter", Some(true)),

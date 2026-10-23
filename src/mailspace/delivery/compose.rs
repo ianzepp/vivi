@@ -1,39 +1,92 @@
-//! The compose gate: a need, want or task body with front matter is parsed
-//! and validated at send, so an invalid letter is refused and nothing is
-//! stored.
+//! The compose gate: every send and reply is checked at compose. A need, want
+//! or task body must open with valid front matter; a pump record must parse as
+//! one; prose mail and chat are stored as written, with no front matter; a mail
+//! body with front matter must be a note, an action or a role reply envelope. An invalid
+//! letter is refused and nothing is stored.
 
 use super::super::Mailspace;
 use super::super::serves::canonical_wants;
 use crate::error::VivariumError;
 use crate::letter::sugar::opens_with_fence;
-use crate::letter::{Front, Letter, LetterKind, parse_kind, render};
+use crate::letter::{Front, Letter, LetterError, LetterKind, of_message, parse_kind, render};
 
-/// A validated work letter body and what it declares.
-pub(super) struct WorkLetter {
-    /// The body to store (re-rendered when a need's `serves`/`explores` were made canonical).
+/// A checked letter body and what it declares.
+pub(super) struct Gated {
+    /// The body to store: re-rendered when a
+    /// need's `serves`/`explores` were made canonical, else as written.
     pub body: String,
-    /// The front matter's `depends_on`.
+    /// The `X-Vivi-Kind` to write.
+    pub kind: Option<String>,
+    /// Whether the letter carries `X-Vivi-Format: 1`.
+    pub formatted: bool,
+    /// The front matter's `depends_on` (need, want and task only).
     pub depends_on: Vec<String>,
     /// The parsed letter, with a need's `serves` and `explores` canonical.
-    pub letter: Letter,
+    pub letter: Option<Letter>,
 }
 
-/// Parse and validate `body` when `kind` is need, want or task. Any other
-/// kind returns `Ok(None)`.
+/// Check `body` for its kind: the request `kind`, else the kind of the
+/// `role`, else mail. Memo, rule and any other kind pass unchanged and
+/// unformatted.
 ///
 /// # Errors
 /// Returns the `LetterError` text when the front matter is invalid, or the
 /// kind's refusal text when the body does not open with front matter.
-pub(super) fn work_letter(
+pub(super) fn gate(
     mailspace: &Mailspace,
     kind: Option<&str>,
+    role: &str,
     body: &str,
-) -> Result<Option<WorkLetter>, VivariumError> {
+) -> Result<Gated, VivariumError> {
+    let word = kind.unwrap_or_else(|| role_kind(role));
+    match word {
+        "need" | "want" | "task" => work(mailspace, word, body),
+        "pump" => checked(word, body, parse(&LetterKind::Record, body)?),
+        "mail" => checked_prose(word, body, &LetterKind::Mail),
+        "chat" => checked_prose(word, body, &LetterKind::Chat),
+        _ => Ok(Gated {
+            body: body.to_string(),
+            kind: Some(word.to_string()),
+            formatted: false,
+            depends_on: Vec::new(),
+            letter: None,
+        }),
+    }
+}
+
+/// The kind a role's letters carry when the request names none.
+fn role_kind(role: &str) -> &'static str {
+    match role {
+        "tasks" => "task",
+        "needs" => "need",
+        "wants" => "want",
+        "pumps" => "pump",
+        _ => "mail",
+    }
+}
+
+fn checked(kind: &str, body: &str, letter: Letter) -> Result<Gated, VivariumError> {
+    Ok(Gated {
+        body: body.to_string(),
+        kind: Some(kind.to_string()),
+        formatted: true,
+        depends_on: Vec::new(),
+        letter: Some(letter),
+    })
+}
+
+/// A body that opens with front matter must parse as `letter_kind`; any other
+/// body is prose and is stored as written (it reads as an empty front plus the
+/// whole body).
+fn checked_prose(kind: &str, body: &str, letter_kind: &LetterKind) -> Result<Gated, VivariumError> {
+    checked(kind, body, parse(letter_kind, body)?)
+}
+
+fn work(mailspace: &Mailspace, kind: &str, body: &str) -> Result<Gated, VivariumError> {
     let letter_kind = match kind {
-        Some("need") => LetterKind::Need,
-        Some("want") => LetterKind::Want,
-        Some("task") => LetterKind::Task,
-        _ => return Ok(None),
+        "need" => LetterKind::Need,
+        "want" => LetterKind::Want,
+        _ => LetterKind::Task,
     };
     if !opens_with_fence(body) {
         return Err(VivariumError::Message(no_front(&letter_kind).into()));
@@ -52,11 +105,26 @@ pub(super) fn work_letter(
     if merged {
         body = rerender(&letter)?;
     }
-    Ok(Some(WorkLetter {
+    Ok(Gated {
         body,
+        kind: Some(kind.to_string()),
+        formatted: true,
         depends_on,
-        letter,
-    }))
+        letter: Some(letter),
+    })
+}
+
+/// Check a raw imported letter. A letter with no `X-Vivi-Format` header is
+/// history and imports as is; one that claims a format must parse.
+///
+/// # Errors
+/// Returns the `LetterError` text when the letter claims format 1 (or an
+/// unknown format) and fails the parser.
+pub(super) fn raw_letter(data: &[u8]) -> Result<(), VivariumError> {
+    match of_message(data, "") {
+        Ok(_) | Err(LetterError::Legacy { .. }) => Ok(()),
+        Err(error) => Err(VivariumError::Message(format!("letter format: {error}"))),
+    }
 }
 
 fn no_front(kind: &LetterKind) -> &'static str {

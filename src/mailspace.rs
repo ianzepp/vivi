@@ -50,6 +50,7 @@ mod mermaid;
 mod message_id_test;
 mod pool_record;
 mod pump_action;
+pub mod pump_note;
 mod pump_record;
 mod reply;
 mod report;
@@ -106,14 +107,9 @@ pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
 pub use mermaid::{MermaidEdge, MermaidFlowchart, MermaidNode, parse_flowchart};
-pub use pool_record::{
-    ATTEMPT_MARKER, BRIEF_MARKER, POOL_EVENT_TYPES, PoolEventRow, PoolTask, marked_line,
-    marked_payload, order_marked,
-};
-pub use pump_action::{
-    PUMP_ACTION_HEADER, PUMP_RECORD_HEADER, PumpAction, PumpActionKind, PumpActionRequest,
-};
-pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
+pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask, order_notes};
+pub use pump_action::{PumpAction, PumpActionKind, PumpActionRequest, UnreadableAction};
+pub use pump_record::{PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest};

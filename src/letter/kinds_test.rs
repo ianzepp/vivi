@@ -1,5 +1,5 @@
 use super::*;
-use crate::letter::records::ActionWord;
+use crate::letter::records::{ActionWord, MailFront};
 
 fn letter(front: &str, prose: &str) -> String {
     format!("+++\n{front}+++\n\n{prose}\n")
@@ -165,7 +165,7 @@ fn mail_with_an_action_key_becomes_an_action() {
 
 #[test]
 fn mail_with_only_a_pump_note_stays_mail() {
-    let text = letter("[pump]\nnote = \"brief\"\nt = 5\n", "note");
+    let text = letter("[pump]\nnote = \"attempt\"\nt = 5\n", "note");
     let parsed = parse_kind(&LetterKind::Mail, &text).unwrap();
     assert_eq!(parsed.kind, LetterKind::Mail);
     assert!(matches!(parsed.front, Front::Mail(_)));
@@ -174,8 +174,8 @@ fn mail_with_only_a_pump_note_stays_mail() {
 #[test]
 fn a_broken_mail_front_reports_the_mail_error() {
     assert_eq!(
-        parse_kind(&LetterKind::Mail, "no fence"),
-        Err(LetterError::NoOpening)
+        parse_kind(&LetterKind::Mail, "+++\nunclosed"),
+        Err(LetterError::Unclosed)
     );
     assert!(matches!(
         parse_kind(&LetterKind::Mail, &letter("action = = 1\n", "x")),
@@ -199,4 +199,134 @@ fn close_events_take_a_verdict_and_other_events_take_none() {
     ));
     let parsed = parse_kind(&marked, &letter("", "x")).unwrap();
     assert_eq!(parsed.front, Front::Event(CloseFront::default()));
+}
+
+#[test]
+fn mail_with_a_role_envelope_is_a_reply() {
+    let text = letter(
+        "answer = \"built\"\nchange = []\ndeviations = []\nremaining = []\n",
+        "done",
+    );
+    let parsed = parse_kind(&LetterKind::Mail, &text).unwrap();
+    assert_eq!(parsed.kind, LetterKind::Reply(RoleKind::Hand));
+    assert_eq!(parsed.prose, "done");
+    assert!(matches!(parsed.front, Front::Reply(ref reply) if reply.answer == "built"));
+}
+
+#[test]
+fn mail_with_keys_that_fit_no_front_is_refused_naming_both() {
+    let err = parse_kind(&LetterKind::Mail, &letter("colour = \"red\"\n", "x"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("colour"), "{err}");
+    assert!(
+        err.contains("(and the front matter is not a role reply envelope)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_role_envelope_that_fails_its_own_rules_is_refused_naming_the_rule() {
+    let err = parse_kind(
+        &LetterKind::Mail,
+        &letter("answer = \"blocked-scope\"\n", "x"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("hand envelope"), "{err}");
+    assert!(err.contains("scope_paths"), "{err}");
+    assert!(!err.contains("not a role reply envelope"), "{err}");
+}
+
+fn mail_error(front: &str) -> String {
+    parse_kind(&LetterKind::Mail, &letter(front, "x"))
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn a_hand_envelope_with_an_extra_key_names_the_role_and_the_key() {
+    let err = mail_error("answer = \"built\"\ntask = \"x\"\n");
+    assert!(err.contains("hand envelope: unknown field `task`"), "{err}");
+}
+
+#[test]
+fn a_hand_envelope_with_a_string_for_a_list_names_the_role_and_the_field() {
+    let err = mail_error("answer = \"built\"\nchange = \"a.rs\"\n");
+    assert!(err.contains("hand envelope"), "{err}");
+    assert!(err.contains("expected a sequence (at `change`)"), "{err}");
+    assert!(!err.contains("`answer`"), "{err}");
+}
+
+#[test]
+fn an_answer_word_no_role_accepts_lists_the_words() {
+    let err = mail_error("answer = \"bilt\"\n");
+    assert!(
+        err.contains("answer `bilt` is not a word any role accepts"),
+        "{err}"
+    );
+    assert!(err.contains("hand: built, blocked-scope, failed"), "{err}");
+    assert!(err.contains("cto: research"), "{err}");
+}
+
+#[test]
+fn a_front_with_no_answer_key_keeps_the_mail_error() {
+    let err = mail_error("colour = \"red\"\n");
+    assert!(err.contains("unknown field `colour`"), "{err}");
+    assert!(
+        err.contains("(and the front matter is not a role reply envelope)"),
+        "{err}"
+    );
+    assert!(!err.contains("envelope:"), "{err}");
+}
+
+#[test]
+fn every_listed_answer_word_is_one_its_role_parses() {
+    for role in RoleKind::ALL {
+        for word in role.answer_words() {
+            let text = letter(&format!("answer = \"{word}\"\n"), "x");
+            if let Err(error) = roles::parse_for(role, &text) {
+                let shown = error.to_string();
+                assert!(
+                    !shown.contains("unknown variant"),
+                    "{} lists `{word}`: {shown}",
+                    role.name()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn every_role_is_listed_once() {
+    let all = RoleKind::ALL;
+    for (index, role) in all.iter().enumerate() {
+        assert!(!all[index + 1..].contains(role), "{role:?} listed twice");
+    }
+}
+
+#[test]
+fn a_mail_or_chat_with_no_front_matter_is_prose_with_an_empty_front() {
+    let mail = parse_kind(&LetterKind::Mail, "\nhello there\n").unwrap();
+    assert_eq!(mail.kind, LetterKind::Mail);
+    assert_eq!(mail.front, Front::Mail(MailFront::default()));
+    assert_eq!(mail.prose, "hello there");
+    let chat = parse_kind(&LetterKind::Chat, "hi").unwrap();
+    assert_eq!(chat.front, Front::Chat);
+    assert_eq!(chat.prose, "hi");
+}
+
+#[test]
+fn a_wrapped_mail_and_chat_body_still_parses() {
+    let mail = parse_kind(&LetterKind::Mail, "+++\n+++\n\nold").unwrap();
+    assert_eq!(mail.front, Front::Mail(MailFront::default()));
+    assert_eq!(mail.prose, "old");
+    let chat = parse_kind(&LetterKind::Chat, "+++\n+++\n\nold").unwrap();
+    assert_eq!(chat.front, Front::Chat);
+    assert_eq!(chat.prose, "old");
+}
+
+#[test]
+fn an_invalid_chat_front_is_still_refused() {
+    assert!(parse_kind(&LetterKind::Chat, "+++\ncolour = \"red\"\n+++\n\nhi").is_err());
 }

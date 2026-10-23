@@ -27,7 +27,9 @@ fn repair_rig() -> Result<Rig, VivariumError> {
         pools: vec![String::from("build-pool")],
         ..RungsConfig::default()
     };
-    let record = format!("kind: repair\ntarget: default\ntested: {TESTED}\n\nFAILED a::b\n");
+    let record = format!(
+        "+++\nkind = \"repair\"\ntarget = \"default\"\ntested = \"{TESTED}\"\n+++\nFAILED a::b\n"
+    );
     let mut rig = rig(cfg, &record, "fix1")?;
     rig.git("main", MAIN);
     rig.tick_until("fix1 job", |rig| rig.open_job("fix1").is_some())?;

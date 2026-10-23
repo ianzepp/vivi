@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use crate::letter::fixture::{sentinel_body, step_body};
+use crate::letter::fixture::{record_body, sentinel_body, step_body};
 use crate::mailspace::{Mailspace, RoleUpdate};
 use crate::pump::flow::mail::MailspacePort;
 use crate::storage::BACKLOG_GRAPH_CODE;
@@ -113,7 +113,8 @@ fn hub_run(hub: &Checkout, to: &str) -> Run {
         pump_identity: "operator".into(),
     };
     let need = hub.send_need("mind", to, "run the flow");
-    port.open_pump_record(&need, "kind: build").unwrap();
+    port.open_pump_record(&need, &record_body(&need, "build"))
+        .unwrap();
     // The run-start post the engine writes: addressed to the need's own
     // recipient set so it reaches every member, the earlier post other
     // members need before they take the pump's close.
@@ -362,7 +363,8 @@ fn member_authored_close(post: bool) -> Option<String> {
         mailspace: hub.mailspace.clone(),
         pump_identity: "pump".into(),
     };
-    port.open_pump_record(&hub_need, "kind: build").unwrap();
+    port.open_pump_record(&hub_need, &record_body(&hub_need, "build"))
+        .unwrap();
     if post {
         port.post_to_need_audience(&hub_need, "pump: run r1 started (build, entry plan)")
             .unwrap();

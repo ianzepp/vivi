@@ -84,7 +84,7 @@ impl StepHandler for Fanout {
 /// A build run started at `entry` over a live need branch at [`TIP`] cut from
 /// [`BASE`], with main at [`MAIN`] and a merge role routed.
 fn build(entry: &str) -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", entry)?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", entry)?;
     let mut routing = (*rig.ctx.routing).clone();
     for (name, read_only) in [("merge", false), ("admitter", true), ("slicer", true)] {
         routing.roles.push(RoutedRole {
@@ -117,7 +117,7 @@ fn build(entry: &str) -> Result<Rig, VivariumError> {
     rig.git("main", MAIN);
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

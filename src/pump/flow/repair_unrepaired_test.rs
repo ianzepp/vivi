@@ -9,7 +9,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::{MAIN_UNREPAIRED, Unrepaired};
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::fixture::repair_record_body;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -110,7 +112,7 @@ fn start_opens_and_waits() -> R {
 
 #[test]
 fn polling_twice_raises_one_alarm_and_never_answers() -> R {
-    let record = format!("kind: repair\ntarget: vivi\ntested: {TESTED}\n\nFAILED a::b\n");
+    let record = repair_record_body(NEED, "vivi", Some(TESTED), "FAILED a::b");
     let rig = rig(Some(&record))?;
     assert_eq!(poll(&rig)?, None);
     assert_eq!(poll(&rig)?, None);
@@ -149,7 +151,7 @@ const MAIN_NEW: &str = "aaaa000000000000000000000000000000000001";
 const MAIN_OLD: &str = "bbbb000000000000000000000000000000000002";
 
 fn main_record() -> String {
-    format!("kind: repair\ntarget: default\ntested: {TESTED}\n\nFAILED a::b\n")
+    repair_record_body(NEED, "default", Some(TESTED), "FAILED a::b")
 }
 
 fn main_is(rig: &Rig, tip: &str, green: &str) -> R {
@@ -200,7 +202,12 @@ fn a_green_tip_without_the_tested_tip_holds() -> R {
 
 #[test]
 fn a_record_without_a_tested_tip_holds() -> R {
-    let rig = rig(Some("kind: repair\ntarget: default\n\nFAILED a::b\n"))?;
+    let rig = rig(Some(&repair_record_body(
+        NEED,
+        "default",
+        None,
+        "FAILED a::b",
+    )))?;
     main_is(&rig, MAIN_NEW, MAIN_NEW)?;
     main_contains(&rig, 0);
     assert_eq!(poll(&rig)?, None);
@@ -255,7 +262,7 @@ fn the_alarm_names_each_attempt_word_and_what_it_published() -> R {
     };
     rig.mail.reply(
         &fix2,
-        &marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts)),
+        &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
     )?;
     assert_eq!(poll(&rig)?, None);
     let log = exceptions(&rig);

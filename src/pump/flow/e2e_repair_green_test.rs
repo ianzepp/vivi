@@ -36,7 +36,9 @@ const MAIN_REF: &str = "main";
 const FAILED: &str = "+++\nanswer = \"failed\"\n+++\ngave up";
 
 fn record() -> String {
-    format!("kind: repair\ntarget: {TARGET}\ntested: {TESTED}\n\nFAILED a::b\n")
+    format!(
+        "+++\nkind = \"repair\"\ntarget = \"{TARGET}\"\ntested = \"{TESTED}\"\n+++\nFAILED a::b\n"
+    )
 }
 
 /// The config with a `main` rung for the default target.

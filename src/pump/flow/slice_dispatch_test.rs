@@ -7,13 +7,14 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    AttemptResult, DEVIATIONS_CAP, DEVIATIONS_CUT, DEVIATIONS_MARKER, EXAMPLE_BLOCKED,
-    EXAMPLE_BUILT, MAX_ATTEMPTS, Retried, SliceMail, classify, classify_corrected, contract,
-    dispatch, redispatch_scope, retry,
+    AttemptResult, DEVIATIONS_CAP, DEVIATIONS_CUT, EXAMPLE_BLOCKED, EXAMPLE_BUILT, MAX_ATTEMPTS,
+    Retried, SliceMail, classify, classify_corrected, contract, dispatch, redispatch_scope, retry,
 };
 use crate::error::VivariumError;
 use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::parse;
 use crate::pump::envelope::roles::Hand;
@@ -157,8 +158,10 @@ impl Rig {
 
     /// Close `slice` merged and post its deviations.
     fn land(&mut self, slice: &StepRow, deviations: &str) -> R {
-        self.mail
-            .reply(&slice.task, &format!("{DEVIATIONS_MARKER} {deviations}"))?;
+        self.mail.reply(
+            &slice.task,
+            &note_body(NoteWord::Deviations, None, deviations)?,
+        )?;
         self.mail.close_task(&slice.task, "merged", None, None)
     }
 
@@ -396,10 +399,10 @@ fn deviations_of_merged_siblings_come_newest_first_and_skip_unmerged_ones() -> R
     rig.land(&b, "the new one")?;
     rig.mail.reply(
         &c.task,
-        &format!("{DEVIATIONS_MARKER} from an unmerged slice"),
+        &note_body(NoteWord::Deviations, None, "from an unmerged slice")?,
     )?;
     rig.mail
-        .reply(&me.task, &format!("{DEVIATIONS_MARKER} my own"))?;
+        .reply(&me.task, &note_body(NoteWord::Deviations, None, "my own")?)?;
 
     let id = rig.dispatch(&me, 1)?;
     let body = &rig.job(&id).body;
@@ -653,7 +656,7 @@ fn a_corrected_envelope_is_judged_against_the_original_jobs_machine_facts() -> R
 // ---- the real mailspace port ------------------------------------------------
 
 #[test]
-fn the_real_port_reads_the_task_body_and_marked_replies() {
+fn the_real_port_reads_the_task_body_and_pool_result_replies() {
     use crate::pump::fixture::project;
     use crate::pump::flow::mail::MailspacePort;
 
@@ -677,30 +680,22 @@ fn the_real_port_reads_the_task_body_and_marked_replies() {
             &[],
         )
         .unwrap();
-    let stamped = |marker: &str, rest: &str| crate::mailspace::marked_line(marker, rest);
-    port.reply(&task, &stamped("pump-deviations:", "first"))
+    port.reply(&task, "pool result j1: finished\nthe answer")
         .unwrap();
-    port.reply(&task, &stamped("pump-attempt:", "not a deviation"))
-        .unwrap();
-    port.reply(&task, &stamped("pump-deviations:", "second"))
-        .unwrap();
-    port.reply(&task, &stamped("pump-deviations:", "third"))
-        .unwrap();
+    port.reply(
+        &task,
+        &note_body(NoteWord::Attempt, None, "not a pool result").unwrap(),
+    )
+    .unwrap();
+    port.reply(&task, "plain prose reply").unwrap();
 
     assert_eq!(
         crate::pump::flow::fanout::target_of(&port.task_body(&task).unwrap()).as_deref(),
         Some("vivi")
     );
-    let found = port.marked_replies(&task, DEVIATIONS_MARKER).unwrap();
+    let found = port.marked_replies(&task, "pool result ").unwrap();
     let texts: Vec<&str> = found.iter().map(|(_, text)| text.as_str()).collect();
-    assert_eq!(
-        texts,
-        [
-            "pump-deviations: first",
-            "pump-deviations: second",
-            "pump-deviations: third"
-        ]
-    );
+    assert_eq!(texts, ["pool result j1: finished\nthe answer"]);
 }
 
 // ---- hands start from the need branch -------------------------------------
@@ -742,38 +737,6 @@ fn a_published_need_branch_is_where_the_hand_starts() -> R {
 }
 
 #[test]
-fn the_fake_returns_port_replies_for_its_identity_and_foreign_ones_only_for_their_sender() -> R {
-    let mut mail = FakeMail::new("pump");
-    let task = mail.send_step(
-        "pump",
-        "mind",
-        "slice",
-        &step_body(NEED, 1, "slice:a", ""),
-        &[],
-    )?;
-    mail.reply(&task, "pump-attempt: mine")?;
-    mail.foreign_reply(&task, "mind", "pump-attempt: forged");
-    mail.foreign_reply(&task, "mind", "other: not marked");
-
-    let texts = |found: Vec<(String, String)>| -> Vec<String> {
-        found.into_iter().map(|(_, text)| text).collect()
-    };
-    assert_eq!(
-        texts(mail.marked_replies_from(&task, "pump-attempt:", "pump")?),
-        ["pump-attempt: mine"]
-    );
-    assert_eq!(
-        texts(mail.marked_replies_from(&task, "pump-attempt:", "mind")?),
-        ["pump-attempt: forged"]
-    );
-    assert!(
-        mail.marked_replies_from(&task, "pump-attempt:", "nobody")?
-            .is_empty()
-    );
-    Ok(())
-}
-
-#[test]
 fn an_unpublished_need_branch_falls_back_to_the_recorded_base() -> R {
     let mut rig = rig()?;
     let slice = rig.slice("a", &["src/a.rs"])?;
@@ -796,48 +759,5 @@ fn a_need_branch_on_another_target_refuses_the_slice() -> R {
     let text = err.to_string();
     assert!(text.contains("other") && text.contains("default"), "{text}");
     assert!(rig.jobs.jobs.is_empty());
-    Ok(())
-}
-
-#[test]
-fn the_real_port_reads_marked_replies_from_one_sender_only() -> R {
-    use crate::pump::fixture::project;
-    use crate::pump::flow::mail::MailspacePort;
-
-    let p = project();
-    let port = MailspacePort {
-        mailspace: p.mailspace.clone(),
-        pump_identity: "mind".into(),
-    };
-    let task = port.send_step(
-        "mind",
-        "operator",
-        "slice",
-        &step_body(NEED, 1, "slice:a", ""),
-        &[],
-    )?;
-    let marker = "pump-attempt:";
-    port.reply(
-        &task,
-        &crate::mailspace::marked_line(marker, "from the pump"),
-    )?;
-    p.mailspace.reply(
-        &task,
-        "operator",
-        Vec::new(),
-        Vec::new(),
-        None,
-        crate::mailspace::marked_line(marker, "from a member"),
-    )?;
-
-    let all = port.marked_replies(&task, marker)?;
-    assert_eq!(all.len(), 2);
-    let from_pump = port.marked_replies_from(&task, marker, "mind")?;
-    let texts: Vec<&str> = from_pump.iter().map(|(_, text)| text.as_str()).collect();
-    assert_eq!(texts, ["pump-attempt: from the pump"]);
-    let from_member = port.marked_replies_from(&task, marker, "operator")?;
-    let texts: Vec<&str> = from_member.iter().map(|(_, text)| text.as_str()).collect();
-    assert_eq!(texts, ["pump-attempt: from a member"]);
-    assert!(port.marked_replies_from(&task, marker, "ghost")?.is_empty());
     Ok(())
 }

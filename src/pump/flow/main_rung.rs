@@ -7,6 +7,7 @@ mod schedule;
 use std::collections::BTreeSet;
 
 use crate::error::VivariumError;
+use crate::letter::read::record_of;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::load::load;
@@ -43,12 +44,13 @@ pub(crate) fn key(name: &str, target: &str) -> String {
     format!("{name}:{target}")
 }
 
-/// The trimmed value of the first `target:` line of a record body; None when absent or empty.
-pub(crate) fn record_target(body: &str) -> Option<&str> {
-    body.lines()
-        .find_map(|line| line.trim().strip_prefix("target:"))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+/// The target a record body names: the front matter `target`; None when the
+/// body has no readable front matter or the target is absent or empty.
+pub(crate) fn record_target(body: &str) -> Option<String> {
+    match record_of("", body) {
+        Ok(envelope) => envelope.front.target.filter(|value| !value.is_empty()),
+        Err(_) => None,
+    }
 }
 
 /// Exception kind of a main rung job that ended without an exit code.

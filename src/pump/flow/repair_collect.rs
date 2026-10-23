@@ -7,7 +7,8 @@
 use serde_json::json;
 
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::collect::{self, Collected};
@@ -98,8 +99,10 @@ fn built<S: JobStore, M: FlowMail>(
         return cx.advance_word(step, word, json!({"job": job.id, "reason": reason}));
     };
     let text = repair::facts_text(&facts);
-    cx.mail
-        .reply(&step.task, &marked_line(repair::ATTEMPT_MARKER, &text))?;
+    cx.mail.reply(
+        &step.task,
+        &note_body(NoteWord::RepairAttempt, None, &text)?,
+    )?;
     payload["branch"] = json!(facts.branch);
     payload["commit"] = json!(facts.commit);
     cx.advance_word(step, "built", payload)

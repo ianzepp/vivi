@@ -71,6 +71,20 @@ fn the_block_of_an_attempt_record_parses_field_by_field() {
 }
 
 #[test]
+fn a_note_wrapped_record_parses_from_its_prose() {
+    let body = crate::mailspace::pump_note::note_body(
+        crate::letter::records::NoteWord::Attempt,
+        Some("delivered"),
+        RECORD,
+    )
+    .unwrap();
+    assert!(body.starts_with("+++"), "{body}");
+    let fields = parse_record(&body).expect("note record parses");
+    assert_eq!(fields.attempt, "eb093a9c-3-a2");
+    assert_eq!(fields.outcome, "delivered");
+}
+
+#[test]
 fn the_prose_task_line_after_the_block_is_ignored() {
     let body = RECORD.replace("task: c366c7b7\n", "");
     let fields = parse_record(&body).expect("record parses");
@@ -142,6 +156,17 @@ fn a_merged_status_event_enriches_only_its_attempt() {
         at: Some(1_000_099),
     }));
     assert_eq!(record.merged_at, Some(1_000_042));
+}
+
+#[test]
+fn a_wrapped_status_event_is_read_from_its_prose() {
+    let event = parse_status_event(
+        "+++\n+++\n\npump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged\nat: 7",
+    )
+    .expect("wrapped status event parses");
+    assert_eq!(event.attempt, "n1-1-a2");
+    assert_eq!(event.status, "merged");
+    assert_eq!(event.at, Some(7));
 }
 
 #[test]
