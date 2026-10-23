@@ -79,6 +79,14 @@ fn project_base_url_joins_the_server_and_the_project_path() {
     );
 }
 
+#[test]
+fn server_mcp_url_is_the_server_with_the_mcp_path() {
+    assert_eq!(
+        server_mcp_url("https://sync.example"),
+        "https://sync.example/v1/mcp"
+    );
+}
+
 fn header<'a>(headers: &'a [(&'static str, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()

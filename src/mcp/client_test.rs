@@ -183,3 +183,38 @@ fn arguments_must_be_a_json_object() {
     assert!(parse_arguments("\"s\"").unwrap_err().contains("object"));
     assert!(parse_arguments("{nope").unwrap_err().contains("not JSON"));
 }
+
+fn project_tools() -> Vec<Value> {
+    vec![
+        json!({"name": "send", "inputSchema": {"properties": {"project": {"type": "string"}, "to": {}}}}),
+        json!({"name": "ping", "inputSchema": {"properties": {}}}),
+        json!({"name": "bare"}),
+    ]
+}
+
+#[test]
+fn takes_project_reads_the_input_schema() {
+    let tools = project_tools();
+    assert!(takes_project(&tools, "send"));
+    assert!(!takes_project(&tools, "ping"));
+    assert!(!takes_project(&tools, "bare"));
+    assert!(!takes_project(&tools, "missing"));
+}
+
+#[test]
+fn with_project_adds_the_key_and_keeps_the_rest() {
+    let result = with_project(&json!({"to": "bob"}), "abcde-fghjk");
+    assert_eq!(result, json!({"to": "bob", "project": "abcde-fghjk"}));
+}
+
+#[test]
+fn with_project_keeps_an_explicit_project() {
+    let result = with_project(&json!({"project": "mine"}), "abcde-fghjk");
+    assert_eq!(result, json!({"project": "mine"}));
+}
+
+#[test]
+fn with_project_leaves_a_non_object_unchanged() {
+    assert_eq!(with_project(&json!("text"), "p"), json!("text"));
+    assert_eq!(with_project(&json!(null), "p"), json!(null));
+}
