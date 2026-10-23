@@ -420,7 +420,23 @@ fn blocked_scope_held_by_a_slice_waits_then_redispatches_after_it_merges() -> R 
         "{:?}",
         rig.jobs.jobs.keys()
     );
-    assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Clear));
+    assert!(
+        rig.jobs.jobs[&again].body.contains("- src/extra.rs"),
+        "the formerly held path is granted"
+    );
+    assert!(
+        !rig.jobs.jobs[&id].body.contains("- src/extra.rs"),
+        "the first brief did not have it"
+    );
+    assert_eq!(rig.store.scope_state(&a.task)?, Some(ScopeState::Granted));
+
+    // The wait did not use up the slice's one request: the next block after
+    // it is a first request, so it settles and no repair is raised.
+    rig.finish(&again, &blocked_receipt());
+    rig.tick()?;
+    let third = format!("slice-{}-a1-s2", a.task);
+    assert!(rig.jobs.jobs.contains_key(&third));
+    assert_eq!(rig.count(SCOPE_REPAIR), 0);
     Ok(())
 }
 

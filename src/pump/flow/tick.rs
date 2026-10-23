@@ -32,7 +32,10 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::{Outcome, StartAction, StepHandlers};
 use crate::pump::flow::run::SENTINEL_NODE;
-use crate::pump::flow::scope::{BlockedScope, Resolution, ScopeMail, ScopeState, resolve};
+use crate::pump::flow::scope::{
+    BlockedScope, Resolution, ScopeMail, ScopeState, finish_grant, grant_held, resolve,
+    wait_holders,
+};
 use crate::pump::flow::slice_dispatch::{
     self, AttemptResult, DEVIATIONS_MARKER, Retried, SliceMail,
 };
@@ -632,7 +635,7 @@ where
                 continue;
             }
             let mut all_closed = true;
-            for holder in self.store.scope_holders(&step.task)? {
+            for holder in wait_holders(self.store, &step.task)? {
                 let state = self.mail.task_state(&holder)?;
                 let landed = matches!(
                     state.verdict.as_deref(),
@@ -641,8 +644,10 @@ where
                 all_closed &= state.status == TaskStatus::Done && landed;
             }
             if all_closed {
+                grant_held(self.store, &step.task)?;
                 let attempt = self.current_attempt(&step.task);
                 self.redispatch(&step, attempt)?;
+                finish_grant(self.store, &step.task)?;
             }
         }
         Ok(())
