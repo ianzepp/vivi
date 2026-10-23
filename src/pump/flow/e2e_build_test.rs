@@ -360,3 +360,27 @@ fn a_handler_that_fails_three_ticks_running_holds_the_step_with_one_alarm() -> R
     assert!(rig.exceptions().contains("handler broke"));
     Ok(())
 }
+
+#[test]
+fn a_sync1_whose_agent_cannot_run_is_held_with_one_env_alarm_and_no_cto() -> R {
+    let mut rig = build(BASE)?;
+    to_merge(&mut rig)?;
+    finish(&mut rig, "merge", &conflict_main())?;
+    finish(&mut rig, "sync1", &env_receipt("claude"))?;
+    rig.tick_until("sync1 held", |rig| {
+        rig.row("sync1")
+            .is_ok_and(|row| row.is_some_and(|row| row.verdict.as_deref() == Some(OPERATOR_HOLD)))
+    })?;
+    for _ in 0..3 {
+        rig.tick()?;
+    }
+    let held = rig.row("sync1")?.map(|row| (row.state, row.verdict));
+    assert_eq!(
+        held,
+        Some((StepState::Waiting, Some(OPERATOR_HOLD.to_string())))
+    );
+    assert_eq!(rig.exceptions().matches(ENV_FAILURE).count(), 1);
+    assert!(rig.row("cto")?.is_none());
+    assert!(rig.row("st1")?.is_none());
+    Ok(())
+}
