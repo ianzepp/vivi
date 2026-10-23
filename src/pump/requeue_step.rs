@@ -1,15 +1,13 @@
 //! Operator requeue of a flow step: `vivi pump requeue <step task>`.
 //!
-//! A flow step is not a unit of the old pipeline, so the unit path of
-//! [`super::run`] does not know it. The task handle is looked up in the flow
-//! run index instead, and the request is posted as the same requeue action
-//! the flow engine applies ([`crate::pump::flow::operator_actions`]), with
-//! the step task as its unit, on the open pump record of the step's need.
+//! The task handle is looked up in the flow run index, and the request is
+//! posted as the requeue action the flow engine applies
+//! ([`crate::pump::flow::operator_actions`]), with the step task as its unit,
+//! on the open pump record of the step's need.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::AttemptPolicy;
 use crate::VivariumError;
 use crate::mailspace::{Mailspace, PumpActionRequest, PumpState};
 use crate::pump::flow::index::run_state;
@@ -18,32 +16,28 @@ use crate::pump::store::PumpStore;
 /// A step task and the need whose run holds it.
 pub(super) type StepTarget = (String, String);
 
-/// The step tasks among `uids`: those that are not units but name a step of
-/// an active run, each with the need of that run. A uid that is neither a
-/// unit nor such a step is refused as an unknown unit.
+/// Each of `tasks` with the need of the active run that holds it. A task that
+/// is not a step of an active run is refused, naming it.
 ///
 /// # Errors
-/// Returns [`VivariumError::Message`] for a uid that is neither a unit nor a
-/// step, and whatever reading the run index fails with.
-pub(super) fn resolve(
-    db: &Path,
-    uids: &[String],
-    is_unit: impl Fn(&str) -> bool,
-) -> Result<Vec<StepTarget>, VivariumError> {
+/// Returns [`VivariumError::Message`] for a mailspace with no pump database or
+/// a task that is not a step of an active run, and whatever reading the run
+/// index fails with.
+pub(super) fn resolve(db: &Path, tasks: &[String]) -> Result<Vec<StepTarget>, VivariumError> {
+    let Some(store) = PumpStore::open_read_only(db)? else {
+        return Err(VivariumError::Message(format!(
+            "no pump.db at {}",
+            db.display()
+        )));
+    };
     let mut found = Vec::new();
-    let mut store = None;
-    for uid in uids.iter().filter(|uid| !is_unit(uid)) {
-        if store.is_none() {
-            store = PumpStore::open_read_only(db)?;
-        }
-        let need = match store.as_ref() {
-            Some(open) => active_need(open, uid)?,
-            None => None,
+    for task in tasks {
+        let Some(need) = active_need(&store, task)? else {
+            return Err(VivariumError::Message(format!(
+                "{task} is not a step of an active flow run (see `vivi flow show <kind> --need <need>`)"
+            )));
         };
-        let Some(need) = need else {
-            return Err(VivariumError::Message(format!("unknown unit: {uid}")));
-        };
-        found.push((uid.clone(), need));
+        found.push((task.clone(), need));
     }
     Ok(found)
 }
@@ -84,7 +78,6 @@ fn active_need(store: &PumpStore, task: &str) -> Result<Option<String>, Vivarium
 pub(super) fn post(
     project: &Path,
     steps: &[StepTarget],
-    policy: AttemptPolicy,
     reason: &str,
     dry_run: bool,
 ) -> Result<(), VivariumError> {
@@ -110,8 +103,7 @@ pub(super) fn post(
             println!("would requeue flow step {task} of need {need}");
             continue;
         }
-        let request =
-            PumpActionRequest::requeue(task, policy.attempts, policy.fresh, policy.refund, reason);
+        let request = PumpActionRequest::requeue(task, None, false, false, reason);
         mailspace.pump_post_action(None, need, &request)?;
         println!("{}", super::requested_line(task));
     }

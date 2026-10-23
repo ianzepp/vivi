@@ -37,7 +37,7 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpTargetCommand,
     },
-    /// Requeue one or more units: posts an action on the need's open pump record, applied at the pump's next tick
+    /// Requeue flow steps: posts a requeue on each step's need's open pump record; the pump queues the step's job again at its next tick
     Requeue(PumpRequeueCommand),
     /// Close one or more needs `withdrawn`, then withdraw every unfinished unit and close their pump record; the pump applies the rest at its next tick
     Withdraw(PumpWithdrawCommand),
@@ -216,32 +216,17 @@ pub struct PumpTargetRemoveCommand {
 
 #[derive(Debug, Args)]
 pub struct PumpRequeueCommand {
-    /// Unit handles to requeue
-    #[arg(value_name = "UID")]
-    pub units: Vec<String>,
-    /// Set the attempt counter to N instead of keeping it
-    #[arg(long, value_name = "N")]
-    pub attempts: Option<u32>,
-    /// Refund the attempts that failed for a transient reason
-    #[arg(long)]
-    pub refund_host_failures: bool,
-    /// Reset the attempt counter to zero
-    #[arg(long)]
-    pub fresh: bool,
+    /// Step task handles to requeue (see `vivi flow show <kind> --need <need>`)
+    #[arg(value_name = "STEP")]
+    pub steps: Vec<String>,
     /// Reason posted with the action and recorded in the pump log (default `operator requeue`)
     #[arg(long, value_name = "TEXT")]
     pub reason: Option<String>,
     /// Print what would change without posting an action
     #[arg(long)]
     pub dry_run: bool,
-    /// Requeue every unit stuck since this time (bulk form)
-    #[arg(long, value_name = "TIME")]
-    pub stuck_since: Option<String>,
-    /// Restrict the requeue to this failure class (bulk form)
-    #[arg(long, value_name = "CLASS")]
-    pub why: Option<String>,
     /// Release this held pool job; the pump applies it at its next tick
-    #[arg(long, value_name = "JOB", conflicts_with_all = ["units", "stuck_since"])]
+    #[arg(long, value_name = "JOB", conflicts_with = "steps")]
     pub job: Option<String>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
