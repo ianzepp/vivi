@@ -9,7 +9,8 @@ use super::{find_repair_need, report_red};
 use crate::error::VivariumError;
 use crate::letter::fixture::repair_record_body;
 use crate::letter::read::record_of;
-use crate::letter::records::{RecordFront, RecordKind};
+use crate::letter::records::{NoteWord, RecordFront, RecordKind};
+use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -129,14 +130,12 @@ fn a_different_set_replies_on_the_open_need_and_files_nothing() -> R {
     let replies = rig.replies();
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0].0, rig.need);
-    assert!(
-        replies[0].1.starts_with("pump-main-red: t="),
-        "{}",
-        replies[0].1
-    );
-    assert!(replies[0].1.contains("abcdef0123456789"));
-    assert!(replies[0].1.contains("b::t9"));
-    assert!(replies[0].1.contains("tail text"));
+    let note = note_of(&replies[0].1)
+        .ok_or_else(|| VivariumError::Message("the reply is not a pump note".into()))?;
+    assert_eq!(note.pump.note, NoteWord::MainRed, "{}", replies[0].1);
+    assert!(note.prose.contains("abcdef0123456789"));
+    assert!(note.prose.contains("b::t9"));
+    assert!(note.prose.contains("tail text"));
     assert_eq!(
         rig.store.main_state(&key(FAILING, "default"))?,
         Some("[\"a::t1\",\"b::t9\"]".to_string())

@@ -9,7 +9,8 @@
 //! A result the receipt cannot settle goes to git.
 
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, StepRow, StepState};
@@ -25,9 +26,6 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
-
-/// Marker of the reply that records why a slice merge failed.
-pub(crate) const FAILED_MARKER: &str = "pump-slice-merge:";
 
 /// Exception kind for a finished slice merge that could not be applied.
 const APPLY_FAILED: &str = "flow-slice-merge-apply-failed";
@@ -220,21 +218,23 @@ impl Ended<'_> {
         u32::try_from(value).map_err(|_| bad())
     }
 
-    /// Reply on the slice task once per job: the text carries `job <id>:`, and
-    /// a reply that already names this job is not posted again.
+    /// Reply on the slice task once per job with a slice-merge note whose
+    /// reference is the job id; a task that already has one is not posted to again.
     fn reply_once<M: FlowMail>(&self, mail: &mut M, reason: &str) -> Result<(), VivariumError> {
-        let key = format!("job {}:", self.job.id);
         let seen = mail
-            .marked_replies(&self.slice.task, FAILED_MARKER)?
+            .notes(&self.slice.task, NoteWord::SliceMerge)?
             .iter()
-            .any(|(_, body)| body.contains(&key));
+            .any(|(_, note)| note.pump.reference.as_deref() == Some(self.job.id.as_str()));
         if seen {
             return Ok(());
         }
-        mail.reply(
-            &self.slice.task,
-            &marked_line(FAILED_MARKER, &format!("{key} {reason}")),
-        )
+        let key = format!("job {}:", self.job.id);
+        let body = note_body(
+            NoteWord::SliceMerge,
+            Some(&self.job.id),
+            &format!("{key} {reason}"),
+        )?;
+        mail.reply(&self.slice.task, &body)
     }
 
     /// Reply with the reason (once per job), then count a failed hand attempt.
