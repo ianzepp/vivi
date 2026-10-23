@@ -41,7 +41,6 @@ fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter
         of: "item".into(),
         prev: prev.iter().map(ToString::to_string).collect(),
         from_domain: "a.local".into(),
-        date,
         at: date * 1_000_000,
     }
 }
@@ -183,7 +182,7 @@ fn events_of(mailspace: &Mailspace, handle: &str) -> Vec<(String, usize)> {
         let row = storage.message_by_content_id(&child).unwrap().unwrap();
         let bytes = storage.read_listed_blob(&row.blob_relpath).unwrap();
         if let Some(event) = parse_event(&bytes) {
-            found.push((event.date, event.kind.header().into(), event.prev.len()));
+            found.push((event.at, event.kind.header().into(), event.prev.len()));
         }
     }
     found.sort();
@@ -208,7 +207,7 @@ fn an_event_letter_names_its_item_twice_and_a_kind() {
     assert_eq!(parsed.id, "ev-1@x.test");
     assert_eq!(parsed.prev, ["p1@x.test", "p2@x.test"], "deduplicated");
     assert_eq!(parsed.from_domain, "aaaaaaaa.local");
-    assert!(parsed.date > 0);
+    assert_eq!(parsed.at, 1_791_720_000 * 1_000_000, "the Date header");
 }
 
 #[test]
@@ -307,7 +306,7 @@ fn an_event_at_stamp_beats_the_date_header() {
     let parsed = parse_event(&stamped).unwrap();
     assert_eq!(parsed.at, 1_791_944_463_123_456);
     let fallback = parse_event(&unparsable).unwrap();
-    assert_eq!(fallback.at, fallback.date * 1_000_000, "falls back to Date");
+    assert_eq!(fallback.at, 1_791_720_000 * 1_000_000, "falls back to Date");
 }
 
 #[test]
@@ -558,7 +557,7 @@ fn event_letters(mailspace: &Mailspace, handle: &str) -> Vec<String> {
         let row = storage.message_by_content_id(&child).unwrap().unwrap();
         let bytes = storage.read_listed_blob(&row.blob_relpath).unwrap();
         if let Some(event) = parse_event(&bytes) {
-            found.push((event.date, String::from_utf8_lossy(&bytes).into_owned()));
+            found.push((event.at, String::from_utf8_lossy(&bytes).into_owned()));
         }
     }
     found.sort();
