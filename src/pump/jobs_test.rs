@@ -773,20 +773,26 @@ fn a_preset_task_job_posts_one_brief_before_it_dispatches() {
     assert!(reply < dispatch, "{commands:?}");
     assert!(commands[reply].contains("t1"), "{commands:?}");
     let brief = brief.expect("brief file written");
-    let first = brief.lines().next().unwrap();
-    assert!(first.starts_with("pump-brief: t="), "{brief}");
-    assert!(first.ends_with(" h1"), "{brief}");
-    assert!(brief.contains("WRITE SCOPE: a.rs"), "{brief}");
+    let note = crate::mailspace::pump_note::note_of(&brief).expect("a brief note");
+    assert_eq!(note.pump.note, crate::letter::records::NoteWord::Brief);
+    assert_eq!(note.job.expect("a [job] table").id, "h1");
+    assert!(note.prose.contains("WRITE SCOPE: a.rs"), "{brief}");
 }
 
 #[test]
 fn a_task_that_already_has_this_jobs_brief_gets_no_second_one() {
+    let brief = crate::mailspace::pump_note::brief_body(
+        crate::letter::work::JobFront {
+            id: "h1".into(),
+            kind: "merge".into(),
+            builtin_role: None,
+        },
+        "WRITE SCOPE",
+    )
+    .unwrap();
+    let thread = serde_json::json!({"messages": [{"body": brief}]}).to_string();
     let (commands, _) = dispatch_brief_job(Some("t1"), |host| {
-        host.reply(
-            "mail thread",
-            0,
-            "From: pump\n\npump-brief: t=1761100000123456 h1\nWRITE SCOPE\n",
-        );
+        host.reply("mail thread", 0, &thread);
     });
     assert_eq!(replies_in(&commands), 0, "{commands:?}");
     assert!(commands.iter().any(|c| c.contains("pool dispatch")));
