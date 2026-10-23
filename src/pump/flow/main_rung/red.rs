@@ -47,7 +47,7 @@ pub(crate) fn find_repair_need<M: FlowMail>(
             continue;
         };
         let (flow_kind, _) = kind::of(Some(&body), &mail.need_marks(&need)?);
-        if flow_kind == FlowKind::Repair && record_target(&body) == Some(target) {
+        if flow_kind == FlowKind::Repair && record_target(&body).as_deref() == Some(target) {
             return Ok(Some(need));
         }
     }

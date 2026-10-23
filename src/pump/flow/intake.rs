@@ -260,9 +260,9 @@ fn target_of<M: FlowMail>(mail: &M, need: &str) -> Result<String, VivariumError>
         .unwrap_or_default())
 }
 
-/// The `target:` line of a record body; empty when absent.
+/// The target a record body names; empty when absent.
 fn target_line(body: &str) -> String {
-    record_target(body).unwrap_or_default().to_owned()
+    record_target(body).unwrap_or_default()
 }
 
 /// Epoch seconds of an RFC 3339 or RFC 2822 date; `u64::MAX` when neither parses.

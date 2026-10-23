@@ -21,6 +21,24 @@ fn record_kind_line_beats_the_marks() {
 }
 
 #[test]
+fn front_matter_kind_beats_the_marks_and_a_missing_one_falls_to_them() {
+    use crate::letter::fixture::record_body;
+    let body = record_body("abcd1234", "release");
+    assert_eq!(
+        of(Some(&body), &marks(&["research"])),
+        (FlowKind::Release, None)
+    );
+    let bare = record_body("abcd1234", "");
+    assert_eq!(
+        of(Some(&bare), &marks(&["research"])),
+        (FlowKind::Research, None)
+    );
+    // front matter that does not parse falls to the marks, ignoring any `kind:` line
+    let broken = "+++\nneed = \nkind: release\n";
+    assert_eq!(of(Some(broken), &marks(&["repair"])).0, FlowKind::Repair);
+}
+
+#[test]
 fn marks_map_in_order_research_release_repair() {
     assert_eq!(
         of(None, &marks(&["repair", "release", "research"])).0,

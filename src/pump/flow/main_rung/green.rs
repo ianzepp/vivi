@@ -127,7 +127,7 @@ fn land_outside_flow<M: FlowMail>(
 
 fn records_target<M: FlowMail>(mail: &M, need: &str, target: &str) -> Result<bool, VivariumError> {
     let record = MailReader::open_record(mail, need)?;
-    Ok(record.is_some_and(|(_, body)| super::record_target(&body) == Some(target)))
+    Ok(record.is_some_and(|(_, body)| super::record_target(&body).as_deref() == Some(target)))
 }
 
 #[cfg(test)]
