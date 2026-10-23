@@ -72,6 +72,7 @@ pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_a
 pub use body::{read_body_arg, read_body_input};
 pub use config_edit::{IdentityPatch, PoolAdd};
 pub use depend::{BacklogDependency, DependWrite};
+pub(crate) use dependencies::depends_on_refs;
 pub use dump::{
     DumpFilters, DumpRecord, MailDumpRequest, TaskDumpRequest, TaskDumpStatus, parse_time_bound,
 };

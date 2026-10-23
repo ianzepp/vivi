@@ -66,13 +66,8 @@ pub fn references_in(bytes: &[u8]) -> Vec<String> {
             found.push(token);
         }
     };
-    for header in parsed.headers() {
-        if !header.name().eq_ignore_ascii_case("X-Vivi-Depends-On") {
-            continue;
-        }
-        if let mail_parser::HeaderValue::Text(text) = header.value()
-            && let Some(handle) = depends_on_handle(text)
-        {
+    for value in crate::mailspace::depends_on_refs(bytes) {
+        if let Some(handle) = depends_on_handle(&value) {
             add(handle);
         }
     }

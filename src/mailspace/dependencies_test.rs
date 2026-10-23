@@ -527,3 +527,28 @@ fn an_added_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
     assert_eq!(readiness(&mailspace, &release), "ready");
     assert_eq!(readiness(&mailspace, &work), "ready");
 }
+
+#[test]
+fn a_format_one_task_letter_names_its_refs_and_parent_in_front_matter() {
+    let body = "+++\ndepends_on = [\"000000a1\", \" 000000b2 \", \"000000a1\"]\n\
+                parent = \"<source@x.test>\"\n+++\nprose\n";
+    let bytes = format!(
+        "From: mind@a.local\r\nTo: hand@a.local\r\nSubject: t\r\n\
+         Message-ID: <t@x.test>\r\nX-Vivi-Format: 1\r\nX-Vivi-Kind: task\r\n\
+         X-Vivi-Depends-On: 000000ff\r\n\r\n{body}"
+    )
+    .into_bytes();
+
+    assert_eq!(depends_on_refs(&bytes), ["000000a1", "000000b2"]);
+    assert_eq!(parent_ref(&bytes).as_deref(), Some("source@x.test"));
+}
+
+#[test]
+fn an_old_letter_still_names_its_refs_in_headers() {
+    let bytes = b"From: mind@a.local\r\nTo: hand@a.local\r\nSubject: t\r\n\
+                  Message-ID: <t@x.test>\r\nX-Vivi-Kind: task\r\n\
+                  X-Vivi-Depends-On: 000000a1\r\nX-Vivi-Parent: <p@x.test>\r\n\r\nbody\r\n";
+
+    assert_eq!(depends_on_refs(bytes), ["000000a1"]);
+    assert_eq!(parent_ref(bytes).as_deref(), Some("p@x.test"));
+}
