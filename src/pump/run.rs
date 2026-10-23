@@ -449,10 +449,22 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
     )
 }
 
-/// The run/once loop: tick, then return when control state is stopped, save
-/// and return, else wait for the next tick in one-second slices. A finished
+/// The run/once loop: reload, tick, then return when control state is
+/// stopped, else wait for the next tick in one-second slices. A finished
 /// board pass always lands before a return. A panic inside a tick is caught,
 /// logged as `TICK ERROR`, and the state saved.
+///
+/// Every tick starts from a fresh load of `<home>/pump.db` (`reload`), and
+/// the exit paths reload before they apply the board pass and save, so no
+/// tick acts on, and no save writes back, a `State` older than the store. A
+/// change made to pump.db between two ticks (a stop and start, a job
+/// removed or enqueued by another handle) is seen by the next tick. What the
+/// process still keeps across ticks: the board-pass worker thread with its
+/// in-flight snapshot, the config fingerprint and last config error, the
+/// cycle counter, and the process-local alarm dedupe maps
+/// (`tick_steps::should_raise`; the flow raise-once and step counters belong
+/// to the flow rework). The `State` parameter is only a slot the reload
+/// overwrites.
 fn drive(
     ctx: &mut Ctx,
     st: &mut State,
@@ -463,6 +475,7 @@ fn drive(
     let mut config_error = None;
     let mut cycle_sequence = 0;
     loop {
+        reload(ctx, st)?;
         if exit_requested(ctx) {
             boardpass.apply(ctx, st);
             save(ctx, st)?;
@@ -471,17 +484,26 @@ fn drive(
         refresh_config(ctx, &mut config_fingerprint, &mut config_error);
         run_recorded_tick(ctx, st, boardpass, &mut cycle_sequence)?;
         if once {
-            boardpass.apply(ctx, st);
-            save(ctx, st)?;
-            return Ok(());
+            return land_board_pass(ctx, st, boardpass);
         }
         if wait_for_next_tick(ctx) {
             ctx.log("pump control state requests exit");
-            boardpass.apply(ctx, st);
-            save(ctx, st)?;
-            return Ok(());
+            return land_board_pass(ctx, st, boardpass);
         }
     }
+}
+
+/// Reload the state from pump.db, then fold in a finished board pass and save.
+/// The reload keeps the final save from overwriting changes made to the store
+/// since the last tick.
+fn land_board_pass(
+    ctx: &Ctx,
+    st: &mut State,
+    boardpass: &mut BoardPass,
+) -> Result<(), VivariumError> {
+    reload(ctx, st)?;
+    boardpass.apply(ctx, st);
+    save(ctx, st)
 }
 
 fn run_recorded_tick(
@@ -706,6 +728,20 @@ pub fn lock_is_held(home: &Path) -> Result<bool, VivariumError> {
         Err(error) => return Err(error.into()),
     };
     Ok(lock.try_lock().is_err())
+}
+
+/// Replace the in-memory state with the contents of `<home>/pump.db`; stop the
+/// controller if the store cannot be read.
+fn reload(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
+    let path = ctx.home.join(DB_FILENAME);
+    *st = PumpStore::open(&path)
+        .and_then(|store| store.load())
+        .map_err(|err| {
+            let message = format!("state reload failed at {}: {err}", path.display());
+            ctx.log(&message);
+            VivariumError::Message(message)
+        })?;
+    Ok(())
 }
 
 /// Save the state to `<home>/pump.db`; stop the controller if it cannot be saved.
