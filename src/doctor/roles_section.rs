@@ -377,19 +377,20 @@ pub(super) fn pump_role_findings(config: &crate::mailspace::MailspaceConfig) -> 
                 .map(|issue| issue.message.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
-            let wrong = check
-                .issues
-                .iter()
-                .any(|issue| issue.severity == crate::routing::Severity::Error);
+            let has = |severity| check.issues.iter().any(|issue| issue.severity == severity);
             let fix = if check.name.ends_with(" model") {
                 MODEL_FIX
             } else {
                 PUMP_ROLES_FIX
             };
-            if wrong {
+            // The label follows the worst severity: an error fails, a missing
+            // item is not ready, and a warning alone is only a warning.
+            if has(crate::routing::Severity::Error) {
                 Finding::fail(SECTION, &name, &message, fix)
-            } else {
+            } else if has(crate::routing::Severity::NotReady) {
                 not_ready_finding(&name, &message, fix)
+            } else {
+                Finding::warn(SECTION, &name, &message, fix)
             }
         })
         .collect()

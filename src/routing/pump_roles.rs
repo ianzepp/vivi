@@ -42,13 +42,13 @@ pub(super) fn pump_role_checks_of(
     vec![
         collect("pump-planner", |issues| check_planner(routing, issues)),
         collect("researcher", |issues| {
-            check_flow_role(routing, RESEARCHER_ROLE, issues);
+            check_flow_role(routing, RESEARCHER_ROLE, false, issues);
         }),
         collect("admitter", |issues| {
-            check_flow_role(routing, ADMITTER_ROLE, issues);
+            check_flow_role(routing, ADMITTER_ROLE, true, issues);
         }),
         collect("slicer", |issues| {
-            check_flow_role(routing, SLICER_ROLE, issues);
+            check_flow_role(routing, SLICER_ROLE, true, issues);
         }),
         collect("merge", |issues| check_merge(routing, issues)),
         collect("merge kind", |issues| check_merge_kind(routing, issues)),
@@ -118,8 +118,10 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
 /// The flow roles (researcher, admitter, slicer) will run durable jobs like
 /// the planner: each needs an active role assigned to a pool. Until the flow
 /// engine dispatches role steps, a missing role or pool is only a warning;
-/// the pump holds for them once it really uses them.
-fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
+/// the pump holds for them once it really uses them. A `dispatched` role
+/// (admitter, slicer) must also have kind equal to its name and be read-only;
+/// a role that does not is an error.
+fn check_flow_role(routing: &RoleRouting, name: &str, dispatched: bool, issues: &mut Vec<Issue>) {
     let Some(role) = routing.lookup(name) else {
         issues.push(Issue::warning(format!(
             "the pump flows need an active {name} role assigned to a pool for durable jobs \
@@ -133,11 +135,33 @@ fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
             role.name
         )));
     }
+    if dispatched {
+        check_dispatched_role(role, name, issues);
+    }
     if role.pool.is_none() {
         issues.push(Issue::warning(format!(
             "role {} must name a pool for durable {name} jobs (required once the flow engine \
              dispatches role steps): run `vivi config migrate` or `vivi role pool {} <pool>`",
             role.name, role.name
+        )));
+    }
+}
+
+/// The extra requirements of a flow role the pump dispatches: its kind is its
+/// name and it cannot write.
+fn check_dispatched_role(role: &RoutedRole, name: &str, issues: &mut Vec<Issue>) {
+    if !has_kind(role.kind.as_deref(), name) {
+        issues.push(Issue::error(format!(
+            "role {} has kind {}; the {name} role must have kind = \"{name}\": run `vivi \
+             config migrate` or set kind = \"{name}\"",
+            role.name,
+            role.kind.as_deref().unwrap_or("none")
+        )));
+    }
+    if !role.is_read_only() {
+        issues.push(Issue::error(format!(
+            "role {} must be read-only: the {name} role only answers, it never writes",
+            role.name
         )));
     }
 }

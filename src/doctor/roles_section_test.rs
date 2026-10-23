@@ -165,7 +165,8 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
             .contains("vivi pool bands set <pool> <band> <model> <reasoning> --project <root>"),
         "{models:#?}"
     );
-    // Wrong kinds fail; absent roles and pools are only not ready.
+    // Wrong kinds fail; an absent flow role is only a warning (labelled as
+    // one); other absent roles and pools are not ready.
     for finding in &findings {
         if finding.name.ends_with(" kind") {
             assert_eq!(finding.status, Status::Fail, "{finding:#?}");
@@ -173,6 +174,12 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
                 finding.fix.as_deref(),
                 Some("vivi config migrate --project <root>")
             );
+        } else if ["researcher", "admitter", "slicer"]
+            .iter()
+            .any(|role| finding.name == format!("pump role {role}"))
+        {
+            assert_eq!(finding.status, Status::Warn, "{finding:#?}");
+            assert!(!finding.detail.starts_with("not ready"), "{finding:#?}");
         } else {
             assert_eq!(finding.status, Status::Skipped, "{finding:#?}");
             assert!(finding.detail.starts_with("not ready: "), "{finding:#?}");
@@ -195,4 +202,35 @@ fn doctor_passes_a_pump_with_every_required_role() {
     );
     let no_pump: crate::mailspace::MailspaceConfig = toml::from_str("name = \"t\"\n").unwrap();
     assert!(pump_role_findings(&no_pump).is_empty());
+}
+
+#[test]
+fn doctor_labels_a_warning_finding_as_a_warning_not_as_not_ready() {
+    // The admitter has no pool: a warning, so it is not "not ready" and not a
+    // failure.
+    let config = pump_config("[[identities]]\nname = \"admitter\"\nkind = \"admitter\"\n");
+    let findings = pump_role_findings(&config);
+    let admitter = findings
+        .iter()
+        .find(|f| f.name == "pump role admitter")
+        .expect("admitter finding");
+    assert_eq!(admitter.status, Status::Warn, "{admitter:#?}");
+    assert!(!admitter.detail.starts_with("not ready"), "{admitter:#?}");
+    assert!(
+        admitter.detail.contains("must name a pool"),
+        "{admitter:#?}"
+    );
+    // A flow role that is absent entirely is also only a warning.
+    let slicer = findings
+        .iter()
+        .find(|f| f.name == "pump role slicer")
+        .expect("slicer finding");
+    assert_eq!(slicer.status, Status::Warn, "{slicer:#?}");
+    // The pump-planner is absent: that one really is not ready.
+    let planner = findings
+        .iter()
+        .find(|f| f.name == "pump role pump-planner")
+        .expect("planner finding");
+    assert_eq!(planner.status, Status::Skipped, "{planner:#?}");
+    assert!(planner.detail.starts_with("not ready: "), "{planner:#?}");
 }
