@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::handlers::TickPhase;
@@ -79,13 +80,9 @@ impl Rig {
 
     /// A waiting step row for `node` on run 1, over a real task.
     fn hold(&mut self, node: &str) -> R {
-        let task = self.port.send_step(
-            PUMP,
-            PUMP,
-            node,
-            &format!("pump-step: {} r1 {node}", self.need),
-            &[],
-        )?;
+        let task =
+            self.port
+                .send_step(PUMP, PUMP, node, &step_body(&self.need, 1, node, ""), &[])?;
         self.store.insert_step(
             &self.need,
             &StepRow {

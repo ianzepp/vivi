@@ -15,6 +15,8 @@ use super::{
     STEP_OVERDUE, VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
+use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -205,8 +207,12 @@ impl Rig {
             "mind",
             "mind",
             &format!("slice {id}"),
-            &format!(
-                "pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"
+            &task_body_with(
+                &TaskFront {
+                    target: Some("default".into()),
+                    ..TaskFront::step(NEED, 1, &format!("slice:{id}"))
+                },
+                &format!("title {id}\n\nbrief {id}"),
             ),
             &[],
         )?;
@@ -237,13 +243,7 @@ impl Rig {
 
     /// A merge-main step of the build flow in the running state.
     fn merge_step(&mut self, id: &str, status: JobStatus) -> Result<StepRow, VivariumError> {
-        let task = self.mail.send_step(
-            "mind",
-            "mind",
-            "merge",
-            &format!("pump-step: {NEED} r1 merge"),
-            &[],
-        )?;
+        let task = step_task(&mut self.mail, "merge")?;
         let row = StepRow {
             run: 1,
             node: "merge".into(),
@@ -845,13 +845,7 @@ fn an_unchanged_fanout_payload_says_why() -> R {
     let slicer = rig.step("slice")?;
     rig.store
         .set_step_state(&slicer.task, StepState::Done, Some("sliced"))?;
-    let task = rig.mail.send_step(
-        "mind",
-        "mind",
-        "build1",
-        &format!("pump-step: {NEED} r1 build1"),
-        &[],
-    )?;
+    let task = step_task(&mut rig.mail, "build1")?;
     rig.store.insert_step(
         NEED,
         &StepRow {
@@ -943,10 +937,14 @@ fn only_the_newest_attempt_of_a_step_routes() -> R {
     Ok(())
 }
 
+/// A fresh mail task of `NEED`'s run 1 for `node`.
+fn step_task(mail: &mut FakeMail, node: &str) -> Result<String, VivariumError> {
+    mail.send_step("mind", "mind", node, &step_body(NEED, 1, node, ""), &[])
+}
+
 /// A step row of `node` on a fresh mail task of `NEED`'s run 1.
 fn node_step(rig: &mut Rig, node: &str, state: StepState) -> R {
-    let body = format!("pump-step: {NEED} r1 {node}");
-    let task = rig.mail.send_step("mind", "mind", node, &body, &[])?;
+    let task = step_task(&mut rig.mail, node)?;
     let row = rig.store.run_row(NEED, 1)?.step(node, &task, state);
     rig.store.insert_step(NEED, &row)
 }

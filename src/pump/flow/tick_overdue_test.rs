@@ -9,6 +9,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{FANOUT_UNBOUND, STEP_OVERDUE, tick_with};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -129,7 +130,7 @@ impl Rig {
         let plan = self.plan()?;
         self.store
             .set_step_state(&plan.task, StepState::Done, Some("planned"))?;
-        let body = format!("pump-step: {NEED} r1 build1");
+        let body = step_body(NEED, 1, "build1", "");
         let task = self.mail.send_step("mind", "mind", "build1", &body, &[])?;
         let row = StepRow {
             run: 1,

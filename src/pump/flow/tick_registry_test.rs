@@ -8,6 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{OPERATOR_HOLD, tick_with};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -194,7 +195,7 @@ fn a_fanout_handler_expands_its_slices_and_the_step_runs() -> R {
         "mind",
         "mind",
         "build",
-        &format!("pump-step: {NEED} r1 build1"),
+        &step_body(NEED, 1, "build1", ""),
         &[],
     )?;
     rig.store.insert_step(
