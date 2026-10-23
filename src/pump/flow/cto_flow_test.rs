@@ -93,6 +93,11 @@ fn rig(entry: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), config());
     host.reply(
+        "ls-remote",
+        0,
+        "0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n",
+    );
+    host.reply(
         "need show",
         0,
         &serde_json::json!([
@@ -399,9 +404,13 @@ fn a_failed_cto_reaches_the_lock_and_alarms_once_with_failed() -> R {
     rig.to_cto()?;
     // An envelope that never parses: two corrections, then `failed`. A
     // correction job belongs to no task, so it is finished by its id.
+    let cto_task = rig
+        .row(1, "cto")
+        .ok_or_else(|| VivariumError::Message("no cto step".into()))?
+        .task;
     rig.finish("cto", &receipt(0, "no envelope here"))?;
     for n in 1..=2 {
-        let id = format!("step-t0007-a1-c{n}");
+        let id = format!("step-{cto_task}-a1-c{n}");
         rig.tick_until("the correction job", |rig| rig.jobs.jobs.contains_key(&id))?;
         rig.finish_job(&id, &receipt(0, "still no envelope"))?;
     }

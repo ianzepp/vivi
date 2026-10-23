@@ -7,7 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{ENV_FAILED, FAILING, record_target};
 use super::{
-    GREEN, LOST, MAIN_RUNG_FAILED, MainRung, PAYLOAD_KEY, STARTED, TESTED, key, last_green,
+    GREEN, LOST, MAIN_RUNG_FAILED, MAIN_TARGET_UNKNOWN, MainRung, PAYLOAD_KEY, STARTED, TESTED,
+    key, last_green,
 };
 use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
@@ -337,4 +338,29 @@ fn record_target_reads_the_target_line_and_ignores_a_missing_one() {
     assert_eq!(record_target("kind: repair\ntarget: x\n"), Some("x"));
     assert_eq!(record_target("kind: repair\n"), None);
     assert_eq!(record_target("target:  \n"), None);
+}
+
+#[test]
+fn a_finished_job_for_an_unconfigured_target_is_applied_with_one_exception() -> R {
+    let mut rig = rig(true)?;
+    let id = rig.job(JobStatus::Finished, "ok\nagent exit 0 in 8s")?;
+    rig.jobs
+        .jobs
+        .get_mut(&id)
+        .ok_or_else(|| VivariumError::Message("job".into()))?
+        .payload[PAYLOAD_KEY] = serde_json::json!("gone");
+    rig.run()?;
+    rig.run()?;
+    assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    let lines: Vec<String> = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(MAIN_TARGET_UNKNOWN))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("expected target gone configured with a main rung"));
+    assert!(lines[0].contains(&format!("configured [{TARGET}]")));
+    assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
+    Ok(())
 }

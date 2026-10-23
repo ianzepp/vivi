@@ -149,6 +149,19 @@ fn merged_receipt() -> String {
     push_receipt(0, "", &publish, "")
 }
 
+/// The sorted exception kinds raised so far: the second field of every
+/// `exceptions.txt` line.
+fn kinds(rig: &Rig) -> Vec<String> {
+    let mut kinds: Vec<String> = rig
+        .exceptions()
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+        .collect();
+    kinds.sort();
+    kinds
+}
+
 #[test]
 fn rung1_pass_starts_merge1_at_the_tested_commit() -> R {
     let rig = at_merge1()?;
@@ -214,7 +227,7 @@ fn rung1_exit_127_holds_the_rung_with_one_alarm_and_no_verdict() -> R {
         .marked_replies_from(&rung.task, repair::RUNG_MARKER, "mind")?;
     assert!(replies.is_empty(), "{replies:?}");
     let text = rig.exceptions();
-    assert_eq!(text.matches("flow-env-failure").count(), 1, "{text}");
+    assert_eq!(kinds(&rig), ["flow-env-failure"], "{text}");
     assert!(rig.open_job("fix2").is_none());
     assert!(rig.open_job("merge1").is_none());
     let rung_jobs = rig
@@ -263,6 +276,7 @@ fn merge1_conflict_starts_fix2() -> R {
     assert_eq!(verdict(&rig, "merge1")?.as_deref(), Some("conflict"));
     assert_eq!(reason(&rig, "merge1")?, "merge conflict");
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -274,6 +288,7 @@ fn merge1_not_ancestor_means_main_moved_and_starts_fix2() -> R {
     rig.tick_until("fix2", |rig| rig.open_job("fix2").is_some())?;
     assert_eq!(verdict(&rig, "merge1")?.as_deref(), Some("conflict"));
     assert_eq!(reason(&rig, "merge1")?, "main moved");
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -287,6 +302,7 @@ fn merge1_lost_with_main_unmoved_answers_failed_and_starts_fix2() -> R {
     rig.tick_until("fix2", |rig| rig.open_job("fix2").is_some())?;
     assert_eq!(verdict(&rig, "merge1")?.as_deref(), Some("failed"));
     assert!(reason(&rig, "merge1")?.contains(&format!("actual: main {MAIN_A} without it")));
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -301,6 +317,12 @@ fn rung2_exit_1_is_unrepaired() -> R {
     assert_eq!(verdict(&rig, "rung2")?.as_deref(), Some("fail"));
     assert!(rig.open_job("merge2").is_none());
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
+    assert_eq!(
+        kinds(&rig),
+        ["flow-main-unrepaired"],
+        "{}",
+        rig.exceptions()
+    );
     Ok(())
 }
 
@@ -315,5 +337,11 @@ fn merge2_conflict_is_unrepaired() -> R {
     )?;
     assert_eq!(verdict(&rig, "merge2")?.as_deref(), Some("conflict"));
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
+    assert_eq!(
+        kinds(&rig),
+        ["flow-main-unrepaired"],
+        "{}",
+        rig.exceptions()
+    );
     Ok(())
 }

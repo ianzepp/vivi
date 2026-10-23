@@ -5,6 +5,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::VivariumError;
+use crate::pump::flow::index::RunRow;
 
 use super::{PumpStore, db_err};
 
@@ -51,6 +52,24 @@ pub struct SliceLink {
     pub fanout: Option<String>,
     /// Slice step tasks this one depends on.
     pub deps: Vec<String>,
+}
+
+impl SliceLink {
+    /// A link for a slice task of `run`: need and run come from the run row.
+    pub fn for_run(
+        run: &RunRow,
+        task: &str,
+        fanout: Option<String>,
+        deps: Vec<String>,
+    ) -> SliceLink {
+        SliceLink {
+            task: task.to_string(),
+            need: run.need.clone(),
+            run: run.run,
+            fanout,
+            deps,
+        }
+    }
 }
 
 type LinkRow = (String, String, u32, Option<String>, String);

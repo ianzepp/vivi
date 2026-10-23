@@ -3,14 +3,12 @@
 
 use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::store::PumpStore;
-
-/// The run state of a run that is in progress.
-const RUN_LIVE: &str = "live";
 
 /// The pump record outcome of a need that landed.
 const LANDED: &str = "landed";
@@ -75,17 +73,17 @@ fn held(store: &PumpStore, handle: &str) -> Result<PrereqState, VivariumError> {
         .runs_of(handle)?
         .into_iter()
         .rev()
-        .find(|run| run.state == RUN_LIVE)
+        .find(|run| run.state == run_state::LIVE)
     else {
         return Ok(PrereqState::Open);
     };
-    let def = flow_of(&run);
+    let def = flow_of(handle, &run)?;
     for row in store.steps_of(handle, run.run)? {
         if row.state != StepState::Waiting {
             continue;
         }
         let operator_hold = row.verdict.as_deref() == Some(OPERATOR_HOLD);
-        if operator_hold || operator_only(def.as_ref(), &row.node) {
+        if operator_hold || operator_only(&def, &row.node) {
             let what = row.verdict.as_deref().unwrap_or("waiting");
             return Ok(PrereqState::Held(format!("{} {what}", row.node)));
         }
@@ -93,18 +91,25 @@ fn held(store: &PumpStore, handle: &str) -> Result<PrereqState, VivariumError> {
     Ok(PrereqState::Open)
 }
 
-/// The run's flow definition; none when the kind has no shipped flow.
-fn flow_of(run: &RunRow) -> Option<FlowDef> {
-    let kind = FlowKind::parse(&run.kind)?;
-    match load(kind) {
-        Ok(def) => Some(def),
-        // A kind with no shipped flow has no lock or park nodes to look for.
-        Err(_) => None,
-    }
+/// The run's flow definition.
+///
+/// # Errors
+/// An unknown kind word, or a flow that cannot load, is an error: a prerequisite
+/// that cannot be read must not look open.
+fn flow_of(need: &str, run: &RunRow) -> Result<FlowDef, VivariumError> {
+    let kind = FlowKind::parse(&run.kind).ok_or_else(|| {
+        VivariumError::Other(format!(
+            "prerequisite {need} r{}: expected a known flow kind; actual: {}",
+            run.run, run.kind
+        ))
+    })?;
+    load(kind)
 }
 
-fn operator_only(def: Option<&FlowDef>, node: &str) -> bool {
-    def.and_then(|def| def.nodes.iter().find(|n| n.id == node))
+fn operator_only(def: &FlowDef, node: &str) -> bool {
+    def.nodes
+        .iter()
+        .find(|n| n.id == node)
         .is_some_and(|n| matches!(n.class, NodeClass::Lock | NodeClass::Park))
 }
 

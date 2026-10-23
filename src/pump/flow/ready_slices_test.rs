@@ -80,7 +80,7 @@ fn rig() -> Result<Rig, VivariumError> {
         need: NEED.into(),
         run: 1,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "plan".into(),
         state: "live".into(),
@@ -137,6 +137,10 @@ impl Rig {
         ReadySlices.run(&self.ctx, &mut self.jobs, &self.store, &mut self.mail)
     }
 
+    fn exceptions(&self) -> String {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
+    }
+
     fn job_ids(&self) -> Vec<String> {
         self.jobs.jobs.keys().cloned().collect()
     }
@@ -173,15 +177,36 @@ fn a_slice_waits_for_an_open_dep_and_dispatches_once_it_is_merged() -> R {
 }
 
 #[test]
-fn a_dep_closed_replaced_does_not_release_the_slice() -> R {
+fn a_dep_closed_replaced_does_not_release_the_slice_and_raises_once() -> R {
+    let mut rig = rig()?;
+    let dep = rig.slice("a", StepState::Running, &[])?;
+    let slice = rig.slice("b", StepState::Pending, &[dep.task.as_str()])?;
+
+    rig.mail.close_task(&dep.task, "replaced", None, None)?;
+    rig.tick()?;
+    assert!(rig.job_ids().is_empty());
+    let text = rig.exceptions();
+    assert_eq!(text.matches("flow-slice-blocked").count(), 1, "{text}");
+    assert!(text.contains(&dep.task), "{text}");
+    assert!(text.contains(&slice.task), "{text}");
+    assert!(text.contains("closed replaced"), "{text}");
+
+    rig.tick()?;
+    assert_eq!(rig.exceptions().matches("flow-slice-blocked").count(), 1);
+    assert!(rig.job_ids().is_empty());
+    Ok(())
+}
+
+#[test]
+fn an_open_dep_raises_nothing() -> R {
     let mut rig = rig()?;
     let dep = rig.slice("a", StepState::Running, &[])?;
     rig.slice("b", StepState::Pending, &[dep.task.as_str()])?;
 
-    rig.mail.close_task(&dep.task, "replaced", None, None)?;
     rig.tick()?;
 
     assert!(rig.job_ids().is_empty());
+    assert!(!rig.exceptions().contains("flow-slice-blocked"));
     Ok(())
 }
 

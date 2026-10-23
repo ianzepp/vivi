@@ -194,6 +194,10 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     assert!(!rig.jobs.jobs().contains_key("hand-a2-q2"));
     let row = rig.store.step_job("hand-a2-q1")?.expect("step job row");
     assert_eq!((row.attempt, row.task.as_str()), (2, step.as_str()));
+    assert_eq!(copy.payload["attempt"], 2);
+    assert_eq!(copy.payload["task"], step.as_str());
+    assert_eq!(copy.payload["node"], "build1");
+    assert_eq!(copy.payload["need"], rig.need.as_str());
     let state = rig.store.step_by_task(&step)?.map(|s| s.state);
     assert_eq!(state, Some(StepState::Running));
     assert!(rig.applied(&id)?);

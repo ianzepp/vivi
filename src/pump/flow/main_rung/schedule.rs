@@ -8,6 +8,7 @@
 use super::{ENV_FAILED, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::error::VivariumError;
 use crate::pump::flow::handlers::FlowMail;
+use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::merge_main::ref_safe;
@@ -17,6 +18,9 @@ use crate::pump::store::PumpStore;
 /// Seconds that must pass between two main rung starts on one target.
 const INTERVAL_SECS: u64 = 1800;
 
+/// Exception kind raised when the target's main ref is absent on its remote.
+pub(crate) const MAIN_REF_MISSING: &str = "flow-main-ref-missing";
+
 /// Length of the tip prefix used in the job id.
 const SHORT_TIP: usize = 12;
 
@@ -24,7 +28,8 @@ const SHORT_TIP: usize = 12;
 ///
 /// Returns `Ok(None)` when no main rung is configured, a main rung job is
 /// still queued or running, the interval has not passed, main has no tip, or
-/// the tip was already tested or failed on the environment.
+/// the tip was already tested or failed on the environment. A main ref
+/// absent on the remote raises [`MAIN_REF_MISSING`] once.
 ///
 /// # Errors
 /// A store, mail or git-config failure, or an unknown target.
@@ -58,6 +63,15 @@ pub(crate) fn schedule<S: JobStore, M: FlowMail>(
     let Some(tip) = verify::remote_tip(&tctx, &tctx.cfg.remote, &tctx.cfg.main)
         .map_err(VivariumError::Other)?
     else {
+        raise_once(
+            ctx,
+            MAIN_REF_MISSING,
+            target,
+            &format!(
+                "main rung for target {target}: expected {} on {}; actual: absent",
+                tctx.cfg.main, tctx.cfg.remote
+            ),
+        );
         return Ok(None);
     };
     for name in [TESTED, ENV_FAILED] {

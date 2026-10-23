@@ -14,6 +14,7 @@ use crate::mailspace::{PumpAction, PumpActionKind};
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -29,9 +30,6 @@ pub const UNLOCK_REFUSED: &str = "flow-unlock-refused";
 
 /// The exception kind raised once when a run reaches its lock.
 pub const NEED_LOCKED: &str = "flow-need-locked";
-
-/// The run state of a run that is still being advanced.
-const RUN_LIVE: &str = "live";
 
 /// The verdict a released lock step closes with.
 const UNLOCKED: &str = "unlocked";
@@ -144,7 +142,7 @@ fn apply_one<M: MailWriter + MailReader>(
         .map_err(|error| format!("cannot read the run index: {error}"))?;
     let run = runs
         .into_iter()
-        .rfind(|row| row.state == RUN_LIVE)
+        .rfind(|row| row.state == run_state::LIVE)
         .ok_or_else(|| format!("need {need} has no live run"))?;
     let def = flow_of(&run)?;
     let row = locked_step(store, need, &run, &def)?;

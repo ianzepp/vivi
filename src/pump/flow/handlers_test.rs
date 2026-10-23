@@ -18,6 +18,19 @@ use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type Reg = Registry<(), FakeMail>;
 
+/// A job store that holds nothing, for building the shipped registry.
+struct Jobs(std::collections::BTreeMap<String, crate::pump::jobs::PoolJob>);
+
+impl JobStore for Jobs {
+    fn jobs(&self) -> &std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
+        &self.0
+    }
+
+    fn jobs_mut(&mut self) -> &mut std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
+        &mut self.0
+    }
+}
+
 /// A handler that names itself when polled.
 struct Named(&'static str);
 
@@ -52,7 +65,7 @@ fn rig() -> Result<Rig, VivariumError> {
             need: "n1".into(),
             run: 1,
             flow: "build".into(),
-            flow_version: 1,
+            flow_version: 2,
             kind: "build".into(),
             entry: "plan".into(),
             state: "live".into(),
@@ -206,20 +219,31 @@ fn phases_come_back_in_registration_order() -> Result<(), VivariumError> {
 }
 
 #[test]
-fn shipped_registers_a_collector_for_every_step_class() -> Result<(), VivariumError> {
+fn shipped_has_a_start_handler_for_every_step_node_of_every_flow() -> Result<(), VivariumError> {
     let rig = rig()?;
-    struct Jobs(std::collections::BTreeMap<String, crate::pump::jobs::PoolJob>);
-    impl JobStore for Jobs {
-        fn jobs(&self) -> &std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
-            &self.0
-        }
-
-        fn jobs_mut(
-            &mut self,
-        ) -> &mut std::collections::BTreeMap<String, crate::pump::jobs::PoolJob> {
-            &mut self.0
+    let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
+    for kind in [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ] {
+        for node in load(kind)?.nodes.iter().filter(|n| n.class.is_step()) {
+            assert!(
+                registry.handler_for(kind, node).is_some(),
+                "no handler for {} ({}) of {}",
+                node.id,
+                node.class.name(),
+                kind.name()
+            );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn shipped_registers_a_collector_for_every_step_class() -> Result<(), VivariumError> {
+    let rig = rig()?;
     let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
     for kind in [
         FlowKind::Build,

@@ -4,13 +4,14 @@
 use serde_json::json;
 use tempfile::tempdir;
 
-use super::{RUN_STARTING, SENTINEL_NODE, resume, start};
+use super::{SENTINEL_NODE, resume, start};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
 use crate::pump::flow::advance::route::{JoinInput, route};
 use crate::pump::flow::def::{FlowKind, FlowNode, SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
+use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -103,7 +104,7 @@ fn resume_adopts_tasks_sent_without_step_rows() -> R {
     let store = PumpStore::open(&project.home().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("pump");
     let hand = hand_send_start(&mut mail)?;
-    let starting = run_row(RUN_STARTING);
+    let starting = run_row(run_state::STARTING);
     store.insert_run(&starting)?;
 
     let row = resume(&ctx, &store, &mut mail, &starting)?;

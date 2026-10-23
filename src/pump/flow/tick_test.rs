@@ -10,8 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    FINISHING_STUCK, FOLLOW_UP, FOLLOW_UP_MARKER, KIND_CHANGED, OPERATOR_HOLD, RUN_ERROR,
-    SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STEP_OVERDUE, VALIDATED, tick_with,
+    FINISHING_STUCK, FLOW_VERSION_STALE, FOLLOW_UP, FOLLOW_UP_MARKER, JOB_ORPHANED, KIND_CHANGED,
+    NODE_UNKNOWN, OPERATOR_HOLD, RUN_ERROR, SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STALE_ATTEMPT,
+    STEP_OVERDUE, VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -21,7 +22,7 @@ use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::fanout::{self, VERDICT_NO_DEFECT, slice_node};
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
 use crate::pump::flow::need_branch;
@@ -636,7 +637,7 @@ fn an_error_in_one_run_does_not_stop_another_run() -> R {
         need: "n0".into(),
         run: 1,
         flow: "bogus".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "bogus".into(),
         entry: "plan".into(),
         state: "live".into(),
@@ -677,7 +678,7 @@ fn a_run_that_keeps_failing_to_finish_raises_the_stuck_alarm_once() -> R {
         need: NEED.into(),
         run: 1,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "plan".into(),
         state: "live".into(),
@@ -737,6 +738,59 @@ fn a_start_answer_advances_the_step_and_records_its_payload() -> R {
     assert_eq!(plan.verdict.as_deref(), Some("planned"));
     let stored = rig.store.step_payload(&plan.task)?.expect("payload row");
     assert_eq!(stored.payload, serde_json::json!({"reason": "r"}));
+    Ok(())
+}
+
+struct StartsAJob;
+
+impl StepHandler for StartsAJob {
+    fn start(&self, _cx: &StartCx<'_>, _step: &StepRow) -> Result<StartAction, VivariumError> {
+        let mut spec = JobSpec::new("started", "planner", "pump-planner", "s", "b");
+        spec.payload = serde_json::json!({"attempt": 9, "keep": "me"});
+        Ok(StartAction::Job(Box::new(spec)))
+    }
+}
+
+fn tick_starting_a_job(rig: &mut Rig) -> R {
+    let mut registry = Registry::new();
+    registry.node_handler(FlowKind::Build, "plan", Box::new(StartsAJob));
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )
+}
+
+#[test]
+fn a_fresh_step_starts_at_attempt_one_with_payload_and_row_equal() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    tick_starting_a_job(&mut rig)?;
+
+    let plan = rig.step("plan")?;
+    let row = rig.store.step_job("started")?.expect("step job row");
+    assert_eq!(row.attempt, 1);
+    let payload = &rig.jobs.jobs["started"].payload;
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["task"], plan.task.as_str());
+    assert_eq!(payload["keep"], "me");
+    assert_eq!(payload["kind"], "build");
+    Ok(())
+}
+
+#[test]
+fn a_step_with_an_earlier_attempt_row_starts_at_the_next_attempt() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    let plan = rig.step("plan")?;
+    rig.store.insert_step_job(NEED, &plan.job("earlier", 1))?;
+    tick_starting_a_job(&mut rig)?;
+
+    let row = rig.store.step_job("started")?.expect("step job row");
+    assert_eq!(row.attempt, 2);
+    assert_eq!(rig.jobs.jobs["started"].payload["attempt"], 2);
     Ok(())
 }
 
@@ -817,5 +871,130 @@ fn an_unchanged_fanout_payload_says_why() -> R {
     let reason = stored.payload["reason"].as_str().unwrap_or_default();
     assert!(reason.contains("expected a change"), "{reason}");
     assert!(reason.contains("0 merged"), "{reason}");
+    Ok(())
+}
+
+// ---- orphaned and stale step jobs --------------------------------------------
+
+#[test]
+fn a_job_of_a_done_run_is_applied_and_raised_once() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    rig.role_job("plan", "plan-j1", PLANNED)?;
+    rig.store.set_run_state(NEED, 1, "done")?;
+    rig.tick()?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs["plan-j1"].applied_at.is_some());
+    assert_eq!(rig.count(JOB_ORPHANED), 1);
+    let text = rig.exceptions();
+    assert!(
+        text.contains("plan-j1") && text.contains("actual: done"),
+        "{text}"
+    );
+    assert_eq!(rig.step("plan")?.state, StepState::Running, "not applied");
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_superseded_run_is_applied_without_an_exception() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    rig.role_job("plan", "plan-j1", PLANNED)?;
+    rig.store.set_run_state(NEED, 1, "superseded")?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs["plan-j1"].applied_at.is_some());
+    assert_eq!(rig.count(JOB_ORPHANED), 0);
+    Ok(())
+}
+
+#[test]
+fn only_the_newest_attempt_of_a_step_routes() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    rig.role_job("plan", "plan-j1", PLANNED)?;
+    let task = rig.step("plan")?.task;
+    let mut spec = JobSpec::new("plan-j2", "planner", "pump-planner", "s", "b");
+    spec.task = Some(task.clone());
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    rig.finish("plan-j2", &receipt("", 0, PLANNED));
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "plan-j2".into(),
+            run: 1,
+            node: "plan".into(),
+            task,
+            attempt: 2,
+        },
+    )?;
+    rig.tick()?;
+    assert_eq!(rig.step("plan")?.state, StepState::Done);
+    assert_eq!(rig.step("admit1")?.state, StepState::Pending);
+    assert_eq!(rig.count(STALE_ATTEMPT), 1);
+    let text = rig.exceptions();
+    assert!(
+        text.contains("plan-j1")
+            && text.contains("expected attempt 2")
+            && text.contains("actual: attempt 1"),
+        "{text}"
+    );
+    assert!(rig.jobs.jobs["plan-j1"].applied_at.is_some());
+    assert!(rig.jobs.jobs["plan-j2"].applied_at.is_some());
+    Ok(())
+}
+
+/// A step row of `node` on a fresh mail task of `NEED`'s run 1.
+fn node_step(rig: &mut Rig, node: &str, state: StepState) -> R {
+    let body = format!("pump-step: {NEED} r1 {node}");
+    let task = rig.mail.send_step("mind", "mind", node, &body, &[])?;
+    let row = rig.store.run_row(NEED, 1)?.step(node, &task, state);
+    rig.store.insert_step(NEED, &row)
+}
+
+#[test]
+fn a_run_stored_under_another_flow_version_is_raised_once_and_applies_nothing() -> R {
+    let mut rig = rig()?;
+    let (flow, kind, entry, state) = ("build".into(), "build".into(), "plan".into(), "live".into());
+    let stale = RunRow {
+        need: NEED.into(),
+        run: 1,
+        flow,
+        flow_version: 1,
+        kind,
+        entry,
+        state,
+    };
+    rig.store.insert_run(&stale)?;
+    node_step(&mut rig, "plan", StepState::Pending)?;
+    rig.role_job("plan", "j2", PLANNED)?;
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.count(FLOW_VERSION_STALE), 1);
+    let want = "need n1 r1: expected flow version 2; actual: stored 1";
+    assert!(rig.exceptions().contains(want));
+    assert!(rig.jobs.jobs["j2"].applied_at.is_none());
+    assert_eq!(rig.step("plan")?.state, StepState::Running);
+    Ok(())
+}
+
+#[test]
+fn a_node_missing_from_the_flow_is_raised_for_a_job_and_held_for_a_pending_step() -> R {
+    let mut rig = rig()?;
+    assert_eq!(rig.start("plan")?.flow_version, FLOW_VERSION_NUMBER);
+    node_step(&mut rig, "ghost", StepState::Running)?;
+    rig.role_job("ghost", "j2", PLANNED)?;
+    node_step(&mut rig, "ghost2", StepState::Pending)?;
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.count(NODE_UNKNOWN), 1, "the job is raised once");
+    let want = "expected node ghost in the build flow (version 2); actual: not in the definition; job j2 not applied";
+    assert!(rig.exceptions().contains(want));
+    assert!(rig.jobs.jobs["j2"].applied_at.is_some());
+    assert_eq!(rig.step("ghost2")?.state, StepState::Pending);
+    rig.tick()?;
+    let held = rig.step("ghost2")?;
+    assert_eq!(held.state, StepState::Waiting);
+    assert_eq!(held.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert!(rig.exceptions().contains("expected node ghost2"));
     Ok(())
 }
