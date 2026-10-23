@@ -65,8 +65,33 @@ fn join_and_raisecheck_words_follow_the_table() {
 
 #[test]
 fn flow_kind_round_trips() {
-    for kind in [FlowKind::Build, FlowKind::Research, FlowKind::Release] {
+    for kind in [
+        FlowKind::Build,
+        FlowKind::Research,
+        FlowKind::Release,
+        FlowKind::Repair,
+    ] {
         assert_eq!(FlowKind::parse(kind.name()), Some(kind));
     }
     assert_eq!(FlowKind::parse("nope"), None);
+}
+
+#[test]
+fn class_name_is_the_inverse_of_parse() {
+    for name in STEP_CLASSES {
+        assert_eq!(NodeClass::parse(name).unwrap().name(), name);
+    }
+    for name in [
+        "join",
+        "raisecheck",
+        "milestone",
+        "park",
+        "lock",
+        "decision",
+        "done",
+        "restart-plan",
+        "restart-rework1",
+    ] {
+        assert_eq!(NodeClass::parse(name).unwrap().name(), name);
+    }
 }

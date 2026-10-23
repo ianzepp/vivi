@@ -51,7 +51,9 @@ fn show(
             "unknown flow kind {kind:?}; expected build, research or release"
         ))
     })?;
-    let source = registry::shipped(kind);
+    let source = registry::shipped(kind).ok_or_else(|| {
+        VivariumError::Message(format!("the {} flow is not shipped yet", kind.name()))
+    })?;
     // Outer Option: `--need` given. Inner Option: a pump.db exists.
     let runs: Option<Option<Runs>> = match need {
         Some(need) => Some(run_index(need, &project_root(project))?),
