@@ -3,8 +3,8 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    BUILT, expand, is_slice_row, mark_exhausted, parse_reply, settle, slice_node, target_of,
-    wait_on,
+    BUILT, check_batch, expand, is_slice_row, mark_exhausted, parse_reply, settle, slice_node,
+    target_of, wait_on,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -269,6 +269,43 @@ fn expand_refuses_unknown_and_duplicate_ids() -> R {
     assert!(r.expand(&[slice("A", &[]), slice("A", &[])]).is_err());
     assert!(r.expand(&[slice("A", &["A"])]).is_err());
     assert_eq!(r.store.steps_of(NEED, 1)?.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn check_batch_refuses_each_graph_error_and_names_it() -> R {
+    let r = rig()?;
+    let check = |slices: &[Slice]| check_batch(&r.store, &r.run, slices);
+    let dup = check(&[slice("A", &[]), slice("A", &[])]).unwrap_err();
+    assert!(dup.contains("`A`") && dup.contains("twice"), "{dup}");
+    let unknown = check(&[slice("A", &["Z"])]).unwrap_err();
+    assert!(
+        unknown.contains("`A`") && unknown.contains("`Z`"),
+        "{unknown}"
+    );
+    let own = check(&[slice("A", &["A"])]).unwrap_err();
+    assert!(own.contains("`A`") && own.contains("itself"), "{own}");
+    let cycle = check(&[slice("C", &[]), slice("A", &["B"]), slice("B", &["A"])]).unwrap_err();
+    assert!(
+        cycle.contains("cycle") && cycle.contains("`A`") && cycle.contains("`B`"),
+        "{cycle}"
+    );
+    assert!(!cycle.contains("`C`"), "{cycle}");
+    Ok(())
+}
+
+#[test]
+fn check_batch_accepts_a_valid_batch_and_an_earlier_slice_dep() -> R {
+    let mut r = rig()?;
+    assert_eq!(
+        check_batch(&r.store, &r.run, &[slice("A", &[]), slice("B", &["A"])]),
+        Ok(())
+    );
+    r.expand(&[slice("A", &[])])?;
+    assert_eq!(
+        check_batch(&r.store, &r.run, &[slice("R1", &["A"])]),
+        Ok(())
+    );
     Ok(())
 }
 

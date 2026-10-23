@@ -26,6 +26,9 @@ use crate::pump::store::flow_links::SliceLink;
 /// Prefix of a slice step row's node: `slice:<id>`.
 pub const SLICE_NODE_PREFIX: &str = "slice:";
 
+/// The exception kind raised when a slicer's slices cannot be used.
+pub const SLICES_INVALID: &str = "flow-slices-invalid";
+
 /// The word the fanout answers when every slice is built.
 pub const BUILT: &str = "built";
 
@@ -95,7 +98,7 @@ pub fn expand<M: MailWriter + MailReader>(
 ) -> Result<Vec<String>, VivariumError> {
     let rows = store.steps_of(&run.need, run.run)?;
     let sentinel = sentinel_of(&rows, run)?;
-    let order = topological_order(slices, &rows)?;
+    let order = topological_order(slices, &rows).map_err(VivariumError::Parse)?;
     let fanout = store.open_fanout(&run.need, run.run)?;
 
     let mut tasks: BTreeMap<&str, String> = BTreeMap::new();
@@ -277,32 +280,42 @@ fn earlier_task(rows: &[StepRow], dep: &str) -> Result<String, VivariumError> {
         .ok_or_else(|| VivariumError::Parse(format!("slice dependency `{dep}` is not a slice")))
 }
 
+/// Check a slicer batch without sending anything: duplicate ids,
+/// self-dependencies, dependencies on unknown slices and cycles.
+///
+/// This is the same check [`expand`] runs, so a batch that passes here
+/// expands (mail and store failures aside).
+///
+/// # Errors
+/// Returns the reason, naming the duplicated id, the unknown dependency or
+/// the slices of the cycle.
+pub fn check_batch(store: &PumpStore, run: &RunRow, slices: &[Slice]) -> Result<(), String> {
+    let rows = store
+        .steps_of(&run.need, run.run)
+        .map_err(|err| err.to_string())?;
+    topological_order(slices, &rows).map(|_| ())
+}
+
 /// The batch in an order where every in-batch prerequisite comes first,
 /// keeping the slicer's order otherwise. Refuses duplicate ids, unknown
-/// dependencies and cycles.
-fn topological_order<'a>(
-    slices: &'a [Slice],
-    rows: &[StepRow],
-) -> Result<Vec<&'a Slice>, VivariumError> {
+/// dependencies and cycles, naming each.
+fn topological_order<'a>(slices: &'a [Slice], rows: &[StepRow]) -> Result<Vec<&'a Slice>, String> {
     for (index, slice) in slices.iter().enumerate() {
         if slices[..index].iter().any(|other| other.id == slice.id) {
-            return Err(VivariumError::Parse(format!(
-                "slice id `{}` appears twice",
-                slice.id
-            )));
+            return Err(format!("slice id `{}` appears twice", slice.id));
         }
     }
     for slice in slices {
         for dep in &slice.deps {
-            let in_batch = slices.iter().any(|other| other.id == *dep);
             if dep == &slice.id {
-                return Err(VivariumError::Parse(format!(
-                    "slice `{}` depends on itself",
-                    slice.id
-                )));
+                return Err(format!("slice `{}` depends on itself", slice.id));
             }
-            if !in_batch {
-                earlier_task(rows, dep)?;
+            let in_batch = slices.iter().any(|other| other.id == *dep);
+            if !in_batch && earlier_task(rows, dep).is_err() {
+                return Err(format!(
+                    "slice `{}` depends on unknown slice `{dep}`",
+                    slice.id
+                ));
             }
         }
     }
@@ -318,8 +331,14 @@ fn topological_order<'a>(
         match next {
             Some(slice) => placed.push(slice),
             None => {
-                return Err(VivariumError::Parse(
-                    "slice dependencies form a cycle".to_string(),
+                let members: Vec<String> = slices
+                    .iter()
+                    .filter(|slice| !placed.iter().any(|done| done.id == slice.id))
+                    .map(|slice| format!("`{}`", slice.id))
+                    .collect();
+                return Err(format!(
+                    "slice dependencies form a cycle among {}",
+                    members.join(", ")
                 ));
             }
         }
