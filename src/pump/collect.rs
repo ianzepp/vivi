@@ -58,12 +58,6 @@ pub fn parse_reconcile(out: &str) -> BTreeMap<String, (String, String)> {
     seen
 }
 
-/// The last 6000 chars of `vivi task show <task> --latest`.
-#[must_use]
-pub fn receipt(ctx: &Ctx, task: &str) -> String {
-    tail(&receipt_full(ctx, task), 6000)
-}
-
 /// All of `vivi task show <task> --latest`: the pool's summary lines (the
 /// agent's exit code among them) come first, the agent's own final message
 /// after them.
@@ -81,8 +75,11 @@ fn live_split_planners(st: &State) -> usize {
         .filter(|(_, unit)| unit.status == Status::Splitting && unit.split_retry_at.is_none())
         .filter(|(uid, unit)| {
             match crate::pump::planner_jobs::lifecycle(st, "split", uid, unit.since) {
-                Some((crate::pump::jobs::JobStatus::Pending, _)) => true,
-                Some((crate::pump::jobs::JobStatus::Dispatched, _)) => true,
+                Some((
+                    crate::pump::jobs::JobStatus::Pending
+                    | crate::pump::jobs::JobStatus::Dispatched,
+                    _,
+                )) => true,
                 Some(_) => false,
                 None => true,
             }
@@ -156,7 +153,7 @@ pub fn collect(ctx: &Ctx, st: &mut State) {
         // is reported only once, so drop nothing that the round did report.
         ctx.log(&format!("pool reconcile failed: {}", tail(&out, 300)));
     }
-    let _terminal_jobs = crate::pump::jobs::apply_reconcile(ctx, st, &seen);
+    crate::pump::jobs::apply_reconcile(ctx, st, &seen);
     crate::pump::planner_jobs::apply_completions(ctx, st);
     expire_splits(ctx, st);
 }
