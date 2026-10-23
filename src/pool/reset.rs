@@ -17,19 +17,11 @@ use super::provider::{ExecOutput, PoolProvider};
 use super::slot::META_BASE;
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
-use crate::pump::state::Unit;
 
 /// `marks/base_ref`: origin branch the slot was last reset onto.
 pub const MARK_BASE_REF: &str = "base_ref";
 /// `marks/base_sha`: resolved commit of that reset.
 pub const MARK_BASE_SHA: &str = "base_sha";
-
-/// When the base is chosen: recycle always defaults to main.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResetKind {
-    Recycle,
-    Dispatch,
-}
 
 /// The origin branch a reset will fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,57 +53,17 @@ pub fn default_main(space: &Mailspace) -> String {
 
 /// Pick the origin branch for this reset. `requested` wins when set.
 #[must_use]
-pub fn choose_base(
-    space: &Mailspace,
-    requested: Option<&str>,
-    unit: Option<&Unit>,
-    kind: ResetKind,
-) -> ChosenBase {
+pub fn choose_base(space: &Mailspace, requested: Option<&str>) -> ChosenBase {
     if let Some(name) = requested.map(strip_origin).filter(|n| !n.is_empty()) {
         return ChosenBase {
             name,
             why: "requested",
         };
     }
-    if kind == ResetKind::Dispatch
-        && let Some(unit) = unit
-        && let Some(chosen) = dispatch_override(unit)
-    {
-        return chosen;
-    }
     ChosenBase {
         name: default_main(space),
         why: "default-main",
     }
-}
-
-fn dispatch_override(unit: &Unit) -> Option<ChosenBase> {
-    if let Some(name) = unit
-        .base
-        .as_deref()
-        .map(strip_origin)
-        .filter(|n| !n.is_empty())
-    {
-        return Some(ChosenBase {
-            name,
-            why: "unit.base",
-        });
-    }
-    if let Some(name) = prior_attempt_branch(unit) {
-        return Some(ChosenBase {
-            name,
-            why: "prior-attempt",
-        });
-    }
-    None
-}
-
-fn prior_attempt_branch(unit: &Unit) -> Option<String> {
-    unit.history
-        .iter()
-        .rev()
-        .find_map(|a| a.branch.clone())
-        .filter(|b| !b.is_empty())
 }
 
 fn strip_origin(name: &str) -> String {

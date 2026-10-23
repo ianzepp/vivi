@@ -592,7 +592,7 @@ fn recycle(
         };
         return Ok((Vec::new(), vec![skip]));
     };
-    let chosen = super::reset::choose_base(space, base, hint, super::reset::ResetKind::Recycle);
+    let chosen = super::reset::choose_base(space, base);
     clean_work::recycle_lane(
         &handle.id.pool,
         name,
@@ -657,12 +657,7 @@ fn reset_remote_requested(
     let Some(requested) = base else {
         return (Vec::new(), Vec::new());
     };
-    let chosen = super::reset::choose_base(
-        space,
-        Some(requested),
-        None,
-        super::reset::ResetKind::Recycle,
-    );
+    let chosen = super::reset::choose_base(space, Some(requested));
     let Ok(machines) = handle.provider.list() else {
         return (Vec::new(), Vec::new());
     };

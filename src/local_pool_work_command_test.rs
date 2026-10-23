@@ -165,7 +165,7 @@ fn remote_dispatch_does_not_load_a_pump_reset_base() {
     let space = Mailspace::init(Some(tmp.path())).unwrap();
     let config: PoolConfig = toml::from_str("provider = 'fly'\nslots = 1\n").unwrap();
 
-    assert_eq!(dispatch_reset_base(&config, &space, "missing-task"), None);
+    assert_eq!(dispatch_reset_base(&config, &space), None);
 }
 
 #[test]
