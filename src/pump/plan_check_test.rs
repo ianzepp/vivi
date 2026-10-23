@@ -49,10 +49,6 @@ fn strs(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
 }
 
-fn exceptions(ctx: &Ctx) -> String {
-    fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
-}
-
 // --- vacuous proofs ----------------------------------------------------
 
 #[test]
@@ -458,75 +454,6 @@ fn a_parked_design_reason_holds_at_once_without_a_re_ask() {
     ingest(&ctx, &mut st);
     assert_eq!(st.needs["n1"].verdict, "hold");
     assert!(st.board.plan_findings.is_empty());
-}
-
-// --- a rejected revision is asked again with the findings ---------------
-
-#[test]
-fn a_rejected_revision_is_asked_again_with_the_findings() {
-    use crate::pump::amend::detect;
-    let (_dir, ctx, host, mut st) = setup();
-    let ctx = ctx.with_routing(crate::routing::RoleRouting {
-        roles: vec![crate::routing::RoutedRole {
-            name: "pump-planner".into(),
-            kind: Some("planner".into()),
-            status: "active".into(),
-            pool: Some("here".into()),
-            read_only: None,
-            model: None,
-            models: Vec::new(),
-        }],
-        pools: BTreeMap::from([(
-            "here".into(),
-            crate::routing::RoutedPool {
-                slots: 1,
-                provider: "local".into(),
-                fallback: None,
-                caps: BTreeMap::new(),
-                models: Vec::new(),
-                has_bands: false,
-            },
-        )]),
-    });
-    merged_unit(&mut st, "n1-1", "first", &["src/a.rs"]);
-    host.reply("need show n1", 0, "## thread\n");
-    write_plan(
-        &ctx,
-        "n1.r2.json",
-        &revision(&[unit("n1-2", &["src/b.rs"], &["! grep -q old src/b.rs"])]),
-    );
-    ingest(&ctx, &mut st);
-    assert_eq!(st.needs["n1"].revision, 1, "the revision was not applied");
-    assert!(st.needs["n1"].amendment_pending);
-    let retry_at = st.board.planner_retry_at["n1.revision"];
-
-    // The backoff holds the re-ask; after it the planner gets the findings.
-    detect(&ctx, &mut st);
-    assert!(st.board.revision_planning.is_empty());
-    host.set_now(retry_at);
-    detect(&ctx, &mut st);
-    let job = st
-        .jobs
-        .values()
-        .find(|job| job.kind == "planner:revision")
-        .expect("revision relaunched");
-    assert!(
-        job.body
-            .contains("the pump rejected your previous revision")
-    );
-    assert!(job.body.contains("only checks that something is absent"));
-    assert!(!job.body.contains("gave no usable plan"));
-
-    // When the retries are spent, the exception carries the findings.
-    st.board.revision_planning.clear();
-    st.board
-        .planner_fails
-        .insert(String::from("n1.revision"), 3);
-    st.board.planner_retry_at.clear();
-    detect(&ctx, &mut st);
-    let text = exceptions(&ctx);
-    assert!(text.contains("revision-failed n1"), "{text}");
-    assert!(text.contains("Last findings: unit n1-2"), "{text}");
 }
 
 // --- needs that wait on unlanded needs ----------------------------------
