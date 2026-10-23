@@ -110,6 +110,11 @@ pub struct PoolDispatchCommand {
     #[arg(long, hide = true)]
     pub kind: Option<String>,
 
+    /// The role whose charter, band and publish rights the job runs with
+    /// (default: the task's addressee)
+    #[arg(long, value_name = "ROLE")]
+    pub role: Option<String>,
+
     /// Model slug; must be one of `[pools.<name>.harness].models`
     /// (default: the model the task's role band picks from the pool's band table)
     #[arg(long)]

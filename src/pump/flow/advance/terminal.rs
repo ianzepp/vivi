@@ -2,9 +2,10 @@
 //! starts a new run, and a withdrawal closes what is left of a run.
 
 use crate::error::VivariumError;
+use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::route::Terminal;
-use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
-use crate::pump::flow::def::{FlowDef, NodeClass, VERDICT_SUPERSEDED, VERDICT_WITHDRAWN};
+use crate::pump::flow::advance::start::SENTINEL_NODE;
+use crate::pump::flow::def::{FlowDef, NodeClass, VERDICT_WITHDRAWN};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
@@ -18,11 +19,9 @@ const RECORD_LANDED: &str = "landed";
 /// The pump record outcome of a withdrawn run.
 const RECORD_WITHDRAWN: &str = "withdrawn";
 /// Run state: the terminal is closing the need; neither live nor withdrawn.
-const RUN_FINISHING: &str = "finishing";
+pub(crate) const RUN_FINISHING: &str = "finishing";
 /// Run state: finished and landed.
 const RUN_DONE: &str = "done";
-/// Run state: replaced by a newer run.
-const RUN_SUPERSEDED: &str = "superseded";
 /// Run state: withdrawn.
 const RUN_WITHDRAWN: &str = "withdrawn";
 /// The note a need is closed with when its run lands.
@@ -51,9 +50,9 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
     outcome: &Outcome,
     terminal: &Terminal,
 ) -> Result<Finished, VivariumError> {
-    let sentinel = sentinel_of(store, &outcome.need, outcome.run)?;
     match &terminal.class {
         NodeClass::Done => {
+            let sentinel = sentinel_of(store, &outcome.need, outcome.run)?;
             land(store, mail, &outcome.need, outcome.run, &sentinel)?;
             Ok(Finished::Landed)
         }
@@ -61,9 +60,17 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
             // The new run binds its sentinel while the old one is still open,
             // so the need never looks complete in between.
             let entry = entry_for(def, name);
-            let row = start(ctx, store, mail, &outcome.need, Some(&entry))?;
-            close_row(store, mail, &sentinel, VERDICT_SUPERSEDED)?;
-            store.set_run_state(&outcome.need, outcome.run, RUN_SUPERSEDED)?;
+            let old = store
+                .runs_of(&outcome.need)?
+                .into_iter()
+                .find(|row| row.run == outcome.run)
+                .ok_or_else(|| {
+                    VivariumError::Parse(format!(
+                        "need {} r{}: no run row to restart",
+                        outcome.need, outcome.run
+                    ))
+                })?;
+            let row = restart(ctx, store, mail, &old, &entry)?;
             Ok(Finished::Restarted(row))
         }
         other => Err(VivariumError::Parse(format!(
@@ -164,7 +171,7 @@ fn sentinel_of(store: &PumpStore, need: &str, run: u32) -> Result<StepRow, Vivar
 }
 
 /// The entry a `restart-<name>` terminal starts: the flow's entry of that
-/// name, else the numbered one (`restart-repair` starts `repair1`).
+/// name, else the numbered one (`restart-rework` starts `rework1`).
 fn entry_for(def: &FlowDef, name: &str) -> String {
     if def.entries.iter().any(|e| e == name) {
         return name.to_string();

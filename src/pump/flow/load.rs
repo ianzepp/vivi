@@ -14,7 +14,9 @@ const TERMINAL_ID: &str = "done";
 /// Returns [`VivariumError::Parse`] when the Mermaid source does not parse or
 /// a node has no recognised class.
 pub fn load(kind: FlowKind) -> Result<FlowDef, VivariumError> {
-    let chart = parse_flowchart(shipped(kind))?;
+    let source = shipped(kind)
+        .ok_or_else(|| VivariumError::Parse(format!("{} flow: no shipped flow", kind.name())))?;
+    let chart = parse_flowchart(source)?;
     let nodes = chart
         .nodes
         .iter()
@@ -77,9 +79,10 @@ fn split_words(label: Option<&str>) -> Vec<String> {
 
 fn entries(kind: FlowKind) -> Vec<String> {
     let names: &[&str] = match kind {
-        FlowKind::Build => &["plan", "research", "slice", "repair1"],
+        FlowKind::Build => &["plan", "research", "slice", "rework1"],
         FlowKind::Research => &["research"],
         FlowKind::Release => &["wait"],
+        FlowKind::Repair => &[],
     };
     names.iter().map(|name| (*name).to_string()).collect()
 }

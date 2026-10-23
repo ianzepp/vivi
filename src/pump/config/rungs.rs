@@ -29,9 +29,12 @@ pub struct RungsConfig {
     pub main: Option<String>,
     /// Command proving a release.
     pub release: Option<String>,
-    /// Seconds one rung run may take.
-    pub timeout: u64,
-    /// Pools a no-model rung job may run on; empty means any pool.
+    /// Seconds one rung run may take; unset means the next level up
+    /// (workspace, then [`DEFAULT_RUNG_TIMEOUT`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    /// Pools a no-model rung job may run on; empty means no pool can run it,
+    /// so a set rung command with no pools never dispatches.
     pub pools: Vec<String>,
 }
 
@@ -42,7 +45,7 @@ impl Default for RungsConfig {
             need: None,
             main: None,
             release: None,
-            timeout: DEFAULT_RUNG_TIMEOUT,
+            timeout: None,
             pools: Vec::new(),
         }
     }
@@ -68,6 +71,37 @@ impl RungsConfig {
     }
 }
 
+impl super::PumpConfig {
+    /// The rung settings a job for `target` actually uses: each command is the
+    /// target's own else the workspace one, the timeout is the target's else
+    /// the workspace's else [`DEFAULT_RUNG_TIMEOUT`] (always set in the result),
+    /// and the pools are the target's when it names any, else the workspace's.
+    #[must_use]
+    pub fn effective_rungs(&self, target: Option<&str>) -> RungsConfig {
+        let own = target.and_then(|id| self.targets.get(id)).map(|t| &t.rungs);
+        let shared = &self.rungs;
+        let pick = |name: &str| {
+            own.and_then(|own| own.command(name))
+                .or_else(|| shared.command(name))
+                .map(str::to_owned)
+        };
+        RungsConfig {
+            task: pick("task"),
+            need: pick("need"),
+            main: pick("main"),
+            release: pick("release"),
+            timeout: Some(
+                own.and_then(|own| own.timeout)
+                    .or(shared.timeout)
+                    .unwrap_or(DEFAULT_RUNG_TIMEOUT),
+            ),
+            pools: own
+                .filter(|own| !own.pools.is_empty())
+                .map_or_else(|| shared.pools.clone(), |own| own.pools.clone()),
+        }
+    }
+}
+
 impl RungsConfig {
     /// Render the rung settings of the project at `project_root` for
     /// `vivi pump rungs show`. With `target`, each command is the effective one
@@ -80,19 +114,20 @@ impl RungsConfig {
         {
             return Err(VivariumError::Config(format!("unknown pump target `{id}`")));
         }
+        let effective = cfg.effective_rungs(target);
         let mut out = String::new();
         for name in RUNG_NAMES {
-            let command = match target {
-                Some(id) => cfg.rung(id, name),
-                None => cfg.rungs.command(name),
-            };
+            let command = effective.command(name);
             out.push_str(&format!("{name}: {}\n", command.unwrap_or("(unset)")));
         }
-        out.push_str(&format!("timeout: {}\n", cfg.rungs.timeout));
-        let pools = if cfg.rungs.pools.is_empty() {
-            "(any)".to_owned()
+        out.push_str(&format!(
+            "timeout: {}\n",
+            effective.timeout.unwrap_or(DEFAULT_RUNG_TIMEOUT)
+        ));
+        let pools = if effective.pools.is_empty() {
+            "(none: rung jobs cannot dispatch)".to_owned()
         } else {
-            cfg.rungs.pools.join(", ")
+            effective.pools.join(", ")
         };
         out.push_str(&format!("pools: {pools}\n"));
         Ok(out)

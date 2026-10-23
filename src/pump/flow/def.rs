@@ -23,6 +23,7 @@ pub enum FlowKind {
     Build,
     Research,
     Release,
+    Repair,
 }
 
 impl FlowKind {
@@ -31,6 +32,7 @@ impl FlowKind {
             "build" => Some(Self::Build),
             "research" => Some(Self::Research),
             "release" => Some(Self::Release),
+            "repair" => Some(Self::Repair),
             _ => None,
         }
     }
@@ -40,6 +42,7 @@ impl FlowKind {
             Self::Build => "build",
             Self::Research => "research",
             Self::Release => "release",
+            Self::Repair => "repair",
         }
     }
 }
@@ -105,6 +108,35 @@ impl NodeClass {
         })
     }
 
+    /// The class word as written in the Mermaid source: the inverse of
+    /// [`NodeClass::parse`].
+    pub fn name(&self) -> String {
+        match self {
+            Self::Researcher => "researcher".to_string(),
+            Self::Planner => "planner".to_string(),
+            Self::Admitter => "admitter".to_string(),
+            Self::Slicer => "slicer".to_string(),
+            Self::Auditor => "auditor".to_string(),
+            Self::Judge => "judge".to_string(),
+            Self::Cto => "cto".to_string(),
+            Self::Merge => "merge".to_string(),
+            Self::MergeMain => "merge-main".to_string(),
+            Self::Fanout => "fanout".to_string(),
+            Self::RungNeed => "rung-need".to_string(),
+            Self::RungMain => "rung-main".to_string(),
+            Self::RungRelease => "rung-release".to_string(),
+            Self::RungRaised => "rung-raised".to_string(),
+            Self::Join => "join".to_string(),
+            Self::Raisecheck => "raisecheck".to_string(),
+            Self::Milestone => "milestone".to_string(),
+            Self::Park => "park".to_string(),
+            Self::Lock => "lock".to_string(),
+            Self::Restart(entry) => format!("restart-{entry}"),
+            Self::Decision => "decision".to_string(),
+            Self::Done => "done".to_string(),
+        }
+    }
+
     /// A step is a role, rung, merge or fanout node: it has a fixed answer
     /// word set and always also answers `failed`.
     pub fn is_step(&self) -> bool {
@@ -144,7 +176,7 @@ impl NodeClass {
                 FAILED,
             ],
             Self::Judge => &["block", "residual", FAILED],
-            Self::Cto => &["research", "plan", "slice", "repair", "lock", FAILED],
+            Self::Cto => &["research", "plan", "slice", "rework", "lock", FAILED],
             Self::Merge | Self::MergeMain => &["merged", "conflict", FAILED],
             Self::Fanout => &["built", FAILED],
             Self::RungNeed | Self::RungMain | Self::RungRelease | Self::RungRaised => {

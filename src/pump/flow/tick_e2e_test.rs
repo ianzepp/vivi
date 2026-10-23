@@ -15,12 +15,13 @@ use super::tick_with;
 use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::{Project, project};
-use crate::pump::flow::def::NodeClass;
+use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
+use crate::pump::flow::def::{FlowKind, NodeClass};
+use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::mail::read::run_count;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
-use crate::pump::flow::outcome::{StartAction, StepHandler, StepHandlers};
-use crate::pump::flow::run::{SENTINEL_NODE, start};
+use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -52,19 +53,23 @@ impl JobStore for Jobs {
 struct JobStep;
 
 impl StepHandler for JobStep {
-    fn start(&self, step: &StepRow) -> Result<StartAction, VivariumError> {
-        Ok(StartAction::EnqueueJob {
-            kind: "planner".into(),
-            brief: format!("stub brief for {}", step.node),
-        })
+    fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        Ok(StartAction::Job(Box::new(role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "planner",
+            "planner",
+            &format!("stub brief for {}", step.node),
+        ))))
     }
 }
 
-fn handlers() -> StepHandlers {
-    let mut handlers = StepHandlers::new();
-    handlers.register(NodeClass::Planner, Box::new(JobStep));
-    handlers.register(NodeClass::Admitter, Box::new(JobStep));
-    handlers
+fn handlers() -> Registry<Jobs, MailspacePort> {
+    let mut registry = Registry::new();
+    registry.handler(FlowKind::Build, NodeClass::Planner, Box::new(JobStep));
+    registry.handler(FlowKind::Build, NodeClass::Admitter, Box::new(JobStep));
+    registry
 }
 
 /// The scripted reply of the worker that holds `node`'s step.

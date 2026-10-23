@@ -27,7 +27,7 @@ fn build_flow_has_the_plan_counts() {
     let def = load(FlowKind::Build).unwrap();
     assert_eq!(def.nodes.len(), 51);
     assert_eq!(def.edges.len(), 84);
-    assert_eq!(def.entries, ["plan", "research", "slice", "repair1"]);
+    assert_eq!(def.entries, ["plan", "research", "slice", "rework1"]);
 }
 
 #[test]
@@ -67,4 +67,9 @@ fn node_classes_map() {
     assert_eq!(node_class(&def, "locked"), &NodeClass::Lock);
     let release = load(FlowKind::Release).unwrap();
     assert_eq!(node_class(&release, "wait"), &NodeClass::Milestone);
+}
+
+#[test]
+fn repair_has_no_shipped_flow_yet() {
+    assert!(load(FlowKind::Repair).is_err());
 }

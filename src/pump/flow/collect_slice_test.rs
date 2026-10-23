@@ -1,0 +1,186 @@
+//! Tests for slice collection: the built-slice hooks run in registration order.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use tempfile::{TempDir, tempdir};
+
+use super::{BuiltHook, register_defaults};
+use crate::error::VivariumError;
+use crate::pump::config::PumpConfig;
+use crate::pump::envelope::roles::Hand;
+use crate::pump::flow::advance::start::start;
+use crate::pump::flow::collect_step::RunCx;
+use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::handlers::Registry;
+use crate::pump::flow::index::{StepRow, StepState};
+use crate::pump::flow::mail::{MailWriter, TaskStatus};
+use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
+use crate::pump::flow::tick::tick_with;
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
+use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::routing::RoutedRole;
+
+type R = Result<(), VivariumError>;
+
+const NEED: &str = "n1";
+const BUILT: &str = "+++\nanswer = \"built\"\ndeviations = ['changed a signature']\n+++\ndone";
+
+#[derive(Default)]
+struct Jobs {
+    jobs: BTreeMap<String, PoolJob>,
+}
+
+impl JobStore for Jobs {
+    fn jobs(&self) -> &BTreeMap<String, PoolJob> {
+        &self.jobs
+    }
+
+    fn jobs_mut(&mut self) -> &mut BTreeMap<String, PoolJob> {
+        &mut self.jobs
+    }
+}
+
+/// A hook that replies with its name on the built slice's task.
+struct Tag(&'static str);
+
+impl BuiltHook<Jobs, FakeMail> for Tag {
+    fn built(&self, cx: &mut RunCx<'_, Jobs, FakeMail>, step: &StepRow, _envelope: &Hand) -> R {
+        cx.mail.reply(&step.task, self.0).map(|_| ())
+    }
+}
+
+struct Rig {
+    _dir: TempDir,
+    ctx: Ctx,
+    _host: Arc<FakeHost>,
+    store: PumpStore,
+    mail: FakeMail,
+    jobs: Jobs,
+}
+
+fn rig() -> Result<Rig, VivariumError> {
+    let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let mut routing = (*ctx.routing).clone();
+    routing.roles.push(RoutedRole {
+        name: String::from("hand"),
+        kind: Some(String::from("hand")),
+        status: String::from("active"),
+        pool: Some(String::from("test-planner-pool")),
+        read_only: None,
+        model: None,
+        models: Vec::new(),
+    });
+    let ctx = ctx.with_routing(routing);
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let mut mail = FakeMail::new("mind");
+    MailWriter::open_record(&mut mail, NEED, "kind: build")?;
+    Ok(Rig {
+        _dir: dir,
+        ctx,
+        _host: host,
+        store,
+        mail,
+        jobs: Jobs::default(),
+    })
+}
+
+/// A started run with one dispatched slice whose hand job finished `built`.
+fn built_slice(rig: &mut Rig) -> Result<StepRow, VivariumError> {
+    start(&rig.ctx, &rig.store, &mut rig.mail, NEED, Some("plan"))?;
+    let task = rig.mail.send_step(
+        "mind",
+        "mind",
+        "slice a",
+        &format!("pump-step: {NEED} r1 slice:a\ntarget: vivi\n\ntitle a\n\nbrief a"),
+        &[],
+    )?;
+    let slice = StepRow {
+        run: 1,
+        node: "slice:a".into(),
+        task: task.clone(),
+        state: StepState::Pending,
+        verdict: None,
+    };
+    rig.store.insert_step(NEED, &slice)?;
+    rig.store
+        .insert_slice_scope(&task, 1, &["src/a.rs".to_string()])?;
+    let id = slice_dispatch::dispatch(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &rig.mail,
+        NEED,
+        &slice,
+        1,
+    )?;
+    let receipt = format!(
+        "pool result j1: finished\npool p  slot s1  model m\nfrom main  default\n\
+         push: pushed vivi/unit/x-a1 abcdef0123\nagent exit 0 in 12s, job 20s, started from 1234567890\n\n\
+         --- receipt\n{BUILT}\n\n--- stderr tail\n\n\n--- runner log tail\nlog line"
+    );
+    let job = rig
+        .jobs
+        .jobs
+        .get_mut(&id)
+        .ok_or_else(|| VivariumError::Message("no job".into()))?;
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt,
+        at: 0,
+    });
+    Ok(slice)
+}
+
+#[test]
+fn built_hooks_run_in_registration_order_after_the_default_and_the_slice_stays_open() -> R {
+    let mut rig = rig()?;
+    let slice = built_slice(&mut rig)?;
+    let mut registry = Registry::<Jobs, FakeMail>::new();
+    register_defaults(&mut registry);
+    registry.built_hook(Box::new(Tag("hook-one")));
+    registry.built_hook(Box::new(Tag("hook-two")));
+
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )?;
+
+    let replies = &rig.mail.tasks[&slice.task].replies;
+    let position = |needle: &str| replies.iter().position(|r| r.contains(needle));
+    let deviations = position(DEVIATIONS_MARKER);
+    let one = position("hook-one");
+    let two = position("hook-two");
+    assert!(
+        deviations.is_some() && one.is_some() && two.is_some(),
+        "{replies:?}"
+    );
+    assert!(deviations < one && one < two, "{replies:?}");
+    assert_eq!(rig.mail.tasks[&slice.task].state.status, TaskStatus::Open);
+    Ok(())
+}
+
+#[test]
+fn a_registry_built_by_hand_still_posts_the_default_notes() -> R {
+    let mut rig = rig()?;
+    let slice = built_slice(&mut rig)?;
+
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &Registry::new(),
+    )?;
+
+    let replies = &rig.mail.tasks[&slice.task].replies;
+    assert!(replies.iter().any(|r| r.contains("changed a signature")));
+    Ok(())
+}

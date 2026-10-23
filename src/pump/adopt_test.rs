@@ -96,7 +96,7 @@ fn adopt_leaves_a_need_that_already_has_an_open_record_alone() {
 #[test]
 fn adopt_reports_what_it_cannot_adopt_instead_of_failing() {
     let project = project();
-    let stray = send_need(&project.mailspace, "not for the pump", "elsewhere");
+    let stray = send_need(&project.mailspace, "addressed elsewhere", "elsewhere");
     let st = state_of(&[
         ("pumpfix-g1", &[("p1", Status::Pending)]),
         (&stray, &[("s1", Status::Pending)]),
@@ -104,17 +104,18 @@ fn adopt_reports_what_it_cannot_adopt_instead_of_failing() {
 
     let report = adopt(&project.mailspace, &st, false).unwrap();
 
-    assert!(report.opened.is_empty());
-    let skipped: Vec<&str> = report.skipped.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(skipped.len(), 2, "{report:?}");
-    assert!(skipped.contains(&"pumpfix-g1") && skipped.contains(&stray.as_str()));
-    let why = report
-        .skipped
-        .iter()
-        .find(|(need, _)| need == &stray)
-        .map(|(_, why)| why.as_str())
-        .unwrap();
-    assert!(why.contains("not addressed to the pump identity"), "{why}");
+    // A need addressed to a third identity is adopted: an open record alone
+    // admits it. Only the handle that is no need at all is skipped.
+    assert_eq!(handles(&report.opened), vec![stray.as_str()]);
+    assert_eq!(report.skipped.len(), 1, "{report:?}");
+    assert_eq!(report.skipped[0].0, "pumpfix-g1");
+    assert!(
+        project
+            .mailspace
+            .pump_open_record(&stray)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

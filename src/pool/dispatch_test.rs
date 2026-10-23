@@ -953,3 +953,46 @@ fn without_a_command_an_unlisted_model_is_still_refused() {
     };
     assert_eq!(plan(&flags).unwrap().harness_cmd, "true");
 }
+
+fn plan_on(config: &PoolConfig, flags: &DispatchFlags) -> Result<JobPlan, VivariumError> {
+    plan_job(config, "p", ("a1", "S", "b"), flags, "r".into(), "j".into())
+}
+
+#[test]
+fn a_command_job_plans_without_a_harness_block_and_gets_no_env() {
+    let mut config = config();
+    let command = DispatchFlags {
+        command: Some("cargo test --quiet".into()),
+        ..flags("")
+    };
+    assert!(plan_on(&config, &command).unwrap().env_names.is_empty());
+    config.harness = None;
+    let p = plan_on(&config, &command).unwrap();
+    assert_eq!(p.harness_cmd, "cargo test --quiet");
+    assert!(p.env_names.is_empty());
+    let err = plan_on(&config, &flags("m/ok")).unwrap_err().to_string();
+    assert!(err.contains("harness"), "{err}");
+    config.committer = None;
+    assert!(plan_on(&config, &command).is_err());
+}
+
+#[test]
+fn every_owned_cleanup_prefix_takes_one_segment_and_no_more() {
+    let mut cleanup = flags("m/ok");
+    cleanup.delete_expect = Some("b".repeat(40));
+    for (name, ok) in [
+        ("vivi/need-prior/abcd1234", true),
+        ("vivi/repair/abcd1234-2.1", true),
+        ("pump/merge-main/default-merge-main-step1-abc", true),
+        ("vivi/need-prior/a/b", false),
+        ("vivi/need-prior/", false),
+        ("vivi/repair/a/b", false),
+        ("vivi/repair/", false),
+        ("pump/merge-main/t/x", false),
+        ("pump/merge-main/", false),
+        ("pump/other/x", false),
+    ] {
+        cleanup.delete_ref = Some(format!("refs/heads/{name}"));
+        assert_eq!(plan(&cleanup).is_ok(), ok, "{name}");
+    }
+}

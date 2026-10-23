@@ -102,7 +102,7 @@ fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
         addressee: Some(String::from("hand")),
     };
 
-    let role = role_facts(&space, &task).unwrap();
+    let role = role_facts(&space, &task, None).unwrap();
 
     assert_eq!(role.kind.as_deref(), Some("auditor"));
     assert!(role.read_only.unwrap_or(false));
@@ -213,4 +213,32 @@ fn the_human_dispatch_line_carries_the_extra_refs_when_there_are_some() {
 fn the_human_dispatch_line_has_no_with_segment_when_the_job_has_none() {
     let text = dispatched_text("abcd1234", &record(&[]), None, "");
     assert!(!text.contains("with"), "{text}");
+}
+
+#[test]
+fn the_named_role_wins_over_the_task_addressee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = Mailspace::init(Some(tmp.path())).unwrap();
+    let kind = |kind: &str| vivi::mailspace::RoleUpdate {
+        kind: Some(Some(kind.into())),
+        ..Default::default()
+    };
+    space.add_role("pump", kind("pump")).unwrap();
+    space.add_role("merge", kind("merge")).unwrap();
+    let task = PoolTask {
+        handle: String::from("abcd1234"),
+        subject: String::from("step"),
+        body: String::from("pump-step: n r1 merge"),
+        addressee: Some(String::from("pump")),
+    };
+
+    let named = role_facts(&space, &task, Some("merge")).unwrap();
+    assert_eq!(named.name, "merge");
+    assert_eq!(named.kind.as_deref(), Some("merge"));
+
+    let default = role_facts(&space, &task, None).unwrap();
+    assert_eq!(default.name, "pump");
+    assert_eq!(default.kind.as_deref(), Some("pump"));
+
+    assert!(role_facts(&space, &task, Some("nobody")).is_none());
 }

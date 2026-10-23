@@ -8,6 +8,7 @@ use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
 
 pub(crate) mod guard;
+pub(crate) mod restart;
 pub(crate) mod route;
 pub(crate) mod start;
 pub(crate) mod terminal;

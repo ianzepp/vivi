@@ -138,6 +138,74 @@ fn dispatch_order_ranks_jobs_of_pump_created_gate_fix_needs_as_fix_work() {
     assert_eq!(dispatch_order(&by_need, &legacy, &priorities).0, 1);
 }
 
+fn flow_job(id: &str, kind: &str, class: &str, need: &str, queued_at: u64) -> PoolJob {
+    let mut job = PoolJob::from(JobSpec::new(id, "merge", "merge", "s", "b"));
+    job.payload = serde_json::json!({"kind": kind, "class": class, "need": need});
+    job.queued_at = queued_at;
+    job
+}
+
+#[test]
+fn flow_jobs_rank_repair_then_cto_then_priority_then_age() {
+    let priorities = BTreeMap::from([(String::from("hot"), 3)]);
+    let fix = FixMarks {
+        prefix: "pumpfix",
+        ids: BTreeSet::new(),
+    };
+    let mut jobs = vec![
+        flow_job("old-plain", "build", "hand", "cold", 1),
+        flow_job("hot-build", "build", "hand", "hot", 9),
+        flow_job("cto", "build", "cto", "cold", 5),
+        flow_job("repair", "repair", "hand", "cold", 7),
+    ];
+    jobs.sort_by_key(|job| dispatch_order(job, &fix, &priorities));
+    let ids: Vec<&str> = jobs.iter().map(|job| job.id.as_str()).collect();
+    assert_eq!(ids, ["repair", "cto", "hot-build", "old-plain"]);
+}
+
+#[test]
+fn an_old_pipeline_gate_fix_job_keeps_its_old_rank() {
+    let fix = FixMarks {
+        prefix: "pumpfix",
+        ids: BTreeSet::new(),
+    };
+    let mut old_fix = PoolJob::from(JobSpec::new("merge-old", "merge", "merge", "s", "b"));
+    old_fix.payload = serde_json::json!({"need": "pumpfix-g1"});
+    let key = dispatch_order(&old_fix, &fix, &BTreeMap::new());
+    assert_eq!(key.0, 1);
+}
+
+#[test]
+fn one_merge_main_per_target_is_offered_while_another_is_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\n");
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 bridge slot-1 model/default unit/task\n",
+    );
+    let mut store = Store::default();
+    let mut flying = flow_job("mm-flying", "build", "merge-main", "n1", 1);
+    flying.target = Some(String::from("t"));
+    flying.status = JobStatus::Dispatched;
+    let mut blocked = flow_job("mm-t", "build", "merge-main", "n2", 2);
+    blocked.target = Some(String::from("t"));
+    let mut open = flow_job("mm-u", "build", "merge-main", "n3", 3);
+    open.target = Some(String::from("u"));
+    for job in [flying, blocked, open] {
+        store.jobs.insert(job.id.clone(), job);
+    }
+
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        vec![String::from("mm-u")]
+    );
+    assert_eq!(store.jobs["mm-t"].status, JobStatus::Pending);
+}
+
 #[test]
 fn a_state_store_reports_gate_fix_need_and_unit_ids_for_job_dispatch() {
     let mut st = crate::pump::state::State::default();
@@ -459,6 +527,15 @@ fn pool_command_carries_repository_and_write_context() {
     assert!(!command.contains("--read-only"));
     assert!(command.contains("--publish-ref refs/heads/next"));
     assert!(command.contains(&format!("--publish-expect {}", "a".repeat(40))));
+}
+
+#[test]
+fn pool_command_names_the_job_role_only_when_it_has_one() {
+    let mut job = PoolJob::from(spec("merge-2"));
+    job.role = String::from("merge");
+    assert!(pool_command(&job, "local", "a1b2c3d4").contains("--role merge"));
+    job.role = String::new();
+    assert!(!pool_command(&job, "local", "a1b2c3d4").contains("--role"));
 }
 
 #[test]

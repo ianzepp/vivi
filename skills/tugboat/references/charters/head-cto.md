@@ -140,7 +140,7 @@ else; the full table is in the vivi skill's `references/envelope.md`.
 | `research` | A fact is missing; start a new run at the research entry to find it. Take no action yourself |
 | `plan` | The plan was wrong; start a new run at plan |
 | `slice` | Re-slice the admitted plan as a new run |
-| `repair` | The work is close; start a new run at repair on the existing need branch |
+| `rework` | The work is close; start a new run at rework on the existing need branch |
 | `lock` | Stop the loop; hold the need for the operator |
 
 Fields:
@@ -157,7 +157,7 @@ Example:
 
 ```
 +++
-answer = "repair"
+answer = "rework"
 reason = 'The build passes its rung but the audit found a missing guard.'
 new_fact = 'The auditor traced the missing guard to the slice that merged last.'
 +++

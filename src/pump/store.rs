@@ -19,12 +19,14 @@ use crate::error::VivariumError;
 
 mod codec;
 mod flow_index;
+mod need_branch;
 mod priority;
 mod promotions;
 mod schema;
 mod snapshot;
 mod unit_extra;
 pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
+pub use need_branch::NeedBranchRow;
 use schema::{drop_request_queues, newer_schema, schema_version, take_migration_lock};
 
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};

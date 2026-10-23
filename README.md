@@ -646,7 +646,7 @@ units. **vivi pump recover &lt;need&gt;** releases a need branch the pump holds
 remote tip when the ref still sits where the hold recorded it, and delivered
 units merge onto it again. Sending a new record for a need whose last record closed **gave-up** is
 the retry: the pump clears what parked it and requeues its stuck units.
-**vivi pump send** refuses a need that is not addressed to the pump. After
+**vivi pump send** accepts any need: the open pump record admits it, whoever the need is addressed to. After
 upgrading to vivi 19, run **vivi pump adopt** once so the needs already in
 flight get a record; see [the 19.0.0 notes](docs/release-v19.0.0.md).
 

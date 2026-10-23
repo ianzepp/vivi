@@ -37,19 +37,19 @@ flowchart TD
   end
   b1 -->|failed| cto
   j1 -->|verified| merge
-  j1 -->|block| repair1
+  j1 -->|block| rework1
   j1 -->|failed| cto
-  jq1 -->|block| repair1
+  jq1 -->|block| rework1
   jq1 -->|failed| cto
   rc1 -->|none| merge
   rr1 -->|pass| merge
-  rr1 -->|fail| repair1
+  rr1 -->|fail| rework1
   rr1 -->|failed| cto
-  repair1[Repair 1: findings and failures to repair slices]:::slicer --> rs1{repair slice}
-  rs1 -->|sliced| build2
-  rs1 -->|escalate, failed| cto
+  rework1[Rework 1: findings and failures to rework slices]:::slicer --> rw1{rework slice}
+  rw1 -->|sliced| build2
+  rw1 -->|escalate, failed| cto
   subgraph pass2 [Verify 2]
-    build2[Repair tasks]:::fanout --> b2{build 2}
+    build2[Rework tasks]:::fanout --> b2{build 2}
     b2 -->|built| audit2[Audit 2, prior context]:::auditor
     b2 -->|built| test2[Need rung 2]:::rung-need
     audit2 --> j2{join 2}:::join
@@ -85,6 +85,6 @@ flowchart TD
   cq -->|research| r_research([New run: research]):::restart-research
   cq -->|plan| r_plan([New run: plan]):::restart-plan
   cq -->|slice| r_slice([New run: slice]):::restart-slice
-  cq -->|repair| r_repair([New run: repair]):::restart-repair
+  cq -->|rework| r_rework([New run: rework]):::restart-rework
   cq -->|lock, failed| locked([Locked: operator only]):::lock
   parked([Parked: a newer reply restarts at plan]):::park

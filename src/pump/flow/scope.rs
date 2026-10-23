@@ -3,7 +3,7 @@
 //! other open slices. No model is involved.
 
 use crate::error::VivariumError;
-use crate::pump::flow::fanout::SliceEdges;
+use crate::pump::flow::fanout::{self, SliceEdges};
 use crate::pump::store::PumpStore;
 
 /// A request for more paths than this goes to the slicer.
@@ -16,8 +16,8 @@ pub enum ScopeState {
     Clear,
     /// Waiting for slices that hold the requested paths to close.
     Wait,
-    /// Waiting for the slicer to repair the scopes.
-    Repair,
+    /// Waiting for the slicer to rework the scopes.
+    Rework,
 }
 
 impl ScopeState {
@@ -27,7 +27,7 @@ impl ScopeState {
         match self {
             Self::Clear => "none",
             Self::Wait => "scope-wait",
-            Self::Repair => "scope-repair",
+            Self::Rework => "scope-rework",
         }
     }
 
@@ -39,7 +39,7 @@ impl ScopeState {
         Ok(match word {
             "none" => Self::Clear,
             "scope-wait" => Self::Wait,
-            "scope-repair" => Self::Repair,
+            "scope-rework" => Self::Rework,
             other => {
                 return Err(VivariumError::Other(format!(
                     "pump.db slice_scope: unknown scope state {other:?}"
@@ -65,8 +65,8 @@ pub enum Resolution {
     Widen(Vec<String>),
     /// These slice tasks hold some of the paths; the slice now depends on them.
     WaitOn(Vec<String>),
-    /// The slicer must repair the scopes; the reason says why.
-    Repair(String),
+    /// The slicer must rework the scopes; the reason says why.
+    Rework(String),
 }
 
 /// Marks a requested-but-held path in the stored wait record (the
@@ -166,18 +166,18 @@ pub fn resolve(
 ) -> Result<Resolution, VivariumError> {
     let requests = store.bump_scope_requests(task)?;
     if requests >= 2 {
-        return Ok(Resolution::Repair(format!(
+        return Ok(Resolution::Rework(format!(
             "second blocked-scope request on {task}"
         )));
     }
     if req.paths.len() > MAX_REQUEST_PATHS {
-        return Ok(Resolution::Repair(format!(
+        return Ok(Resolution::Rework(format!(
             "{} paths requested; the limit is {MAX_REQUEST_PATHS}",
             req.paths.len()
         )));
     }
     if req.design {
-        return Ok(Resolution::Repair(format!(
+        return Ok(Resolution::Rework(format!(
             "design question: {}",
             req.reason
         )));
@@ -194,9 +194,7 @@ pub fn resolve(
     if holders.is_empty() {
         return Ok(Resolution::Widen(free));
     }
-    for holder in &holders {
-        mail.add_dependency(task, holder)?;
-    }
+    fanout::wait_on(mail, task, &holders)?;
     let mut record = holders.clone();
     record.extend(
         held_paths

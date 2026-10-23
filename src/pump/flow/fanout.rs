@@ -272,6 +272,22 @@ impl SliceEdges for MailspacePort {
     }
 }
 
+/// Make `task` depend on every holder. This is the one place a slice gains a
+/// dependency after its send.
+///
+/// # Errors
+/// Returns [`VivariumError`] when an edge cannot be written.
+pub fn wait_on<M: SliceEdges + ?Sized>(
+    mail: &mut M,
+    task: &str,
+    holders: &[String],
+) -> Result<(), VivariumError> {
+    for holder in holders {
+        mail.add_dependency(task, holder)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 impl SliceEdges for crate::pump::flow::fake_mail::FakeMail {
     fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError> {
@@ -297,7 +313,7 @@ pub fn mark_exhausted(store: &PumpStore, task: &str) -> Result<(), VivariumError
 /// exhausted, otherwise `None`. A run with no slices is `None`.
 ///
 /// A slice waiting on blocked-scope resolution (`scope-wait` or
-/// `scope-repair`) is neither built nor failed.
+/// `scope-rework`) is neither built nor failed.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when the index or the mailspace cannot be read.
@@ -324,7 +340,7 @@ pub fn settle<M: MailReader>(
         slices += 1;
         let waiting = matches!(
             store.scope_state(&row.task)?,
-            Some(ScopeState::Wait | ScopeState::Repair)
+            Some(ScopeState::Wait | ScopeState::Rework)
         );
         let built = closed && matches!(verdict, Some(VERDICT_MERGED | VERDICT_NO_DEFECT));
         if waiting || !built {

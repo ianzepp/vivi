@@ -124,9 +124,16 @@ impl PumpConfig {
         self.validate_workspace(&mut found);
         self.validate_dispatch(pools, hand_role_pool, &mut found);
         validate_rungs("[pump.rungs]", &self.rungs, pools, &mut found);
+        validate_rung_pools("[pump.rungs]", &self.effective_rungs(None), &mut found);
         for (id, target) in &self.targets {
             let scope = format!("[pump.targets.{id}.rungs]");
             validate_rungs(&scope, &target.rungs, pools, &mut found);
+            if RUNG_NAMES
+                .iter()
+                .any(|name| target.rungs.command(name).is_some())
+            {
+                validate_rung_pools(&scope, &self.effective_rungs(Some(id)), &mut found);
+            }
         }
         if self.targets.is_empty() {
             if self.branch.is_empty() {
@@ -431,7 +438,7 @@ fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], found: &m
 }
 
 fn validate_rungs(scope: &str, rungs: &RungsConfig, pools: &[String], found: &mut Findings) {
-    if rungs.timeout == 0 {
+    if rungs.timeout == Some(0) {
         found.invalid(format!("{scope} timeout must be >= 1"));
     }
     for name in RUNG_NAMES {
@@ -443,6 +450,19 @@ fn validate_rungs(scope: &str, rungs: &RungsConfig, pools: &[String], found: &mu
         if !known(pools, name) {
             found.invalid(format!("{scope} pools names unknown pool `{name}`"));
         }
+    }
+}
+
+/// A set rung command with no effective pool never dispatches: the rung job's
+/// role is unrouted, so it would stay pending forever.
+fn validate_rung_pools(scope: &str, effective: &RungsConfig, found: &mut Findings) {
+    let set = RUNG_NAMES
+        .iter()
+        .any(|name| effective.command(name).is_some());
+    if set && effective.pools.is_empty() {
+        found.invalid(format!(
+            "{scope} sets a rung command but its effective pools are empty; rung jobs cannot dispatch"
+        ));
     }
 }
 
