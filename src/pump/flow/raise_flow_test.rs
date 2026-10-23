@@ -39,6 +39,7 @@ const REWORK_SLICED: &str = "+++\nanswer = \"sliced\"\nmode = \"rework\"\n\n[[sl
                              write_scope = [\"src/a.rs\"]\n+++\ncut";
 const AUDIT_RAISES_MAIN: &str =
     "+++\nanswer = \"residual\"\nraise_rung = \"main\"\n+++\nlooks fine, run main";
+const AUDIT_CLEAN: &str = "+++\nanswer = \"clean_pass\"\n+++\nclean";
 const JUDGE_RESIDUAL: &str =
     "+++\nanswer = \"residual\"\nreason = 'only minor leftovers'\n+++\nresidual";
 const JUDGE_BLOCK: &str =
@@ -321,5 +322,32 @@ fn a_judge_block_goes_straight_to_rework() -> R {
         "the judge reason reaches the rework brief: {}",
         rework.body
     );
+    Ok(())
+}
+
+#[test]
+fn a_pass_one_raise_is_sticky_so_pass_two_reruns_the_rung() -> R {
+    let mut rig = rig()?;
+    rig.through_failed_rung_to_judge()?;
+    rig.finish("judge1", 0, JUDGE_RESIDUAL)?;
+    rig.settle()?;
+    rig.finish("raise1", 1, "test result: FAILED")?;
+    rig.settle()?;
+    rig.finish("rework1", 0, REWORK_SLICED)?;
+    rig.settle()?;
+    assert_eq!(rig.step("build2")?.verdict.as_deref(), Some("built"));
+
+    // Pass two is clean: audit2 names no rung and test2 passes.
+    rig.finish("audit2", 0, AUDIT_CLEAN)?;
+    rig.finish("test2", 0, "test result: ok")?;
+    rig.settle()?;
+
+    // The join still answers `raised`: audit1 of this run named `main`.
+    assert_eq!(rig.step("audit2")?.verdict.as_deref(), Some("clean_pass"));
+    assert_eq!(rig.step("test2")?.verdict.as_deref(), Some("pass"));
+    let raised = rig.job_of("raise2")?;
+    assert_eq!(raised.kind, "rung");
+    assert_eq!(raised.payload["rung"], serde_json::json!("main"));
+    assert_eq!(raised.command.as_deref(), Some("cargo test --all"));
     Ok(())
 }

@@ -332,3 +332,21 @@ fn a_raised_step_without_a_named_rung_runs_the_need_rung() -> R {
     assert_eq!(none.job_ids(), vec![format!("rung-need-{task}-a1")]);
     Ok(())
 }
+
+#[test]
+fn a_raised_step_picks_the_older_raise_when_the_newest_audit_has_none() -> R {
+    let mut rig = rig_at(config(true), "raise1")?;
+    audit_payload(&rig, Some("main"))?;
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run: 1,
+        node: "audit2".into(),
+        class: "auditor".into(),
+        task: "t-audit2".into(),
+        payload: serde_json::json!({ "front": {}, "body": "" }),
+    })?;
+    rig.tick()?;
+    let task = rig.step()?.task;
+    assert_eq!(rig.job_ids(), vec![format!("rung-main-{task}-a1")]);
+    Ok(())
+}
