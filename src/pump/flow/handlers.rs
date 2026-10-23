@@ -18,6 +18,7 @@ use crate::pump::flow::mail::{MailWriter, OpenRecords};
 use crate::pump::flow::outcome::StepHandler;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::{intake, need_branch, prune, rung_step};
+use crate::pump::flow::{integration, main_rung, slice_merge};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
@@ -183,6 +184,9 @@ pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     need_branch::register(&mut registry);
     prune::register(&mut registry);
     rung_step::register(&mut registry);
+    slice_merge::register(&mut registry);
+    integration::register(&mut registry);
+    main_rung::register(&mut registry);
     registry
 }
 
