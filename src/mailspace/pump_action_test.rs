@@ -187,3 +187,85 @@ fn actions_show_in_the_needs_pump_history_threads() {
         "{messages:?}"
     );
 }
+
+fn send_task(mailspace: &Mailspace, body: &str) -> String {
+    mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "step".into(),
+            body: body.into(),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+#[test]
+fn an_answer_posts_on_the_open_record_of_the_steps_need_with_step_and_word_headers() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let step = send_task(&mailspace, &format!("pump-step: {need} r1 plan\n\nPlan"));
+
+    let posted = mailspace
+        .pump_post_answer(None, &step, "planned", "operator ruled")
+        .unwrap();
+
+    assert_eq!(posted.record, record.handle);
+    assert_eq!(posted.need, need);
+    let pending = mailspace.pump_pending_actions(&none()).unwrap();
+    assert_eq!(pending.len(), 1);
+    let request = &pending[0].request;
+    assert_eq!(request.kind, PumpActionKind::Answer);
+    assert_eq!(request.step.as_deref(), Some(step.as_str()));
+    assert_eq!(request.word.as_deref(), Some("planned"));
+    assert_eq!(request.reason, "operator ruled");
+}
+
+#[test]
+fn an_answer_to_the_run_sentinel_posts_too() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    mailspace.pump_send(None, &need, None).unwrap();
+    let sentinel = send_task(&mailspace, &format!("pump-run-sentinel: {need} r1"));
+
+    mailspace
+        .pump_post_answer(None, &sentinel, "failed", "")
+        .unwrap();
+
+    assert_eq!(mailspace.pump_pending_actions(&none()).unwrap().len(), 1);
+}
+
+#[test]
+fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let step = send_task(&mailspace, &format!("pump-step: {need} r1 plan"));
+    let error = mailspace
+        .pump_post_answer(None, &step, "planned", "")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no open pump record"), "{error}");
+
+    mailspace.pump_send(None, &need, None).unwrap();
+    let plain = send_task(&mailspace, "just a task");
+    let error = mailspace
+        .pump_post_answer(None, &plain, "planned", "")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not a pump step task"), "{error}");
+    let error = mailspace
+        .pump_post_answer(None, &step, "  ", "")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("names the word"), "{error}");
+    assert!(mailspace.pump_pending_actions(&none()).unwrap().is_empty());
+}
