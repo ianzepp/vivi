@@ -279,8 +279,22 @@ where
         self.settle_fanouts()?;
         self.start_steps()?;
         self.poll_waiting()?;
+        if !self.still_live()? {
+            return Ok(());
+        }
         self.check_kind()?;
         self.check_overdue()
+    }
+
+    /// Whether this run is still `live` after the step work: a job applied
+    /// this tick may have landed, restarted or withdrawn it, and an ended run
+    /// has no kind left to check and no overdue job to report.
+    fn still_live(&self) -> Result<bool, VivariumError> {
+        const RUN_LIVE: &str = "live";
+        let rows = self.store.runs_of(&self.run.need)?;
+        Ok(rows
+            .iter()
+            .any(|row| row.run == self.run.run && row.state == RUN_LIVE))
     }
 
     /// Per-step error boundary: a failing unit never ends the run's tick.
@@ -524,9 +538,13 @@ where
     /// Raise once when the need's marks no longer name the run's kind.
     fn check_kind(&mut self) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
-        let body = MailReader::open_record(&*self.mail, &need)?.map(|(_, body)| body);
+        // No open record means no kind source (the run was landed or its need
+        // closed): the next tick withdraws it, so say nothing here.
+        let Some((_, body)) = MailReader::open_record(&*self.mail, &need)? else {
+            return Ok(());
+        };
         let marks = self.mail.need_marks(&need)?;
-        let (now_kind, _) = kind::of(body.as_deref(), &marks);
+        let (now_kind, _) = kind::of(Some(&body), &marks);
         if now_kind.name() != self.run.kind {
             raise_once(
                 self.ctx,

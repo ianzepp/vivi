@@ -569,6 +569,45 @@ fn a_kind_change_alarms_once_and_changes_nothing() -> R {
 }
 
 #[test]
+fn the_landing_tick_of_a_record_kind_run_raises_no_kind_alarm() -> R {
+    let mut rig = rig_with("kind: research")?;
+    rig.start("research")?;
+    rig.role_job(
+        "research",
+        "research-j1",
+        "+++\nanswer = \"READY\"\n+++\nanalysis",
+    )?;
+    rig.tick()?;
+    assert_eq!(rig.run_state()?, "done");
+    assert_eq!(rig.count(KIND_CHANGED), 0);
+    Ok(())
+}
+
+#[test]
+fn a_real_kind_change_on_a_live_record_kind_run_still_alarms_once() -> R {
+    let mut rig = rig_with("a record without a kind line")?;
+    rig.mail.set_marks(NEED, &["research"]);
+    rig.start("research")?;
+    assert_eq!(rig.store.runs_of(NEED)?[0].kind, "research");
+    rig.mail.set_marks(NEED, &["repair"]);
+    rig.tick()?;
+    rig.tick()?;
+    assert_eq!(rig.count(KIND_CHANGED), 1);
+    assert_eq!(rig.run_state()?, "live");
+    Ok(())
+}
+
+#[test]
+fn a_record_closed_without_landing_raises_no_kind_alarm() -> R {
+    let mut rig = rig_with("kind: research")?;
+    rig.start("research")?;
+    rig.mail.close_need_by(NEED, "operator");
+    rig.tick()?;
+    assert_eq!(rig.count(KIND_CHANGED), 0);
+    Ok(())
+}
+
+#[test]
 fn an_error_in_one_run_does_not_stop_another_run() -> R {
     let mut rig = rig()?;
     rig.start("plan")?;
