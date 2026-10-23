@@ -166,8 +166,10 @@ fn run4_text(store: &PumpStore, need: &str, number: u32) -> Result<String, Vivar
     ))
 }
 
-/// The task of `node` in `rows`, or a fresh send followed at once by its step row.
-fn send_missing<M: MailWriter>(
+/// The task of `node` in `rows`, or an already-sent task with this subject
+/// and first line, or a fresh send; the last two are followed at once by
+/// their step row.
+fn send_missing<M: MailWriter + MailReader>(
     ctx: &Ctx,
     store: &PumpStore,
     mail: &mut M,
@@ -179,7 +181,12 @@ fn send_missing<M: MailWriter>(
         return Ok(row.task.clone());
     }
     let from = ctx.cfg.reply_from.as_str();
-    let task = mail.send_step(from, from, &format!("{need} r{run} {node}"), &body, &[])?;
+    let subject = format!("{need} r{run} {node}");
+    // A task sent before a crash but never indexed is adopted, not sent twice.
+    let task = match mail.sent_step(&subject, &body)? {
+        Some(task) => task,
+        None => mail.send_step(from, from, &subject, &body, &[])?,
+    };
     store.insert_step(need, &step_row(run, node, &task, state))?;
     Ok(task)
 }
@@ -239,3 +246,7 @@ mod tests;
 #[cfg(test)]
 #[path = "start_resume_test.rs"]
 mod resume_tests;
+
+#[cfg(test)]
+#[path = "send_adopt_test.rs"]
+mod adopt_tests;

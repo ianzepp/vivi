@@ -18,9 +18,9 @@ use crate::pump::flow::mail::{MailWriter, OpenRecords};
 use crate::pump::flow::outcome::StepHandler;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::{
-    audit_step, cto_step, decide, intake, judge_step, milestone, need_branch, prune, repair_audit,
-    repair_collect, repair_start, repair_steps, repair_unrepaired, research, research_post,
-    residual, rework_step, rung_step, unlock,
+    audit_step, build_front, cto_step, decide, intake, judge_step, milestone, need_branch, prune,
+    repair_audit, repair_collect, repair_start, repair_steps, repair_unrepaired, research,
+    research_post, residual, rework_step, rung_step, unlock,
 };
 use crate::pump::flow::{integration, main_rung, slice_merge};
 use crate::pump::host::Ctx;
@@ -206,6 +206,7 @@ pub(crate) fn shipped<S: JobStore, M: FlowMail>(_ctx: &Ctx) -> Registry<S, M> {
     cto_step::register(&mut registry);
     unlock::register(&mut registry);
     residual::register(&mut registry);
+    build_front::register(&mut registry);
     registry
 }
 

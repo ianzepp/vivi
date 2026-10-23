@@ -119,6 +119,28 @@ impl MailReader for MailspacePort {
             .find(|record| record.status == PumpState::Done)
             .map(|record| record.outcome.unwrap_or_default()))
     }
+
+    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
+        let sent = self
+            .mailspace
+            .list_kind(Some(&self.pump_identity), "sent", "task")?;
+        let storage = self.mailspace.storage()?;
+        let mut newest: Option<(String, String)> = None;
+        for row in sent.iter().filter(|row| row.subject == subject) {
+            let body = crate::extract::extract_text(&storage.read_message(&row.message_id)?)?;
+            if body.lines().next().map(str::trim) != Some(first_line.trim()) {
+                continue;
+            }
+            let handle = delivered_handle(&storage, row)?;
+            if self.task_state(&handle)?.status != TaskStatus::Open {
+                continue;
+            }
+            if newest.as_ref().is_none_or(|(date, _)| *date <= row.date) {
+                newest = Some((row.date.clone(), handle));
+            }
+        }
+        Ok(newest.map(|(_, handle)| handle))
+    }
 }
 
 impl OpenRecords for MailspacePort {
@@ -149,6 +171,16 @@ fn held_item(storage: &Storage, handle: &str) -> Result<HeldItem, VivariumError>
         events.extend(storage.list_mailspace_events(&row.message_id)?);
     }
     Ok(HeldItem { rows, events })
+}
+
+/// The handle `send_step` hands back for a sent copy: the recipient's copy
+/// of the same content, or the sent copy itself when nobody local holds one.
+fn delivered_handle(storage: &Storage, sent: &StoredMessageView) -> Result<String, VivariumError> {
+    let rows = storage.live_messages_for_content(&sent.content_id)?;
+    Ok(rows
+        .into_iter()
+        .find(|row| row.local_role != "sent")
+        .map_or_else(|| sent.handle.clone(), |row| row.handle))
 }
 
 /// The newest folder move of the item, close or reopen alike.

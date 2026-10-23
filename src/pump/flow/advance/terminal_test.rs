@@ -341,6 +341,10 @@ impl MailReader for Flaky {
     fn last_closed_record(&self, need: &str) -> Result<Option<String>, VivariumError> {
         self.inner.last_closed_record(need)
     }
+
+    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
+        self.inner.sent_step(subject, first_line)
+    }
 }
 
 #[test]

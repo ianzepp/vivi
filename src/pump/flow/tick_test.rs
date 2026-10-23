@@ -22,6 +22,7 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
+use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::registry;
 use crate::pump::flow::scope::ScopeState;
@@ -29,12 +30,13 @@ use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
 use crate::pump::flow::validate::validate;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+const BASE: &str = "2222222222222222222222222222222222222222";
 const BEFORE: &str = "1111111111111111111111111111111111111111";
 const TIP: &str = "2222222222222222222222222222222222222222";
 const WANT: &str = "3333333333333333333333333333333333333333";
@@ -63,6 +65,19 @@ struct Rig {
     jobs: Jobs,
 }
 
+/// A live need-branch row on the slices' target, so hands have a start point.
+fn seed_need_branch(store: &PumpStore) -> R {
+    store.upsert_need_branch(&NeedBranchRow {
+        need: NEED.into(),
+        branch: need_branch::branch(NEED),
+        base: Some(BASE.into()),
+        status: need_branch::LIVE.into(),
+        run: 1,
+        target: "default".into(),
+        priors: Vec::new(),
+    })
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     rig_with("kind: build")
 }
@@ -82,6 +97,7 @@ fn rig_with(record: &str) -> Result<Rig, VivariumError> {
     });
     let ctx = ctx.with_routing(routing);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, record)?;
     Ok(Rig {
@@ -186,7 +202,9 @@ impl Rig {
             "mind",
             "mind",
             &format!("slice {id}"),
-            &format!("pump-step: {NEED} r1 slice:{id}\ntarget: vivi\n\ntitle {id}\n\nbrief {id}"),
+            &format!(
+                "pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"
+            ),
             &[],
         )?;
         let row = StepRow {

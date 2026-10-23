@@ -1,4 +1,4 @@
-//! The planner board pass on its own worker thread, merge-lane style.
+//! The board pass on its own worker thread, merge-lane style.
 //!
 //! One board pass is minutes of serial `vivi` calls (`sync pull`, `need
 //! list`, `need show`, `mail reply`). Running it inline in the tick blocks
@@ -10,8 +10,8 @@
 //! The worker never touches the live state. Every field it reads is a
 //! snapshot, so [`merge_back`] copies back only what the board pass itself
 //! owns, and the rules below name who else mutates each field concurrently.
-//! Newly queued planner jobs return through the outbox merge without
-//! rewinding tick-side dispatch or reconciliation.
+//! Newly queued jobs return through the outbox merge without rewinding
+//! tick-side dispatch or reconciliation.
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
@@ -159,59 +159,10 @@ fn board_loop(requests: &Receiver<BoardRequest>, out: &Sender<State>) {
 pub(crate) fn merge_back(st: &mut State, snap: &State, done: &State) {
     merge_needs(st, snap, done);
     merge_plans_seen(st, snap, done);
-    merge_planning(st, snap, done);
     merge_jobs(st, snap, done);
     merge_replied(st, snap, done);
-    merge_planner_bookkeeping(st, snap, done);
-    merge_revision_planning(st, snap, done);
     // The interval restarts at completion.
     st.board.at = done.board.at;
-}
-
-/// (h) What the pass changed in the planner bookkeeping it owns: the exit
-/// counts, relaunch times, running pids and the parked list. Only entries the
-/// pass added, changed or dropped move, so a clearing the tick thread made
-/// during the pass (a new pump record, a replan) is not undone by the stale
-/// snapshot the pass worked from.
-fn merge_planner_bookkeeping(st: &mut State, snap: &State, done: &State) {
-    merge_map(
-        &mut st.board.planner_pids,
-        &snap.board.planner_pids,
-        &done.board.planner_pids,
-    );
-    merge_map(
-        &mut st.board.planner_fails,
-        &snap.board.planner_fails,
-        &done.board.planner_fails,
-    );
-    merge_map(
-        &mut st.board.planner_retry_at,
-        &snap.board.planner_retry_at,
-        &done.board.planner_retry_at,
-    );
-    st.board.planner_failed.retain(|need| {
-        !(snap.board.planner_failed.contains(need) && !done.board.planner_failed.contains(need))
-    });
-    for need in &done.board.planner_failed {
-        if !snap.board.planner_failed.contains(need) && !st.board.planner_failed.contains(need) {
-            st.board.planner_failed.push(need.clone());
-        }
-    }
-}
-
-/// Apply to `live` the entries `done` added or changed against `snap`, and
-/// drop the ones `done` removed.
-fn merge_map<V: Clone + PartialEq>(
-    live: &mut std::collections::BTreeMap<String, V>,
-    snap: &std::collections::BTreeMap<String, V>,
-    done: &std::collections::BTreeMap<String, V>,
-) {
-    for (key, value) in done {
-        if snap.get(key) != Some(value) {
-            live.insert(key.clone(), value.clone());
-        }
-    }
-    live.retain(|key, _| !(snap.contains_key(key) && !done.contains_key(key)));
 }
 
 /// Fold worker-created jobs into the live outbox without rewinding jobs that
@@ -233,11 +184,9 @@ fn merge_jobs(st: &mut State, snap: &State, done: &State) {
     }
 }
 
-/// (a) A need the worker dropped (replan surgery) leaves the live state; a
-/// need the tick thread added during the pass is not in `done`, but it is not
-/// in `snap` either, so it stays. (b) `amend` only mutates the three thread
-/// fields of a record, so only those come back; verdict, units and revision
-/// changed on the tick thread during the pass survive.
+/// A need the worker dropped (replan surgery) leaves the live state; a need
+/// the tick thread added during the pass is not in `done`, but it is not in
+/// `snap` either, so it stays.
 fn merge_needs(st: &mut State, snap: &State, done: &State) {
     let dropped: Vec<String> = snap
         .needs
@@ -248,57 +197,16 @@ fn merge_needs(st: &mut State, snap: &State, done: &State) {
     for handle in dropped {
         st.needs.remove(&handle);
     }
-    for (handle, record) in &done.needs {
-        let Some(before) = snap.needs.get(handle) else {
-            continue;
-        };
-        let Some(live) = st.needs.get_mut(handle) else {
-            continue;
-        };
-        // Only a field the pass changed comes back. A field it left alone
-        // still holds the snapshot's value, and copying that would undo what
-        // the tick thread did meanwhile: a revision plan landing on the tick
-        // thread clears `amendment_pending`, and a stale copy of `true`
-        // would leave the need waiting for a revision that already landed.
-        if before.thread_seen_at != record.thread_seen_at {
-            live.thread_seen_at = record.thread_seen_at;
-        }
-        if before.thread_sha256 != record.thread_sha256 {
-            live.thread_sha256.clone_from(&record.thread_sha256);
-        }
-        if before.amendment_pending != record.amendment_pending {
-            live.amendment_pending = record.amendment_pending;
-        }
-    }
 }
 
-/// (c) Entries the pass dropped (replan surgery); one `plan::ingest` added
+/// Entries the pass dropped (replan surgery); one `plan::ingest` added
 /// during the pass stays.
 fn merge_plans_seen(st: &mut State, snap: &State, done: &State) {
     st.plans_seen
         .retain(|seen| !(snap.plans_seen.contains(seen) && !done.plans_seen.contains(seen)));
 }
 
-/// (d) Planning entries the pass expired go, entries it launched land with
-/// the worker's timestamps — except for a need that entered the live state
-/// during the pass: that one is already being planned by the tick thread and
-/// must not gain a second planner.
-fn merge_planning(st: &mut State, snap: &State, done: &State) {
-    st.board.planning.retain(|handle, _| {
-        !(snap.board.planning.contains_key(handle) && !done.board.planning.contains_key(handle))
-    });
-    for (handle, at) in &done.board.planning {
-        if snap.board.planning.contains_key(handle) {
-            continue;
-        }
-        if st.needs.contains_key(handle) && !snap.needs.contains_key(handle) {
-            continue;
-        }
-        st.board.planning.insert(handle.clone(), *at);
-    }
-}
-
-/// (e) Reply keys the pass did not record are dropped, the ones it recorded
+/// Reply keys the pass did not record are dropped, the ones it recorded
 /// are appended in its order.
 fn merge_replied(st: &mut State, snap: &State, done: &State) {
     st.board
@@ -309,20 +217,5 @@ fn merge_replied(st: &mut State, snap: &State, done: &State) {
             continue;
         }
         st.board.replied.push(key.clone());
-    }
-}
-
-/// (g) Revision planners the pass expired leave; the ones it launched land
-/// with the worker's timestamps.
-fn merge_revision_planning(st: &mut State, snap: &State, done: &State) {
-    st.board.revision_planning.retain(|handle, _| {
-        !(snap.board.revision_planning.contains_key(handle)
-            && !done.board.revision_planning.contains_key(handle))
-    });
-    for (handle, at) in &done.board.revision_planning {
-        if snap.board.revision_planning.contains_key(handle) {
-            continue;
-        }
-        st.board.revision_planning.insert(handle.clone(), *at);
     }
 }

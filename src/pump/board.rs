@@ -1,21 +1,18 @@
-//! Need intake: candidate rows (needs with an open pump record), planner
-//! expiry and launch, and the pump's replies.
+//! Need intake: candidate rows (needs with an open pump record), re-plan
+//! of answered needs, and the pump's replies.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
-use serde::Serialize;
 use serde_json::Value;
 
-use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
-use crate::pump::planner_jobs;
-use crate::pump::ready::{blocked_needs, satisfied};
+use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::ready::satisfied;
 use crate::pump::state::{State, Status, Unit};
 
 mod replan;
-pub use replan::{reask_invalid_plans, replan_unblocked};
+pub use replan::replan_unblocked;
 
 /// One row of `vivi need list --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,214 +204,6 @@ pub fn read_skip(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// Drop planner entries whose plan file exists (done), whose planner exited
-/// without a plan, or that ran longer than `plan_timeout`. A planner exit
-/// receipt (`.rc`, written by the spawn reaper) frees the slot at once and
-/// schedules a backoff relaunch; a timed-out planner without a receipt still
-/// raises `plan-no-answer`. A landed plan clears the handle's planner
-/// bookkeeping so a later re-plan starts clean.
-pub fn expire_planning(ctx: &Ctx, st: &mut State) {
-    let timeout = ctx.cfg.board.plan_timeout;
-    let mins = timeout / 60;
-    let now = ctx.now();
-    let expired: Vec<String> = st
-        .board
-        .planning
-        .iter()
-        .filter(|(handle, at)| {
-            let timed_out = match crate::pump::planner_jobs::lifecycle(st, "board", handle, **at) {
-                Some((crate::pump::jobs::JobStatus::Pending, _)) => false,
-                Some((crate::pump::jobs::JobStatus::Dispatched, started)) => {
-                    now.saturating_sub(started.unwrap_or(**at)) > timeout
-                }
-                Some(_) => false,
-                None => now.saturating_sub(**at) > timeout,
-            };
-            plan_path(ctx, handle).exists()
-                || exit_receipt_path(&out_path(ctx, handle)).exists()
-                || timed_out
-        })
-        .map(|(handle, _)| handle.clone())
-        .collect();
-    let mut rate_limited = Vec::new();
-    for handle in expired {
-        if plan_path(ctx, &handle).exists() {
-            st.board.planner_pids.remove(&handle);
-            st.board.planner_fails.remove(&handle);
-            st.board.planner_retry_at.remove(&handle);
-        } else if exit_receipt_path(&out_path(ctx, &handle)).exists() {
-            if fail_exited_planner(ctx, st, &handle) {
-                rate_limited.push(handle.clone());
-            }
-        } else {
-            ctx.exception(
-                "plan-no-answer",
-                &handle,
-                &format!("the planner wrote no plan in {mins} minutes"),
-            );
-        }
-        st.board.planning.remove(&handle);
-    }
-    crate::pump::collect::rate_limit_burst(ctx, st, &rate_limited);
-}
-
-/// Consecutive planner crashes tolerated before the need parks, and the base
-/// seconds of the exponential relaunch delay.
-const PLANNER_TRIES: u32 = 3;
-const PLANNER_BACKOFF: u64 = 60;
-
-/// Seconds of relaunch delay for a planner a provider rate-limited, before
-/// the per-handle [`crate::pump::transient::jitter`] spread is added.
-const RATE_LIMIT_RETRY: u64 = 120;
-
-/// `<home>/board/<handle>.out`, the planner's captured output.
-fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
-    ctx.home.join("board").join(format!("{handle}.out"))
-}
-
-/// Log, flag and free one planner that exited without writing its plan: the
-/// slot opens this pass, a relaunch waits [`PLANNER_BACKOFF`] doubled per
-/// prior failure, and after [`PLANNER_TRIES`] failures the need parks as
-/// `plan-failed`. A provider 429 / rate-limit / overload in the planner's
-/// output is transient instead: it relaunches after [`RATE_LIMIT_RETRY`]
-/// plus jitter and leaves the failure budget untouched.
-fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) -> bool {
-    let code = match fs::read_to_string(exit_receipt_path(&out_path(ctx, handle))) {
-        Ok(text) => text.trim().parse::<i32>().unwrap_or(-1),
-        Err(_) => -1,
-    };
-    let text = fs::read_to_string(out_path(ctx, handle)).unwrap_or_default();
-    if crate::pump::transient::provider_rate_limited(&text) {
-        st.board.planner_pids.remove(handle);
-        let delay = RATE_LIMIT_RETRY + crate::pump::transient::jitter(handle);
-        st.board
-            .planner_retry_at
-            .insert(handle.to_owned(), ctx.now() + delay);
-        ctx.log(&format!(
-            "board: planner {handle} rate-limited; retry in {delay}s; failure budget untouched"
-        ));
-        return true;
-    }
-    let tail = tail_note(&text, 200);
-    ctx.log(&format!("board: planner {handle} exited rc={code}: {tail}"));
-    ctx.exception(
-        "plan-crashed",
-        handle,
-        &format!("planner exited rc={code} without a plan: {tail}"),
-    );
-    st.board.planner_pids.remove(handle);
-    let fails = st.board.planner_fails.entry(handle.to_owned()).or_insert(0);
-    *fails += 1;
-    let fails = *fails;
-    if fails < PLANNER_TRIES {
-        let delay = PLANNER_BACKOFF.saturating_mul(1u64 << fails.saturating_sub(1).min(63));
-        st.board
-            .planner_retry_at
-            .insert(handle.to_owned(), ctx.now() + delay);
-        return false;
-    }
-    st.board.planner_failed.push(handle.to_owned());
-    st.board.planner_retry_at.remove(handle);
-    ctx.exception(
-        "plan-failed",
-        handle,
-        "planner exited three times without writing a plan",
-    );
-    false
-}
-
-/// Plan the new needs among `rows` (the needs with an open pump record): skip
-/// skipped, known, already-planning or already-planned handles, respect the
-/// concurrent-planner cap, then write the need file, spawn the planner and
-/// record the planning entry.
-///
-/// A dependent whose prerequisite has no plan file yet is held back: the
-/// planner would buy nothing, because the dependent's units would sit held at
-/// dispatch until the prerequisite landed. A prerequisite merely being planned
-/// right now still gates, and gates lift as soon as its plan file exists. An
-/// unreadable dependency read gates nothing.
-///
-/// Within one pass, needs other open needs depend on are planned before their
-/// dependents and before independent needs, so an arrival batch cannot spend
-/// every planner slot on independent work while a shared prerequisite waits.
-pub fn launch_planners(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
-    let skip = read_skip(ctx);
-    let gates = planning_gates(ctx, rows);
-    for row in plan_order(rows, &gates) {
-        let handle = row.handle.as_str();
-        let parked = st.board.planner_failed.iter().any(|seen| seen == handle);
-        let waiting = st
-            .board
-            .planner_retry_at
-            .get(handle)
-            .is_some_and(|at| *at > ctx.now());
-        if skip.contains(handle)
-            || st.needs.contains_key(handle)
-            || st.board.planning.contains_key(handle)
-            || parked
-            || waiting
-        {
-            continue;
-        }
-        if let Some(dep) = unplanned_prerequisite(ctx, &gates, handle) {
-            ctx.log(&format!(
-                "board: {handle} waits on unplanned prerequisite {dep}"
-            ));
-            continue;
-        }
-        if plan_path(ctx, handle).exists()
-            || st.board.planning.len()
-                >= usize::try_from(ctx.cfg.board.planners_max).unwrap_or(usize::MAX)
-        {
-            continue;
-        }
-        launch_one(ctx, st, &row);
-        if stop_requested(ctx) {
-            ctx.log(STOP_NOTE);
-            return;
-        }
-    }
-}
-
-/// The rows of `launch_planners` reordered: needs some open need still waits
-/// on come first (they unblock everyone behind them), and the `need list`
-/// order is kept everywhere else. Handles that appear in any `blocked_by`
-/// list count as depended on, including dependents whose planner is already
-/// running.
-fn plan_order(rows: &[NeedRow], blocked: &BTreeMap<String, Vec<String>>) -> Vec<NeedRow> {
-    let mut depended_on = BTreeSet::new();
-    for deps in blocked.values() {
-        depended_on.extend(deps.iter().cloned());
-    }
-    let mut ordered = rows.to_vec();
-    ordered.sort_by_key(|row| !depended_on.contains(&row.handle));
-    ordered
-}
-
-/// Prerequisite handles per need, from the backlog graph. Empty rows mean no
-/// read at all; an unreadable graph already logs inside [`blocked_needs`] and
-/// the board degrades to no gating rather than stalling.
-fn planning_gates(ctx: &Ctx, rows: &[NeedRow]) -> BTreeMap<String, Vec<String>> {
-    if rows.is_empty() {
-        return BTreeMap::new();
-    }
-    blocked_needs(ctx).unwrap_or_default()
-}
-
-/// The first prerequisite of `handle` that has no plan file yet, so the
-/// dependent must wait. `None` when every prerequisite is at least planned.
-fn unplanned_prerequisite(
-    ctx: &Ctx,
-    gates: &BTreeMap<String, Vec<String>>,
-    handle: &str,
-) -> Option<String> {
-    gates
-        .get(handle)?
-        .iter()
-        .find(|dep| !plan_path(ctx, dep).exists())
-        .cloned()
-}
-
 /// The log line a pass writes when control stops it between two needs.
 const STOP_NOTE: &str = "board: control stop requested; finishing the pass early";
 
@@ -430,98 +219,9 @@ fn stop_requested(ctx: &Ctx) -> bool {
     )
 }
 
-/// Write the need file, spawn the planner for one row, and record it.
-fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow) {
-    let handle = row.handle.as_str();
-    let thread = ctx.vivi(&format!("need show {handle}"), 60).text;
-    let thread: String = thread.chars().take(40_000).collect();
-    let needs = ctx.home.join("needs");
-    drop(fs::create_dir_all(&needs));
-    let need_file = NeedFile {
-        need: handle,
-        subject: row.subject.as_str(),
-        triage: "",
-        thread: thread.as_str(),
-    };
-    drop(write_json(
-        &needs.join(format!("{handle}.json")),
-        &need_file,
-    ));
-    let input = serde_json::to_string(&need_file).unwrap_or_default();
-    let targets = target_catalog(ctx);
-    let prompt = format!(
-        "Plan one need, as your system prompt describes. Input JSON follows between the input markers:\n\
-         PUMP-NEED-INPUT-BEGIN\n{input}\nPUMP-NEED-INPUT-END\n\
-         Available repository targets (id and workspace-relative path): {targets}. Every unit must name \
-         exactly one target from this list in its `target` field, and its `write_scope` must be relative \
-         to that repository. Do not make an `after` dependency cross targets: the pump cannot pass an \
-         unpublished branch from one repository into another; park the need if that handoff is required. \
-         Return the plan for this need; do not write to a pump-local path."
-    );
-    let prompt = match st.board.plan_findings.get(handle) {
-        Some(findings) => format!(
-            "{prompt}\nYour previous plan for this need was rejected by the pump's checks. Fix \
-             every finding and return the complete plan again. Findings: {findings}\n"
-        ),
-        None => prompt,
-    };
-    let queued_at = ctx.now();
-    let queued = planner_jobs::enqueue(
-        ctx,
-        st,
-        "board",
-        handle,
-        queued_at,
-        &prompt,
-        ctx.cfg.board.plan_timeout,
-        &format!("board/{handle}.out"),
-        &format!("plans/{handle}.json"),
-        None,
-    );
-    if let Err(error) = queued {
-        ctx.exception("planner-dispatch-failed", handle, &error.to_string());
-        return;
-    }
-    st.board.planner_pids.remove(handle);
-    st.board.planning.insert(handle.to_owned(), queued_at);
-    let subject: String = row.subject.chars().take(70).collect();
-    ctx.log(&format!("board: planning new need {handle} {subject}"));
-}
-
-/// JSON catalog of named execution targets for planner assignment.
-fn target_catalog(ctx: &Ctx) -> String {
-    let targets: Vec<_> = ctx
-        .cfg
-        .target_configs()
-        .into_iter()
-        .map(|(id, target)| serde_json::json!({"id": id, "path": target.path}))
-        .collect();
-    serde_json::to_string(&targets).unwrap_or_else(|_| String::from("[]"))
-}
-
 /// `<home>/plans/<handle>.json`.
 fn plan_path(ctx: &Ctx, handle: &str) -> PathBuf {
     ctx.home.join("plans").join(format!("{handle}.json"))
-}
-
-/// The need file a planner reads.
-#[derive(Serialize)]
-struct NeedFile<'a> {
-    need: &'a str,
-    subject: &'a str,
-    triage: &'a str,
-    thread: &'a str,
-}
-
-/// Write `value` as JSON with a one-space indent, like
-/// `json.dump(..., indent=1)`.
-fn write_json<T: Serialize>(path: &PathBuf, value: &T) -> std::io::Result<()> {
-    let file = fs::File::create(path)?;
-    let mut writer = std::io::BufWriter::new(file);
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
-    let mut serializer = serde_json::Serializer::with_formatter(&mut writer, formatter);
-    value.serialize(&mut serializer)?;
-    writer.flush()
 }
 
 /// The last `max` characters of `text`, newlines folded to `" | "`.
@@ -893,8 +593,8 @@ pub(crate) fn last_line(text: &str, max: usize) -> String {
         .collect()
 }
 
-/// One board pass: pull, expire, re-plan answered needs, plan new needs, and
-/// push replies. The interval starts when the pass completes.
+/// One board pass: pull, re-plan answered needs, and push replies. The
+/// interval starts when the pass completes.
 pub fn board(ctx: &Ctx, st: &mut State) {
     if ctx.now().saturating_sub(st.board.at) < ctx.cfg.board.every {
         return;
@@ -908,18 +608,14 @@ pub fn board(ctx: &Ctx, st: &mut State) {
         ));
     }
     let rows = candidate_rows_except(ctx, &crate::pump::gatefix::own_needs(st));
-    expire_planning(ctx, st);
     replan_answered(ctx, st, &rows);
     replan_unblocked(ctx, st, &rows);
-    reask_invalid_plans(ctx, st, &rows);
-    launch_planners(ctx, st, &rows);
     let said = post_replies(ctx, st, &rows);
     let handles: Vec<String> = rows.iter().map(|row| row.handle.clone()).collect();
     crate::pump::record::settle_gave_up(ctx, st, &handles);
     if std::mem::take(&mut st.board.sync_pending) || said {
         spawn_sync_push(ctx);
     }
-    crate::pump::amend::detect(ctx, st);
     st.board.at = ctx.now();
 }
 

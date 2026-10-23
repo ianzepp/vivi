@@ -9,12 +9,14 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use crate::pump::attempt_record::{
-    agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_status,
+    Ending, agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_on_task,
+    post_status,
 };
 use crate::pump::board::board;
 use crate::pump::collect::{collect, fail};
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobSpec, PoolJob};
 use crate::pump::quarantine::set_aside;
 use crate::pump::state::{MergeResult, Quarantine, State, Status, Unit};
 
@@ -779,4 +781,33 @@ fn the_agent_seconds_come_from_the_pool_summary_line() {
     assert_eq!(agent_secs(&receipt(3, "m", "")), Some(12));
     assert_eq!(agent_secs("agent exit 124 after 600s"), Some(600));
     assert_eq!(agent_secs("no summary here"), None);
+}
+
+#[test]
+fn a_task_record_carries_the_jobs_attempt_pool_and_model() {
+    let (_dir, ctx, _host) = setup();
+    let mut spec = JobSpec::new("slice-t9-a2", "hand", "hand", "s", "b");
+    spec.model = Some(String::from("zai/glm"));
+    spec.target = Some(String::from("vivi"));
+    spec.branch = Some(String::from("vivi/unit/t9-a2"));
+    let mut job = PoolJob::from(spec);
+    job.pool = Some(String::from("fly4"));
+    job.payload = serde_json::json!({"attempt": 2});
+    let ending = Ending::failed("hand failed", "", None);
+    assert!(post_on_task(
+        &ctx,
+        "t9",
+        &job,
+        &ending,
+        &receipt(1, "m", "")
+    ));
+    let records = records_for(&ctx, "t9");
+    assert_eq!(records.len(), 1, "{records:?}");
+    let text = &records[0].1;
+    assert!(text.contains("attempt: t9-a2\n"), "{text}");
+    assert!(text.contains("pool: fly4\n"), "{text}");
+    assert!(
+        text.contains("unit: t9  attempt: 2  model: zai/glm  pool: fly4  target: vivi"),
+        "{text}"
+    );
 }

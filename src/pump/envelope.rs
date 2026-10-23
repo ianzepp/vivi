@@ -31,7 +31,16 @@ pub trait Validate {
 pub enum EnvelopeError {
     NoOpening,
     Unclosed,
-    Toml { line: usize, message: String },
+    Toml {
+        line: usize,
+        message: String,
+    },
+    /// A `[[follow_up]]` or `[[check]]` table written below the closing fence,
+    /// where it would be read as prose and lost. `line` is 1-based.
+    TableBelowFence {
+        line: usize,
+        table: String,
+    },
     Invalid(String),
 }
 
@@ -49,6 +58,10 @@ impl fmt::Display for EnvelopeError {
             Self::Toml { line, message } => {
                 write!(f, "front matter line {line}: {}", one_line(message))
             }
+            Self::TableBelowFence { line, table } => write!(
+                f,
+                "line {line}: `{table}` is below the closing `{FENCE}` fence, where it is prose and is lost: move it inside the front matter"
+            ),
             Self::Invalid(reason) => write!(f, "{}", one_line(reason)),
         }
     }
@@ -66,6 +79,7 @@ struct Pieces<'a> {
     front: &'a str,
     body: &'a str,
     front_line: usize,
+    body_line: usize,
 }
 
 fn split_pieces(text: &str) -> Result<Pieces<'_>, EnvelopeError> {
@@ -93,6 +107,7 @@ fn split_pieces(text: &str) -> Result<Pieces<'_>, EnvelopeError> {
                 front: &text[front_start..offset],
                 body: &text[offset + line.len()..],
                 front_line: line_no + 1,
+                body_line: line_no + 2 + text[front_start..offset].matches('\n').count(),
             });
         }
         offset += line.len();
@@ -106,9 +121,29 @@ pub fn split(text: &str) -> Result<(&str, &str), EnvelopeError> {
     split_pieces(text).map(|pieces| (pieces.front, pieces.body))
 }
 
+/// Tables that belong in the front matter; written below the fence they are lost.
+const FRONT_TABLES: [&str; 2] = ["[[follow_up]]", "[[check]]"];
+
+/// The first body line that starts one of the front-matter tables.
+fn table_below_fence(pieces: &Pieces<'_>) -> Option<EnvelopeError> {
+    pieces.body.lines().enumerate().find_map(|(index, line)| {
+        let trimmed = line.trim();
+        FRONT_TABLES
+            .iter()
+            .find(|table| trimmed.starts_with(**table))
+            .map(|table| EnvelopeError::TableBelowFence {
+                line: pieces.body_line + index,
+                table: (*table).to_string(),
+            })
+    })
+}
+
 /// Parse a reply into a typed envelope and run its conditional rules.
 pub fn parse<T: DeserializeOwned + Validate>(text: &str) -> Result<Envelope<T>, EnvelopeError> {
     let pieces = split_pieces(text)?;
+    if let Some(err) = table_below_fence(&pieces) {
+        return Err(err);
+    }
     let front: T = toml::from_str(pieces.front).map_err(|err| {
         let before = err.span().map_or(0, |span| {
             let end = span.start.min(pieces.front.len());

@@ -200,7 +200,10 @@ fn command_job(
     tip: &str,
     scratch: String,
 ) -> Option<JobSpec> {
-    let role = ctx.routing.merge()?;
+    let role = ctx
+        .routing
+        .merge()
+        .filter(|role| role.status == "active" && ctx.routing.pool_of(role).is_some())?;
     let mut spec = JobSpec::new(
         id,
         kind,
@@ -229,7 +232,7 @@ fn no_merge_role(ctx: &Ctx, row: &NeedBranchRow) {
         ctx,
         row,
         &format!(
-            "the project has no merge role, so the need branch of {} cannot be moved",
+            "the merge role is missing, inactive or has no pool, so the need branch of {} cannot be moved",
             row.need
         ),
     );

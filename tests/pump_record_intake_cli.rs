@@ -1,4 +1,4 @@
-//! The board pass through the real binary: a need is planned exactly when it
+//! Flow intake through the real binary: a need starts a run exactly when it
 //! has an open pump record. A mark, a sender and a closed record are not
 //! intake.
 
@@ -6,18 +6,20 @@ use std::fs;
 use std::process::{Command, Output};
 use std::sync::Arc;
 
-use vivi::pump::board::board;
+use vivi::mailspace::Mailspace;
 use vivi::pump::config::{BoardConfig, PumpConfig};
+use vivi::pump::flow::tick::tick;
 use vivi::pump::host::{Ctx, RealHost};
 use vivi::pump::state::State;
+use vivi::pump::store::{DB_FILENAME, PumpStore};
 use vivi::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[test]
-fn the_board_plans_exactly_the_needs_with_an_open_pump_record() {
+fn flow_intake_starts_runs_only_for_needs_with_an_open_pump_record() {
     let project = temp_mailspace();
-    let recorded = send_need(&project, "has a record");
-    let marked = send_need(&project, "only marked");
-    let closed = send_need(&project, "record closed");
+    let recorded = send_need(&project, "mind", "has a record");
+    let marked = send_need(&project, "mind", "only marked");
+    let closed = send_need(&project, "mind", "record closed");
     assert_success(&vivi([
         "need",
         "mark",
@@ -62,24 +64,52 @@ fn the_board_plans_exactly_the_needs_with_an_open_pump_record() {
 
     let ctx = real_ctx(&project);
     let mut state = State::default();
-    board(&ctx, &mut state);
+    tick(&ctx, &mut state).unwrap();
 
-    assert!(
-        state.board.planning.contains_key(&recorded),
-        "the recorded need is planned: {:?}",
-        state.board.planning
+    let store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    let runs = |need: &str| store.runs_of(need).unwrap();
+    assert_eq!(
+        runs(&recorded).len(),
+        1,
+        "the recorded need starts one run: {:?}",
+        runs(&recorded)
     );
     assert!(
-        !state.board.planning.contains_key(&marked),
+        runs(&marked).is_empty(),
         "a mark without a record is not intake: {:?}",
-        state.board.planning
+        runs(&marked)
     );
     assert!(
-        !state.board.planning.contains_key(&closed),
+        runs(&closed).is_empty(),
         "a closed record is not intake: {:?}",
-        state.board.planning
+        runs(&closed)
     );
-    assert_eq!(state.board.planning.len(), 1);
+}
+
+#[test]
+fn a_need_addressed_to_hand_with_an_open_record_gets_a_flow_run() {
+    let project = temp_mailspace();
+    let need = send_need(&project, "hand", "addressed to hand");
+    assert_success(&vivi([
+        "pump",
+        "send",
+        "--need",
+        &need,
+        "--project",
+        root(&project),
+    ]));
+
+    let ctx = real_ctx(&project);
+    let mut state = State::default();
+    tick(&ctx, &mut state).unwrap();
+
+    let store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    let runs = store.runs_of(&need).unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "a need addressed to hand with an open record is planned: {runs:?}"
+    );
 }
 
 fn real_ctx(project: &tempfile::TempDir) -> Ctx {
@@ -92,12 +122,14 @@ fn real_ctx(project: &tempfile::TempDir) -> Ctx {
         },
         ..PumpConfig::default()
     };
+    let mailspace = Mailspace::discover(Some(project.path())).unwrap();
     Ctx::new(
         cfg,
         Arc::new(RealHost::new(&home)),
         project.path().to_path_buf(),
         env!("CARGO_BIN_EXE_vivi").to_string(),
     )
+    .with_mailspace(mailspace.mailspace_id().to_string())
     .with_routing(planner_routing())
 }
 
@@ -129,7 +161,7 @@ fn planner_routing() -> RoleRouting {
 fn temp_mailspace() -> tempfile::TempDir {
     let project = tempfile::tempdir().unwrap();
     assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
-    for (role, kind) in [("operator", "operator"), ("mind", "mind")] {
+    for (role, kind) in [("operator", "operator"), ("mind", "mind"), ("hand", "hand")] {
         let _ = vivi([
             "role",
             "add",
@@ -143,14 +175,14 @@ fn temp_mailspace() -> tempfile::TempDir {
     project
 }
 
-fn send_need(project: &tempfile::TempDir, subject: &str) -> String {
+fn send_need(project: &tempfile::TempDir, to: &str, subject: &str) -> String {
     let out = vivi([
         "need",
         "send",
         "--from",
         "operator",
         "--to",
-        "mind",
+        to,
         "--subject",
         subject,
         "--body",
@@ -161,7 +193,10 @@ fn send_need(project: &tempfile::TempDir, subject: &str) -> String {
     assert_success(&out);
     stdout(&out)
         .lines()
-        .find_map(|line| line.strip_prefix("created mind ").map(str::to_owned))
+        .find_map(|line| {
+            line.strip_prefix(&format!("created {to} "))
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| panic!("no handle in {}", stdout(&out)))
 }
 

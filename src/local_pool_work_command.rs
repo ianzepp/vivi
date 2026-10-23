@@ -45,23 +45,7 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
 
 /// The active `project`-scope rules, read now as the dispatch's snapshot.
 fn load_project_rules(space: &Mailspace) -> Result<String, VivariumError> {
-    let mut details = Vec::new();
-    for rule in space.list_rules(None, false)? {
-        if rule.scope == "project" {
-            details.push(space.show_rule(&rule.handle)?);
-        }
-    }
-    let rows: Vec<(&str, &str, &str)> = details
-        .iter()
-        .map(|d| {
-            (
-                d.rule.scope.as_str(),
-                d.rule.subject.as_str(),
-                d.body.as_str(),
-            )
-        })
-        .collect();
-    Ok(role_dispatch::project_rules_text(&rows))
+    role_dispatch::project_rules_snapshot(space)
 }
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {

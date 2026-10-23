@@ -3,7 +3,7 @@
 //! Each tick the phase resumes runs left `starting`, then ranks the needs that
 //! have an open pump record and no run in flight, and starts as many as the
 //! `[pump.flow] max_live_runs` cap allows, at most one repair-kind run per
-//! target. The addressee of the need plays no part.
+//! target. Repair-kind runs neither count toward the cap nor wait for it. The addressee of the need plays no part.
 //!
 //! Assumption: the target of a repair-kind need is read from a `target:` line
 //! of the open pump record body, which N6 writes together with the
@@ -35,6 +35,9 @@ pub const START_STUCK: &str = "flow-run-start-stuck";
 /// Seconds a run may stay `starting` before the alarm.
 const START_STUCK_SECS: u64 = 600;
 
+/// Exception kind: a need has an open pump record the flow cannot act on.
+pub const RECORD_UNUSABLE: &str = "flow-record-unusable";
+
 /// Run states that occupy a slot under the cap or block a new run.
 const RUN_LIVE: &str = "live";
 
@@ -58,10 +61,12 @@ pub(crate) struct Candidate {
 
 /// The needs to start, in rank order.
 ///
-/// `active` is the number of runs already starting, live or restarting;
-/// `busy_targets` the targets of repair-kind runs already in flight. With a
-/// `cap` the selection stops when `active` plus the picks reach it; a
-/// repair-kind candidate whose target is busy (or already picked) is skipped.
+/// `active` is the number of non-repair runs already starting, live or
+/// restarting; `busy_targets` the targets of repair-kind runs already in
+/// flight. With a `cap` the selection stops picking ordinary candidates when
+/// `active` plus the ordinary picks reach it. A repair-kind candidate is never
+/// stopped by the cap and does not count toward it; one whose target is busy
+/// (or already picked) is skipped.
 #[must_use]
 pub(crate) fn select(
     mut candidates: Vec<Candidate>,
@@ -72,15 +77,18 @@ pub(crate) fn select(
     candidates.sort_by_key(|c| need_key(c.repair, c.priority, c.age, &c.need));
     let mut busy: Vec<String> = busy_targets.to_vec();
     let mut picked = Vec::new();
+    let mut ordinary = 0;
     for candidate in candidates {
-        if cap.is_some_and(|cap| active + picked.len() >= cap) {
-            break;
-        }
         if candidate.repair {
             if busy.contains(&candidate.target) {
                 continue;
             }
             busy.push(candidate.target.clone());
+        } else {
+            if cap.is_some_and(|cap| active + ordinary >= cap) {
+                break;
+            }
+            ordinary += 1;
         }
         picked.push(candidate.need);
     }
@@ -149,7 +157,8 @@ fn resume_starting<M: FlowMail>(ctx: &Ctx, store: &PumpStore, mail: &mut M) {
     }
 }
 
-/// The count of runs under the cap and the targets of repair-kind runs in flight.
+/// The count of non-repair runs under the cap and the targets of repair-kind
+/// runs in flight (repair runs use no cap slot).
 fn in_flight<M: FlowMail>(
     store: &PumpStore,
     mail: &M,
@@ -158,9 +167,10 @@ fn in_flight<M: FlowMail>(
     let mut busy = Vec::new();
     for state in [RUN_STARTING, RUN_LIVE, RUN_RESTARTING] {
         for run in store.runs_in_state(state)? {
-            active += 1;
             if run.kind == FlowKind::Repair.name() {
                 busy.push(target_of(mail, &run.need)?);
+            } else {
+                active += 1;
             }
         }
     }
@@ -177,11 +187,25 @@ fn candidates<M: FlowMail>(
     let priorities: BTreeMap<String, i64> = store.need_priorities()?.into_iter().collect();
     let mut found = Vec::new();
     for (need, date) in mail.open_record_needs()? {
-        if mail.need_state(&need)? != NeedStatus::Open || has_run_in_flight(store, &need)? {
+        if has_run_in_flight(store, &need)? {
+            continue;
+        }
+        let record = MailReader::open_record(mail, &need)?;
+        let handle = record.as_ref().map_or("", |(handle, _)| handle.as_str());
+        if mail.need_state(&need)? != NeedStatus::Open {
+            raise_once(
+                ctx,
+                RECORD_UNUSABLE,
+                &need,
+                &format!(
+                    "need {need} has open pump record {handle} but the need is done: expected \
+                     an open need; close the record with `vivi pump done {handle}`"
+                ),
+            );
             continue;
         }
         let marks = mail.need_marks(&need)?;
-        let body = MailReader::open_record(mail, &need)?.map(|(_, body)| body);
+        let body = record.map(|(_, body)| body);
         let (flow_kind, _) = kind::of(body.as_deref(), &marks);
         if let Err(error) = load(flow_kind) {
             raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
@@ -192,6 +216,9 @@ fn candidates<M: FlowMail>(
             Some(text) if repair => target_line(text),
             _ => String::new(),
         };
+        if repair && !known_target(ctx, &need, &target) {
+            continue;
+        }
         found.push(Candidate {
             repair,
             target,
@@ -201,6 +228,25 @@ fn candidates<M: FlowMail>(
         });
     }
     Ok(found)
+}
+
+/// Whether a repair record names a configured target; raise once when not.
+fn known_target(ctx: &Ctx, need: &str, target: &str) -> bool {
+    let targets: Vec<String> = ctx.cfg.target_configs().into_keys().collect();
+    if targets.iter().any(|id| id == target) {
+        return true;
+    }
+    let actual = if target.is_empty() { "none" } else { target };
+    raise_once(
+        ctx,
+        RECORD_UNUSABLE,
+        need,
+        &format!(
+            "repair need {need}: expected a `target:` line naming one of {}; actual: {actual}",
+            targets.join(", ")
+        ),
+    );
+    false
 }
 
 fn has_run_in_flight(store: &PumpStore, need: &str) -> Result<bool, VivariumError> {
