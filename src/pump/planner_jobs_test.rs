@@ -239,7 +239,11 @@ fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
     let plan = plan_job(
         &dispatchable_pool(),
         "apool",
-        ("1234abcd", "subject", "plan the need"),
+        (
+            "1234abcd",
+            "subject",
+            &crate::letter::fixture::task_body("plan the need"),
+        ),
         &flags,
         String::new(),
         String::from("job"),
