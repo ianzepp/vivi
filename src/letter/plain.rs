@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::letter::{Validate, check_list, check_text};
 
 /// The event verbs (`X-Vivi-Event` values) whose letters take [`CloseFront`].
-pub const CLOSE_EVENTS: [&str; 3] = ["done", "reopened", "promoted"];
+pub const CLOSE_EVENTS: [&str; 2] = ["done", "reopened"];
 
 /// Memo front matter.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -56,7 +56,7 @@ impl Validate for RuleFront {
     }
 }
 
-/// Front matter of a `done`, `reopened` or `promoted` event letter.
+/// Front matter of a `done` or `reopened` event letter.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CloseFront {

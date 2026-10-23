@@ -311,33 +311,6 @@ fn an_unlock_carries_its_entry_in_the_word_and_none_without_one() {
     assert_eq!(pending[1].request.word, None);
 }
 
-#[test]
-fn posting_a_recover_is_refused_and_stores_nothing() {
-    let (mailspace, _tmp) = roster();
-    let need = send_need(&mailspace, "fix auth");
-    let record = mailspace.pump_send(None, &need, None).unwrap();
-    let mut request = PumpActionRequest::withdraw("adopt");
-    request.kind = PumpActionKind::Recover;
-
-    let error = mailspace
-        .pump_post_action(None, &need, &request)
-        .unwrap_err()
-        .to_string();
-
-    assert!(error.contains("recover is retired"), "{error}");
-    let thread = mailspace
-        .thread(&record.handle, false, usize::MAX, usize::MAX)
-        .unwrap();
-    assert_eq!(thread.len(), 1, "only the record: {thread:?}");
-    assert!(mailspace.pump_pending_actions(&none()).unwrap().is_empty());
-    assert!(
-        mailspace
-            .pump_unreadable_actions(&none())
-            .unwrap()
-            .is_empty()
-    );
-}
-
 /// Post `body` as a reply on `record` the way `send_letter` does, with the
 /// given extra headers, and log its `posted` event.
 fn post_raw(mailspace: &Mailspace, record: &str, body: &str, extras: &[(String, String)]) {

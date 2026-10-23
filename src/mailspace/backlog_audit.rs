@@ -12,6 +12,7 @@ use super::Mailspace;
 use super::backlog::backlog_node_by_token;
 use super::holding::is_foreign_account;
 use super::item_events::event_release_due;
+use super::want_state::WantState;
 use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphEdgeRow, WorkGraphNodeRow,
@@ -43,6 +44,9 @@ struct AuditItem {
     handle: String,
     kind: String,
     folder_done: bool,
+    /// Whether the node should be done: the folder for a task or need, the
+    /// computed state for a want (a want has no folder move of its own).
+    done: bool,
     subject: String,
     message_id: String,
     content_id: String,
@@ -245,10 +249,20 @@ fn canonical_item(
             .map(str::to_string)
             .unwrap_or_else(|| "task".into())
     };
+    let folder_done = view.local_role == "done";
+    let done = if kind == "want" {
+        match mailspace.want_state(&handle) {
+            Ok(report) => report.state == WantState::Done,
+            Err(_) => folder_done,
+        }
+    } else {
+        folder_done
+    };
     Ok(Some(AuditItem {
         handle,
         kind,
-        folder_done: view.local_role == "done",
+        folder_done,
+        done,
         foreign_account: is_foreign_account(&view.account).then(|| view.account.clone()),
         unowned: mailspace.is_unowned_account(&view.account),
         content_id: view.content_id,
@@ -316,6 +330,7 @@ fn audit_item(
     // A `done` folder under an open node is a report awaiting its
     // acceptance, not drift: the acceptor's `done` completes the node.
     let reported = item.folder_done
+        && item.kind != "want"
         && matches!(node.state.as_str(), "open" | "active")
         && mailspace.audit_sees_report(storage, &item.content_id)?;
     if !reported {
@@ -363,8 +378,9 @@ fn repair_mint(mailspace: &Mailspace, item: &AuditItem) -> Result<(), VivariumEr
     let letter = mailspace.storage()?.read_message(&item.message_id)?;
     mailspace.backlog_attach_letter(&item.kind, &item.message_id, &item.subject, &letter)?;
     let reported = item.folder_done
+        && item.kind != "want"
         && mailspace.audit_sees_report(&*mailspace.storage()?, &item.content_id)?;
-    if item.folder_done && !reported {
+    if item.done && !reported {
         mailspace.backlog_complete_item_via(&item.handle, "via=repair")?;
     }
     let arrived = (item.message_id.clone(), item.content_id.clone());
@@ -449,7 +465,7 @@ fn audit_state(
     findings: &mut Vec<BacklogAuditFinding>,
 ) -> Result<(), VivariumError> {
     let done = node.state == "done";
-    if done == item.folder_done || node.state == "cancelled" || node.state == "superseded" {
+    if done == item.done || node.state == "cancelled" || node.state == "superseded" {
         return Ok(());
     }
     let mut finding = BacklogAuditFinding {
@@ -457,11 +473,7 @@ fn audit_state(
         kind: item.kind.clone(),
         handle: item.handle.clone(),
         subject: item.subject.clone(),
-        detail: format!(
-            "node is '{}' but the item folder is '{}'",
-            node.state,
-            if item.folder_done { "done" } else { "open" }
-        ),
+        detail: format!("node is '{}' but {}", node.state, item_side(item)),
         repaired: false,
     };
     if repair {
@@ -470,6 +482,16 @@ fn audit_state(
     }
     findings.push(finding);
     Ok(())
+}
+
+/// What the audit compares a node's state against, in words.
+fn item_side(item: &AuditItem) -> String {
+    let state = if item.done { "done" } else { "open" };
+    if item.kind == "want" {
+        format!("the want's computed state is '{state}'")
+    } else {
+        format!("the item folder is '{state}'")
+    }
 }
 
 /// Folder is the lifecycle ledger of record: done folders complete nodes;
@@ -481,7 +503,7 @@ fn repair_state(
     node: &WorkGraphNodeRow,
     item: &AuditItem,
 ) -> Result<(), VivariumError> {
-    if item.folder_done {
+    if item.done {
         return mailspace
             .backlog_complete_item_via(&item.handle, "via=repair")
             .map(|_| ());

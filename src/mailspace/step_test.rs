@@ -171,7 +171,7 @@ fn ready_task_with_done_when_dispatches() {
 }
 
 #[test]
-fn ready_wants_require_promotion() {
+fn ready_wants_are_parked() {
     let (mailspace, _tmp) = roster();
     let want = send_item(
         &mailspace,
@@ -182,8 +182,8 @@ fn ready_wants_require_promotion() {
     );
     let exception =
         exception_for(&mailspace, &want).unwrap_or_else(|| panic!("expected exception for {want}"));
-    assert_eq!(exception.reason, "want_requires_promotion");
-    assert!(exception.detail.contains("parked"), "{exception:?}");
+    assert_eq!(exception.reason, "want_parked");
+    assert!(exception.detail.contains("--serves"), "{exception:?}");
 }
 
 #[test]
@@ -198,8 +198,7 @@ fn clauseless_wants_are_parked_without_a_missing_clause_note() {
     );
     let exception =
         exception_for(&mailspace, &want).unwrap_or_else(|| panic!("expected exception for {want}"));
-    assert_eq!(exception.reason, "want_requires_promotion");
-    assert!(exception.detail.contains("parked"), "{exception:?}");
+    assert_eq!(exception.reason, "want_parked");
     assert!(!exception.detail.contains("no done_when"), "{exception:?}");
 }
 

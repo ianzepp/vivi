@@ -198,6 +198,8 @@ impl Mailspace {
         if let Ok(parsed) = crate::letter::of_message(letter, "") {
             let storage = self.storage()?;
             super::serves::index_front(&storage, message_id, &parsed)?;
+            drop(storage);
+            self.settle_served_want(message_id)?;
         }
         let refs = depends_on_refs(letter);
         if refs.is_empty() {

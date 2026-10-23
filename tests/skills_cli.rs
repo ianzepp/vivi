@@ -174,14 +174,12 @@ fn embedded_skill_examples_match_the_clap_tree() {
                 continue;
             }
             let shown = skills::show(skill.name, Some(file)).expect("embedded file");
-            for example in extract_vivi_examples(shown.contents) {
-                if let Err(reason) = validate_example(&root, &example.tokens) {
-                    failures.push(format!(
-                        "{}:{}: `{}` — {reason}",
-                        skill.name, file, example.display
-                    ));
-                }
-            }
+            check_examples(
+                &format!("{}:{file}", skill.name),
+                shown.contents,
+                &root,
+                &mut failures,
+            );
         }
     }
     assert!(
@@ -189,6 +187,26 @@ fn embedded_skill_examples_match_the_clap_tree() {
         "skill examples that are not on the current CLI:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn readme_examples_match_the_clap_tree() {
+    let root = Cli::command();
+    let mut failures = Vec::new();
+    check_examples("README.md", &on_disk("README.md"), &root, &mut failures);
+    assert!(
+        failures.is_empty(),
+        "README examples that are not on the current CLI:\n{}",
+        failures.join("\n")
+    );
+}
+
+fn check_examples(label: &str, markdown: &str, root: &ClapCommand, failures: &mut Vec<String>) {
+    for example in extract_vivi_examples(markdown) {
+        if let Err(reason) = validate_example(root, &example.tokens) {
+            failures.push(format!("{label}: `{}` — {reason}", example.display));
+        }
+    }
 }
 
 struct SkillExample {
@@ -320,7 +338,28 @@ fn validate_example(root: &ClapCommand, tokens: &[String]) -> Result<(), String>
             None => i += 1,
         }
     }
-    Ok(())
+    validate_send_requirements(tokens)
+}
+
+/// A need needs `--done-when` and a want needs `--question`, or the letter is
+/// a whole letter read from `--body-file` (its front matter carries them). A
+/// span with no flag at all only names the command, so it is not an example.
+fn validate_send_requirements(tokens: &[String]) -> Result<(), String> {
+    let has = |flag: &str| tokens.iter().any(|token| flag_name(token) == flag);
+    let (kind, required) = match (
+        tokens.first().map(String::as_str),
+        tokens.get(1).map(String::as_str),
+    ) {
+        (Some("need"), Some("send")) => ("need", "--done-when"),
+        (Some("want"), Some("send")) => ("want", "--question"),
+        _ => return Ok(()),
+    };
+    if has(required) || has("--body-file") || !tokens.iter().any(|token| is_flag(token)) {
+        return Ok(());
+    }
+    Err(format!(
+        "`{kind} send` without {required} is refused at send (a whole-letter --body-file is exempt)"
+    ))
 }
 
 fn find_subcommand<'a>(cmd: &'a ClapCommand, name: &str) -> Option<&'a ClapCommand> {

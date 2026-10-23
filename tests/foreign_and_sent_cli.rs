@@ -160,11 +160,6 @@ fn a_sent_copy_is_awaiting_listed_and_orderable_but_never_dispatched() {
 
     let reopen = fails(p, &["need", "reopen", &need, "--for", "mind"]);
     assert!(reopen.contains("only the receiving mailspace"), "{reopen}");
-    let promote = fails(p, &["want", "promote", &want, "--for", "mind"]);
-    assert!(
-        promote.contains("only the receiving mailspace"),
-        "{promote}"
-    );
 
     ok(p, &["need", "done", &need, "--for", "mind"]);
     let cleared = ok(p, &["graph", "ready"]);

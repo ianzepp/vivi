@@ -207,7 +207,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
             json,
             latest,
             project,
-        } => show_local_message(handle, *json, *latest, project.as_deref())?,
+        } => crate::local_want_show::show_want(handle, *json, *latest, project.as_deref())?,
         WantCommand::Dump(command) => dump_work_items(command, "wants", "want", "Vivi Want Dump")?,
         WantCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("want", command)?;
@@ -234,20 +234,6 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
                 reason: reason.clone(),
             },
             project.as_deref(),
-        )?,
-        WantCommand::Promote {
-            handle,
-            for_identity,
-            note,
-            project,
-        } => move_item(
-            handle,
-            for_identity,
-            note.as_ref(),
-            project.as_deref(),
-            "needs",
-            "want promote",
-            "promoted",
         )?,
         WantCommand::Done {
             handle,
@@ -365,7 +351,7 @@ fn list_wants(
     let from = crate::local_mail_list::resolve_list_header(&mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(&mailspace, to);
     let records = mailspace
-        .list_wants_with_metadata(for_identity, want_status_roles(status), options)?
+        .list_wants_by_state(for_identity, want_state_filter(status), options)?
         .into_iter()
         .filter(|record| {
             crate::local_mail_list::headers_match(
@@ -618,19 +604,6 @@ pub(crate) fn print_move_receipt(moved: &vivi::mailspace::MoveOutcome, verb: &st
     }
 }
 
-fn show_local_message(
-    handle: &str,
-    json: bool,
-    latest: bool,
-    project: Option<&std::path::Path>,
-) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    if !json && !latest {
-        vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
-    }
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)
-}
-
 /// Need show: the thread plus a bound-units block, so a need's lowering
 /// state (which units exist, which have settled) is answerable by reading.
 fn show_need(
@@ -780,6 +753,14 @@ fn status_roles<'a>(status: &TaskStatus, open_role: &'a str) -> Vec<&'a str> {
         TaskStatus::Open => vec![open_role, "sent"],
         TaskStatus::Done => vec!["done"],
         TaskStatus::All => vec![open_role, "sent", "done"],
+    }
+}
+
+fn want_state_filter(status: &WantStatus) -> Option<vivi::mailspace::WantState> {
+    match status {
+        WantStatus::Open => Some(vivi::mailspace::WantState::Open),
+        WantStatus::Done => Some(vivi::mailspace::WantState::Done),
+        WantStatus::All => None,
     }
 }
 

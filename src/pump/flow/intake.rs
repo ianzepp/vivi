@@ -216,7 +216,7 @@ fn candidates<M: FlowMail>(
         }
         let marks = mail.need_marks(&need)?;
         let body = record.map(|(_, body)| body);
-        let (flow_kind, _) = kind::of(body.as_deref(), &marks);
+        let flow_kind = kind::of(body.as_deref(), &marks);
         if let Err(error) = load(flow_kind) {
             raise_once(ctx, FLOW_INVALID, &need, &error.to_string());
             continue;

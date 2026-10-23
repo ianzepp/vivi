@@ -279,5 +279,13 @@ fn print_items(label: &str, items: &[BoardItem], runs: impl Fn(&str) -> usize) {
             "  {}  {}  {}  {}{suffix}",
             item.handle, item.date, item.from, item.subject
         );
+        if !item.serving.is_empty() {
+            let serving: Vec<String> = item
+                .serving
+                .iter()
+                .map(|need| format!("{}:{}", need.handle, need.state))
+                .collect();
+            println!("    serves  {}", serving.join("  "));
+        }
     }
 }

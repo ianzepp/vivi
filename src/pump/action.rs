@@ -132,7 +132,6 @@ fn apply_all(ctx: &Ctx, st: &mut State, actions: &[PumpAction]) {
         PumpActionKind::Requeue,
         PumpActionKind::Withdraw,
         PumpActionKind::Replan,
-        PumpActionKind::Recover,
     ] {
         for action in actions.iter().filter(|action| action.request.kind == kind) {
             if let Some(mark) = apply_one(ctx, st, action) {
@@ -150,12 +149,6 @@ fn apply_one(ctx: &Ctx, st: &mut State, action: &PumpAction) -> Option<ActionMar
     let (owes, detail) = match action.request.kind {
         PumpActionKind::Requeue => (String::new(), String::new()),
         PumpActionKind::Answer | PumpActionKind::Unlock => return None,
-        PumpActionKind::Recover => {
-            ctx.log(&format!(
-                "recover is retired: the letter on {need} changes nothing"
-            ));
-            (String::new(), String::new())
-        }
         PumpActionKind::Withdraw => {
             let reason = action.request.reason.as_str();
             let text = crate::pump::withdraw::apply_one(ctx, st, need, reason);

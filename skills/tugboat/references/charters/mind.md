@@ -22,8 +22,11 @@ hand to others.
   agents' work.
 - **Dispatch by role.** File the task to the class role; `vivi pool dispatch
   <handle>` then takes the charter, the read-only kind and the band's model
-  from that role. `--model` and `--read-only` are overrides only, and a
-  `band:` line in the task body moves this one assignment to a different band.
+  from that role. `--model` and `--read-only` are overrides only, and the
+  task's front matter key `band = "P1"` moves this one assignment to a
+  different band. A `band:` line in the prose is ignored. `task send` has no
+  band flag: write the band in a whole-letter body (a body file that opens with
+  a `+++` front matter), then send that file with `--body-file`.
 - Capacity and charters live on Vivi class roles: `vivi role list`, `vivi role
   show <role>`, and the project frame from `vivi boot`. Do not mint numbered
   roles; a class is one role, and the handle carries the unit.

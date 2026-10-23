@@ -156,6 +156,8 @@ impl Mailspace {
                 let storage = self.storage()?;
                 let row = storage.resolve_message_token(handle)?;
                 super::serves::index_front(&storage, &row, letter)?;
+                drop(storage);
+                self.settle_served_want(&row)?;
             }
         }
         Ok(())

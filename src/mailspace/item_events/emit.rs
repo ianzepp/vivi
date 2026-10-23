@@ -44,8 +44,8 @@ impl EmitRequest<'_> {
     }
 }
 
-/// The event kind a folder move is, if it is one: a close of open work, a
-/// reopen of closed work, or a want's promotion into `needs`. A reopen may
+/// The event kind a folder move is, if it is one: a close of open work or a
+/// reopen of closed work. A want never moves into `needs`. A reopen may
 /// point at the owner's `sent` record of a send whose delivered copies are
 /// closed; the caller checks that. A close may point at a copy an assignee
 /// already reported done, which the owner still has to close; the caller
@@ -53,7 +53,6 @@ impl EmitRequest<'_> {
 fn event_kind_for_move(from: &str, to: &str) -> Option<ItemEventKind> {
     match (from, to) {
         ("tasks" | "needs" | "wants" | "sent" | "done", "done") => Some(ItemEventKind::Done),
-        ("wants", "needs") => Some(ItemEventKind::Promoted),
         ("done" | "sent", "tasks" | "needs" | "wants") => Some(ItemEventKind::Reopened),
         _ => None,
     }
@@ -90,11 +89,13 @@ impl Mailspace {
         headers
     }
 
-    /// Write the event letter for a `done`, `reopen` or `promote` move by a
-    /// role that may close the item (its author, or a mind or operator) and
-    /// apply it; the result is the event letter's handle. `Ok(None)` when the
-    /// move is not an event: not a close, reopen or promotion, not work, or the
-    /// actor may not close the item (an assignee's move is a local report).
+    /// Write the event letter for a `done` or `reopen` move by a role that may
+    /// close the item (its author, or a mind or operator) and apply it; the
+    /// result is the event letter's handle. `Ok(None)` when the move is not an
+    /// event: not a close or reopen, not work, or the actor may not close the
+    /// item (an assignee's move is a local report). A want moving into `needs`
+    /// is refused: a want never becomes a need. A want that serving needs
+    /// follow is not closed by hand, by anyone.
     /// Needs the applied event's join rule completes are pushed onto `joined`
     /// as the mailspace shows them.
     pub(in crate::mailspace) fn try_emit_for_move(
@@ -108,12 +109,22 @@ impl Mailspace {
         extras: &[(String, String)],
         joined: &mut Vec<String>,
     ) -> Result<Option<String>, VivariumError> {
+        if before.local_role == "wants" && role == "needs" {
+            return Err(VivariumError::Message(format!(
+                "{} is a want: a want never becomes a need; send a need that serves it \
+                 (vivi need send --serves <want>)",
+                before.handle
+            )));
+        }
         let Some(kind) = event_kind_for_move(&before.local_role, role) else {
             return Ok(None);
         };
         let Some(item) = held_item(storage, &before.content_id)? else {
             return Ok(None);
         };
+        if kind == ItemEventKind::Done && item.kind == "want" {
+            crate::mailspace::want_state::refuse_hand_close(storage, before)?;
+        }
         let head = self.item_head(storage, &item)?;
         if !self.may_close(&item, identity) {
             return refuse_assignee_reopen(before, kind, head, &item);

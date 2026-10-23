@@ -1,14 +1,131 @@
-# The reply envelope
+# Letters and the reply envelope
 
-Every role reply in the pump is Markdown that opens with TOML front matter
-between two `+++` fence lines. The front matter carries the answer word and the
-role's typed fields. The prose report goes below it. The pump reads the front
-matter and nothing else to decide what happens next; the prose is for the next
+One letter format serves every stored need, want and task letter and every
+role reply: TOML front matter between two `+++` fence lines, then Markdown
+prose. The same parser reads both (`src/letter.rs`). In a stored letter the
+front matter carries the keys vivi acts on (`done_when`, `depends_on`, and so
+on) and the prose is for the reader. In a role reply the front matter carries
+the answer word and the role's typed fields. The pump reads the front matter
+and nothing else to decide what happens next; the prose is for the next
 reader.
 
 This file is the general rule and the full table. A role's own charter states
 that role's fields and one example, so the charter is enough for a worker. Read
-this file when you need the whole table, or when a reply was refused.
+this file when you need the whole table, when you write a stored letter by
+hand, or when a reply was refused.
+
+## Stored letters
+
+Need, want and task letters are front matter plus prose, and the send path
+stamps the header `X-Vivi-Format: 1` on them. Memo, rule, mail, chat and pump
+records are not yet written in this format; this file does not document keys
+for them.
+
+Keys per kind (unknown keys are refused, blank list entries are refused):
+
+| Kind | Keys |
+| --- | --- |
+| need | `done_when` (list, **required**, non-empty), `target`, `depends_on` (list), `write_scope` (list), `priority` (integer), `serves` (a want), `explores` (a want). Never both `serves` and `explores` |
+| want | `question` (**required**), `depends_on` (list) |
+| task | `done_when` (list), `depends_on`, `parent`, `target`, `write_scope`, `from`, `branch`, `with` (list), `band`, and the pump's `[step]` table (`need`, `run`, and `node` or `sentinel = true`) |
+
+A need letter:
+
+```
++++
+done_when = ["cargo test --test foo passes", "README names the flag"]
+target = "vivi"
+depends_on = ["ab12cd34"]
+serves = "ef56ab78"
++++
+
+Prose body in Markdown.
+```
+
+`vivi need send`, `vivi want send` and `vivi task send` build the front matter
+from flags, so you rarely write it by hand.
+
+A need, from flags (repeat `--done-when` for more clauses; optional
+`--target`, `--write-scope`, `--depends-on`, `--serves` or `--explores`, and
+`--mark`):
+
+```sh
+vivi need send --from mind --to hand-1 --subject "Add a greeting" \
+  --body "Print hello." \
+  --done-when "running hello.sh prints hello"
+```
+
+A task, from flags:
+
+```sh
+vivi task send --from mind --to hand-1 --subject "Write hello.sh" \
+  --body "Print hello." \
+  --done-when "running hello.sh prints hello" \
+  --write-scope hello.sh
+```
+
+A want, from flags:
+
+```sh
+vivi want send --from head-cto --to mind --subject "want: extract a shared retry helper" \
+  --body "Non-urgent cleanup after the auth fix lands." \
+  --question "Should the three retry loops share one helper?"
+```
+
+`task send` has no flag for `from`, `branch`, `with` or `band`. Put those in a
+whole-letter body.
+
+### The whole-letter body
+
+A body whose first non-blank line is `+++` is the whole letter and is taken
+unchanged. Passing `--done-when`, `--target`, `--write-scope`, `--serves`,
+`--explores`, `--question` or `--depends-on` beside it is refused. A body
+`unit.md`:
+
+```
++++
+done_when = ["cargo test -p parser --test validate passes", "malformed input is rejected with the expected error"]
+write_scope = ["crates/parser/src/validate.rs", "crates/parser/tests/validate.rs"]
+band = "P1"
++++
+
+goal: docs/goal.md
+unit: U-17
+edit: reject malformed input at validate.rs::parse_input
+```
+
+```sh
+vivi task send --from mind --to hand --subject 'unit U-17: parser input validation' --body-file unit.md
+```
+
+Lines like `goal:` below the closing fence are free text: vivi never reads them.
+
+### Refused at send
+
+Nothing is stored when a send is refused:
+
+- a need with no `done_when`: `need has no done_when: pass --done-when or add done_when = [...] to the front matter`
+- a want with no `question`: `want has no question: pass --question or add question = "..." to the front matter`
+- a whole-letter body plus a flag: `the body is a whole letter (it opens with +++): put done_when in its front matter instead of passing --done-when`
+- an unknown front matter key, a blank list entry, or a need with both `serves` and `explores`.
+
+`--serves` and `--explores` check that the handle is a want and store its
+canonical id.
+
+### Old letters
+
+Dependencies live in the front matter `depends_on` only; the old body lines
+(`done_when: ...`, `write_scope: ...`, `from:`, `branch:`, `band:`) are not
+read. A letter with no front matter is history: `show` and `list` still read
+it, and `vivi step` reports it as the exception `letter_invalid`. The pump
+refuses to run it (`letter <handle> is in the old format (no front matter); it
+is history and cannot be executed: send a new <kind> with front matter`).
+Rewrite old work as a new letter by hand.
+
+## Role replies
+
+Every role reply in the pump is Markdown that opens with the same front matter.
+The `answer` key carries the answer word.
 
 ## Shape
 
@@ -24,9 +141,9 @@ Prose report.
 
 - The envelope opens the final message. Leading blank lines are allowed; nothing
   else may come before the first fence.
-- There are exactly two `+++` fence lines: one opens the front matter and one
-  closes it. Do not use `+++` anywhere else in the reply. A third fence line
-  (three plus signs) is refused.
+- The first non-blank line must be the fence `+++`. The next `+++` line closes
+  the front matter, and everything after it is prose. A later `+++` line is not
+  refused, but do not write one.
 - Every `[[table]]` goes above the closing fence. A `[[follow_up]]` or
   `[[check]]` table written below the closing fence is prose, not data, and the
   reply is refused.
@@ -43,9 +160,9 @@ Prose report.
 - `answer` is always the first key and is always one of the words listed for your
   role. The words are lower-case except the researcher's, which are
   `READY`, `NOT READY` and `NEEDS FURTHER REVIEW`.
-- The word `failed` belongs to the pump. Only a hand may write `answer = "failed"`
-  itself. Every other role either gives one of its own words or ends without an
-  envelope, and the pump records the failure.
+- The word `failed` belongs to the pump. A hand and the repairer may write
+  `answer = "failed"` themselves. Every other role either gives one of its own
+  words or ends without an envelope, and the pump records the failure.
 - Do not repeat the front matter in the prose, and do not wrap the envelope in a
   code fence in your real reply. The examples below are fenced only so you can
   read them here.
@@ -338,7 +455,7 @@ Notes.
 The pump checks the envelope before it acts on the reply. Refusals are:
 
 - no opening fence, or text before it;
-- a missing closing fence, or a third fence;
+- a missing closing fence;
 - a `[[follow_up]]` or `[[check]]` table written below the closing fence;
 - front matter that is not valid TOML;
 - an unknown key;

@@ -57,8 +57,6 @@ pub enum PumpActionKind {
     Withdraw,
     /// Throw the plan away and plan the need again on a fresh record.
     Replan,
-    /// Retired: it cannot be posted.
-    Recover,
     /// Answer a flow step by hand; applied by the flow engine, not the old pump.
     Answer,
     /// Release a locked flow run; applied by the flow engine, not the old pump.
@@ -73,21 +71,19 @@ impl PumpActionKind {
             Self::Requeue => "requeue",
             Self::Withdraw => "withdraw",
             Self::Replan => "replan",
-            Self::Recover => "recover",
             Self::Answer => "answer",
             Self::Unlock => "unlock",
         }
     }
 
-    /// The front matter word for this kind; `Recover` has none.
-    fn word(self) -> Option<ActionWord> {
+    /// The front matter word for this kind.
+    fn word(self) -> ActionWord {
         match self {
-            Self::Requeue => Some(ActionWord::Requeue),
-            Self::Withdraw => Some(ActionWord::Withdraw),
-            Self::Replan => Some(ActionWord::Replan),
-            Self::Answer => Some(ActionWord::Answer),
-            Self::Unlock => Some(ActionWord::Unlock),
-            Self::Recover => None,
+            Self::Requeue => ActionWord::Requeue,
+            Self::Withdraw => ActionWord::Withdraw,
+            Self::Replan => ActionWord::Replan,
+            Self::Answer => ActionWord::Answer,
+            Self::Unlock => ActionWord::Unlock,
         }
     }
 
@@ -194,11 +190,11 @@ impl PumpActionRequest {
         }
     }
 
-    /// The front matter this request writes; `None` for a retired kind.
-    fn front(&self, need: &str) -> Option<ActionFront> {
+    /// The front matter this request writes.
+    fn front(&self, need: &str) -> ActionFront {
         let text = |value: &Option<String>| value.clone().filter(|text| !text.trim().is_empty());
-        Some(ActionFront {
-            action: self.kind.word()?,
+        ActionFront {
+            action: self.kind.word(),
             need: need.to_string(),
             unit: text(&self.unit),
             attempts: self.attempts,
@@ -207,7 +203,7 @@ impl PumpActionRequest {
             force: self.force,
             step: text(&self.step),
             word: text(&self.word),
-        })
+        }
     }
 
     /// The request a letter's front matter and prose describe.
@@ -332,11 +328,6 @@ impl Mailspace {
         need: &str,
         request: &PumpActionRequest,
     ) -> Result<PumpAction, VivariumError> {
-        if request.kind == PumpActionKind::Recover {
-            return Err(VivariumError::Message(
-                "recover is retired: there is no recover action letter".into(),
-            ));
-        }
         if request.kind == PumpActionKind::Requeue && request.unit.is_none() {
             return Err(VivariumError::Message(
                 "a requeue action names the unit to requeue".into(),
@@ -377,9 +368,7 @@ impl Mailspace {
         letter: &ActionLetter<'_>,
     ) -> Result<StoredMessageView, VivariumError> {
         let request = letter.request;
-        let front = request.front(letter.need).ok_or_else(|| {
-            VivariumError::Message("recover is retired: there is no recover action letter".into())
-        })?;
+        let front = request.front(letter.need);
         let prose = if request.reason.is_empty() {
             format!("{} {}", request.kind.as_str(), letter.need)
         } else {

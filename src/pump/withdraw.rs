@@ -2,8 +2,9 @@
 //!
 //! A pump need normally closes through the mail board
 //! (`board::reconcile_done_needs`). The operator closes one here when it
-//! should stop without closing the need on the board. The CLI posts a
-//! withdraw action on the need's open pump record
+//! should stop. The CLI closes the need itself `withdrawn` while its pump
+//! record is still open, as the pump identity (a close that travels to every
+//! member), then posts a withdraw action on that record
 //! ([`crate::mailspace::PumpActionRequest`]); the pump applies it once
 //! ([`crate::pump::action`]):
 //!
@@ -17,11 +18,14 @@
 //! A need the pump holds no state for (its planner has not run) still has its
 //! record closed: there is nothing to withdraw but the dispatch.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::VivariumError;
 use crate::cli::PumpWithdrawCommand;
+use crate::mailspace::want_state::need_closed;
 use crate::mailspace::{Mailspace, PumpActionRequest};
+use crate::pump::config::PumpConfig;
 use crate::pump::control::project_home;
 use crate::pump::host::Ctx;
 use crate::pump::state::{State, Status};
@@ -61,9 +65,6 @@ pub fn apply_one(ctx: &Ctx, st: &mut State, need: &str, reason: &str) -> String 
     }
     let text = format!("withdrew need {need}: {count} unit(s) ({reason})");
     ctx.log(&text);
-    ctx.log(&format!(
-        "withdraw {need}: the mail need is not closed; close it on the board if it has one"
-    ));
     ctx.exception("need-withdrawn", need, &text);
     text
 }
@@ -99,9 +100,43 @@ pub fn run(project: &Path, cmd: &PumpWithdrawCommand) -> Result<(), VivariumErro
             )));
         }
     }
+    let pump = mailspace.config.pump.as_ref().map_or_else(
+        || PumpConfig::default().reply_from,
+        |p| p.reply_from.clone(),
+    );
+    let verdict = BTreeMap::from([(String::from("verdict"), String::from("withdrawn"))]);
     for need in &cmd.needs {
+        let closed = close_withdrawn(&mailspace, &pump, need, cmd.reason.trim(), &verdict)?;
         mailspace.pump_post_action(None, need, &PumpActionRequest::withdraw(cmd.reason.trim()))?;
-        println!("withdraw {need} requested; the pump applies it at its next tick");
+        let state = if closed {
+            "need closed withdrawn"
+        } else {
+            "need already closed"
+        };
+        println!("withdraw {need} requested; {state}; the pump applies the rest at its next tick");
     }
     Ok(())
+}
+
+/// Close `need` `withdrawn` as the pump identity unless it is already closed.
+/// Returns whether this call closed it. The pump record is still open, so the
+/// close is an event letter that syncs.
+fn close_withdrawn(
+    mailspace: &Mailspace,
+    pump: &str,
+    need: &str,
+    reason: &str,
+    verdict: &BTreeMap<String, String>,
+) -> Result<bool, VivariumError> {
+    // Closed by the rule a want's state uses: a folder `done` alone can be an
+    // assignee's report that nobody accepted, and that is still open.
+    let already_closed = {
+        let storage = mailspace.storage()?;
+        need_closed(&storage, need)?
+    };
+    if already_closed {
+        return Ok(false);
+    }
+    mailspace.move_item_outcome(pump, need, "done", Some(reason), "need done", Some(verdict))?;
+    Ok(true)
 }
