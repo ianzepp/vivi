@@ -3,12 +3,13 @@
 
 use super::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskState, TaskStatus};
 use crate::error::VivariumError;
+use crate::letter::read::step_of;
+use crate::letter::work::StepFront;
 use crate::mailspace::{Mailspace, PumpState, held_item, is_done, newest_move, sorted_marks};
-use crate::pump::flow::def::SENTINEL_MARKER;
 use crate::storage::{Storage, StoredMessageView};
 
-/// How many run sentinels `need` has: the bound tasks whose body starts with
-/// the sentinel marker. This is the Q1 run count, derived from mail alone.
+/// How many run sentinels `need` has: the bound tasks whose step table is a
+/// sentinel. This is the Q1 run count, derived from mail alone.
 ///
 /// # Errors
 /// Returns an error when the bound units or their bodies cannot be read.
@@ -19,7 +20,7 @@ pub fn sentinel_count_of(mailspace: &Mailspace, need: &str) -> Result<usize, Viv
     for unit in units {
         let message_id = storage.resolve_message_token(&unit.handle)?;
         let body = crate::extract::extract_text(&storage.read_message(&message_id)?)?;
-        if body.trim_start().starts_with(SENTINEL_MARKER) {
+        if step_of(&body).is_some_and(|step| step.sentinel) {
             count += 1;
         }
     }
@@ -110,7 +111,7 @@ impl MailReader for MailspacePort {
             .map(|record| record.outcome.unwrap_or_default()))
     }
 
-    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
+    fn sent_step(&self, subject: &str, step: &StepFront) -> Result<Option<String>, VivariumError> {
         let sent = self
             .mailspace
             .list_kind(Some(&self.pump_identity), "sent", "task")?;
@@ -118,7 +119,7 @@ impl MailReader for MailspacePort {
         let mut newest: Option<(String, String)> = None;
         for row in sent.iter().filter(|row| row.subject == subject) {
             let body = crate::extract::extract_text(&storage.read_message(&row.message_id)?)?;
-            if body.lines().next().map(str::trim) != Some(first_line.trim()) {
+            if step_of(&body).as_ref() != Some(step) {
                 continue;
             }
             let handle = delivered_handle(&storage, row)?;

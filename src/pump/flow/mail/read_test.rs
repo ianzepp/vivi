@@ -1,6 +1,7 @@
 //! Reader tests on a real mailspace.
 
 use super::{run_count, sentinel_count_of};
+use crate::letter::work::StepFront;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::project;
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskStatus};
@@ -169,6 +170,12 @@ fn prerequisites_and_last_closed_record_are_read() {
 
 #[test]
 fn sent_step_finds_the_open_task_not_the_closed_one() {
+    let key = |node: &str| StepFront {
+        need: "n".into(),
+        run: 1,
+        node: Some(node.into()),
+        sentinel: false,
+    };
     let project = project();
     let port = MailspacePort {
         mailspace: project.mailspace,
@@ -181,30 +188,18 @@ fn sent_step_finds_the_open_task_not_the_closed_one() {
         .send_step("mind", "elsewhere", "step", "pump-step: n r1 slice", &[])
         .unwrap();
     assert_eq!(
-        port.sent_step("step", "pump-step: n r1 plan").unwrap(),
+        port.sent_step("step", &key("plan")).unwrap(),
         Some(one.clone())
     );
     assert_eq!(
-        port.sent_step("step", "pump-step: n r1 slice").unwrap(),
+        port.sent_step("step", &key("slice")).unwrap(),
         Some(two.clone())
     );
     port.close_task(&one, "withdrawn", None, None).unwrap();
-    assert_eq!(
-        port.sent_step("step", "pump-step: n r1 plan").unwrap(),
-        None
-    );
-    assert_eq!(
-        port.sent_step("step", "pump-step: n r1 slice").unwrap(),
-        Some(two)
-    );
-    assert_eq!(
-        port.sent_step("step", "pump-step: n r1 nope").unwrap(),
-        None
-    );
-    assert_eq!(
-        port.sent_step("other", "pump-step: n r1 slice").unwrap(),
-        None
-    );
+    assert_eq!(port.sent_step("step", &key("plan")).unwrap(), None);
+    assert_eq!(port.sent_step("step", &key("slice")).unwrap(), Some(two));
+    assert_eq!(port.sent_step("step", &key("nope")).unwrap(), None);
+    assert_eq!(port.sent_step("other", &key("slice")).unwrap(), None);
 }
 
 #[test]

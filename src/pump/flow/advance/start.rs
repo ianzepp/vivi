@@ -3,6 +3,7 @@
 //! bound in one letter.
 
 use crate::error::VivariumError;
+use crate::letter::read::step_of;
 use crate::pump::flow::def::{FlowDef, FlowKind, SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepRow, StepState, run_state};
 use crate::pump::flow::kind;
@@ -172,7 +173,9 @@ fn send_missing<M: MailWriter + MailReader>(
     let from = ctx.cfg.reply_from.as_str();
     let subject = format!("{} r{} {node}", run.need, run.run);
     // A task sent before a crash but never indexed is adopted, not sent twice.
-    let task = match mail.sent_step(&subject, &body)? {
+    let key = step_of(&body)
+        .ok_or_else(|| VivariumError::Message(format!("step body for {node} has no step")))?;
+    let task = match mail.sent_step(&subject, &key)? {
         Some(task) => task,
         None => mail.send_step(from, from, &subject, &body, &[])?,
     };

@@ -6,6 +6,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{resume, withdraw};
 use crate::error::VivariumError;
+use crate::letter::work::StepFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::terminal::Finished;
@@ -342,8 +343,8 @@ impl MailReader for Flaky {
         self.inner.last_closed_record(need)
     }
 
-    fn sent_step(&self, subject: &str, first_line: &str) -> Result<Option<String>, VivariumError> {
-        self.inner.sent_step(subject, first_line)
+    fn sent_step(&self, subject: &str, step: &StepFront) -> Result<Option<String>, VivariumError> {
+        self.inner.sent_step(subject, step)
     }
 }
 

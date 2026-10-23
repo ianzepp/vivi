@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::VivariumError;
+use crate::letter::read::step_of;
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowNode, NodeClass, STEP_MARKER};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -320,8 +321,10 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
         );
         let subject = format!("{} ({} r{})", node.label, o.need, o.run);
         // A task sent before a crash but never indexed is adopted, not sent twice.
-        let first_line = body.lines().next().unwrap_or_default();
-        let task = match self.mail.sent_step(&subject, first_line)? {
+        let key = step_of(&body).ok_or_else(|| {
+            VivariumError::Message(format!("step body for {} has no step", node.id))
+        })?;
+        let task = match self.mail.sent_step(&subject, &key)? {
             Some(task) => task,
             None => self.mail.send_step(
                 &self.ctx.cfg.reply_from,
