@@ -1082,11 +1082,16 @@ Legacy `[pump.dispatch.kinds]` routes unit tasks when the hand role has no pool;
 The old `[pump.merge]` keys `batch`, `lanes`, `need_parallel`, `shared_checks`,
 `checks_for`, `proof_timeout` and `remote_wait`, and the `[pump.need]` table
 (`repair_rounds`), are retired: they are no longer read and a config that still
-carries them parses with them ignored. Convert supported legacy
+carries them parses with them ignored. `vivi config validate` names each
+retired key it finds, also under `[pump.targets.<id>.merge]`, and
+`vivi config migrate --write` removes them. Convert supported legacy
 dispatch and gate routing with
 `vivi config migrate` (dry-run) or `vivi config migrate --write`.
 A role that names a band when its pool has no `[pools.X.bands]` table
 fails `vivi config validate` unless caps or legacy lanes still cover it.
+A role's `model` may also be a model slug listed in the pool's
+`harness.models` instead of a band: its effort then comes from the role's
+`thinking`, else from the first band entry that names that model.
 
 `vivi pool set <name> <key> <value>` writes one (possibly dotted) key on
 `[pools.<name>]`. `vivi pool unset <name> <key>` removes it. There is no
@@ -1095,7 +1100,12 @@ allow-list: any path under that table is settable (`provider`, `slots`,
 `harness.models`, `harness.name`, `harness.run`, `committer.name`,
 `committer.email`, `bridge.enabled`, and the provider tables). Values:
 a decimal integer (`10`), `true` / `false`, a TOML array (`["a", "b"]`),
-or any other string. Comments and unrelated keys are left alone.
+or any other string. Comments and unrelated keys are left alone. Like every
+pool writer (`pool add`, `set`, `unset`, `remove`, `bands`), `set` and `unset`
+go through the config write guard: refused while the pump runs (pause it
+first), a `mailspace.toml.bak.<stamp>` backup kept, and a write that adds a
+new `vivi config validate` error rolled back. They print `backup <path>`
+notes.
 
 ```sh
 vivi pool set glm slots 10
@@ -1110,10 +1120,11 @@ vivi pool unset glm image
 - Porcelain show: `pool <name> <provider> <slots> <free>` — `free` is `-`
   unless `--resolved` (then the live free-slot count)
 - JSON (list is an array; show is one object): `name`, `provider`,
-  `slots`, `free` (`null` unless `--resolved` on show)
+  `slots`, `free` (`null` unless `--resolved` on show), `bands`
+  (`{"P<n>": [{"model", "reasoning"}]}`) and `harness_models`
 - Human list: `<name>  provider=<p>  slots=<n>`
 - Human show: the same line, then optional `free`, `worktree_of`,
-  `models`, `caps`, and `bands`
+  `models`, `caps`, and one `  P<n>: <model> (<reasoning>)` line per band
 
 #### Named pools and `--pool`
 
@@ -1228,9 +1239,9 @@ the `pool_collected` JSON the array `restored`).
 
 `vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>]
 [--budget SECS]` runs a job that publishes nothing, so a review role can have a
-full shell (git, builds, tests) safely. `--from` (or a `from:` body line) is
-required; `--branch` and `--allow-default-branch` are refused with it, and a
-`branch:` body line is ignored (the human output says so). Per-dispatch flag
+full shell (git, builds, tests) safely. `--from` (or the task front matter
+`from` key) is required; `--branch` and `--allow-default-branch` are refused
+with it, and a front matter `branch` is ignored (the human output says so). Per-dispatch flag
 only; no config setting.
 
 - The GitHub token is minted with `contents: read`: the slot cannot push.
@@ -1333,6 +1344,7 @@ scale      created ... | home ... | exists ... | issue ...         as create
 status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE   MODE write|read-only, - with no open dispatch
            capacity POOL FREE                                      per-dispatch pools (worker, runpod): jobs it may start now
 dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST   BRANCH - when read-only; MODE write|read-only; ABANDONED COST: see below
+           refused TASK REASON                                     the dispatch can never work as asked; the pump counts it toward a held job
 wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
            nothing-open                                            already collected
            issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task
@@ -1868,8 +1880,8 @@ from it; units that need another unit's code start `--from` that unit's branch
   slug must be one of the pool's `[harness].models`. Every model, band and
   read-only check runs before any machine is touched.
 - `from` is what to start from (a commit or a branch); `branch` is where to
-  push. Each comes from its flag, else from a `from: <ref>` / `branch: <name>`
-  line in the task body; both are required one way or the other. One rule covers
+  push. Each comes from its flag, else from the task front matter `from` /
+  `branch` key; both are required one way or the other. One rule covers
   three cases: a new branch (`from` = commit), continuing a branch (`from` =
   `branch`), and stacking (`from` = one branch, `branch` = another). On a pool
   that fetches from a remote, an abbreviated commit hash is resolved to the
@@ -1886,13 +1898,11 @@ from it; units that need another unit's code start `--from` that unit's branch
   local fetch mode do not check the branch when dispatching — the job runs, and
   its final push, never forced, ends `push_refused`.
 - Extra refs a job must see besides `from` travel with the dispatch:
-  `--with <ref>`, repeatable, at most 8, or `with: <ref>` lines in the task
-  body. Each is resolved to a commit before a slot is claimed, so an unknown
+  `--with <ref>`, repeatable, at most 8, or the task front matter list
+  `with = ["a", "b"]`. Each is resolved to a commit before a slot is claimed, so an unknown
   ref refuses the dispatch and claims nothing (a worktree pool resolves in its
-  source repository the same way). Body lines follow the same trimming and
-  list-dash rules as `from:`/`branch:` and every `with: <ref>` line counts — a
-  line whose value is empty or holds a space is not a `with` line; when any
-  `--with` is given, the flags win and the body lines are ignored. Duplicates
+  source repository the same way). When any `--with` is given, the flags win
+  and the front matter list is ignored. Duplicates
   are dropped keeping the first; a value that is not a plain ref name, or that
   names `from` or `branch`, is refused. An abbreviated hash is resolved to the
   full hash like `from`, and the job's `with.list` and the dispatch record
@@ -1948,7 +1958,7 @@ from it; units that need another unit's code start `--from` that unit's branch
 A task addressed to a known role is dispatched from that role.
 `vivi pool dispatch --pool <name> <task>` looks the addressee up; an absent or
 unknown addressee is no role at all, and the dispatch then needs `--model` or
-a `band:` line. From the role it takes:
+a front matter `band`. From the role it takes:
 
 - **The charter as the worker's standing prompt.** The rules file the job runs
   under is composed charter first, then the pool note, then the pool rules
@@ -1964,19 +1974,42 @@ a `band:` line. From the role it takes:
   `read_only` flag; else the kind default. Auditor, triage, cadence/steward,
   head, and gate default read-only; hand, merge, and lint write.
 - **The model and reasoning from the band.** The role's `model` field holds a
-  band string such as `P2-S0` (set it with `vivi role set <role> --model P2`),
-  not a model slug. The pool's `bands` table says which model-and-reasoning
-  pair serves each band, and the job runs at that pair.
+  band string such as `P2-S0` (set it with `vivi role set <role> --model P2`)
+  or a model slug listed in the pool's `harness.models`. The pool's `bands`
+  table says which model-and-reasoning pair serves each band, and the job runs
+  at that pair. A slug runs as named, at the role's `thinking`, else at the
+  reasoning of the first band entry that names that model.
 
 Bands: `P0` to `P5` is the intelligence axis (P0 the most capable); the
 optional `-S0` to `-S3` speed suffix is parsed and ignored for now. The
 plain-language gloss: P0 can make complex decisions, P1 understands anything
-inside its area, and P2 executes a tightly constrained scope. A `band:` line
-in the task body overrides the role's band for this one assignment (the first
-one wins; the same trimming rules as `from:`). `--model` and `--read-only`
-remain the overrides: `--model` wins over any band and takes the band's
-reasoning only when the pool's choice for that band names the same model;
-`--read-only` forces read-only on any role.
+inside its area, and P2 executes a tightly constrained scope. The task front
+matter `band` key (`band = "P1"`) overrides the role's band for this one
+assignment (a whole-letter task, example below). `--model` and
+`--read-only` remain the overrides: `--model` wins over any band and takes the band's
+reasoning only when the pool's choice for that band names the same model (or,
+for the role's own slug, the role's `thinking`); `--read-only` forces
+read-only on any role.
+
+A task that sets `band` (or `from`, `branch`, `with`) carries it in front
+matter, and `task send` has no flag for those keys, so send a whole-letter
+body (it opens with `+++`; no front matter flag may go beside it):
+
+```
++++
+done_when = ["cargo test -p parser --test validate passes", "malformed input is rejected with the expected error"]
+write_scope = ["crates/parser/src/validate.rs", "crates/parser/tests/validate.rs"]
+band = "P1"
++++
+
+goal: docs/goal.md
+unit: U-17
+edit: reject malformed input at validate.rs::parse_input
+```
+
+```sh
+vivi task send --from mind --to hand --subject 'unit U-17: parser input validation' --body-file unit.md
+```
 
 The bands table is per pool. Prefer the commands:
 
@@ -2000,8 +2033,8 @@ are reserved for in-band failover, which is **not built**: no failover, no
 health tracking, no retry on another model — the first choice is the only one.
 When the harness template uses a `{reasoning}` placeholder beside `{model}`,
 a job dispatched by band runs at its band's reasoning; a job dispatched with
-`--model` that is not the band's model has no reasoning, and a `{reasoning}`
-harness refuses it.
+`--model` that is neither the band's model nor the role's slug has no
+reasoning, and a `{reasoning}` harness refuses it.
 
 A pool with nothing for the band refuses before a slot is claimed, naming the
 band and the pool (and the bands it does serve): send that job to a pool that
