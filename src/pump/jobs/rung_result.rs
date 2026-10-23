@@ -1,5 +1,7 @@
 //! Reading a rung job's result from its pool receipt.
 
+use std::collections::BTreeSet;
+
 use crate::pump::attempt_record::agent_exit;
 use crate::pump::jobs::{JobStatus, PoolJob};
 
@@ -19,6 +21,20 @@ pub struct RungResult {
     /// the posted reply, capped by lines and bytes. A reply with no sections
     /// is tailed whole.
     pub tail: String,
+    /// Canonical ids of the tests the output named as failing, read from
+    /// cargo's own output and never from model text: `<binary>::<test path>`,
+    /// or just `<test path>` when the binary is unknown. The binary is the
+    /// deps file stem without its trailing `-<hex hash>`, with `-` replaced by
+    /// `_`, so every spelling of one crate gives one id.
+    ///
+    /// Consumer contract (N6 main-rung red detection, which compares failing
+    /// sets between runs, and N7 repair-flow failing-test identity): compare
+    /// sets of these ids only. An empty set with `pass == false` means the
+    /// output named no failing test: a build error, a timeout, a lost job, or
+    /// output cut by the 256 KiB head capture of agent.out
+    /// (`src/pool/collect.rs`). An empty set is never green and never "all
+    /// fixed".
+    pub failing: BTreeSet<String>,
 }
 
 /// Read a rung job's result. A timed-out or lost job, or a receipt with no
@@ -26,7 +42,8 @@ pub struct RungResult {
 #[must_use]
 pub fn parse(job: &PoolJob) -> RungResult {
     let receipt = job.outcome.as_ref().map_or("", |o| o.receipt.as_str());
-    let tail = tail_of(&failure_text(receipt));
+    let text = failure_text(receipt);
+    let tail = tail_of(&text);
     let exit = match job.status {
         JobStatus::Finished => agent_exit(receipt),
         _ => None,
@@ -35,7 +52,122 @@ pub fn parse(job: &PoolJob) -> RungResult {
         pass: exit == Some(0),
         exit,
         tail,
+        failing: failing_ids(&text),
     }
+}
+
+/// The binary a cargo `Running` or `Doc-tests` line names, canonical; the
+/// outer `None` for any other line.
+fn binary_line(line: &str) -> Option<Option<String>> {
+    let line = line.trim();
+    if let Some(name) = line.strip_prefix("Doc-tests ") {
+        return Some(Some(canonical(name.trim())));
+    }
+    if !line.starts_with("Running ") {
+        return None;
+    }
+    let inner = line.strip_suffix(')').and_then(|l| l.rsplit_once('('));
+    let stem = inner.and_then(|(_, path)| path.rsplit('/').next());
+    Some(stem.filter(|s| !s.is_empty()).map(canonical))
+}
+
+/// A deps file stem without its trailing `-<hex hash>`, `-` replaced by `_`.
+fn canonical(stem: &str) -> String {
+    let bare = match stem.rsplit_once('-') {
+        Some((head, hash)) if hash.len() >= 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            head
+        }
+        _ => stem,
+    };
+    bare.replace('-', "_")
+}
+
+/// The binary named by a cargo `to rerun pass` footer, canonical.
+fn footer_binary(line: &str) -> Option<String> {
+    let command = line.split('`').nth(1)?;
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let after = |flags: &[&str]| {
+        words
+            .iter()
+            .position(|w| flags.contains(w))
+            .and_then(|i| words.get(i + 1))
+            .map(|w| canonical(w))
+    };
+    after(&["--test", "--bin"]).or_else(|| after(&["-p", "--package"]))
+}
+
+/// The test name of a libtest `... FAILED` line or a JSON failed event.
+fn failed_line(line: &str) -> Option<String> {
+    if let Some(rest) = line.strip_prefix("test ")
+        && let Some(name) = rest.strip_suffix(" ... FAILED")
+    {
+        return Some(name.trim().to_owned());
+    }
+    if !line.starts_with('{') {
+        return None;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return None;
+    };
+    if value["type"] != "test" || value["event"] != "failed" {
+        return None;
+    }
+    value["name"].as_str().map(str::to_owned)
+}
+
+/// Where the parser is within a libtest `failures:` list.
+#[derive(Clone, Copy, PartialEq)]
+enum Block {
+    None,
+    Header,
+    Names,
+}
+
+/// Canonical ids of the failing tests named in cargo output.
+fn failing_ids(text: &str) -> BTreeSet<String> {
+    let mut binary: Option<String> = None;
+    let mut found: BTreeSet<(Option<String>, String)> = BTreeSet::new();
+    let mut footers: BTreeSet<Option<String>> = BTreeSet::new();
+    let mut state = Block::None;
+    for line in text.lines() {
+        if let Some(named) = binary_line(line) {
+            binary = named;
+            state = Block::None;
+            continue;
+        }
+        if line.contains("to rerun pass `") {
+            footers.insert(footer_binary(line));
+        }
+        if let Some(name) = failed_line(line) {
+            found.insert((binary.clone(), name));
+            continue;
+        }
+        let listed = state != Block::None && line.starts_with("    ") && !line.trim().is_empty();
+        if listed {
+            found.insert((binary.clone(), line.trim().to_owned()));
+        }
+        state = if line == "failures:" {
+            Block::Header
+        } else if listed {
+            Block::Names
+        } else if state == Block::Header && line.is_empty() {
+            Block::Header
+        } else {
+            Block::None
+        };
+    }
+    let lone = if footers.len() == 1 {
+        footers.into_iter().next().flatten()
+    } else {
+        None
+    };
+    found
+        .into_iter()
+        .map(|(own, name)| match own.or_else(|| lone.clone()) {
+            Some(bin) => format!("{bin}::{name}"),
+            None => name,
+        })
+        .collect()
 }
 
 /// Section headings `pool::record::collected_text` writes.

@@ -144,3 +144,84 @@ fn a_long_receipt_section_is_still_capped_by_lines() {
     assert_eq!(result.tail.lines().count(), TAIL_LINES);
     assert_eq!(result.tail.lines().last(), Some("line199"));
 }
+
+fn failing_of(receipt: &str, stderr: &str) -> Vec<String> {
+    let text = posted("101", receipt, stderr, "");
+    let result = parse(&job(JobStatus::Finished, Some(&text)));
+    result.failing.into_iter().collect()
+}
+
+fn running(binary: &str) -> String {
+    format!("     Running unittests src/lib.rs (target/debug/deps/{binary}-1a2b3c4d5e6f7081)\n")
+}
+
+#[test]
+fn binary_spellings_give_the_same_failing_set() {
+    let hyphen = format!("{}test emit::a ... FAILED\n", running("mir-emit-harness"));
+    let under = format!("{}test emit::a ... FAILED\n", running("mir_emit_harness"));
+    let one = failing_of(&hyphen, "");
+    assert_eq!(one, failing_of(&under, ""));
+    assert_eq!(one, ["mir_emit_harness::emit::a"]);
+}
+
+#[test]
+fn a_failure_is_prefixed_with_its_canonical_binary() {
+    let receipt = "     Running unittests src/lib.rs (target/debug/deps/faber_cli-1a2b3c4d)\n\
+                   test pump::x::y ... FAILED\n";
+    assert_eq!(failing_of(receipt, ""), ["faber_cli::pump::x::y"]);
+}
+
+#[test]
+fn two_binaries_with_one_failure_each_give_two_ids() {
+    let receipt = format!(
+        "{}test a::one ... FAILED\n{}test b::two ... FAILED\n",
+        running("alpha"),
+        running("beta-bin"),
+    );
+    assert_eq!(
+        failing_of(&receipt, ""),
+        ["alpha::a::one", "beta_bin::b::two"]
+    );
+}
+
+#[test]
+fn the_failures_block_dedups_with_the_failed_lines() {
+    let receipt = format!(
+        "{}test a::one ... FAILED\n\nfailures:\n\n---- a::one stdout ----\n    noise\n\nfailures:\n    a::one\n\ntest result: FAILED.\n",
+        running("alpha"),
+    );
+    assert_eq!(failing_of(&receipt, ""), ["alpha::a::one"]);
+}
+
+#[test]
+fn a_rerun_footer_names_the_binary_when_one_failed() {
+    let one = failing_of(
+        "test a::one ... FAILED\n",
+        "error: test failed, to rerun pass `-p faber-cli --test cli_flow`\n",
+    );
+    assert_eq!(one, ["cli_flow::a::one"]);
+    let two = failing_of(
+        "test a::one ... FAILED\n",
+        "to rerun pass `--lib`\nto rerun pass `--test x`\n",
+    );
+    assert_eq!(two, ["a::one"]);
+}
+
+#[test]
+fn a_passing_run_and_a_compile_error_have_an_empty_set() {
+    let pass = posted("0", "test a ... ok\ntest result: ok.\n", "", "");
+    let result = parse(&job(JobStatus::Finished, Some(&pass)));
+    assert!(result.pass && result.failing.is_empty());
+    let build = posted("101", "", "error[E0432]: unresolved import\n", "");
+    let result = parse(&job(JobStatus::Finished, Some(&build)));
+    assert!(!result.pass && result.failing.is_empty());
+}
+
+#[test]
+fn a_json_failure_line_is_parsed() {
+    let receipt = format!(
+        "{}{{\"type\":\"test\",\"event\":\"failed\",\"name\":\"m::t\"}}\n{{\"type\":\"test\",\"event\":\"ok\",\"name\":\"m::u\"}}\n",
+        running("alpha"),
+    );
+    assert_eq!(failing_of(&receipt, ""), ["alpha::m::t"]);
+}
