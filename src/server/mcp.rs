@@ -495,11 +495,13 @@ fn tools_list() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             })),
-            tool("pump_gate", "Hosted projects only, operator only. Show or set the pump gate command (`[pump.gate] command` in the project's mailspace config), as `vivi pump gate` reads and sets it. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. `set` needs a non-blank `command` and is rate limited as a write. Pools, roles and other config are not exposed. Returns {command}, null when unset.", json!({
+            tool("pump_rungs", "Hosted projects only, operator only. Show or set the pump's rung commands (`[pump.rungs]` in the project's mailspace config, or `[pump.targets.<id>.rungs]` with `target`), as `vivi pump rungs show|set` do. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator; show is held to it too. `set` needs a `rung` (task, need, main or release) and a non-blank `command`, is refused for an unknown rung or target, and is rate limited as a write. Show ignores `rung` and `command`; with `target` it answers that target's effective table (its own rung command, else the workspace one). Pools, timeout, roles and other config are not exposed for change, and a set rung with no rung pools leaves the config invalid until the host sets `pools` (vivi config validate: rung jobs cannot dispatch). Returns {target, task, need, main, release, timeout, pools} as the table stands afterwards, null for an unset command.", json!({
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["show", "set"] },
-                    "command": { "type": "string", "description": "The gate command; required for set, ignored by show" }
+                    "rung": { "type": "string", "enum": ["task", "need", "main", "release"], "description": "The rung to set; required for set" },
+                    "command": { "type": "string", "description": "The shell command that proves the rung; required for set, must not be blank" },
+                    "target": { "type": "string", "description": "A pump target id; omit for the workspace-level rungs" }
                 },
                 "required": ["action"],
                 "additionalProperties": false

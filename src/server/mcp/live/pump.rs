@@ -1,5 +1,5 @@
-//! `pump_control` and `pump_gate` (and the authorization the pump record tools
-//! in `pump_record.rs` share): operator-only pump tools for a hosted
+//! `pump_control` and `pump_rungs` (and the authorization the pump record
+//! tools in `pump_record.rs` share): operator-only pump tools for a hosted
 //! project.
 //!
 //! The same library call the CLI's `vivi pump pause|resume|stop|start`
@@ -7,11 +7,12 @@
 //! lives in the host's `pump.db`, not in the server. In the CLI `start` is
 //! `resume`: both set the mode to running.
 //!
-//! `pump_gate` shows or sets the pump gate command (`[pump.gate] command` in
-//! the project's `.vivi/mailspace.toml`) through
-//! [`vivi::pump::gate_config`]. It is the only config the server edits:
-//! pools, roles and free-form config stay with the host, because a member who
-//! could repoint a pool's `remote_url` could send code elsewhere.
+//! `pump_rungs` shows or sets the rung commands (`[pump.rungs]`, or
+//! `[pump.targets.<id>.rungs]` for one target) through
+//! [`vivi::pump::config::RungsConfig`]. Rung commands are the only config the
+//! server edits through this tool: pools, roles, remotes and free-form config
+//! stay with the host, because a member who could repoint a pool's
+//! `remote_url` could send code elsewhere.
 //!
 //! The caller of either tool must be the operator:
 //!
@@ -24,11 +25,12 @@
 use std::path::Path;
 
 use serde_json::{Value, json};
+use vivi::mailspace::Mailspace;
+use vivi::pump::config::RungsConfig;
 use vivi::pump::control::{PumpMode, inspect, project_home, set_project_mode};
-use vivi::pump::gate_config;
 
 use crate::identities::IdentityRecord;
-use crate::mcp::tools::{ToolError, rate_limit, req_str};
+use crate::mcp::tools::{ToolError, opt_str, rate_limit, req_str};
 use crate::safety::RateLimiter;
 
 use super::{Hosted, lib_error};
@@ -68,10 +70,12 @@ pub(in crate::mcp) fn pump_control(
     }))
 }
 
-/// Run `pump_gate` for `caller` acting as `acting`. `show` reads the gate
-/// command; `set` writes it and is rate limited as a write. Both answer
-/// `{command}` as it stands afterwards (`null` when unset or blank).
-pub(in crate::mcp) fn pump_gate(
+/// Run `pump_rungs` for `caller` acting as `acting`. `show` reads the rung
+/// table; `set` writes one rung command (workspace level, or the named
+/// target's) and is rate limited as a write. Both answer the effective table
+/// as it stands afterwards: `{target, task, need, main, release, timeout,
+/// pools}`, with `null` for an unset command.
+pub(in crate::mcp) fn pump_rungs(
     limiter: &RateLimiter,
     project_id: &str,
     root: &Path,
@@ -79,27 +83,44 @@ pub(in crate::mcp) fn pump_gate(
     acting: Option<&str>,
     arguments: &Value,
 ) -> Result<Value, ToolError> {
-    let requested = acting_key("pump_gate", "use the pump gate", acting)?;
+    let requested = acting_key("pump_rungs", "use the pump rungs", acting)?;
     let action = req_str(arguments, "action")?;
-    let new_command = match action {
+    let target = opt_str(arguments, "target")?;
+    let change = match action {
         "show" => None,
-        "set" => match arguments.get("command") {
-            Some(Value::String(text)) => Some(text.as_str()),
-            _ => return Err(ToolError::new("command (a string) is required to set")),
-        },
+        "set" => {
+            let rung = match arguments.get("rung") {
+                Some(Value::String(text)) => text.as_str(),
+                _ => return Err(ToolError::new("rung (a string) is required to set")),
+            };
+            let command = match arguments.get("command") {
+                Some(Value::String(text)) => text.as_str(),
+                _ => return Err(ToolError::new("command (a string) is required to set")),
+            };
+            Some((rung, command))
+        }
         other => {
             return Err(ToolError::new(format!(
                 "action must be show or set; got '{other}'"
             )));
         }
     };
-    let hosted = authorize("pump_gate", root, caller, requested)?;
-    if let Some(command) = new_command {
+    let hosted = authorize("pump_rungs", root, caller, requested)?;
+    if let Some((rung, command)) = change {
         rate_limit(limiter, project_id, &hosted.actor)?;
-        gate_config::set_command(root, command).map_err(lib_error)?;
+        RungsConfig::set(root, rung, command, target).map_err(lib_error)?;
     }
-    let command = gate_config::command(root).map_err(lib_error)?;
-    Ok(json!({ "command": command }))
+    let ms = Mailspace::open_root(root.to_path_buf()).map_err(lib_error)?;
+    let cfg = ms.config.pump.unwrap_or_default();
+    if let Some(id) = target
+        && !cfg.targets.contains_key(id)
+    {
+        return Err(ToolError::new(format!("unknown pump target `{id}`")));
+    }
+    let mut answer = serde_json::to_value(cfg.effective_rungs(target))
+        .map_err(|error| ToolError::new(error.to_string()))?;
+    answer["target"] = json!(target);
+    Ok(answer)
 }
 
 /// The identity an operator tool acts as: a member token has none and is

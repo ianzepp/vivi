@@ -1063,9 +1063,7 @@ async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
     let operator = fx.key(None);
     let mind = fx.key(Some("mind"));
     let hand = fx.key(Some("hand"));
-    let send = |subject: &'static str, to: &'static str, deps: Value| {
-        json!({"kind": "need", "to": to, "subject": subject, "body": "x\n\ndone_when: y", "depends_on": deps})
-    };
+    let send = |subject: &'static str, to: &'static str, deps: Value| json!({"kind": "need", "to": to, "subject": subject, "body": "x\n\ndone_when: y", "depends_on": deps});
     let work = fx
         .call(&operator, "send", send("work", "mind", json!([])))
         .await["handle"]
@@ -1096,11 +1094,7 @@ async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
 
     // Remove the dependency named at send: the release is ready.
     let removed = fx
-        .call(
-            &mind,
-            "depend",
-            json!({"handle": release, "remove": work}),
-        )
+        .call(&mind, "depend", json!({"handle": release, "remove": work}))
         .await;
     assert_eq!(removed["changes"][0]["action"], "removed");
     assert_eq!(removed["changes"][0]["changed"], true);
@@ -1120,7 +1114,11 @@ async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
             json!({"handle": release, "add": [work, other]}),
         )
         .await;
-    assert_eq!(added["dependencies"].as_array().unwrap().len(), 2, "{added}");
+    assert_eq!(
+        added["dependencies"].as_array().unwrap().len(),
+        2,
+        "{added}"
+    );
     let graph = fx.call(&mind, "graph", json!({"view": "status"})).await;
     assert!(blocked(&graph), "{graph}");
 
@@ -1160,6 +1158,8 @@ async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
         .call_err(&hand, "depend", json!({"handle": release, "add": other}))
         .await;
     assert!(!refused.is_empty());
-    let empty = fx.call_err(&mind, "depend", json!({"handle": release})).await;
+    let empty = fx
+        .call_err(&mind, "depend", json!({"handle": release}))
+        .await;
     assert!(empty.contains("--add or --remove"), "{empty}");
 }

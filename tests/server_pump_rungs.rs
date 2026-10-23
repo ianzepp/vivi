@@ -1,5 +1,6 @@
-//! The `pump_gate` MCP tool: operator-only show and set of a hosted
-//! project's pump gate command, through the vivi library's gate config.
+//! The `pump_rungs` MCP tool: operator-only show and set of a hosted
+//! project's pump rung commands, per rung and per target, through the vivi
+//! library's rung config.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use vivi_server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "vivi-server-pump-control-{}-{name}",
+        "vivi-server-pump-rungs-{}-{name}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -36,6 +37,7 @@ fn fixture(name: &str) -> Fx {
     let base = scratch(name);
     let root = base.join("hosts").join("app");
     let mut ms = Mailspace::init(Some(&root)).unwrap();
+    std::fs::create_dir_all(root.join("web")).unwrap();
     ms.ensure_operator_role().unwrap();
     ms.add_role(
         "hand",
@@ -47,7 +49,7 @@ fn fixture(name: &str) -> Fx {
     .unwrap();
     let toml = root.join(".vivi").join("mailspace.toml");
     let mut text = std::fs::read_to_string(&toml).unwrap();
-    text.push_str("\n[pump]\ntick = 20\n");
+    text.push_str("\n[pump]\ntick = 20\n\n[pump.targets.web]\npath = \"web\"\n");
     std::fs::write(&toml, text).unwrap();
     let state = app_state(base.join("data"), None, None);
     let report = hosted::reconcile(
@@ -95,12 +97,12 @@ impl Fx {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    async fn gate(&self, token: &str, arguments: Value) -> Value {
+    async fn rungs(&self, token: &str, arguments: Value) -> Value {
         let value = self
             .rpc(
                 token,
                 "tools/call",
-                json!({"name": "pump_gate", "arguments": arguments}),
+                json!({"name": "pump_rungs", "arguments": arguments}),
             )
             .await;
         let text = value["result"]["content"][0]["text"].as_str().unwrap();
@@ -117,7 +119,7 @@ impl Fx {
             .rpc(
                 token,
                 "tools/call",
-                json!({"name": "pump_gate", "arguments": arguments}),
+                json!({"name": "pump_rungs", "arguments": arguments}),
             )
             .await;
         assert_eq!(value["result"]["isError"], true, "{value}");
@@ -146,8 +148,15 @@ fn spki_pem(seed: u8) -> String {
     )
 }
 
+fn rung_table(task: Value, need: Value, target: Value) -> Value {
+    json!({
+        "target": target, "task": task, "need": need, "main": null,
+        "release": null, "timeout": 1800, "pools": []
+    })
+}
+
 #[tokio::test]
-async fn show_on_a_fresh_project_is_null_and_set_round_trips() {
+async fn show_on_a_fresh_project_is_unset_and_set_round_trips_per_rung() {
     let fx = fixture("roundtrip");
     let key = fx.key_by(&fx.member, None);
     let listed = fx.rpc(&key, "tools/list", json!({})).await;
@@ -155,33 +164,105 @@ async fn show_on_a_fresh_project_is_null_and_set_round_trips() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|tool| tool["name"] == "pump_gate")
-        .expect("pump_gate is listed");
+        .find(|tool| tool["name"] == "pump_rungs")
+        .expect("pump_rungs is listed");
+    let properties = &tool["inputSchema"]["properties"];
+    assert_eq!(properties["action"]["enum"], json!(["show", "set"]));
     assert_eq!(
-        tool["inputSchema"]["properties"]["action"]["enum"],
-        json!(["show", "set"])
+        properties["rung"]["enum"],
+        json!(["task", "need", "main", "release"])
     );
+    assert_eq!(tool["inputSchema"]["required"], json!(["action"]));
 
-    let shown = fx.gate(&key, json!({"action": "show"})).await;
-    assert_eq!(shown, json!({"command": null}));
+    // The answer is a parsed structure, not the `{text}` of RungsConfig::show.
+    let shown = fx.rungs(&key, json!({"action": "show"})).await;
+    assert!(shown.get("text").is_none(), "{shown}");
+    assert_eq!(shown, rung_table(Value::Null, Value::Null, Value::Null));
 
     let set = fx
-        .gate(
+        .rungs(
             &key,
-            json!({"action": "set", "command": "cargo test --quiet"}),
+            json!({"action": "set", "rung": "need", "command": "cargo test --quiet"}),
         )
         .await;
-    assert_eq!(set, json!({"command": "cargo test --quiet"}));
-    let shown = fx.gate(&key, json!({"action": "show"})).await;
-    assert_eq!(shown, json!({"command": "cargo test --quiet"}));
+    assert_eq!(
+        set,
+        rung_table(Value::Null, json!("cargo test --quiet"), Value::Null)
+    );
+    let shown = fx.rungs(&key, json!({"action": "show"})).await;
+    assert_eq!(shown, set);
     let text = fx.config_text();
+    assert!(text.contains("[pump.rungs]"), "{text}");
     assert!(text.contains("cargo test --quiet"), "{text}");
     assert!(text.contains("tick = 20"), "other config kept: {text}");
 
     let replaced = fx
-        .gate(&key, json!({"action": "set", "command": "make gate"}))
+        .rungs(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "make gate"}),
+        )
         .await;
-    assert_eq!(replaced, json!({"command": "make gate"}));
+    assert_eq!(replaced["need"], "make gate");
+    let other = fx
+        .rungs(
+            &key,
+            json!({"action": "set", "rung": "task", "command": "make unit"}),
+        )
+        .await;
+    assert_eq!(other["task"], "make unit");
+    assert_eq!(other["need"], "make gate");
+}
+
+#[tokio::test]
+async fn a_target_set_writes_the_target_table_and_falls_back_to_the_workspace() {
+    let fx = fixture("target");
+    let key = fx.key_by(&fx.member, None);
+    fx.rungs(
+        &key,
+        json!({"action": "set", "rung": "task", "command": "make unit"}),
+    )
+    .await;
+    let set = fx
+        .rungs(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "npm test", "target": "web"}),
+        )
+        .await;
+    assert_eq!(
+        set,
+        rung_table(json!("make unit"), json!("npm test"), json!("web"))
+    );
+    assert!(fx.config_text().contains("[pump.targets.web.rungs]"));
+
+    let shown = fx
+        .rungs(&key, json!({"action": "show", "target": "web"}))
+        .await;
+    assert_eq!(shown, set);
+    // No target: the workspace value, untouched by the target set.
+    let workspace = fx.rungs(&key, json!({"action": "show"})).await;
+    assert_eq!(
+        workspace,
+        rung_table(json!("make unit"), Value::Null, Value::Null)
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_target_is_refused_and_changes_nothing() {
+    let fx = fixture("badtarget");
+    let key = fx.key_by(&fx.member, None);
+    let before = fx.config_text();
+    let message = fx
+        .refused(&key, json!({"action": "show", "target": "nope"}))
+        .await;
+    assert!(message.contains("unknown pump target `nope`"), "{message}");
+    let message = fx
+        .refused(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "x", "target": "nope"}),
+        )
+        .await;
+    assert!(message.contains("unknown pump target `nope`"), "{message}");
+    assert_eq!(fx.config_text(), before);
 }
 
 #[tokio::test]
@@ -189,25 +270,49 @@ async fn a_key_acting_as_the_operator_role_by_name_is_accepted() {
     let fx = fixture("named");
     let key = fx.key_by(&fx.member, Some("operator"));
     let set = fx
-        .gate(&key, json!({"action": "set", "command": "true"}))
+        .rungs(
+            &key,
+            json!({"action": "set", "rung": "main", "command": "true"}),
+        )
         .await;
-    assert_eq!(set["command"], "true");
+    assert_eq!(set["main"], "true");
 }
 
 #[tokio::test]
-async fn a_blank_or_missing_command_is_refused_and_changes_nothing() {
+async fn a_bad_rung_or_command_is_refused_and_changes_nothing() {
     let fx = fixture("blank");
     let key = fx.key_by(&fx.member, None);
-    fx.gate(&key, json!({"action": "set", "command": "keep me"}))
-        .await;
+    fx.rungs(
+        &key,
+        json!({"action": "set", "rung": "need", "command": "keep me"}),
+    )
+    .await;
+    let before = fx.config_text();
     let message = fx
-        .refused(&key, json!({"action": "set", "command": "   "}))
+        .refused(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "   "}),
+        )
         .await;
     assert!(message.contains("must not be empty"), "{message}");
-    let message = fx.refused(&key, json!({"action": "set"})).await;
+    let message = fx
+        .refused(
+            &key,
+            json!({"action": "set", "rung": "deploy", "command": "x"}),
+        )
+        .await;
+    assert!(message.contains("unknown rung `deploy`"), "{message}");
+    let message = fx
+        .refused(&key, json!({"action": "set", "command": "x"}))
+        .await;
+    assert!(message.contains("rung"), "{message}");
+    let message = fx
+        .refused(&key, json!({"action": "set", "rung": "need"}))
+        .await;
     assert!(message.contains("command"), "{message}");
-    let shown = fx.gate(&key, json!({"action": "show"})).await;
-    assert_eq!(shown["command"], "keep me");
+    assert_eq!(fx.config_text(), before);
+    let shown = fx.rungs(&key, json!({"action": "show"})).await;
+    assert_eq!(shown["need"], "keep me");
 }
 
 #[tokio::test]
@@ -225,7 +330,7 @@ async fn a_member_token_is_refused_and_changes_nothing() {
         .unwrap()
         .token;
     for arguments in [
-        json!({"action": "set", "command": "evil"}),
+        json!({"action": "set", "rung": "need", "command": "evil"}),
         json!({"action": "show"}),
     ] {
         let message = fx.refused(&bearer, arguments).await;
@@ -240,7 +345,10 @@ async fn a_key_that_is_not_the_operators_is_refused() {
     // A key acting as a role that is not of kind operator.
     let hand = fx.key_by(&fx.member, Some("hand"));
     let message = fx
-        .refused(&hand, json!({"action": "set", "command": "evil"}))
+        .refused(
+            &hand,
+            json!({"action": "set", "rung": "need", "command": "evil"}),
+        )
         .await;
     assert!(message.contains("kind operator"), "{message}");
     // A key another member minted, even one acting as the operator role.
@@ -255,7 +363,7 @@ async fn a_key_that_is_not_the_operators_is_refused() {
         .unwrap();
     let bobs = fx.key_by("bob", Some("operator"));
     for arguments in [
-        json!({"action": "set", "command": "evil"}),
+        json!({"action": "set", "rung": "need", "command": "evil"}),
         json!({"action": "show"}),
     ] {
         let message = fx.refused(&bobs, arguments).await;

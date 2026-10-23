@@ -357,7 +357,7 @@ async fn initialize_and_tools_list() {
             "depend",
             "pump",
             "pump_control",
-            "pump_gate",
+            "pump_rungs",
             "pool_bands",
             "pump_send",
             "pump_list",
@@ -1742,4 +1742,109 @@ async fn api_key_identity_is_optional_stored_and_validated() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+}
+
+/// An event letter written as `pump@<prefix_for(owner)>.local`: the pump
+/// identity of `owner`'s host, whose events count by the host's stamped
+/// prefix whatever the local part.
+fn pump_event_letter(owner: &str, id: &str, of: &str, to: &str, kind: &str, at: &str) -> Vec<u8> {
+    let letter = String::from_utf8(event_letter(
+        owner,
+        id,
+        of,
+        to,
+        kind,
+        &[("X-Vivi-Event-At", at)],
+    ))
+    .unwrap();
+    let own = format!("From: {}\n", address(owner));
+    assert!(letter.contains(&own), "{letter}");
+    letter
+        .replacen(
+            &own,
+            &format!("From: pump@{}.local\n", prefix_for(owner)),
+            1,
+        )
+        .into_bytes()
+}
+
+#[tokio::test]
+async fn a_pump_identity_close_from_the_host_prefix_counts() {
+    let fx = fixture("pump-identity").await;
+    let hand = fx.add_member("hand", 2).await;
+    let pump = format!("pump@{}.local", prefix_for("creator"));
+    let (handle, id) = fx.send_item(&hand, "need", &pump, "pump close").await;
+    let of = rfc_id(&id, "hand");
+    let state = |viewer: &str, status: &str| {
+        let args = json!({"kind": "need", "status": status});
+        let viewer = viewer.to_owned();
+        let fx = &fx;
+        async move { handles(&fx.call(&viewer, "list", args).await) }
+    };
+
+    // The same pump address pushed by another member is stamped with that
+    // member's prefix, so it does not count.
+    fx.put_letter(
+        &hand,
+        330,
+        pump_event_letter(
+            "creator",
+            &traveling(330),
+            &of,
+            &address("hand"),
+            "done",
+            &stamp(0),
+        ),
+        "need",
+        &address("hand"),
+    )
+    .await;
+    for viewer in [&fx.token, &hand] {
+        assert_eq!(state(viewer, "open").await, [handle.clone()]);
+        assert!(state(viewer, "done").await.is_empty());
+    }
+
+    // From the host prefix itself, the pump's close counts for everyone.
+    fx.put_letter(
+        &fx.token,
+        331,
+        pump_event_letter(
+            "creator",
+            &traveling(331),
+            &of,
+            &address("hand"),
+            "done",
+            &stamp(5),
+        ),
+        "need",
+        &address("hand"),
+    )
+    .await;
+    for viewer in [&fx.token, &hand] {
+        assert_eq!(state(viewer, "done").await, [handle.clone()]);
+        assert!(state(viewer, "open").await.is_empty());
+        let shown = fx.call(viewer, "show", json!({"handle": handle})).await;
+        assert_eq!(shown["item"]["status"], "done", "{shown}");
+    }
+
+    // A later reopened from the same pump address makes it open again.
+    fx.put_letter(
+        &fx.token,
+        332,
+        pump_event_letter(
+            "creator",
+            &traveling(332),
+            &of,
+            &address("hand"),
+            "reopened",
+            &stamp(10),
+        ),
+        "need",
+        &address("hand"),
+    )
+    .await;
+    for viewer in [&fx.token, &hand] {
+        assert_eq!(state(viewer, "open").await, [handle.clone()]);
+        assert!(state(viewer, "done").await.is_empty());
+    }
 }

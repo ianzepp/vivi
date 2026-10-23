@@ -151,13 +151,16 @@ async fn the_operator_token_lists_and_initializes() {
     assert_eq!(tools.len(), 1, "{listed}");
     assert_eq!(tools[0]["name"], "create_project");
     assert_eq!(tools[0]["inputSchema"]["required"], json!(["name"]));
+    let properties = &tools[0]["inputSchema"]["properties"];
+    assert!(properties.get("rungs").is_some(), "{listed}");
+    assert!(properties.get("gate").is_none(), "{listed}");
 }
 
 #[tokio::test]
 async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it() {
     let fx = fixture("create", Some(TOKEN), true);
     let (errored, made) = fx
-        .create(json!({"name": "fresh", "initial_commit": true, "gate": "true"}))
+        .create(json!({"name": "fresh", "initial_commit": true}))
         .await;
     assert!(!errored, "{made}");
 
@@ -181,9 +184,9 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
     assert_eq!(made["operator_key"]["identity"], "operator");
 
     // Served without a restart or a watcher: the project endpoint answers,
-    // and the minted key is the operator's (pump_gate needs one).
+    // and the minted key is the operator's (pump_list needs one).
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "pump_gate", "arguments": {"action": "show"}}});
+        "params": {"name": "pump_list", "arguments": {}}});
     let (status, value) = fx
         .post(
             &made["mcp_path"].as_str().unwrap().to_owned(),
@@ -194,10 +197,7 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_ne!(value["result"]["isError"], true, "{value}");
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(text).unwrap()["command"],
-        "true"
-    );
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap()["total"], 0);
 }
 
 #[tokio::test]
@@ -311,4 +311,125 @@ async fn bad_arguments_are_refused() {
     let (errored, _) = fx.create(json!({"name": "../escape"})).await;
     assert!(errored);
     assert!(!fx.projects.join("x").exists());
+}
+
+#[tokio::test]
+async fn create_project_seeds_the_given_rungs_and_answers_the_readiness_after() {
+    let fx = fixture("rungs", Some(TOKEN), true);
+    let (errored, made) = fx
+        .create(json!({"name": "laddered", "rungs": {"need": "make need", "main": "make main"}}))
+        .await;
+    assert!(!errored, "{made}");
+    assert!(made.get("rungs_error").is_none(), "{made}");
+
+    let root = fx.projects.join("laddered").canonicalize().unwrap();
+    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let issues = vivi::pump::readiness::assess(&space);
+    let rungs = space.config.pump.unwrap().rungs;
+    assert_eq!(rungs.need.as_deref(), Some("make need"));
+    assert_eq!(rungs.main.as_deref(), Some("make main"));
+    assert!(rungs.task.is_none() && rungs.release.is_none());
+
+    // The answer is the readiness as it stands after the write.
+    assert_eq!(made["readiness"]["ready"], false, "{made}");
+    let listed: Vec<_> = vivi::routing::not_ready(&issues)
+        .map(|i| i.item.clone().unwrap_or_default())
+        .collect();
+    let answered: Vec<_> = made["readiness"]["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["item"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(answered, listed, "{made}");
+}
+
+#[tokio::test]
+async fn bad_rungs_are_refused_before_anything_is_created() {
+    let fx = fixture("badrungs", Some(TOKEN), true);
+    let cases = [
+        (json!({"deploy": "make"}), "deploy"),
+        (json!({"need": "  "}), "need"),
+        (json!({"main": 7}), "main"),
+        (json!("make need"), "rungs must be an object"),
+    ];
+    for (rungs, expect) in cases {
+        let (errored, value) = fx.create(json!({"name": "norungs", "rungs": rungs})).await;
+        assert!(errored, "{value}");
+        let message = value["error"].as_str().unwrap();
+        assert!(message.contains(expect), "{message}");
+        assert!(!fx.projects.join("norungs").exists(), "{message}");
+        assert!(!fx.lanes.join("norungs.git").exists(), "{message}");
+    }
+    let (errored, value) = fx
+        .create(json!({"name": "norungs", "rungs": {"x": "y"}}))
+        .await;
+    assert!(
+        errored
+            && value["error"]
+                .as_str()
+                .unwrap()
+                .contains("task, need, main, release"),
+        "{value}"
+    );
+}
+
+#[tokio::test]
+async fn create_project_writes_rung_timeout_and_pools() {
+    let fx = fixture("rungsettings", Some(TOKEN), true);
+    let (errored, made) = fx
+        .create(json!({
+            "name": "timed",
+            "rungs": {"need": "make need", "timeout": 900, "pools": ["rung"]}
+        }))
+        .await;
+    assert!(!errored, "{made}");
+    assert!(made.get("rungs_error").is_none(), "{made}");
+
+    let root = fx.projects.join("timed").canonicalize().unwrap();
+    let raw = std::fs::read_to_string(root.join(".vivi").join("mailspace.toml")).unwrap();
+    assert!(raw.contains("timeout = 900"), "{raw}");
+    assert!(raw.contains("pools = [\"rung\"]"), "{raw}");
+    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let rungs = space.config.pump.unwrap().rungs;
+    assert_eq!(rungs.need.as_deref(), Some("make need"));
+    assert_eq!(rungs.timeout, Some(900));
+    assert_eq!(rungs.pools, vec!["rung".to_owned()]);
+}
+
+#[tokio::test]
+async fn create_project_writes_rung_timeout_alone() {
+    let fx = fixture("rungtimeout", Some(TOKEN), true);
+    let (errored, made) = fx
+        .create(json!({"name": "onlytimeout", "rungs": {"timeout": 60}}))
+        .await;
+    assert!(!errored, "{made}");
+    assert!(made.get("rungs_error").is_none(), "{made}");
+    let root = fx.projects.join("onlytimeout").canonicalize().unwrap();
+    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    assert_eq!(space.config.pump.unwrap().rungs.timeout, Some(60));
+}
+
+#[tokio::test]
+async fn bad_rung_timeout_and_pools_are_refused_before_anything_is_created() {
+    let fx = fixture("badsettings", Some(TOKEN), true);
+    let cases = [
+        (json!({"timeout": 0}), "rungs.timeout"),
+        (json!({"timeout": -5}), "rungs.timeout"),
+        (json!({"timeout": "900"}), "rungs.timeout"),
+        (json!({"timeout": 1.5}), "rungs.timeout"),
+        (json!({"pools": "rung"}), "rungs.pools"),
+        (json!({"pools": [""]}), "rungs.pools"),
+        (json!({"pools": ["ok", 3]}), "rungs.pools"),
+    ];
+    for (rungs, expect) in cases {
+        let (errored, value) = fx
+            .create(json!({"name": "nosettings", "rungs": rungs}))
+            .await;
+        assert!(errored, "{value}");
+        let message = value["error"].as_str().unwrap();
+        assert!(message.contains(expect), "{message}");
+        assert!(!fx.projects.join("nosettings").exists(), "{message}");
+        assert!(!fx.lanes.join("nosettings.git").exists(), "{message}");
+    }
 }
