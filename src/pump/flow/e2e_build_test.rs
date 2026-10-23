@@ -17,7 +17,7 @@ use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_error::STEP_ERROR_HELD;
-use crate::pump::flow::tick::OPERATOR_HOLD;
+use crate::pump::flow::tick::{OPERATOR_HOLD, RUN_ERROR};
 use crate::pump::jobs::JobStatus;
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::store::NeedBranchRow;
@@ -160,6 +160,19 @@ fn sync_conflict() -> String {
     )
 }
 
+/// The sorted exception kinds raised so far: the second field of every
+/// `exceptions.txt` line.
+fn kinds(rig: &Rig) -> Vec<String> {
+    let mut kinds: Vec<String> = rig
+        .exceptions()
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+        .collect();
+    kinds.sort();
+    kinds
+}
+
 fn verdict(rig: &Rig, node: &str) -> Result<Option<String>, VivariumError> {
     Ok(rig.row(node)?.and_then(|row| row.verdict))
 }
@@ -231,6 +244,7 @@ fn a_failing_st1_goes_to_the_cto() -> R {
     open(&mut rig, "cto")?;
     assert_eq!(verdict(&rig, "st1")?.as_deref(), Some("fail"));
     assert!(rig.row("merge2")?.is_none());
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -241,6 +255,7 @@ fn a_conflict_at_merge2_goes_to_the_cto() -> R {
     finish(&mut rig, "merge2", &conflict_main())?;
     open(&mut rig, "cto")?;
     assert_eq!(verdict(&rig, "merge2")?.as_deref(), Some("conflict"));
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -253,6 +268,7 @@ fn a_sync_that_publishes_nothing_goes_to_the_cto() -> R {
     open(&mut rig, "cto")?;
     assert_eq!(verdict(&rig, "sync1")?.as_deref(), Some("conflict"));
     assert!(rig.row("st1")?.is_none());
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -281,6 +297,7 @@ fn a_need_tip_equal_to_the_run_base_fails_the_merge_and_reaches_the_cto() -> R {
         reason.contains("nothing to merge") && reason.contains(TIP),
         "{reason}"
     );
+    assert_eq!(rig.exceptions(), "");
     Ok(())
 }
 
@@ -304,7 +321,7 @@ fn an_st1_with_a_missing_tool_is_held_with_one_env_alarm_and_no_cto() -> R {
         held,
         Some((StepState::Waiting, Some(OPERATOR_HOLD.to_string())))
     );
-    assert_eq!(rig.exceptions().matches(ENV_FAILURE).count(), 1);
+    assert_eq!(kinds(&rig), [ENV_FAILURE], "{}", rig.exceptions());
     assert!(rig.row("cto")?.is_none());
     assert_eq!(rig.runs()?.len(), 1);
     Ok(())
@@ -326,8 +343,7 @@ fn a_cto_lock_locks_the_need_with_one_alarm() -> R {
     let locked = rig.row("locked")?.map(|row| (row.state, row.verdict));
     assert_eq!(locked, Some((StepState::Waiting, None)));
     assert_eq!(rig.runs()?[0].state, "live");
-    let alarms = rig.exceptions().matches(LOCK_ALARM).count();
-    assert_eq!(alarms, 1, "{}", rig.exceptions());
+    assert_eq!(kinds(&rig), [LOCK_ALARM], "{}", rig.exceptions());
     Ok(())
 }
 
@@ -356,7 +372,14 @@ fn a_handler_that_fails_three_ticks_running_holds_the_step_with_one_alarm() -> R
         held,
         Some((StepState::Waiting, Some(OPERATOR_HOLD.to_string())))
     );
-    assert_eq!(rig.exceptions().matches(STEP_ERROR_HELD).count(), 1);
+    // The failing tick's run boundary raises its own alarm, once per distinct
+    // error, beside the hold.
+    assert_eq!(
+        kinds(&rig),
+        [RUN_ERROR, STEP_ERROR_HELD],
+        "{}",
+        rig.exceptions()
+    );
     assert!(rig.exceptions().contains("handler broke"));
     Ok(())
 }
@@ -379,7 +402,7 @@ fn a_sync1_whose_agent_cannot_run_is_held_with_one_env_alarm_and_no_cto() -> R {
         held,
         Some((StepState::Waiting, Some(OPERATOR_HOLD.to_string())))
     );
-    assert_eq!(rig.exceptions().matches(ENV_FAILURE).count(), 1);
+    assert_eq!(kinds(&rig), [ENV_FAILURE], "{}", rig.exceptions());
     assert!(rig.row("cto")?.is_none());
     assert!(rig.row("st1")?.is_none());
     Ok(())
