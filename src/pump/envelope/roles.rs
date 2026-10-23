@@ -39,6 +39,40 @@ impl RoleKind {
         Self::HeadCeo,
     ];
 
+    /// The role's name, as a seat or a person says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Researcher => "researcher",
+            Self::Planner => "planner",
+            Self::Admitter => "admitter",
+            Self::Slicer => "slicer",
+            Self::Auditor => "auditor",
+            Self::Judge => "judge",
+            Self::Cto => "cto",
+            Self::Merge => "merge",
+            Self::Hand => "hand",
+            Self::Repairer => "repairer",
+            Self::HeadCeo => "head-ceo",
+        }
+    }
+
+    /// The `answer` words the role's envelope accepts.
+    pub fn answer_words(self) -> &'static [&'static str] {
+        match self {
+            Self::Researcher => &["READY", "NOT READY", "NEEDS FURTHER REVIEW"],
+            Self::Planner => &["planned", "delivered", "operator", "hold", "design"],
+            Self::Admitter => &["admitted", "revise", "escalate"],
+            Self::Slicer => &["sliced", "escalate"],
+            Self::Auditor => &["clean_pass", "residual", "block_range", "block_ship"],
+            Self::Judge => &["block", "residual"],
+            Self::Cto => &["research", "plan", "slice", "rework", "lock"],
+            Self::Merge => &["merged", "conflict"],
+            Self::Hand => &["built", "blocked-scope", "failed"],
+            Self::Repairer => &["built", "failed"],
+            Self::HeadCeo => &["reviewed", "no-op"],
+        }
+    }
+
     /// The role of a flow step node; `None` for rung, fanout and other
     /// code-run nodes, and for merge-main (a code job, not a role reply).
     pub fn from_class(class: &NodeClass) -> Option<Self> {
