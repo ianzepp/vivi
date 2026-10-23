@@ -326,6 +326,7 @@ impl Mailspace {
     /// neither a local role nor a remote address, the letter is over the sync
     /// cap, or the storage operation fails.
     pub fn deliver_raw(&self, data: &[u8], folder: &str) -> Result<RawDelivery, VivariumError> {
+        compose::raw_letter(data)?;
         validate_message_headers(data)?;
         self.check_letter_size(data.len())?;
         let parsed = mail_parser::MessageParser::default()
