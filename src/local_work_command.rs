@@ -710,6 +710,10 @@ fn show_need(
             .join("  ");
         println!("  units    {rendered}");
     }
+    let runs = vivi::pump::flow::mail::read::run_count(&mailspace, handle);
+    if runs > 0 {
+        println!("  runs: {runs}");
+    }
     print_pump_need(&mailspace, handle, registry_open);
     Ok(())
 }
