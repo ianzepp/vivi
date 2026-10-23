@@ -1,4 +1,6 @@
 use super::*;
+use crate::letter::fixture::{need_body, task_body, task_body_with, want_body};
+use crate::letter::work::TaskFront;
 use crate::mailspace::SendRequest;
 use crate::storage::MessageIngestRequest;
 
@@ -8,6 +10,44 @@ fn roster() -> (Mailspace, tempfile::TempDir) {
     mailspace.add_identity("ceo").unwrap();
     mailspace.add_identity("cto").unwrap();
     (mailspace, tmp)
+}
+
+/// A task body with the given done conditions.
+fn task_done(done_when: &[&str], prose: &str) -> String {
+    let front = TaskFront {
+        done_when: done_when.iter().map(ToString::to_string).collect(),
+        ..TaskFront::default()
+    };
+    task_body_with(&front, prose)
+}
+
+/// A task body with done conditions and a write scope.
+fn task_with_scope(done_when: &[&str], write_scope: &[&str], prose: &str) -> String {
+    let front = TaskFront {
+        done_when: done_when.iter().map(ToString::to_string).collect(),
+        write_scope: write_scope.iter().map(ToString::to_string).collect(),
+        ..TaskFront::default()
+    };
+    task_body_with(&front, prose)
+}
+
+/// A task body with done conditions and dependencies.
+fn task_with_deps(done_when: &[&str], deps: &[String], prose: &str) -> String {
+    let front = TaskFront {
+        done_when: done_when.iter().map(ToString::to_string).collect(),
+        depends_on: deps.to_vec(),
+        ..TaskFront::default()
+    };
+    task_body_with(&front, prose)
+}
+
+/// A step task body that also carries one done condition.
+fn task_with_step(step: TaskFront, done_when: &str) -> String {
+    let front = TaskFront {
+        done_when: vec![done_when.to_string()],
+        ..step
+    };
+    task_body_with(&front, "")
 }
 
 fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str, body: &str) -> String {
@@ -40,15 +80,18 @@ fn file_letter(
     deps: &[&str],
 ) -> String {
     let domain = mailspace.address_domain();
-    let mut headers = format!(
+    let front = TaskFront {
+        done_when: vec![subject.to_string()],
+        depends_on: deps.iter().map(ToString::to_string).collect(),
+        ..TaskFront::default()
+    };
+    let body = task_body_with(&front, "");
+    let bytes = format!(
         "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: {subject}\r\n\
          Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
-         X-Vivi-Kind: {kind}\r\n"
-    );
-    for dep in deps {
-        headers.push_str(&format!("X-Vivi-Depends-On: {dep}\r\n"));
-    }
-    let bytes = format!("{headers}\r\ndone_when: {subject}\r\n").into_bytes();
+         X-Vivi-Format: 1\r\nX-Vivi-Kind: {kind}\r\n\r\n{body}"
+    )
+    .into_bytes();
     let storage = mailspace.storage().unwrap();
     let stored = storage
         .ingest_message(
@@ -114,7 +157,11 @@ fn ready_task_with_done_when_dispatches() {
         "tasks",
         "task",
         "unit A",
-        "goal: g.md\nunit: U-1\ndone_when: malformed input rejected\nwrite_scope: src/validate.rs",
+        &task_with_scope(
+            &["malformed input rejected"],
+            &["src/validate.rs"],
+            "goal: g.md\nunit: U-1",
+        ),
     );
     let dispatch =
         manifest_for(&mailspace, &task).unwrap_or_else(|| panic!("expected dispatch for {task}"));
@@ -132,7 +179,7 @@ fn ready_wants_require_promotion() {
         "wants",
         "want",
         "later work",
-        "done_when: exists",
+        &want_body("later work", ""),
     );
     let exception =
         exception_for(&mailspace, &want).unwrap_or_else(|| panic!("expected exception for {want}"));
@@ -143,7 +190,13 @@ fn ready_wants_require_promotion() {
 #[test]
 fn clauseless_wants_are_parked_without_a_missing_clause_note() {
     let (mailspace, _tmp) = roster();
-    let want = send_item(&mailspace, "wants", "want", "parked idea", "someday");
+    let want = send_item(
+        &mailspace,
+        "wants",
+        "want",
+        "parked idea",
+        &want_body("parked idea", "someday"),
+    );
     let exception =
         exception_for(&mailspace, &want).unwrap_or_else(|| panic!("expected exception for {want}"));
     assert_eq!(exception.reason, "want_requires_promotion");
@@ -154,7 +207,13 @@ fn clauseless_wants_are_parked_without_a_missing_clause_note() {
 #[test]
 fn task_without_done_when_is_exception() {
     let (mailspace, _tmp) = roster();
-    let task = send_item(&mailspace, "tasks", "task", "vague work", "just do it");
+    let task = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "vague work",
+        &task_body("just do it"),
+    );
     let exception =
         exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
     assert_eq!(exception.reason, "no_done_when");
@@ -174,14 +233,14 @@ fn pump_marked_tasks_are_pump_owned_and_unmarked_unchanged() {
         "tasks",
         "task",
         "step",
-        "pump-step: abc r1 plan\ndone_when: ANSWER word",
+        &task_with_step(TaskFront::step("abc", 1, "plan"), "ANSWER word"),
     );
     let sentinel = send_item(
         &mailspace,
         "tasks",
         "task",
         "sentinel",
-        "pump-run-sentinel: abc r1\ndone_when: run ends",
+        &task_with_step(TaskFront::sentinel("abc", 1), "run ends"),
     );
     for item in [&step, &sentinel] {
         assert!(manifest_for(&mailspace, item).is_none(), "{item}");
@@ -195,7 +254,7 @@ fn pump_marked_tasks_are_pump_owned_and_unmarked_unchanged() {
         "tasks",
         "task",
         "plain",
-        "goal: g.md\ndone_when: ok",
+        &task_done(&["ok"], "goal: g.md"),
     );
     assert!(manifest_for(&mailspace, &plain).is_some());
 }
@@ -208,7 +267,7 @@ fn no_done_when_detail_names_coordination_fields() {
         "tasks",
         "task",
         "audit pass",
-        "verdict: clean_pass\nrepo: vivi\ntip: 0a6d1a1\nNote: prose stays out.",
+        &task_body("verdict: clean_pass\nrepo: vivi\ntip: 0a6d1a1\nNote: prose stays out."),
     );
     let exception =
         exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
@@ -229,14 +288,14 @@ fn lowered_need_awaits_units() {
         "needs",
         "need",
         "lower me",
-        "done_when: join complete",
+        &need_body(&["join complete"], ""),
     );
     let unit = send_item(
         &mailspace,
         "tasks",
         "task",
         "unit 1",
-        "done_when: unit lands",
+        &task_done(&["unit lands"], ""),
     );
     mailspace.backlog_bind_units(&need, &[unit]).unwrap();
 
@@ -248,7 +307,13 @@ fn lowered_need_awaits_units() {
 #[test]
 fn blocked_nodes_do_not_appear() {
     let (mailspace, _tmp) = roster();
-    let dep = send_item(&mailspace, "tasks", "task", "first", "done_when: lands");
+    let dep = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "first",
+        &task_done(&["lands"], ""),
+    );
     // A task depending on the first one stays out of the manifest entirely
     // until its prerequisite completes.
     let result = mailspace
@@ -258,11 +323,11 @@ fn blocked_nodes_do_not_appear() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "second".into(),
-            body: "done_when: lands".into(),
+            body: task_with_deps(&["lands"], &[dep], ""),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: vec![dep],
+            depends_on: Vec::new(),
         })
         .unwrap();
     let blocked_item = &result.delivered[0].handle;
@@ -294,7 +359,7 @@ fn blocked_dependent_awaiting_unheld_dependency_is_exception() {
         "tasks",
         "task",
         "free to go",
-        "done_when: lands",
+        &task_done(&["lands"], ""),
     );
 
     let manifest = mailspace.step_shadow().unwrap();
@@ -331,7 +396,7 @@ fn apply_rejects_unsettled_item() {
         "tasks",
         "task",
         "still open",
-        "done_when: lands",
+        &task_done(&["lands"], ""),
     );
     let manifest = mailspace.step_apply(&task).unwrap();
     let exception = manifest
@@ -351,7 +416,7 @@ fn apply_completes_settled_task_and_records_decision() {
         "tasks",
         "task",
         "settled work",
-        "done_when: lands",
+        &task_done(&["lands"], ""),
     );
     mailspace
         .move_item("ceo", &task, "done", None, "task done", None)
@@ -398,7 +463,13 @@ fn apply_completes_settled_task_and_records_decision() {
 #[test]
 fn lifecycle_completion_records_decision_event() {
     let (mailspace, _tmp) = roster();
-    let task = send_item(&mailspace, "tasks", "task", "unit work", "done_when: lands");
+    let task = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "unit work",
+        &task_done(&["lands"], ""),
+    );
     mailspace
         .move_item("ceo", &task, "done", None, "task done", None)
         .unwrap();
@@ -455,7 +526,7 @@ fn settled_rewound_task(mailspace: &Mailspace) -> String {
         "tasks",
         "task",
         "judged work",
-        "done_when: tests pass\ndone_when: lint clean\nwrite_scope: src/x.rs",
+        &task_with_scope(&["tests pass", "lint clean"], &["src/x.rs"], ""),
     );
     mailspace
         .move_item("ceo", &task, "done", None, "task done", None)
@@ -544,6 +615,23 @@ fn judged_apply_skips_cleanly_on_provider_error() {
         !_tmp.path().join(".vivi/judgment-corpus.jsonl").exists(),
         "no corpus record on provider failure"
     );
+}
+
+// legacy: flips to letter_invalid in W3B2-39
+#[test]
+fn legacy_prose_task_still_dispatches_through_the_transitional_reader() {
+    let (mailspace, _tmp) = roster();
+    let task = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "old unit",
+        "done_when: lands\nwrite_scope: src/old.rs",
+    );
+    let dispatch =
+        manifest_for(&mailspace, &task).unwrap_or_else(|| panic!("expected dispatch for {task}"));
+    assert_eq!(dispatch.done_when_clauses, 1);
+    assert!(dispatch.write_scope);
 }
 
 #[test]
