@@ -384,6 +384,7 @@ fn finish_cadence_spec(
     let mut spec = JobSpec::new(id, kind, role.name.clone(), subject, body);
     spec.budget = ctx.cfg.dispatch.budget;
     spec.read_only = true;
+    spec.from_ref = Some(ctx.cfg.main.clone());
     spec.payload = serde_json::json!({
         "cadence": role.cadence,
         "scheduled_at": now,

@@ -79,6 +79,11 @@ pub fn spec(
     spec.target.clone_from(&original.target);
     spec.pool_candidates.clone_from(&original.pool_candidates);
     spec.local_only = original.local_only;
+    spec.from_ref.clone_from(&original.from_ref);
+    spec.extra_targets.clone_from(&original.extra_targets);
+    spec.with.clone_from(&original.with);
+    spec.builtin_role.clone_from(&original.builtin_role);
+    spec.model.clone_from(&original.model);
     spec.read_only = true;
     spec.budget = BUDGET;
     spec

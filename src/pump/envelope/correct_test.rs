@@ -39,6 +39,11 @@ fn row(job: &str, attempt: u32) -> StepJobRow {
 fn original(id: &str, message: &str) -> PoolJob {
     let mut job = PoolJob::from(JobSpec::new(id, "planner", "planner", "s", "b"));
     job.target = Some("vivi".to_owned());
+    job.from_ref = Some("main".to_owned());
+    job.extra_targets = vec!["vivi-server".to_owned()];
+    job.with = vec!["need/x".to_owned()];
+    job.builtin_role = Some("planner".to_owned());
+    job.model = Some("m1".to_owned());
     job.outcome = Some(JobOutcome {
         state: "finished".to_owned(),
         detail: String::new(),
@@ -82,6 +87,26 @@ fn the_spec_names_the_step_and_asks_for_the_envelope_only() {
     assert!(got.body.contains("keep every fact"));
     assert!(got.body.contains("planner: answer"));
     assert!(got.body.contains("the plan, no fences"));
+}
+
+#[test]
+fn the_correction_carries_the_originals_dispatch_fields() {
+    let job = original("j1", "x");
+    let got = spec(
+        "n1",
+        &row("j1", 1),
+        "planner",
+        RoleKind::Planner,
+        &job,
+        &EnvelopeError::NoOpening,
+        1,
+    );
+    assert_eq!(got.from_ref.as_deref(), Some("main"));
+    assert_eq!(got.extra_targets, vec!["vivi-server".to_owned()]);
+    assert_eq!(got.with, vec!["need/x".to_owned()]);
+    assert_eq!(got.builtin_role.as_deref(), Some("planner"));
+    assert_eq!(got.model.as_deref(), Some("m1"));
+    assert!(got.task.is_none());
 }
 
 #[test]
