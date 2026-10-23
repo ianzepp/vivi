@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VivariumError;
-use crate::letter::work::NeedFront;
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
@@ -76,18 +75,25 @@ pub struct NeedAuditRequirement {
 
 /// The requirements an audit must account for. A root message with front
 /// matter gives one requirement per `done_when` entry, ids `<handle>-d<n>`
-/// (1-based). A root without front matter (an old prose need), and every
-/// later message (an amendment), is one whole-message requirement.
-pub(crate) fn requirements(ctx: &Ctx, need: &str, messages: &[Value]) -> Vec<NeedAuditRequirement> {
+/// (1-based); every later message (an amendment) is one whole-message
+/// requirement.
+///
+/// # Errors
+/// Returns [`VivariumError`] naming the handle when the root is not a valid
+/// need letter.
+pub(crate) fn requirements(
+    ctx: &Ctx,
+    need: &str,
+    messages: &[Value],
+) -> Result<Vec<NeedAuditRequirement>, VivariumError> {
     let whole = whole_message_requirements(ctx, need, messages);
     let Some(root) = messages.first() else {
-        return whole;
+        return Ok(whole);
     };
     let handle = root["handle"].as_str().unwrap_or("");
     let body = root["body"].as_str().unwrap_or("");
-    let Ok(envelope) = crate::letter::parse_letter::<NeedFront>(body) else {
-        return whole;
-    };
+    let envelope = crate::letter::read::need_of(handle, body)
+        .map_err(|error| VivariumError::Message(format!("need {handle}: {error}")))?;
     let root_id = format!("{handle}-r0");
     let mut out: Vec<NeedAuditRequirement> = envelope
         .front
@@ -100,7 +106,7 @@ pub(crate) fn requirements(ctx: &Ctx, need: &str, messages: &[Value]) -> Vec<Nee
         })
         .collect();
     out.extend(whole.into_iter().filter(|req| req.id != root_id));
-    out
+    Ok(out)
 }
 
 /// One requirement per source message: the requirement text is one short line

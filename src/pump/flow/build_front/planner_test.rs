@@ -60,11 +60,17 @@ fn rig(with_role: bool, run_no: u32) -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
+    let mut mail = FakeMail::new("pump");
+    let body = crate::letter::fixture::need_body(&["build the widget"], "prose");
+    let sent = mail.send_step("pump", "pump", "the need", &body, &[])?;
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         run,
     })
 }
@@ -133,6 +139,23 @@ fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
 
     let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\nthread:";
     assert!(spec.body.contains(lines), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn a_need_root_without_front_matter_fails_the_brief_naming_the_handle() -> R {
+    let mut rig = rig(true, 1)?;
+    let need = rig
+        .mail
+        .send_step("pump", "pump", "the need", "Build the widget", &[])?;
+    rig.run.need = need.clone();
+
+    let Err(err) = start(&rig, "plan") else {
+        return Err(VivariumError::Other(String::from("brief did not fail")));
+    };
+
+    assert!(err.to_string().contains(&need), "{err}");
+    assert!(err.to_string().contains("front matter"), "{err}");
     Ok(())
 }
 

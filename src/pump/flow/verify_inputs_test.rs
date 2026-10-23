@@ -159,7 +159,7 @@ fn thread_json() -> String {
             "message_id": "message-1",
             "from": "operator@local",
             "subject": "Need",
-            "body": "Build the thing"
+            "body": crate::letter::fixture::need_body(&["Build the thing"], "")
         },
         {
             "handle": "reply-1",
@@ -178,9 +178,9 @@ fn need_thread_parses_a_need_show_reply() {
     f.host.reply("need show", 0, &thread_json());
     let messages = need_thread(&f.ctx, NEED).unwrap();
     assert_eq!(messages.len(), 2);
-    let reqs = requirements(&f.ctx, NEED, &messages);
+    let reqs = requirements(&f.ctx, NEED, &messages).unwrap();
     assert_eq!(reqs.len(), 2);
-    assert_eq!(reqs[0].id, "need-1-r0");
+    assert_eq!(reqs[0].id, "need-1-d1");
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn a_front_matter_root_gives_one_requirement_per_done_when_entry() {
         json!({"handle": NEED, "from": "operator@local", "body": root}),
         json!({"handle": "reply-1", "from": "operator@local", "body": "also keep the CLI shape"}),
     ];
-    let reqs = requirements(&f.ctx, NEED, &messages);
+    let reqs = requirements(&f.ctx, NEED, &messages).unwrap();
     let ids: Vec<&str> = reqs.iter().map(|req| req.id.as_str()).collect();
     assert_eq!(ids, ["need-1-d1", "need-1-d2", "reply-1-r0"]);
     assert_eq!(reqs[0].text, "first thing");
@@ -199,15 +199,15 @@ fn a_front_matter_root_gives_one_requirement_per_done_when_entry() {
 }
 
 #[test]
-fn a_prose_root_keeps_the_whole_message_requirement() {
+fn a_root_without_front_matter_is_an_error_naming_the_handle() {
     let f = fixture();
     let messages: Vec<serde_json::Value> = vec![
         json!({"handle": NEED, "from": "operator@local", "body": "Build the thing"}),
         json!({"handle": "reply-1", "from": "operator@local", "body": "more"}),
     ];
-    let reqs = requirements(&f.ctx, NEED, &messages);
-    let ids: Vec<&str> = reqs.iter().map(|req| req.id.as_str()).collect();
-    assert_eq!(ids, ["need-1-r0", "reply-1-r0"]);
+    let err = requirements(&f.ctx, NEED, &messages).unwrap_err();
+    assert!(err.to_string().contains(NEED), "{err}");
+    assert!(err.to_string().contains("front matter"), "{err}");
 }
 
 #[test]

@@ -75,7 +75,7 @@ fn with_branch(f: &Fixture) {
         0,
         &serde_json::to_string(&json!([
             {"handle": NEED, "message_id": "m1", "from": "operator@local",
-             "subject": "Need", "body": "Build the thing"},
+             "subject": "Need", "body": crate::letter::fixture::need_body(&["Build the thing"], "")},
             {"handle": "reply-1", "message_id": "m2", "from": "operator@local",
              "subject": "Need amendment", "body": "also keep the CLI shape"}
         ]))
@@ -163,7 +163,8 @@ fn a_first_pass_is_a_read_only_auditor_job_with_range_and_plan() {
     assert!(spec.body.contains("vivi/need/need-1"));
     assert!(spec.body.contains("PLAN TEXT"));
     assert!(spec.body.contains("reply-1: also keep the CLI shape"));
-    assert!(spec.body.contains("need-1-r0"));
+    assert!(spec.body.contains("need-1-d1: Build the thing"));
+    assert!(spec.body.contains("reply-1-r0"));
     assert!(spec.body.contains("in parallel"));
     assert!(!spec.body.contains("Second pass"));
 }
@@ -247,6 +248,25 @@ fn no_need_branch_row_is_an_error_naming_the_need() {
     let f = fixture();
     let err = start(&f, "audit1").unwrap_err();
     assert!(err.to_string().contains(NEED), "{err}");
+}
+
+#[test]
+fn a_prose_need_root_fails_the_audit_brief_naming_the_handle() {
+    let f = fixture();
+    with_branch(&f);
+    plan(&f);
+    f.host.reply(
+        "need show",
+        0,
+        &serde_json::to_string(&json!([
+            {"handle": NEED, "message_id": "m1", "from": "operator@local",
+             "subject": "Need", "body": "Build the thing"}
+        ]))
+        .unwrap(),
+    );
+    let err = start(&f, "audit1").unwrap_err();
+    assert!(err.to_string().contains(NEED), "{err}");
+    assert!(err.to_string().contains("front matter"), "{err}");
 }
 
 #[test]
