@@ -5,13 +5,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{GoalView, Mailspace};
 use crate::error::VivariumError;
 use crate::role_schedule::{ScheduleReport, ScheduleState};
 use crate::role_status::ProcessReport;
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
+
+mod wants;
 
 /// What a board read includes and filters.
 #[derive(Debug, Clone, Default)]
@@ -122,6 +124,17 @@ pub struct BoardItem {
     pub from: String,
     pub subject: String,
     pub last_event: Option<BoardEvent>,
+    /// The needs serving this want, with their state. Empty for tasks and
+    /// needs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serving: Vec<BoardServing>,
+}
+
+/// One need serving a want on the board; `state` is `open` or `done`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardServing {
+    pub handle: String,
+    pub state: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +217,7 @@ fn build_identity_boards(
     let account_identity = account_identity_map(&scopes);
     let accounts = unique_scope_accounts(&scopes);
     let mut messages = storage.list_messages_by_account_roles_raw(&accounts, &board_roles())?;
+    messages.extend(wants::reopened_rows(&storage, &account_identity)?);
     apply_scoped_handles(&storage, &scopes, &account_identity, &mut messages)?;
     let ids: Vec<String> = messages
         .iter()
@@ -211,7 +225,7 @@ fn build_identity_boards(
         .collect();
     let events = storage.list_mailspace_events_for_messages(&ids)?;
     let mut grouped = group_board_messages(messages, &account_identity);
-    Ok(identities
+    identities
         .into_iter()
         .map(|identity| {
             build_identity_board(
@@ -226,7 +240,7 @@ fn build_identity_boards(
                 with_process,
             )
         })
-        .collect())
+        .collect()
 }
 
 /// The pump block: counts from `pump.db`, plus complete needs still open in
@@ -448,12 +462,16 @@ fn build_identity_board(
     wants_cap: usize,
     since: Option<DateTime<Utc>>,
     with_process: bool,
-) -> IdentityBoard {
+) -> Result<IdentityBoard, VivariumError> {
     let (tasks_open, needs_open, wants_open) = partition_board_messages(messages);
+    let (wants_open, mut serving) = wants::open_wants(storage, wants_open)?;
     let tasks = board_items(tasks_open, events_by_message, None, since);
     let needs = board_items(needs_open, events_by_message, None, since);
-    let (wants, wants_count) =
+    let (mut wants, wants_count) =
         board_items_with_count(wants_open, events_by_message, Some(wants_cap), since);
+    for want in &mut wants {
+        want.serving = serving.remove(&want.handle).unwrap_or_default();
+    }
     let (model, thinking) = role_capacity(mailspace, identity);
     let schedule = mailspace
         .schedule_report_with(storage, identity)
@@ -463,7 +481,7 @@ fn build_identity_board(
     } else {
         cadence_runs.get(identity).map(cadence_run_label)
     };
-    IdentityBoard {
+    Ok(IdentityBoard {
         identity: identity.into(),
         address: mailspace.address_for(identity),
         model,
@@ -476,7 +494,7 @@ fn build_identity_board(
         tasks,
         needs,
         wants,
-    }
+    })
 }
 
 fn role_capacity(mailspace: &Mailspace, identity: &str) -> (Option<String>, Option<String>) {
@@ -593,6 +611,7 @@ fn board_item(message: StoredMessageView, events: &[MailspaceEvent]) -> BoardIte
         from: message.from_addr,
         subject: message.subject,
         last_event: events.last().map(board_event),
+        serving: Vec::new(),
     }
 }
 
