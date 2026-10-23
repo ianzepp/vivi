@@ -34,7 +34,7 @@ fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: format!("a {kind}"),
-            body: "done_when: ok\n".into(),
+            body: crate::letter::fixture::body_for(kind, ""),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
