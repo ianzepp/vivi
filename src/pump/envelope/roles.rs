@@ -122,6 +122,10 @@ pub struct Check {
 pub struct FollowUp {
     pub paths: Vec<String>,
     pub need: String,
+    /// An optional follow-up is posted on the slice task only; a required one
+    /// goes to the slicer in rework mode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }
 
 /// A hand's envelope.
