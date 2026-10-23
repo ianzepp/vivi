@@ -318,7 +318,7 @@ fn refuse_second_dispatch(space: &Mailspace, handle: &str) -> Result<(), Vivariu
 /// there costs nothing. The rules gain the role's charter as a standing
 /// prompt whose pool note follows the pool's bridge: with the bridge on it
 /// names the server's vivi tools, without it the receipt ending. A role with
-/// no charter leaves the pool rules unchanged.
+/// no charter, or no role, gets the pool rules followed by the project rules.
 fn resolve_dispatch(
     command: &PoolDispatchCommand,
     config: &PoolConfig,
@@ -361,7 +361,7 @@ fn resolve_dispatch(
             &load_project_rules(space)?,
             config.bridge.enabled,
         ),
-        None => pool_rules,
+        None => role_dispatch::with_project_rules(&pool_rules, &load_project_rules(space)?),
     };
     let role_line = role_line(command, role.as_ref(), &resolved);
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
