@@ -56,11 +56,10 @@ pub use pump_command::{
     PumpAdoptCommand, PumpCloseoutCommand, PumpControlCommand, PumpDoneCommand, PumpExportCommand,
     PumpGateCommand, PumpGateSetCommand, PumpHealthCommand, PumpHistoryCommand, PumpListCommand,
     PumpListStatus, PumpLogCommand, PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand,
-    PumpPrioritySetCommand, PumpRecoverCommand, PumpReopenCommand, PumpReplanCommand,
-    PumpRequeueCommand, PumpRunCommand, PumpRungsCommand, PumpRungsSetCommand,
-    PumpRungsShowCommand, PumpSendCommand, PumpServiceAddCommand, PumpServiceCommand,
-    PumpServiceProjectCommand, PumpShowCommand, PumpStatusCommand, PumpSubcommand,
-    PumpWithdrawCommand,
+    PumpPrioritySetCommand, PumpReopenCommand, PumpReplanCommand, PumpRequeueCommand,
+    PumpRunCommand, PumpRungsCommand, PumpRungsSetCommand, PumpRungsShowCommand, PumpSendCommand,
+    PumpServiceAddCommand, PumpServiceCommand, PumpServiceProjectCommand, PumpShowCommand,
+    PumpStatusCommand, PumpSubcommand, PumpWithdrawCommand,
 };
 pub use report_command::{
     ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsCommand, ReportRecordsFormat,

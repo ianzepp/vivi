@@ -60,7 +60,6 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             vivi::pump::withdraw::run(&project_root(&cmd.project), cmd)
         }
         PumpSubcommand::Replan(cmd) => vivi::pump::replan::run(&project_root(&cmd.project), cmd),
-        PumpSubcommand::Recover(cmd) => vivi::pump::recover::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Answer {
             step,
             word,
