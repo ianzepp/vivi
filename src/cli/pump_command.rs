@@ -45,7 +45,7 @@ pub enum PumpSubcommand {
     },
     /// Requeue one or more units: posts an action on the need's open pump record, applied at the pump's next tick
     Requeue(PumpRequeueCommand),
-    /// Withdraw every unfinished unit of one or more needs and close their pump record `withdrawn`; applied at the pump's next tick
+    /// Close one or more needs `withdrawn`, then withdraw every unfinished unit and close their pump record; the pump applies the rest at its next tick
     Withdraw(PumpWithdrawCommand),
     /// Supersede a need's plan: closes its pump record `superseded`, opens a fresh one and plans it again
     Replan(PumpReplanCommand),
@@ -431,9 +431,9 @@ pub struct PumpExportCommand {
     pub project: Option<PathBuf>,
 }
 
-/// Close needs inside the pump without touching the mail board. Posts a
-/// withdraw action on each need's open pump record; the running pump applies
-/// it at its next tick: every unfinished unit of the need (stuck ones
+/// Stop needs. Closes each need `withdrawn` (as the pump identity, so the
+/// close syncs), then posts a withdraw action on its open pump record; the
+/// running pump applies it at its next tick: every unfinished unit of the need (stuck ones
 /// included) is withdrawn, the need joins the closed set so nothing re-plans
 /// or dispatches it, and its pump record is closed `withdrawn`. Refused for a
 /// need with no open pump record.
