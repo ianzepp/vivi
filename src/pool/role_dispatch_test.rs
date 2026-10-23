@@ -118,6 +118,23 @@ fn privileged_publication_is_limited_to_merge_and_guarded_release_roles() {
 }
 
 #[test]
+fn a_repairer_publishes_only_one_repair_segment() {
+    let repairer = role("fixer", Some("Repairer"), None);
+    assert!(validate_publish(Some(&repairer), Some("refs/heads/vivi/repair/x"), None).is_ok());
+    for bad in [
+        "refs/heads/vivi/repair/x/y",
+        "refs/heads/vivi/repair/",
+        "refs/heads/main",
+        "refs/heads/vivi/unit/x",
+    ] {
+        assert!(
+            validate_publish(Some(&repairer), Some(bad), None).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn triage_and_cadence_kinds_are_read_only_too() {
     for kind in [
         "triage", "cadence", "AUDITOR", "Triage", "steward", "head", "gate",

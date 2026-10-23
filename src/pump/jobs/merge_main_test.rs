@@ -76,10 +76,9 @@ fn the_job_runs_on_a_scratch_branch_so_pool_dispatch_accepts_it() {
     let job = spec(&ctx, "default", "n1", NEED_TIP, TIP, "step1").unwrap();
 
     let branch = job.branch.unwrap();
-    assert!(
-        branch.starts_with("pump/merge-main/default/merge-main-step1-"),
-        "{branch}"
-    );
+    let rest = branch.strip_prefix("pump/merge-main/").unwrap();
+    assert!(rest.starts_with("default-merge-main-step1-"), "{branch}");
+    assert!(!rest.is_empty() && !rest.contains('/'), "{branch}");
     assert_ne!(branch, "main");
 }
 
