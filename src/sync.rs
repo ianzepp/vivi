@@ -241,6 +241,10 @@ mod deps;
 mod serves_index_test;
 
 #[cfg(test)]
+#[path = "sync/want_state_sync_test.rs"]
+mod want_state_sync_test;
+
+#[cfg(test)]
 #[path = "sync/events_test.rs"]
 mod events;
 

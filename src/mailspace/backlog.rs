@@ -134,6 +134,9 @@ impl Mailspace {
         if let Some(parent) = target.subgraph.clone() {
             self.backlog_complete_if_join_complete(&parent, joined)?;
         }
+        if target.kind == "need" {
+            self.settle_served_want(handle)?;
+        }
         Ok(true)
     }
 
@@ -431,6 +434,19 @@ impl Mailspace {
         via: &str,
         joined: &mut Vec<String>,
     ) -> Result<(), VivariumError> {
+        self.settle_need_mailbox_moves(handle, to_done, via, joined)?;
+        self.settle_served_want(handle)
+    }
+
+    /// The folder move and event application of
+    /// [`Mailspace::settle_need_mailbox_collect`].
+    fn settle_need_mailbox_moves(
+        &self,
+        handle: &str,
+        to_done: bool,
+        via: &str,
+        joined: &mut Vec<String>,
+    ) -> Result<(), VivariumError> {
         let storage = self.storage()?;
         let Ok(message_id) = storage.resolve_message_token(handle) else {
             return Ok(());
@@ -527,13 +543,15 @@ impl Mailspace {
                 self.settle_need_mailbox(&parent, false, "join-reopen")?;
             }
         }
+        if target.kind == "need" {
+            self.settle_served_want(handle)?;
+        }
         Ok(Some(target.kind))
     }
 
     /// Keep the backlog node in step with a lifecycle folder move. Work-item
     /// closes (tasks/needs/wants → done, and the sender's own `sent` copy →
-    /// done) and their reversals touch graph state; promotion (wants→needs)
-    /// intentionally leaves the node open.
+    /// done) and their reversals touch graph state.
     pub(super) fn sync_backlog_node(
         &self,
         from_role: &str,
