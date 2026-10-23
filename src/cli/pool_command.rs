@@ -22,7 +22,7 @@ pub enum PoolSubcommand {
     Reconcile(PoolReconcileCommand),
     /// Check the pools, their providers and repositories, naming the fix for each finding; read-only unless --test (which needs --pool when there are several)
     Doctor(PoolDoctorCommand),
-    /// Reclaim disposable build output and recycle finished work lanes
+    /// Reclaim disposable build output on free slots
     Clean(PoolCleanCommand),
     /// Reset a free slot onto a freshly fetched origin branch
     Reset(PoolResetCommand),
@@ -331,10 +331,6 @@ pub struct PoolScaleCommand {
 
 #[derive(Debug, Args)]
 pub struct PoolCleanCommand {
-    /// Reclaim from a serialized request written by a dispatched cleanup job
-    #[arg(long, conflicts_with_all = ["dry_run", "pool", "base"])]
-    pub after_merged_request: Option<PathBuf>,
-
     /// Report reclaimable space and stay put
     #[arg(long)]
     pub dry_run: bool,
@@ -347,7 +343,7 @@ pub struct PoolCleanCommand {
     #[arg(long)]
     pub pool: Option<String>,
 
-    /// Origin branch to restore recycled work lanes onto (default: [pump] main)
+    /// Origin branch to reset free remote slots onto (default: [pump] main)
     #[arg(long)]
     pub base: Option<String>,
 

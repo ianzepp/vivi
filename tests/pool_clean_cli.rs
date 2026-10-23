@@ -4,9 +4,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use vivi::pool::clean::{ReclaimRequest, ReclaimUnit};
-use vivi::pump::state::Status;
-
 fn vivi(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args(args)
@@ -123,7 +120,9 @@ fn clean_help_names_dry_run() {
     assert!(said.contains("--dry-run"), "{said}");
     assert!(said.contains("reclaim"), "{said}");
     assert!(said.contains("--base"), "{said}");
-    assert!(said.contains("--after-merged-request"), "{said}");
+    assert!(!said.contains("--after-merged-request"), "{said}");
+    assert!(!said.contains("lane"), "{said}");
+    assert!(!said.contains("merged"), "{said}");
 }
 
 #[test]
@@ -154,46 +153,7 @@ fn dry_run_reports_bytes_and_live_clean_empties_the_build_dir() {
     );
 }
 
-#[test]
-fn dispatched_reclaim_uses_the_request_source_project_not_the_worker_checkout() {
-    let (_tmp, project, _repo, root) = scaffold();
-    let slot = plant_slot(&root, &project);
-    let request = ReclaimRequest {
-        version: 1,
-        source_project: project.canonicalize().unwrap(),
-        mailspace_id: mailspace_key(&project),
-        unit: ReclaimUnit {
-            need: String::from("need-1"),
-            target: String::from("default"),
-            status: Status::Merged,
-            task: None,
-            branch: None,
-            pool: Some(String::from("lanes")),
-        },
-        pools: vec![String::from("lanes")],
-        merging_targets: Vec::new(),
-    };
-    let request_path = project.join("reclaim-request.json");
-    std::fs::write(&request_path, serde_json::to_vec(&request).unwrap()).unwrap();
-
-    let out = vivi(&[
-        "pool",
-        "clean",
-        "--after-merged-request",
-        request_path.to_str().unwrap(),
-        "--porcelain",
-    ]);
-
-    assert!(out.status.success(), "{}", text(&out));
-    assert!(text(&out).contains("cleaned"), "{}", text(&out));
-    assert!(!slot.join("repo/target/blob").exists());
-    assert!(
-        !project.join("pump-home/pump.db").exists(),
-        "the dispatched cleanup must not read or depend on pump.db"
-    );
-}
-
-fn plant_worktree(root: &Path, project: &Path, repo: &Path, dirty: bool) -> PathBuf {
+fn plant_worktree(root: &Path, project: &Path, repo: &Path) -> PathBuf {
     let slot = plant_slot(root, project);
     std::fs::write(slot.join("marks/last_task"), "abcd1234\n").unwrap();
     std::fs::write(
@@ -212,9 +172,6 @@ fn plant_worktree(root: &Path, project: &Path, repo: &Path, dirty: bool) -> Path
             slot.join("repo").to_str().unwrap(),
         ],
     );
-    if dirty {
-        std::fs::write(slot.join("repo/a.txt"), "local edit\n").unwrap();
-    }
     slot
 }
 
@@ -226,54 +183,6 @@ fn git_head(repo: &Path) -> String {
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn write_merged_state(project: &Path) {
-    let home = project.join("pump-home");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(
-        home.join("state.json"),
-        r#"{"units":{"u1":{"status":"merged","task":"abcd1234","branch":"unit/u1-a1","pool":"lanes"}}}"#,
-    )
-    .unwrap();
-}
-
-#[test]
-fn dirty_worktree_is_reported_and_kept() {
-    let (_tmp, project, repo, root) = scaffold();
-    let slot = plant_worktree(&root, &project, &repo, true);
-    write_merged_state(&project);
-    let proj = project.to_str().unwrap();
-    let out = vivi(&["pool", "clean", "--project", proj, "--porcelain"]);
-    assert!(out.status.success(), "{}", text(&out));
-    let said = text(&out);
-    assert!(said.contains("skipped"), "{said}");
-    assert!(said.contains("uncommitted"), "{said}");
-    assert_eq!(
-        std::fs::read_to_string(slot.join("repo/a.txt")).unwrap(),
-        "local edit\n"
-    );
-}
-
-#[test]
-fn merged_into_the_merge_lane_recycles_a_clean_worktree() {
-    let (_tmp, project, repo, root) = scaffold();
-    let slot = plant_worktree(&root, &project, &repo, false);
-    write_merged_state(&project);
-    let proj = project.to_str().unwrap();
-    let out = vivi(&["pool", "clean", "--project", proj, "--porcelain"]);
-    assert!(out.status.success(), "{}", text(&out));
-    let said = text(&out);
-    assert!(said.contains("worktree"), "{said}");
-    assert!(said.contains("cleaned"), "{said}");
-    assert!(slot.join("repo/.git").exists());
-    assert!(!slot.join("repo/target/blob").exists());
-    assert_eq!(
-        std::fs::read_to_string(slot.join("marks/base_ref"))
-            .unwrap()
-            .trim(),
-        "main"
-    );
 }
 
 fn advance_origin_main(repo: &Path, msg: &str) -> String {
@@ -316,7 +225,7 @@ fn reset_help_names_base() {
 #[test]
 fn reset_defaults_to_latest_origin_main_and_records_marks() {
     let (_tmp, project, repo, root) = scaffold();
-    let slot = plant_worktree(&root, &project, &repo, false);
+    let slot = plant_worktree(&root, &project, &repo);
     let proj = project.to_str().unwrap();
     let id = slot_id_of(&root, &slot);
     let first = git_head(&repo);
@@ -359,7 +268,7 @@ fn reset_can_override_to_next() {
     let (_tmp, project, repo, root) = scaffold();
     git(&repo, &["branch", "next"]);
     git(&repo, &["push", "-q", "origin", "next"]);
-    let slot = plant_worktree(&root, &project, &repo, false);
+    let slot = plant_worktree(&root, &project, &repo);
     let proj = project.to_str().unwrap();
     let id = slot_id_of(&root, &slot);
     let out = vivi(&[
@@ -385,7 +294,7 @@ fn reset_can_override_to_next() {
 #[test]
 fn reset_missing_origin_branch_fails_and_keeps_the_slot() {
     let (_tmp, project, repo, root) = scaffold();
-    let slot = plant_worktree(&root, &project, &repo, false);
+    let slot = plant_worktree(&root, &project, &repo);
     let proj = project.to_str().unwrap();
     let id = slot_id_of(&root, &slot);
     let out = vivi(&[
