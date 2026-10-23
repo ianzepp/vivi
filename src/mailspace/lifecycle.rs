@@ -396,8 +396,44 @@ impl Mailspace {
         roles: &[&str],
         options: WantListOptions,
     ) -> Result<Vec<WantListRecord>, VivariumError> {
-        let storage = self.storage()?;
         let wants = wants_for_roles(self, identity, roles)?;
+        self.want_records(wants, &options)
+    }
+
+    /// List wants whose computed state matches `state` (`None` keeps all).
+    ///
+    /// A want's state follows the needs serving it, not the folder it sits
+    /// in: a hand-closed want with an open serving need lists as open.
+    ///
+    /// # Errors
+    /// Returns an error if the identity cannot be resolved or a storage
+    /// operation fails.
+    pub fn list_wants_by_state(
+        &self,
+        identity: Option<&str>,
+        state: Option<super::want_state::WantState>,
+        options: WantListOptions,
+    ) -> Result<Vec<WantListRecord>, VivariumError> {
+        let mut wants = wants_for_roles(self, identity, &["wants", "sent", "done"])?;
+        if state == Some(super::want_state::WantState::Open) {
+            wants.retain(|want| {
+                want.absorbed_at.is_none() || !matches!(want.local_role.as_str(), "wants" | "sent")
+            });
+        }
+        let mut records = self.want_records(wants, &options)?;
+        if let Some(state) = state {
+            records.retain(|record| record.status == state.as_str());
+        }
+        Ok(records)
+    }
+
+    fn want_records(
+        &self,
+        wants: Vec<StoredMessageView>,
+        options: &WantListOptions,
+    ) -> Result<Vec<WantListRecord>, VivariumError> {
+        let storage = self.storage()?;
+        let states = super::want_state::want_states(&storage, &wants)?;
         let ids = wants
             .iter()
             .map(|want| want.message_id.clone())
@@ -406,13 +442,16 @@ impl Mailspace {
         let mut records = Vec::new();
         for want in wants {
             let metadata = storage.item_metadata(&want.message_id)?;
-            if !metadata_matches(&metadata, &options) {
+            if !metadata_matches(&metadata, options) {
                 continue;
             }
             let marks = super::marks::folded_marks(
                 events.get(&want.message_id).map_or(&[][..], Vec::as_slice),
             );
-            records.push(want_record(want, metadata, marks));
+            let status = states
+                .get(&want.content_id)
+                .map_or("open", |report| report.state.as_str());
+            records.push(want_record(want, metadata, marks, status));
         }
         sort_wants(&mut records, &options.sort);
         Ok(records)
@@ -449,14 +488,18 @@ impl Mailspace {
                 ..Default::default()
             },
         })?;
-        let open_wants = self.list_wants_with_metadata(
-            Some(identity),
-            &["wants"],
-            WantListOptions {
-                sort: "priority,rank,created".into(),
-                ..Default::default()
-            },
-        )?;
+        let open_wants = self
+            .list_wants_with_metadata(
+                Some(identity),
+                &["wants"],
+                WantListOptions {
+                    sort: "priority,rank,created".into(),
+                    ..Default::default()
+                },
+            )?
+            .into_iter()
+            .filter(|record| record.status == "open")
+            .collect();
         if write_cursor {
             write_cursor_file(cursor_file, next_cursor)?;
         }
@@ -712,14 +755,10 @@ fn want_record(
     want: StoredMessageView,
     metadata: BTreeMap<String, String>,
     marks: Vec<String>,
+    status: &str,
 ) -> WantListRecord {
     WantListRecord {
-        status: if want.local_role == "done" {
-            "done"
-        } else {
-            "open"
-        }
-        .into(),
+        status: status.into(),
         handle: want.handle,
         kind: "want".into(),
         role: want.local_role,
