@@ -1,4 +1,4 @@
-use super::{MergeMainResult, classify, spec};
+use super::{MergeMainResult, classify, main_moved, spec, with_attempt};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, PoolJob};
@@ -202,4 +202,66 @@ fn a_clean_exit_without_a_publish_receipt_is_failed() {
 #[test]
 fn a_job_still_running_is_not_classified() {
     assert_eq!(classify(&job_with(JobStatus::Dispatched, None)), None);
+}
+
+#[test]
+fn with_attempt_suffixes_the_id_and_recomputes_the_branch() {
+    let (_dir, ctx) = merge_ctx();
+    let base = spec(&ctx, "default", "n1", NEED_TIP, TIP, "step1").unwrap();
+
+    let job = with_attempt(base.clone(), "default", 2);
+
+    assert_eq!(job.id, format!("{}-a2", base.id));
+    assert!(
+        job.id.starts_with("merge-main-step1-111111111111-a2"),
+        "{}",
+        job.id
+    );
+    let branch = job.branch.clone().unwrap();
+    let rest = branch.strip_prefix("pump/merge-main/").unwrap();
+    assert!(rest.starts_with("default-merge-main-step1-"), "{branch}");
+    assert!(rest.ends_with("-a2"), "{branch}");
+    assert!(!rest.contains('/'), "{branch}");
+    assert_ne!(job.branch, base.branch);
+    assert_eq!(job.command, base.command);
+    assert_eq!(job.from_ref, base.from_ref);
+    assert_eq!(job.publish_ref, base.publish_ref);
+}
+
+fn moved(receipt: &str) -> bool {
+    main_moved(&job_with(JobStatus::Finished, finished(receipt)))
+}
+
+#[test]
+fn main_moved_is_true_for_a_lost_compare_and_swap() {
+    let not_ancestor =
+        format!("agent exit 0 in 1s\nrunner publish: not_ancestor refs/heads/main {MERGED} ");
+    let refused =
+        format!("agent exit 0 in 1s\nrunner publish: push_refused refs/heads/main {MERGED} ");
+
+    assert!(moved(&not_ancestor));
+    assert!(moved(&refused));
+}
+
+#[test]
+fn main_moved_is_false_for_a_real_conflict_a_merge_and_other_refusals() {
+    let merged =
+        format!("agent exit 0 in 1s\nrunner publish: pushed refs/heads/main {MERGED} {MERGED}");
+    let mismatch =
+        format!("agent exit 0 in 1s\nrunner publish: candidate_mismatch refs/heads/main {MERGED} ");
+
+    assert!(!moved(
+        "agent exit 1 in 1s\nCONFLICT (content): Merge conflict in a.rs"
+    ));
+    assert!(!moved(&merged));
+    assert!(!moved(&mismatch));
+    assert!(!moved("agent exit 0 in 1s"));
+}
+
+#[test]
+fn main_moved_is_false_for_timeout_lost_and_unfinished_jobs() {
+    assert!(!main_moved(&job_with(JobStatus::Timeout, None)));
+    assert!(!main_moved(&job_with(JobStatus::Lost, None)));
+    assert!(!main_moved(&job_with(JobStatus::Dispatched, None)));
+    assert!(!main_moved(&job_with(JobStatus::Finished, None)));
 }
