@@ -7,6 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{KIND, hand_commit, hand_job_of, spec};
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -84,7 +86,13 @@ fn rig(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         "mind",
         "mind",
         "slice A",
-        &format!("pump-step: {NEED} r1 slice:A\ntarget: default\n\ntitle\n\nbrief"),
+        &task_body_with(
+            &TaskFront {
+                target: Some("default".into()),
+                ..TaskFront::step(NEED, 1, &format!("slice:A"))
+            },
+            "title\n\nbrief",
+        ),
         &[],
     )?;
     let run = RunRow {
