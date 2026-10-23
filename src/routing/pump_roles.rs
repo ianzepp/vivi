@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 
 use crate::mailspace::MailspaceConfig;
-use crate::mailspace::shipped::{ADMITTER_ROLE, PUMP_PLANNER_ROLE, RESEARCHER_ROLE, SLICER_ROLE};
+use crate::mailspace::shipped::{
+    ADMITTER_ROLE, PUMP_PLANNER_ROLE, REPAIRER_ROLE, RESEARCHER_ROLE, SLICER_ROLE,
+};
 use crate::pool::config::PoolConfig;
 use crate::pump::config::PumpConfig;
 
@@ -16,7 +18,7 @@ use super::validate::Issue;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpRoleCheck {
     /// What the requirement is about: `pump-planner`, `researcher`,
-    /// `admitter`, `slicer`, `merge`, `merge kind`, `auditor`, `hand kind`, or
+    /// `admitter`, `slicer`, `repairer`, `merge`, `merge kind`, `auditor`, `hand kind`, or
     /// a role's `<role> model` (the role's pool can run its jobs).
     pub name: &'static str,
     /// Empty when the requirement is met. An issue is an error, or a
@@ -42,13 +44,19 @@ pub(super) fn pump_role_checks_of(
     vec![
         collect("pump-planner", |issues| check_planner(routing, issues)),
         collect("researcher", |issues| {
-            check_flow_role(routing, RESEARCHER_ROLE, issues);
+            check_flow_role(routing, RESEARCHER_ROLE, None, issues);
         }),
         collect("admitter", |issues| {
-            check_flow_role(routing, ADMITTER_ROLE, issues);
+            check_flow_role(routing, ADMITTER_ROLE, None, issues);
         }),
         collect("slicer", |issues| {
-            check_flow_role(routing, SLICER_ROLE, issues);
+            check_flow_role(routing, SLICER_ROLE, None, issues);
+        }),
+        collect("repairer", |issues| {
+            // Band P0 is set by seeding and not checked here. Only a role of
+            // kind repairer may publish `vivi/repair/<segment>`, and it must
+            // be able to write.
+            check_flow_role(routing, REPAIRER_ROLE, Some("repairer"), issues);
         }),
         collect("merge", |issues| check_merge(routing, issues)),
         collect("merge kind", |issues| check_merge_kind(routing, issues)),
@@ -67,6 +75,9 @@ pub(super) fn pump_role_checks_of(
         }),
         collect("slicer model", |issues| {
             check_flow_role_runs(routing.lookup(SLICER_ROLE), pools, issues);
+        }),
+        collect("repairer model", |issues| {
+            check_flow_role_runs(routing.lookup(REPAIRER_ROLE), pools, issues);
         }),
         collect("merge model", |issues| {
             check_role_runs(routing.merge(), pools, issues);
@@ -115,11 +126,18 @@ fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     }
 }
 
-/// The flow roles (researcher, admitter, slicer) will run durable jobs like
+/// The flow roles (researcher, admitter, slicer, repairer) will run durable jobs like
 /// the planner: each needs an active role assigned to a pool. Until the flow
 /// engine dispatches role steps, a missing role or pool is only a warning;
-/// the pump holds for them once it really uses them.
-fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
+/// the pump holds for them once it really uses them. A role that publishes
+/// a branch names its required `kind`: any other kind, or a read-only role,
+/// is an error because its jobs would be refused.
+fn check_flow_role(
+    routing: &RoleRouting,
+    name: &str,
+    required_kind: Option<&str>,
+    issues: &mut Vec<Issue>,
+) {
     let Some(role) = routing.lookup(name) else {
         issues.push(Issue::warning(format!(
             "the pump flows need an active {name} role assigned to a pool for durable jobs \
@@ -133,11 +151,33 @@ fn check_flow_role(routing: &RoleRouting, name: &str, issues: &mut Vec<Issue>) {
             role.name
         )));
     }
+    if let Some(kind) = required_kind {
+        check_publisher(role, kind, issues);
+    }
     if role.pool.is_none() {
         issues.push(Issue::warning(format!(
             "role {} must name a pool for durable {name} jobs (required once the flow engine \
              dispatches role steps): run `vivi config migrate` or `vivi role pool {} <pool>`",
             role.name, role.name
+        )));
+    }
+}
+
+/// A publishing flow role must have the matching kind and must not be
+/// read-only.
+fn check_publisher(role: &RoutedRole, kind: &str, issues: &mut Vec<Issue>) {
+    if !has_kind(role.kind.as_deref(), kind) {
+        issues.push(Issue::error(format!(
+            "role {} has kind {}; only a {kind}-kind role may publish its branches, so its \
+             jobs would be refused: run `vivi config migrate` or set kind = \"{kind}\"",
+            role.name,
+            role.kind.as_deref().unwrap_or("none")
+        )));
+    }
+    if role.read_only == Some(true) {
+        issues.push(Issue::error(format!(
+            "role {} is read-only and cannot publish its {kind} branches",
+            role.name
         )));
     }
 }
