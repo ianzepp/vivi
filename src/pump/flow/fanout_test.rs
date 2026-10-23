@@ -344,3 +344,16 @@ fn a_replaced_slice_does_not_block_its_replacements() -> R {
     assert_eq!(r.settle()?, Some(BUILT));
     Ok(())
 }
+
+#[test]
+fn slice_tasks_are_sent_from_and_to_the_pump_identity() -> R {
+    let mut r = rig()?;
+    let tasks = r.expand(&[slice("A", &[]), slice("B", &["A"])])?;
+    let pump = r.ctx.cfg.reply_from.clone();
+    assert_ne!(pump, r.ctx.cfg.to, "default to must differ for this test");
+    for task in &tasks {
+        let t = &r.mail.tasks[task];
+        assert_eq!((&t.from, &t.to), (&pump, &pump));
+    }
+    Ok(())
+}

@@ -255,8 +255,8 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
         );
         let subject = format!("{} ({} r{})", node.label, o.need, o.run);
         let task = self.mail.send_step(
-            &self.ctx.cfg.from,
-            &self.ctx.cfg.to,
+            &self.ctx.cfg.reply_from,
+            &self.ctx.cfg.reply_from,
             &subject,
             &body,
             std::slice::from_ref(&o.task),

@@ -107,8 +107,8 @@ pub fn expand<M: MailWriter>(
             }
         }
         let task = mail.send_step(
-            &ctx.cfg.from,
-            &ctx.cfg.to,
+            &ctx.cfg.reply_from,
+            &ctx.cfg.reply_from,
             &format!("{} ({} r{})", slice.title, run.need, run.run),
             &slice_body(run, slice),
             &depends_on,
