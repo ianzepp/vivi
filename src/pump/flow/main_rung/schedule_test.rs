@@ -9,7 +9,7 @@ use super::{INTERVAL_SECS, schedule};
 use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
-use crate::pump::flow::main_rung::{GREEN, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
+use crate::pump::flow::main_rung::{GREEN, LOST, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -192,5 +192,50 @@ fn task_is_sent_once_and_reused() -> R {
     assert_eq!(rig.store.main_state(&key(TASK, TARGET))?, task);
     let tasks: Vec<_> = rig.jobs.jobs.values().map(|job| job.task.clone()).collect();
     assert_eq!(tasks, vec![task.clone(), task]);
+    Ok(())
+}
+
+#[test]
+fn a_stored_lost_count_makes_the_next_job_attempt_two() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    rig.store
+        .set_main_state(&key(LOST, TARGET), &format!("{TIP_A} 1"))?;
+    let id = rig.schedule()?;
+    assert_eq!(
+        id.as_deref(),
+        Some(format!("rung-main-main-default-{}-a2", &TIP_A[..12]).as_str())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lost_count_for_another_tip_leaves_attempt_one() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    rig.store
+        .set_main_state(&key(LOST, TARGET), &format!("{TIP_B} 1"))?;
+    let id = rig.schedule()?;
+    assert_eq!(
+        id.as_deref(),
+        Some(format!("rung-main-main-default-{}-a1", &TIP_A[..12]).as_str())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_job_id_that_already_exists_is_an_error() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    let id = rig.schedule()?.unwrap_or_default();
+    if let Some(job) = rig.jobs.jobs.get_mut(&id) {
+        job.status = JobStatus::Lost;
+    }
+    rig.host.advance(INTERVAL_SECS);
+    // No lost count was recorded, so the next attempt id collides.
+    let Err(VivariumError::Other(text)) = rig.schedule() else {
+        return Err(VivariumError::Message("expected an error".into()));
+    };
+    assert!(text.contains(&id), "{text}");
     Ok(())
 }

@@ -66,13 +66,19 @@ pub(crate) fn schedule<S: JobStore, M: FlowMail>(
     let task = task_for(ctx, store, mail, target)?;
     let short = &tip[..tip.len().min(SHORT_TIP)];
     let step_task = format!("main-{}-{short}", ref_safe(target));
-    let mut spec = rung::spec(ctx, target, "main", &tip, &step_task, 1)
+    let attempt = super::lost_count(store, target, &tip)? + 1;
+    let mut spec = rung::spec(ctx, target, "main", &tip, &step_task, attempt)
         .ok_or_else(|| VivariumError::Config(format!("no main rung for target {target:?}")))?;
     spec.task = Some(task);
     if let Some(payload) = spec.payload.as_object_mut() {
         payload.insert(PAYLOAD_KEY.to_owned(), serde_json::json!(target));
     }
     let id = spec.id.clone();
+    if st.jobs().contains_key(&id) {
+        return Err(VivariumError::Other(format!(
+            "main rung job {id} was not enqueued: the id already exists"
+        )));
+    }
     jobs::enqueue(st, spec)?;
     store.set_main_state(&key(STARTED, target), &ctx.now().to_string())?;
     Ok(Some(id))

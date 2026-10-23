@@ -239,21 +239,53 @@ fn the_same_tool_missing_on_a_new_tip_raises_nothing_new() -> R {
 #[test]
 fn two_lost_jobs_on_one_tip_mark_it_tested() -> R {
     let mut rig = rig(true)?;
-    rig.job_at(JobStatus::Lost, "", TIP, 1)?;
+    let first = rig.job_at(JobStatus::Lost, "", TIP, 1)?;
     rig.run()?;
     assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
     assert_eq!(
         rig.store.main_state(&key(LOST, TARGET))?,
         Some(format!("{TIP} 1"))
     );
-    rig.job_at(JobStatus::Lost, "", TIP, 2)?;
+    // After the interval the schedule re-runs the same tip as attempt 2.
+    rig.host.advance(1800);
+    rig.run()?;
+    let second = format!("rung-main-main-default-{}-a2", &TIP[..12]);
+    assert!(first.ends_with("-a1"));
+    let job = rig
+        .jobs
+        .jobs
+        .get_mut(&second)
+        .ok_or_else(|| VivariumError::Message("no -a2 job scheduled".into()))?;
+    assert_eq!(job.status, JobStatus::Pending);
+    job.status = JobStatus::Lost;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: String::new(),
+        at: 1,
+    });
     rig.run()?;
     assert_eq!(
         rig.store.main_state(&key(TESTED, TARGET))?.as_deref(),
         Some(TIP)
     );
     assert_eq!(rig.raised(), 2);
+    assert_eq!(rig.jobs.jobs.len(), 2);
     assert!(rig.sends().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_malformed_lost_value_is_an_error() -> R {
+    let mut rig = rig(true)?;
+    rig.store
+        .set_main_state(&key(LOST, TARGET), &format!("{TIP} many"))?;
+    rig.job_at(JobStatus::Lost, "", TIP, 1)?;
+    let Err(VivariumError::Parse(text)) = rig.run() else {
+        return Err(VivariumError::Message("expected a Parse error".into()));
+    };
+    assert!(text.contains("main-lost:default"), "{text}");
+    assert!(text.contains("many"), "{text}");
     Ok(())
 }
 
