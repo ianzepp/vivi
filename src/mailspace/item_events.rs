@@ -57,6 +57,7 @@ mod arrival;
 mod dependency;
 mod emit;
 mod held;
+pub(in crate::mailspace) mod join_guard;
 mod property;
 mod property_emit;
 
