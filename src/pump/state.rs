@@ -36,7 +36,7 @@ pub enum Status {
     /// Retired merge-pipeline status: no code sets it. A stored unit keeps it
     /// and is never dispatched.
     Merging,
-    /// Merged into the integration branch.
+    /// Merged into the need branch or main.
     Merged,
     /// Retired merge-pipeline status: no code sets it. A stored unit keeps it
     /// (`Unit::quarantine` may still name an id); it is not dispatched and not

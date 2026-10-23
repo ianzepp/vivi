@@ -118,7 +118,7 @@ fn a_need_the_pump_holds_nothing_for_changes_no_state_but_still_ends_its_dispatc
 
 #[test]
 fn applying_the_same_need_twice_closes_it_once() {
-    let (_dir, ctx, host) = setup();
+    let (_dir, ctx, _) = setup();
     let mut st = State::default();
     add_need(&mut st, "n1", &[("u1", Status::Stuck)]);
 

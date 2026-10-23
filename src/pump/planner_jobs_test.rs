@@ -250,14 +250,12 @@ fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
 
 fn three_targets() -> PumpConfig {
     use crate::pump::config::PumpTarget;
-    let target = |branch: &str| PumpTarget {
-        ..PumpTarget::default()
-    };
+    let target = PumpTarget::default;
     PumpConfig {
         targets: std::collections::BTreeMap::from([
-            ("radix".to_owned(), target("next")),
-            ("gradus".to_owned(), target("main")),
-            ("inferentia".to_owned(), target("main")),
+            ("radix".to_owned(), target()),
+            ("gradus".to_owned(), target()),
+            ("inferentia".to_owned(), target()),
         ]),
         ..PumpConfig::default()
     }

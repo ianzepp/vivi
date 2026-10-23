@@ -631,7 +631,7 @@ lanes = 4
     assert!(
         plan.new_pools
             .iter()
-            .any(|pool| pool.name == "host" && pool.slots == 1 && pool.provider == "local")
+            .any(|pool| pool.name == "host" && pool.slots == 4 && pool.provider == "local")
     );
     assert!(
         plan.caps

@@ -112,7 +112,6 @@ models = ["m/ok"]
 P2 = [{ model = "m/ok", reasoning = "high" }]
 
 [pump]
-branch = "next"
 to = "hand"
 committer_name = "t"
 committer_email = "t@t"
@@ -123,9 +122,6 @@ model = "m/a"
 cap = 1
 [pump.dispatch.kinds.plain]
 pools = ["glm"]
-[pump.merge]
-lanes = 2
-shared_checks = ["true"]
 "#,
     );
     let root = dir.path().to_str().unwrap();
@@ -155,7 +151,6 @@ name = "hand"
 kind = "hand"
 pool = "ghost"
 [pump]
-branch = "next"
 to = "hand"
 "#,
     );
@@ -312,10 +307,8 @@ pool = "glm"
 provider = "local"
 slots = 4
 [pump]
-branch = "next"
 to = "hand"
 main = "main"
-promote = true
 "#,
     );
     let root = dir.path().to_str().unwrap();
@@ -405,4 +398,84 @@ fn config_validate_exits_0_for_a_project_without_a_pump() {
     let root = dir.path().to_str().unwrap();
     let out = vivi(&["config", "validate", "--project", root]);
     assert_success(&out);
+}
+
+const RETIRED_KEYS: &str = r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[pools.glm]
+provider = "local"
+slots = 2
+[pump]
+branch = "next"
+promote = true
+to = "hand"
+[pump.merge]
+batch = 4
+shared_checks = ["true"]
+[pump.need]
+repair_rounds = 2
+[pump.gate]
+command = "true"
+[pump.targets.other]
+repo = "/tmp/other"
+branch = "next"
+gate = { command = "true" }
+"#;
+
+#[test]
+fn config_validate_names_each_retired_key_and_still_reports_readiness() {
+    let dir = project_with(RETIRED_KEYS);
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    let text = stdout(&out);
+    for expected in [
+        "[pump] branch:",
+        "[pump] promote:",
+        "[pump] gate:",
+        "[pump] need:",
+        "[pump.merge] batch:",
+        "[pump.merge] shared_checks:",
+        "[pump.targets.other] branch:",
+        "[pump.targets.other] gate:",
+    ] {
+        assert!(text.contains(expected), "{expected} missing from:\n{text}");
+    }
+    assert!(text.contains("retired: "), "{text}");
+    assert_eq!(out.status.code(), Some(3), "{text}{}", stderr(&out));
+    assert!(text.contains("not ready: "), "{text}");
+}
+
+#[test]
+fn config_migrate_removes_each_retired_key_with_its_reason() {
+    let dir = project_with(RETIRED_KEYS);
+    let root = dir.path().to_str().unwrap();
+    let dry = vivi(&["config", "migrate", "--project", root]);
+    assert_success(&dry);
+    let text = stdout(&dry);
+    assert!(
+        text.contains("remove [pump] gate = (table: command)"),
+        "{text}"
+    );
+    assert!(text.contains("remove [pump.targets.other] gate"), "{text}");
+    assert!(text.contains("there is no integration branch"), "{text}");
+    assert_success(&vivi(&["config", "migrate", "--write", "--project", root]));
+    let after = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    for gone in [
+        "branch =",
+        "promote =",
+        "batch =",
+        "shared_checks",
+        "repair_rounds",
+        "[pump.gate]",
+        "[pump.need]",
+        "gate =",
+    ] {
+        assert!(!after.contains(gone), "{gone} still in:\n{after}");
+    }
+    assert!(after.contains("repo = \"/tmp/other\""), "{after}");
 }

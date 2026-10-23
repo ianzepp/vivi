@@ -40,9 +40,8 @@ const PUMP_TOML: &str = concat!(
     "[pools.here]\nprovider = \"local\"\nslots = 1\n\n",
     "[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n\n",
     "[pools.here.bands]\nP2 = [{ model = \"m/ok\", reasoning = \"high\" }]\n\n",
-    "[pump]\nbranch = \"next\"\ntick = 1\n",
+    "[pump]\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
-    "[pump.merge]\nshared_checks = [\"true\"]\n\n",
     "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n\n",
 );
 
