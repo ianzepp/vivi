@@ -153,7 +153,7 @@ impl Rig {
             need: DEP.into(),
             run: 1,
             flow: kind.into(),
-            flow_version: 1,
+            flow_version: 2,
             kind: kind.into(),
             entry: node.into(),
             state: "live".into(),

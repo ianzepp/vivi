@@ -22,7 +22,7 @@ fn run(need: &str, n: u32, state: &str) -> RunRow {
         need: need.into(),
         run: n,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "admit".into(),
         state: state.into(),

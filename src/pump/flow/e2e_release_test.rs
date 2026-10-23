@@ -121,7 +121,7 @@ fn a_prerequisite_held_at_a_lock_alarms_once_and_the_release_keeps_waiting() -> 
         need: prereq.clone(),
         run: 1,
         flow: "build".into(),
-        flow_version: 1,
+        flow_version: 2,
         kind: "build".into(),
         entry: "locked".into(),
         state: "live".into(),
