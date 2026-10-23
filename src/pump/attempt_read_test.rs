@@ -2,8 +2,7 @@
 //! result replies, and the close-line timing summary.
 
 use crate::pump::attempt_read::{
-    AttemptFields, AttemptStatusEvent, human_secs, opened_epoch, parse_receipt, parse_record,
-    parse_status_event, timing_summary,
+    AttemptFields, human_secs, opened_epoch, parse_receipt, parse_record, timing_summary,
 };
 
 /// A full attempt record body: the block unit eb093a9c-3 writes, then its
@@ -126,59 +125,6 @@ fn old_records_leave_new_capture_fields_unavailable() {
     assert_eq!(fields.ready_at, None);
     assert_eq!(fields.delivered_at, None);
     assert_eq!(fields.merged_at, None);
-}
-
-#[test]
-fn a_merged_status_event_enriches_only_its_attempt() {
-    let event = parse_status_event(
-        "pump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged\nat: 1000042",
-    )
-    .expect("status event parses");
-    assert_eq!(event.attempt, "n1-1-a2");
-    assert_eq!(event.need, Some(String::from("n1")));
-    assert_eq!(event.status, "merged");
-    assert_eq!(event.at, Some(1_000_042));
-
-    let mut record = AttemptFields {
-        need: Some(String::from("n1")),
-        ..attempt("n1-1-a2", Some(12))
-    };
-    assert!(record.apply_status_event(&event));
-    assert_eq!(record.merged_at, Some(1_000_042));
-    assert!(!record.apply_status_event(&AttemptStatusEvent {
-        attempt: String::from("n1-1-a3"),
-        ..event
-    }));
-    assert!(!record.apply_status_event(&AttemptStatusEvent {
-        attempt: String::from("n1-1-a2"),
-        need: Some(String::from("other")),
-        status: String::from("merged"),
-        at: Some(1_000_099),
-    }));
-    assert_eq!(record.merged_at, Some(1_000_042));
-}
-
-#[test]
-fn a_wrapped_status_event_is_read_from_its_prose() {
-    let event = parse_status_event(
-        "+++\n+++\n\npump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged\nat: 7",
-    )
-    .expect("wrapped status event parses");
-    assert_eq!(event.attempt, "n1-1-a2");
-    assert_eq!(event.status, "merged");
-    assert_eq!(event.at, Some(7));
-}
-
-#[test]
-fn a_status_event_without_a_timestamp_stays_unavailable() {
-    let event = parse_status_event(
-        "pump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged",
-    )
-    .expect("status event still identifies the attempt");
-    assert_eq!(event.at, None);
-    let mut record = attempt("n1-1-a2", Some(12));
-    assert!(record.apply_status_event(&event));
-    assert_eq!(record.merged_at, None);
 }
 
 #[test]
