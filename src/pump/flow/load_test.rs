@@ -68,3 +68,8 @@ fn node_classes_map() {
     let release = load(FlowKind::Release).unwrap();
     assert_eq!(node_class(&release, "wait"), &NodeClass::Milestone);
 }
+
+#[test]
+fn repair_has_no_shipped_flow_yet() {
+    assert!(load(FlowKind::Repair).is_err());
+}

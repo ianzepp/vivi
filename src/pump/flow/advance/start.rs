@@ -5,6 +5,7 @@
 use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowDef, FlowKind, SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
@@ -140,38 +141,21 @@ fn step_row(run: u32, node: &str, task: &str, state: StepState) -> StepRow {
     }
 }
 
-/// The run's kind: a `kind: <word>` line in the open record's body wins,
-/// then the need's marks (`research`, `release`), else build.
+/// The run's kind: see [`kind::of`]. A record word that names no kind raises
+/// `flow-kind-unknown` and the marks decide.
 fn run_kind<M>(ctx: &Ctx, mail: &M, need: &str) -> Result<FlowKind, VivariumError>
 where
     M: MailWriter + MailReader,
 {
-    if let Some((_, body)) = MailReader::open_record(mail, need)?
-        && let Some(word) = kind_line(&body)
-    {
-        match FlowKind::parse(word) {
-            Some(kind) => return Ok(kind),
-            None => ctx.exception(
-                "flow-kind-unknown",
-                need,
-                &format!("record body names kind `{word}`; using the marks"),
-            ),
-        }
-    }
+    let body = MailReader::open_record(mail, need)?.map(|(_, body)| body);
     let marks = mail.need_marks(need)?;
-    let has = |mark: &str| marks.iter().any(|m| m == mark);
-    Ok(if has("research") {
-        FlowKind::Research
-    } else if has("release") {
-        FlowKind::Release
-    } else {
-        FlowKind::Build
-    })
-}
-
-fn kind_line(body: &str) -> Option<&str> {
-    body.lines()
-        .find_map(|line| line.trim().strip_prefix("kind:"))
-        .map(str::trim)
-        .filter(|word| !word.is_empty())
+    let (kind, unknown) = kind::of(body.as_deref(), &marks);
+    if let Some(word) = unknown {
+        ctx.exception(
+            "flow-kind-unknown",
+            need,
+            &format!("record body names kind `{word}`; using the marks"),
+        );
+    }
+    Ok(kind)
 }
