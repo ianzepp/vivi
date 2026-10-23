@@ -215,6 +215,7 @@ impl PumpConfig {
 
     /// A target-specific copy of the legacy pump settings consumed by the
     /// single-target execution seams.
+    #[must_use]
     pub fn for_target(&self, id: &str) -> Option<Self> {
         let target = self.target_configs().remove(id)?;
         let mut config = self.clone();
@@ -260,6 +261,71 @@ impl PumpConfig {
                 (name.clone(), source)
             })
             .collect()
+    }
+
+    /// The pump home: `home` (relative paths join `project`) or
+    /// `<project>/.vivi/pump`.
+    #[must_use]
+    pub fn home_dir(&self, project: &Path) -> PathBuf {
+        match &self.home {
+            Some(home) => resolve(project, home),
+            None => project.join(".vivi").join("pump"),
+        }
+    }
+
+    /// The integration clone: `repo` (relative paths join `project`) or
+    /// `<home>/repo`.
+    #[must_use]
+    pub fn repo_dir(&self, project: &Path) -> PathBuf {
+        match &self.repo {
+            Some(repo) => resolve(project, repo),
+            None => self.home_dir(project).join("repo"),
+        }
+    }
+
+    /// The hand-rules file: `hand_rules` (relative paths join `project`), or
+    /// `None` when unset.
+    #[must_use]
+    pub fn hand_rules_path(&self, project: &Path) -> Option<PathBuf> {
+        self.hand_rules
+            .as_deref()
+            .map(|rules| resolve(project, rules))
+    }
+
+    /// The reserved-paths file: `reserved_file`, a relative value joining
+    /// `home`.
+    #[must_use]
+    pub fn reserved_path(&self, project: &Path) -> PathBuf {
+        resolve(&self.home_dir(project), &self.reserved_file)
+    }
+
+    /// `--from` of a unit dispatch: `dispatch.from`, else `main`.
+    #[must_use]
+    pub fn dispatch_from(&self) -> &str {
+        self.dispatch.from.as_deref().unwrap_or(&self.main)
+    }
+
+    /// `--to` of thread replies: `board.reply_to`, else the first of
+    /// `board.from`, else empty.
+    #[must_use]
+    pub fn reply_to(&self) -> String {
+        self.board
+            .reply_to
+            .clone()
+            .or_else(|| self.board.from.first().cloned())
+            .unwrap_or_default()
+    }
+
+    /// The kind a unit's `tools` value selects (`default_kind` when `tools` is
+    /// empty); `None` when it is not defined.
+    #[must_use]
+    pub fn kind_of(&self, tools: &str) -> Option<&Kind> {
+        let name = if tools.is_empty() {
+            &self.dispatch.default_kind
+        } else {
+            tools
+        };
+        self.dispatch.kinds.get(name)
     }
 }
 
@@ -539,7 +605,7 @@ impl MergeConfig {
 
 /// One set of generated files the merge lane rebuilds from source of truth
 /// instead of resolving by hand (a `[[pump.merge.generated]]` array entry).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Generated {
     /// Repository-relative paths of the generated files; globs are allowed
@@ -553,88 +619,6 @@ pub struct Generated {
     pub drift: Vec<String>,
 }
 
-impl Default for Generated {
-    fn default() -> Self {
-        Self {
-            paths: Vec::new(),
-            regenerate: String::new(),
-            drift: Vec::new(),
-        }
-    }
-}
-
-impl PumpConfig {
-    /// The pump home: `home` (relative paths join `project`) or
-    /// `<project>/.vivi/pump`.
-    #[must_use]
-    pub fn home_dir(&self, project: &Path) -> PathBuf {
-        match &self.home {
-            Some(home) => resolve(project, home),
-            None => project.join(".vivi").join("pump"),
-        }
-    }
-
-    /// The integration clone: `repo` (relative paths join `project`) or
-    /// `<home>/repo`.
-    #[must_use]
-    pub fn repo_dir(&self, project: &Path) -> PathBuf {
-        match &self.repo {
-            Some(repo) => resolve(project, repo),
-            None => self.home_dir(project).join("repo"),
-        }
-    }
-
-    /// The hand-rules file: `hand_rules` (relative paths join `project`), or
-    /// `None` when unset.
-    #[must_use]
-    pub fn hand_rules_path(&self, project: &Path) -> Option<PathBuf> {
-        self.hand_rules
-            .as_deref()
-            .map(|rules| resolve(project, rules))
-    }
-
-    /// The reserved-paths file: `reserved_file`, a relative value joining
-    /// `home`.
-    #[must_use]
-    pub fn reserved_path(&self, project: &Path) -> PathBuf {
-        resolve(&self.home_dir(project), &self.reserved_file)
-    }
-
-    /// `--from` of a unit dispatch: `dispatch.from`, else `main`.
-    #[must_use]
-    pub fn dispatch_from(&self) -> &str {
-        self.dispatch.from.as_deref().unwrap_or(&self.main)
-    }
-
-    /// `--to` of thread replies: `board.reply_to`, else the first of
-    /// `board.from`, else empty.
-    #[must_use]
-    pub fn reply_to(&self) -> String {
-        self.board
-            .reply_to
-            .clone()
-            .or_else(|| self.board.from.first().cloned())
-            .unwrap_or_default()
-    }
-
-    /// The name of the kind a unit's `tools` value selects: `tools`, or
-    /// `default_kind` when `tools` is empty.
-    #[must_use]
-    pub fn kind_name<'a>(&'a self, tools: &'a str) -> &'a str {
-        if tools.is_empty() {
-            &self.dispatch.default_kind
-        } else {
-            tools
-        }
-    }
-
-    /// The kind a unit's `tools` value selects; `None` when it is not defined.
-    #[must_use]
-    pub fn kind_of(&self, tools: &str) -> Option<&Kind> {
-        self.dispatch.kinds.get(self.kind_name(tools))
-    }
-}
-
 /// An absolute path stands alone; a relative one joins `project`. `~` is not
 /// expanded.
 fn resolve(project: &Path, value: &str) -> PathBuf {
@@ -646,7 +630,7 @@ fn resolve(project: &Path, value: &str) -> PathBuf {
     }
 }
 
-/// Whether `name` is one of the mailspace's pool names.
+/// Whether `name` is one of the mailspace pool names.
 fn known(pools: &[String], name: &str) -> bool {
     pools.iter().any(|pool| pool == name)
 }
