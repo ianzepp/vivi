@@ -272,6 +272,8 @@ pub async fn run() -> Result<(), VivariumError> {
     ServiceRuntime::default().run().await
 }
 
+/// Per-project child pump processes and the bookkeeping that governs their
+/// restart. All maps are keyed by project root.
 #[derive(Default)]
 struct ServiceRuntime {
     children: BTreeMap<PathBuf, Child>,
@@ -293,49 +295,156 @@ impl ServiceRuntime {
         );
         loop {
             #[cfg(unix)]
-            let shutdown = self.poll(&mut interval, &mut terminate).await;
+            let shutdown = wait_for_shutdown(&mut interval, &mut terminate).await;
             #[cfg(not(unix))]
-            let shutdown = self.poll(&mut interval).await;
+            let shutdown = wait_for_shutdown(&mut interval).await;
             if shutdown {
                 break;
             }
+            if let Err(error) = self.reconcile().await {
+                tracing::error!(%error, "pump service reconciliation failed");
+            }
         }
-        stop_children(&mut self.children, &mut self.stopping).await;
+        self.stop_all().await;
         tracing::info!("pump service stopped");
         Ok(())
     }
 
-    #[cfg(unix)]
-    async fn poll(
-        &mut self,
-        interval: &mut tokio::time::Interval,
-        terminate: &mut tokio::signal::unix::Signal,
-    ) -> bool {
-        let shutdown = wait_for_shutdown(interval, terminate).await;
-        self.reconcile_tick(shutdown).await
+    async fn reconcile(&mut self) -> Result<(), VivariumError> {
+        let desired = registry::load()?.pumped();
+        self.reap_stopping().await;
+        self.stop_removed(&desired);
+        self.reap_exited();
+        self.start_missing(&desired).await;
+        Ok(())
     }
 
-    #[cfg(not(unix))]
-    async fn poll(&mut self, interval: &mut tokio::time::Interval) -> bool {
-        let shutdown = wait_for_shutdown(interval).await;
-        self.reconcile_tick(shutdown).await
+    fn stop_removed(&mut self, desired: &BTreeSet<PathBuf>) {
+        let removed: Vec<PathBuf> = self
+            .children
+            .keys()
+            .filter(|project| !desired.contains(*project))
+            .cloned()
+            .collect();
+        for project in removed {
+            if let Some(child) = self.children.remove(&project) {
+                let path = project.clone();
+                self.stopping.insert(
+                    project.clone(),
+                    tokio::spawn(async move {
+                        stop_pump(&path, child).await;
+                        tracing::info!(project = %path.display(), "stopped unregistered pump");
+                    }),
+                );
+            }
+            self.retry_after.remove(&project);
+        }
     }
 
-    async fn reconcile_tick(&mut self, shutdown: bool) -> bool {
-        if shutdown {
-            return true;
+    async fn reap_stopping(&mut self) {
+        let done: Vec<PathBuf> = self
+            .stopping
+            .iter()
+            .filter(|(_, task)| task.is_finished())
+            .map(|(project, _)| project.clone())
+            .collect();
+        for project in done {
+            if let Some(task) = self.stopping.remove(&project) {
+                if let Err(error) = task.await {
+                    tracing::warn!(project = %project.display(), %error, "pump stop task failed");
+                }
+            }
         }
-        if let Err(error) = reconcile(
-            &mut self.children,
-            &mut self.retry_after,
-            &mut self.observed_modes,
-            &mut self.stopping,
-        )
-        .await
-        {
-            tracing::error!(%error, "pump service reconciliation failed");
+    }
+
+    fn reap_exited(&mut self) {
+        let projects: Vec<PathBuf> = self.children.keys().cloned().collect();
+        for project in projects {
+            let status = match self.children.get_mut(&project).map(Child::try_wait) {
+                Some(Ok(Some(status))) => Some(status.to_string()),
+                Some(Ok(None)) | None => None,
+                Some(Err(error)) => {
+                    tracing::warn!(project = %project.display(), %error, "could not inspect pump process");
+                    Some(String::from("unknown exit status"))
+                }
+            };
+            if let Some(status) = status {
+                self.children.remove(&project);
+                self.retry_after
+                    .insert(project.clone(), Instant::now() + RESTART_DELAY);
+                tracing::warn!(project = %project.display(), ?status, "project pump exited; restart delayed");
+            }
         }
-        false
+    }
+
+    async fn start_missing(&mut self, desired: &BTreeSet<PathBuf>) {
+        let executable = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::error!(%error, "could not locate vivi executable");
+                return;
+            }
+        };
+        for project in desired {
+            if self.children.contains_key(project)
+                || self.stopping.contains_key(project)
+                || self
+                    .retry_after
+                    .get(project)
+                    .is_some_and(|until| *until > Instant::now())
+            {
+                continue;
+            }
+            if let Err(error) = crate::mailspace::inherit::refuse_base(project) {
+                tracing::warn!(project = %project.display(), %error, "registered root is a base config; not pumped");
+                continue;
+            }
+            let (home, control) = match super::control::initialize_project(project) {
+                Ok(project) => project,
+                Err(error) => {
+                    tracing::warn!(project = %project.display(), %error, "could not read project pump control state");
+                    self.retry_after
+                        .insert(project.clone(), Instant::now() + RESTART_DELAY);
+                    continue;
+                }
+            };
+            if self.observed_modes.insert(project.clone(), control.mode) != Some(control.mode) {
+                self.retry_after.remove(project);
+            }
+            if control.mode == super::control::PumpMode::Stopped {
+                continue;
+            }
+            if control.shutdown_requested && shutdown_is_pending(project, &home) {
+                continue;
+            }
+            match spawn_pump(&executable, project).await {
+                Ok(child) => {
+                    tracing::info!(project = %project.display(), pid = ?child.id(), "started project pump");
+                    self.children.insert(project.clone(), child);
+                    self.retry_after.remove(project);
+                }
+                Err(error) => {
+                    tracing::warn!(project = %project.display(), %error, "could not start project pump");
+                    self.retry_after
+                        .insert(project.clone(), Instant::now() + RESTART_DELAY);
+                }
+            }
+        }
+    }
+
+    async fn stop_all(&mut self) {
+        for (project, child) in std::mem::take(&mut self.children) {
+            let path = project.clone();
+            self.stopping.insert(
+                project,
+                tokio::spawn(async move { stop_pump(&path, child).await }),
+            );
+        }
+        for (project, task) in std::mem::take(&mut self.stopping) {
+            if let Err(error) = task.await {
+                tracing::warn!(project = %project.display(), %error, "pump stop task failed");
+            }
+        }
     }
 }
 
@@ -356,141 +465,6 @@ async fn wait_for_shutdown(interval: &mut tokio::time::Interval) -> bool {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => true,
         _ = interval.tick() => false,
-    }
-}
-
-async fn reconcile(
-    children: &mut BTreeMap<PathBuf, Child>,
-    retry_after: &mut BTreeMap<PathBuf, Instant>,
-    observed_modes: &mut BTreeMap<PathBuf, super::control::PumpMode>,
-    stopping: &mut BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
-) -> Result<(), VivariumError> {
-    let desired = registry::load()?.pumped();
-    reap_stopping(stopping).await;
-    stop_removed(&desired, children, retry_after, stopping);
-    reap_exited(children, retry_after);
-    start_missing(&desired, children, retry_after, observed_modes, stopping).await;
-    Ok(())
-}
-
-fn stop_removed(
-    desired: &BTreeSet<PathBuf>,
-    children: &mut BTreeMap<PathBuf, Child>,
-    retry_after: &mut BTreeMap<PathBuf, Instant>,
-    stopping: &mut BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
-) {
-    let removed: Vec<PathBuf> = children
-        .keys()
-        .filter(|project| !desired.contains(*project))
-        .cloned()
-        .collect();
-    for project in removed {
-        if let Some(child) = children.remove(&project) {
-            let path = project.clone();
-            stopping.insert(
-                project.clone(),
-                tokio::spawn(async move {
-                    stop_pump(&path, child).await;
-                    tracing::info!(project = %path.display(), "stopped unregistered pump");
-                }),
-            );
-        }
-        retry_after.remove(&project);
-    }
-}
-
-async fn reap_stopping(stopping: &mut BTreeMap<PathBuf, tokio::task::JoinHandle<()>>) {
-    let done: Vec<PathBuf> = stopping
-        .iter()
-        .filter(|(_, task)| task.is_finished())
-        .map(|(project, _)| project.clone())
-        .collect();
-    for project in done {
-        if let Some(task) = stopping.remove(&project) {
-            if let Err(error) = task.await {
-                tracing::warn!(project = %project.display(), %error, "pump stop task failed");
-            }
-        }
-    }
-}
-
-fn reap_exited(
-    children: &mut BTreeMap<PathBuf, Child>,
-    retry_after: &mut BTreeMap<PathBuf, Instant>,
-) {
-    let projects: Vec<PathBuf> = children.keys().cloned().collect();
-    for project in projects {
-        let status = match children.get_mut(&project).map(Child::try_wait) {
-            Some(Ok(Some(status))) => Some(status.to_string()),
-            Some(Ok(None)) | None => None,
-            Some(Err(error)) => {
-                tracing::warn!(project = %project.display(), %error, "could not inspect pump process");
-                Some(String::from("unknown exit status"))
-            }
-        };
-        if let Some(status) = status {
-            children.remove(&project);
-            retry_after.insert(project.clone(), Instant::now() + RESTART_DELAY);
-            tracing::warn!(project = %project.display(), ?status, "project pump exited; restart delayed");
-        }
-    }
-}
-
-async fn start_missing(
-    desired: &BTreeSet<PathBuf>,
-    children: &mut BTreeMap<PathBuf, Child>,
-    retry_after: &mut BTreeMap<PathBuf, Instant>,
-    observed_modes: &mut BTreeMap<PathBuf, super::control::PumpMode>,
-    stopping: &BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
-) {
-    let executable = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(error) => {
-            tracing::error!(%error, "could not locate vivi executable");
-            return;
-        }
-    };
-    for project in desired {
-        if children.contains_key(project)
-            || stopping.contains_key(project)
-            || retry_after
-                .get(project)
-                .is_some_and(|until| *until > Instant::now())
-        {
-            continue;
-        }
-        if let Err(error) = crate::mailspace::inherit::refuse_base(project) {
-            tracing::warn!(project = %project.display(), %error, "registered root is a base config; not pumped");
-            continue;
-        }
-        let (home, control) = match super::control::initialize_project(project) {
-            Ok(project) => project,
-            Err(error) => {
-                tracing::warn!(project = %project.display(), %error, "could not read project pump control state");
-                retry_after.insert(project.clone(), Instant::now() + RESTART_DELAY);
-                continue;
-            }
-        };
-        if observed_modes.insert(project.clone(), control.mode) != Some(control.mode) {
-            retry_after.remove(project);
-        }
-        if control.mode == super::control::PumpMode::Stopped {
-            continue;
-        }
-        if control.shutdown_requested && shutdown_is_pending(project, &home) {
-            continue;
-        }
-        match spawn_pump(&executable, project).await {
-            Ok(child) => {
-                tracing::info!(project = %project.display(), pid = ?child.id(), "started project pump");
-                children.insert(project.clone(), child);
-                retry_after.remove(project);
-            }
-            Err(error) => {
-                tracing::warn!(project = %project.display(), %error, "could not start project pump");
-                retry_after.insert(project.clone(), Instant::now() + RESTART_DELAY);
-            }
-        }
     }
 }
 
@@ -536,24 +510,6 @@ async fn spawn_pump(executable: &Path, project: &Path) -> Result<Child, std::io:
     drop(child.kill().await);
     drop(child.wait().await);
     Err(failure)
-}
-
-async fn stop_children(
-    children: &mut BTreeMap<PathBuf, Child>,
-    stopping: &mut BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
-) {
-    for (project, child) in std::mem::take(children) {
-        let path = project.clone();
-        stopping.insert(
-            project,
-            tokio::spawn(async move { stop_pump(&path, child).await }),
-        );
-    }
-    for (project, task) in std::mem::take(stopping) {
-        if let Err(error) = task.await {
-            tracing::warn!(project = %project.display(), %error, "pump stop task failed");
-        }
-    }
 }
 
 async fn stop_pump(project: &Path, mut child: Child) {
