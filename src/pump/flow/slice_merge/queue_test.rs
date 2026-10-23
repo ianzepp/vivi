@@ -210,7 +210,7 @@ fn a_pending_merge_of_a_superseded_run_is_removed() -> R {
         rig.host
             .logs()
             .iter()
-            .any(|line| line.contains("removed pending job hand-A-merge")),
+            .any(|line| line.contains("removed pending job hand-A-merge-t1")),
         "{:?}",
         rig.host.logs()
     );
@@ -334,5 +334,25 @@ fn a_start_error_holds_the_slice_for_the_operator() -> R {
     assert_eq!(raised(&rig), 1);
     assert_eq!(rig.host.commands().len(), commands);
     assert!(rig.merges("n1").is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_slice_put_back_after_a_finished_merge_enqueues_the_next_try() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    let slice = rig.slice("n1", "A", true)?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs.contains_key("hand-A-merge-t1"));
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-A-merge-t1") {
+        job.status = JobStatus::Finished;
+    }
+    // The requeue puts the slice row back in the queue.
+    rig.store
+        .set_step_state(&slice.task, StepState::Waiting, Some(MERGE_QUEUED))?;
+    rig.tick()?;
+    assert!(rig.jobs.jobs.contains_key("hand-A-merge-t2"));
+    assert_eq!(rig.merges("n1").len(), 2);
+    assert_eq!(rig.state(&slice)?, Some(StepState::Running));
     Ok(())
 }
