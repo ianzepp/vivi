@@ -81,6 +81,24 @@ kind = "auditor"
 pool = "glm"
 model = "P2-S0"
 
+[[identities]]
+name = "researcher"
+kind = "researcher"
+pool = "glm"
+model = "P2-S0"
+
+[[identities]]
+name = "admitter"
+kind = "admitter"
+pool = "glm"
+model = "P2-S0"
+
+[[identities]]
+name = "slicer"
+kind = "slicer"
+pool = "glm"
+model = "P2-S0"
+
 [pools.glm]
 provider = "local"
 slots = 2

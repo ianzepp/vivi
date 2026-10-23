@@ -45,7 +45,7 @@ impl Mailspace {
     }
 
     /// Create the mailspace at `project` the way `vivi mailspace init` does:
-    /// the config and store, the operator, merge and planner roles, and, for a
+    /// the config and store, the operator, merge, planner and flow (researcher, admitter, slicer) roles, and, for a
     /// mailspace that did not exist yet, the [`STARTER_PUMP`] table. Returns
     /// the mailspace and whether this call created it.
     ///
@@ -58,6 +58,7 @@ impl Mailspace {
         mailspace.ensure_operator_role()?;
         mailspace.ensure_merge_role()?;
         mailspace.ensure_pump_planner_role()?;
+        mailspace.ensure_flow_roles()?;
         if !existed {
             mailspace.ensure_starter_pump()?;
         }

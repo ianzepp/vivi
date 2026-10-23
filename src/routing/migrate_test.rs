@@ -426,7 +426,7 @@ fn a_merge_role_of_the_wrong_kind_is_changed_and_keeps_its_other_fields() {
 
 #[test]
 fn validate_requires_pump_planner_and_ignores_a_role_named_planner() {
-    let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
+    let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n[[identities]]\nname = \"researcher\"\nkind = \"researcher\"\npool = \"here\"\n[[identities]]\nname = \"admitter\"\nkind = \"admitter\"\npool = \"here\"\n[[identities]]\nname = \"slicer\"\nkind = \"slicer\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
     // Everything that stops the pump: wrong values and missing items.
     let errors = |text: &str| -> Vec<String> {
         let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
@@ -800,7 +800,7 @@ fn an_auditor_with_a_pool_is_left_alone() {
 
 #[test]
 fn validate_requires_an_active_auditor_with_a_pool() {
-    let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
+    let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[[identities]]\nname = \"researcher\"\nkind = \"researcher\"\npool = \"here\"\n[[identities]]\nname = \"admitter\"\nkind = \"admitter\"\npool = \"here\"\n[[identities]]\nname = \"slicer\"\nkind = \"slicer\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
     // Everything that stops the pump: wrong values and missing items.
     let errors = |text: &str| -> Vec<String> {
         let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
@@ -904,7 +904,18 @@ fn the_pump_role_checks_name_each_requirement_for_doctor() {
         .filter(|check| !check.issues.is_empty())
         .map(|check| check.name)
         .collect();
-    assert_eq!(failing, ["pump-planner", "merge", "merge kind", "auditor"]);
+    assert_eq!(
+        failing,
+        [
+            "pump-planner",
+            "researcher",
+            "admitter",
+            "slicer",
+            "merge",
+            "merge kind",
+            "auditor"
+        ]
+    );
     let none: MailspaceConfig = toml::from_str("name = \"t\"\n").unwrap();
     assert!(crate::routing::pump_role_checks(&none).is_empty());
 }
