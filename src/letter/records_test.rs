@@ -208,6 +208,7 @@ fn mail_round_trips_empty_and_noted() {
             t: 1_700_000_000_000_000,
             reference: Some("job-1 reason text".to_string()),
         }),
+        job: None,
     };
     assert_eq!(round_trip(&noted), noted);
     let bare = MailFront {
@@ -216,6 +217,7 @@ fn mail_round_trips_empty_and_noted() {
             t: 5,
             reference: None,
         }),
+        job: None,
     };
     assert_eq!(round_trip(&bare), bare);
 }
@@ -240,6 +242,11 @@ fn every_note_word_round_trips() {
                 note,
                 t: 1,
                 reference: None,
+            }),
+            job: (note == NoteWord::Brief).then(|| JobFront {
+                id: "j1".to_string(),
+                kind: "build".to_string(),
+                builtin_role: None,
             }),
         };
         assert_eq!(round_trip(&front), front);
@@ -272,5 +279,38 @@ fn mail_refusals() {
     invalid_naming::<MailFront>(
         "+++\n[pump]\nnote = \"attempt\"\nt = 1\nref = \" \"\n+++\n",
         &["pump.ref"],
+    );
+}
+
+#[test]
+fn brief_note_carries_a_job() {
+    let brief = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::Brief,
+            t: 9,
+            reference: None,
+        }),
+        job: Some(JobFront {
+            id: "j1".to_string(),
+            kind: "build".to_string(),
+            builtin_role: Some("hand".to_string()),
+        }),
+    };
+    assert_eq!(round_trip(&brief), brief);
+    invalid_naming::<MailFront>(
+        "+++\n[pump]\nnote = \"attempt\"\nt = 1\n[job]\nid = \"j\"\nkind = \"k\"\n+++\n",
+        &["job", "brief"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[job]\nid = \"j\"\nkind = \"k\"\n+++\n",
+        &["job", "brief"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[pump]\nnote = \"brief\"\nt = 1\n+++\n",
+        &["brief", "[job]"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[pump]\nnote = \"brief\"\nt = 1\n[job]\nid = \" \"\nkind = \"k\"\n+++\n",
+        &["job.id"],
     );
 }

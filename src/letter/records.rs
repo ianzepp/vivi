@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::letter::work::JobFront;
 use crate::letter::{Validate, check_text, is_false};
 use crate::pump::flow::def::FlowKind;
 
@@ -50,7 +51,8 @@ impl Validate for RecordFront {
         if let Some(tested) = &self.tested {
             check_text("tested", tested)?;
             if self.kind != Some(RecordKind::Repair) {
-                return Err("`tested` is only read on a record with kind = \"repair\"".to_string());
+                return Err("`tested` is only read on a record with kind = \"repair\": add kind = \"repair\""
+                        .to_string());
             }
         }
         Ok(())
@@ -194,10 +196,29 @@ pub struct PumpNote {
 pub struct MailFront {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pump: Option<PumpNote>,
+    /// The pump job a brief note carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobFront>,
 }
 
 impl Validate for MailFront {
     fn validate(&self) -> Result<(), String> {
+        let brief = self
+            .pump
+            .as_ref()
+            .is_some_and(|pump| pump.note == NoteWord::Brief);
+        match (&self.job, brief) {
+            (Some(_), false) => {
+                return Err(
+                    "`job` is only read on a brief note (pump.note = \"brief\")".to_string()
+                );
+            }
+            (None, true) => return Err("a brief note carries a `[job]` table".to_string()),
+            _ => {}
+        }
+        if let Some(job) = &self.job {
+            job.validate()?;
+        }
         let Some(pump) = &self.pump else {
             return Ok(());
         };

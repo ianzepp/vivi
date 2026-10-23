@@ -165,7 +165,7 @@ fn mail_with_an_action_key_becomes_an_action() {
 
 #[test]
 fn mail_with_only_a_pump_note_stays_mail() {
-    let text = letter("[pump]\nnote = \"brief\"\nt = 5\n", "note");
+    let text = letter("[pump]\nnote = \"attempt\"\nt = 5\n", "note");
     let parsed = parse_kind(&LetterKind::Mail, &text).unwrap();
     assert_eq!(parsed.kind, LetterKind::Mail);
     assert!(matches!(parsed.front, Front::Mail(_)));

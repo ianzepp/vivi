@@ -38,6 +38,11 @@ fn full_task() -> TaskFront {
         with: vec![s("one"), s("two")],
         band: Some(s("P1")),
         step: Some(full_step()),
+        job: Some(JobFront {
+            id: s("job-1"),
+            kind: s("build"),
+            builtin_role: Some(s("hand")),
+        }),
     }
 }
 
@@ -242,4 +247,29 @@ fn fixture_bodies_parse_back() {
     assert_eq!(step.front, TaskFront::step("ab12", 1, "n"));
     let sentinel = parse_letter::<TaskFront>(&fixture::sentinel_body("ab12", 1, "p")).unwrap();
     assert_eq!(sentinel.front, TaskFront::sentinel("ab12", 1));
+}
+
+#[test]
+fn job_table_round_trips_and_is_validated() {
+    let minimal = TaskFront {
+        job: Some(JobFront {
+            id: s("j1"),
+            kind: s("research"),
+            builtin_role: None,
+        }),
+        ..TaskFront::default()
+    };
+    assert_eq!(round(&minimal), minimal);
+    let text = render(&full_task(), "p").unwrap();
+    assert!(text.find("[step]").unwrap() < text.find("[job]").unwrap());
+    assert!(toml_error::<TaskFront>("[job]\nkind = \"k\"\n").contains("id"));
+    assert!(toml_error::<TaskFront>("[job]\nid = \"i\"\n").contains("kind"));
+    assert!(
+        toml_error::<TaskFront>("[job]\nid = \"i\"\nkind = \"k\"\nbogus = 1\n").contains("bogus")
+    );
+    assert!(invalid::<TaskFront>("[job]\nid = \" \"\nkind = \"k\"\n").contains("job.id"));
+    assert!(
+        invalid::<TaskFront>("[job]\nid = \"i\"\nkind = \"k\"\nbuiltin_role = \"\"\n")
+            .contains("job.builtin_role")
+    );
 }
