@@ -5,7 +5,7 @@
 
 use super::Mailspace;
 use super::backlog::backlog_node_by_token;
-use super::want_state::WantState;
+use super::want_state::{WantState, state_of_handle};
 use crate::error::VivariumError;
 use crate::storage::BACKLOG_GRAPH_CODE;
 
@@ -45,22 +45,38 @@ impl Mailspace {
         let Some(want) = self.resolve_want(&format!("<{id}>"))? else {
             return Ok(());
         };
+        self.settle_want_node(&want)
+    }
+
+    /// Bring the node of the want `want` in step with its computed state:
+    /// done when the state is done, open when it is open. A handle that is
+    /// not a want node changes nothing. Idempotent. The want's own letter
+    /// arriving (send, pull, import) calls this too, so a want that comes in
+    /// after its serving needs closed does not sit open.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    pub(super) fn settle_want_node(&self, want: &str) -> Result<(), VivariumError> {
         let node = {
             let storage = self.storage()?;
             let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
                 return Ok(());
             };
             let nodes = storage.work_graph_nodes(&graph.handle)?;
-            backlog_node_by_token(&storage, &nodes, &want)?
+            backlog_node_by_token(&storage, &nodes, want)?
         };
         let Some(node) = node.filter(|node| node.kind == "want") else {
             return Ok(());
         };
-        match (self.want_state(&want)?.state, node.state.as_str()) {
-            (WantState::Done, "open" | "active") => {
-                self.backlog_complete_item_via(&want, "via=served")?;
+        let state = {
+            let storage = self.storage()?;
+            state_of_handle(&storage, want)?
+        };
+        match (state, node.state.as_str()) {
+            (Some(WantState::Done), "open" | "active") => {
+                self.backlog_complete_item_via(want, "via=served")?;
             }
-            (WantState::Open, "done") => self.backlog_reopen_item(&want)?,
+            (Some(WantState::Open), "done") => self.backlog_reopen_item(want)?,
             _ => {}
         }
         Ok(())

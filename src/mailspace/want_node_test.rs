@@ -118,3 +118,44 @@ fn a_withdrawn_serving_need_counts() {
     close(&mailspace, &a, Some("withdrawn"));
     assert!(want_done(&mailspace));
 }
+
+#[test]
+fn a_want_attached_after_its_serving_need_closed_settles() {
+    let (_tmp, mailspace) = space();
+    let want = send(&mailspace, "want", want_body("q", "p"));
+    let task = send(
+        &mailspace,
+        "task",
+        body_with_deps("task", "p", std::slice::from_ref(&want)),
+    );
+    let served = need(&mailspace, Some(&want), None);
+    close(&mailspace, &served, None);
+    assert!(want_done(&mailspace));
+
+    // The want's node is minted open when its letter arrives after the
+    // need's close (a later recipient, a restore): put it back to that state.
+    let (row, bytes, subject) = {
+        let storage = mailspace.storage().unwrap();
+        let graph = storage.work_graph_by_code("backlog").unwrap().unwrap();
+        let node = storage
+            .work_graph_nodes(&graph.handle)
+            .unwrap()
+            .into_iter()
+            .find(|n| n.kind == "want")
+            .unwrap();
+        storage
+            .set_work_graph_node_state(&graph.handle, &node.handle, "open", None)
+            .unwrap();
+        let row = storage.resolve_message_token(&want).unwrap();
+        let bytes = storage.read_message(&row).unwrap();
+        (row, bytes, node.label)
+    };
+    assert!(!want_done(&mailspace));
+    assert!(!node(&mailspace, "task").1, "{task}");
+
+    mailspace
+        .backlog_attach_letter("want", &row, &subject, &bytes)
+        .unwrap();
+    assert!(want_done(&mailspace));
+    assert!(node(&mailspace, "task").1);
+}

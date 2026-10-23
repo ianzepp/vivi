@@ -30,7 +30,8 @@ fn want_show_reports_state_and_serving_needs() {
         "second need",
         &["--done-when", "b", "--serves", &want],
     );
-    vivi_ok(&["need", "done", &first, "--for", "cto", "--project", root]);
+    // The owner closes (the assignee's `done` would only be a report).
+    vivi_ok(&["need", "done", &first, "--for", "ceo", "--project", root]);
 
     let shown = stdout(&vivi_ok(&["want", "show", &want, "--project", root]));
     assert!(
@@ -71,7 +72,7 @@ fn want_show_reports_state_and_serving_needs() {
     assert_eq!(done_of(&first), true, "{json}");
     assert_eq!(done_of(&second), false, "{json}");
 
-    vivi_ok(&["need", "done", &second, "--for", "cto", "--project", root]);
+    vivi_ok(&["need", "done", &second, "--for", "ceo", "--project", root]);
     let finished = stdout(&vivi_ok(&["want", "show", &want, "--project", root]));
     assert!(
         finished.contains("  state    done (2 of 2 serving needs done)"),

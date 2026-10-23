@@ -9,6 +9,7 @@ use serde::Serialize;
 use super::Mailspace;
 use super::graph_mutate::{newly_ready_after_done, ready_handles, validate_source_id};
 use super::item_events::PropertyKind;
+use super::want_state::{WantState, state_of_handle};
 use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, MailspaceEventInput, Storage,
@@ -76,6 +77,12 @@ impl Mailspace {
             });
         }
         storage.mint_backlog(&BacklogMintInput { nodes, edges })?;
+        drop(storage);
+        if kind == "want" {
+            // A want that arrives after its serving needs closed (a later
+            // recipient, a restore, a pull) takes the state they decide.
+            self.settle_want_node(handle)?;
+        }
         Ok(())
     }
 
@@ -113,6 +120,10 @@ impl Mailspace {
             return Ok(false);
         };
         if !matches!(target.state.as_str(), "open" | "active") {
+            return Ok(false);
+        }
+        if target.kind == "want" && state_of_handle(&storage, handle)? != Some(WantState::Done) {
+            // A want's node follows its computed state, never a folder move.
             return Ok(false);
         }
         let ready_before = ready_handles(&nodes, &edges);
@@ -528,6 +539,10 @@ impl Mailspace {
             return Ok(None);
         };
         if target.state != "done" {
+            return Ok(None);
+        }
+        if target.kind == "want" && state_of_handle(&storage, handle)? != Some(WantState::Open) {
+            // A want's node follows its computed state, never a folder move.
             return Ok(None);
         }
         let parent = target.subgraph.clone();

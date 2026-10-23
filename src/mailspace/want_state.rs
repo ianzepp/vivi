@@ -12,11 +12,11 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use super::Mailspace;
-use super::backlog::canonical_content_handle;
-use super::item_facts::{held_item, is_done};
+use super::backlog::{backlog_node_by_token, canonical_content_handle};
+use super::item_facts::{HeldItem, held_item, is_done};
 use super::kind::effective_kind;
 use crate::error::VivariumError;
-use crate::storage::{Storage, StoredMessageView};
+use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphNodeRow};
 
 /// Whether a want still has work to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -102,18 +102,23 @@ pub fn fold(closed_by_hand: bool, serving_done: impl IntoIterator<Item = bool>) 
 }
 
 /// The needs serving the want whose normalized Message-ID is `want_rfc_id`,
-/// one per content id, oldest first.
+/// one per content id, oldest first. A sealed (absorbed) copy still counts:
+/// whether a need is open or done does not depend on who sealed a copy.
 pub(crate) fn serving_needs(
     storage: &Storage,
     want_rfc_id: &str,
 ) -> Result<Vec<ServingNeed>, VivariumError> {
     let mut seen = HashSet::new();
     let mut found = Vec::new();
+    let nodes = match storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? {
+        Some(graph) => storage.work_graph_nodes(&graph.handle)?,
+        None => Vec::new(),
+    };
     for message_id in storage.rows_with_item_metadata("serves", want_rfc_id)? {
         let Some(row) = storage.message_by_id(&message_id)? else {
             continue;
         };
-        if row.absorbed_at.is_some() || !seen.insert(row.content_id.clone()) {
+        if !seen.insert(row.content_id.clone()) {
             continue;
         }
         let item = held_item(storage, &row.message_id)?;
@@ -126,16 +131,46 @@ pub(crate) fn serving_needs(
             }
         }
         let handle = canonical_content_handle(storage, &row.message_id)?;
+        let done = is_closed(storage, &nodes, &item, &handle)?;
         let need = ServingNeed {
             handle,
             subject: row.subject.clone(),
-            done: is_done(&item),
+            done,
             verdict,
         };
         found.push((row.date, need));
     }
     found.sort_by(|a, b| (&a.0, &a.1.handle).cmp(&(&b.0, &b.1.handle)));
     Ok(found.into_iter().map(|(_, need)| need).collect())
+}
+
+/// Whether vivi treats the need as closed. A `done` folder move alone is not
+/// enough: an assignee's report awaiting acceptance moves only its own row,
+/// and the need's backlog node stays open until the owner (or the pump
+/// identity) accepts it or closes it by event. So when the need has a
+/// backlog node, the node decides; a need with no node (it predates the
+/// backlog) falls back to the folder rule.
+fn is_closed(
+    storage: &Storage,
+    nodes: &[WorkGraphNodeRow],
+    item: &HeldItem,
+    handle: &str,
+) -> Result<bool, VivariumError> {
+    if !is_done(item) {
+        return Ok(false);
+    }
+    let mut tokens = vec![handle.to_string()];
+    tokens.extend(item.rows.iter().map(|row| row.message_id.clone()));
+    let mut tracked = false;
+    for token in &tokens {
+        if let Some(node) = backlog_node_by_token(storage, nodes, token)? {
+            if node.state == "done" {
+                return Ok(true);
+            }
+            tracked = true;
+        }
+    }
+    Ok(!tracked)
 }
 
 /// The computed state of every want in `wants`, keyed by content id.
@@ -168,6 +203,21 @@ fn report_for(
         serving,
         closed_by_hand,
     })
+}
+
+/// The computed state of the want `handle` names, or `None` when no message
+/// answers to the handle. The caller has already checked the item is a want.
+pub(super) fn state_of_handle(
+    storage: &Storage,
+    handle: &str,
+) -> Result<Option<WantState>, VivariumError> {
+    let Ok(row) = storage.resolve_message_token(handle) else {
+        return Ok(None);
+    };
+    let Some(view) = storage.message_by_id(&row)? else {
+        return Ok(None);
+    };
+    Ok(Some(report_for(storage, &view)?.state))
 }
 
 /// Refuse a hand close of a want that serving needs decide.
