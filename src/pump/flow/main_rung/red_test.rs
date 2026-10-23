@@ -87,6 +87,12 @@ fn first_red_files_one_repair_need_and_opens_its_record() -> R {
     let sends = rig.sends();
     assert_eq!(sends.len(), 1);
     assert!(sends[0].contains("--mark repair"), "{}", sends[0]);
+    assert!(sends[0].contains(" --target default"), "{}", sends[0]);
+    assert!(
+        sends[0].contains("--done-when 'the main rung on default passes'"),
+        "{}",
+        sends[0]
+    );
     let (_, body) = MailReader::open_record(&rig.mail, &rig.need)?
         .ok_or_else(|| VivariumError::Message("no record".into()))?;
     assert!(body.contains("kind: repair"), "{body}");

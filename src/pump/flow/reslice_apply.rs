@@ -134,6 +134,10 @@ fn send_need<M: FlowMail>(
         run.need, run.run
     );
     let subject = format!("follow-up of {} r{} slice {old_slice}", run.need, run.run);
+    let done_when = format!(
+        "the follow-up of {} r{} slice {old_slice} is handled",
+        run.need, run.run
+    );
     let key: String = format!("{}-r{}-{}", run.need, run.run, reslice.task)
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -145,9 +149,10 @@ fn send_need<M: FlowMail>(
     fs::write(&path, body)?;
     let from = shell_quote(&ctx.cfg.reply_from);
     let command = format!(
-        "need send --from {from} --to {from} --subject {} --body-file {}",
+        "need send --from {from} --to {from} --subject {} --body-file {} --done-when {}",
         shell_quote(&subject),
         shell_quote(&path.to_string_lossy()),
+        shell_quote(&done_when),
     );
     let output = ctx.vivi(&command, 60);
     if output.code != 0 {
