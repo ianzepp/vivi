@@ -318,7 +318,9 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
         "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
     );
     let mut st = State::default();
-    put(&mut st, "a-1", unit(Status::Inflight, Some("1a2b3c4d")));
+    let mut job = planner_job("j-1", JobStatus::Dispatched, ctx.now(), Some(ctx.now()));
+    job.task = Some(String::from("1a2b3c4d"));
+    st.jobs.insert(String::from("j-1"), job);
     tick(&ctx, &mut st);
     let commands = host.commands();
     let sync = first_at(&commands, "sync pull");
@@ -954,7 +956,9 @@ fn a_blocked_board_pass_does_not_block_collect_or_the_tick() {
         "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
     );
     let mut st = State::default();
-    put(&mut st, "x-a1", unit(Status::Inflight, Some("1a2b3c4d")));
+    let mut job = planner_job("j-1", JobStatus::Dispatched, ctx.now(), Some(ctx.now()));
+    job.task = Some(String::from("1a2b3c4d"));
+    st.jobs.insert(String::from("j-1"), job);
     let mut pass = BoardPass::start(&ctx);
     pass.request(&ctx, &mut st);
     wait_until_arrived(&park);

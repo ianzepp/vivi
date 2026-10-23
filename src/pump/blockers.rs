@@ -71,9 +71,8 @@ pub(crate) fn findings(ctx: &Ctx, st: &State, now: u64) -> Vec<crate::pump::alar
 
 /// The automatic response to a blocking-stuck root holding at least
 /// `alarm.blocking_hold_units` units: raise its need to priority 1, requeue a
-/// transient-class stuck unit once, and hand a persistently stuck unit to a
-/// fresh split planner after `alarm.blocking_replan_minutes`. Parked-verdict
-/// roots get no action here: the recurring exception is their alert.
+/// transient-class stuck unit once. Parked-verdict roots get no action here:
+/// the recurring exception is their alert.
 pub fn check(ctx: &Ctx, st: &mut State) {
     let threshold = ctx.cfg.alarm.blocking_hold_units;
     for blocker in compute(ctx, st) {
@@ -120,22 +119,14 @@ fn respond(ctx: &Ctx, st: &mut State, need: &str) {
     }
 }
 
-/// Requeue `uid` once when its last attempt failed transiently; otherwise
-/// hand it to the split planner once it has been stuck long enough.
+/// Requeue `uid` once when its last attempt failed transiently.
 fn respond_unit(ctx: &Ctx, st: &mut State, uid: &str) {
     let Some(unit) = st.units.get(uid) else {
         return;
     };
     if !unit.requeued && transient_failure(unit) {
         requeue(ctx, st, uid);
-        return;
     }
-    let age = ctx.now().saturating_sub(unit.since);
-    if age < ctx.cfg.alarm.blocking_replan_minutes.saturating_mul(60) {
-        return;
-    }
-    let text = last_attempt_text(unit);
-    crate::pump::collect::split(ctx, st, uid, &text);
 }
 
 /// Requeue one unit: back to `pending` with `requeued` set. Attempts are
@@ -162,13 +153,6 @@ fn transient_failure(unit: &Unit) -> bool {
     attempt.why == "timeout"
         || attempt.why == "finished/agent exit 124"
         || attempt.detail.contains("failed (exit 124)")
-}
-
-/// `why: detail` from the unit's last attempt; empty when there is none.
-fn last_attempt_text(unit: &Unit) -> String {
-    unit.history.last().map_or_else(String::new, |attempt| {
-        format!("{}: {}", attempt.why, attempt.detail)
-    })
 }
 
 /// The `status.txt` lines for the largest holds: up to three blockers, each as
