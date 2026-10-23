@@ -36,6 +36,7 @@ fn role(name: &str, kind: Option<&str>, band: Option<&str>) -> RoleFacts {
         name: name.to_string(),
         kind: kind.map(str::to_string),
         band: band.map(str::to_string),
+        thinking: None,
         charter: String::new(),
         read_only: None,
     }
@@ -620,4 +621,108 @@ fn a_merge_role_may_not_publish_main_when_the_configured_main_is_another_name() 
     assert!(validate_publish(Some(&merge), Some("refs/heads/trunk"), None, &mains).is_ok());
     assert!(validate_publish(Some(&merge), Some("refs/heads/main"), None, &mains).is_err());
     assert!(validate_publish(Some(&merge), Some("refs/heads/main"), None, &[]).is_err());
+}
+
+fn slug_role(slug: &str, thinking: Option<&str>) -> RoleFacts {
+    RoleFacts {
+        thinking: thinking.map(str::to_string),
+        ..role("slugger", Some("hand"), Some(slug))
+    }
+}
+
+#[test]
+fn a_slug_role_resolves_to_that_model_with_its_thinking() {
+    let worker = slug_role("other/model", Some("high"));
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(resolved.reasoning.as_deref(), Some("high"));
+    assert_eq!(resolved.band, None);
+    assert_eq!(resolved.role.as_deref(), Some("slugger"));
+}
+
+#[test]
+fn a_slug_role_without_thinking_takes_the_reasoning_of_a_band_entry_naming_it() {
+    let worker = slug_role("other/model", None);
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(resolved.reasoning.as_deref(), Some("low"));
+}
+
+#[test]
+fn a_slug_role_with_no_thinking_and_no_band_entry_has_no_reasoning() {
+    let config = pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["zai/glm-5.3-flash", "bare/model"]
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "xhigh"
+[local]
+root = "~/lanes"
+"#,
+    );
+    let worker = slug_role("bare/model", None);
+    let resolved = resolve(
+        &config,
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "bare/model");
+    assert_eq!(resolved.reasoning, None);
+}
+
+#[test]
+fn a_model_flag_equal_to_a_slug_role_takes_the_role_thinking() {
+    let worker = slug_role("other/model", Some("high"));
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", Some("other/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(resolved.reasoning.as_deref(), Some("high"));
+}
+
+#[test]
+fn a_body_band_beats_a_slug_role() {
+    let worker = slug_role("other/model", Some("high"));
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it\nband: P1", None, false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "zai/glm-5.3-flash");
+    assert_eq!(resolved.band, Some(1));
+}
+
+#[test]
+fn a_role_value_that_is_neither_band_nor_harness_model_is_refused() {
+    let worker = slug_role("nope/model", None);
+    let err = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("role slugger"), "got: {message}");
+    assert!(message.contains("nope/model"), "got: {message}");
+    assert!(message.contains("harness.models"), "got: {message}");
 }
