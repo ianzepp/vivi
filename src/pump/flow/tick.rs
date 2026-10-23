@@ -31,6 +31,7 @@ use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::{Outcome, StartAction, StartCx};
@@ -288,6 +289,7 @@ where
         self.release_scope_waits()?;
         self.settle_fanouts()?;
         self.start_steps()?;
+        self.poll_waiting()?;
         self.check_kind()?;
         self.check_overdue()
     }
@@ -720,6 +722,58 @@ where
                 StartAction::Decide { word } => {
                     self.advance_word(&step, &word, serde_json::json!({"source": "code"}))?;
                 }
+                StartAction::Fanout {
+                    slicer_step,
+                    slices,
+                } => {
+                    fanout::expand(
+                        self.ctx,
+                        self.store,
+                        self.mail,
+                        &self.run,
+                        &slicer_step,
+                        &slices,
+                    )?;
+                    self.store
+                        .set_step_state(&step.task, StepState::Running, None)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask each waiting step's handler for an answer. Lock, park and
+    /// milestone rows go straight to waiting, so polling is how their
+    /// handlers answer. A held step is the operator's and is not polled.
+    fn poll_waiting(&mut self) -> Result<(), VivariumError> {
+        let rows = self.store.steps_of(&self.run.need, self.run.run)?;
+        for step in rows {
+            if step.state != StepState::Waiting
+                || step.node == SENTINEL_NODE
+                || is_slice_row(&step)
+                || step.verdict.as_deref() == Some(OPERATOR_HOLD)
+            {
+                continue;
+            }
+            let registry = self.registry;
+            let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
+                continue;
+            };
+            let Some(handler) = registry.handler_for(self.def.kind, node) else {
+                continue;
+            };
+            let word = {
+                let cx = StartCx {
+                    ctx: self.ctx,
+                    store: self.store,
+                    mail: &*self.mail,
+                    run: &self.run,
+                    def: &self.def,
+                };
+                handler.poll(&cx, &step)?
+            };
+            if let Some(word) = word {
+                self.advance_word(&step, &word, serde_json::json!({"source": "poll"}))?;
             }
         }
         Ok(())
@@ -740,6 +794,15 @@ where
             ("node", serde_json::json!(step.node)),
             ("task", serde_json::json!(step.task)),
             ("attempt", serde_json::json!(1)),
+            ("kind", serde_json::json!(self.run.kind)),
+            (
+                "class",
+                serde_json::json!(
+                    self.class_of(&step.node)
+                        .map(|class| class.name())
+                        .unwrap_or_default()
+                ),
+            ),
         ] {
             payload.insert(key.to_owned(), value);
         }
@@ -763,25 +826,9 @@ where
     /// Raise once when the need's marks no longer name the run's kind.
     fn check_kind(&mut self) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
-        let from_record = MailReader::open_record(&*self.mail, &need)?
-            .and_then(|(_, body)| {
-                body.lines().find_map(|line| {
-                    line.trim()
-                        .strip_prefix("kind:")
-                        .map(str::trim)
-                        .map(str::to_owned)
-                })
-            })
-            .and_then(|word| FlowKind::parse(&word));
+        let body = MailReader::open_record(&*self.mail, &need)?.map(|(_, body)| body);
         let marks = self.mail.need_marks(&need)?;
-        let has = |mark: &str| marks.iter().any(|m| m == mark);
-        let now_kind = from_record.unwrap_or(if has("research") {
-            FlowKind::Research
-        } else if has("release") {
-            FlowKind::Release
-        } else {
-            FlowKind::Build
-        });
+        let (now_kind, _) = kind::of(body.as_deref(), &marks);
         if now_kind.name() != self.run.kind {
             raise_once(
                 self.ctx,
@@ -859,3 +906,7 @@ mod e2e;
 #[cfg(test)]
 #[path = "tick_guard_test.rs"]
 mod guard_tests;
+
+#[cfg(test)]
+#[path = "tick_registry_test.rs"]
+mod registry_tests;

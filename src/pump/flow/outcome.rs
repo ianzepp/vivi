@@ -1,6 +1,7 @@
 //! A step's outcome and the contract of the handlers that start each class of step.
 
 use crate::error::VivariumError;
+use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::slice_dispatch::SliceMail;
@@ -28,6 +29,12 @@ pub enum StartAction {
     OpenAndWait,
     /// Code decides at once with this word.
     Decide { word: String },
+    /// Expand the slicer's slices as slice tasks; the fanout step runs until
+    /// they all settle.
+    Fanout {
+        slicer_step: StepRow,
+        slices: Vec<Slice>,
+    },
 }
 
 /// Read access a handler gets when it starts or polls a step.
