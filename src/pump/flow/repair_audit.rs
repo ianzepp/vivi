@@ -19,8 +19,9 @@ use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
 use crate::pump::envelope::review::Finding;
 use crate::pump::envelope::roles::{RoleKind, parse_for};
+use crate::pump::flow::fanout::VERDICT_MERGED;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
-use crate::pump::flow::index::RunRow;
+use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::{Ctx, shell_quote};
@@ -99,11 +100,19 @@ fn enqueue<S: JobStore, M: FlowMail>(
 ) -> Result<(), VivariumError> {
     let key = run_key(&run.need, run.run);
     let id = job_id(&run.need, run.run);
-    let Some(facts) = published_facts(store, mail, &ctx.cfg.reply_from, run)? else {
+    let Some(attempt) = merged_attempt(store, run)? else {
         ctx.log(&format!(
-            "repair audit: {} r{} published nothing; nothing to audit",
+            "repair audit: {} r{} has no merged merge step; nothing to audit",
             run.need, run.run
         ));
+        return settle(ctx, store, &key);
+    };
+    let Some(facts) = published_facts(ctx, store, mail, run, attempt)? else {
+        let text = format!(
+            "{} r{}: merged attempt {attempt} has no attempt facts",
+            run.need, run.run
+        );
+        raise_once(ctx, REPAIR_AUDIT_FAILED, &id, &text);
         return settle(ctx, store, &key);
     };
     let Some(role) = ctx
@@ -286,19 +295,27 @@ fn settle(ctx: &Ctx, store: &PumpStore, key: &str) -> Result<(), VivariumError> 
     store.mark_action_applied(key, ctx.now()).map(|_| ())
 }
 
-/// What the newest publishing attempt of a run published: attempt 2 first.
+/// The attempt whose merge step answered `merged`. A run with none landed
+/// outside the flow (through `green`), so it has nothing of its own to audit.
+fn merged_attempt(store: &PumpStore, run: &RunRow) -> Result<Option<u32>, VivariumError> {
+    let steps = store.steps_of(&run.need, run.run)?;
+    Ok(steps.iter().rev().find_map(|row| {
+        let is_merge = matches!(row.node.as_str(), "merge1" | "merge2");
+        let landed = row.state == StepState::Done && row.verdict.as_deref() == Some(VERDICT_MERGED);
+        repair::attempt_of(&row.node).filter(|_| is_merge && landed)
+    }))
+}
+
+/// What the merged attempt published.
 fn published_facts<M: FlowMail>(
+    ctx: &Ctx,
     store: &PumpStore,
     mail: &M,
-    pump: &str,
     run: &RunRow,
+    attempt: u32,
 ) -> Result<Option<AttemptFacts>, VivariumError> {
-    for attempt in [2, 1] {
-        if let Some(facts) = repair::latest_facts(store, mail, pump, &run.need, run.run, attempt)? {
-            return Ok(Some(facts));
-        }
-    }
-    Ok(None)
+    let pump = &ctx.cfg.reply_from;
+    repair::latest_facts(store, mail, pump, &run.need, run.run, attempt)
 }
 
 /// The audit target and brief. The target is the record's, else the need's
