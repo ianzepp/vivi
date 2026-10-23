@@ -582,3 +582,38 @@ fn spki_pem(seed: u8) -> String {
         STANDARD.encode(der)
     )
 }
+
+#[test]
+fn a_pump_identity_letter_is_indexed_under_the_host_prefix() {
+    let env = env("pump-prefix");
+    let host = host(&env, Some("addressed"));
+    let peer = peer(&env, &host.id, "pat");
+    let mut ms = host.mailspace();
+    ms.add_identity("pump").unwrap();
+    let host_prefix = ms.address_prefix().to_owned();
+
+    send(
+        &ms,
+        "pump",
+        &peer.mailspace.address_for("mind"),
+        None,
+        "pump close",
+    );
+
+    let (indexed, duplicates, _) = ran(env.projects.index_hosted(&host.id).unwrap());
+    assert_eq!((indexed, duplicates), (1, 0));
+    let pat = Viewer {
+        name: "pat",
+        prefix: Some(&peer.prefix()),
+    };
+    let records = env
+        .projects
+        .read_page(&host.id, &ListQuery::since(0), &pat)
+        .unwrap()
+        .records;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(
+        records[0].from_prefix.as_deref(),
+        Some(host_prefix.as_str())
+    );
+}
