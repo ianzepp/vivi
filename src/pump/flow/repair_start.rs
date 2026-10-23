@@ -2,6 +2,7 @@
 //! main tip, and the need gets a `need_branches` row so prune can find it.
 
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
 use crate::mailspace::shipped::REPAIRER_ROLE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -141,11 +142,11 @@ fn prior_attempt(cx: &StartCx<'_>) -> Result<String, VivariumError> {
         None => text.push_str("Attempt 1 published nothing.\n"),
     }
     if let Some(rung) = first.iter().find(|s| s.node == repair::rung_node(1)) {
-        let replies =
-            cx.mail
-                .marked_replies_from(&rung.task, repair::RUNG_MARKER, &cx.ctx.cfg.reply_from)?;
-        if let Some((_, reply)) = replies.last() {
-            text.push_str(&format!("Rung verdict: {reply}\n"));
+        let notes = cx
+            .mail
+            .notes_from(&rung.task, NoteWord::RepairRung, &cx.ctx.cfg.reply_from)?;
+        if let Some((_, note)) = notes.last() {
+            text.push_str(&format!("Rung verdict: {}\n", note.prose.trim()));
         }
     }
     Ok(text)

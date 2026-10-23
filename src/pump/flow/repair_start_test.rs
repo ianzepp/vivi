@@ -7,7 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::RepairerStart;
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::start::start as start_run;
@@ -164,11 +165,11 @@ fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
     };
     rig.mail.reply(
         &fix,
-        &marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts)),
+        &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
     )?;
     rig.mail.reply(
         &rung,
-        &marked_line(repair::RUNG_MARKER, "failed on a::b::c_test"),
+        &note_body(NoteWord::RepairRung, None, "failed on a::b::c_test")?,
     )?;
     main_tip(&rig.host, MAIN_B);
     let spec = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
@@ -249,7 +250,7 @@ fn a_restarted_repair_run_publishes_to_fresh_refs() -> R {
         };
         rig.mail.reply(
             task,
-            &marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts)),
+            &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
         )?;
         old_refs.push(branch);
     }
