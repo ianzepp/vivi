@@ -10,8 +10,9 @@ pub const DEFAULT_SLICE_MINUTES: u32 = 10;
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FlowConfig {
-    /// Most runs that may be starting, live or restarting at once; unset
-    /// means no cap.
+    /// Most non-repair runs that may be starting, live or restarting at once;
+    /// unset means no cap. Repair-kind runs neither count toward the cap nor
+    /// wait for it.
     pub max_live_runs: Option<u32>,
 }
 
