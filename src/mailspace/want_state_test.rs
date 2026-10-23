@@ -207,3 +207,85 @@ fn want_states_of_keys_a_batch_by_content_id() {
     assert_eq!(states[&views[0].content_id].serving.len(), 1);
     assert!(states[&views[1].content_id].serving.is_empty());
 }
+
+fn quiet_space() -> (tempfile::TempDir, Mailspace) {
+    let (tmp, mut mailspace) = space();
+    mailspace.config.absorb = Some(crate::mailspace::AbsorbConfig { quiet_hours: 0 });
+    (tmp, mailspace)
+}
+
+fn need_with_sent(mailspace: &Mailspace, serves: &str) -> (String, String) {
+    let mut front = NeedFront::new(vec!["done".to_string()]);
+    front.serves = Some(serves.to_string());
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "need subject".into(),
+            body: need_body_with(&front, "prose"),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    (result.delivered[0].handle.clone(), result.sent)
+}
+
+#[test]
+fn absorbing_a_closed_serving_need_keeps_the_want_done() {
+    let (_tmp, mailspace) = quiet_space();
+    let want = want(&mailspace);
+    let (serving, sent) = need_with_sent(&mailspace, &want);
+    close(&mailspace, &serving, None);
+    assert_eq!(state(&mailspace, &want), WantState::Done);
+
+    // Both ends seal their copy once the need is done.
+    mailspace.absorb("mind", &sent, None, "need").unwrap();
+    mailspace.absorb("hand", &serving, None, "need").unwrap();
+    let report = mailspace.want_state(&want).unwrap();
+    assert_eq!(report.state, WantState::Done, "{report:?}");
+    assert_eq!(report.summary(), "done (1 of 1 serving needs done)");
+
+    let storage = mailspace.storage().unwrap();
+    let row = storage.resolve_message_token(&want).unwrap();
+    let view = storage.message_by_id(&row).unwrap().unwrap();
+    assert!(refuse_hand_close(&storage, &view).is_err());
+}
+
+#[test]
+fn an_assignee_absorbing_its_open_copy_keeps_the_want_open() {
+    let (_tmp, mailspace) = quiet_space();
+    let want = want(&mailspace);
+    let closed = need(&mailspace, Some(&want), None);
+    close(&mailspace, &closed, None);
+    let open = need(&mailspace, Some(&want), None);
+    assert_eq!(state(&mailspace, &want), WantState::Open);
+
+    mailspace.absorb("hand", &open, None, "need").unwrap();
+    let report = mailspace.want_state(&want).unwrap();
+    assert_eq!(report.state, WantState::Open, "{report:?}");
+    assert_eq!(report.summary(), "open (1 of 2 serving needs done)");
+}
+
+#[test]
+fn an_unaccepted_assignee_report_does_not_close_the_serving_need() {
+    let (_tmp, mailspace) = space();
+    let want = want(&mailspace);
+    let serving = need(&mailspace, Some(&want), None);
+
+    // The assignee's `done` is a report: only its own row moves.
+    mailspace
+        .move_item("hand", &serving, "done", None, "report", None)
+        .unwrap();
+    let report = mailspace.want_state(&want).unwrap();
+    assert_eq!(report.state, WantState::Open, "{report:?}");
+    assert!(!report.serving[0].done);
+
+    // The owner accepts it: now the need, and so the want, is done.
+    close(&mailspace, &serving, None);
+    let report = mailspace.want_state(&want).unwrap();
+    assert_eq!(report.state, WantState::Done, "{report:?}");
+    assert!(report.serving[0].done);
+}

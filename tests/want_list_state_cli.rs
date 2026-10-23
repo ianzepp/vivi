@@ -21,7 +21,11 @@ fn want_list_follows_serving_needs() {
     assert_eq!(statuses(root, "open", &want), ["open"]);
     assert!(statuses(root, "done", &want).is_empty());
 
+    // The assignee's `done` is only a report: the want stays open.
     vivi_ok(&["need", "done", &need, "--for", "cto", "--project", root]);
+    assert_eq!(statuses(root, "open", &want), ["open"]);
+    // The owner accepts it.
+    vivi_ok(&["need", "done", &need, "--for", "ceo", "--project", root]);
     assert!(statuses(root, "open", &want).is_empty());
     assert_eq!(statuses(root, "done", &want), ["done"]);
     assert_eq!(statuses(root, "all", &want), ["done"]);
