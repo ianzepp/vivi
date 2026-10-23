@@ -83,7 +83,6 @@ pub struct PumpHealth {
     pub merges: Merges,
     pub blocked: Vec<BlockedView>,
     pub planner_parked: Vec<String>,
-    pub baseline_red: Vec<String>,
     pub complete_open_needs: Vec<CloseoutRow>,
     pub exceptions: Vec<ExceptionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,7 +177,6 @@ fn blank(now: u64, tick_secs: u64, opts: &HealthOptions) -> PumpHealth {
         merges: Merges::default(),
         blocked: Vec::new(),
         planner_parked: Vec::new(),
-        baseline_red: Vec::new(),
         complete_open_needs: Vec::new(),
         exceptions: Vec::new(),
         changed_since: None,
@@ -203,7 +201,6 @@ fn fill(
     out.merges = views::merges(state);
     out.blocked = views::blocked(state, now);
     out.planner_parked = state.board.planner_failed.clone();
-    out.baseline_red = state.baseline.clone().unwrap_or_default();
     out.complete_open_needs = closeout::complete_open(mailspace, snapshot)?;
     let window = opts
         .since
@@ -234,7 +231,6 @@ fn signals(out: &PumpHealth) -> Signals {
         quarantined: count("quarantined"),
         needs_replan: count("needs-replan"),
         planner_parked: out.planner_parked.len(),
-        red: out.baseline_red.len(),
         stall_exceptions: out
             .exceptions
             .iter()
