@@ -103,6 +103,24 @@ fn rig(extra_local: &str) -> Rig {
     }
 }
 
+/// A whole-letter task body: pool refs live in the front matter, not in prose.
+fn pool_body(
+    prose: &str,
+    from: Option<&str>,
+    branch: Option<&str>,
+    band: Option<&str>,
+    with: &[&str],
+) -> String {
+    let front = vivi::letter::work::TaskFront {
+        from: from.map(str::to_string),
+        branch: branch.map(str::to_string),
+        band: band.map(str::to_string),
+        with: with.iter().map(|w| (*w).to_string()).collect(),
+        ..vivi::letter::work::TaskFront::default()
+    };
+    vivi::letter::render(&front, prose).expect("a rendered task letter")
+}
+
 fn handle(rig: &Rig, subject: &str) -> String {
     let sent = vivi(&[
         "task",
@@ -248,7 +266,7 @@ fn an_unknown_with_ref_in_the_body_is_refused_before_a_slot_is_claimed() {
         "--subject",
         "body names a ref",
         "--body",
-        "from: main\nbranch: feat/new\nwith: nope/ref\n",
+        &pool_body("", Some("main"), Some("feat/new"), None, &["nope/ref"]),
     ]);
     assert!(sent.status.success());
     let task = String::from_utf8_lossy(&sent.stdout)
@@ -501,7 +519,12 @@ fn job_file(rig: &Rig, name: &str) -> PathBuf {
 #[test]
 fn an_auditor_role_task_runs_read_only_on_the_band_model_with_the_charter_above_the_rules() {
     let rig = role_rig();
-    let task = send_to(&rig, "auditor", "Audit it", "work\nfrom: main\n");
+    let task = send_to(
+        &rig,
+        "auditor",
+        "Audit it",
+        &pool_body("work", Some("main"), None, None, &[]),
+    );
     let (ok, said) = dispatch_to(&rig, &task, &["--from", "main"]);
     assert!(ok, "{said}");
     assert!(said.contains("model standin"), "{said}");
@@ -539,7 +562,7 @@ fn a_hand_role_task_with_a_band_line_writes_on_the_band_model() {
         &rig,
         "helper",
         "Write it",
-        "work\nband: P2\nfrom: main\nbranch: feat/b\n",
+        &pool_body("work", Some("main"), Some("feat/b"), Some("P2"), &[]),
     );
     let (ok, said) = dispatch_to(&rig, &task, &[]);
     assert!(ok, "{said}");
@@ -565,7 +588,7 @@ fn a_task_with_neither_band_nor_model_is_refused_and_the_slot_stays_free() {
         &rig,
         "helper",
         "No band",
-        "work\nfrom: main\nbranch: feat/c\n",
+        &pool_body("work", Some("main"), Some("feat/c"), None, &[]),
     );
     let (ok, said) = dispatch_to(&rig, &task, &[]);
     assert!(!ok && said.contains("no model:"), "{said}");
@@ -579,7 +602,7 @@ fn a_pool_without_the_band_refuses_naming_it_and_the_slot_stays_free() {
         &rig,
         "helper",
         "Bad band",
-        "work\nband: P5\nfrom: main\nbranch: feat/d\n",
+        &pool_body("work", Some("main"), Some("feat/d"), Some("P5"), &[]),
     );
     let (ok, said) = dispatch_to(&rig, &task, &[]);
     assert!(!ok && said.contains("band P5"), "{said}");
@@ -604,7 +627,7 @@ fn a_model_flag_still_works_on_a_role_task_and_read_only_still_forces() {
         &rig,
         "helper",
         "Flag write",
-        "work\nfrom: main\nbranch: feat/e\n",
+        &pool_body("work", Some("main"), Some("feat/e"), None, &[]),
     );
     let (ok, said) = dispatch_to(&rig, &write, &["--model", "standin"]);
     assert!(ok && said.contains("model standin"), "{said}");
@@ -615,7 +638,12 @@ fn a_model_flag_still_works_on_a_role_task_and_read_only_still_forces() {
     let waited = wait(&rig, &write);
     assert!(waited.contains("committed feat/e"), "{waited}");
     // `--read-only` still forces a read-only job on a hand-kind role.
-    let ro = send_to(&rig, "helper", "Flag ro", "work\nfrom: main\n");
+    let ro = send_to(
+        &rig,
+        "helper",
+        "Flag ro",
+        &pool_body("work", Some("main"), None, None, &[]),
+    );
     let (ok, said) = dispatch_to(
         &rig,
         &ro,
