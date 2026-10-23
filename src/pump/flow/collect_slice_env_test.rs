@@ -8,7 +8,9 @@ use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
 use crate::letter::fixture::task_body_with;
+use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
+use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -190,7 +192,10 @@ fn environment_replies(rig: &Rig, slice: &StepRow) -> usize {
         .iter()
         .filter(|call| {
             matches!(call, Call::Reply { handle, body }
-                if *handle == slice.task && body.contains("environment:"))
+                if *handle == slice.task
+                    && note_of(body).is_some_and(|n| n.pump.note == NoteWord::SliceEnv
+                        && n.pump.reference.is_some()
+                        && n.prose.contains("environment:")))
         })
         .count()
 }

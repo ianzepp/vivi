@@ -45,9 +45,6 @@ pub const HAND_REPORTED_FAILURE: &str = "flow-hand-reported-failure";
 /// A slice gets this many attempts; the failure of the last one exhausts it.
 pub const MAX_ATTEMPTS: u32 = 2;
 
-/// First line of a deviations reply on a slice task (posted by the tick).
-pub const DEVIATIONS_MARKER: &str = "pump-deviations:";
-
 /// Most bytes of landed-slice deviations a brief carries.
 const DEVIATIONS_CAP: usize = 4 * 1024;
 
@@ -556,8 +553,8 @@ fn landed_deviations<M: SliceMail>(
             {
                 continue;
             }
-            for (date, text) in mail.marked_replies(&row.task, DEVIATIONS_MARKER)? {
-                let text = text.strip_prefix(DEVIATIONS_MARKER).unwrap_or(&text).trim();
+            for (date, note) in mail.notes(&row.task, NoteWord::Deviations)? {
+                let text = note.prose.trim();
                 entries.push((date, format!("- {} ({}): {text}", row.node, row.task)));
             }
         }

@@ -9,7 +9,8 @@
 use serde::Serialize;
 
 use crate::error::VivariumError;
-use crate::mailspace::marked_line;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::{FollowUp, Hand, RoleKind};
 use crate::pump::flow::collect_step::RunCx;
@@ -21,10 +22,8 @@ use crate::pump::flow::reslice::{self, Mode};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
-use crate::pump::flow::slice_dispatch::{self, AttemptResult, DEVIATIONS_MARKER, Retried};
-use crate::pump::flow::tick::{
-    FOLLOW_UP, FOLLOW_UP_MARKER, OPERATOR_HOLD, SCOPE_REWORK, raise_once,
-};
+use crate::pump::flow::slice_dispatch::{self, AttemptResult, Retried};
+use crate::pump::flow::tick::{FOLLOW_UP, OPERATOR_HOLD, SCOPE_REWORK, raise_once};
 use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure, EnvKind};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 
@@ -38,9 +37,6 @@ fn tail_of(text: &str, max: usize) -> &str {
         .nth(skip)
         .map_or("", |(at, _)| &text[at..])
 }
-
-/// Marker of the reply that records a hand job's environment failure.
-const ENV_MARKER: &str = "pump-slice-env:";
 
 /// The runner-level environment failure of a hand job, if it has one. Only
 /// runner facts count: the agent binary itself exiting 126 or 127, or a host
@@ -103,8 +99,8 @@ impl<S: JobStore, M: FlowMail> BuiltHook<S, M> for PostBuiltNotes {
     ) -> Result<(), VivariumError> {
         if !envelope.deviations.is_empty() {
             let text = envelope.deviations.join("; ");
-            cx.mail
-                .reply(&step.task, &marked_line(DEVIATIONS_MARKER, &text))?;
+            let body = note_body(NoteWord::Deviations, None, &text)?;
+            cx.mail.reply(&step.task, &body)?;
         }
         if !envelope.follow_up.is_empty() {
             #[derive(Serialize)]
@@ -115,10 +111,8 @@ impl<S: JobStore, M: FlowMail> BuiltHook<S, M> for PostBuiltNotes {
                 follow_up: &envelope.follow_up,
             })
             .map_err(|error| VivariumError::Other(format!("follow-up encoding: {error}")))?;
-            cx.mail.reply(
-                &step.task,
-                &marked_line(FOLLOW_UP_MARKER, &format!("\n{toml}")),
-            )?;
+            let body = note_body(NoteWord::FollowUp, None, &toml)?;
+            cx.mail.reply(&step.task, &body)?;
             cx.ctx.exception(
                 FOLLOW_UP,
                 &step.task,
@@ -212,16 +206,15 @@ where
             row.attempt,
         );
         raise_once(self.ctx, ENV_FAILURE, &hand.id, &text);
-        let key = format!("job {}:", hand.id);
         let seen = self
             .mail
-            .marked_replies(&step.task, ENV_MARKER)?
+            .notes(&step.task, NoteWord::SliceEnv)?
             .iter()
-            .any(|(_, body)| body.contains(&key));
+            .any(|(_, note)| note.pump.reference.as_deref() == Some(hand.id.as_str()));
         if !seen {
-            let reason = format!("{key} environment: {}", env.evidence);
-            self.mail
-                .reply(&step.task, &marked_line(ENV_MARKER, &reason))?;
+            let reason = format!("environment: {}", env.evidence);
+            let body = note_body(NoteWord::SliceEnv, Some(&hand.id), &reason)?;
+            self.mail.reply(&step.task, &body)?;
         }
         self.store
             .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))

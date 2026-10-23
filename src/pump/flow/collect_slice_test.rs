@@ -8,7 +8,9 @@ use tempfile::{TempDir, tempdir};
 use super::{BuiltHook, register_defaults, runner_env_failure};
 use crate::error::VivariumError;
 use crate::letter::fixture::task_body_with;
+use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
+use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Hand;
 use crate::pump::flow::advance::start::start;
@@ -20,7 +22,7 @@ use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
 use crate::pump::flow::need_branch;
-use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
+use crate::pump::flow::slice_dispatch;
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::rung_result::EnvKind;
@@ -182,7 +184,9 @@ fn built_hooks_run_in_registration_order_after_the_default_and_the_slice_stays_o
 
     let replies = &rig.mail.tasks[&slice.task].replies;
     let position = |needle: &str| replies.iter().position(|r| r.contains(needle));
-    let deviations = position(DEVIATIONS_MARKER);
+    let deviations = replies
+        .iter()
+        .position(|r| note_of(r).is_some_and(|n| n.pump.note == NoteWord::Deviations));
     let one = position("hook-one");
     let two = position("hook-two");
     assert!(
