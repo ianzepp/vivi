@@ -28,14 +28,8 @@ fn counts(out: &mut String, pump: &PumpBoot) {
     line(
         out,
         format!(
-            "  complete {} | complete-but-open {} | amendments {} | stuck {} | exceptions {} | planners {} | parked {}",
-            pump.complete,
-            pump.complete_but_open,
-            pump.amendments,
-            pump.stuck,
-            pump.exceptions,
-            pump.planning,
-            pump.planner_parked
+            "  complete {} | complete-but-open {} | amendments {} | stuck {} | exceptions {}",
+            pump.complete, pump.complete_but_open, pump.amendments, pump.stuck, pump.exceptions
         ),
     );
     line(
