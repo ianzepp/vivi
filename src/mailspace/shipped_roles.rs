@@ -1,19 +1,21 @@
-//! Provisioning of the flow roles: researcher, admitter and slicer.
+//! Provisioning of the flow roles: researcher, admitter, slicer and repairer.
 
-use super::shipped::{ADMITTER_ROLE, RESEARCHER_ROLE, SLICER_ROLE, shipped_charter};
+use super::shipped::{ADMITTER_ROLE, REPAIRER_ROLE, RESEARCHER_ROLE, SLICER_ROLE, shipped_charter};
 use super::{Mailspace, MailspaceConfig, RoleUpdate};
 use crate::error::VivariumError;
 
 const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
 
 impl Mailspace {
-    /// Ensure the `researcher`, `admitter` and `slicer` roles and their
-    /// shipped charters exist.
+    /// Ensure the `researcher`, `admitter`, `slicer` and `repairer` roles and
+    /// their shipped charters exist.
     ///
     /// A new role gets kind equal to its name, `read_only: true`, and the pool
-    /// of the pump's hand role, else the first local pool. A role that already
-    /// exists is left as it is. The shipped charter is written only when the
-    /// role has no charter text.
+    /// of the pump's hand role, else the first local pool. The `repairer`
+    /// differs: it is not read-only (it publishes `vivi/repair/<segment>`) and
+    /// it gets model band `P0`, the top tier. A role that already exists is
+    /// left as it is. The shipped charter is written only when the role has no
+    /// charter text.
     ///
     /// # Errors
     /// Returns an error if a flow role name is already another role's alias,
@@ -22,10 +24,31 @@ impl Mailspace {
         for name in FLOW_ROLES {
             self.ensure_flow_role(name)?;
         }
-        Ok(())
+        self.ensure_repairer_role()
+    }
+
+    fn ensure_repairer_role(&mut self) -> Result<(), VivariumError> {
+        let update = RoleUpdate {
+            kind: Some(Some(REPAIRER_ROLE.to_string())),
+            read_only: Some(Some(false)),
+            model: Some(Some(String::from("P0"))),
+            pool: flow_pool(&self.config).map(Some),
+            ..RoleUpdate::default()
+        };
+        self.ensure_role_with(REPAIRER_ROLE, update)
     }
 
     fn ensure_flow_role(&mut self, name: &str) -> Result<(), VivariumError> {
+        let update = RoleUpdate {
+            kind: Some(Some(name.to_string())),
+            read_only: Some(Some(true)),
+            pool: flow_pool(&self.config).map(Some),
+            ..RoleUpdate::default()
+        };
+        self.ensure_role_with(name, update)
+    }
+
+    fn ensure_role_with(&mut self, name: &str, update: RoleUpdate) -> Result<(), VivariumError> {
         let existing = self
             .config
             .identities
@@ -40,12 +63,6 @@ impl Mailspace {
             }
             Some(_) => {}
             None => {
-                let update = RoleUpdate {
-                    kind: Some(Some(name.to_string())),
-                    read_only: Some(Some(true)),
-                    pool: flow_pool(&self.config).map(Some),
-                    ..RoleUpdate::default()
-                };
                 self.add_role(name, update)?;
             }
         }

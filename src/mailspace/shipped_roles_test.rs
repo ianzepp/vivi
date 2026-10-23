@@ -39,6 +39,41 @@ fn a_fresh_mailspace_gets_the_three_flow_roles_with_their_charters() {
 }
 
 #[test]
+fn a_fresh_mailspace_gets_the_repairer_at_the_top_band() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = Mailspace::init(Some(tmp.path())).unwrap();
+    add_local_pool(tmp.path(), "workers");
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    mailspace.ensure_flow_roles().unwrap();
+    let view = mailspace.role_view("repairer").unwrap();
+    assert_eq!(view.kind.as_deref(), Some("repairer"));
+    assert_eq!(view.pool.as_deref(), Some("workers"));
+    assert_eq!(view.read_only, Some(false));
+    assert_eq!(view.model.as_deref(), Some("P0"));
+    assert_eq!(Some(view.charter.as_str()), shipped_charter("repairer"));
+    assert!(view.charter.contains("answer = \""));
+}
+
+#[test]
+fn an_existing_repairer_is_left_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = Mailspace::init(Some(tmp.path())).unwrap();
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    mailspace
+        .add_role("repairer", RoleUpdate::default())
+        .unwrap();
+    mailspace
+        .set_charter("repairer", "my own repairer")
+        .unwrap();
+    mailspace.ensure_flow_roles().unwrap();
+    let view = mailspace.role_view("repairer").unwrap();
+    assert_eq!(view.charter, "my own repairer");
+    assert_eq!(view.kind, None);
+    assert_eq!(view.model, None);
+    assert_eq!(view.read_only, None);
+}
+
+#[test]
 fn an_existing_charter_is_never_replaced() {
     let tmp = tempfile::tempdir().unwrap();
     let _ = Mailspace::init(Some(tmp.path())).unwrap();
@@ -57,7 +92,7 @@ fn an_existing_charter_is_never_replaced() {
 }
 
 #[test]
-fn shipped_charter_covers_the_six_shipped_roles() {
+fn shipped_charter_covers_the_seven_shipped_roles() {
     for name in [
         "pump-planner",
         "merge",
@@ -65,6 +100,7 @@ fn shipped_charter_covers_the_six_shipped_roles() {
         "researcher",
         "admitter",
         "slicer",
+        "repairer",
     ] {
         assert!(
             shipped_charter(name).is_some_and(|text| !text.is_empty()),
