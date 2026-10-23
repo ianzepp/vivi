@@ -43,16 +43,7 @@ fn admits_accepts_when_the_request_fits() {
 }
 
 #[test]
-fn enospc_matches_both_kernel_and_errno_forms() {
-    assert!(enospc("hdiutil: attach failed - No space left on device"));
-    assert!(enospc("build failed: os error 28"));
-    assert!(!enospc("disk attached and erased"));
-    assert!(!enospc("os error 13: permission denied"));
-    assert!(!enospc(""));
-}
-
-#[test]
-fn parse_mounts_keeps_only_vivi_volumes_and_returns_raw_devices() {
+fn parse_mount_rows_returns_every_row_with_raw_devices() {
     let text = "\
 /dev/disk5s1 on /Volumes/vivi-here-slot3-job1 (apfs, local, nodev, nosuid, journaled)
 /dev/disk1s1s1 on / (apfs, local, journaled)
@@ -60,23 +51,34 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
 /dev/disk3s1 on /Volumes/TimeMachine (apfs, local)
 ";
     assert_eq!(
-        parse_mounts(text),
-        vec![(
-            "/dev/disk5s1".to_string(),
-            "/Volumes/vivi-here-slot3-job1".to_string()
-        )]
+        parse_mount_rows(text),
+        vec![
+            (
+                "/dev/disk5s1".to_string(),
+                "/Volumes/vivi-here-slot3-job1".to_string()
+            ),
+            ("/dev/disk1s1s1".to_string(), "/".to_string()),
+            (
+                "map auto_home".to_string(),
+                "/System/Volumes/Data/home".to_string()
+            ),
+            (
+                "/dev/disk3s1".to_string(),
+                "/Volumes/TimeMachine".to_string()
+            ),
+        ]
     );
 }
 
 #[test]
-fn parse_mounts_ignores_blank_and_malformed_lines() {
-    assert!(parse_mounts("").is_empty());
-    assert!(parse_mounts("a line with no mount marker\n").is_empty());
-    assert!(parse_mounts("/dev/disk9s1 on /Volumes/vivi-x\n").is_empty());
+fn parse_mount_rows_ignores_blank_and_malformed_lines() {
+    assert!(parse_mount_rows("").is_empty());
+    assert!(parse_mount_rows("a line with no mount marker\n").is_empty());
+    assert!(parse_mount_rows("/dev/disk9s1 on /Volumes/vivi-x\n").is_empty());
 }
 
 #[test]
-fn parse_df_gib_keeps_vivi_rows_with_1g_block_sizes() {
+fn parse_df_rows_reads_the_1g_blocks_column_and_drops_the_header() {
     let text = "\
 Filesystem     1G-blocks Used Available Capacity iused ifree %iused  Mounted on
 /dev/disk5s1          30    1        29     4%       2  9999    0%   /Volumes/vivi-here-slot3-job1
@@ -84,13 +86,14 @@ Filesystem     1G-blocks Used Available Capacity iused ifree %iused  Mounted on
 /dev/disk7s1           8    1         7     4%       2  9999    0%   /Volumes/vivi-here-slot4-job2
 ";
     assert_eq!(
-        parse_df_gib(text),
+        parse_df_rows(text),
         vec![
             ("/Volumes/vivi-here-slot3-job1".to_string(), 30),
+            ("/".to_string(), 466),
             ("/Volumes/vivi-here-slot4-job2".to_string(), 8),
         ]
     );
-    assert!(parse_df_gib("").is_empty());
+    assert!(parse_df_rows("").is_empty());
 }
 
 /// A `Runner` that records every argv it was given and answers from a canned
@@ -641,7 +644,6 @@ fn mounted_recognizes_local_pool_mounts_through_the_exact_slot_marker() {
     assert_eq!(disks[0].volume, "vivi-here-pool-slot-0-job");
     assert_eq!(disks[0].size_gib, 8, "marker size covers absent df rows");
     assert_eq!(disks[0].mount, mount);
-    assert_eq!(held_gib(&runner), 8);
     let _ = std::fs::remove_dir_all(&slot);
 }
 
@@ -728,10 +730,11 @@ fn two_disk_runner(first: u64, second: u64) -> FakeRunner {
 }
 
 #[test]
-fn held_gib_sums_the_mounted_disks() {
-    assert_eq!(held_gib(&two_disk_runner(30, 8)), 38);
-    assert_eq!(held_gib(&empty_runner()), 0);
-    assert_eq!(held_gib(&two_disk_runner(0, 0)), 0);
+fn admit_with_counts_the_sum_of_all_held_disks() {
+    // 30 + 8 GiB held, 8 wanted, 6 margin: 52 GiB needed, 51 free.
+    let error = admit_with(&two_disk_runner(30, 8), 51 * GIB, 8, 6).expect_err("sum overflows");
+    assert!(error.contains("38 GiB held"), "{error}");
+    assert_eq!(admit_with(&two_disk_runner(30, 8), 52 * GIB, 8, 6), Ok(()));
 }
 
 #[test]
