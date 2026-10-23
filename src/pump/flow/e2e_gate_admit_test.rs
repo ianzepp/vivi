@@ -282,13 +282,9 @@ fn slice_failed_goes_to_the_cto() -> R {
     at_cto(&mut rig, "slice", "failed")
 }
 
-/// Pins a production defect, so it is ignored until the defect is fixed: the
-/// park step raises its alarm from `start`, but a park row is opened
-/// `Waiting` by the router and `start` only runs for `Pending` rows, so the
-/// alarm never fires (the lock step raises its alarm from `poll`, which does
-/// run for waiting rows).
+/// A park row is opened `Waiting`, so the park step raises its alarm from
+/// `poll` (as the lock step does), once.
 #[test]
-#[ignore = "defect: ParkStep raises flow-need-parked in start(), which never runs for a Waiting park row"]
 fn a_parked_run_raises_one_park_alarm() -> R {
     let mut rig = build()?;
     to_plan2(&mut rig)?;
