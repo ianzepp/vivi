@@ -7,6 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{answer, job, register};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -78,13 +79,7 @@ fn rig_at(cfg: PumpConfig, node: &'static str) -> Result<Rig, VivariumError> {
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, "kind: build")?;
     start(&ctx, &store, &mut mail, NEED, Some("plan"))?;
-    let task = mail.send_step(
-        "mind",
-        "mind",
-        "rung",
-        &format!("pump-step: {NEED} r1 {node}"),
-        &[],
-    )?;
+    let task = mail.send_step("mind", "mind", "rung", &step_body(NEED, 1, node, ""), &[])?;
     store.insert_step(
         NEED,
         &StepRow {

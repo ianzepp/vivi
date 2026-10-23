@@ -7,6 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{RepairMerge, RepairRung, register};
 use crate::error::VivariumError;
+use crate::letter::fixture::step_body;
 use crate::mailspace::marked_line;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
@@ -153,13 +154,9 @@ impl Rig {
 
     /// A step row of `node` with its own task.
     fn add_step(&mut self, node: &str, state: StepState) -> Result<StepRow, VivariumError> {
-        let task = self.mail.send_step(
-            "mind",
-            "mind",
-            node,
-            &format!("pump-step: {NEED} r1 {node}"),
-            &[],
-        )?;
+        let task = self
+            .mail
+            .send_step("mind", "mind", node, &step_body(NEED, 1, node, ""), &[])?;
         let row = StepRow {
             run: 1,
             node: node.into(),

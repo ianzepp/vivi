@@ -8,6 +8,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{FAILED_MARKER, run};
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -106,7 +108,13 @@ impl Rig {
             "pump",
             "pump",
             "slice a",
-            &format!("pump-step: {NEED} r1 slice:a\ntarget: default\n\ntitle\n\nbrief"),
+            &task_body_with(
+                &TaskFront {
+                    target: Some("default".into()),
+                    ..TaskFront::step(NEED, 1, &format!("slice:a"))
+                },
+                "title\n\nbrief",
+            ),
             &[],
         )?;
         let row = StepRow {

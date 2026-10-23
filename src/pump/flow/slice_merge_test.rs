@@ -7,6 +7,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::register;
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::collect_slice;
@@ -114,8 +116,12 @@ impl Rig {
             "mind",
             "mind",
             &format!("slice {id}"),
-            &format!(
-                "pump-step: {NEED} r1 slice:{id}\ntarget: default\n\ntitle {id}\n\nbrief {id}"
+            &task_body_with(
+                &TaskFront {
+                    target: Some("default".into()),
+                    ..TaskFront::step(NEED, 1, &format!("slice:{id}"))
+                },
+                &format!("title {id}\n\nbrief {id}"),
             ),
             &[],
         )?;
