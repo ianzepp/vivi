@@ -230,3 +230,39 @@ fn validation_reports_a_set_rung_with_empty_effective_pools() {
     ));
     assert!(rung_errors(&cfg, &["p".to_string()]).is_empty());
 }
+
+#[test]
+fn targets_with_their_own_pools_need_no_workspace_pools() {
+    let cfg = pump(concat!(
+        "[rungs]\ntask = \"x\"\n",
+        "[targets.tela]\n",
+        "path = \"tela\"\n",
+        "branch = \"next\"\n",
+        "[targets.tela.rungs]\npools = [\"p\"]\n",
+        "[targets.cista]\n",
+        "path = \"cista\"\n",
+        "branch = \"next\"\n",
+        "[targets.cista.rungs]\npools = [\"p\"]\n",
+    ));
+    assert!(rung_errors(&cfg, &["p".to_string()]).is_empty());
+}
+
+#[test]
+fn a_target_inheriting_a_command_without_pools_is_reported_alone() {
+    let cfg = pump(concat!(
+        "[rungs]\ntask = \"x\"\n",
+        "[targets.tela]\n",
+        "path = \"tela\"\n",
+        "branch = \"next\"\n",
+        "[targets.tela.rungs]\npools = [\"p\"]\n",
+        "[targets.cista]\n",
+        "path = \"cista\"\n",
+        "branch = \"next\"\n",
+    ));
+    let errors = rung_errors(&cfg, &["p".to_string()]);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("[pump.targets.cista.rungs] sets a rung command"),
+        "{errors:?}"
+    );
+}
