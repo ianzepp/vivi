@@ -3,7 +3,7 @@
 //! other open slices. No model is involved.
 
 use crate::error::VivariumError;
-use crate::pump::flow::fanout::SliceEdges;
+use crate::pump::flow::fanout::{self, SliceEdges};
 use crate::pump::store::PumpStore;
 
 /// A request for more paths than this goes to the slicer.
@@ -194,9 +194,7 @@ pub fn resolve(
     if holders.is_empty() {
         return Ok(Resolution::Widen(free));
     }
-    for holder in &holders {
-        mail.add_dependency(task, holder)?;
-    }
+    fanout::wait_on(mail, task, &holders)?;
     let mut record = holders.clone();
     record.extend(
         held_paths
