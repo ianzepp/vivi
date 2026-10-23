@@ -598,7 +598,6 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pump.board]\nfrom = []\npull = false\n\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
          [pump.merge]\nshared_checks = [\"true\"]\n\n\
-         [pump.gate]\ncommand = \"true\"\n\n\
          [pools.test]\nprovider = \"local\"\nslots = 1\n\n\
          [pools.test.harness]\nname = \"test\"\nrun = \"test --model {{model}} @{{brief}}\"\n\
          models = [\"test/model\"]\n\n\
@@ -761,7 +760,7 @@ fn pump_once_on_a_freshly_initialised_project_holds_instead_of_failing() {
     assert_success(&status);
     let text = stdout(&status);
     assert!(text.contains("not ready:"), "{text}");
-    assert!(text.contains("pump.gate.command"), "{text}");
+    assert!(text.contains("pump.committer_name"), "{text}");
     let health = vivi(["pump", "health", "--json", "--project", root(&project)]);
     assert_success(&health);
     let body = stdout(&health);

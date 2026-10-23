@@ -126,9 +126,6 @@ pools = ["glm"]
 [pump.merge]
 lanes = 2
 shared_checks = ["true"]
-[pump.gate]
-command = "true"
-pools = ["glm"]
 "#,
     );
     let root = dir.path().to_str().unwrap();
@@ -261,7 +258,7 @@ fn config_migrate_dry_run_and_write_on_faber_fixture() {
     assert!(text.contains("set role hand pool=glm"), "{text}");
     assert!(text.contains("set role merge pool=host"), "{text}");
     assert!(text.contains("add [pools.host]"), "{text}");
-    assert!(text.contains("add role gate"), "{text}");
+    assert!(!text.contains("add role gate"), "{text}");
     assert!(text.contains("dry-run"), "{text}");
     let before = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
     assert!(!hand_has_pool(&before), "fixture must start unmigrated");
@@ -272,7 +269,7 @@ fn config_migrate_dry_run_and_write_on_faber_fixture() {
     let after = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
     assert!(hand_has_pool(&after), "{after}");
     assert!(after.contains("[pools.host]"), "{after}");
-    assert!(after.contains("name = \"gate\""), "{after}");
+    assert!(!after.contains("name = \"gate\""), "{after}");
     let bak = fs::read_dir(dir.path().join(".vivi"))
         .unwrap()
         .filter_map(|entry| entry.ok())
@@ -342,7 +339,7 @@ fn mailspace_init_writes_a_starter_pump_table() {
     let dir = init_project();
     let text = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
     assert!(text.contains("\n[pump]\n"), "{text}");
-    assert!(text.contains("[pump.gate]"), "{text}");
+    assert!(!text.contains("[pump.gate]"), "{text}");
     assert!(text.contains("# Starter pump configuration."), "{text}");
 }
 
@@ -364,7 +361,7 @@ fn config_validate_says_not_ready_and_exits_3_on_a_fresh_project() {
     let text = stdout(&out);
     assert!(text.contains("not ready: "), "{text}");
     assert!(text.contains("item(s) missing"), "{text}");
-    assert!(text.contains("- pump.gate.command:"), "{text}");
+    assert!(text.contains("- pump.committer_name:"), "{text}");
     assert!(text.contains("- hand pool:"), "{text}");
     assert!(!text.contains("error:"), "{text}");
 }
@@ -376,13 +373,13 @@ fn config_validate_json_marks_missing_items_not_ready() {
     let out = vivi(&["config", "validate", "--json", "--project", root]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     let rows: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-    let gate = rows
+    let missing = rows
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["item"] == "pump.gate.command")
+        .find(|row| row["item"] == "pump.committer_name")
         .unwrap_or_else(|| panic!("{rows}"));
-    assert_eq!(gate["severity"], "not_ready");
+    assert_eq!(missing["severity"], "not_ready");
 }
 
 #[test]

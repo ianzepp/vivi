@@ -205,7 +205,6 @@ fn plan_pump(
     plan_pump_planner(config, pump, inputs, plan);
     plan_auditor(config, pump, inputs, plan);
     plan_hand_kind(config, pump, plan);
-    assign_gate(config, pump, dispatch.as_deref(), plan);
     assign_slug_roles(config, plan);
     fold_caps(config, pump, dispatch.as_deref(), plan);
     if pump.planner.split_timeout_present {
@@ -621,35 +620,6 @@ fn host_pool_name(config: &MailspaceConfig) -> String {
         }
     }
     "host".into()
-}
-
-fn assign_gate(
-    config: &MailspaceConfig,
-    pump: &PumpConfig,
-    dispatch: Option<&str>,
-    plan: &mut MigratePlan,
-) {
-    let pool = pump.gate.pools.first().map(String::as_str).or(dispatch);
-    let Some(pool) = pool else {
-        return;
-    };
-    if let Some(role) = find_role(config, "gate") {
-        if role.pool.is_none() {
-            plan.assignments.push(Assignment {
-                role: role.name.clone(),
-                pool: pool.to_string(),
-                reason: "[pump.gate] pools".into(),
-            });
-        }
-        return;
-    }
-    plan.new_roles.push(NewRole {
-        name: "gate".into(),
-        kind: "gate".into(),
-        pool: pool.to_string(),
-        read_only: Some(true),
-        model: None,
-    });
 }
 
 fn assign_slug_roles(config: &MailspaceConfig, plan: &mut MigratePlan) {

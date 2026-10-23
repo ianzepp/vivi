@@ -58,7 +58,6 @@ fn a_fresh_project_is_not_ready_and_has_no_errors() {
         "pump.committer_name",
         "pump.committer_email",
         "pump.merge.shared_checks",
-        "pump.gate.command",
         "hand pool",
         "merge pool",
         "pump-planner pool",
@@ -95,7 +94,7 @@ fn the_missing_report_counts_and_names_every_item() {
         report.starts_with(&format!("not ready: {count} item(s) missing")),
         "{report}"
     );
-    assert!(report.contains("- pump.gate.command:"), "{report}");
+    assert!(report.contains("- pump.committer_name:"), "{report}");
     assert_eq!(render_missing(&[]), "");
 }
 
@@ -122,7 +121,7 @@ fn a_pool_name_that_points_at_nothing_stays_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     fresh(tmp.path());
     edit(tmp.path(), |text| {
-        text.replace("[pump.gate]\n", "[pump.gate]\npools = [\"nowhere\"]\n")
+        format!("{text}\n[pump.rungs]\npools = [\"nowhere\"]\n")
     });
     let issues = assess(&reopen(tmp.path()));
     assert!(
@@ -207,8 +206,7 @@ fn filling_in_the_missing_items_makes_the_project_ready_with_no_other_step() {
             "pump.committer_name",
             "pump.committer_email",
             "pump.branch",
-            "pump.merge.shared_checks",
-            "pump.gate.command"
+            "pump.merge.shared_checks"
         ],
         "{issues:?}"
     );
@@ -220,7 +218,6 @@ fn filling_in_the_missing_items_makes_the_project_ready_with_no_other_step() {
                 "committer_email = \"t@example.com\"",
             )
             .replace("shared_checks = []", "shared_checks = [\"true\"]")
-            .replace("command = \"\"", "command = \"true\"")
     });
     let issues = assess(&reopen(tmp.path()));
     assert!(is_ready(&issues), "{issues:?}");

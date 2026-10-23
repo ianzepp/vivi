@@ -41,8 +41,6 @@ fn valid_with(ramdisk: &str) -> PumpConfig {
          promote = false\n\
          [pump.dispatch]\n\
          lanes = [{{ model = \"m\", cap = 1 }}]\n\
-         [pump.gate]\n\
-         command = \"./gate\"\n\
          [pump.workspace]\n{ramdisk}"
     ))
 }

@@ -1006,7 +1006,6 @@ slots = 4
 
 Legacy `[pump.dispatch.kinds]` routes unit tasks when the hand role has no pool;
 `[[pump.dispatch.lanes]]` supplies legacy model caps when a pool has no per-model caps.
-`[pump.gate] pools` provides gate fallback candidates after the gate role's pool chain.
 `[pump.merge] need_parallel` (default 4, >= 1, per target under `[pump.targets.<id>.merge]`) caps
 concurrent need-merge jobs per target; waiting needs start in priority order as slots free.
 `[pump.merge] lanes` is not a live merge route. Convert supported legacy
@@ -2547,7 +2546,7 @@ targets must exist, and cycles are configuration errors.
 | Unit task | **[pump].to** | Hand role pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but its pool list is ignored. If no hand pool is assigned, configured kinds and **default_kind** route the unit. |
 | Board, revision, and split planners | Active **pump-planner** role | Its pool and fallback chain; its charter is the planner's system prompt (shipped default: `references/charters/pump-planner.md`). `mailspace init` and `sync join` provision it. Required with a pool when **[pump]** is configured. |
 | Merge | **merge** role | Merge role pool and fallback chain. `mailspace init` and `sync join` provision the role and shipped charter when absent; pool and model remain operator-configured. |
-| Gate | **gate** role | Gate role pool and fallback chain, then **[pump.gate].pools** candidates. Read-only. |
+| Gate | **gate** role | Gate role pool and fallback chain. Read-only. (`[pump.gate]` is retired: an old table parses and is ignored.) |
 | Gate audit | **auditor** role | Auditor role pool and fallback chain, followed by gate-pool candidates; without an auditor role, a built-in read-only auditor uses gate pools. |
 | Need acceptance audit | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
 | Investigation | Configured **auditor** role | Auditor pool and fallback chain. Read-only. |
@@ -2791,10 +2790,6 @@ proof_timeout = 300
 # repair_budget = 600  # default: proof_timeout + 300 seconds
 remote_limit = 1800
 
-[pump.gate]
-command = "<read-only gate command>"
-budget = 1800
-max_replans = 2
 ```
 
 The matching mailspace roles are configured separately and each needs a pool
