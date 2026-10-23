@@ -17,9 +17,9 @@ use vivi::routing::{RoleRouting, RoutedPool, RoutedRole};
 #[test]
 fn flow_intake_starts_runs_only_for_needs_with_an_open_pump_record() {
     let project = temp_mailspace();
-    let recorded = send_need(&project, "has a record");
-    let marked = send_need(&project, "only marked");
-    let closed = send_need(&project, "record closed");
+    let recorded = send_need(&project, "mind", "has a record");
+    let marked = send_need(&project, "mind", "only marked");
+    let closed = send_need(&project, "mind", "record closed");
     assert_success(&vivi([
         "need",
         "mark",
@@ -86,6 +86,32 @@ fn flow_intake_starts_runs_only_for_needs_with_an_open_pump_record() {
     );
 }
 
+#[test]
+fn a_need_addressed_to_hand_with_an_open_record_gets_a_flow_run() {
+    let project = temp_mailspace();
+    let need = send_need(&project, "hand", "addressed to hand");
+    assert_success(&vivi([
+        "pump",
+        "send",
+        "--need",
+        &need,
+        "--project",
+        root(&project),
+    ]));
+
+    let ctx = real_ctx(&project);
+    let mut state = State::default();
+    tick(&ctx, &mut state).unwrap();
+
+    let store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    let runs = store.runs_of(&need).unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "a need addressed to hand with an open record is planned: {runs:?}"
+    );
+}
+
 fn real_ctx(project: &tempfile::TempDir) -> Ctx {
     let home = project.path().join(".vivi/pump");
     fs::create_dir_all(home.join("plans")).unwrap();
@@ -135,7 +161,7 @@ fn planner_routing() -> RoleRouting {
 fn temp_mailspace() -> tempfile::TempDir {
     let project = tempfile::tempdir().unwrap();
     assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
-    for (role, kind) in [("operator", "operator"), ("mind", "mind")] {
+    for (role, kind) in [("operator", "operator"), ("mind", "mind"), ("hand", "hand")] {
         let _ = vivi([
             "role",
             "add",
@@ -149,14 +175,14 @@ fn temp_mailspace() -> tempfile::TempDir {
     project
 }
 
-fn send_need(project: &tempfile::TempDir, subject: &str) -> String {
+fn send_need(project: &tempfile::TempDir, to: &str, subject: &str) -> String {
     let out = vivi([
         "need",
         "send",
         "--from",
         "operator",
         "--to",
-        "mind",
+        to,
         "--subject",
         subject,
         "--body",
@@ -167,7 +193,10 @@ fn send_need(project: &tempfile::TempDir, subject: &str) -> String {
     assert_success(&out);
     stdout(&out)
         .lines()
-        .find_map(|line| line.strip_prefix("created mind ").map(str::to_owned))
+        .find_map(|line| {
+            line.strip_prefix(&format!("created {to} "))
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| panic!("no handle in {}", stdout(&out)))
 }
 
