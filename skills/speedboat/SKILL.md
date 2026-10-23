@@ -60,16 +60,20 @@ receipt.
 tier P (lower is deeper) and a speed tier S (lower is faster decode). A band
 names a model at an effort, not a model alone: the same model at low and at
 high effort lands in different tiers, so do not pin Hands to a thinking level.
-Vivi stores the band as an opaque string in the role's `model` field. The Mind
-resolves it to a slug and effort at spawn from the host's model inventory if it
-has one, otherwise from the models the project configured (for a pool dispatch,
-the pool's `models` allowlist). Never write a slug back into the role.
+Speedboat keeps bands: the role's `model` field holds the band as a string. The
+Mind resolves it to a slug and effort at spawn from the host's model inventory
+if it has one, otherwise from the models the project configured (for a pool
+dispatch, the pool's bands). Vivi also accepts a slug listed in the pool's
+`harness.models` as a role's `model` (effort then comes from the role's
+`thinking`), but Speedboat does not pin slugs: leave the band in the role.
 
 Default bands: Mind P1, Hand P2. Planner, Auditor, and Head seats are used only
 when the operator asks, at their usual bands (Planner P1, Auditor P1, Head P0).
-Set `band:` in the brief only when the unit is not the role default: `band: P1`
-for a complex or architectural unit, `band: P0` for an Auditor on a complex
-range. A bare P keeps the role's S; a full band (`band: P1-S0`) sets both.
+Set the task's front matter key `band` only when the unit is not the role
+default: `band = "P1"` for a complex or architectural unit, `band = "P0"` for
+an Auditor on a complex range. A bare P keeps the role's S; a full band
+(`band = "P1-S0"`) sets both. `task send` has no band flag, so a banded unit is
+a whole-letter body (see the brief template below).
 Speedboat adds one preference inside the band: take the fastest healthy slug
 (prefer S0) and do not seat a deeper band than the unit needs. Favor latency
 and useful turnover over marginal answer quality. Do not inherit the Mind's
@@ -78,7 +82,7 @@ harness whose spawn takes a model but no effort, effort comes from the agent
 type, so a band is a choice of agent type.
 
 Escalate only for a named obstacle the Hand could not resolve: retry the unit
-at the next deeper band (`band: P1`), and give that seat the obstacle, not the
+at the next deeper band (`band = "P1"`), and give that seat the obstacle, not the
 whole goal. Availability and provider restrictions still apply. If the harness
 cannot select the requested model or effort, disclose the limitation instead
 of claiming it did.
@@ -125,7 +129,8 @@ unaffected units moving. Do not request a review merely to increase confidence.
 | `awaiting_remote` | Work you handed to a role in another mailspace; tracked, never dispatched here, and its dependents stay blocked | Let the receiver dispatch it; close your copy once accepted |
 | `awaiting_acceptance` | A Hand or Auditor reported the unit done; the row names the reporter and the accept command. The node stays open and its dependents blocked; `step --apply` completes nothing | Integrate the work, then accept it with that command; a failed gate reopens it (see "Mind acceptance gates") |
 | `want_requires_promotion` | A parked want | Promote it, or leave it parked |
-| `no_done_when` | The body has no `done_when:` line, so it cannot dispatch | Send the unit with one |
+| `no_done_when` | The task's front matter has no `done_when`, so it cannot dispatch | Send a new task with `--done-when` (or `done_when = [...]` in a whole-letter body) |
+| `letter_invalid` | An old-format letter (no front matter) or a letter with invalid front matter; it is history and cannot be executed | Re-send the unit as a new letter |
 
 Work held for another mailspace's role mints no node, so `step`, `graph ready`
 and `boot` leave it out. A letter for a role this mailspace lacks is held
@@ -159,19 +164,31 @@ Before dispatch, inspect the failure's exact file paths and give the Hand all
 needed write paths and external log read paths. A missing companion file or
 log scope burns the Hand's short budget on clarification.
 
-Put the assignment in Vivi before spawning. Use a short body with these fields;
-`done_when:` and `write_scope:` begin their own lines for Vivi's work graph:
+Put the assignment in Vivi before spawning. `done_when`, `write_scope` and
+`band` go in the task's front matter, where Vivi's work graph and pool read
+them; the other fields stay prose for the Hand. A unit with no `band` is a
+body plus flags (`--done-when`, repeatable, and `--write-scope`, repeatable).
+A unit with a `band`, or any key without a flag, is a whole-letter body file
+(it opens with `+++`; flags beside it are refused):
 
 ```text
++++
+done_when = ["<outcome, assigned check, and required landing>"]
+write_scope = ["<allowed repo paths>"]
+band = "P1"   # optional; only when the unit is not the role default
++++
+
 protocol: speedboat
 goal: <parent goal/phase/need>
 change: <one concrete outcome; likely edit and immediate caller>
-done_when: <outcome, assigned check, and required landing>
-write_scope: <allowed repo and paths; forbidden paths or roots>
+forbidden: <forbidden paths or roots>
 check: <one exact scoped command, or inspection with a reason>
 budget: <5 min target; stop at 10 min>
-band: <optional; only when the unit is not the role default, e.g. P1>
 return: diff, check result, elapsed time, known failures or blocker
+```
+
+```sh
+vivi task send --from mind --to hand --subject 'unit U-17: parser input validation' --body-file unit.md
 ```
 
 Use graph dependencies for real prerequisites and activate the task at
