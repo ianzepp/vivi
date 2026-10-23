@@ -99,7 +99,7 @@ where
         store,
         mail,
         &rows,
-        (need, number, SENTINEL_NODE),
+        (run, SENTINEL_NODE),
         (
             format!("{SENTINEL_MARKER} {need} r{number}"),
             StepState::Running,
@@ -110,7 +110,7 @@ where
         store,
         mail,
         &rows,
-        (need, number, entry),
+        (run, entry),
         (
             format!("{STEP_MARKER} {need} r{number} {entry}"),
             StepState::Pending,
@@ -174,20 +174,20 @@ fn send_missing<M: MailWriter + MailReader>(
     store: &PumpStore,
     mail: &mut M,
     rows: &[StepRow],
-    (need, run, node): (&str, u32, &str),
+    (run, node): (&RunRow, &str),
     (body, state): (String, StepState),
 ) -> Result<String, VivariumError> {
     if let Some(row) = rows.iter().find(|r| r.node == node) {
         return Ok(row.task.clone());
     }
     let from = ctx.cfg.reply_from.as_str();
-    let subject = format!("{need} r{run} {node}");
+    let subject = format!("{} r{} {node}", run.need, run.run);
     // A task sent before a crash but never indexed is adopted, not sent twice.
     let task = match mail.sent_step(&subject, &body)? {
         Some(task) => task,
         None => mail.send_step(from, from, &subject, &body, &[])?,
     };
-    store.insert_step(need, &step_row(run, node, &task, state))?;
+    store.insert_run_step(run, &run.step(node, &task, state))?;
     Ok(task)
 }
 
@@ -207,16 +207,6 @@ fn resolve_entry(
                 VivariumError::Message(format!("{} flow has no entries", kind.name()))
             })
         }
-    }
-}
-
-fn step_row(run: u32, node: &str, task: &str, state: StepState) -> StepRow {
-    StepRow {
-        run,
-        node: node.to_string(),
-        task: task.to_string(),
-        state,
-        verdict: None,
     }
 }
 

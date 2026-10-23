@@ -312,6 +312,8 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
             });
             return Ok(());
         }
+        // The run row first: a missing run must not leave a sent task behind.
+        let run = self.store.run_row(&o.need, o.run)?;
         let body = format!(
             "{STEP_MARKER} {} r{} {}\n\n{}",
             o.need, o.run, node.id, node.label
@@ -329,16 +331,8 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
                 std::slice::from_ref(&o.task),
             )?,
         };
-        self.store.insert_step(
-            &o.need,
-            &StepRow {
-                run: o.run,
-                node: node.id.clone(),
-                task: task.clone(),
-                state,
-                verdict: None,
-            },
-        )?;
+        let row = run.step(&node.id, &task, state);
+        self.store.insert_run_step(&run, &row)?;
         self.routed.sent.push(Sent {
             node: node.id.clone(),
             task,

@@ -620,3 +620,20 @@ fn a_reslice_row_of_another_fanout_does_not_hold_this_one() -> R {
     assert_eq!(r.settle()?, None);
     Ok(())
 }
+
+#[test]
+fn expanded_rows_and_links_carry_the_run_of_the_run_row() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[]), slice("B", &["A"])])?;
+    for id in ["A", "B"] {
+        let task = r.task_of(id)?;
+        let link = r.store.slice_link(&task)?.expect("link");
+        assert_eq!(
+            (link.need.as_str(), link.run),
+            (r.run.need.as_str(), r.run.run)
+        );
+        let row = r.store.step_by_task(&task)?.expect("row");
+        assert_eq!(row.run, r.run.run);
+    }
+    Ok(())
+}
