@@ -29,11 +29,21 @@ fn scoped(ctx: &Ctx, key: &str) -> String {
 }
 
 /// Count one more consecutive failure of `key` in this process; returns the count.
+///
+/// When the count reaches [`STEP_ERROR_LIMIT`] it is returned and the key is
+/// removed in the same call, so the next failure of that key counts from 1.
+/// A requeued unit therefore gets fresh tries after its hold. Each caller holds
+/// or settles at the limit and does not call again for the same item.
 pub(crate) fn note_failure(ctx: &Ctx, key: &str) -> u32 {
     let mut counts = counts();
-    let count = counts.entry(scoped(ctx, key)).or_insert(0);
+    let scoped_key = scoped(ctx, key);
+    let count = counts.entry(scoped_key.clone()).or_insert(0);
     *count += 1;
-    *count
+    let n = *count;
+    if n >= STEP_ERROR_LIMIT {
+        counts.remove(&scoped_key);
+    }
+    n
 }
 
 /// A success: the consecutive count of `key` goes back to zero.
