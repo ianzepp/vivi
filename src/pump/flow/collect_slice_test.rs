@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{BuiltHook, register_defaults};
+use super::{BuiltHook, register_defaults, runner_env_failure};
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Hand;
@@ -21,6 +21,7 @@ use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::rung_result::EnvKind;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
@@ -270,4 +271,64 @@ fn a_task_with_no_step_jobs_row_is_an_error_naming_the_task() -> R {
         "{text}"
     );
     Ok(())
+}
+
+/// A finished hand job whose receipt says `body`.
+fn hand_job(body: &str) -> PoolJob {
+    let mut job = PoolJob::from(crate::pump::jobs::JobSpec::new(
+        "hand-1", "hand", "pool", "s", "b",
+    ));
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: body.to_owned(),
+        at: 1,
+    });
+    job
+}
+
+#[test]
+fn a_provider_failure_alone_is_a_host_setup_environment_failure() {
+    let job = hand_job("agent exit 1 in 8s\n\n--- stderr tail\nConnection refused\n");
+
+    let env = runner_env_failure(&job).expect("runner fact");
+
+    assert_eq!(env.kind, EnvKind::HostSetup);
+    assert!(env.evidence.contains("provider"), "{}", env.evidence);
+}
+
+#[test]
+fn an_endpoint_failure_is_an_environment_failure() {
+    let job = hand_job("agent exit 1 in 8s\n\n--- stderr tail\n503 Service Unavailable\n");
+
+    let env = runner_env_failure(&job).expect("runner fact");
+
+    assert_eq!(env.kind, EnvKind::HostSetup);
+}
+
+#[test]
+fn a_shell_marker_only_failure_is_the_hands_judgment() {
+    let job = hand_job("agent exit 1 in 8s\n\n--- stderr tail\nbash: tsc: command not found\n");
+
+    assert_eq!(runner_env_failure(&job), None);
+}
+
+#[test]
+fn a_successful_agent_is_never_an_environment_failure() {
+    let job = hand_job(
+        "agent exit 0 in 8s\n\n--- stderr tail\nConnection refused\nbash: tsc: command not found\n",
+    );
+
+    assert_eq!(runner_env_failure(&job), None);
+}
+
+#[test]
+fn agent_exit_127_is_a_missing_tool() {
+    let job = hand_job("agent exit 127 in 1s");
+
+    let env = runner_env_failure(&job).expect("runner fact");
+
+    assert_eq!(env.kind, EnvKind::ToolMissing);
+    assert_eq!(env.evidence, "agent exit 127");
 }
