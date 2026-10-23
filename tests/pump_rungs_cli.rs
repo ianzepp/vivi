@@ -38,7 +38,10 @@ fn rungs_set_then_show_round_trips_and_rejects_unknown_rung() {
         assert!(text.contains(&format!("{name}: (unset)")), "{text}");
     }
     assert!(text.contains("timeout: 1800"), "{text}");
-    assert!(text.contains("pools: (any)"), "{text}");
+    assert!(
+        text.contains("pools: (none: rung jobs cannot dispatch)"),
+        "{text}"
+    );
 
     let set = vivi(&[
         "pump",

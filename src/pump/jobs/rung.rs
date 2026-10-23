@@ -11,22 +11,24 @@ use crate::pump::host::Ctx;
 /// sent to it; the name only labels the job.
 const RUNG_ROLE: &str = "pump-rung";
 
-/// The job that runs rung `rung` for `target` against `tip`, or none when that
-/// rung is not configured. A rung or timeout set on the target wins over the
-/// workspace-level `[pump.rungs]` one; the target's pools win when it names any.
+/// The job that runs rung `rung` for `target` against `tip` (attempt `attempt`,
+/// so a retry at the same tip is a new job), or none when that rung is not
+/// configured. Settings come from `PumpConfig::effective_rungs`.
 #[must_use]
-pub fn spec(ctx: &Ctx, target: &str, rung: &str, tip: &str, step_task: &str) -> Option<JobSpec> {
-    let command = ctx.cfg.rung(target, rung)?;
-    let own = ctx.cfg.targets.get(target).map(|target| &target.rungs);
-    let shared = &ctx.cfg.rungs;
-    let timeout = own
-        .filter(|own| own.timeout != DEFAULT_RUNG_TIMEOUT)
-        .map_or(shared.timeout, |own| own.timeout);
-    let pools = own
-        .filter(|own| !own.pools.is_empty())
-        .map_or(&shared.pools, |own| &own.pools);
+pub fn spec(
+    ctx: &Ctx,
+    target: &str,
+    rung: &str,
+    tip: &str,
+    step_task: &str,
+    attempt: u32,
+) -> Option<JobSpec> {
+    let effective = ctx.cfg.effective_rungs(Some(target));
+    let command = effective.command(rung)?;
+    let timeout = effective.timeout.unwrap_or(DEFAULT_RUNG_TIMEOUT);
+    let pools = &effective.pools;
     let mut job = JobSpec::new(
-        format!("rung-{rung}-{step_task}"),
+        format!("rung-{rung}-{step_task}-a{attempt}"),
         "rung",
         RUNG_ROLE,
         format!("{rung} rung on {target} at {tip}"),

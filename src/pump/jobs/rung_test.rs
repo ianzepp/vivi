@@ -7,7 +7,7 @@ fn config() -> PumpConfig {
     let mut cfg = PumpConfig::default();
     cfg.rungs = RungsConfig {
         need: Some(String::from("cargo test")),
-        timeout: 900,
+        timeout: Some(900),
         pools: vec![String::from("build-pool")],
         ..RungsConfig::default()
     };
@@ -19,7 +19,7 @@ fn spec_carries_the_rung_command_tip_and_budget() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), config());
 
-    let job = spec(&ctx, "core", "need", "abc123", "step9").unwrap();
+    let job = spec(&ctx, "core", "need", "abc123", "step9", 1).unwrap();
 
     assert_eq!(job.kind, "rung");
     assert!(job.read_only);
@@ -39,8 +39,8 @@ fn an_unconfigured_rung_gives_none() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), config());
 
-    assert!(spec(&ctx, "core", "main", "abc123", "step9").is_none());
-    assert!(spec(&ctx, "core", "nonsense", "abc123", "step9").is_none());
+    assert!(spec(&ctx, "core", "main", "abc123", "step9", 1).is_none());
+    assert!(spec(&ctx, "core", "nonsense", "abc123", "step9", 1).is_none());
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn a_target_rung_overrides_the_workspace_one() {
         PumpTarget {
             rungs: RungsConfig {
                 need: Some(String::from("make check")),
-                timeout: 60,
+                timeout: Some(60),
                 pools: vec![String::from("own-pool")],
                 ..RungsConfig::default()
             },
@@ -61,7 +61,7 @@ fn a_target_rung_overrides_the_workspace_one() {
     );
     let (ctx, _host) = test_ctx(dir.path(), cfg);
 
-    let job = spec(&ctx, "core", "need", "abc123", "step9").unwrap();
+    let job = spec(&ctx, "core", "need", "abc123", "step9", 1).unwrap();
 
     assert_eq!(job.command.as_deref(), Some("make check"));
     assert_eq!(job.budget, 60);
@@ -72,7 +72,7 @@ fn a_target_rung_overrides_the_workspace_one() {
 fn pool_command_emits_command_only_for_command_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), config());
-    let job = PoolJob::from(spec(&ctx, "core", "need", "abc123", "step9").unwrap());
+    let job = PoolJob::from(spec(&ctx, "core", "need", "abc123", "step9", 1).unwrap());
 
     let line = pool_command(&job, "build-pool", "task1");
     assert!(line.contains("--command 'cargo test'"), "{line}");
@@ -81,4 +81,39 @@ fn pool_command_emits_command_only_for_command_jobs() {
     let mut plain = job;
     plain.command = None;
     assert!(!pool_command(&plain, "build-pool", "task1").contains("--command"));
+}
+
+#[test]
+fn two_attempts_give_two_job_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), config());
+
+    let first = spec(&ctx, "core", "need", "abc123", "step9", 1).unwrap();
+    let second = spec(&ctx, "core", "need", "abc123", "step9", 2).unwrap();
+
+    assert_eq!(first.id, "rung-need-step9-a1");
+    assert_eq!(second.id, "rung-need-step9-a2");
+}
+
+#[test]
+fn a_target_timeout_wins_over_a_smaller_workspace_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config();
+    cfg.rungs.timeout = Some(600);
+    cfg.targets.insert(
+        String::from("core"),
+        PumpTarget {
+            rungs: RungsConfig {
+                timeout: Some(1800),
+                ..RungsConfig::default()
+            },
+            ..PumpTarget::default()
+        },
+    );
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+
+    let job = spec(&ctx, "core", "need", "abc123", "step9", 1).unwrap();
+
+    assert_eq!(job.budget, 1800);
+    assert_eq!(job.command.as_deref(), Some("cargo test"));
 }
