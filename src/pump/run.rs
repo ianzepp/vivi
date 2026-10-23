@@ -35,6 +35,8 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
         crate::pump::action::apply_pending(ctx, st);
     }
     collect_phase(ctx, st)?;
+    tick_steps::soft_step(ctx, "flow", crate::pump::flow::tick::tick(ctx, st));
+    save(ctx, st)?;
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
