@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 
 use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, MemoFront, RuleFront};
 use crate::letter::records::{ActionFront, MailFront, RecordFront};
+use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::{NeedFront, TaskFront, WantFront};
 use crate::letter::{LetterError, Validate, parse_letter, split};
 use crate::pump::envelope::roles::{self, Parsed, RoleKind};
@@ -113,6 +114,11 @@ pub fn parse_kind(kind: &LetterKind, text: &str) -> Result<Letter, LetterError> 
         LetterKind::Action => stored(kind, text, Front::Action),
         LetterKind::Event(verb) => parse_event(kind, verb, text),
         LetterKind::Mail => parse_mail(text),
+        LetterKind::Chat if !opens_with_fence(text) => Ok(Letter {
+            kind: kind.clone(),
+            front: Front::Chat,
+            prose: text.trim().to_string(),
+        }),
         LetterKind::Chat => {
             let letter = parse_letter::<EmptyFront>(text)?;
             Ok(Letter {
@@ -156,10 +162,18 @@ fn parse_event(kind: &LetterKind, verb: &str, text: &str) -> Result<Letter, Lett
     })
 }
 
+/// A mail letter with no front matter is plain prose mail with an empty front.
 /// A mail letter whose front matter has a top-level `action` key is a pump
 /// action; any other mail is plain mail with an optional pump note, or a role
 /// reply envelope (a seat's report sent with `vivi mail reply`).
 fn parse_mail(text: &str) -> Result<Letter, LetterError> {
+    if !opens_with_fence(text) {
+        return Ok(Letter {
+            kind: LetterKind::Mail,
+            front: Front::Mail(MailFront::default()),
+            prose: text.trim().to_string(),
+        });
+    }
     if names_action(text) {
         return stored(&LetterKind::Action, text, Front::Action);
     }

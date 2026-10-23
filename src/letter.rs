@@ -157,13 +157,13 @@ pub fn split(text: &str) -> Result<(&str, &str), LetterError> {
 }
 
 /// The prose of a stored letter body: what follows the front matter when the
-/// body opens with it, else the body. Surrounding blank space is trimmed, as
-/// `parse_letter` trims it.
+/// body opens with it, else the whole body (plain mail and chat carry no front
+/// matter). Surrounding blank space is trimmed, as `parse_letter` trims it.
 #[must_use]
 pub fn prose_of(body: &str) -> &str {
     match split(body) {
         Ok((_, prose)) => prose.trim(),
-        Err(_) => body,
+        Err(_) => body.trim(),
     }
 }
 
