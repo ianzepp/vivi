@@ -127,16 +127,43 @@ where
     store.set_run_state(need, number, RUN_LIVE_STATE)?;
 
     if number >= ALARM_RUN {
-        ctx.exception(
-            "flow-run-4",
-            need,
-            &format!("need {need} is on run {number}: a CTO should look before another restart"),
-        );
+        ctx.exception("flow-run-4", need, &run4_text(store, need, number)?);
     }
     Ok(RunRow {
         state: RUN_LIVE_STATE.to_string(),
         ..run.clone()
     })
+}
+
+/// The longest `new_fact` the run-4 alarm quotes (the exception text is cut at 600).
+const NEW_FACT_CAP: usize = 120;
+
+/// The run-4 alarm text: the need, the run count and each earlier run's CTO
+/// answer with its `new_fact`, in run order.
+fn run4_text(store: &PumpStore, need: &str, number: u32) -> Result<String, VivariumError> {
+    let rows = store.step_payloads_of_need(need)?;
+    let earlier: Vec<String> = (1..number)
+        .map(|run| {
+            let cto = rows
+                .iter()
+                .filter(|row| row.run == run && row.class == "cto")
+                .next_back();
+            match cto {
+                None => format!("r{run} no CTO answer"),
+                Some(row) => {
+                    let front = &row.payload["front"];
+                    let word = front["answer"].as_str().unwrap_or("failed");
+                    let fact = front["new_fact"].as_str().unwrap_or("no new fact");
+                    let fact: String = fact.chars().take(NEW_FACT_CAP).collect();
+                    format!("r{run} {word} ({fact})")
+                }
+            }
+        })
+        .collect();
+    Ok(format!(
+        "need {need} is on run {number} (expected at most 3 runs before an operator looks; actual: {number}); earlier CTO answers: {}",
+        earlier.join("; ")
+    ))
 }
 
 /// The task of `node` in `rows`, or a fresh send followed at once by its step row.
