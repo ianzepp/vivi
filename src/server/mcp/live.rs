@@ -33,7 +33,7 @@ use crate::safety::RateLimiter;
 use super::tools::ToolError;
 
 use pool_bands::pool_bands;
-use pump::pump_control;
+use pump::{pump_control, pump_rungs};
 use pump_record::{pump_list, pump_send, pump_show};
 
 /// An operator-only tool: it takes the key's minting member and the identity
@@ -51,6 +51,7 @@ pub(super) type OperatorTool = fn(
 pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
     match name {
         "pump_control" => Some(pump_control),
+        "pump_rungs" => Some(pump_rungs),
         "pool_bands" => Some(pool_bands),
         "pump_send" => Some(pump_send),
         "pump_list" => Some(pump_list),
