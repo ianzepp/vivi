@@ -4,12 +4,6 @@
 
 use super::attempt_record;
 
-/// How far back, in seconds, host-failure evidence counts toward a pause.
-pub const HOST_FAIL_WINDOW: u64 = 300;
-
-/// Host failures inside the window after which a pool pauses.
-pub const HOST_PAUSE_AFTER: usize = 2;
-
 /// Push outcomes that name a host problem, not a unit problem.
 pub const HOST_PUSH_OUTCOMES: [&str; 10] = [
     "checkout_failed",

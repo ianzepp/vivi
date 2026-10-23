@@ -310,24 +310,6 @@ fn cargo_positionals(words: &[String], cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `text` is cargo's usage-error family: an argument-parse error
-/// line plus a usage line. Compile errors and plain test failures are not.
-#[must_use]
-pub fn usage_failure(text: &str) -> bool {
-    let mut error = false;
-    let mut usage = false;
-    for line in text.lines() {
-        if line.starts_with("error: unexpected argument") || line.starts_with("error: the argument")
-        {
-            error = true;
-        }
-        if line.starts_with("Usage:") {
-            usage = true;
-        }
-    }
-    error && usage
-}
-
 /// The final path component of a command word: everything through the
 /// last `/`.
 fn basename(word: &str) -> &str {
