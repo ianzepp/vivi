@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
+use crate::letter::records::{ActionFront, ActionWord};
 use crate::mailspace::SendRequest;
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
@@ -35,7 +36,7 @@ fn none() -> BTreeSet<String> {
 }
 
 #[test]
-fn a_posted_action_is_a_reply_on_the_open_record_with_machine_readable_headers() {
+fn a_posted_action_is_a_reply_on_the_open_record_with_front_matter_and_no_pump_headers() {
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
     let record = mailspace.pump_send(None, &need, None).unwrap();
@@ -56,17 +57,25 @@ fn a_posted_action_is_a_reply_on_the_open_record_with_machine_readable_headers()
     let storage = mailspace.storage().unwrap();
     let raw = storage.read_message(&reply.message_id).unwrap();
     let raw = String::from_utf8(raw).unwrap();
-    for header in [
-        "X-Vivi-Pump-Action: requeue",
-        "X-Vivi-Pump-Unit: u1",
-        "X-Vivi-Pump-Attempts: 2",
-        "X-Vivi-Pump-Refund: 1",
-        &format!("X-Vivi-Pump-Record: {}", record.handle),
-        &format!("X-Vivi-Need: {need}"),
-    ] {
-        assert!(raw.contains(header), "{header} missing from {raw}");
-    }
-    assert!(!raw.contains("X-Vivi-Pump-Fresh"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Pump-"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Need"), "{raw}");
+    let body = crate::extract::extract_text(raw.as_bytes()).unwrap();
+    let front = crate::letter::parse_letter::<ActionFront>(&body).unwrap();
+    assert_eq!(front.body.trim(), "host was down");
+    assert_eq!(
+        front.front,
+        ActionFront {
+            action: ActionWord::Requeue,
+            need: need.clone(),
+            unit: Some("u1".into()),
+            attempts: Some(2),
+            fresh: false,
+            refund: true,
+            force: false,
+            step: None,
+            word: None,
+        }
+    );
     let pending = mailspace.pump_pending_actions(&none()).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, posted.id);
@@ -300,4 +309,130 @@ fn an_unlock_carries_its_entry_in_the_word_and_none_without_one() {
     assert_eq!(pending[0].request.reason, "ok");
     assert_eq!(pending[1].request.kind, PumpActionKind::Unlock);
     assert_eq!(pending[1].request.word, None);
+}
+
+#[test]
+fn posting_a_recover_is_refused_and_stores_nothing() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let mut request = PumpActionRequest::withdraw("adopt");
+    request.kind = PumpActionKind::Recover;
+
+    let error = mailspace
+        .pump_post_action(None, &need, &request)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("recover is retired"), "{error}");
+    let thread = mailspace
+        .thread(&record.handle, false, usize::MAX, usize::MAX)
+        .unwrap();
+    assert_eq!(thread.len(), 1, "only the record: {thread:?}");
+    assert!(mailspace.pump_pending_actions(&none()).unwrap().is_empty());
+    assert!(
+        mailspace
+            .pump_unreadable_actions(&none())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Post `body` as a reply on `record` the way `send_letter` does, with the
+/// given extra headers, and log its `posted` event.
+fn post_raw(mailspace: &Mailspace, record: &str, body: &str, extras: &[(String, String)]) {
+    let result = mailspace
+        .send_with_extras(
+            SendRequest {
+                from: "operator".into(),
+                to: vec!["mind".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "pump: old action".into(),
+                body: body.into(),
+                role: "inbox".into(),
+                kind: Some("mail".into()),
+                reply_to: Some(record.to_string()),
+            },
+            extras,
+        )
+        .unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&result.sent).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    storage
+        .append_mailspace_event(&MailspaceEventInput {
+            command: EVENT_COMMAND.into(),
+            event_type: EVENT_TYPE.into(),
+            actor_identity: Some("operator".into()),
+            account: "operator".into(),
+            message_id: view.message_id.clone(),
+            content_id: view.content_id.clone(),
+            from_role: None,
+            to_role: Some("inbox".into()),
+            from_identity: Some("operator".into()),
+            to_identity: None,
+            subject: view.subject.clone(),
+            note: Some(record.to_string()),
+        })
+        .unwrap();
+}
+
+#[test]
+fn an_old_header_only_action_letter_is_never_pending_and_is_listed_once_as_unreadable() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let extras = [
+        ("X-Vivi-Pump-Action".to_string(), "withdraw".to_string()),
+        ("X-Vivi-Pump-Record".to_string(), record.handle.clone()),
+        ("X-Vivi-Need".to_string(), need.clone()),
+    ];
+    post_raw(&mailspace, &record.handle, "stop it", &extras);
+    let fresh = mailspace
+        .pump_post_action(None, &need, &PumpActionRequest::replan(false))
+        .unwrap();
+
+    let pending = mailspace.pump_pending_actions(&none()).unwrap();
+    let unreadable = mailspace.pump_unreadable_actions(&none()).unwrap();
+
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].id, fresh.id);
+    assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+    assert_eq!(unreadable[0].record, record.handle);
+    assert!(
+        unreadable[0].error.contains(&unreadable[0].handle),
+        "{:?}",
+        unreadable[0]
+    );
+    assert!(
+        unreadable[0].error.contains("old format"),
+        "{:?}",
+        unreadable[0]
+    );
+    let applied: BTreeSet<String> = [unreadable[0].id.clone()].into();
+    assert!(
+        mailspace
+            .pump_unreadable_actions(&applied)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_action_letter_with_invalid_front_matter_is_listed_as_unreadable_and_not_pending() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let body = format!("+++\naction = \"requeue\"\nneed = \"{need}\"\n+++\n\nno unit");
+    post_raw(&mailspace, &record.handle, &body, &[]);
+
+    assert!(mailspace.pump_pending_actions(&none()).unwrap().is_empty());
+    let unreadable = mailspace.pump_unreadable_actions(&none()).unwrap();
+    assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+    assert!(
+        unreadable[0].error.contains(&unreadable[0].handle),
+        "{unreadable:?}"
+    );
+    assert!(unreadable[0].error.contains("unit"), "{unreadable:?}");
 }

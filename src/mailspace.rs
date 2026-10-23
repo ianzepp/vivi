@@ -108,9 +108,7 @@ pub use pool_record::{
     ATTEMPT_MARKER, BRIEF_MARKER, POOL_EVENT_TYPES, PoolEventRow, PoolTask, marked_line,
     marked_payload, order_marked,
 };
-pub use pump_action::{
-    PUMP_ACTION_HEADER, PUMP_RECORD_HEADER, PumpAction, PumpActionKind, PumpActionRequest,
-};
+pub use pump_action::{PumpAction, PumpActionKind, PumpActionRequest, UnreadableAction};
 pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};

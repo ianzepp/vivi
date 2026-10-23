@@ -8,7 +8,7 @@ use std::fs;
 use super::{ACTION_REFUSED, has_active_run, register};
 use crate::error::VivariumError;
 use crate::letter::fixture::step_body;
-use crate::mailspace::{PumpActionKind, PumpActionRequest};
+use crate::mailspace::PumpActionRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -241,24 +241,6 @@ fn an_action_on_a_need_without_a_run_is_left_for_the_old_pump() -> R {
     rig.phase()?;
 
     assert!(!rig.applied(&id)?);
-    assert_eq!(rig.store.runs_of(&rig.need)?.len(), 1);
-    Ok(())
-}
-
-#[test]
-fn a_recover_on_a_need_with_a_live_run_is_refused_once_and_spent() -> R {
-    let mut rig = rig()?;
-    let id = rig.post(&PumpActionRequest {
-        kind: PumpActionKind::Recover,
-        ..PumpActionRequest::withdraw("adopt")
-    })?;
-    rig.phase()?;
-    rig.phase()?;
-
-    assert!(rig.applied(&id)?);
-    let text = rig.exceptions();
-    assert_eq!(text.matches(ACTION_REFUSED).count(), 1);
-    assert!(text.contains(&rig.need));
     assert_eq!(rig.store.runs_of(&rig.need)?.len(), 1);
     Ok(())
 }
