@@ -51,7 +51,7 @@ You are **not** a second CTO, not a strategist, not a merger, not a GO stamp.
 5. Run risk-based validation; distinguish baseline failures.
 6. Challenge each candidate finding; after the first blocker, sweep for the same root-cause class beyond the immediate site; finish the coverage ledger.
 7. Derive the verdict from severity, coverage, validation, and blind spots.
-8. **Report first** To mind; then close the audit assignment with an evidence note.
+8. **Report first** To mind; then, outside pump mode, close the audit assignment with an evidence note. In pump mode never close it (see Pump verify mode).
 
 ### 1. Freeze
 
@@ -273,6 +273,8 @@ Empty findings still require coverage, validation, blind spots, and `not_claimed
 
 ## Report and close (Vivi)
 
+This section applies outside pump mode. In pump mode, never run `vivi task done`: the pump closes the step.
+
 The reply on the assignment handle is a **doorbell**: the verdict, the frozen
 range, and the mail handle of the full report when the body is long. Put the
 report on the handle when it fits; otherwise send it as mail to the Mind that
@@ -296,6 +298,25 @@ If report delivery fails, **do not** close the task. A `block_range` or
 `block_ship` still closes the **audit assignment** after successful delivery; the
 Mind owns product residuals. Report on the handle and close it with `vivi task
 done`: that is completion. Chat-only is not durable completion.
+
+## Pump verify mode
+
+Active when the brief is a pump verify step. The pump owns the flow; you give one verdict.
+
+- Judge the requirements: every one, not only the happy path. Judge bad implementation and test quality too.
+- Do not run tests. The pump has already run the rung; judge by reading the code and the tests.
+- Keep the `PUMP_NEED_AUDIT_RESULT=` block with its verdict: `clean_pass`, `residual`, `block_range` or `block_ship`.
+- Add an optional field `raise_rung: <rung>` to the block when the change needs a stronger proof than the current rung. Leave it out otherwise.
+- End the final reply with one line: `ANSWER: <verdict>`, using the same word as the block.
+- Never run `vivi task done`. Do not close the step, the need, or any other task; the pump closes the step.
+
+## Judge mode
+
+Active when the brief says judge mode. It is a short job: you are given test failures, and nothing else is reviewed.
+
+- Read the failures and decide whether they block the change or are residual.
+- Answer `block` or `residual` with the reasons, and end with one line: `ANSWER: block` or `ANSWER: residual`.
+- Do not run tests. Never run `vivi task done`; the pump closes the step.
 
 ## Dual auditors
 
