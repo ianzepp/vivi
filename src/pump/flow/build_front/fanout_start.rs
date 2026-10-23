@@ -39,7 +39,7 @@ impl StepHandler for FanoutStart {
             Ok(slices) => slices,
             Err(reason) => return Ok(invalid(cx, step, &reason)),
         };
-        let problems = problems(cx, &slices);
+        let problems = problems(cx, &slices)?;
         if !problems.is_empty() {
             return Ok(invalid(cx, step, &problems.join("; ")));
         }
@@ -77,8 +77,9 @@ fn latest_slices(
 }
 
 /// What is wrong with `slices`: unknown targets, empty write scopes, and a
-/// duplicate id, unknown dependency or cycle.
-fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Vec<String> {
+/// duplicate id, unknown dependency or cycle. A store read error is an Err,
+/// not a problem.
+fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Result<Vec<String>, VivariumError> {
     let known = step_inputs::targets(cx.ctx);
     let mut out = Vec::new();
     for slice in slices {
@@ -92,10 +93,10 @@ fn problems(cx: &StartCx<'_>, slices: &[Slice]) -> Vec<String> {
             out.push(format!("slice {} has an empty write_scope", slice.id));
         }
     }
-    if let Err(reason) = check_batch(cx.store, cx.run, slices) {
+    if let Some(reason) = check_batch(cx.store, cx.run, slices)? {
         out.push(reason);
     }
-    out
+    Ok(out)
 }
 
 /// Raise `flow-slices-invalid` and answer failed so routing goes to the CTO.
