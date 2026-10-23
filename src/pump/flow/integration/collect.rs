@@ -11,7 +11,7 @@ use crate::pump::flow::def::{FAILED, NodeClass};
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
-use crate::pump::flow::verify::{self, SideEffect, VerifyReq};
+use crate::pump::flow::verify;
 use crate::pump::jobs::merge_main::{self, MergeMainResult};
 use crate::pump::jobs::rung_result::{self, EnvFailure};
 use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
@@ -115,18 +115,15 @@ fn settle_lost<S: JobStore, M: FlowMail>(
     step: &StepRow,
 ) -> Result<(), VivariumError> {
     let remote_ref = job.publish_ref.clone().unwrap_or_default();
-    let req = VerifyReq {
-        target: job.target.clone().unwrap_or_default(),
-        remote_ref: remote_ref.clone(),
-        before: job.from_ref.clone(),
-        must_contain: payload_str(job, "need_tip")?.to_owned(),
-        receipt: None,
-    };
-    match verify::check(cx.ctx, &req) {
-        SideEffect::Verified { sha } => cx.advance_word(step, "merged", merged_payload(&sha)),
-        SideEffect::Absent if row.attempt <= MOVED_RETRIES => requeue(cx, job, row, step),
-        SideEffect::Absent => failed(cx, job, step),
-        SideEffect::Unclear { reason } => {
+    let target = job.target.clone().unwrap_or_default();
+    let need_tip = payload_str(job, "need_tip")?;
+    // The push is fast-forward only: a main that moved without the need tip
+    // means the merge did not land.
+    match verify::ref_contains(cx.ctx, &target, &remote_ref, need_tip) {
+        Ok(Some(tip)) => cx.advance_word(step, "merged", merged_payload(&tip)),
+        Ok(None) if row.attempt <= MOVED_RETRIES => requeue(cx, job, row, step),
+        Ok(None) => failed(cx, job, step),
+        Err(reason) => {
             cx.ctx.exception(
                 SIDE_EFFECT_UNCLEAR,
                 &step.task,
