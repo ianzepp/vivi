@@ -359,6 +359,9 @@ impl Mailspace {
         if units.is_empty() || !units.iter().all(|n| n.state == "done") {
             return Ok(());
         }
+        if super::item_events::join_guard::named_units_unseen(&storage, parent)? {
+            return Ok(());
+        }
         drop(storage);
         if self.backlog_complete_item_collect(parent, "via=lifecycle", joined)? {
             self.settle_need_mailbox_collect(parent, true, "join", joined)?;
