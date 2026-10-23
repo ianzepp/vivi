@@ -185,6 +185,13 @@ fn fetch(ctx: &Ctx, remote: &str, remote_ref: &str) -> Result<(), String> {
     }
 }
 
+/// Whether the commit exists in the local object store.
+fn commit_present(ctx: &Ctx, sha: &str) -> bool {
+    ctx.git(&format!("cat-file -e {sha}^{{commit}}"), QUERY_SECS)
+        .code
+        == 0
+}
+
 /// `git merge-base --is-ancestor`: 0 yes, 1 no, anything else is an error.
 fn is_ancestor(ctx: &Ctx, ancestor: &str, descendant: &str) -> Result<bool, String> {
     let out = ctx.git(
@@ -222,6 +229,11 @@ pub(crate) fn ref_contains(
         return Ok(Some(tip));
     }
     fetch(&tctx, &remote, remote_ref)?;
+    // The fetch brings every ancestor of the tip, so a commit still absent
+    // afterwards is not contained (and merge-base would exit 128).
+    if !commit_present(&tctx, sha) {
+        return Ok(None);
+    }
     Ok(is_ancestor(&tctx, sha, &tip)?.then_some(tip))
 }
 
