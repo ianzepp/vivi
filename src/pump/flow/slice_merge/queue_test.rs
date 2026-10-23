@@ -8,10 +8,11 @@ use tempfile::{TempDir, tempdir};
 use super::{MERGE_QUEUED, run};
 use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::slice_merge::spec::KIND;
+use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -247,5 +248,72 @@ fn one_bad_slice_does_not_stop_another_need() -> R {
     rig.tick()?;
     assert!(rig.merges("n1").is_empty());
     assert_eq!(rig.merges("n2").len(), 1);
+    Ok(())
+}
+
+const NEED_TIP: &str = "4444444444444444444444444444444444444444";
+
+#[test]
+fn a_slice_already_on_the_need_branch_closes_merged_without_a_job() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    let slice = rig.slice("n1", "A", true)?;
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/n1",
+        0,
+        &format!("{NEED_TIP}\trefs/heads/vivi/need/n1\n"),
+    );
+    rig.host.reply("merge-base --is-ancestor", 0, "");
+    rig.tick()?;
+    assert!(rig.merges("n1").is_empty());
+    let row = rig.store.step_by_task(&slice.task)?.expect("row");
+    assert_eq!(row.state, StepState::Done);
+    assert_eq!(row.verdict.as_deref(), Some("merged"));
+    assert!(rig.mail.calls.contains(&Call::CloseTask {
+        handle: slice.task.clone(),
+        verdict: String::from("merged"),
+    }));
+    Ok(())
+}
+
+#[test]
+fn a_slice_not_on_the_need_branch_enqueues_one_job() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    rig.slice("n1", "A", true)?;
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/n1",
+        0,
+        &format!("{NEED_TIP}\trefs/heads/vivi/need/n1\n"),
+    );
+    rig.host.reply("merge-base --is-ancestor", 1, "");
+    rig.tick()?;
+    assert_eq!(rig.merges("n1").len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_start_error_holds_the_slice_for_the_operator() -> R {
+    let mut rig = rig()?;
+    rig.run_row("n1", "live")?;
+    let slice = rig.slice("n1", "A", false)?;
+    rig.tick()?;
+    let row = rig.store.step_by_task(&slice.task)?.expect("row");
+    assert_eq!(row.state, StepState::Waiting);
+    assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
+    let raised = |rig: &Rig| {
+        let needle = format!("EXCEPTION flow-slice-merge-failed {}", slice.task);
+        rig.host
+            .logs()
+            .iter()
+            .filter(|line| line.contains(&needle))
+            .count()
+    };
+    assert_eq!(raised(&rig), 1);
+    let commands = rig.host.commands().len();
+    rig.tick()?;
+    assert_eq!(raised(&rig), 1);
+    assert_eq!(rig.host.commands().len(), commands);
+    assert!(rig.merges("n1").is_empty());
     Ok(())
 }
