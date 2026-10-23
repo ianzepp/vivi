@@ -13,17 +13,37 @@ Usage:
     check-task-body.py BODY_FILE [--root ROOT] [--ledger LEDGER_JSON] [--strict-outcome]
     check-task-body.py BODY_FILE --record CLASS ACTUAL_CALLS ACTUAL_ELAPSED_S [--root ROOT] [--ledger LEDGER_JSON]
 
-BODY_FILE is the task body as `vivi task show <handle>` prints it (key: value
-lines). --root defaults to the current directory; the ledger defaults to
+BODY_FILE is the task body: a letter that opens with TOML front matter
+between two `+++` lines, then free prose. done_when and write_scope live in
+the front matter as lists, one done_when entry per outcome:
+
+    +++
+    done_when = ["cargo test --lib x passes"]
+    write_scope = ["src/x.rs"]
+    +++
+
+    goal: docs/goal.md
+    unit: U-1
+
+The prose below the fence keeps `key: value` lines (goal, unit, delivery,
+sanity, validation, est_basis, est_work_tokens, cohesion, split_reason).
+A body with no front matter is an old-format letter and FAILs (vivi step
+reports letter_invalid). Front matter is parsed with tomllib (Python 3.11+);
+older Pythons use a small reader that accepts only `key = "text"`,
+`key = 'text'` and arrays of those strings, and FAILs on anything else.
+
+--root defaults to the current directory; the ledger defaults to
 <root>/.tugboat/estimate-ledger.json.
 
 Checks:
-  1. Pointer present: (delivery) or (goal + unit); plus done_when and write_scope.
-  2. If est_basis is present, it resolves: "pilot" or a ledger class.
-  3. If sanity/validation is present: no workspace-wide / all-targets flags.
-  4. Single logical change: done_when is one outcome, or the body records a
+  1. Front matter present; done_when and write_scope are non-empty lists of
+     non-empty strings.
+  2. Pointer present: (delivery) or (goal + unit).
+  3. If est_basis is present, it resolves: "pilot" or a ledger class.
+  4. If sanity/validation is present: no workspace-wide / all-targets flags.
+  5. Single logical change: done_when has one entry, or the prose records a
      cohesion/split_reason line. --strict-outcome also rejects semicolon lists.
-  5. If est_work_tokens is present, it is a range; high end above 15k is
+  6. If est_work_tokens is present, it is a range; high end above 15k is
      treated as a mega-bag (refuse).
 
 --record appends an actuals row to the ledger (optional closeout calibration).
@@ -35,16 +55,164 @@ import os
 import re
 import sys
 
-REQUIRED_FIELDS = [
-    "done_when",
-    "write_scope",
-]
+FENCE = "+++"
+REQUIRED_LISTS = ["done_when", "write_scope"]
+NO_FRONT = (
+    "task body has no front matter: it is an old-format letter "
+    "(vivi step reports letter_invalid)"
+)
 
 FORBIDDEN_FLAGS = ["--workspace", "--all-targets", "--all-features", "--all"]
 
 
+class FrontError(Exception):
+    pass
+
+
+def split_front(text):
+    """Split at the fence like src/letter.rs split_pieces: (front, prose)."""
+    lines = text.splitlines(keepends=True)
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines) or lines[i].strip() != FENCE:
+        raise FrontError(NO_FRONT)
+    for j in range(i + 1, len(lines)):
+        if lines[j].strip() == FENCE:
+            return "".join(lines[i + 1 : j]), "".join(lines[j + 1 :])
+    raise FrontError("task body front matter is not closed: no second +++ line")
+
+
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+
+
+def parse_front_fallback(front):
+    """Minimal TOML reader: key = "text" | 'text' | [strings, ...]; # comments."""
+    data = {}
+    lines = front.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.*)$", line)
+        if not m:
+            raise FrontError(f"unsupported front matter line: {stripped}")
+        key, rest = m.group(1), m.group(2)
+        if key in data:
+            raise FrontError(f"duplicate front matter key: {key}")
+        # Gather a multi-line array until its closing bracket.
+        if rest.lstrip().startswith("["):
+            buf = rest
+            while not array_closed(buf):
+                if i >= len(lines):
+                    raise FrontError(f"unclosed array for key {key}")
+                buf += "\n" + lines[i]
+                i += 1
+            data[key] = parse_array(buf, stripped)
+        else:
+            value, tail = parse_string(rest.lstrip(), stripped)
+            check_tail(tail, stripped)
+            data[key] = value
+    return data
+
+
+def parse_string(src, ctx):
+    """Parse one quoted string at the start of src; return (value, remainder)."""
+    if not src or src[0] not in "\"'":
+        raise FrontError(f"unsupported front matter line: {ctx}")
+    quote = src[0]
+    out = []
+    k = 1
+    while k < len(src):
+        c = src[k]
+        if c == quote:
+            return "".join(out), src[k + 1 :]
+        if quote == '"' and c == "\\":
+            k += 1
+            if k >= len(src) or src[k] not in _ESCAPES:
+                raise FrontError(f"unsupported escape in front matter line: {ctx}")
+            out.append(_ESCAPES[src[k]])
+        else:
+            out.append(c)
+        k += 1
+    raise FrontError(f"unterminated string in front matter line: {ctx}")
+
+
+def check_tail(tail, ctx):
+    t = tail.strip()
+    if t and not t.startswith("#"):
+        raise FrontError(f"unsupported front matter line: {ctx}")
+
+
+def array_closed(buf):
+    """True once the `[` that opens buf has its `]` outside any string."""
+    quote = None
+    k = 0
+    while k < len(buf):
+        c = buf[k]
+        if quote:
+            if quote == '"' and c == "\\":
+                k += 1
+            elif c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c == "#":
+            while k < len(buf) and buf[k] != "\n":
+                k += 1
+        elif c == "]":
+            return True
+        k += 1
+    return False
+
+
+def parse_array(buf, ctx):
+    src = buf.lstrip()[1:]
+    items = []
+    while True:
+        src = skip_space(src)
+        if not src:
+            raise FrontError(f"unclosed array in front matter line: {ctx}")
+        if src[0] == "]":
+            check_tail(src[1:], ctx)
+            return items
+        value, src = parse_string(src, ctx)
+        items.append(value)
+        src = skip_space(src)
+        if src.startswith(","):
+            src = src[1:]
+        elif not src.startswith("]"):
+            raise FrontError(f"unsupported front matter line: {ctx}")
+
+
+def skip_space(src):
+    while src:
+        if src[0].isspace():
+            src = src[1:]
+        elif src[0] == "#":
+            nl = src.find("\n")
+            src = "" if nl < 0 else src[nl + 1 :]
+        else:
+            break
+    return src
+
+
+def parse_front(front):
+    try:
+        import tomllib
+    except ImportError:
+        return parse_front_fallback(front)
+    try:
+        return tomllib.loads(front)
+    except tomllib.TOMLDecodeError as e:
+        raise FrontError(f"front matter is not valid TOML: {e}")
+
+
 def parse_body(text):
-    """Parse key: value lines into a dict. Multiline values are joined."""
+    """Parse the prose part's key: value lines into a dict. Multiline values are joined."""
     fields = {}
     current = None
     for line in text.splitlines():
@@ -82,14 +250,6 @@ def check_sanity(text, label):
     return problems
 
 
-def count_outcomes(done_when):
-    """Heuristic: 1 outcome if a single clause; N if enumerated (1) (a) 2)."""
-    enumerated = re.findall(r"\([0-9a-z]\)|\b[0-9a-z]\)", done_when, flags=re.I)
-    if enumerated:
-        return len(enumerated)
-    return 1
-
-
 def token_high_end(text):
     """Return the high end of a 3-8k / 20-32k range as thousands, or None."""
     m = re.search(r"(\d+)\s*[-–]\s*(\d+)\s*k?\b", text, flags=re.I)
@@ -103,11 +263,14 @@ def token_high_end(text):
     return float(hi)
 
 
-def validate(fields, ledger, strict_outcome=False):
+def validate(front, fields, ledger, strict_outcome=False):
     problems = []
-    for field in REQUIRED_FIELDS:
-        if field not in fields or not fields[field]:
-            problems.append(f"missing required field: {field}")
+    for field in REQUIRED_LISTS:
+        value = front.get(field)
+        if not isinstance(value, list) or not value:
+            problems.append(f"front matter needs {field} = [...] (a non-empty list)")
+        elif not all(isinstance(v, str) and v.strip() for v in value):
+            problems.append(f"front matter {field} must hold only non-empty strings")
 
     has_delivery = bool(fields.get("delivery"))
     has_goal_unit = bool(fields.get("goal")) and bool(fields.get("unit"))
@@ -130,9 +293,11 @@ def validate(fields, ledger, strict_outcome=False):
         if label in fields:
             problems.extend(check_sanity(fields[label], label))
 
-    if "done_when" in fields and "cohesion" not in fields and "split_reason" not in fields:
-        n = count_outcomes(fields["done_when"])
-        if n > 1 or (strict_outcome and ";" in fields["done_when"]):
+    done_when = front.get("done_when")
+    if isinstance(done_when, list) and "cohesion" not in fields and "split_reason" not in fields:
+        n = len(done_when)
+        semi = any(isinstance(v, str) and ";" in v for v in done_when)
+        if n > 1 or (strict_outcome and semi):
             problems.append(
                 f"done_when has {n} outcomes with no cohesion:/split_reason: — "
                 "split into one-logical-change Hands"
@@ -194,8 +359,15 @@ def main():
 
     with open(args.body_file) as f:
         text = f.read()
-    fields = parse_body(text)
-    problems = validate(fields, ledger, strict_outcome=args.strict_outcome)
+    try:
+        front_text, prose = split_front(text)
+        front = parse_front(front_text)
+    except FrontError as e:
+        print("FAIL — Hand refuses this task body:")
+        print(f"  - {e}")
+        return 1
+    fields = parse_body(prose)
+    problems = validate(front, fields, ledger, strict_outcome=args.strict_outcome)
 
     if problems:
         print("FAIL — Hand refuses this task body:")
