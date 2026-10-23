@@ -458,8 +458,8 @@ metadata still applies, but kind pool lists are ignored. If the hand role has
 no pool, configured kinds and **default_kind** route unit tasks.
 
 Durable pool jobs are addressed to their work role: planner jobs use
-**pump-planner**, integration jobs use **merge**, gates use **gate**, audits and
-investigations use **auditor**, promotions use the active **release** role
+**pump-planner**, integration jobs use **merge**, gates use **gate**, audits
+use **auditor**, research needs use **researcher**, promotions use the active **release** role
 with a pool or fall back to an active **merge** role with a pool, cadence jobs
 use the scheduled role, and reclaim uses **reclaim** or the hand role.
 Each role's assigned pool and configured fallback chain provide candidates.
@@ -467,8 +467,7 @@ A job stays pending when none has capacity. A live merge pipeline needs a
 **merge** role with a pool; the old **[pump.merge].lanes** value does not run
 local merges. Gate jobs use the gate role and its fallback, with
 **[pump.gate].pools** available as additional candidates. If no auditor role is
-configured, gate audits have a built-in read-only fallback using gate pools;
-investigations require an auditor role. Managed need acceptance audits require
+configured, gate audits have a built-in read-only fallback using gate pools. Managed need acceptance audits require
 an active auditor role with a configured pool; the gate-audit fallback does
 not replace it.
 
@@ -562,7 +561,8 @@ lacks things the pump needs is *not ready*, not invalid: a missing committer,
 roles and pools, or a pool without a harness or bands, and a missing **task**,
 **need** or **main** proof rung (for each target, counting the rungs it
 inherits from **[pump.rungs]**; set them with **vivi pump rungs set** or
-**vivi pump target add --rung**). **vivi config validate** lists each missing
+**vivi pump target add --rung**, after **[pump.rungs] pools** names a pool: a
+rung command with no effective pool is refused and rolled back). **vivi config validate** lists each missing
 item under `not ready:` and exits 3; a wrong value (a bad number, a pool name
 that points at nothing, a misspelled role, a pump-role charter that predates
 the v20 envelope) is an error and exits 1; ready exits 0. **vivi pump run** and
@@ -596,7 +596,8 @@ pump restarts.
 | Whole-need, revision, and split planning | The active **pump-planner** role and its pool; its charter is the planner's system prompt. This role with a pool is required when **[pump]** is configured. |
 | Integration merges and need branches | The **merge** role and its pool. This role integrates sources, runs the assigned checks, and returns a candidate commit; the privileged pool runner publishes it. |
 | Gates | The read-only **gate** role's pool and fallback chain, then configured **[pump.gate].pools** candidates. |
-| Audits and investigations | The **auditor** role and its pool, followed by gate-pool candidates for audits. Without an auditor role, gate audits use a built-in read-only fallback; investigations require an auditor role. |
+| Audits | The **auditor** role and its pool, followed by gate-pool candidates for audits. Without an auditor role, gate audits use a built-in read-only fallback. |
+| Research needs | The **researcher** role and its pool. |
 | Need acceptance audits | An active **auditor** role with a configured pool and fallback chain. Gate-pool fallback does not satisfy this route. |
 | Promotion | The active **release** role with a pool, or an active **merge** role with a pool as fallback. |
 | Cadence and digest | The role whose schedule is due. |
@@ -679,7 +680,8 @@ flight get a record; see [the 19.0.0 notes](docs/release-v19.0.0.md).
 Role cadence uses each role's latest durable outbound signal. Due runs appear
 in the board and pump status. To look into an unclear want, head-ceo files a
 research need: **vivi need send --mark research --explores &lt;want-handle&gt;
---done-when "..."**. The researcher role posts its analysis on the want. The
+--done-when "..."**, then starts it with **vivi pump send --need &lt;need&gt;**
+(mark first). The researcher role posts its analysis on the want. The
 cadence prompt tells head-ceo to file at most two research needs for one want.
 
 The pump home defaults to **&lt;project&gt;/.vivi/pump**. It stores **pump.db**,
