@@ -22,7 +22,10 @@ use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
 use crate::pump::flow::slice_dispatch::{self, AttemptResult, DEVIATIONS_MARKER, Retried};
-use crate::pump::flow::tick::{FOLLOW_UP, FOLLOW_UP_MARKER, SCOPE_REWORK};
+use crate::pump::flow::tick::{
+    FOLLOW_UP, FOLLOW_UP_MARKER, OPERATOR_HOLD, SCOPE_REWORK, raise_once,
+};
+use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 
 /// Characters of a timed-out hand's receipt passed to the split job.
@@ -34,6 +37,24 @@ fn tail_of(text: &str, max: usize) -> &str {
     text.char_indices()
         .nth(skip)
         .map_or("", |(at, _)| &text[at..])
+}
+
+/// Marker of the reply that records a hand job's environment failure.
+const ENV_MARKER: &str = "pump-slice-env:";
+
+/// The runner-level environment failure of a hand job, if it has one: a host
+/// failure the runner classified from its own facts, or the agent binary
+/// itself exiting 126 or 127. A missing tool the hand's own test run printed
+/// to stderr is the hand's judgment and does not count.
+fn runner_env_failure(job: &PoolJob) -> Option<EnvFailure> {
+    let env = rung_result::env_failure(job)?;
+    let agent_missing = matches!(rung_result::parse(job).exit, Some(126 | 127));
+    let host = job
+        .outcome
+        .as_ref()
+        .and_then(|outcome| outcome.host_failure())
+        .is_some_and(|host| host.class != "shell_marker");
+    (agent_missing || host).then_some(env)
 }
 
 /// Something done for a slice whose hand job built.
@@ -115,6 +136,9 @@ where
             None
         };
         let hand = hand.as_ref().unwrap_or(job);
+        if let Some(env) = runner_env_failure(hand) {
+            return self.environment(step, row, hand, &env);
+        }
         let Some(result) = slice_dispatch::classify_corrected(self.ctx, hand, job) else {
             return Ok(());
         };
@@ -151,6 +175,42 @@ where
             AttemptResult::Correct { error } => self.correct(job, row, RoleKind::Hand, &error),
             AttemptResult::BlockedScope(request) => self.blocked(step, row, &request),
         }
+    }
+
+    /// The worker could not run the hand job: alarm once, reply once and hold
+    /// the slice for the operator. No attempt is counted, queued or split.
+    fn environment(
+        &mut self,
+        step: &StepRow,
+        row: &StepJobRow,
+        hand: &PoolJob,
+        env: &EnvFailure,
+    ) -> Result<(), VivariumError> {
+        let tool = env.tool.as_deref().unwrap_or("none named");
+        let text = format!(
+            "hand job {} of slice {} ({}): expected the agent to run; actual: {} ({:?}, tool {tool}); pool {}, attempt {} not counted; fix the worker, then `vivi pump requeue` or `vivi pump answer`",
+            hand.id,
+            step.node,
+            step.task,
+            env.evidence,
+            env.kind,
+            hand.pool.as_deref().unwrap_or("none"),
+            row.attempt,
+        );
+        raise_once(self.ctx, ENV_FAILURE, &hand.id, &text);
+        let key = format!("job {}:", hand.id);
+        let seen = self
+            .mail
+            .marked_replies(&step.task, ENV_MARKER)?
+            .iter()
+            .any(|(_, body)| body.contains(&key));
+        if !seen {
+            let reason = format!("{key} environment: {}", env.evidence);
+            self.mail
+                .reply(&step.task, &marked_line(ENV_MARKER, &reason))?;
+        }
+        self.store
+            .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
 
     pub(crate) fn blocked(
@@ -284,3 +344,7 @@ mod tests;
 #[cfg(test)]
 #[path = "collect_slice_reslice_test.rs"]
 mod reslice_tests;
+
+#[cfg(test)]
+#[path = "collect_slice_env_test.rs"]
+mod env_tests;
