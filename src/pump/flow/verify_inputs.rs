@@ -4,12 +4,12 @@
 //! Pool workers have no mailspace, so earlier replies come from the step
 //! payload table, and the need thread comes from `vivi need show`.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VivariumError;
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::need_audit::{NeedAuditRequirement, whole_message_requirements};
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 
@@ -65,9 +65,50 @@ pub(crate) fn need_thread(ctx: &Ctx, need: &str) -> Result<Vec<Value>, VivariumE
     Ok(messages)
 }
 
+/// One original requirement passed to the Auditor for status accounting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeedAuditRequirement {
+    pub id: String,
+    pub text: String,
+}
+
 /// The requirements an audit must account for, one per whole need message.
 pub(crate) fn requirements(ctx: &Ctx, need: &str, messages: &[Value]) -> Vec<NeedAuditRequirement> {
     whole_message_requirements(ctx, need, messages)
+}
+
+/// Requirements for a need that declares no `done_when:` lines: each source
+/// message is one requirement, so the audit checks the delivered work against
+/// what the need actually asked for. The requirement text is one short line
+/// that names the message and points at the thread the auditor already
+/// receives as `original_need_thread`: a receipt must repeat each requirement
+/// text byte for byte, and a model auditor cannot reliably echo a long body.
+pub fn whole_message_requirements(
+    ctx: &Ctx,
+    need: &str,
+    messages: &[Value],
+) -> Vec<NeedAuditRequirement> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            !crate::pump::amend::is_generated_pump_reply(ctx, need, *index, message)
+        })
+        .filter_map(|(_, message)| {
+            let handle = message["handle"].as_str().filter(|h| !h.is_empty())?;
+            let body = message["body"].as_str().unwrap_or("").trim();
+            if body.is_empty() {
+                return None;
+            }
+            Some(NeedAuditRequirement {
+                id: format!("{handle}-r0"),
+                text: format!(
+                    "Deliver what need message {handle} asks for (full text in the original need thread)."
+                ),
+            })
+        })
+        .collect()
 }
 
 /// The newest admitted plan of a need, over every run. Runs restarted at
