@@ -5,6 +5,7 @@
 //! missing one is an error the tick reports.
 
 use crate::error::VivariumError;
+use crate::pump::flow::def::FAILED;
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
@@ -17,6 +18,8 @@ struct Tips {
     target: String,
     need_tip: String,
     main_tip: String,
+    /// The main tip the need branch was cut from; `None` when none is recorded.
+    base: Option<String>,
 }
 
 fn tips(cx: &StartCx<'_>) -> Result<Tips, VivariumError> {
@@ -49,7 +52,18 @@ fn tips(cx: &StartCx<'_>) -> Result<Tips, VivariumError> {
         target: row.target,
         need_tip,
         main_tip,
+        base: row.base,
     })
+}
+
+/// Why a need branch that never moved has nothing to merge. Also the reason
+/// the collector gives, so both name the same facts.
+pub(crate) fn nothing_to_merge(tip: &str, base: &str) -> String {
+    format!("need tip {tip} == run base {base}: nothing to merge")
+}
+
+fn no_merge_role() -> VivariumError {
+    VivariumError::Config("expected a merge role in the routing; actual: none".to_owned())
 }
 
 /// Starts the no-model merge of the need tip into main.
@@ -58,6 +72,12 @@ pub(crate) struct MergeMainStart;
 impl StepHandler for MergeMainStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let tips = tips(cx)?;
+        if let Some(base) = tips.base.as_deref().filter(|base| *base == tips.need_tip) {
+            return Ok(StartAction::Answer {
+                word: FAILED.to_owned(),
+                payload: serde_json::json!({"reason": nothing_to_merge(&tips.need_tip, base)}),
+            });
+        }
         let spec = merge_main::spec(
             cx.ctx,
             &tips.target,
@@ -66,7 +86,7 @@ impl StepHandler for MergeMainStart {
             &tips.main_tip,
             &step.task,
         )
-        .ok_or_else(|| VivariumError::Config("no merge role".to_owned()))?;
+        .ok_or_else(no_merge_role)?;
         let mut spec = merge_main::with_attempt(spec, &tips.target, 1);
         spec.task = Some(step.task.clone());
         Ok(StartAction::Job(Box::new(spec)))
@@ -79,11 +99,7 @@ pub(crate) struct SyncStart;
 
 impl StepHandler for SyncStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
-        let role = cx
-            .ctx
-            .routing
-            .merge()
-            .ok_or_else(|| VivariumError::Config("no merge role".to_owned()))?;
+        let role = cx.ctx.routing.merge().ok_or_else(no_merge_role)?;
         let tips = tips(cx)?;
         let need = &cx.run.need;
         let brief = format!(
