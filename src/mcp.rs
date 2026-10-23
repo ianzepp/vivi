@@ -5,7 +5,7 @@
 //! an `id` member is a request and expects an answer, a message without one
 //! is a notification and never gets a reply, so new server tools need no
 //! bridge change. Every valid line is forwarded byte-for-byte to the
-//! project server's MCP endpoint; a line that cannot be served is answered
+//! server's MCP endpoint; a line that cannot be served is answered
 //! in-protocol (-32700 / -32600 / -32000) and the session continues. Bearer
 //! tokens live in memory for one serve and are never written anywhere.
 //!
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::error::VivariumError;
 use crate::sync::SyncSettings;
-use crate::sync::http::{MintedToken, RawResponse, mint_token, project_base_url, send_raw};
+use crate::sync::http::{MintedToken, RawResponse, mint_token, send_raw, server_mcp_url};
 use crate::sync::identity::SyncIdentity;
 
 pub mod client;
@@ -67,7 +67,7 @@ pub struct BridgeConfig {
 /// The upstream the bridge posts to. A trait so the engine is testable
 /// without sockets: tests script the answers.
 pub trait Upstream {
-    /// POST `body` to the project's MCP endpoint with
+    /// POST `body` to the server's MCP endpoint with
     /// `Authorization: Bearer <bearer>`.
     ///
     /// # Errors
@@ -103,7 +103,7 @@ impl Upstream for HttpUpstream<'_> {
     fn post(&self, bearer: &str, body: &[u8]) -> Result<RawResponse, VivariumError> {
         send_raw(
             "POST",
-            &format!("{}/mcp", project_base_url(self.settings)),
+            &server_mcp_url(&self.settings.server),
             &[
                 ("Authorization", format!("Bearer {bearer}")),
                 ("Content-Type", "application/json".to_string()),

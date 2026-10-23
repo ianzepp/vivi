@@ -91,6 +91,9 @@ fn call_prints_the_result_text() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stdout(&output), "alice: hi\n");
     assert!(!stderr(&output).contains(&key));
+    for seen in server.mcp_requests() {
+        assert_eq!(seen.path, "/v1/mcp", "the server's MCP endpoint");
+    }
     let methods: Vec<String> = server
         .mcp_requests()
         .iter()
@@ -155,7 +158,8 @@ fn call_without_arguments_sends_an_empty_object() {
 #[test]
 fn a_tool_error_exits_1_with_its_text_on_stderr() {
     let (server, key) = fixture();
-    let output = run(&server, &key, &["call", "show", r#"{"handle":"nope"}"#], "");
+    let arguments = format!(r#"{{"handle":"nope","project":"{}"}}"#, server.project());
+    let output = run(&server, &key, &["call", "show", &arguments], "");
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(
         stderr(&output).contains("unknown item: nope"),
