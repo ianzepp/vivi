@@ -7,6 +7,7 @@
 use std::rc::Rc;
 
 use super::{alice, bob};
+use crate::letter::fixture::need_body;
 use crate::mailspace::{RoleUpdate, is_foreign_account};
 use crate::sync::fake_server::{
     Checkout, FakeServer, LETTER_DATE, World, checkout, handle, wire_id,
@@ -199,9 +200,9 @@ fn a_held_foreign_row_follows_the_newest_mark_letter() {
         "need",
         &carol.address("mind"),
         "for carol",
-        "done_when: x\n",
+        &need_body(&["x"], ""),
         LETTER_DATE,
-        "",
+        "X-Vivi-Kind: need\r\nX-Vivi-Format: 1\r\n",
     );
     w.bob.pull(&w.bob_client);
     let item = handle(1);
