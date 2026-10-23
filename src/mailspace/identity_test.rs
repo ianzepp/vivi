@@ -107,7 +107,7 @@ fn ensure_pump_planner_role_creates_an_active_planner_with_the_shipped_charter()
         view.charter,
         crate::mailspace::shipped::PUMP_PLANNER_CHARTER
     );
-    assert!(view.charter.contains("ANSWER:"));
+    assert!(view.charter.contains("answer = \"planned\""));
     assert!(!view.charter.contains("PUMP-PLAN-BEGIN"));
 }
 

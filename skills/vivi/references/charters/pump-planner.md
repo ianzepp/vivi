@@ -35,24 +35,58 @@ Include these sections, in this order. Leave a section out only if it is truly e
 
 Keep the document concrete. Name files and functions, not themes. Do not pad it, and do not restate the thread.
 
-## Return the plan
+## Reply format
 
-Your final reply is the plan document, followed by the answer line.
+Your final reply is one Markdown message. It opens with TOML front matter between two `+++` fence lines, and the plan document is the body below it. The pump reads the front matter to decide what happens next. General rules and the full table for every role are in [the envelope reference](../envelope.md).
 
-The last line of your final reply is exactly one line:
+Front matter for the planner:
 
-`ANSWER: <word>`
+| Key | Type | Rule |
+| --- | --- | --- |
+| `answer` | string | First key. Exactly one of the words below. |
+| `reason` | string | Required unless `answer` is `planned`. A literal string, `'...'`. |
 
-with one word from this list:
+No other keys are allowed. An unknown key is refused.
+
+Answer words:
 
 - `planned`: there is work, and the document describes it.
-- `delivered`: nothing is left to do. The document names the commit or the code that shows it.
-- `operator`: a decision is missing that only the operator can make. The document quotes the open question. A need that only records a ruling whose work is carried by another need is `delivered`, with that pointer.
-- `hold`: it cannot be done here: it needs hardware or access this checkout lacks, belongs to a repository that is not an available target, or the thread says it is deferred. The document says which.
-- `design`: the work is real but not settled enough to plan; the document says what is unsettled. Use this sparingly: if the ruling is clear and the work is merely large, answer `planned`. Size is the slicer's concern, not yours.
+- `delivered`: nothing is left to do. The document names the commit or the code that shows it. Give `reason`.
+- `operator`: a decision is missing that only the operator can make. The document quotes the open question. A need that only records a ruling whose work is carried by another need is `delivered`, with that pointer. Give `reason`.
+- `hold`: it cannot be done here: it needs hardware or access this checkout lacks, belongs to a repository that is not an available target, or the thread says it is deferred. The document says which. Give `reason`.
+- `design`: the work is real but not settled enough to plan; the document says what is unsettled. Use this sparingly: if the ruling is clear and the work is merely large, answer `planned`. Size is the slicer's concern, not yours. Give `reason`.
 
 A need may mix: answer `planned` for the settled part and put what was left out, and why, under "Open questions".
 
+Rules for the envelope:
+
+- The envelope opens the reply. Nothing comes before the first `+++` line, and `+++` appears only twice.
+- Write `reason` as a literal string in single quotes, with no single quote inside it.
+- Do not repeat the front matter in the plan, and do not wrap the envelope in a code fence in your real reply. The examples below are fenced only so you can read them here.
+
+Example of a plan:
+
+```
++++
+answer = "planned"
++++
+# Plan: one title for the whole need
+
+## Goal
+
+The plan document follows, with the sections listed above.
+```
+
+Example of a need with nothing left to do:
+
+```
++++
+answer = "delivered"
+reason = 'Commit 3f9a2c1 already adds the command and its test; nothing is left.'
++++
+Evidence for the claim above.
+```
+
 ## Finish
 
-Return one plan for the one need you were given. Do not ask a question and do not wait for an answer: if something is unclear, answer `operator` or `design` and put the question in the document. Put nothing after the `ANSWER:` line.
+Return one plan for the one need you were given. Do not ask a question and do not wait for an answer: if something is unclear, answer `operator` or `design` and put the question in the document.
