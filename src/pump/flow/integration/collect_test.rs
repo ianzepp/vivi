@@ -314,6 +314,66 @@ fn a_lost_job_with_unclear_git_holds_the_step() -> R {
     Ok(())
 }
 
+fn exceptions(rig: &Rig) -> String {
+    std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+fn held(rig: &Rig) -> R {
+    let step = rig.step()?;
+    assert_eq!(step.state, StepState::Waiting);
+    assert_eq!(step.verdict.as_deref(), Some(OPERATOR_HOLD));
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_missing_tool_alarms_once_and_holds_the_step() -> R {
+    let mut rig = rig(1)?;
+    rig.finish(
+        1,
+        JobStatus::Finished,
+        "agent exit 127 in 1s\n\n--- stderr tail\nbash: git: command not found\n",
+    )?;
+    rig.tick()?;
+    held(&rig)?;
+    let text = exceptions(&rig);
+    assert_eq!(text.matches("flow-env-failure").count(), 1, "{text}");
+    assert!(text.contains("tool git"), "{text}");
+    rig.tick()?;
+    held(&rig)?;
+    assert_eq!(exceptions(&rig).matches("flow-env-failure").count(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_failed_checkout_holds_the_step() -> R {
+    let mut rig = rig(1)?;
+    rig.finish(1, JobStatus::Finished, "agent exit 1 in 1s")?;
+    let id = rig.job_id(1);
+    if let Some(outcome) = rig.jobs.jobs.get_mut(&id).and_then(|j| j.outcome.as_mut()) {
+        outcome.detail = "checkout_failed exited 128".into();
+    }
+    rig.tick()?;
+    held(&rig)?;
+    assert_eq!(exceptions(&rig).matches("flow-env-failure").count(), 1);
+    Ok(())
+}
+
+#[test]
+fn an_already_on_remote_receipt_answers_merged() -> R {
+    let mut rig = rig(1)?;
+    let receipt = format!(
+        "agent exit 0 in 1s\nrunner publish: already-on-remote refs/heads/main {MERGED} {MERGED}"
+    );
+    rig.finish(1, JobStatus::Finished, &receipt)?;
+    rig.tick()?;
+    let step = rig.step()?;
+    assert_eq!(step.state, StepState::Done);
+    assert_eq!(step.verdict.as_deref(), Some("merged"));
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    Ok(())
+}
+
 #[test]
 fn a_setup_error_answers_failed() -> R {
     let mut rig = rig(1)?;
