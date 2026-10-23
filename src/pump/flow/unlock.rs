@@ -18,12 +18,17 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use crate::pump::store::step_payload::StepPayloadRow;
 
 /// The exception kind raised for an unlock that cannot be applied.
 pub const UNLOCK_REFUSED: &str = "flow-unlock-refused";
+
+/// The exception kind raised once when a run reaches its lock.
+pub const NEED_LOCKED: &str = "flow-need-locked";
 
 /// The run state of a run that is still being advanced.
 const RUN_LIVE: &str = "live";
@@ -39,9 +44,38 @@ impl StepHandler for LockWait {
         Ok(StartAction::OpenAndWait)
     }
 
-    fn poll(&self, _cx: &StartCx<'_>, _step: &StepRow) -> Result<Option<String>, VivariumError> {
+    fn poll(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<Option<String>, VivariumError> {
+        let runs = cx.store.runs_of(&cx.run.need)?.len();
+        let why = cto_why(&cx.store.step_payloads_of_run(&cx.run.need, cx.run.run)?);
+        let text = format!(
+            "need {need} r{run} is locked (run count {runs}): {why}; expected an operator \
+             decision; actual: the run waits at `{node}`; release with \
+             `vivi pump unlock {need} [entry]`",
+            need = cx.run.need,
+            run = cx.run.run,
+            node = step.node,
+        );
+        raise_once(cx.ctx, NEED_LOCKED, &step.task, &text);
         Ok(None)
     }
+}
+
+/// What the run's newest CTO step said, for the lock alarm.
+fn cto_why(rows: &[StepPayloadRow]) -> String {
+    let Some(row) = rows.iter().rfind(|row| row.class == NodeClass::Cto.name()) else {
+        return "reached without a CTO answer".to_string();
+    };
+    let front = &row.payload["front"];
+    let Some(word) = front["answer"].as_str() else {
+        let job = row.payload["job"].as_str().unwrap_or("unknown");
+        return format!("the CTO answered `failed`: no usable CTO envelope (job {job})");
+    };
+    let reason = front["reason"].as_str().unwrap_or_default();
+    let mut why = format!("the CTO answered `{word}`: {reason}");
+    if let Some(fact) = front["new_fact"].as_str().filter(|f| !f.trim().is_empty()) {
+        why.push_str(&format!(" new_fact: {fact}"));
+    }
+    why
 }
 
 /// The tick phase that applies unlock letters.

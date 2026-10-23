@@ -169,6 +169,15 @@ impl Rig {
         std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
     }
 
+    /// The `flow-need-locked` lines of the exceptions log.
+    fn lock_alarms(&self) -> Vec<String> {
+        self.exceptions()
+            .lines()
+            .filter(|line| line.contains("flow-need-locked"))
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn runs(&self) -> Result<Vec<RunRow>, VivariumError> {
         self.store.runs_of(NEED)
     }
@@ -207,10 +216,15 @@ impl Rig {
             .open_job_of(run, node)
             .ok_or_else(|| VivariumError::Message(format!("no open job for {node}")))?
             .id;
+        self.finish_job(&id, receipt)
+    }
+
+    /// Finish the job `id` with `receipt`.
+    fn finish_job(&mut self, id: &str, receipt: &str) -> R {
         let job = self
             .jobs
             .jobs
-            .get_mut(&id)
+            .get_mut(id)
             .ok_or_else(|| VivariumError::Message(format!("no job {id}")))?;
         job.status = JobStatus::Finished;
         job.outcome = Some(JobOutcome {
@@ -365,7 +379,45 @@ fn a_cto_lock_word_opens_the_locked_step_and_it_stays_waiting() -> R {
     assert_eq!(locked, Some((StepState::Waiting, None)));
     assert_eq!(rig.runs()?.len(), 1);
     assert_eq!(rig.runs()?[0].state, "live");
-    assert_eq!(rig.exceptions(), "");
+
+    // The lock alarms once, however many ticks it waited.
+    let alarms = rig.lock_alarms();
+    assert_eq!(alarms.len(), 1, "{alarms:?}");
+    for needle in [NEED, "lock", "the ruling", "run count 1"] {
+        assert!(
+            alarms[0].contains(needle),
+            "{needle} missing: {}",
+            alarms[0]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failed_cto_reaches_the_lock_and_alarms_once_with_failed() -> R {
+    let mut rig = rig("rework1")?;
+    rig.to_cto()?;
+    // An envelope that never parses: two corrections, then `failed`. A
+    // correction job belongs to no task, so it is finished by its id.
+    rig.finish("cto", &receipt(0, "no envelope here"))?;
+    for n in 1..=2 {
+        let id = format!("step-t0007-a1-c{n}");
+        rig.tick_until("the correction job", |rig| rig.jobs.jobs.contains_key(&id))?;
+        rig.finish_job(&id, &receipt(0, "still no envelope"))?;
+    }
+    rig.tick_until("the locked step", |rig| rig.row(1, "locked").is_some())?;
+    rig.tick()?;
+    rig.tick()?;
+
+    let alarms = rig.lock_alarms();
+    assert_eq!(alarms.len(), 1, "{alarms:?}");
+    for needle in [NEED, "locked", "failed", "no usable CTO envelope"] {
+        assert!(
+            alarms[0].contains(needle),
+            "{needle} missing: {}",
+            alarms[0]
+        );
+    }
     Ok(())
 }
 
