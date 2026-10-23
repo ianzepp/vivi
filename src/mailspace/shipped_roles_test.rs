@@ -73,3 +73,31 @@ fn shipped_charter_covers_the_six_shipped_roles() {
     }
     assert!(shipped_charter("hand").is_none());
 }
+
+#[test]
+fn an_existing_role_is_found_without_regard_to_case() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = Mailspace::init(Some(tmp.path())).unwrap();
+    let config = tmp.path().join(".vivi").join("mailspace.toml");
+    config_edit::apply(&config, |doc| {
+        let patch = config_edit::IdentityPatch {
+            kind: Some(Some(String::from("slicer"))),
+            ..config_edit::IdentityPatch::default()
+        };
+        config_edit::insert_identity(doc, "Slicer", &patch)
+    })
+    .unwrap();
+    let charters = tmp.path().join(".vivi").join("charters");
+    std::fs::create_dir_all(&charters).unwrap();
+    std::fs::write(charters.join("Slicer.md"), "my own slicer").unwrap();
+    let mut mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    mailspace.ensure_flow_roles().unwrap();
+    let slicers = mailspace
+        .config
+        .identities
+        .iter()
+        .filter(|role| role.name.eq_ignore_ascii_case("slicer"))
+        .count();
+    assert_eq!(slicers, 1);
+    assert!(mailspace.role_view("admitter").is_ok());
+}

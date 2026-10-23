@@ -146,3 +146,25 @@ fn an_existing_flow_role_without_a_pool_gets_the_hand_pool() {
     );
     assert!(plan.new_roles.iter().all(|role| role.name != "admitter"));
 }
+
+#[test]
+fn new_flow_roles_take_no_hand_band_and_each_asks_for_one_in_review() {
+    let raw = BASE.replace(
+        "name = \"hand\"\nkind = \"hand\"",
+        "name = \"hand\"\nkind = \"hand\"\nmodel = \"P2\"",
+    );
+    let plan = plan_of(&raw, &MigrateInputs::default());
+    for name in FLOW {
+        let role = plan
+            .new_roles
+            .iter()
+            .find(|role| role.name == name)
+            .expect("flow role added");
+        assert_eq!(role.model, None, "{name}");
+        let want = format!("set a band for {name}: `vivi role set {name} --model <band>`");
+        assert!(
+            plan.review.iter().any(|item| *item == want),
+            "{name}: {plan:?}"
+        );
+    }
+}
