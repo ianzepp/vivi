@@ -143,7 +143,7 @@ fn attempt_one_cuts_a_repair_branch_from_the_main_tip() -> R {
     assert_eq!(row.branch, "vivi/need/abcd1234");
     assert_eq!(row.base.as_deref(), Some(MAIN_A));
     assert_eq!(row.status, "live");
-    assert_eq!(row.run, 1);
+    assert_eq!((row.need.as_str(), row.run), (NEED, 1));
     assert_eq!(row.target, "default");
     Ok(())
 }
