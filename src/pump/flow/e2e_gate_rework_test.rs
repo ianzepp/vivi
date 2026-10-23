@@ -117,7 +117,7 @@ fn build(entry: &str) -> Result<Rig, VivariumError> {
     rig.git("main", MAIN);
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

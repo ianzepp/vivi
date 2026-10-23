@@ -121,7 +121,7 @@ fn replies(host: &Arc<FakeHost>) -> R {
     );
     let thread = serde_json::to_string(&json!([
         {"handle": NEED, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "Build the thing"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]))
     .map_err(|e| VivariumError::Other(e.to_string()))?;
     host.reply("need show", 0, &thread);

@@ -84,7 +84,7 @@ fn build() -> Result<Rig, VivariumError> {
         .reply("cat-file -e", 128, "fatal: Not a valid object name");
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "build something in two slices"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "build something in two slices")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

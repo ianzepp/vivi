@@ -90,7 +90,7 @@ fn rig() -> Result<Rig, VivariumError> {
     // The audit brief reads the full need thread as JSON.
     let thread = serde_json::json!([
         {"handle": need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": "build something in two slices"}
+         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "build something in two slices")}
     ]);
     host.reply("need show", 0, &thread.to_string());
     let mut ctx = p.pump_ctx();

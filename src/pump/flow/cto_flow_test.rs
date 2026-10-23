@@ -104,7 +104,7 @@ fn rig(entry: &str) -> Result<Rig, VivariumError> {
         0,
         &serde_json::json!([
             {"handle": NEED, "message_id": "m1", "from": "operator@local",
-             "subject": "Need", "body": "Build the thing"}
+             "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
         ])
         .to_string(),
     );
