@@ -10,15 +10,24 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{PumpStore, db_err};
 use crate::error::VivariumError;
-use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state};
 use crate::pump::flow::scope::ScopeState;
 
-/// The run state of a run that is still being advanced. Any other value is a
-/// finished run.
-pub const RUN_LIVE: &str = "live";
+/// The error text for a run state word outside the one vocabulary.
+fn unknown_run_state(word: &str) -> String {
+    format!(
+        "run state: expected one of {}; actual: {word}",
+        run_state::ALL.join(", ")
+    )
+}
 
-/// The run state of a run whose terminal is closing the need; a tick resumes it.
-const RUN_FINISHING: &str = "finishing";
+fn check_run_state(word: &str) -> Result<(), VivariumError> {
+    if run_state::is_known(word) {
+        Ok(())
+    } else {
+        Err(VivariumError::Other(unknown_run_state(word)))
+    }
+}
 
 const FLOW_DDL: &str = "
 CREATE TABLE IF NOT EXISTS flow_runs (
@@ -116,6 +125,14 @@ fn parse_state(word: &str) -> Result<StepState, VivariumError> {
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
+    let state: String = row.get(6)?;
+    if !run_state::is_known(&state) {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Text,
+            unknown_run_state(&state).into(),
+        ));
+    }
     Ok(RunRow {
         need: row.get(0)?,
         run: row.get(1)?,
@@ -123,7 +140,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRow> {
         flow_version: row.get(3)?,
         kind: row.get(4)?,
         entry: row.get(5)?,
-        state: row.get(6)?,
+        state,
     })
 }
 
@@ -155,6 +172,7 @@ impl PumpStore {
     /// # Errors
     /// Returns [`VivariumError`] when the row cannot be written or already exists.
     pub fn insert_run(&self, row: &RunRow) -> Result<(), VivariumError> {
+        check_run_state(&row.state)?;
         self.conn
             .execute(
                 "INSERT INTO flow_runs (need, run, flow, flow_version, kind, entry, state, state_at) \
@@ -173,12 +191,12 @@ impl PumpStore {
         Ok(())
     }
 
-    /// Every run whose state is [`RUN_LIVE`], ordered by need then run.
+    /// Every run whose state is [`run_state::LIVE`], ordered by need then run.
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the rows cannot be read.
     pub fn live_runs(&self) -> Result<Vec<RunRow>, VivariumError> {
-        self.runs_in_state(RUN_LIVE)
+        self.runs_in_state(run_state::LIVE)
     }
 
     /// Every run left `finishing`, ordered by need then run.
@@ -186,7 +204,7 @@ impl PumpStore {
     /// # Errors
     /// Returns [`VivariumError`] when the rows cannot be read.
     pub fn finishing_runs(&self) -> Result<Vec<RunRow>, VivariumError> {
-        self.runs_in_state(RUN_FINISHING)
+        self.runs_in_state(run_state::FINISHING)
     }
 
     /// Every run in `state`, ordered by need then run.
@@ -245,6 +263,7 @@ impl PumpStore {
     /// # Errors
     /// Returns [`VivariumError`] when the update fails.
     pub fn set_run_state(&self, need: &str, run: u32, state: &str) -> Result<(), VivariumError> {
+        check_run_state(state)?;
         self.conn
             .execute(
                 "UPDATE flow_runs SET state = ?3, state_at = CAST(strftime('%s', 'now') AS INTEGER) \
@@ -253,6 +272,39 @@ impl PumpStore {
             )
             .map_err(db_err("set flow run state"))?;
         Ok(())
+    }
+
+    /// One run of `need`.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the run does not exist or cannot be read.
+    pub fn run_row(&self, need: &str, run: u32) -> Result<RunRow, VivariumError> {
+        self.query_runs(
+            &format!("SELECT {RUN_COLUMNS} FROM flow_runs WHERE need = ?1 AND run = ?2"),
+            params![need, run],
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            VivariumError::Other(format!(
+                "need {need}: expected run r{run}; actual: no such run"
+            ))
+        })
+    }
+
+    /// Insert a step row through the run it belongs to.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row's run differs from `run`, or
+    /// when [`Self::insert_step`] fails.
+    pub fn insert_run_step(&self, run: &RunRow, row: &StepRow) -> Result<(), VivariumError> {
+        if row.run != run.run {
+            return Err(VivariumError::Other(format!(
+                "step {}: expected run r{}; actual: row run r{}",
+                row.task, run.run, row.run
+            )));
+        }
+        self.insert_step(&run.need, row)
     }
 
     /// Insert a step row of `need`'s run.
@@ -373,7 +425,32 @@ impl PumpStore {
             .map_err(db_err("read step job"))
     }
 
-    /// How many job attempts the step task has had.
+    /// The highest attempt number the step task has had (0 when none).
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the attempt cannot be read.
+    pub fn last_attempt(&self, task: &str) -> Result<u32, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(MAX(attempt), 0) FROM step_jobs WHERE task = ?1",
+                params![task],
+                |row| row.get(0),
+            )
+            .map_err(db_err("read last step attempt"))
+    }
+
+    /// The attempt number a new job of the step task takes.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the attempt cannot be read.
+    pub fn next_attempt(&self, task: &str) -> Result<u32, VivariumError> {
+        Ok(self.last_attempt(task)? + 1)
+    }
+
+    /// How many job rows the step task has (counts corrections and requeues).
+    ///
+    /// Kept only until the tests outside this slice's scope move to
+    /// [`Self::last_attempt`]; use that instead.
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the count cannot be read.
