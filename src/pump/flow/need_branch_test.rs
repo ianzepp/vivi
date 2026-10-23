@@ -386,3 +386,31 @@ fn a_restart_without_a_merge_role_raises_and_changes_nothing() {
     assert!(jobs.0.is_empty());
     assert_eq!(f.store.need_branch(NEED).unwrap().unwrap().status, LIVE);
 }
+
+#[test]
+fn a_merge_role_without_a_pool_raises_and_enqueues_nothing() {
+    let f = fixture();
+    let mut routing = (*f.ctx.routing).clone();
+    routing.roles.push(RoutedRole {
+        name: String::from("merge"),
+        kind: Some(String::from("merge")),
+        status: String::from("active"),
+        pool: None,
+        read_only: None,
+        model: None,
+        models: Vec::new(),
+    });
+    let f = Fixture {
+        ctx: f.ctx.with_routing(routing),
+        ..f
+    };
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    start_run(&f, 2, "plan");
+    old_branch_at(&f, OLD_TIP);
+    let mut jobs = Jobs::default();
+    tick(&f, &mut jobs);
+    tick(&f, &mut jobs);
+    assert_eq!(alarms(&f), 1);
+    assert!(jobs.0.is_empty());
+    assert_eq!(f.store.need_branch(NEED).unwrap().unwrap().status, LIVE);
+}
