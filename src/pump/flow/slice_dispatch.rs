@@ -24,7 +24,7 @@ use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct::correction_n;
 use crate::pump::envelope::parse;
-use crate::pump::envelope::roles::{Hand, HandAnswer};
+use crate::pump::envelope::roles::{CheckResult, Hand, HandAnswer};
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
@@ -38,6 +38,9 @@ use crate::pump::store::PumpStore;
 
 /// Job kind of a slice hand job.
 pub const KIND: &str = "hand";
+
+/// Exception kind: a built envelope reported a failing `[[check]]`.
+pub const HAND_REPORTED_FAILURE: &str = "flow-hand-reported-failure";
 
 /// A slice gets this many attempts; the failure of the last one exhausts it.
 pub const MAX_ATTEMPTS: u32 = 2;
@@ -538,6 +541,24 @@ fn built(
         disagree(ctx, task, job, "built", "the agent did not exit 0");
         return AttemptResult::Failed;
     }
+    let failing: Vec<&str> = envelope
+        .check
+        .iter()
+        .filter(|check| check.result == CheckResult::Fail)
+        .map(|check| check.cmd.as_str())
+        .collect();
+    if !failing.is_empty() {
+        ctx.exception(
+            HAND_REPORTED_FAILURE,
+            task,
+            &format!(
+                "hand job {}: the envelope says built but reports failing checks: {}",
+                job.id,
+                failing.join("; ")
+            ),
+        );
+        return AttemptResult::Failed;
+    }
     match push.word {
         "pushed" | "committed" => AttemptResult::Built {
             branch: push
@@ -686,3 +707,7 @@ impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
 #[cfg(test)]
 #[path = "slice_dispatch_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "slice_dispatch_check_test.rs"]
+mod check_tests;
