@@ -14,6 +14,7 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::main_rung;
 use crate::pump::flow::tick::{OPERATOR_HOLD, tick_with};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, merge_main};
@@ -198,6 +199,12 @@ impl Rig {
             .to_owned())
     }
 
+    /// The recorded `main-repaired:default` value.
+    fn repaired(&self) -> Result<Option<String>, VivariumError> {
+        self.store
+            .main_state(&main_rung::key(main_rung::REPAIRED, "default"))
+    }
+
     fn exceptions(&self) -> String {
         std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
     }
@@ -214,6 +221,7 @@ fn a_merged_receipt_answers_merged() -> R {
     let step = rig.step()?;
     assert_eq!(step.state, StepState::Done);
     assert_eq!(step.verdict.as_deref(), Some("merged"));
+    assert_eq!(rig.repaired()?.as_deref(), Some(MERGED));
     Ok(())
 }
 
@@ -226,6 +234,7 @@ fn a_conflict_receipt_answers_conflict() -> R {
     )?;
     rig.tick()?;
     assert_eq!(rig.answered("conflict")?, "merge conflict");
+    assert_eq!(rig.repaired()?, None);
     Ok(())
 }
 
@@ -238,6 +247,7 @@ fn a_not_ancestor_receipt_answers_conflict_for_a_moved_main() -> R {
     )?;
     rig.tick()?;
     assert_eq!(rig.answered("conflict")?, "main moved");
+    assert_eq!(rig.repaired()?, None);
     Ok(())
 }
 
@@ -253,6 +263,7 @@ fn a_lost_job_whose_main_holds_the_tip_answers_merged() -> R {
     assert_eq!(step.state, StepState::Done);
     assert_eq!(step.verdict.as_deref(), Some("merged"));
     assert_eq!(rig.jobs.jobs.len(), 1);
+    assert_eq!(rig.repaired()?.as_deref(), Some(MAIN_B));
     Ok(())
 }
 
@@ -268,6 +279,7 @@ fn a_lost_job_on_a_moved_main_without_the_tip_answers_conflict() -> R {
         reason,
         format!("main moved from {MAIN_A} to {MAIN_B} without {NEED_TIP}")
     );
+    assert_eq!(rig.repaired()?, None);
     Ok(())
 }
 
@@ -283,6 +295,7 @@ fn a_lost_job_with_main_unmoved_answers_failed() -> R {
         reason,
         format!("expected main to contain {NEED_TIP}; actual: main {MAIN_A} without it")
     );
+    assert_eq!(rig.repaired()?, None);
     Ok(())
 }
 
