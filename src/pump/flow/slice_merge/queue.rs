@@ -101,9 +101,33 @@ fn start<S: JobStore, M: FlowMail>(
             &tip,
         );
     }
-    let job = spec::spec(ctx, store, &*mail, run, row, &hand)?;
+    let try_no = merge_tries(st, &hand.id) + 1;
+    let job = spec::spec(ctx, store, &*mail, run, row, &hand, try_no)?;
+    let id = job.id.clone();
     jobs::enqueue(st, job)?;
+    if !st.jobs().contains_key(&id) {
+        return Err(VivariumError::Other(format!(
+            "slice merge job {id} was not queued"
+        )));
+    }
     store.set_step_state(&row.task, StepState::Running, None)
+}
+
+/// How many slice merge jobs already ran for `hand_job`.
+fn merge_tries<S: JobStore>(st: &S, hand_job: &str) -> u32 {
+    let count = st
+        .jobs()
+        .values()
+        .filter(|job| {
+            job.kind == KIND
+                && job
+                    .payload
+                    .get("hand_job")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(hand_job)
+        })
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// The need-branch tip when the hand's commit is already on the need branch.

@@ -150,6 +150,10 @@ impl Rig {
     }
 
     fn spec(&self) -> Result<JobSpec, VivariumError> {
+        self.spec_try(1)
+    }
+
+    fn spec_try(&self, try_no: u32) -> Result<JobSpec, VivariumError> {
         spec(
             &self.ctx,
             &self.store,
@@ -157,6 +161,7 @@ impl Rig {
             &self.run,
             &self.slice,
             &self.hand(),
+            try_no,
         )
     }
 
@@ -226,10 +231,10 @@ fn the_job_publishes_the_need_branch_under_the_merge_role() -> R {
     let job = rig.spec()?;
     assert_eq!(job.kind, KIND);
     assert_eq!(job.role, "merge");
-    assert_eq!(job.id, "hand-1-merge");
+    assert_eq!(job.id, "hand-1-merge-t1");
     assert_eq!(
         job.branch.as_deref(),
-        Some(&*format!("vivi/unit/{}-a1-merge", rig.slice.task))
+        Some(&*format!("vivi/unit/{}-a1-merge-t1", rig.slice.task))
     );
     assert_eq!(job.publish_ref.as_deref(), Some("refs/heads/vivi/need/n1"));
     assert_eq!(job.publish_contains.as_deref(), Some(HAND));
@@ -292,4 +297,21 @@ fn hand_commit_reads_both_receipt_forms() {
     assert_eq!(hand_commit(&summary).as_deref(), Some(TIP));
     let none = hand_job("h", "T1", 1, 1, "agent exit 0\npush: no_changes\n");
     assert_eq!(hand_commit(&none), None);
+}
+
+#[test]
+fn each_merge_try_has_its_own_id_and_scratch_branch() -> R {
+    let rig = rig(config(true))?;
+    rig.no_need_branch();
+    let first = rig.spec_try(1)?;
+    let second = rig.spec_try(2)?;
+    assert_eq!(first.id, "hand-1-merge-t1");
+    assert_eq!(second.id, "hand-1-merge-t2");
+    assert_eq!(
+        second.branch.as_deref(),
+        Some(&*format!("vivi/unit/{}-a1-merge-t2", rig.slice.task))
+    );
+    assert_eq!(second.payload["try"], 2);
+    assert_ne!(first.branch, second.branch);
+    Ok(())
 }

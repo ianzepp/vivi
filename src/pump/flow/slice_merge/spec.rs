@@ -75,6 +75,9 @@ pub(crate) fn hand_commit(job: &PoolJob) -> Option<String> {
 /// Returns [`VivariumError`] for a slice task with no `target:` line, an
 /// unknown target, a project with no merge role, an unconfigured `task` rung,
 /// a hand job with no published commit or branch, or a failed ls-remote.
+///
+/// `try_no` is the 1-based merge try of this hand job; it keeps the job id and
+/// the scratch branch unique per try.
 pub(crate) fn spec<M: SliceMail + ?Sized>(
     ctx: &Ctx,
     store: &PumpStore,
@@ -82,6 +85,7 @@ pub(crate) fn spec<M: SliceMail + ?Sized>(
     run: &RunRow,
     slice: &StepRow,
     hand: &PoolJob,
+    try_no: u32,
 ) -> Result<JobSpec, VivariumError> {
     let body = mail.task_body(&slice.task)?;
     let target = fanout::target_of(&body).ok_or_else(|| {
@@ -116,7 +120,7 @@ pub(crate) fn spec<M: SliceMail + ?Sized>(
     }
     command = format!("{command} && {task}");
     let mut job = JobSpec::new(
-        format!("{}-merge", hand.id),
+        format!("{}-merge-t{try_no}", hand.id),
         KIND,
         role.name.clone(),
         format!("merge {} of {} onto the need branch", slice.node, run.need),
@@ -130,7 +134,7 @@ pub(crate) fn spec<M: SliceMail + ?Sized>(
     job.target = Some(target.to_owned());
     job.from_ref = Some(from_ref);
     job.with = vec![sha.clone()];
-    job.branch = Some(format!("{hand_branch}-merge"));
+    job.branch = Some(format!("{hand_branch}-merge-t{try_no}"));
     job.publish_ref = Some(need_ref);
     job.publish_contains = Some(sha.clone());
     job.pool_candidates = rungs.pools.clone();
@@ -143,6 +147,7 @@ pub(crate) fn spec<M: SliceMail + ?Sized>(
         "task": slice.task,
         "attempt": attempt_of(hand),
         "hand_job": hand.id,
+        "try": try_no,
         "hand_sha": sha,
         "target": target,
         "before": before,
