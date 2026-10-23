@@ -95,7 +95,7 @@ pub fn plan_job(
     rules: String,
     job: String,
 ) -> Result<JobPlan, VivariumError> {
-    let (_, _, body) = task;
+    let (handle, _, body) = task;
     validate_source(config, pool)?;
     let committer = config.committer.clone().ok_or_else(|| {
         VivariumError::Config(format!(
@@ -114,6 +114,7 @@ pub fn plan_job(
         }
     };
     validate_publish_flags(flags)?;
+    check_task_letter(handle, body)?;
     let refs = plan_refs(flags, body)?;
     let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
         .into_iter()
@@ -344,6 +345,14 @@ fn brief_for(config: &PoolConfig, handle: &str, subject: &str, body: &str) -> St
         brief.trim_end(),
         super::commit_hygiene::COMMIT_MESSAGE_RULE
     )
+}
+
+/// Refuse a task body that is not a format-1 letter: an old-format task is
+/// history and is never dispatched. The error names the handle.
+fn check_task_letter(handle: &str, body: &str) -> Result<(), VivariumError> {
+    crate::letter::read::task_of(handle, body)
+        .map(|_| ())
+        .map_err(|err| VivariumError::Message(err.to_string()))
 }
 
 /// `from` and `branch` for the flags. A read-only job names no branch.

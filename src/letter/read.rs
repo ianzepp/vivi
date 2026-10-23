@@ -2,7 +2,7 @@
 //! want or task letter body.
 
 use crate::letter::work::{NeedFront, StepFront, TaskFront, WantFront};
-use crate::letter::{Envelope, FENCE, LetterError, legacy, parse_letter};
+use crate::letter::{Envelope, FENCE, LetterError, parse_letter};
 
 /// True when the first non-blank line of `body` is the front matter fence.
 fn has_front(body: &str) -> bool {
@@ -15,40 +15,49 @@ fn has_front(body: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns the `LetterError` when the front matter does not parse or validate.
+/// Returns the `LetterError` when the front matter does not parse or validate,
+/// and `LetterError::Legacy` naming `handle` for a body with no front matter.
 /// `handle` names the letter in errors.
-pub fn need_of(_handle: &str, body: &str) -> Result<Envelope<NeedFront>, LetterError> {
+pub fn need_of(handle: &str, body: &str) -> Result<Envelope<NeedFront>, LetterError> {
     if has_front(body) {
         return parse_letter(body);
     }
-    // TRANSITIONAL (W3-B2): deleted by W3B2-39
-    Ok(legacy::need(body))
+    Err(LetterError::Legacy {
+        handle: handle.to_string(),
+        kind: "need".to_string(),
+    })
 }
 
 /// The typed front of a want body.
 ///
 /// # Errors
 ///
-/// Returns the `LetterError` when the front matter does not parse or validate.
-pub fn want_of(_handle: &str, body: &str) -> Result<Envelope<WantFront>, LetterError> {
+/// Returns the `LetterError` when the front matter does not parse or validate,
+/// and `LetterError::Legacy` naming `handle` for a body with no front matter.
+pub fn want_of(handle: &str, body: &str) -> Result<Envelope<WantFront>, LetterError> {
     if has_front(body) {
         return parse_letter(body);
     }
-    // TRANSITIONAL (W3-B2): deleted by W3B2-39
-    Ok(legacy::want(body))
+    Err(LetterError::Legacy {
+        handle: handle.to_string(),
+        kind: "want".to_string(),
+    })
 }
 
 /// The typed front of a task body.
 ///
 /// # Errors
 ///
-/// Returns the `LetterError` when the front matter does not parse or validate.
-pub fn task_of(_handle: &str, body: &str) -> Result<Envelope<TaskFront>, LetterError> {
+/// Returns the `LetterError` when the front matter does not parse or validate,
+/// and `LetterError::Legacy` naming `handle` for a body with no front matter.
+pub fn task_of(handle: &str, body: &str) -> Result<Envelope<TaskFront>, LetterError> {
     if has_front(body) {
         return parse_letter(body);
     }
-    // TRANSITIONAL (W3-B2): deleted by W3B2-39
-    Ok(legacy::task(body))
+    Err(LetterError::Legacy {
+        handle: handle.to_string(),
+        kind: "task".to_string(),
+    })
 }
 
 /// The `[step]` table of a task body; `None` when the body is not a task
@@ -61,8 +70,7 @@ pub fn step_of(body: &str) -> Option<StepFront> {
             Err(_) => None,
         };
     }
-    // TRANSITIONAL (W3-B2): deleted by W3B2-39
-    legacy::task(body).front.step
+    None
 }
 
 #[cfg(test)]

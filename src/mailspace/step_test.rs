@@ -615,21 +615,16 @@ fn judged_apply_skips_cleanly_on_provider_error() {
     );
 }
 
-// legacy: flips to letter_invalid in W3B2-39
+// legacy: an old-format task is letter_invalid, naming the handle
 #[test]
-fn legacy_prose_task_still_dispatches_through_the_transitional_reader() {
+fn legacy_prose_task_is_letter_invalid_naming_the_handle() {
     let (mailspace, _tmp) = roster();
-    let task = send_item(
-        &mailspace,
-        "tasks",
-        "task",
-        "old unit",
-        "done_when: lands\nwrite_scope: src/old.rs",
-    );
-    let dispatch =
-        manifest_for(&mailspace, &task).unwrap_or_else(|| panic!("expected dispatch for {task}"));
-    assert_eq!(dispatch.done_when_clauses, 1);
-    assert!(dispatch.write_scope);
+    let task = file_raw_task(&mailspace, "done_when: lands\nwrite_scope: src/old.rs");
+    let exception =
+        exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
+    assert_eq!(exception.reason, "letter_invalid");
+    assert!(exception.detail.contains(&task), "{}", exception.detail);
+    assert!(manifest_for(&mailspace, &task).is_none());
 }
 
 #[test]

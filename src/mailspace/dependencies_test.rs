@@ -558,13 +558,13 @@ fn a_format_one_task_letter_names_its_refs_and_parent_in_front_matter() {
     assert_eq!(parent_ref(&bytes).as_deref(), Some("source@x.test"));
 }
 
-// legacy: flips to letter_invalid in W3B2-39
+// legacy: an old-format letter names no refs and no parent
 #[test]
-fn an_old_letter_still_names_its_refs_in_headers() {
+fn an_old_letter_names_no_refs_or_parent() {
     let bytes = b"From: mind@a.local\r\nTo: hand@a.local\r\nSubject: t\r\n\
                   Message-ID: <t@x.test>\r\nX-Vivi-Kind: task\r\n\
                   X-Vivi-Depends-On: 000000a1\r\nX-Vivi-Parent: <p@x.test>\r\n\r\nbody\r\n";
 
-    assert_eq!(depends_on_refs(bytes), ["000000a1"]);
-    assert_eq!(parent_ref(bytes).as_deref(), Some("p@x.test"));
+    assert!(depends_on_refs(bytes).is_empty());
+    assert_eq!(parent_ref(bytes), None);
 }

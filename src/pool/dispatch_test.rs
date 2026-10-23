@@ -3,6 +3,11 @@ use crate::letter::work::TaskFront;
 use crate::pool::fake_provider::{Fake, claimed, pid, slot};
 use crate::pool::slot::{META_CLAIMED, META_TASK};
 
+/// A task letter with no pool keys: what a pool job is planned from.
+fn body_text() -> String {
+    crate::letter::fixture::task_body("body text")
+}
+
 /// A task letter whose front matter sets the pool keys.
 fn refs_body(from: Option<&str>, branch: Option<&str>, with: &[&str]) -> String {
     let front = TaskFront {
@@ -86,7 +91,7 @@ fn plan(flags: &DispatchFlags) -> Result<JobPlan, VivariumError> {
     plan_job(
         &config(),
         "p",
-        ("abcd1234", "Subject line", "body text"),
+        ("abcd1234", "Subject line", &body_text()),
         flags,
         "rules".into(),
         "job000000001".into(),
@@ -125,7 +130,8 @@ fn a_valid_request_plans_a_job() {
     assert_eq!(
         p.brief,
         format!(
-            "body text\n\n{}\n",
+            "{}\n\n{}\n",
+            body_text().trim_end(),
             crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE
         )
     );
@@ -143,7 +149,7 @@ fn the_pool_depth_setting_reaches_the_plan() {
     let p = plan_job(
         &config,
         "p",
-        ("abcd1234", "Subject line", "body text"),
+        ("abcd1234", "Subject line", &body_text()),
         &flags("m/ok"),
         "rules".into(),
         "job000000001".into(),
@@ -155,7 +161,11 @@ fn the_pool_depth_setting_reaches_the_plan() {
 #[test]
 fn the_brief_is_a_pointer_with_the_bridge_and_the_body_without_it() {
     let without = plan(&flags("m/ok")).unwrap();
-    assert!(without.brief.starts_with("body text\n\n"));
+    assert!(
+        without
+            .brief
+            .starts_with(&format!("{}\n\n", body_text().trim_end()))
+    );
     assert!(
         without
             .brief
@@ -166,7 +176,7 @@ fn the_brief_is_a_pointer_with_the_bridge_and_the_body_without_it() {
     let with = plan_job(
         &config,
         "p",
-        ("abcd1234", "Subject line", "body text"),
+        ("abcd1234", "Subject line", &body_text()),
         &flags("m/ok"),
         "rules".into(),
         "job000000001".into(),
@@ -191,13 +201,30 @@ fn the_pool_restore_setting_reaches_the_plan() {
     let p = plan_job(
         &config,
         "p",
-        ("abcd1234", "Subject line", "body text"),
+        ("abcd1234", "Subject line", &body_text()),
         &flags("m/ok"),
         "rules".into(),
         "job000000001".into(),
     )
     .unwrap();
     assert_eq!(p.restore, ["runtime/llvm/Cargo.lock"]);
+}
+
+#[test]
+fn a_legacy_prose_task_is_refused_naming_the_handle() {
+    let err = plan_job(
+        &config(),
+        "p",
+        ("abcd1234", "Subject line", "from: main\nbody text"),
+        &flags("m/ok"),
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("abcd1234"), "{err}");
+    assert!(err.contains("old format"), "{err}");
+    assert!(err.contains("send a new task with front matter"), "{err}");
 }
 
 #[test]
@@ -219,7 +246,7 @@ fn a_template_using_reasoning_is_refused_without_a_level() {
     let err = plan_job(
         &c,
         "p",
-        ("t", "s", "b"),
+        ("t", "s", &body_text()),
         &flags("m/ok"),
         "r".into(),
         "j".into(),
@@ -243,7 +270,7 @@ fn a_chosen_reasoning_level_reaches_the_harness_command() {
     let p = plan_job(
         &reasoning_config("fake --model {model} --thinking {reasoning}"),
         "p",
-        ("t", "s", "b"),
+        ("t", "s", &body_text()),
         &f,
         "r".into(),
         "j".into(),
@@ -266,7 +293,7 @@ fn an_unsafe_reasoning_level_is_refused_by_name() {
         let err = plan_job(
             &reasoning_config("fake --model {model} --thinking {reasoning}"),
             "p",
-            ("t", "s", "b"),
+            ("t", "s", &body_text()),
             &f,
             "r".into(),
             "j".into(),
@@ -360,7 +387,7 @@ fn harness_and_committer_are_required() {
     let err = plan_job(
         &c,
         "lanes",
-        ("t", "s", "b"),
+        ("t", "s", &body_text()),
         &flags("m/ok"),
         "r".into(),
         "j".into(),
@@ -375,7 +402,7 @@ fn harness_and_committer_are_required() {
     let err = plan_job(
         &c,
         "lanes",
-        ("t", "s", "b"),
+        ("t", "s", &body_text()),
         &flags("m/ok"),
         "r".into(),
         "j".into(),
@@ -599,7 +626,7 @@ fn a_pool_with_no_repository_refuses_to_dispatch_and_names_the_setting() {
     plan_job(
         &c,
         "lanes",
-        ("t", "s", "b"),
+        ("t", "s", &body_text()),
         &flags("m/ok"),
         "r".into(),
         "j".into(),
@@ -955,7 +982,7 @@ fn a_no_model_job_runs_the_command_as_the_harness() {
     let p = plan_job(
         &config,
         "p",
-        ("abcd1234", "Subject line", "body text"),
+        ("abcd1234", "Subject line", &body_text()),
         &flags,
         "rules".into(),
         "job000000001".into(),
@@ -976,7 +1003,14 @@ fn without_a_command_an_unlisted_model_is_still_refused() {
 }
 
 fn plan_on(config: &PoolConfig, flags: &DispatchFlags) -> Result<JobPlan, VivariumError> {
-    plan_job(config, "p", ("a1", "S", "b"), flags, "r".into(), "j".into())
+    plan_job(
+        config,
+        "p",
+        ("a1", "S", &body_text()),
+        flags,
+        "r".into(),
+        "j".into(),
+    )
 }
 
 #[test]

@@ -1,10 +1,5 @@
 //! Flow definition types: kinds, node classes, answer words, nodes and edges.
 
-/// A step task's body starts with `pump-step: <need> r<run> <node>`.
-pub const STEP_MARKER: &str = "pump-step:";
-/// A run sentinel's body starts with `pump-run-sentinel: <need> r<run>`.
-pub const SENTINEL_MARKER: &str = "pump-run-sentinel:";
-
 /// Verdict word: the task was withdrawn.
 pub const VERDICT_WITHDRAWN: &str = "withdrawn";
 /// Verdict word: the task was replaced.
