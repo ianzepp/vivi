@@ -134,6 +134,63 @@ fn mode_word(read_only: bool) -> &'static str {
     if read_only { "read-only" } else { "write" }
 }
 
+/// `refused TASK REASON`: the dispatch can never work as asked.
+#[must_use]
+pub fn refused(task: &str, reason: &str) -> String {
+    line("refused", &[quote(task), quote(reason)])
+}
+
+/// The reason of the first `refused TASK REASON` line in command output.
+#[must_use]
+pub fn refused_reason(output: &str) -> Option<String> {
+    output
+        .lines()
+        .filter_map(|l| l.strip_prefix("refused "))
+        .find_map(|rest| {
+            let (_task, rest) = next_token(rest)?;
+            next_token(rest).map(|(reason, _)| reason)
+        })
+}
+
+/// One value of a line (see [`quote`]) and the text after it.
+fn next_token(text: &str) -> Option<(String, &str)> {
+    let text = text.trim_start();
+    let Some(body) = text.strip_prefix('"') else {
+        let end = text.find(char::is_whitespace).unwrap_or(text.len());
+        return (end > 0).then(|| (text[..end].to_string(), &text[end..]));
+    };
+    let mut out = String::new();
+    let mut chars = body.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, &body[at + 1..])),
+            '\\' => match chars.next()?.1 {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => {
+                    let (_, open) = chars.next()?;
+                    if open != '{' {
+                        return None;
+                    }
+                    let hex: String = chars
+                        .by_ref()
+                        .map(|(_, c)| c)
+                        .take_while(|c| *c != '}')
+                        .collect();
+                    let Ok(code) = u32::from_str_radix(&hex, 16) else {
+                        return None;
+                    };
+                    out.push(char::from_u32(code)?);
+                }
+                other => out.push(other),
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
 /// `home POOL TEXT`
 #[must_use]
 pub fn home(pool: &str, text: &str) -> String {

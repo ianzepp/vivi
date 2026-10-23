@@ -44,35 +44,41 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
     }
 }
 
-pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
-    let progress = Progress::stderr(command.porcelain, "");
-    let space = Mailspace::discover(command.project.as_deref())?;
-    let task = space.pool_task(&command.task)?;
-    let pool_flag = command
-        .pool
-        .clone()
-        .or_else(|| role_pool(&space, task.addressee.as_deref()));
-    let handle = pools::open_one(&space, pool_flag.as_deref())?;
-    let selected = resolve_target_config(&space, &handle.config, command.target.as_deref())?;
+/// What the plan phase decided: everything that can refuse a dispatch for good.
+struct Planned {
+    selected: Option<dispatch::target::Resolved>,
+    ready_timeout: Option<u64>,
+    flags: DispatchFlags,
+    role_line: String,
+    plan: job::JobPlan,
+    job_id: String,
+}
+
+/// Decide the job without claiming a slot or touching a remote.
+fn plan_phase(
+    command: &PoolDispatchCommand,
+    space: &Mailspace,
+    task: &PoolTask,
+    handle: &pools::PoolHandle,
+) -> Result<Planned, VivariumError> {
+    let selected = resolve_target_config(space, &handle.config, command.target.as_deref())?;
     let config = selected
         .as_ref()
         .map_or(&handle.config, |selected| &selected.config);
-    let (id, provider) = (&handle.id, handle.provider.as_ref());
     let ready_timeout =
-        dispatch::check_ready_timeout(provider.slot_lifetime(), command.ready_timeout)?;
-    refuse_second_dispatch(&space, &task.handle)?;
+        dispatch::check_ready_timeout(handle.provider.slot_lifetime(), command.ready_timeout)?;
     let job_id = fresh_job_id(&task.handle);
     let (flags, rules, role_line) = resolve_dispatch(
         command,
         config,
-        &id.pool,
-        &space,
-        &task,
-        load_rules(config, &space)?,
+        &handle.id.pool,
+        space,
+        task,
+        load_rules(config, space)?,
     )?;
     let mut plan = dispatch::plan_job(
         config,
-        &id.pool,
+        &handle.id.pool,
         (&task.handle, &task.subject, &task.body),
         &flags,
         rules,
@@ -84,6 +90,42 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
             .as_ref()
             .and_then(|selected| selected.target.publish_remote.clone());
     }
+    Ok(Planned {
+        selected,
+        ready_timeout,
+        flags,
+        role_line,
+        plan,
+        job_id,
+    })
+}
+
+pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
+    let progress = Progress::stderr(command.porcelain, "");
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let task = space.pool_task(&command.task)?;
+    let pool_flag = command
+        .pool
+        .clone()
+        .or_else(|| role_pool(&space, task.addressee.as_deref()));
+    let handle = pools::open_one(&space, pool_flag.as_deref())?;
+    refuse_second_dispatch(&space, &task.handle)?;
+    let Planned {
+        selected,
+        ready_timeout,
+        flags,
+        role_line,
+        mut plan,
+        job_id,
+    } = plan_phase(command, &space, &task, &handle).inspect_err(|e| {
+        if command.porcelain {
+            println!("{}", porcelain::refused(&task.handle, &e.to_string()));
+        }
+    })?;
+    let config = selected
+        .as_ref()
+        .map_or(&handle.config, |selected| &selected.config);
+    let (id, provider) = (&handle.id, handle.provider.as_ref());
     plan.extras = resolve_extras(
         &space,
         &handle.config,
