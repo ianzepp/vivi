@@ -12,7 +12,6 @@ use crate::pump::collect::tail;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::PoolJob;
 use crate::pump::record::reply_on_task;
-use crate::pump::state::State;
 
 /// Characters of the hand's final message kept (the tail).
 const FINAL_MESSAGE_CHARS: usize = 1500;
@@ -288,20 +287,6 @@ pub fn post_on_task(
         ctx.log(&format!("attempt record send failed on task {task}"));
     }
     sent
-}
-
-/// Mark the first tick when a pending unit enters the dispatch-ready frontier.
-pub(crate) fn mark_ready(st: &mut State, uid: &str, at: u64) {
-    if let Some(unit) = st.units.get_mut(uid) {
-        unit.ready_at.get_or_insert(at);
-    }
-}
-
-/// Clear a readiness interval when a unit returns to a dependency hold.
-pub(crate) fn clear_ready(st: &mut State, uid: &str) {
-    if let Some(unit) = st.units.get_mut(uid) {
-        unit.ready_at = None;
-    }
 }
 
 /// A file-name-safe form of `label`.

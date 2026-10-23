@@ -18,7 +18,6 @@ pub mod collect;
 pub mod config;
 pub mod control;
 pub(crate) mod cycle;
-pub mod dispatch;
 pub mod envelope;
 pub mod envfail;
 pub mod flow;
@@ -127,10 +126,6 @@ mod host_test;
 #[cfg(test)]
 #[path = "pump/collect_test.rs"]
 mod collect_test;
-
-#[cfg(test)]
-#[path = "pump/dispatch_test.rs"]
-mod dispatch_test;
 
 #[cfg(test)]
 #[path = "pump/gate_test.rs"]

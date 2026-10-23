@@ -111,11 +111,7 @@ fn pump_does_not_push_git_refs_itself() {
 
 #[test]
 fn hand_planner_and_merge_producers_dispatch_through_pool_jobs() {
-    let unit = include_str!("../src/pump/dispatch.rs");
     let planner = include_str!("../src/pump/planner_jobs.rs");
-    assert!(unit.contains("pool dispatch --pool"), "{unit}");
-    assert!(unit.contains("--publish-ref"), "{unit}");
-    assert!(!unit.contains("host.spawn"), "{unit}");
     assert!(planner.contains("jobs::enqueue(st, spec)"), "{planner}");
     assert!(!planner.contains(".spawn("), "{planner}");
 }

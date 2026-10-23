@@ -20,6 +20,7 @@ mod receipts;
 mod recovery;
 pub mod rung;
 pub mod rung_result;
+mod slots;
 pub use dispatcher::{candidate_pools, dispatch_pending};
 #[cfg(test)]
 use dispatcher::{dispatch_order, pool_command, send_task};
@@ -29,6 +30,7 @@ pub use gate_sources::{
 };
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
+pub(crate) use slots::{parse_created_handle, slots};
 
 /// A request to make one durable role-addressed pool task.
 #[derive(Debug, Clone, PartialEq, Eq)]

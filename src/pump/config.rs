@@ -604,13 +604,6 @@ impl Default for MergeConfig {
 }
 
 impl MergeConfig {
-    /// Budget for a quarantine repair, with headroom above its failing proof.
-    #[must_use]
-    pub fn quarantine_repair_budget(&self) -> u64 {
-        self.repair_budget
-            .unwrap_or_else(|| self.proof_timeout.saturating_add(300))
-    }
-
     /// Every declared generated path, in declaration order, across all
     /// entries.
     #[must_use]

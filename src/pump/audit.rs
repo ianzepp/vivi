@@ -5,12 +5,11 @@ use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pump::dispatch::slots;
 use crate::pump::envfail::HostFailure;
 use crate::pump::gatefix::{fix_need, send_fix_need, take_residuals};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{
-    JobOutcome, JobSpec, JobStatus, PoolJob, completion, enqueue, mark_applied,
+    JobOutcome, JobSpec, JobStatus, PoolJob, completion, enqueue, mark_applied, slots,
 };
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::routing::RoleRouting;

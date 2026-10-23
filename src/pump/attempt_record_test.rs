@@ -8,16 +8,12 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::attempt_record::{
-    Ending, agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_on_task,
-};
+use crate::pump::attempt_record::{Ending, agent_exit, agent_secs, hand_message, post_on_task};
 use crate::pump::board::board;
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, PoolJob};
-use crate::pump::state::{State, Unit};
-
-const T0: u64 = 1_000_000;
+use crate::pump::state::State;
 
 #[test]
 fn hand_message_reads_the_receipt_section_only() {
@@ -61,12 +57,6 @@ fn open_record(host: &FakeHost, need: &str, record: &str) {
     );
 }
 
-fn state_with(unit: Unit) -> State {
-    let mut st = State::default();
-    st.units.insert(String::from("u-1"), unit);
-    st
-}
-
 /// A task receipt as the pool writes it: summary lines, then sections.
 fn receipt(exit: i32, message: &str, stderr: &str) -> String {
     format!(
@@ -101,19 +91,6 @@ fn records_for(ctx: &Ctx, need: &str) -> Vec<(String, String)> {
         .collect();
     found.sort();
     found
-}
-
-#[test]
-fn ready_time_keeps_the_first_observation_until_cleared() {
-    let mut st = state_with(Unit::default());
-
-    mark_ready(&mut st, "u-1", T0);
-    mark_ready(&mut st, "u-1", T0 + 20);
-    assert_eq!(st.units["u-1"].ready_at, Some(T0));
-
-    clear_ready(&mut st, "u-1");
-    mark_ready(&mut st, "u-1", T0 + 30);
-    assert_eq!(st.units["u-1"].ready_at, Some(T0 + 30));
 }
 
 #[test]
