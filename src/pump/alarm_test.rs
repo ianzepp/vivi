@@ -1,5 +1,5 @@
-//! Tests for [`super::alarm`]: the four stall exceptions, their once-per-hour
-//! suppression, and the `status.txt` lines.
+//! Tests for [`super::alarm`]: the stall exceptions, their once-per-hour
+//! suppression, and the `status.txt` line.
 
 use std::fs;
 use std::sync::Arc;
@@ -9,14 +9,12 @@ use tempfile::{TempDir, tempdir};
 use crate::pump::alarm::{check, status_lines};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{GateRecord, NeedRecord, Promotion, State, Status, Unit};
+use crate::pump::state::{NeedRecord, State, Status, Unit};
 
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
-/// A 40-hex tip.
-const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 
-/// A context with default alarm thresholds (30 min / 3 h / 45 min).
+/// A context with default alarm thresholds (45 min merge idle).
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
@@ -92,172 +90,17 @@ fn rows(pairs: &[(String, Vec<String>)]) -> String {
 }
 
 #[test]
-fn a_fix_unit_delivered_past_the_limit_raises_once_per_hour() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.units.insert(
-        String::from("pumpfix-1"),
-        unit(Status::Delivered, T0 - 31 * 60),
-    );
-    st.units.insert(
-        String::from("other-1"),
-        unit(Status::Delivered, T0 - 31 * 60),
-    );
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    let text = exceptions(&ctx);
-    assert!(text.contains("stall-fix-unit pumpfix-1 fix unit delivered for 31m"));
-    assert!(!text.contains("other-1"), "only fix units alarm here");
-    // Again within the hour: suppressed.
-    host.advance(1800);
-    check(&ctx, &mut st);
-    assert_eq!(exceptions(&ctx).matches("stall-fix-unit").count(), 1);
-    // After the hour: raised again.
-    host.advance(1801);
-    check(&ctx, &mut st);
-    assert_eq!(exceptions(&ctx).matches("stall-fix-unit").count(), 2);
-}
-
-#[test]
-fn a_merging_fix_unit_alarms_and_a_fresh_one_does_not() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.units.insert(
-        String::from("pumpfix-1"),
-        unit(Status::Merging, T0 - 40 * 60),
-    );
-    st.units.insert(
-        String::from("pumpfix-2"),
-        unit(Status::Delivered, T0 - 29 * 60),
-    );
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    let text = exceptions(&ctx);
-    assert!(text.contains("stall-fix-unit pumpfix-1 fix unit merging for 40m"));
-    assert!(!text.contains("pumpfix-2"));
-}
-
-#[test]
 fn the_raised_times_survive_in_state_extra() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
-    st.units.insert(
-        String::from("pumpfix-1"),
-        unit(Status::Delivered, T0 - 3600),
-    );
+    st.units
+        .insert(String::from("u1"), unit(Status::Delivered, T0 - 50 * 60));
     host.set_now(T0);
     check(&ctx, &mut st);
     let saved = serde_json::to_string(&st).unwrap();
     let mut reloaded: State = serde_json::from_str(&saved).unwrap();
     check(&ctx, &mut reloaded);
-    assert_eq!(exceptions(&ctx).matches("stall-fix-unit").count(), 1);
-}
-
-#[test]
-fn promotion_stall_names_hours_and_the_last_gate() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.promotions.push(Promotion {
-        tip: String::from(TIP),
-        at: T0 - 4 * 3600,
-        failing: None,
-    });
-    st.gates.push(GateRecord {
-        tip: String::from(TIP),
-        names: Some(vec![String::from("a"), String::from("b")]),
-        ..GateRecord::default()
-    });
-    st.units.insert(String::from("u1"), merged(T0 - 3600));
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    let text = exceptions(&ctx);
-    assert!(
-        text.contains("stall-promote default 4h00m since last promotion"),
-        "{text}"
-    );
-    assert!(text.contains("1 merged awaiting promotion"));
-    assert!(text.contains("last gate 0123456789 failing 2"));
-}
-
-#[test]
-fn stall_promote_names_the_blocking_reds_and_fix_owners() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.promotions.push(Promotion {
-        tip: String::from(TIP),
-        at: T0 - 4 * 3600,
-        failing: Some(vec![String::from("a")]),
-    });
-    st.gates.push(GateRecord {
-        tip: String::from("bbbb0000bbbb0000bbbb0000bbbb0000bbbb0000"),
-        names: Some(vec![
-            String::from("a"),
-            String::from("x"),
-            String::from("y"),
-        ]),
-        ..GateRecord::default()
-    });
-    st.red.insert(String::from("x"), String::from("pumpfix-g1"));
-    st.units.insert(String::from("u1"), merged(T0 - 3600));
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    let text = exceptions(&ctx);
-    assert!(
-        text.contains("2 reds not on main: x (fix pumpfix-g1), y (no fix)"),
-        "{text}"
-    );
-}
-
-#[test]
-fn promotion_stall_is_quiet_without_merges_since_or_under_the_limit() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.promotions.push(Promotion {
-        tip: String::from(TIP),
-        at: T0 - 4 * 3600,
-        failing: None,
-    });
-    // Merged before the promotion: nothing waits.
-    st.units.insert(String::from("old"), merged(T0 - 5 * 3600));
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    assert!(!exceptions(&ctx).contains("stall-promote"));
-    // A merge since, but the promotion is only 2 h old.
-    st.promotions[0].at = T0 - 2 * 3600;
-    st.units.insert(String::from("new"), merged(T0 - 3600));
-    check(&ctx, &mut st);
-    assert!(!exceptions(&ctx).contains("stall-promote"));
-}
-
-#[test]
-fn promotion_stall_with_no_promotion_ever_counts_from_the_first_merge() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.units.insert(String::from("u1"), merged(T0 - 4 * 3600));
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    let text = exceptions(&ctx);
-    assert!(
-        text.contains("stall-promote default no promotion yet"),
-        "{text}"
-    );
-    assert!(text.contains("no gate has finished"));
-}
-
-#[test]
-fn promotion_stall_is_quiet_when_promotion_is_disabled() {
-    let dir = tempdir().unwrap();
-    let cfg = PumpConfig {
-        branch: String::from("next"),
-        promote: false,
-        ..PumpConfig::default()
-    };
-    let (ctx, host) = test_ctx(dir.path(), cfg);
-    let mut st = State::default();
-    st.units.insert(String::from("u1"), merged(T0 - 4 * 3600));
-    host.set_now(T0);
-    check(&ctx, &mut st);
-    assert!(!exceptions(&ctx).contains("stall-promote"));
+    assert_eq!(exceptions(&ctx).matches("stall-merge").count(), 1);
 }
 
 #[test]
@@ -294,14 +137,9 @@ fn merge_stall_is_quiet_when_merges_flow_or_the_wait_is_short() {
 }
 
 #[test]
-fn status_lines_report_promotion_fix_and_delivered_backlog() {
+fn status_lines_report_the_delivered_backlog() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
-    st.promotions.push(Promotion {
-        tip: String::from(TIP),
-        at: T0 - (2 * 3600 + 5 * 60),
-        failing: None,
-    });
     st.units.insert(
         String::from("pumpfix-1"),
         unit(Status::Delivered, T0 - 14 * 60),
@@ -315,12 +153,7 @@ fn status_lines_report_promotion_fix_and_delivered_backlog() {
     host.set_now(T0);
     assert_eq!(
         status_lines(&ctx, &st),
-        vec![
-            String::from("last promote 2h05m ago (0123456789)"),
-            String::from("last green never"),
-            String::from("oldest waiting fix pumpfix-2 20m"),
-            String::from("delivered waiting 2, oldest 14m"),
-        ]
+        vec![String::from("delivered waiting 2, oldest 14m")]
     );
 }
 
@@ -330,37 +163,8 @@ fn status_lines_report_none_for_an_idle_pump() {
     host.set_now(T0);
     assert_eq!(
         status_lines(&ctx, &State::default()),
-        vec![
-            String::from("last promote never"),
-            String::from("last green never"),
-            String::from("oldest waiting fix none"),
-            String::from("delivered waiting 0, oldest none"),
-        ]
+        vec![String::from("delivered waiting 0, oldest none")]
     );
-}
-
-#[test]
-fn status_lines_show_the_last_green_gate() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    st.baseline = Some(vec![String::from("a")]);
-    st.gates = vec![
-        GateRecord {
-            tip: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-            names: Some(Vec::new()),
-            at: T0 - 3600,
-            ..GateRecord::default()
-        },
-        GateRecord {
-            tip: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-            names: Some(vec![String::from("x")]),
-            at: T0 - 600,
-            ..GateRecord::default()
-        },
-    ];
-    host.set_now(T0);
-    let lines = status_lines(&ctx, &st);
-    assert_eq!(lines[1], "last green 1h00m ago (aaaaaaaaaa)", "{lines:?}");
 }
 
 #[test]

@@ -38,8 +38,11 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
     assert!(home.join("pump.db").is_file(), "no pump.db");
     assert!(home.join("log.txt").is_file(), "no log.txt");
     let lines: Vec<&str> = status.lines().collect();
-    assert_eq!(lines.len(), 8, "status.txt must be 8 lines: {status}");
-    assert_eq!(lines[4], "last promote never", "line 5: {status}");
+    assert_eq!(lines.len(), 5, "status.txt must be 5 lines: {status}");
+    assert_eq!(
+        lines[4], "delivered waiting 0, oldest none",
+        "line 5: {status}"
+    );
     assert!(lines[1].starts_with("units"), "line 2: {status}");
     let shown = vivi(["pump", "status", "--project", root(&project)]);
     assert_success(&shown);
