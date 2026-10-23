@@ -4,14 +4,17 @@ use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::envelope::roles::{Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
+use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::{NodeClass, STEP_MARKER};
 use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
+use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::step_inputs::{read_only_job, targets};
-use crate::pump::flow::tick::raise_once;
+use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::host::Ctx;
+use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 use crate::pump::store::flow_links::SliceLink;
@@ -233,13 +236,75 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Reslices {
             .collect();
         let mut first_error = None;
         for job in &ready {
-            if let Err(error) = collect_one(ctx, st, store, mail, job) {
-                ctx.log(&format!("reslice job {} failed: {error}", job.id));
-                first_error.get_or_insert(error);
+            match collect_one(ctx, st, store, mail, job) {
+                Ok(()) => step_error::note_success(ctx, &job.id),
+                Err(error) => {
+                    ctx.log(&format!("reslice job {} failed: {error}", job.id));
+                    if let Some(kept) = settle_error(ctx, st, store, job, error) {
+                        first_error.get_or_insert(kept);
+                    }
+                }
             }
         }
         first_error.map_or(Ok(()), Err)
     }
+}
+
+/// Count one more failing tick of `job`. Below [`STEP_ERROR_LIMIT`] the error
+/// is kept for the caller and the job stays unapplied. At the limit the job is
+/// marked applied and the reslice row is held for the operator; the error is
+/// then settled and gives `None` (a failed hold is the only error returned).
+fn settle_error<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    job: &PoolJob,
+    error: VivariumError,
+) -> Option<VivariumError> {
+    let n = step_error::note_failure(ctx, &job.id);
+    if n < STEP_ERROR_LIMIT {
+        return Some(error);
+    }
+    jobs::mark_applied(st, &job.id, ctx.now());
+    let task = job.payload.get("task").and_then(|v| v.as_str())?;
+    let text = format!(
+        "reslice job {} for {task}: expected the reply to apply; actual: {error} on {n} ticks in a row",
+        job.id
+    );
+    step_error::hold(ctx, store, task, &text).err()
+}
+
+/// The slicer agent could not run: the reply says nothing about the slice.
+/// Alarm once, hold the reslice row for the operator, settle the job. The
+/// slice and its attempts are untouched.
+fn hold_env<S: JobStore>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    job: &PoolJob,
+    row: &StepRow,
+    env: &EnvFailure,
+) -> Result<(), VivariumError> {
+    let slice = job.payload.get("slice").and_then(|v| v.as_str());
+    raise_once(
+        ctx,
+        ENV_FAILURE,
+        &job.id,
+        &format!(
+            "reslice job {} for {}: expected the slicer agent to run; actual: {:?}, tool {}: {}; \
+             answer with vivi pump answer {} <word>{}",
+            job.id,
+            row.task,
+            env.kind,
+            env.tool.as_deref().unwrap_or("none"),
+            env.evidence,
+            row.task,
+            slice.map_or_else(String::new, |s| format!(" (slice {s})"))
+        ),
+    );
+    store.set_step_state(&row.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
+    jobs::mark_applied(st, &job.id, ctx.now());
+    Ok(())
 }
 
 /// Apply one terminal reslice job, or drop it when its run is closed.
@@ -276,6 +341,9 @@ fn collect_one<S: JobStore, M: FlowMail>(
     if matches!(row.state, StepState::Done | StepState::Failed) {
         jobs::mark_applied(st, &job.id, ctx.now());
         return Ok(());
+    }
+    if let Some(env) = runner_env_failure(job) {
+        return hold_env(ctx, st, store, job, &row, &env);
     }
     let reply = reply_of(ctx, store, &run, job, mode)?;
     let word = reslice_apply::apply(ctx, store, mail, &run, &row, slice, mode, reply.as_ref())?;
