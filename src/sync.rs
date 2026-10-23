@@ -237,6 +237,10 @@ mod admission_test;
 mod deps;
 
 #[cfg(test)]
+#[path = "sync/serves_index_test.rs"]
+mod serves_index_test;
+
+#[cfg(test)]
 #[path = "sync/events_test.rs"]
 mod events;
 

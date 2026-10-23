@@ -54,6 +54,7 @@ mod pump_record;
 mod reply;
 mod report;
 mod rules;
+mod serves;
 pub mod shipped;
 mod shipped_roles;
 mod starter_pump;

@@ -10,7 +10,7 @@ use super::{
     canonical_local_role,
 };
 use crate::error::VivariumError;
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION};
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Letter};
 use crate::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 use crate::storage::{
     MailspaceEventInput, MailspaceMoveWithReply, MessageIngestRequest, Storage, StoredMessageView,
@@ -62,8 +62,12 @@ impl Mailspace {
                 "Bcc is not supported for local mailspace delivery in v1".into(),
             ));
         }
-        let work_letter =
-            compose::work_letter(request.kind.as_deref(), &request.body, &request.depends_on)?;
+        let work_letter = compose::work_letter(
+            self,
+            request.kind.as_deref(),
+            &request.body,
+            &request.depends_on,
+        )?;
         let depends_on = work_letter
             .as_ref()
             .map_or_else(|| request.depends_on.clone(), |w| w.depends_on.clone());
@@ -122,7 +126,15 @@ impl Mailspace {
         let delivered = delivered_with_handles(&storage, delivered_ids)?;
         let sent_handle = storage.display_handle(&sent.message_id)?;
         if let Some(kind) = work_kind {
-            self.attach_sent_work(kind, &request, &depends_on, &delivered, &sent_handle)?;
+            let letter = work_letter.as_ref().map(|w| &w.letter);
+            self.attach_sent_work(
+                kind,
+                &request,
+                &depends_on,
+                &delivered,
+                &sent_handle,
+                letter,
+            )?;
         }
         Ok(DeliveryResult {
             delivered,
@@ -140,6 +152,7 @@ impl Mailspace {
         depends_on: &[String],
         delivered: &[DeliveredMessage],
         sent_handle: &str,
+        letter: Option<&Letter>,
     ) -> Result<(), VivariumError> {
         let handles: Vec<&str> = if delivered.is_empty() {
             vec![sent_handle]
@@ -148,6 +161,11 @@ impl Mailspace {
         };
         for handle in handles {
             self.backlog_attach(kind, handle, &request.subject, depends_on)?;
+            if let Some(letter) = letter {
+                let storage = self.storage()?;
+                let row = storage.resolve_message_token(handle)?;
+                super::serves::index_front(&storage, &row, letter)?;
+            }
         }
         Ok(())
     }

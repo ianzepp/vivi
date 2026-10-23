@@ -216,3 +216,57 @@ fn stdout(output: &Output) -> String {
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
+
+#[test]
+fn need_serves_a_want_stores_its_message_id_and_refuses_a_task() {
+    let project = tempfile::tempdir().unwrap();
+    init_roster(project.path());
+    let root = project.path().to_str().unwrap();
+    let want = handle_after(
+        &stdout(&vivi_ok(&send_args("want", root, &["--question", "q"]))),
+        "created cto",
+    );
+    let task = handle_after(
+        &stdout(&vivi_ok(&send_args("task", root, &["--done-when", "d"]))),
+        "created cto",
+    );
+
+    let sent = vivi_ok(&send_args(
+        "need",
+        root,
+        &["--done-when", "d", "--serves", &want],
+    ));
+    let need = handle_after(&stdout(&sent), "created cto");
+    let shown = stdout(&vivi(&["need", "show", &need, "--project", root]));
+    let serves = shown
+        .lines()
+        .find_map(|line| line.strip_prefix("serves = \""))
+        .unwrap_or_else(|| panic!("no serves in:\n{shown}"));
+    assert!(serves.starts_with('<') && serves.contains("@"), "{shown}");
+    assert!(serves.trim_end().ends_with(">\""), "{shown}");
+
+    let refused = vivi(&send_args(
+        "need",
+        root,
+        &["--done-when", "d", "--serves", &task],
+    ));
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains(&format!("{task} is a task, not a want")),
+        "{}",
+        stderr(&refused)
+    );
+
+    let explores = vivi(&send_args(
+        "need",
+        root,
+        &["--done-when", "d", "--explores", &want],
+    ));
+    assert_success(&explores);
+}
+
+fn vivi_ok(args: &[&str]) -> Output {
+    let output = vivi(args);
+    assert_success(&output);
+    output
+}
