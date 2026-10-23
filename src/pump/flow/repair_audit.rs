@@ -23,6 +23,7 @@ use crate::pump::flow::fanout::VERDICT_MERGED;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::flow::repair::{self, AttemptFacts};
+use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
@@ -30,6 +31,9 @@ use crate::pump::store::PumpStore;
 
 /// Exception kind of an audit that could not be queued or collected.
 pub const REPAIR_AUDIT_FAILED: &str = "flow-repair-audit-failed";
+
+/// Exception kind of a finding given up after repeated failing ticks.
+pub const REPAIR_AUDIT_GAVE_UP: &str = "flow-repair-audit-gave-up";
 
 /// Run state of a landed run.
 const RUN_DONE: &str = "done";
@@ -189,11 +193,25 @@ fn collect(ctx: &Ctx, store: &PumpStore, job: &PoolJob, run: &RunRow) -> Result<
             continue;
         }
         match file(ctx, store, &applied, (run, job, finding), &fkey) {
-            Ok(()) => settle(ctx, store, &fkey)?,
+            Ok(()) => {
+                step_error::note_success(ctx, &fkey);
+                settle(ctx, store, &fkey)?;
+            }
             Err(error) => {
-                let text = format!("{} r{}: finding {}: {error}", run.need, run.run, finding.id);
-                raise_once(ctx, REPAIR_AUDIT_FAILED, &fkey, &text);
-                complete = false;
+                let n = step_error::note_failure(ctx, &fkey);
+                if n >= STEP_ERROR_LIMIT {
+                    let text = format!(
+                        "repair audit {} r{}: finding {}: expected a need filed; actual: {error} on {n} ticks; given up",
+                        run.need, run.run, finding.id
+                    );
+                    raise_once(ctx, REPAIR_AUDIT_GAVE_UP, &fkey, &text);
+                    settle(ctx, store, &fkey)?;
+                } else {
+                    let text =
+                        format!("{} r{}: finding {}: {error}", run.need, run.run, finding.id);
+                    raise_once(ctx, REPAIR_AUDIT_FAILED, &fkey, &text);
+                    complete = false;
+                }
             }
         }
     }
