@@ -81,6 +81,20 @@ fn a_need_exploring_a_want_indexes_explores() {
 }
 
 #[test]
+fn front_matter_copied_from_need_show_resolves_the_message_id_form() {
+    let (_tmp, mailspace) = space();
+    let want = send(&mailspace, "want", want_body("q", "p")).unwrap();
+    let id = format!("<{}>", want_id(&mailspace, &want));
+
+    let serving = send(&mailspace, "need", need_front(Some(&id), None, &[])).unwrap();
+    let exploring = send(&mailspace, "need", need_front(None, Some(&id), &[])).unwrap();
+
+    let key = want_id(&mailspace, &want);
+    assert_eq!(metadata(&mailspace, &serving).get("serves"), Some(&key));
+    assert_eq!(metadata(&mailspace, &exploring).get("explores"), Some(&key));
+}
+
+#[test]
 fn serving_or_exploring_a_task_or_a_missing_handle_is_refused() {
     let (_tmp, mailspace) = space();
     let task = send(&mailspace, "task", crate::letter::fixture::task_body("p")).unwrap();

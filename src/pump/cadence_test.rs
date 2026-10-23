@@ -172,7 +172,9 @@ fn head_role(name: &str) -> RoleView {
 #[test]
 fn head_ceo_cadence_text_files_research_needs_and_asks_for_the_envelope() {
     let text = cadence_run_text(&head_role("head-ceo"), 0);
-    assert!(text.contains("need send --mark research --explores <want-handle>"));
+    assert!(text.contains(
+        "need send --mark research --explores <want-handle> --done-when \"<what the research must answer>\""
+    ));
     assert!(text.contains("before `vivi pump send`"));
     assert!(text.contains("`reviewed` or `no-op`"));
     assert!(text.contains("promoted"));

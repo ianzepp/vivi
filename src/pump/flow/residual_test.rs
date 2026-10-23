@@ -87,6 +87,22 @@ fn residual_files_finding_and_gap() {
 }
 
 #[test]
+fn a_blank_recheck_trigger_files_with_a_fixed_done_when() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = context(dir.path());
+    let mut residual = front(AuditorAnswer::Residual);
+    residual.requirement.clear();
+    residual.finding[0].recheck_trigger = String::from("  ");
+    file(&ctx, "n1", 1, "audit-task", &residual).unwrap();
+    let sends = send_commands(&host);
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    assert!(
+        sends[0].contains("--done-when 'the residual finding is resolved'"),
+        "{sends:?}"
+    );
+}
+
+#[test]
 fn clean_pass_without_gaps_files_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, host) = context(dir.path());

@@ -164,8 +164,14 @@ fn body_head(need: &str, run: u32, audit_task: &str, id: &str, content: &str) ->
     )
 }
 
+/// The `done_when` of a filed finding whose auditor left `recheck_trigger` blank.
+const BLANK_TRIGGER_DONE_WHEN: &str = "the residual finding is resolved";
+
 fn body_tail(mut body: String, recheck_trigger: &str) -> (String, String) {
-    let trigger = one_line(recheck_trigger);
+    let mut trigger = one_line(recheck_trigger);
+    if trigger.is_empty() {
+        trigger = String::from(BLANK_TRIGGER_DONE_WHEN);
+    }
     body.push_str(&format!("\nRecheck trigger: {trigger}\n"));
     (body, trigger)
 }

@@ -51,8 +51,17 @@ pub(super) fn canonical_wants(
 /// The row id and canonical `<id>` of the want `handle` names.
 fn want_id(storage: &Storage, key: &str, handle: &str) -> Result<(String, String), VivariumError> {
     let no_such = || VivariumError::Message(format!("{key} {handle}: no such letter"));
-    let Ok(resolved) = storage.resolve_message_token(handle) else {
-        return Err(no_such());
+    let by_id = match normalize_message_id(handle) {
+        Some(rfc) => storage
+            .live_message_by_rfc_id(&rfc)?
+            .map(|view| view.message_id),
+        None => None,
+    };
+    let resolved = match by_id {
+        Some(row) => row,
+        None => storage
+            .resolve_message_token(handle)
+            .map_err(|_| no_such())?,
     };
     let Some(view) = storage.message_by_id(&resolved)? else {
         return Err(no_such());
