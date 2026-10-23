@@ -48,6 +48,10 @@ Prose report.
 
 ## Fields by role
 
+An envelope carries judgment and reports only. No field is a SHA, a published
+ref, a merged flag, an exit code or a commit that the pump acts on. Those come
+from the runner and from the repository history.
+
 The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 `fail` or `skipped`, and `seconds` an integer.
 
@@ -60,8 +64,8 @@ The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 | auditor (verify) | `clean_pass`, `residual`, `block_range`, `block_ship` | `raise_rung` (`need`, `main` or `release`; optional); `[[requirement]]` tables {`id`, `text`, `status` = `SATISFIED`, `PARTIAL`, `MISSING`, `UNVERIFIED` or `NOT_APPLICABLE`, `evidence` (list)}; `[[finding]]` tables {`id`, `content`, `paths` (list), `recheck_trigger`} | the report |
 | judge (auditor, short mode) | `block`, `residual` | `reason` (string; required) | the reasons |
 | head-cto | `research`, `plan`, `slice`, `repair`, `lock` | `reason` (string; required); `new_fact` (string; required for any answer but `lock` from the third run on) | the analysis |
-| merge (a flow merge step: a slice onto the need branch, and the sync step) | `merged`, `conflict` | `tip` (full SHA; required for `merged`); `conflicts` (list of paths); `[[check]]` tables | the conflict resolutions |
-| hand | `built`, `blocked-scope`, `failed` | `change` (list of paths; empty means no defect); `[[check]]` tables; `deviations` (list); `[[follow_up]]` tables {`paths` (list), `need` (string)}; `remaining` (list); `scope_paths` (list; required for `blocked-scope`); `scope_reason` (string; required for `blocked-scope`); `scope_design` (bool, default false) | the report |
+| merge (a flow merge step: a slice onto the need branch, and the sync step) | `merged`, `conflict` (the worker's claim; the runner's publish receipt and git decide) | `conflicts` (list of paths); `design_change` (bool; the conflict needs a design change); `[[check]]` tables (reported only). No `tip`: the SHA comes from the publish receipt | the conflict resolutions |
+| hand | `built`, `blocked-scope`, `failed` | `change` (list of paths; reported only, and empty means no defect was found); `[[check]]` tables (reported only; the merge job's task rung exit code decides); `deviations` (list); `[[follow_up]]` tables {`paths` (list), `need` (string)}; `remaining` (list); `scope_paths` (list; required for `blocked-scope`); `scope_reason` (string; required for `blocked-scope`); `scope_design` (bool, default false) | the report |
 | head-ceo (cadence prompt; the pump does not parse it) | `reviewed`, `no-op` | `promoted`, `research`, `dropped` (lists of handles) | notes |
 
 ## Examples, one per role
@@ -219,7 +223,6 @@ Notes.
 ```
 +++
 answer = "merged"
-tip = "0123456789abcdef0123456789abcdef01234567"
 
 [[check]]
 cmd = "cargo check --quiet"
@@ -235,6 +238,7 @@ A conflict names its files:
 +++
 answer = "conflict"
 conflicts = ["src/tick.rs"]
+design_change = true
 +++
 Both branches changed the same function; the two edits cannot be combined.
 ```
