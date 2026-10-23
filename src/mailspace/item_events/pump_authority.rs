@@ -1,6 +1,7 @@
 //! The pump identity's word on a need it is running (operator ruling Q7).
 //!
-//! The pump identity (`[pump] from`) may close and reopen a need while the
+//! The pump identity (`[pump] reply_from`, the identity the flow engine writes
+//! as and the one pump records are addressed to) may close and reopen a need while the
 //! need has an open pump record here, whoever authored the need and whatever
 //! its delegation history. Pump records do not sync, so another member
 //! cannot see that record: it accepts the pump's letter only from a sender
@@ -10,13 +11,27 @@
 use std::collections::HashSet;
 
 use super::{HeldItem, Mailspace, parse_event, parse_property_event};
+use crate::mailspace::PumpState;
 use crate::mailspace::backlog::canonical_content_handle;
 
 impl Mailspace {
     /// True when `identity` is this mailspace's pump identity and `item` is a
-    /// need with an open pump record here.
+    /// need with an open pump record here. Writing a close or reopen needs
+    /// this.
     pub(in crate::mailspace) fn pump_controls(&self, item: &HeldItem, identity: &str) -> bool {
-        if item.kind != "need" || !identity.eq_ignore_ascii_case(&self.pump_names().0) {
+        self.pump_record_state(item, identity, true)
+    }
+
+    /// True when `identity` is this mailspace's pump identity and `item` is a
+    /// need with ANY pump record here, open or done. Reading a pump letter
+    /// judges it as of when it was written, so it keeps counting after the
+    /// record closes; it never lets the pump write a new close.
+    pub(in crate::mailspace) fn pump_spoke_for(&self, item: &HeldItem, identity: &str) -> bool {
+        self.pump_record_state(item, identity, false)
+    }
+
+    fn pump_record_state(&self, item: &HeldItem, identity: &str, open_only: bool) -> bool {
+        if item.kind != "need" || !identity.eq_ignore_ascii_case(&self.pump_names().1) {
             return false;
         }
         let Some(row) = item.rows.first() else {
@@ -28,7 +43,13 @@ impl Mailspace {
         let Ok(handle) = canonical_content_handle(&storage, &row.message_id) else {
             return false;
         };
-        matches!(self.open_record_of(&storage, &handle), Ok(Some(_)))
+        let state = if open_only {
+            Some(PumpState::Open)
+        } else {
+            None
+        };
+        self.pump_records(&storage, state)
+            .is_ok_and(|records| records.iter().any(|record| record.need == handle))
     }
 
     /// True when `from_addr`, a sender in another member's mailspace, is the
@@ -44,7 +65,7 @@ impl Mailspace {
         let Some((role, _)) = from_addr.rsplit_once('@') else {
             return false;
         };
-        if item.kind != "need" || !role.trim().eq_ignore_ascii_case(&self.pump_names().0) {
+        if item.kind != "need" || !role.trim().eq_ignore_ascii_case(&self.pump_names().1) {
             return false;
         }
         let Ok(storage) = self.storage() else {

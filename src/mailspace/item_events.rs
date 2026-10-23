@@ -455,6 +455,7 @@ impl Mailspace {
         let domain = domain.trim().to_ascii_lowercase();
         if domain != "local" && domain == self.address_domain().to_ascii_lowercase() {
             return self.may_close(item, role.trim())
+                || self.pump_spoke_for(item, role.trim())
                 || self.delegation_speaks(item, from_addr, at, id);
         }
         let author_domain = item

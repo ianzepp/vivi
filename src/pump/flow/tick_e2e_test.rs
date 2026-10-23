@@ -10,11 +10,10 @@
 //! with the scripted envelope, as a pool worker would).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use super::tick_with;
 use crate::error::VivariumError;
-use crate::mailspace::Mailspace;
+use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::index::{RunRow, StepRow};
@@ -28,8 +27,9 @@ use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
 
-/// The pump's mailspace identity (`reply_from` of the test context).
-const PUMP: &str = "operator";
+/// The pump's mailspace identity: the default `[pump] reply_from`, distinct
+/// from the default `[pump] from` (`operator`).
+const PUMP: &str = "mind";
 /// Ticks the loop may take; the flow needs three job rounds.
 const MAX_TICKS: usize = 12;
 
@@ -98,16 +98,21 @@ struct Rig {
 
 fn rig() -> Result<Rig, VivariumError> {
     let p = project();
-    let mut ctx = p.pump_ctx();
-    let mut cfg = (*ctx.cfg).clone();
-    cfg.reply_from = PUMP.into();
-    ctx.cfg = Arc::new(cfg);
+    let need = p.need("plan something");
+    rig_for(p, need)
+}
+
+/// A rig over `need`, run under the default config (`from` is not
+/// `reply_from`).
+fn rig_for(p: Project, need: String) -> Result<Rig, VivariumError> {
+    let ctx = p.pump_ctx();
+    assert_ne!(ctx.cfg.from, ctx.cfg.reply_from);
+    assert_eq!(ctx.cfg.reply_from, PUMP);
     let store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
     let mut port = MailspacePort {
         mailspace: p.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    let need = p.need("plan something");
     MailWriter::open_record(&mut port, &need, "kind: build")?;
     Ok(Rig {
         _project: p,
@@ -202,7 +207,42 @@ fn done_event_senders(mailspace: &Mailspace, item: &str) -> Vec<String> {
 
 #[test]
 fn one_need_runs_the_planning_loop_to_a_landed_close() -> R {
-    let mut rig = rig()?;
+    landed_close(rig()?)
+}
+
+/// A need authored elsewhere and delegated to a third role: the pump's
+/// landing close is authorized by its `reply_from` identity alone, writes a
+/// `done` event letter that travels, and the need is done.
+#[test]
+fn a_delegated_need_lands_with_a_travelling_done_letter() -> R {
+    let p = project();
+    let need = send_need_from(&p, "elsewhere", "delegated");
+    p.mailspace.assign_need("elsewhere", &need, "operator")?;
+    landed_close(rig_for(p, need)?)
+}
+
+/// Send a need from `from` to the pump identity.
+fn send_need_from(p: &Project, from: &str, subject: &str) -> String {
+    p.mailspace
+        .send(SendRequest {
+            from: from.into(),
+            to: vec![PUMP.into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+fn landed_close(mut rig: Rig) -> R {
     let run: RunRow = start(&rig.ctx, &rig.store, &mut rig.port, &rig.need, Some("plan"))?;
     assert_eq!(run.kind, "build");
     assert_eq!(rig.port.need_state(&rig.need)?, NeedStatus::Open);
