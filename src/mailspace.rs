@@ -99,6 +99,7 @@ pub use lifecycle::{
 pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
+pub use mermaid::{MermaidEdge, MermaidFlowchart, MermaidNode, parse_flowchart};
 pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask};
 pub use pump_action::{
     PUMP_ACTION_HEADER, PUMP_RECORD_HEADER, PumpAction, PumpActionKind, PumpActionRequest,
