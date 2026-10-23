@@ -55,7 +55,8 @@ pub use pump_command::{
     PumpGateCommand, PumpGateSetCommand, PumpHealthCommand, PumpHistoryCommand, PumpListCommand,
     PumpListStatus, PumpLogCommand, PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand,
     PumpPrioritySetCommand, PumpRecoverCommand, PumpReopenCommand, PumpReplanCommand,
-    PumpRequeueCommand, PumpRunCommand, PumpSendCommand, PumpServiceAddCommand, PumpServiceCommand,
+    PumpRequeueCommand, PumpRunCommand, PumpRungsCommand, PumpRungsSetCommand,
+    PumpRungsShowCommand, PumpSendCommand, PumpServiceAddCommand, PumpServiceCommand,
     PumpServiceProjectCommand, PumpShowCommand, PumpStatusCommand, PumpSubcommand,
     PumpWithdrawCommand,
 };
