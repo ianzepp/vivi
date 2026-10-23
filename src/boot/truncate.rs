@@ -6,8 +6,7 @@
 //! and knows where to look for the rest.
 //!
 //! Caps are constants rather than flags: the digest's row budgets stay
-//! comparable across runs. `--role` / `--pump` change which pump rows are
-//! eligible, not the cap that then bounds them.
+//! comparable across runs.
 
 use serde::Serialize;
 
@@ -28,19 +27,6 @@ pub const CAP_PROBE_LINES: usize = 60;
 pub const CAP_TRIAGE_SUBJECTS: usize = 3;
 /// Handles per triage slice: small enough to seat one role per slice.
 pub const TRIAGE_SLICE: usize = 12;
-/// In-flight / assigned pump units.
-pub const CAP_PUMP_INFLIGHT: usize = 12;
-/// Delivered units waiting on merge.
-pub const CAP_PUMP_QUEUE: usize = 12;
-/// Units held on unmerged dependencies.
-pub const CAP_PUMP_HELD: usize = 8;
-/// Stuck units.
-pub const CAP_PUMP_STUCK: usize = 8;
-/// Pump exception rows.
-pub const CAP_PUMP_EXCEPTIONS: usize = 8;
-/// Configured pools.
-pub const CAP_PUMP_POOLS: usize = 12;
-
 /// One cap that bit. Names the section, what was kept, and how much was total.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Truncation {

@@ -7,9 +7,7 @@ use super::goals::{bucket, cap_chars, completion_claim, normalize_status, read_g
 use super::handles::{HandleRow, Verdict, apply_verdicts, parse_verdict, triage_slices};
 use super::probe::{ProbeVerdict, parse_output};
 use super::truncate::{Truncation, capped, record};
-use super::{
-    GoalRow, SeatRow, collect_wants, goal_line, human_seconds, pump_state_line, seat_line,
-};
+use super::{GoalRow, SeatRow, collect_wants, goal_line, human_seconds, seat_line};
 use crate::letter::fixture::{need_body_with, want_body};
 use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
@@ -194,15 +192,6 @@ fn seat_line_names_the_verdict() {
     let line = seat_line(&seat);
     assert!(line.contains("hand"));
     assert!(line.contains("unverified"));
-}
-
-#[test]
-fn pump_state_line_formats_control_writer_and_age() {
-    assert_eq!(
-        pump_state_line("stopped", "not running", Some(4521)),
-        "  state   control stopped, writer not running, status age 4521s"
-    );
-    assert!(pump_state_line("running", "running", None).ends_with("status age never"));
 }
 
 #[test]

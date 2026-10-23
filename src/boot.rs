@@ -13,7 +13,7 @@
 //! harness — arrive through [probes](probe) the project declares, so the same
 //! command serves every project and Vivi never learns what a repository is.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -32,8 +32,6 @@ pub mod format;
 pub mod goals;
 pub mod handles;
 pub mod probe;
-pub mod pump;
-pub mod pump_slots;
 pub mod render;
 pub mod truncate;
 
@@ -41,7 +39,6 @@ use format::{age_label, one_line};
 use goals::GoalRead;
 use handles::{HandleRow, TriageSlice, Verdict};
 use probe::{ProbeOutput, ProbeRun, ProbeSection};
-pub use pump::{BootOptions, PumpBoot, PumpSnapshot, PumpView};
 pub use truncate::Truncation;
 use truncate::{
     CAP_CHARTER_LINES, CAP_CHARTERS, CAP_GOALS, CAP_LOOPS, CAP_MEMOS, CAP_RULES, CAP_SEATS,
@@ -167,9 +164,6 @@ pub struct BootReport {
     pub unabsorbed: Vec<MailRow>,
     /// Role names letters wait under that no seat here carries.
     pub held_unknown: Vec<UnknownRoleRow>,
-    /// Local pump execution state, when `pump.db` or configured pools exist.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pump: Option<PumpBoot>,
     /// Open tasks, needs, and wants with verdicts.
     pub handles: Vec<HandleRow>,
     /// Registered goal documents with register tallies.
@@ -201,16 +195,6 @@ impl BootReport {
     /// probe that is missing, fails, or prints unparseable JSON is recorded as
     /// skipped and never fails the run.
     pub fn collect(mailspace: &Mailspace) -> Result<Self, VivariumError> {
-        Self::collect_with(mailspace, &BootOptions::default())
-    }
-
-    /// Collect the digest, gating the pump snapshot with `opts`.
-    ///
-    /// # Errors
-    /// Returns an error when the mailspace store cannot be opened or `--role`
-    /// names an unknown identity. A declared probe that is missing, fails, or
-    /// prints unparseable JSON is recorded as skipped and never fails the run.
-    pub fn collect_with(mailspace: &Mailspace, opts: &BootOptions) -> Result<Self, VivariumError> {
         let now = Utc::now();
         let storage = mailspace.storage()?;
         let views = mailspace.list_role_views()?;
@@ -219,12 +203,6 @@ impl BootReport {
         let (mut rows, blocked) = collect_handles(mailspace, now)?;
         let runs = probe::run_all(&mailspace.root, &mailspace.config.probes);
         handles::apply_verdicts(&mut rows, &probe_verdicts(&runs), &blocked);
-        let open_needs: BTreeSet<String> = rows
-            .iter()
-            .filter(|row| row.kind == "need")
-            .map(|row| row.handle.clone())
-            .collect();
-        let pump = pump::collect(mailspace, &open_needs, opts, now, &mut truncations)?;
         let handles = cap_handles(rows, &mut truncations);
         let (all_seats, seats) = collect_seats(&views, &handles, &mut truncations);
         let loops = collect_loops(mailspace, &storage, &views, &mut truncations);
@@ -254,7 +232,6 @@ impl BootReport {
             loops,
             unabsorbed,
             held_unknown,
-            pump,
             handles,
             goals,
             rules,
@@ -273,17 +250,6 @@ impl BootReport {
     pub fn render(&self) -> String {
         render::to_text(self)
     }
-}
-
-/// The pump state line: durable control mode, writer process, and how old
-/// the status snapshot is.
-#[must_use]
-pub fn pump_state_line(control: &str, writer: &str, age: Option<u64>) -> String {
-    let age = match age {
-        Some(seconds) => format!("{seconds}s"),
-        None => String::from("never"),
-    };
-    format!("  state   control {control}, writer {writer}, status age {age}")
 }
 
 fn probe_verdicts(runs: &[ProbeRun]) -> Vec<probe::ProbeVerdict> {
