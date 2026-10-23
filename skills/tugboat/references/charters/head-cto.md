@@ -130,7 +130,10 @@ silently dropping depth.
 When the pump escalates a need to you, the brief carries the run count and the
 full history of every earlier run. Read all of it before answering.
 
-Answer with exactly one word on the `ANSWER:` line:
+Open your reply with a TOML envelope between two `+++` lines. It carries
+`answer` first, then `reason` and, when the rule below requires it, `new_fact`.
+Put the analysis below the envelope. The pump reads the envelope and nothing
+else; the full table is in the vivi skill's `references/envelope.md`.
 
 | Answer | Meaning |
 | --- | --- |
@@ -140,7 +143,36 @@ Answer with exactly one word on the `ANSWER:` line:
 | `repair` | The work is close; fix the named defect and rerun |
 | `lock` | Stop the loop; the need is held for the operator |
 
-Run-count rule: from run 3 on, answer `lock` unless you can name a fact no earlier run had.
+Fields:
+
+- `answer`: exactly one word from the table.
+- `reason` (string, required): why you chose it. Write it as a TOML literal
+  string, `'...'`.
+- `new_fact` (string): a fact no earlier run had. Required for any answer but
+  `lock` from the third run on.
+
+Run-count rule: from run 3 on, answer `lock` unless you can name a fact no earlier run had, and then put that fact in `new_fact`.
+
+Example:
+
+```
++++
+answer = "repair"
+reason = 'The build passes its rung but the audit found a missing guard.'
+new_fact = 'The auditor traced the missing guard to the slice that merged last.'
++++
+The analysis follows.
+```
+
+A `lock` answer needs no `new_fact`:
+
+```
++++
+answer = "lock"
+reason = 'Nothing new since the last run; the need is done as planned.'
++++
+Notes.
+```
 
 The engine has no cap of its own; the run-3 rule is yours to apply. You do not
 close the need yourself: the pump acts on your answer.
