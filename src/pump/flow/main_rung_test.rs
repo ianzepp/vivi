@@ -6,13 +6,16 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{FAILING, record_target};
-use super::{GREEN, MAIN_RUNG_FAILED, MainRung, PAYLOAD_KEY, STARTED, TESTED, key, last_green};
+use super::{
+    GREEN, LOST, MAIN_RUNG_FAILED, MainRung, PAYLOAD_KEY, STARTED, TESTED, key, last_green,
+};
 use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::TickPhase;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, rung};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -74,7 +77,18 @@ fn rig(main_rung: bool) -> Result<Rig, VivariumError> {
 impl Rig {
     /// Add a terminal main rung job for the target at `TIP`.
     fn job(&mut self, status: JobStatus, receipt: &str) -> Result<String, VivariumError> {
-        let mut spec = rung::spec(&self.ctx, TARGET, "main", TIP, "main-step", 1)
+        self.job_at(status, receipt, TIP, 1)
+    }
+
+    /// Add a terminal main rung job for the target at `tip`, attempt `attempt`.
+    fn job_at(
+        &mut self,
+        status: JobStatus,
+        receipt: &str,
+        tip: &str,
+        attempt: u32,
+    ) -> Result<String, VivariumError> {
+        let mut spec = rung::spec(&self.ctx, TARGET, "main", tip, "main-step", attempt)
             .ok_or_else(|| VivariumError::Message("no main rung".into()))?;
         spec.payload[PAYLOAD_KEY] = serde_json::json!(TARGET);
         let id = spec.id.clone();
@@ -171,6 +185,90 @@ fn a_lost_job_raises_once_and_sets_nothing() -> R {
     assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
     assert_eq!(rig.store.main_state(&key(GREEN, TARGET))?, None);
     assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    Ok(())
+}
+
+const TIP2: &str = "fedcba9876543210fedcba9876543210fedcba98";
+const TSC_MISSING: &str = "sh: tsc: command not found\nagent exit 127 in 1s\n";
+
+impl Rig {
+    fn env_raised(&self) -> usize {
+        self.host
+            .logs()
+            .iter()
+            .filter(|line| line.contains(&format!("EXCEPTION {ENV_FAILURE}")))
+            .count()
+    }
+}
+
+#[test]
+fn a_missing_tool_is_not_a_red_main() -> R {
+    let mut rig = rig(true)?;
+    let id = rig.job(JobStatus::Finished, TSC_MISSING)?;
+    rig.run()?;
+    rig.run()?;
+    assert_eq!(rig.env_raised(), 1);
+    assert_eq!(rig.raised(), 0);
+    assert!(rig.sends().is_empty());
+    assert_eq!(
+        rig.store.main_state(&key(TESTED, TARGET))?.as_deref(),
+        Some(TIP)
+    );
+    assert_eq!(rig.store.main_state(&key(FAILING, TARGET))?, None);
+    assert_eq!(last_green(&rig.store, TARGET)?, None);
+    assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    Ok(())
+}
+
+#[test]
+fn the_same_tool_missing_on_a_new_tip_raises_nothing_new() -> R {
+    let mut rig = rig(true)?;
+    rig.job(JobStatus::Finished, TSC_MISSING)?;
+    rig.run()?;
+    rig.job_at(JobStatus::Finished, TSC_MISSING, TIP2, 1)?;
+    rig.run()?;
+    assert_eq!(rig.env_raised(), 1);
+    assert!(rig.sends().is_empty());
+    assert_eq!(
+        rig.store.main_state(&key(TESTED, TARGET))?.as_deref(),
+        Some(TIP2)
+    );
+    Ok(())
+}
+
+#[test]
+fn two_lost_jobs_on_one_tip_mark_it_tested() -> R {
+    let mut rig = rig(true)?;
+    rig.job_at(JobStatus::Lost, "", TIP, 1)?;
+    rig.run()?;
+    assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
+    assert_eq!(
+        rig.store.main_state(&key(LOST, TARGET))?,
+        Some(format!("{TIP} 1"))
+    );
+    rig.job_at(JobStatus::Lost, "", TIP, 2)?;
+    rig.run()?;
+    assert_eq!(
+        rig.store.main_state(&key(TESTED, TARGET))?.as_deref(),
+        Some(TIP)
+    );
+    assert_eq!(rig.raised(), 2);
+    assert!(rig.sends().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_new_tip_resets_the_lost_count() -> R {
+    let mut rig = rig(true)?;
+    rig.job_at(JobStatus::Lost, "", TIP, 1)?;
+    rig.run()?;
+    rig.job_at(JobStatus::Lost, "", TIP2, 1)?;
+    rig.run()?;
+    assert_eq!(rig.store.main_state(&key(TESTED, TARGET))?, None);
+    assert_eq!(
+        rig.store.main_state(&key(LOST, TARGET))?,
+        Some(format!("{TIP2} 1"))
+    );
     Ok(())
 }
 
