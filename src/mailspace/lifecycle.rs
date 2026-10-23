@@ -11,6 +11,7 @@ use super::item_events::{
 use super::kind::effective_kind;
 use super::{DeliveryResult, Mailspace, SendRequest, prefix_of_domain};
 use crate::error::VivariumError;
+use crate::letter::work::TaskFront;
 use crate::message::normalize_message_id;
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
 
@@ -286,8 +287,8 @@ impl Mailspace {
     }
 
     /// Create a task from a source message: a want, or a need lowered into
-    /// unit tasks. The task letter names its source in an `X-Vivi-Parent`
-    /// header, and a need's task nodes bind to the need's node here.
+    /// unit tasks. The task letter names its source in the `parent` key of its
+    /// front matter, and a need's task nodes bind to the need's node here.
     ///
     /// # Errors
     /// Returns an error if the source message is neither a need nor a want, if
@@ -305,22 +306,20 @@ impl Mailspace {
                 request.source_handle
             )));
         }
-        let extras = parent_extras(&*self.storage()?, &source.message_id)?;
-        let result = self.send_with_extras(
-            SendRequest {
-                from: actor.clone(),
-                to: request.to,
-                cc: request.cc,
-                bcc: Vec::new(),
-                subject: request.subject,
-                body: request.body,
-                role: "tasks".into(),
-                kind: Some("task".into()),
-                reply_to: Some(request.source_handle.clone()),
-                depends_on: Vec::new(),
-            },
-            &extras,
-        )?;
+        let parent = source_parent(&*self.storage()?, &source.message_id)?;
+        let body = task_body(&request.body, parent)?;
+        let result = self.send(SendRequest {
+            from: actor.clone(),
+            to: request.to,
+            cc: request.cc,
+            bcc: Vec::new(),
+            subject: request.subject,
+            body,
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: Some(request.source_handle.clone()),
+            depends_on: Vec::new(),
+        })?;
         self.record_tasked_source(&actor, &source, &result, &source_kind)?;
         if source_kind == "need" {
             let units = tasked_unit_handles(&result);
@@ -570,21 +569,39 @@ fn tasked_unit_handles(result: &DeliveryResult) -> Vec<String> {
     }
 }
 
-/// The `X-Vivi-Parent` header naming the source message of a `task from`: its
-/// normalized RFC `Message-ID`, so the recipient can see which letter the task
-/// came from. Empty when the stored bytes carry no `Message-ID`.
-fn parent_extras(
-    storage: &Storage,
-    message_id: &str,
-) -> Result<Vec<(String, String)>, VivariumError> {
+/// The source message of a `task from` as `<id>`: its normalized RFC
+/// `Message-ID`, so the recipient can see which letter the task came from.
+/// `None` when the stored bytes carry no `Message-ID`.
+fn source_parent(storage: &Storage, message_id: &str) -> Result<Option<String>, VivariumError> {
     let bytes = storage.read_message(message_id)?;
-    let Some(id) = MessageParser::default()
+    Ok(MessageParser::default()
         .parse(&bytes)
         .and_then(|parsed| parsed.message_id().and_then(normalize_message_id))
-    else {
-        return Ok(Vec::new());
+        .map(|id| format!("<{id}>")))
+}
+
+/// The task letter body: `body` with `parent` set in its front matter, or the
+/// prose wrapped in a front matter that holds only the parent.
+fn task_body(body: &str, parent: Option<String>) -> Result<String, VivariumError> {
+    let message = |err: crate::letter::LetterError| VivariumError::Message(err.to_string());
+    let opens_front = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        == Some("+++");
+    let (mut front, prose) = if opens_front {
+        let envelope = crate::letter::parse_letter::<TaskFront>(body).map_err(message)?;
+        (envelope.front, envelope.body)
+    } else {
+        (TaskFront::default(), body.to_string())
     };
-    Ok(vec![("X-Vivi-Parent".into(), format!("<{id}>"))])
+    if parent.is_none() && !opens_front {
+        return Ok(body.to_string());
+    }
+    if parent.is_some() {
+        front.parent = parent;
+    }
+    crate::letter::render(&front, &prose).map_err(message)
 }
 
 fn insert_optional(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
