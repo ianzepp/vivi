@@ -2432,7 +2432,6 @@ vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--
 vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
 vivi pump replan <need> [--force]
 vivi pump withdraw <need>... --reason TEXT
-vivi pump recover <need>... [--target <id>] [--reason TEXT] [--dry-run]
 vivi pump send --need <need> [--from <id>] [--body TEXT]
 vivi pump adopt [--dry-run]
 vivi pump list [--need <need>] [--status open|done|all] [--json]
@@ -2490,12 +2489,12 @@ merges, blocked units and parked needs with reasons, complete-but-open needs
 and recent exceptions; pass a previous **as_of** as **--since** to get
 **changed_since** (units whose status began, merges and exceptions after it).
 
-**requeue**, **withdraw**, **replan** and **recover** are actions on the need's
+**requeue**, **withdraw** and **replan** are actions on the need's
 open pump record. Each posts one reply on the record (headers
-**X-Vivi-Pump-Action: requeue|withdraw|replan|recover**,
+**X-Vivi-Pump-Action: requeue|withdraw|replan**,
 **X-Vivi-Pump-Record**, **X-Vivi-Need**, and for a requeue
 **X-Vivi-Pump-Unit**, **-Attempts**, **-Fresh**, **-Refund**; for a replan
-**X-Vivi-Pump-Force**; for a recover **X-Vivi-Pump-Target**; the body is the
+**X-Vivi-Pump-Force**; the body is the
 reason) and the pump applies it
 at its next tick, exactly once: the applied letter ids are saved with the state
 in one transaction. A need with no open record is refused and nothing is
@@ -2514,22 +2513,6 @@ for each applied action and closes the record **withdrawn**. A real need's mail
 item stays open: close it on the board too. The synthetic **pumpfix-** needs of
 Vivi 15 have no mail need to hold a record and cannot be withdrawn this way.
 
-**recover** releases a need branch held **unverified**: a need-merge job
-published a tip the pump could not accept, so dispatch for the need stopped and
-the log says `need branch held for explicit recovery` once. **pump recover
-&lt;need&gt;** (**--target** for one target, **--dry-run** to print what would
-happen and the remote ref as it reads now, without posting) is refused unless
-the saved branch is **unverified**. The pump reads the remote
-**vivi/need/&lt;id&gt;** ref again: if it still sits at the tip the hold
-recorded, that tip becomes the trusted tip, the hold and error clear, the
-branch is **active** again and the need's **delivered** units merge onto it on
-the next dispatch (a unit the tip already holds reports "Already up to date" and
-is accepted). A moved or unreadable ref is refused with a
-**need-recover-refused** exception and the hold stays; a branch in any other
-status is skipped with a **need-recover-skipped** log line. The pump does not
-re-prove the adopted tip, so recover only a tip you have checked. A
-**need-recovered** exception records the old and the adopted tip.
-
 **Retry a given-up need** by sending a new record (**vivi pump send --need**).
 The pump starts that dispatch clean: it clears the planner state that parked
 the need and requeues its **stuck** units with a fresh attempt budget, so the
@@ -2544,7 +2527,7 @@ one, so in-flight work keeps its replies. It is idempotent; **--dry-run** lists
 what it would open; a handle that is not a mailspace need is reported as
 skipped.
 
-Control, priority, requeue, replan, withdraw, recover, and closeout commands accept
+Control, priority, requeue, replan, withdraw, and closeout commands accept
 **--project &lt;root&gt;** outside the project. The pump stores live state and
 control mode in **&lt;project&gt;/.vivi/pump/pump.db**. A second writer for the same
 home is refused. **status** reads without the pump lock.
@@ -2650,7 +2633,7 @@ tail; an exhausted audit creates
 **gatefix-no-live-work**, with audit attempts, failures, fix-unit counts,
 reason, and recovery action.
 
-**Gate fix needs are the pump's own needs.** The need a red gate creates (subject **pump: gate fix for g&lt;tip&gt;**) is sent from the pump identity (**[pump] reply_from**) to **[pump.board] reply_to**, and the pump opens its pump record in the same step, so the fix units' attempt records have a record to reply on and **pump replan**, **withdraw**, **requeue** and **recover** have one to act on. The board never plans such a need (the audit does), and its record is not reported as unplannable. **pump send** accepts any need the pump identity itself sent, whoever it is addressed to. A gate fix need an older pump created without a record is repaired by **vivi pump adopt** (or **vivi pump send --need &lt;need&gt;** for one need). The synthetic **pumpfix-** ids (repair units, a gate fix whose need could not be sent) are not mailspace needs: they never have a record and never reply.
+**Gate fix needs are the pump's own needs.** The need a red gate creates (subject **pump: gate fix for g&lt;tip&gt;**) is sent from the pump identity (**[pump] reply_from**) to **[pump.board] reply_to**, and the pump opens its pump record in the same step, so the fix units' attempt records have a record to reply on and **pump replan**, **withdraw** and **requeue** have one to act on. The board never plans such a need (the audit does), and its record is not reported as unplannable. **pump send** accepts any need the pump identity itself sent, whoever it is addressed to. A gate fix need an older pump created without a record is repaired by **vivi pump adopt** (or **vivi pump send --need &lt;need&gt;** for one need). The synthetic **pumpfix-** ids (repair units, a gate fix whose need could not be sent) are not mailspace needs: they never have a record and never reply.
 
 A revision the pump asked for is never left without an answer. A plan file that is not valid JSON, names no **need**, is stale, or fails validation is logged and raised as an exception (**bad-plan**, **revision-stale**), never skipped quietly; a revision file **&lt;need&gt;.r&lt;N&gt;.json** answers revision N whatever number is inside it, and a plan wrapped in a code fence between the markers is unwrapped. A need that stays **amendment_pending** with no revision planner in flight (the planner failed, timed out or its answer was rejected) is asked again after 60 seconds, doubling, at most three times; then one **revision-failed** exception names **vivi pump replan &lt;need&gt;** and the need waits. Units of a need with a pending revision do not dispatch.
 
