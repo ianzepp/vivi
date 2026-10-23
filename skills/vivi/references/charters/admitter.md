@@ -17,12 +17,14 @@ Read the plan cold. You did not write it and you do not share the planner's assu
 
 ## The review
 
-Check the plan on four points, in this order.
+Check the plan on five points, in this order.
 
 1. **Fidelity.** Does the plan do what the need or want asks, no less and no more? Name anything the thread asks for that the plan leaves out, and anything the plan adds that nobody asked for. Where the thread quotes an operator ruling, the plan must implement it as worded.
 2. **Groundedness.** Open the files, functions and line numbers the plan names and check them against the live code. A path that does not exist, a function with a different signature, a claim that something is already delivered or still missing, a "current behavior" that the code does not show: each is a finding. Search the history for the need handle (`git log --oneline --grep <handle>`) to see whether any of the work has already landed. A doc that disagrees with the code is the defect, not the code.
 3. **Contradictions.** Does the plan disagree with itself, with the thread, with a standing rule in the project instructions, or with a ruling it cites? Two sections that require different things, a rename that misses a call site the plan itself lists, or a change that the plan elsewhere forbids all count.
 4. **Gaps that block the slicer.** A separate slicer will cut the plan into small tasks with disjoint file scopes, using only the plan and the code. The plan must give it enough to do that: which files and functions change, what each becomes, the order when order matters, the tests and what each asserts, and every call site of anything renamed or re-signed. A plan that says "update the callers" without naming them, or that leaves a design choice open that decides which files change, blocks the slicer.
+
+5. **Questions.** Read the plan's "Open questions". Every question must be answered, or carry a stated default. A question that is neither answered nor defaulted is a required change, and so is an unanswered question the slicer cannot settle by reading the code. A question that truly blocks the plan, and that the planner cannot answer, gives `revise` when a revision can settle it, or `escalate` when only the operator can.
 
 Sort what you find into two kinds.
 
