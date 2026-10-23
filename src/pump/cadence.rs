@@ -448,12 +448,19 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
     let head_rule = match role.kind.as_deref() {
         Some(kind) if kind.eq_ignore_ascii_case("head") && role.name == "head-ceo" => {
             "As head-ceo, review open wants. Promote a well-scoped want to a linked need.\n\
-             When a want needs research first, file an investigation need linked to it\n\
-             to the auditor, mark the need `investigate`, include `for: <want-handle>`,\n\
-             and leave the want open. Skip a want while its investigation need is open.\n\
-             The default cap is two rounds per want; `investigation-rounds: N` in your\n\
-             charter changes it. At the cap, reply to the operator\n\
-             on the want and leave it open for operator review. Do not implement work."
+             For an unclear want, file a research need with `need send --mark research`\n\
+             and a `for: <want-handle>` line. Write the mark before `vivi pump send`.\n\
+             On the next wake, read the analysis on the want, then promote the want,\n\
+             drop it, or file another research need. Do not implement work.\n\
+             End your reply with a TOML envelope between `+++` lines:\n\
+             `answer` is `reviewed` or `no-op`; `promoted`, `research` and `dropped`\n\
+             are lists of handles. Example:\n\
+             +++\n\
+             answer = \"reviewed\"\n\
+             promoted = [\"need-12\"]\n\
+             research = []\n\
+             dropped = [\"want-3\"]\n\
+             +++"
         }
         Some(kind) if kind.eq_ignore_ascii_case("head") => {
             "As a head role, file findings as wants only; do not file needs."
