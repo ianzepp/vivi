@@ -11,7 +11,7 @@ use vivi::cli::{
     PoolShowCommand, PoolUnsetCommand,
 };
 use vivi::mailspace::Mailspace;
-use vivi::mailspace::config_edit::{self, PoolAdd};
+use vivi::mailspace::config_edit::{self, GuardedWrite, PoolAdd};
 use vivi::pool::PoolConfig;
 use vivi::pool::config::check_pool_name;
 use vivi::pool::work::open_dispatches;
@@ -95,7 +95,7 @@ fn print_show(entry: &PoolRow, pool: &PoolConfig) {
 pub(crate) fn add(command: &PoolAddCommand) -> Result<(), VivariumError> {
     check_pool_name(&command.name)?;
     let mailspace = Mailspace::discover(command.project.as_deref())?;
-    config_edit::apply(&mailspace.config_path(), |doc| {
+    let write = config_edit::guarded(&mailspace.root, |doc| {
         config_edit::upsert_pool(
             doc,
             &PoolAdd {
@@ -113,27 +113,30 @@ pub(crate) fn add(command: &PoolAddCommand) -> Result<(), VivariumError> {
         "added pool {} (provider {} slots {})",
         command.name, command.provider, command.slots
     );
+    print_notes(&write);
     Ok(())
 }
 
 pub(crate) fn set(command: &PoolConfigSetCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
-    config_edit::apply(&mailspace.config_path(), |doc| {
+    let write = config_edit::guarded(&mailspace.root, |doc| {
         config_edit::set_pool_key(doc, &command.name, &command.key, &command.value)
     })?;
     println!(
         "set pools.{} {} = {}",
         command.name, command.key, command.value
     );
+    print_notes(&write);
     Ok(())
 }
 
 pub(crate) fn unset(command: &PoolUnsetCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
-    config_edit::apply(&mailspace.config_path(), |doc| {
+    let write = config_edit::guarded(&mailspace.root, |doc| {
         config_edit::unset_pool_key(doc, &command.name, &command.key)
     })?;
     println!("unset pools.{} {}", command.name, command.key);
+    print_notes(&write);
     Ok(())
 }
 
@@ -149,11 +152,19 @@ pub(crate) fn remove(command: &PoolRemoveCommand) -> Result<(), VivariumError> {
         )));
     }
     refuse_busy(&mailspace, &command.name, command.force)?;
-    config_edit::apply(&mailspace.config_path(), |doc| {
+    let write = config_edit::guarded(&mailspace.root, |doc| {
         config_edit::remove_pool(doc, &command.name)
     })?;
     println!("removed pool {}", command.name);
+    print_notes(&write);
     Ok(())
+}
+
+/// Print a guarded write's backup and still-invalid lines on stderr.
+fn print_notes(write: &GuardedWrite) {
+    for note in write.notes() {
+        eprintln!("{note}");
+    }
 }
 
 fn refuse_busy(mailspace: &Mailspace, name: &str, force: bool) -> Result<(), VivariumError> {
@@ -203,19 +214,21 @@ fn bands_set(
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let effort = reasoning.unwrap_or("xhigh");
-    config_edit::apply(&mailspace.config_path(), |doc| {
+    let write = config_edit::guarded(&mailspace.root, |doc| {
         config_edit::set_band(doc, pool, band, model, effort)
     })?;
     println!("set pools.{pool}.bands.{band} {model} {effort}");
+    print_notes(&write);
     Ok(())
 }
 
 fn bands_unset(project: Option<&Path>, pool: &str, band: &str) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    config_edit::apply(&mailspace.config_path(), |doc| {
+    let write = config_edit::guarded(&mailspace.root, |doc| {
         config_edit::unset_band(doc, pool, band)
     })?;
     println!("unset pools.{pool}.bands.{band}");
+    print_notes(&write);
     Ok(())
 }
 
