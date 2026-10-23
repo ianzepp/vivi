@@ -33,7 +33,8 @@ fn a_fresh_mailspace_gets_the_three_flow_roles_with_their_charters() {
         assert_eq!(view.pool.as_deref(), Some("workers"));
         assert_eq!(view.read_only, Some(true));
         assert_eq!(Some(view.charter.as_str()), shipped_charter(name));
-        assert!(view.charter.contains("ANSWER: <word>"));
+        assert!(view.charter.contains("+++"));
+        assert!(view.charter.contains("answer = \""));
     }
 }
 
