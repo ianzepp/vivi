@@ -474,3 +474,39 @@ fn a_failed_pump_send_retries_without_filing_the_need_twice() -> R {
     assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
     Ok(())
 }
+
+#[test]
+fn a_bad_run_does_not_stop_the_next_runs_audit() -> R {
+    let mut rig = rig(true)?;
+    let bad = "n0";
+    rig.store.insert_run(&RunRow {
+        need: bad.into(),
+        run: 1,
+        flow: "repair".into(),
+        flow_version: 1,
+        kind: "repair".into(),
+        entry: "fix1".into(),
+        state: "done".into(),
+    })?;
+    for (node, task, verdict) in [
+        ("fix1", "ghost-fix", "built"),
+        ("merge1", "ghost-merge", "merged"),
+    ] {
+        rig.store.insert_step(
+            bad,
+            &StepRow {
+                run: 1,
+                node: node.into(),
+                task: task.into(),
+                state: StepState::Done,
+                verdict: Some(verdict.into()),
+            },
+        )?;
+    }
+    rig.land("repair", true)?;
+    assert!(rig.tick().is_err());
+    assert!(rig.jobs.jobs.contains_key(&job_id(NEED, 1)));
+    assert!(!rig.jobs.jobs.contains_key(&job_id(bad, 1)));
+    assert!(!rig.store.applied_action_ids()?.contains(&run_key(bad, 1)));
+    Ok(())
+}

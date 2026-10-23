@@ -71,16 +71,34 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for RepairAudit {
         mail: &mut M,
     ) -> Result<(), VivariumError> {
         let applied = store.applied_action_ids()?;
+        let mut first_error = None;
         for run in store.runs_in_state(RUN_DONE)? {
             if run.kind != REPAIR_KIND || applied.contains(&run_key(&run.need, run.run)) {
                 continue;
             }
-            match st.jobs().get(&job_id(&run.need, run.run)).cloned() {
-                Some(job) => collect(ctx, store, &job, &run)?,
-                None => enqueue(ctx, st, store, mail, &run)?,
+            if let Err(error) = audit_run(ctx, st, store, mail, &run) {
+                ctx.log(&format!(
+                    "repair audit of {} r{} failed: {error}",
+                    run.need, run.run
+                ));
+                first_error.get_or_insert(error);
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+/// Collect or queue the audit of one landed repair run.
+fn audit_run<S: JobStore, M: FlowMail>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    mail: &M,
+    run: &RunRow,
+) -> Result<(), VivariumError> {
+    match st.jobs().get(&job_id(&run.need, run.run)).cloned() {
+        Some(job) => collect(ctx, store, &job, run),
+        None => enqueue(ctx, st, store, mail, run),
     }
 }
 
