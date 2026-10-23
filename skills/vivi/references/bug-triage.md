@@ -83,9 +83,9 @@ vivi want show <handle>
 If the report needs more investigation, reply on the same thread. The added
 reply remains with the original report for review.
 
-## 4. Promote accepted work
+## 4. Send a need that serves the want
 
-If the bug should jump the want queue, set its priority before promotion:
+If the bug should jump the want queue, set its priority first:
 
 ```sh
 vivi want set-priority <handle> --for mind --priority P1 --reason "..."
@@ -97,18 +97,17 @@ time. It does not reorder the pump planner queue.
 Send a need that serves the want after the operator accepts the report:
 
 ```sh
-vivi need send --from mind --to mind --serves <handle> --subject "fix: ..." --done-when "the bug no longer reproduces"
+vivi need send --from mind --to mind --serves <handle> --subject "fix: ..." --done-when "the bug no longer reproduces" --body-file report.md
 ```
 
-Promotion carries the original bug and the auditor's reply into the need. The
-pump planner reads `vivi need show <handle>` output: the whole thread, with the
-original body and replies, truncated at 40,000 characters (`THREAD_CAP` in
-`src/pump/flow/step_inputs.rs`). Ordinary `need show` prints up to 50 messages at depth 50.
-Replies stay attached because threads link by message id and promotion moves
-the same record from Wants to Needs. Planners see replies; no separate fix is
-needed.
+The serving need is a new letter with its own thread. The pump planner reads
+`vivi need show <handle>` output: that thread only, truncated at 40,000
+characters (`THREAD_CAP` in `src/pump/flow/step_inputs.rs`). Put the repro, the
+root cause and the proposed fix in the need body, and name the want handle so
+a reader can open the discussion. The want's state follows its serving needs:
+it stays open while one is open and is done once all are closed.
 
-The pump plans a need only when it has an open pump record. A promoted need
+The pump plans a need only when it has an open pump record. The serving need
 is not dispatched until the Mind or operator sends one:
 
 ```sh
@@ -116,10 +115,10 @@ vivi pump send --need <handle>
 ```
 
 The record is that dispatch; the pump posts its plan and attempt records on
-it and closes it with the outcome (`landed`, `gave-up`, `withdrawn`,
-`superseded`). `vivi pump history <handle>` lists a need's dispatches.
+it and closes it with the outcome (`landed`, `withdrawn`, `superseded`; a
+locked run keeps its record open). `vivi pump history <handle>` lists a need's dispatches.
 
-## 5. Close out without promotion
+## 5. Close a want no need will serve
 
 Invalid, duplicate, and won't-fix reports stay out of the need queue. Close
 the want with a short reason:
@@ -129,5 +128,6 @@ vivi want done <handle> --for mind --note "<reason>"
 vivi want drop <handle> --for mind --note "<reason>"
 ```
 
-Use `done` for a resolved disposition and `drop` for an obsolete want. Record
-the reason in the note so later readers can see why it was not promoted.
+Use `done` for a resolved disposition and `drop` for an obsolete want. A
+`done` by hand counts only while no need serves the want. Record the reason in
+the note so later readers can see why no need was sent.
