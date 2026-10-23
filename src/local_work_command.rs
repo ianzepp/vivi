@@ -207,7 +207,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
             json,
             latest,
             project,
-        } => show_local_message(handle, *json, *latest, project.as_deref())?,
+        } => crate::local_want_show::show_want(handle, *json, *latest, project.as_deref())?,
         WantCommand::Dump(command) => dump_work_items(command, "wants", "want", "Vivi Want Dump")?,
         WantCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("want", command)?;
@@ -602,19 +602,6 @@ pub(crate) fn print_move_receipt(moved: &vivi::mailspace::MoveOutcome, verb: &st
     for need in joined {
         println!("need {need} completed (all bound units accepted)");
     }
-}
-
-fn show_local_message(
-    handle: &str,
-    json: bool,
-    latest: bool,
-    project: Option<&std::path::Path>,
-) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    if !json && !latest {
-        vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
-    }
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)
 }
 
 /// Need show: the thread plus a bound-units block, so a need's lowering
