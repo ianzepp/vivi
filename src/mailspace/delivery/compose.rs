@@ -1,21 +1,19 @@
 //! The compose gate: every send and reply is checked at compose. A need, want
 //! or task body must open with valid front matter; a pump record must parse as
-//! one; prose mail and chat are wrapped in empty front matter; a mail body with
-//! front matter must be a note, an action or a role reply envelope. An invalid
+//! one; prose mail and chat are stored as written, with no front matter; a mail
+//! body with front matter must be a note, an action or a role reply envelope. An invalid
 //! letter is refused and nothing is stored.
 
 use super::super::Mailspace;
 use super::super::serves::canonical_wants;
 use crate::error::VivariumError;
-use crate::letter::plain::EmptyFront;
-use crate::letter::records::MailFront;
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::{Front, Letter, LetterError, LetterKind, of_message, parse_kind, render};
 
 /// A checked letter body and what it declares.
 pub(super) struct Gated {
-    /// The body to store: wrapped when it was prose, re-rendered when a
-    /// need's `serves`/`explores` were made canonical, else unchanged.
+    /// The body to store: re-rendered when a
+    /// need's `serves`/`explores` were made canonical, else as written.
     pub body: String,
     /// The `X-Vivi-Kind` to write.
     pub kind: Option<String>,
@@ -44,8 +42,8 @@ pub(super) fn gate(
     match word {
         "need" | "want" | "task" => work(mailspace, word, body),
         "pump" => checked(word, body, parse(&LetterKind::Record, body)?),
-        "mail" => open_or_wrap(word, body, &LetterKind::Mail, &MailFront::default()),
-        "chat" => open_or_wrap(word, body, &LetterKind::Chat, &EmptyFront::default()),
+        "mail" => checked_prose(word, body, &LetterKind::Mail),
+        "chat" => checked_prose(word, body, &LetterKind::Chat),
         _ => Ok(Gated {
             body: body.to_string(),
             kind: Some(word.to_string()),
@@ -78,19 +76,10 @@ fn checked(kind: &str, body: &str, letter: Letter) -> Result<Gated, VivariumErro
 }
 
 /// A body that opens with front matter must parse as `letter_kind`; any other
-/// body is prose and is wrapped in `empty`.
-fn open_or_wrap<T: serde::Serialize>(
-    kind: &str,
-    body: &str,
-    letter_kind: &LetterKind,
-    empty: &T,
-) -> Result<Gated, VivariumError> {
-    if opens_with_fence(body) {
-        return checked(kind, body, parse(letter_kind, body)?);
-    }
-    let wrapped = render(empty, body).map_err(|err| VivariumError::Message(err.to_string()))?;
-    let letter = parse(letter_kind, &wrapped)?;
-    checked(kind, &wrapped, letter)
+/// body is prose and is stored as written (it reads as an empty front plus the
+/// whole body).
+fn checked_prose(kind: &str, body: &str, letter_kind: &LetterKind) -> Result<Gated, VivariumError> {
+    checked(kind, body, parse(letter_kind, body)?)
 }
 
 fn work(mailspace: &Mailspace, kind: &str, body: &str) -> Result<Gated, VivariumError> {

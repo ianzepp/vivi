@@ -1,5 +1,8 @@
+use super::raw_letter;
 use crate::letter::fixture::{body_with_deps, need_body, task_body_with};
+use crate::letter::records::MailFront;
 use crate::letter::work::{NeedFront, TaskFront};
+use crate::letter::{Front, LetterKind, of_message};
 use crate::mailspace::{Mailspace, SendRequest};
 
 fn space() -> (tempfile::TempDir, Mailspace) {
@@ -225,20 +228,26 @@ fn nothing_mailed(mailspace: &Mailspace) {
     assert!(mailspace.list("mind", "sent").unwrap().is_empty());
 }
 
+/// The body text of a stored letter: everything after the header block.
+fn body_of(eml: &str) -> &str {
+    eml.split_once("\n\n").map_or("", |(_, body)| body)
+}
+
 #[test]
-fn a_prose_mail_is_wrapped_in_empty_front_matter_with_the_format_and_kind_headers() {
+fn a_prose_mail_is_stored_as_written_with_the_format_and_kind_headers() {
     let (_tmp, mailspace) = space();
     for kind in [Some("mail"), None] {
         let result = mailspace.send(mail(kind, "inbox", "hello there")).unwrap();
         let eml = flat(&mailspace, &result.delivered[0].handle);
         assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
         assert!(eml.contains("X-Vivi-Kind: mail"), "{eml}");
-        assert!(eml.contains("+++\n+++\n\nhello there"), "{eml}");
+        assert_eq!(body_of(&eml).trim_end(), "hello there", "{eml}");
+        assert!(!eml.contains("+++"), "{eml}");
     }
 }
 
 #[test]
-fn a_prose_reply_is_wrapped_and_formatted() {
+fn a_prose_reply_is_stored_as_written_and_formatted() {
     let (_tmp, mailspace) = space();
     let first = mailspace
         .send(mail(Some("mail"), "inbox", "question"))
@@ -257,7 +266,48 @@ fn a_prose_reply_is_wrapped_and_formatted() {
     let eml = flat(&mailspace, &result.sent);
     assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
     assert!(eml.contains("X-Vivi-Kind: mail"), "{eml}");
-    assert!(eml.contains("+++\n+++\n\nanswer"), "{eml}");
+    assert_eq!(body_of(&eml).trim_end(), "answer", "{eml}");
+    assert!(!eml.contains("+++"), "{eml}");
+}
+
+#[test]
+fn a_stored_prose_mail_reads_as_mail_with_an_empty_front() {
+    let (_tmp, mailspace) = space();
+    let result = mailspace
+        .send(mail(Some("mail"), "inbox", "hello there"))
+        .unwrap();
+    let handle = &result.delivered[0].handle;
+    let raw = mailspace.storage().unwrap().read_message(handle).unwrap();
+    let letter = of_message(&raw, handle).unwrap();
+    assert_eq!(letter.kind, LetterKind::Mail);
+    assert_eq!(letter.front, Front::Mail(MailFront::default()));
+    assert_eq!(letter.prose, "hello there");
+}
+
+#[test]
+fn the_raw_gate_admits_a_format_one_prose_mail_and_chat() {
+    for kind in ["mail", "chat"] {
+        let raw = format!(
+            "From: a@b\r\nTo: c@d\r\nSubject: s\r\nX-Vivi-Format: 1\r\nX-Vivi-Kind: {kind}\r\n\r\nhello there\r\n"
+        );
+        raw_letter(raw.as_bytes()).unwrap();
+        let letter = of_message(raw.as_bytes(), "h").unwrap();
+        assert_eq!(letter.prose, "hello there");
+        assert_eq!(
+            matches!(letter.front, Front::Mail(_)),
+            kind == "mail",
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_stored_wrapped_prose_mail_still_parses() {
+    let raw = "From: a@b\r\nTo: c@d\r\nSubject: s\r\nX-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\n+++\r\n+++\r\n\r\nold body\r\n";
+    raw_letter(raw.as_bytes()).unwrap();
+    let letter = of_message(raw.as_bytes(), "h").unwrap();
+    assert_eq!(letter.kind, LetterKind::Mail);
+    assert_eq!(letter.prose, "old body");
 }
 
 #[test]
@@ -336,13 +386,14 @@ fn a_hand_envelope_is_accepted_unchanged_by_send_and_by_reply() {
 }
 
 #[test]
-fn chat_is_wrapped_in_empty_front_matter() {
+fn chat_is_stored_as_written() {
     let (_tmp, mailspace) = space();
     let result = mailspace.send(mail(Some("chat"), "inbox", "hi")).unwrap();
     let eml = flat(&mailspace, &result.delivered[0].handle);
     assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
     assert!(eml.contains("X-Vivi-Kind: chat"), "{eml}");
-    assert!(eml.contains("+++\n+++\n\nhi"), "{eml}");
+    assert_eq!(body_of(&eml).trim_end(), "hi", "{eml}");
+    assert!(!eml.contains("+++"), "{eml}");
 }
 
 #[test]
