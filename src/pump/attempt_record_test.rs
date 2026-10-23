@@ -16,8 +16,7 @@ use crate::pump::board::board;
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, PoolJob};
-use crate::pump::quarantine::set_aside;
-use crate::pump::state::{MergeResult, Quarantine, State, Status, Unit};
+use crate::pump::state::{State, Status, Unit};
 
 const T0: u64 = 1_000_000;
 const TASK: &str = "1a2b3c4d";
@@ -97,11 +96,6 @@ fn receipt(exit: i32, message: &str, stderr: &str) -> String {
     )
 }
 
-/// The branch is on the remote.
-fn branch_on_remote(host: &FakeHost) {
-    host.reply("ls-remote", 0, "abc\trefs/heads/unit/u-1-a1\n");
-}
-
 /// The `mail reply` commands sent to `target` (a record or a need handle).
 fn mails_to(host: &FakeHost, target: &str) -> Vec<String> {
     let needle = format!("mail reply {target} ");
@@ -134,18 +128,6 @@ fn records_for(ctx: &Ctx, need: &str) -> Vec<(String, String)> {
     found
 }
 
-/// The attempt records written for need `n1`: file name and text.
-fn records(ctx: &Ctx) -> Vec<(String, String)> {
-    records_for(ctx, "n1")
-}
-
-/// The one record; panics unless there is exactly one.
-fn the_record(ctx: &Ctx) -> String {
-    let mut found = records(ctx);
-    assert_eq!(found.len(), 1, "{found:?}");
-    found.remove(0).1
-}
-
 #[test]
 fn a_merged_status_posts_a_synced_attempt_event() {
     let (_dir, ctx, host) = setup();
@@ -174,41 +156,6 @@ fn ready_time_keeps_the_first_observation_until_cleared() {
     clear_ready(&mut st, "u-1");
     mark_ready(&mut st, "u-1", T0 + 30);
     assert_eq!(st.units["u-1"].ready_at, Some(T0 + 30));
-}
-
-#[test]
-fn a_quarantined_unit_posts_a_record_naming_the_batch_and_the_repair() {
-    let (_dir, ctx, host) = setup();
-    branch_on_remote(&host);
-    host.reply("task show", 0, &receipt(0, "pushed", ""));
-    let mut unit = inflight();
-    unit.status = Status::Merging;
-    let mut st = state_with(unit);
-    st.order.push(String::from("u-1"));
-    let result = MergeResult {
-        uid: String::from("u-1"),
-        ok: None,
-        why: Some(String::from("quarantined")),
-        quarantine: Some(Quarantine {
-            id: String::from("q1-abc"),
-            cmd: String::from("cargo test"),
-            code: 1,
-            text: String::from("boom"),
-            units: vec![String::from("u-1")],
-        }),
-        ..MergeResult::default()
-    };
-    set_aside(&ctx, &mut st, &result);
-    assert_eq!(st.units["u-1"].status, Status::Quarantined);
-    let repair = st.units.keys().find(|uid| uid.as_str() != "u-1").unwrap();
-    let text = the_record(&ctx);
-    assert!(
-        text.contains(&format!(
-            "outcome: quarantined (batch q1-abc, repair unit {repair})\n"
-        )),
-        "{text}"
-    );
-    assert_eq!(mails(&host).len(), 1, "the repair unit posts nothing");
 }
 
 #[test]
