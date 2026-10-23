@@ -31,78 +31,13 @@ pub struct PoolEventRow {
     pub note: String,
 }
 
-/// First line of a pump attempt-context reply on a slice task.
-pub const ATTEMPT_MARKER: &str = "pump-attempt:";
-
-/// First line of a pump brief reply on a preset task (old form).
-pub const BRIEF_MARKER: &str = "pump-brief:";
-
-/// The first line of a pump-marked reply: `<marker> t=<unix micros> <rest>`.
-///
-/// Thread order has one-second precision, so same-second replies need their
-/// own order. The stamp is the clock in microseconds, pushed one past the last
-/// stamp this process issued, so it strictly increases.
-#[must_use]
-pub fn marked_line(marker: &str, rest: &str) -> String {
-    let stamp = super::pump_note::next_stamp();
-    format!("{marker} t={stamp} {rest}").trim_end().to_owned()
-}
-
-/// The text after `marker` on a marked line, without the `t=` stamp. `None`
-/// when the line does not start with the marker.
-#[must_use]
-pub fn marked_payload<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
-    let rest = line.trim().strip_prefix(marker)?.trim_start();
-    Some(match split_stamp(rest) {
-        Some((_, after)) => after,
-        None => rest,
-    })
-}
-
-/// A leading `t=<digits>` token and the text after it.
-fn split_stamp(text: &str) -> Option<(i64, &str)> {
-    let (token, after) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
-    let stamp = match token.strip_prefix("t=")?.parse() {
-        Ok(stamp) => stamp,
-        Err(_) => return None,
-    };
-    Some((stamp, after.trim_start()))
-}
-
-/// The order stamp of a marked message: a note's `pump.t`, else the stamp on
-/// the first line, when it has one.
-fn stamp_of(body: &str) -> Option<i64> {
-    if let Some(note) = super::pump_note::note_of(body) {
-        return Some(note.pump.t);
-    }
-    // TRANSITIONAL (W3-B3): the old first-line stamp, deleted by W3B3-15.
-    let first = body.trim_start().lines().next()?;
-    let (_, rest) = first.split_once(char::is_whitespace)?;
-    split_stamp(rest.trim_start()).map(|(stamp, _)| stamp)
-}
-
-/// Sort marked replies oldest first by `(t, Date, message_id)`. A reply with
-/// no stamp sorts by `Date` and then `message_id`, after any stamped reply
-/// of the same second.
-pub fn order_marked(replies: &mut [MailspaceThreadMessage]) {
+/// Sort a thread's messages oldest first by `(pump.t, Date, message_id)`. A
+/// message that is not a pump note sorts first, by `Date` and `message_id`.
+pub fn order_notes(replies: &mut [MailspaceThreadMessage]) {
     replies.sort_by_cached_key(|message| {
-        let stamp = stamp_of(&message.body);
-        let second = stamp.map_or_else(|| date_seconds(&message.date), |t| t.div_euclid(1_000_000));
-        (
-            second,
-            stamp.is_none(),
-            stamp.unwrap_or(0),
-            message.date.clone(),
-            message.message_id.clone(),
-        )
+        let stamp = super::pump_note::note_of(&message.body).map(|note| note.pump.t);
+        (stamp, message.date.clone(), message.message_id.clone())
     });
-}
-
-/// Unix seconds of a thread `Date`, 0 when it does not parse.
-fn date_seconds(date: &str) -> i64 {
-    chrono::DateTime::parse_from_rfc3339(date)
-        .or_else(|_| chrono::DateTime::parse_from_rfc2822(date))
-        .map_or(0, |parsed| parsed.timestamp())
 }
 
 /// The marked replies found on one task's thread.
@@ -196,7 +131,7 @@ impl Mailspace {
         task_id: &str,
     ) -> Result<ThreadReplies, VivariumError> {
         let mut thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
-        order_marked(&mut thread);
+        order_notes(&mut thread);
         let mut found = ThreadReplies::default();
         for message in thread {
             if message.event.is_some() || message.message_id == task_id {

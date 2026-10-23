@@ -45,11 +45,7 @@ fn the_real_port_reads_notes_of_one_word_oldest_first() {
     port.reply(&task, &note(NoteWord::Attempt, "other word"))
         .unwrap();
     port.reply(&task, "plain prose reply").unwrap();
-    port.reply(
-        &task,
-        &crate::mailspace::marked_line("pump-deviations:", "old form"),
-    )
-    .unwrap();
+    port.reply(&task, "pump-deviations: old form").unwrap();
     port.reply(&task, &note(NoteWord::Deviations, "second"))
         .unwrap();
     port.reply(&task, &note(NoteWord::Deviations, "third"))

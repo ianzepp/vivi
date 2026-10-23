@@ -18,7 +18,7 @@
 use crate::error::VivariumError;
 use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::{Note, note_of};
-use crate::mailspace::{MailspaceThreadMessage, marked_payload, order_marked};
+use crate::mailspace::{MailspaceThreadMessage, order_notes};
 use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
 use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
@@ -138,19 +138,6 @@ pub trait SliceMail: MailReader {
         marker: &str,
     ) -> Result<Vec<(String, String)>, VivariumError>;
 
-    /// Like [`SliceMail::marked_replies`], but only the replies sent by the
-    /// identity `sender` (a role name or alias). A reply whose sender does not
-    /// resolve to `sender` is left out.
-    ///
-    /// # Errors
-    /// Returns [`VivariumError`] when the thread cannot be read.
-    fn marked_replies_from(
-        &self,
-        task: &str,
-        marker: &str,
-        sender: &str,
-    ) -> Result<Vec<(String, String)>, VivariumError>;
-
     /// The pump notes of `word` on `task`, oldest first by `(t, date, message
     /// id)`, each as `(sortable date, note)`. Events, the task itself and
     /// replies that are not a note of `word` are left out.
@@ -160,7 +147,7 @@ pub trait SliceMail: MailReader {
     fn notes(&self, task: &str, word: NoteWord) -> Result<Vec<(String, Note)>, VivariumError>;
 
     /// Like [`SliceMail::notes`], but only the notes sent by the identity
-    /// `sender` (matched as [`SliceMail::marked_replies_from`] does).
+    /// `sender` (a role name or alias; a reply whose sender does not resolve to `sender` is left out).
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the thread cannot be read.
@@ -216,20 +203,7 @@ impl SliceMail for MailspacePort {
         task: &str,
         marker: &str,
     ) -> Result<Vec<(String, String)>, VivariumError> {
-        self.marked_where(task, marker, |_| true)
-    }
-
-    fn marked_replies_from(
-        &self,
-        task: &str,
-        marker: &str,
-        sender: &str,
-    ) -> Result<Vec<(String, String)>, VivariumError> {
-        let wanted = self.mailspace.resolve_identity(sender);
-        self.marked_where(task, marker, |message| match &wanted {
-            Ok(wanted) => self.sent_by(message, wanted),
-            Err(_) => false,
-        })
+        self.marked_where(task, marker)
     }
 }
 
@@ -251,36 +225,19 @@ impl MailspacePort {
         }
     }
 
-    /// The marked replies on `task` that `keep` accepts, oldest first, each as
-    /// `(sortable date, trimmed text)`.
+    /// The replies on `task` whose text starts with `marker`, in thread order,
+    /// each as `(sortable date, trimmed text)`.
     fn marked_where(
         &self,
         task: &str,
         marker: &str,
-        keep: impl Fn(&MailspaceThreadMessage) -> bool,
     ) -> Result<Vec<(String, String)>, VivariumError> {
         let (id, thread) = self.thread_of(task)?;
-        let mut found: Vec<MailspaceThreadMessage> = thread
+        Ok(thread
             .into_iter()
             .filter(|message| message.event.is_none() && message.message_id != id)
             .filter(|message| message.body.trim_start().starts_with(marker))
-            .filter(|message| keep(message))
-            .collect();
-        order_marked(&mut found);
-        Ok(found
-            .into_iter()
-            .map(|message| {
-                let text = message.body.trim();
-                let (first, more) = text.split_once('\n').unwrap_or((text, ""));
-                let payload = marked_payload(first, marker).unwrap_or_default();
-                let line = format!("{marker} {payload}").trim_end().to_owned();
-                let text = if more.is_empty() {
-                    line
-                } else {
-                    format!("{line}\n{more}")
-                };
-                (message.date, text)
-            })
+            .map(|message| (message.date, message.body.trim().to_owned()))
             .collect())
     }
 
@@ -299,7 +256,7 @@ impl MailspacePort {
             .filter(|message| note_of(&message.body).is_some_and(|note| note.pump.note == word))
             .filter(|message| keep(message))
             .collect();
-        order_marked(&mut found);
+        order_notes(&mut found);
         Ok(found
             .into_iter()
             .filter_map(|message| note_of(&message.body).map(|note| (message.date, note)))
@@ -868,24 +825,6 @@ impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
         Ok(notes
             .into_iter()
             .map(|(_, date, note)| (date, note))
-            .collect())
-    }
-
-    fn marked_replies_from(
-        &self,
-        task: &str,
-        marker: &str,
-        sender: &str,
-    ) -> Result<Vec<(String, String)>, VivariumError> {
-        if sender == self.identity {
-            return self.marked_replies(task, marker);
-        }
-        let foreign = self.foreign.get(task).map(Vec::as_slice).unwrap_or(&[]);
-        Ok(foreign
-            .iter()
-            .enumerate()
-            .filter(|(_, (who, body))| who == sender && body.trim_start().starts_with(marker))
-            .map(|(at, (_, body))| (format!("{at:08}"), body.trim().to_owned()))
             .collect())
     }
 }

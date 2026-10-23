@@ -239,10 +239,8 @@ fn task_body_and_replies_have_no_cr_for_a_multi_line_body() {
             &[],
         )
         .unwrap();
-    let reply = crate::mailspace::marked_line(
-        "pool result ",
-        "j1: finished\nsummary\n\nthe answer\n\n--- stderr tail\nnoise",
-    );
+    let reply =
+        "pool result j1: finished\nsummary\n\nthe answer\n\n--- stderr tail\nnoise".to_owned();
     port.reply(&task, &reply).unwrap();
 
     let body = SliceMail::task_body(&port, &task).unwrap();
