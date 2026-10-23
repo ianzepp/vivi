@@ -496,7 +496,7 @@ publish_target() {
   publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes || true
 }
 
-# Delete only this job's owned need or unit attempt ref, guarded by its exact
+# Delete only this job's owned need, prior-need, unit, repair or merge-main ref, guarded by its exact
 # old tip. The lease is a compare-and-delete guard; no nonempty refspec is forced.
 delete_target() {
   [ -n "${DELETE_REF:-}" ] || return 0
@@ -507,6 +507,9 @@ delete_target() {
   case "$DELETE_REF" in
     refs/heads/vivi/need/*) owned_id=${DELETE_REF#refs/heads/vivi/need/} ;;
     refs/heads/vivi/unit/*) owned_id=${DELETE_REF#refs/heads/vivi/unit/} ;;
+    refs/heads/vivi/need-prior/*) owned_id=${DELETE_REF#refs/heads/vivi/need-prior/} ;;
+    refs/heads/vivi/repair/*) owned_id=${DELETE_REF#refs/heads/vivi/repair/} ;;
+    refs/heads/pump/merge-main/*) owned_id=${DELETE_REF#refs/heads/pump/merge-main/} ;;
     *) return 0 ;;
   esac
   case "$owned_id" in ''|*/*) return 0 ;; esac
