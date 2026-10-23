@@ -16,12 +16,12 @@ use std::path::Path;
 
 use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, PumpAction, PumpActionKind};
+use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, route::Decide};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
-use crate::pump::flow::run::SENTINEL_NODE;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
 

@@ -12,10 +12,10 @@ use super::{FOREIGN_CLOSE, pass};
 use crate::error::VivariumError;
 use crate::mailspace::RoleUpdate;
 use crate::pump::fixture::{Project, project};
+use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, TaskStatus};
-use crate::pump::flow::run::SENTINEL_NODE;
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 

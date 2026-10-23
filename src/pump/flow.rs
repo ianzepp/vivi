@@ -18,7 +18,6 @@ pub mod outcome;
 pub mod prune;
 pub mod rank;
 pub mod registry;
-pub mod run;
 pub mod rung_step;
 pub mod scope;
 pub mod slice_dispatch;
