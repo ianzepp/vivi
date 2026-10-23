@@ -11,7 +11,6 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec};
 use crate::pump::state::State;
 use crate::role_schedule::{self, state_label};
-use crate::routing::resolve_read_only;
 
 /// The `state.extra` key holding the cadence state.
 pub const EXTRA_KEY: &str = "cadence";
@@ -41,8 +40,6 @@ pub struct RoleScan {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
-    pub read_only: bool,
-    #[serde(default)]
     pub cadence: Option<String>,
     #[serde(default)]
     pub pool: Option<String>,
@@ -69,8 +66,6 @@ pub struct RoleRun {
     /// The Vivi task handle, once the job has been dispatched.
     #[serde(default)]
     pub task: String,
-    #[serde(default)]
-    pub branch: Option<String>,
     #[serde(default)]
     pub read_only: bool,
     #[serde(default)]
@@ -225,9 +220,8 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
                 scan.schedule_state.as_str()
             };
             format!(
-                "cadence {name} kind {} state {status} mode {} next {next_due}{due} last {result}",
+                "cadence {name} kind {} state {status} next {next_due}{due} last {result}",
                 scan.kind.as_deref().unwrap_or("unknown"),
-                if scan.read_only { "read-only" } else { "write" }
             )
         })
         .collect()
@@ -282,13 +276,11 @@ fn role_scan(
     open_needs: usize,
     now: u64,
 ) -> RoleScan {
-    let read_only = resolve_read_only(false, role.read_only, role.kind.as_deref());
     let next_due_at = next_due_at(&schedule, now);
     RoleScan {
         name: role.name,
         kind: role.kind,
         status: role.status,
-        read_only,
         cadence: role.cadence,
         pool: role.pool,
         open_wants,
@@ -314,7 +306,6 @@ fn enqueue_due(
     let attempt = next_attempt(cadence.runs.get(&scan.name));
     let spec = job_spec(ctx, st, &role, scan, attempt, now);
     let job_id = spec.id.clone();
-    let branch = spec.branch.clone();
     let read_only = spec.read_only;
     if let Err(error) = jobs::enqueue(st, spec) {
         ctx.log(&format!("cadence enqueue {} failed: {error}", scan.name));
@@ -330,7 +321,6 @@ fn enqueue_due(
         RoleRun {
             job: job_id,
             task,
-            branch,
             read_only,
             started_at: now,
             ended_at: None,
@@ -396,19 +386,9 @@ fn finish_cadence_spec(
     subject: String,
     body: String,
 ) -> JobSpec {
-    let read_only = is_mind || resolve_read_only(false, role.read_only, role.kind.as_deref());
-    let branch = (!read_only).then(|| {
-        format!(
-            "cadence/{}-{}-a{attempt}",
-            role.name,
-            scan.next_due_at.unwrap_or(now)
-        )
-    });
     let mut spec = JobSpec::new(id, kind, role.name.clone(), subject, body);
-    spec.target = branch.as_ref().map(|_| ctx.target_id.clone());
-    spec.branch = branch;
     spec.budget = ctx.cfg.dispatch.budget;
-    spec.read_only = read_only;
+    spec.read_only = true;
     spec.payload = serde_json::json!({
         "cadence": role.cadence,
         "scheduled_at": now,
@@ -487,11 +467,7 @@ fn complete_runs(ctx: &Ctx, st: &mut State, cadence: &mut CadenceState, now: u64
             continue;
         };
         let success = outcome.state == "finished" && outcome.agent_success() == Some(true);
-        let ended_at = if run.branch.is_some() {
-            now
-        } else {
-            outcome.at
-        };
+        let ended_at = outcome.at;
         run.ended_at = Some(ended_at);
         run.outcome = Some(if success {
             String::from("success")

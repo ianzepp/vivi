@@ -248,3 +248,33 @@ fn a_misspelled_pump_role_is_an_error_not_a_missing_role() {
     );
     assert!(!items(&issues).iter().any(|name| name == "role hnad"));
 }
+
+#[test]
+fn a_writable_cadence_role_is_one_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = fresh(tmp.path());
+    space
+        .add_role(
+            "head-writer",
+            RoleUpdate {
+                kind: Some(Some(String::from("head"))),
+                cadence: Some(Some(String::from("4h"))),
+                read_only: Some(Some(false)),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    let warnings: Vec<&Issue> = issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Warning && issue.message.contains("cadence"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{issues:?}");
+    assert!(warnings[0].message.contains("head-writer"), "{warnings:?}");
+    assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
+    assert!(
+        !items(&issues)
+            .iter()
+            .any(|name| name.contains("head-writer"))
+    );
+}
