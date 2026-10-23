@@ -181,16 +181,81 @@ fn parse_mail(text: &str) -> Result<Letter, LetterError> {
         Ok(letter) => return Ok(letter),
         Err(error) => error,
     };
+    let answer = answer_of(text);
+    let mut first_fault = None;
     for role in RoleKind::ALL {
-        if let Ok(parsed) = roles::parse_for(role, text) {
-            return Ok(Letter {
-                kind: LetterKind::Reply(role),
-                prose: parsed.body.clone(),
-                front: Front::Reply(parsed),
-            });
+        match roles::parse_for(role, text) {
+            Ok(parsed) => {
+                return Ok(Letter {
+                    kind: LetterKind::Reply(role),
+                    prose: parsed.body.clone(),
+                    front: Front::Reply(parsed),
+                });
+            }
+            Err(fault) => {
+                let named = answer
+                    .as_deref()
+                    .is_some_and(|word| role.answer_words().contains(&word));
+                if first_fault.is_none() && named {
+                    first_fault = Some(role_fault(role, fault, text));
+                }
+            }
         }
     }
-    Err(not_an_envelope(error))
+    Err(match (first_fault, answer) {
+        (Some(fault), _) => fault,
+        (None, Some(word)) => LetterError::Invalid(unknown_answer(&word)),
+        (None, None) => not_an_envelope(error),
+    })
+}
+
+/// The value of the top-level `answer` key; `None` when there is none.
+fn answer_of(text: &str) -> Option<String> {
+    let Ok((front, _)) = split(text) else {
+        return None;
+    };
+    let Ok(table) = toml::from_str::<toml::Table>(front) else {
+        return None;
+    };
+    table.get("answer").map(|value| match value.as_str() {
+        Some(word) => word.to_string(),
+        None => value.to_string(),
+    })
+}
+
+/// A role's own error, told which role it is. A TOML error that does not
+/// name its key is told the key on its line.
+fn role_fault(role: RoleKind, error: LetterError, text: &str) -> LetterError {
+    let name = role.name();
+    match error {
+        LetterError::Toml { line, message } => {
+            let key = text
+                .lines()
+                .nth(line.saturating_sub(1))
+                .and_then(|row| row.split('=').next())
+                .map(|key| key.trim().trim_matches(['[', ']']).trim())
+                .filter(|key| !key.is_empty() && !message.contains(key));
+            let message = match key {
+                Some(key) => format!("{name} envelope: {message} (at `{key}`)"),
+                None => format!("{name} envelope: {message}"),
+            };
+            LetterError::Toml { line, message }
+        }
+        LetterError::Invalid(reason) => LetterError::Invalid(format!("{name} envelope: {reason}")),
+        other => other,
+    }
+}
+
+/// The answer word fits no role: list what each role accepts.
+fn unknown_answer(word: &str) -> String {
+    let roles: Vec<String> = RoleKind::ALL
+        .iter()
+        .map(|role| format!("{}: {}", role.name(), role.answer_words().join(", ")))
+        .collect();
+    format!(
+        "answer `{word}` is not a word any role accepts ({})",
+        roles.join("; ")
+    )
 }
 
 /// The mail error, told that the front matter is not a role envelope either.

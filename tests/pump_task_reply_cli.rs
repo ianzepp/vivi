@@ -135,3 +135,27 @@ fn a_reply_whose_front_matter_fits_no_front_is_refused_and_stores_nothing() {
         text(&thread.stdout)
     );
 }
+
+#[test]
+fn a_hand_envelope_with_one_extra_key_is_refused_naming_it_and_stores_nothing() {
+    let (tmp, mailspace) = project();
+    let task = self_task(&mailspace);
+
+    let out = reply_with(
+        &tmp,
+        &task,
+        &["--to", "mind"],
+        "+++\nanswer = \"built\"\ntask = \"x\"\nchange = []\n+++\n\nthe report\n",
+    );
+
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    let err = text(&out.stderr);
+    assert!(err.contains("hand envelope"), "{err}");
+    assert!(err.contains("unknown field `task`"), "{err}");
+    let thread = vivi(&tmp, &["mail", "thread", &task]);
+    assert!(
+        !text(&thread.stdout).contains("the report"),
+        "{}",
+        text(&thread.stdout)
+    );
+}
