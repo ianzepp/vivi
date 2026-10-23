@@ -348,3 +348,56 @@ fn lock_becomes_an_open_task_and_restart_is_a_terminal() -> R {
     assert_eq!(routed.terminal[0].node, "r_slice");
     Ok(())
 }
+
+#[test]
+fn a_retried_route_reuses_the_step_an_earlier_partial_route_sent() -> R {
+    let mut rig = rig()?;
+    let build = rig.step("build1")?;
+    rig.mail.calls.clear();
+
+    // The first send (audit1) lands; the second (test1) fails.
+    rig.mail.fail_at = Some(1);
+    let first = rig.route(&with_word(build.clone(), "built"), "");
+    assert!(first.is_err());
+    assert_eq!(
+        status(&rig.mail, &build.task)?,
+        TaskStatus::Open,
+        "a failed route never closes the predecessor"
+    );
+
+    let routed = rig.route(&with_word(build.clone(), "built"), "")?;
+    assert_eq!(nodes(&routed), vec!["audit1", "test1"]);
+
+    let tasks_of = |node: &str| {
+        let tag = format!(" r1 {node}\n");
+        rig.mail
+            .tasks
+            .values()
+            .filter(|t| t.body.contains(&tag))
+            .count()
+    };
+    assert_eq!(tasks_of("audit1"), 1);
+    assert_eq!(tasks_of("test1"), 1);
+
+    let bind = rig
+        .mail
+        .position(|c| matches!(c, Call::Bind { .. }))
+        .expect("bind");
+    let mut want = vec![rig.sentinel.clone()];
+    want.extend(routed.sent.iter().map(|s| s.task.clone()));
+    assert_eq!(
+        rig.mail.calls[bind],
+        Call::Bind {
+            need: NEED.into(),
+            units: want
+        }
+    );
+    let closes = rig
+        .mail
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::CloseTask { handle, .. } if *handle == build.task))
+        .count();
+    assert_eq!(closes, 1);
+    Ok(())
+}
