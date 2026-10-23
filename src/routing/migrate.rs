@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use toml_edit::{DocumentMut, Item, Table};
 
+use crate::error::VivariumError;
 use crate::mailspace::config_edit::{IdentityPatch, insert_identity, patch_identity};
 use crate::mailspace::shipped::{
     ADMITTER_ROLE, AUDITOR_CHARTER, MERGE_CHARTER, PUMP_PLANNER_CHARTER, PUMP_PLANNER_ROLE,
@@ -13,15 +14,17 @@ use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
+use super::migrate_flow_roles::plan_flow_roles;
 use super::migrate_keys::{
-    apply_removals, apply_roots, plan_pool_roots, plan_removals, raw_merge_lanes,
+    apply_removals, apply_roots, plan_pool_roots, plan_removals, raw_merge_lanes, review_slot_dirs,
 };
+use super::migrate_pool::{add_pool, settings_source};
 
 /// The flow roles take no band from the hand role.
 const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
 
 /// One planned file change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MigratePlan {
     pub assignments: Vec<Assignment>,
     pub new_roles: Vec<NewRole>,
@@ -171,7 +174,7 @@ pub fn plan_migrate(
     doc: &DocumentMut,
     inputs: &MigrateInputs,
 ) -> MigratePlan {
-    let mut plan = empty_plan();
+    let mut plan = MigratePlan::default();
     if let Some(pump) = &config.pump {
         plan_pump(config, pump, doc, inputs, &mut plan);
     }
@@ -185,7 +188,7 @@ pub fn plan_migrate(
     } else {
         // Advice about the file as it stands: given only while this run
         // changes something, so a migrated file stays quiet.
-        super::migrate_keys::review_slot_dirs(config, &mut plan);
+        review_slot_dirs(config, &mut plan);
         if let Some(pump) = &config.pump {
             review_own_charters(config, inputs, &mut plan);
             review_hand_kind(config, pump, &mut plan);
@@ -219,7 +222,7 @@ fn plan_pump(
         });
     }
     plan_removals(doc, config, &merge_pool, plan);
-    super::migrate_flow_roles::plan_flow_roles(config, pump, inputs, plan);
+    plan_flow_roles(config, pump, inputs, plan);
     inherit_hand_band(config, pump, plan);
     review_new_roles(plan);
 }
@@ -241,22 +244,6 @@ fn inherit_hand_band(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut Mig
         } else {
             role.model.clone_from(&band);
         }
-    }
-}
-
-fn empty_plan() -> MigratePlan {
-    MigratePlan {
-        assignments: Vec::new(),
-        new_roles: Vec::new(),
-        new_pools: Vec::new(),
-        caps: Vec::new(),
-        renames: Vec::new(),
-        kind_changes: Vec::new(),
-        removals: Vec::new(),
-        roots: Vec::new(),
-        charters: Vec::new(),
-        notes: Vec::new(),
-        review: Vec::new(),
     }
 }
 
@@ -285,11 +272,10 @@ fn review_new_roles(plan: &mut MigratePlan) {
     if names.is_empty() {
         return;
     }
-    let text = format!(
+    plan.review.push(format!(
         "new role(s) {} have no charter: add one with `vivi role charter set <role> --file <path>`",
         names.join(", ")
-    );
-    plan.review.push(text);
+    ));
 }
 
 fn dispatch_pool(pump: &PumpConfig) -> Option<String> {
@@ -384,7 +370,7 @@ fn choose_merge_pool(
 ) -> String {
     let name = host_pool_name(config);
     if !config.pools.contains_key(&name) && !plan.new_pools.iter().any(|pool| pool.name == name) {
-        let copy_from = super::migrate_pool::settings_source(config, pump, plan);
+        let copy_from = settings_source(config, pump, plan);
         let start = match &copy_from {
             Some(from) => format!("its source and harness are copied from pool {from}; seed it"),
             None => format!(
@@ -545,15 +531,13 @@ fn plan_hand_kind(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut Migrat
     let Some(role) = find_role(config, &pump.to) else {
         return;
     };
-    match role.kind.as_deref() {
-        Some(kind) if kind.trim().eq_ignore_ascii_case("hand") => {}
-        None => plan.kind_changes.push(KindChange {
+    if role.kind.is_none() {
+        plan.kind_changes.push(KindChange {
             role: role.name.clone(),
             from: None,
             to: "hand".into(),
             reason: "only a hand-kind role may publish unit branches".into(),
-        }),
-        Some(_) => {}
+        });
     }
 }
 
@@ -618,25 +602,21 @@ pub(super) fn hand_pool(
 }
 
 fn host_pool_name(config: &MailspaceConfig) -> String {
-    for candidate in ["host", "pump-host", "local-host"] {
-        if config.pools.contains_key(candidate) {
-            let pool = &config.pools[candidate];
-            if pool.provider == "local" {
-                return candidate.to_string();
-            }
-        } else {
-            return candidate.to_string();
-        }
-    }
-    "host".into()
+    ["host", "pump-host", "local-host"]
+        .into_iter()
+        .find(|candidate| {
+            config
+                .pools
+                .get(*candidate)
+                .is_none_or(|pool| pool.provider == "local")
+        })
+        .unwrap_or("host")
+        .to_string()
 }
 
 fn assign_slug_roles(config: &MailspaceConfig, plan: &mut MigratePlan) {
     for role in &config.identities {
-        if role.pool.is_some() || already_assigned(plan, &role.name) {
-            continue;
-        }
-        if role.status == "retired" {
+        if role.pool.is_some() || role.status == "retired" || already_assigned(plan, &role.name) {
             continue;
         }
         let Some(model) = role.model.as_deref() else {
@@ -816,7 +796,7 @@ fn render_removals(plan: &MigratePlan, lines: &mut Vec<String>) {
 pub fn apply_plan_to_document(
     doc: &mut DocumentMut,
     plan: &MigratePlan,
-) -> Result<(), crate::error::VivariumError> {
+) -> Result<(), VivariumError> {
     add_pools(doc, plan)?;
     add_roles(doc, plan)?;
     assign_roles(doc, plan)?;
@@ -828,7 +808,7 @@ pub fn apply_plan_to_document(
     Ok(())
 }
 
-fn set_kinds(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::error::VivariumError> {
+fn set_kinds(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), VivariumError> {
     for change in &plan.kind_changes {
         patch_identity(
             doc,
@@ -861,14 +841,14 @@ fn rename_keys(doc: &mut DocumentMut, plan: &MigratePlan) {
     }
 }
 
-fn add_pools(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::error::VivariumError> {
+fn add_pools(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), VivariumError> {
     for pool in &plan.new_pools {
-        super::migrate_pool::add_pool(doc, pool)?;
+        add_pool(doc, pool)?;
     }
     Ok(())
 }
 
-fn add_roles(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::error::VivariumError> {
+fn add_roles(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), VivariumError> {
     for role in &plan.new_roles {
         insert_identity(
             doc,
@@ -886,10 +866,7 @@ fn add_roles(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::err
     Ok(())
 }
 
-fn assign_roles(
-    doc: &mut DocumentMut,
-    plan: &MigratePlan,
-) -> Result<(), crate::error::VivariumError> {
+fn assign_roles(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), VivariumError> {
     for row in &plan.assignments {
         patch_identity(
             doc,

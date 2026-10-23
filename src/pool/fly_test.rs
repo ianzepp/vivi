@@ -204,20 +204,14 @@ fn listing(id: &str, name: &str) -> MachineRecord {
 }
 
 #[test]
-fn salvaged_id_reads_the_machine_id_or_falls_back_to_the_name() {
-    let wait = "Error: machine failed to reach desired start state, and restart policy was set to no restart";
-    let said = format!("Some preamble\nMachine ID: 9187f2c1\n{wait}\n");
-    assert_eq!(
-        salvaged_id("ms-p-slot-1", &said, &[]).as_deref(),
-        Some("9187f2c1")
-    );
+fn id_named_finds_the_machine_by_name() {
     let machines = [listing("e73f11", "ms-p-slot-1")];
     assert_eq!(
-        salvaged_id("ms-p-slot-1", "", &machines).as_deref(),
+        id_named("ms-p-slot-1", &machines).as_deref(),
         Some("e73f11")
     );
     let unrelated = [listing("ff00aa", "ms-p-slot-9")];
-    assert_eq!(salvaged_id("ms-p-slot-1", "", &unrelated), None);
+    assert_eq!(id_named("ms-p-slot-1", &unrelated), None);
 }
 
 #[test]

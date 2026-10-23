@@ -131,14 +131,16 @@ impl SyncSettings {
             config.server.as_deref(),
             "server",
             "the project server URL",
-            "",
+            None,
         )?;
         let project = required(
             config.project.as_deref(),
             "project",
             "the server-side project id",
-            "vivi sync create makes a new project and prints its id: put the printed id in \
-             [sync] project, then run vivi sync join",
+            Some(
+                "vivi sync create makes a new project and prints its id: put the printed id in \
+                 [sync] project, then run vivi sync join",
+            ),
         )?;
         if !project
             .chars()
@@ -152,7 +154,7 @@ impl SyncSettings {
             config.name.as_deref(),
             "name",
             "this checkout's identity name",
-            "",
+            None,
         )?;
         let send = SendFilter::parse(config.send.as_deref())?;
         let mailspace_id = mailspace.mailspace_id();
@@ -169,9 +171,7 @@ impl SyncSettings {
             mailspace_id: mailspace_id.to_string(),
         })
     }
-}
 
-impl SyncSettings {
     /// The address prefix of this mailspace: the first characters of its id,
     /// the domain every letter From address of this mailspace carries.
     #[must_use]
@@ -186,7 +186,7 @@ fn required(
     value: Option<&str>,
     key: &str,
     what: &str,
-    hint: &str,
+    hint: Option<&str>,
 ) -> Result<String, VivariumError> {
     value
         .map(str::trim)
@@ -195,10 +195,9 @@ fn required(
         .ok_or_else(|| {
             let base =
                 format!("[sync] {key} is not set; set {key} = \"...\" in mailspace.toml ({what})");
-            if hint.is_empty() {
-                VivariumError::Config(base)
-            } else {
-                VivariumError::Config(format!("{base}; {hint}"))
+            match hint {
+                Some(hint) => VivariumError::Config(format!("{base}; {hint}")),
+                None => VivariumError::Config(base),
             }
         })
 }

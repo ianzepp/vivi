@@ -215,25 +215,71 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
         WantCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("want", command)?;
         }
-        WantCommand::SetPriority { .. } => set_want_priority(command)?,
+        WantCommand::SetPriority {
+            handle,
+            for_identity,
+            priority,
+            rank,
+            repo,
+            lane,
+            blocks_claim,
+            reason,
+            project,
+        } => set_want_priority(
+            handle,
+            for_identity,
+            WantMetadataUpdate {
+                priority: priority.clone(),
+                rank: *rank,
+                repo: repo.clone(),
+                lane: lane.clone(),
+                blocks_claim: blocks_claim.clone(),
+                reason: reason.clone(),
+            },
+            project.as_deref(),
+        )?,
         WantCommand::Promote {
             handle,
             for_identity,
             note,
             project,
-        } => promote_want(handle, for_identity, note.as_ref(), project.as_deref())?,
+        } => move_item(
+            handle,
+            for_identity,
+            note.as_ref(),
+            project.as_deref(),
+            "needs",
+            "want promote",
+            "promoted",
+        )?,
         WantCommand::Done {
             handle,
             for_identity,
             note,
             project,
-        } => close_want_done(handle, for_identity, note.as_ref(), project.as_deref())?,
+        } => move_item(
+            handle,
+            for_identity,
+            note.as_ref(),
+            project.as_deref(),
+            "done",
+            "want done",
+            "done",
+        )?,
         WantCommand::Drop {
             handle,
             for_identity,
             note,
             project,
-        } => close_want_drop(handle, for_identity, note.as_ref(), project.as_deref())?,
+        } => move_item(
+            handle,
+            for_identity,
+            note.as_ref(),
+            project.as_deref(),
+            "done",
+            "want drop",
+            "dropped",
+        )?,
         WantCommand::Mark(command) => mark_item(command, "want", true)?,
         WantCommand::Unmark(command) => mark_item(command, "want", false)?,
         WantCommand::Depend(command) => depend_item(command, "want")?,
@@ -295,51 +341,14 @@ fn print_mark(handle: &str, slug: &str, add: bool, changed: bool) {
     }
 }
 
-fn promote_want(
+fn set_want_priority(
     handle: &str,
     for_identity: &str,
-    note: Option<&String>,
+    update: WantMetadataUpdate,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
-    move_item(
-        handle,
-        for_identity,
-        note,
-        project,
-        "needs",
-        "want promote",
-        "promoted",
-    )
-}
-
-fn set_want_priority(command: &WantCommand) -> Result<(), VivariumError> {
-    let WantCommand::SetPriority {
-        handle,
-        for_identity,
-        priority,
-        rank,
-        repo,
-        lane,
-        blocks_claim,
-        reason,
-        project,
-    } = command
-    else {
-        unreachable!();
-    };
-    let mailspace = Mailspace::discover(project.as_deref())?;
-    let handle = mailspace.set_want_metadata(
-        for_identity,
-        handle,
-        WantMetadataUpdate {
-            priority: priority.clone(),
-            rank: *rank,
-            repo: repo.clone(),
-            lane: lane.clone(),
-            blocks_claim: blocks_claim.clone(),
-            reason: reason.clone(),
-        },
-    )?;
+    let mailspace = Mailspace::discover(project)?;
+    let handle = mailspace.set_want_metadata(for_identity, handle, update)?;
     println!("updated {handle}");
     Ok(())
 }
@@ -397,35 +406,6 @@ fn list_wants(
         );
     }
     Ok(())
-}
-
-fn close_want(
-    handle: &str,
-    for_identity: &str,
-    note: Option<&String>,
-    project: Option<&std::path::Path>,
-    command: &str,
-    verb: &str,
-) -> Result<(), VivariumError> {
-    move_item(handle, for_identity, note, project, "done", command, verb)
-}
-
-fn close_want_done(
-    handle: &str,
-    for_identity: &str,
-    note: Option<&String>,
-    project: Option<&std::path::Path>,
-) -> Result<(), VivariumError> {
-    close_want(handle, for_identity, note, project, "want done", "done")
-}
-
-fn close_want_drop(
-    handle: &str,
-    for_identity: &str,
-    note: Option<&String>,
-    project: Option<&std::path::Path>,
-) -> Result<(), VivariumError> {
-    close_want(handle, for_identity, note, project, "want drop", "dropped")
 }
 
 pub(crate) fn dump_tasks(command: &TaskDumpCommand) -> Result<(), VivariumError> {
@@ -597,7 +577,7 @@ fn move_item_with_close_location(
 /// the close itself never fails.
 pub(crate) fn print_close_timing(project: Option<&std::path::Path>, handle: &str, receipts: bool) {
     if let Some((opened, attempts)) = read_close_thread(project, handle, receipts) {
-        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
+        let now = chrono::Utc::now().timestamp().unsigned_abs();
         println!(
             "{}",
             vivi::pump::attempt_read::timing_summary(opened, &attempts, now)

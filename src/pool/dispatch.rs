@@ -227,10 +227,7 @@ fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
         }
     }
     if let Some(expected) = flags.publish_expect.as_deref()
-        && (!matches!(expected.len(), 40 | 64)
-            || !expected
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        && !full_commit_sha(expected)
     {
         return Err(VivariumError::Config(
             "publish expectation must be a full 40- or 64-character commit SHA".into(),
@@ -303,9 +300,9 @@ fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError>
 }
 
 /// The reasoning level a job runs at, when the harness template asks for
-/// one: `flags.reasoning`, checked before anything else in `plan_job`
-/// returns a plan so the refusal costs nothing. The value lands in a shell
-/// command, so it is held to a safe charset.
+/// one: `flags.reasoning`. Checked inside `plan_job`, before any plan is
+/// returned, so a refusal costs nothing. The value lands in a shell command,
+/// so it is held to a safe charset.
 fn plan_reasoning(
     pool: &str,
     run: &str,

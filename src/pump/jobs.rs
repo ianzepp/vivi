@@ -20,9 +20,9 @@ mod recovery;
 pub mod rung;
 pub mod rung_result;
 mod slots;
-pub use dispatcher::{candidate_pools, dispatch_pending};
+pub use dispatcher::dispatch_pending;
 #[cfg(test)]
-use dispatcher::{dispatch_order, pool_command, send_task};
+use dispatcher::{candidate_pools, dispatch_order, pool_command, send_task};
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
 pub(crate) use slots::{parse_created_handle, slots};
@@ -71,8 +71,12 @@ pub struct JobSpec {
     /// Exact source commit the runner publishes (for example a need-branch
     /// rename publishes the old tip under the prior name).
     pub publish_expect: Option<String>,
+    /// Commit the candidate and the published target must both include.
     pub publish_contains: Option<String>,
+    /// Owned need branch the privileged runner deletes, only while its tip
+    /// still equals `delete_expect`.
     pub delete_ref: Option<String>,
+    /// Exact expected tip of `delete_ref`.
     pub delete_expect: Option<String>,
     /// Pool execution budget in seconds.
     pub budget: u64,
@@ -155,6 +159,16 @@ impl JobStatus {
     #[must_use]
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Finished | Self::Timeout | Self::Lost)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Dispatched => "dispatched",
+            Self::Finished => "finished",
+            Self::Timeout => "timeout",
+            Self::Lost => "lost",
+        }
     }
 }
 
@@ -293,16 +307,6 @@ pub fn has_dispatched(st: &impl JobStore) -> bool {
         .any(|job| job.status == JobStatus::Dispatched)
 }
 
-/// Whether a role/target has pending, running, or unapplied work of `kind`.
-#[must_use]
-pub fn has_unsettled_kind_for_target(st: &impl JobStore, kind: &str, target: &str) -> bool {
-    st.jobs().values().any(|job| {
-        job.kind == kind
-            && job.target.as_deref() == Some(target)
-            && (!job.status.is_terminal() || job.applied_at.is_none())
-    })
-}
-
 /// Read the saved outcome after the collector has transitioned a job.
 #[must_use]
 pub fn completion<'a>(st: &'a impl JobStore, id: &str) -> Option<&'a JobOutcome> {
@@ -363,18 +367,6 @@ pub fn apply_reconcile(
         }
     }
     changed
-}
-
-impl JobStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Dispatched => "dispatched",
-            Self::Finished => "finished",
-            Self::Timeout => "timeout",
-            Self::Lost => "lost",
-        }
-    }
 }
 
 fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {

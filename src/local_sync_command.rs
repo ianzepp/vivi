@@ -32,6 +32,22 @@ struct PushPass {
     drain: bool,
 }
 
+/// The mailspace with its resolved `[sync]` settings and identity: what every
+/// command that talks to the server starts from.
+fn connect(
+    project: Option<&Path>,
+) -> Result<(Mailspace, SyncSettings, SyncIdentity), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    Ok((mailspace, settings, identity))
+}
+
+/// A non-blank value, trimmed.
+fn present(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumError> {
     let top = command.project.as_deref();
     let plain = Some(PullOptions::default());
@@ -138,9 +154,7 @@ fn run_passes(
     push: Option<PushPass>,
     pull: Option<PullOptions>,
 ) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (mailspace, settings, identity) = connect(project)?;
     let transport = HttpTransport::new(&settings, &identity);
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let mut failures = Vec::new();
@@ -256,9 +270,7 @@ fn print_pull(report: &pull::PullReport) {
 }
 
 fn fetch(project: Option<&Path>, handles: &[String]) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (mailspace, settings, identity) = connect(project)?;
     let transport = HttpTransport::new(&settings, &identity);
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let report = fetch_handles(&mailspace, &settings, &transport, handles)?;
@@ -375,9 +387,7 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
 /// One line per member: name, address domain (`-` when the server has none),
 /// and a short fingerprint.
 fn directory(project: Option<&Path>) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (_, settings, identity) = connect(project)?;
     let transport = HttpTransport::new(&settings, &identity);
     for member in transport.directory()? {
         println!("{}", member.line());
@@ -399,41 +409,22 @@ fn key(project: Option<&Path>) -> Result<(), VivariumError> {
 fn create(project: Option<&Path>, creator: Option<&str>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let config = mailspace.config.sync.clone().unwrap_or_default();
-    let server = config
-        .server
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let server = present(config.server.as_deref()).ok_or_else(|| {
+        VivariumError::Config(
+            "[sync] server is not set; set server = \"...\" in mailspace.toml (the project \
+             server URL)"
+                .into(),
+        )
+    })?;
+    let creator_name = present(creator)
+        .or_else(|| present(config.name.as_deref()))
         .ok_or_else(|| {
             VivariumError::Config(
-                "[sync] server is not set; set server = \"...\" in mailspace.toml (the project \
-                 server URL)"
-                    .into(),
+                "no creator name: pass --name CREATOR or set [sync] name in mailspace.toml".into(),
             )
         })?;
-    let creator_name = creator
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || {
-                config
-                    .name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(String::from)
-                    .ok_or_else(|| {
-                        VivariumError::Config(
-                            "no creator name: pass --name CREATOR or set [sync] name in \
-                             mailspace.toml"
-                                .into(),
-                        )
-                    })
-            },
-            |value| Ok(value.to_string()),
-        )?;
     let identity = SyncIdentity::ensure(&mailspace.dir)?;
-    let project_id = http::create_project(server, &identity, &creator_name)?;
+    let project_id = http::create_project(server, &identity, creator_name)?;
     println!("project {project_id}");
     println!("creator {creator_name}");
     println!(
@@ -461,9 +452,7 @@ fn vouch(
             ));
         }
     };
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (mailspace, settings, identity) = connect(project)?;
     let letter = compose_vouch(
         &settings.name,
         &mailspace.address_domain(),
@@ -489,9 +478,7 @@ fn api_key_mint(
     label: &str,
     out: Option<&Path>,
 ) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (_, settings, identity) = connect(project)?;
     let target = match out {
         Some(path) => Some((path, create_secret_file(path)?)),
         None => None,
@@ -500,7 +487,7 @@ fn api_key_mint(
         Ok(minted) => minted,
         Err(error) => {
             if let Some((path, _)) = target {
-                remove_created_quietly(path);
+                remove_created_key(path);
             }
             return Err(error);
         }
@@ -508,7 +495,7 @@ fn api_key_mint(
     match target {
         Some((path, file)) => {
             if let Err(error) = write_secret_file(file, path, &minted.key) {
-                remove_created_quietly(path);
+                remove_created_key(path);
                 return Err(error);
             }
             println!("key_id {}", minted.record.key_id);
@@ -555,11 +542,13 @@ fn create_secret_file(path: &Path) -> Result<std::fs::File, VivariumError> {
         })
 }
 
-/// Best-effort removal of the key file this command just created, after a
-/// failed mint or a failed write: the command's own error is what gets
-/// reported, and a file that cannot be removed is not worth a second one.
-fn remove_created_quietly(path: &Path) {
-    std::fs::remove_file(path).map(drop).unwrap_or_default();
+/// Remove the key file this command just created, after a failed mint or a
+/// failed write. The command's own error is what gets returned; a file that
+/// cannot be removed is reported as a warning beside it.
+fn remove_created_key(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        eprintln!("warning: cannot remove {}: {error}", path.display());
+    }
 }
 
 /// Write the raw key and one newline to the fresh file, then pin the mode
@@ -584,9 +573,7 @@ fn write_secret_file(mut file: std::fs::File, path: &Path, key: &str) -> Result<
 /// List the project's live API keys; revoked ones are not shown and no
 /// secret ever is.
 fn api_key_list(project: Option<&Path>) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (_, settings, identity) = connect(project)?;
     let records = keys::list_keys(&settings, &identity)?;
     if records.is_empty() {
         println!("no api keys");
@@ -603,9 +590,7 @@ fn api_key_list(project: Option<&Path>) -> Result<(), VivariumError> {
 
 /// Revoke one PROJECT API key by its key id.
 fn api_key_revoke(project: Option<&Path>, key_id: &str) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let (_, settings, identity) = connect(project)?;
     keys::revoke_key(&settings, &identity, key_id)?;
     println!("revoked {key_id}");
     Ok(())

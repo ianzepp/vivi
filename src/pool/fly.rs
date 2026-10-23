@@ -3,6 +3,7 @@
 //! One subprocess per call. The secret-bearing create call never echoes its
 //! command line, and any error text is scrubbed of the environment values.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -72,6 +73,17 @@ impl FlyctlProvider {
         Ok((stdout, stderr))
     }
 
+    /// The id of a machine `fly machine run` made but gave up waiting on: from
+    /// the run output when it got that far, else from the listing by name
+    /// (`--name` makes that deterministic). A listing that fails leaves the
+    /// caller to report the original failure.
+    fn salvage(&self, name: &str, output: &str) -> Option<String> {
+        parse_run_output(output).or_else(|| match self.list() {
+            Ok(machines) => id_named(name, &machines),
+            Err(_) => None,
+        })
+    }
+
     /// The error one failed `fly` call says: the verb, then scrubbed stderr.
     fn failure(&self, args: &[String], stderr: &str, secrets: &[&str]) -> VivariumError {
         let verb = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
@@ -133,7 +145,7 @@ impl PoolProvider for FlyctlProvider {
         &self,
         _id: &str,
         _paths: &[&str],
-    ) -> Result<Option<std::collections::BTreeMap<String, Vec<u8>>>, VivariumError> {
+    ) -> Result<Option<BTreeMap<String, Vec<u8>>>, VivariumError> {
         Ok(None)
     }
 
@@ -183,15 +195,14 @@ impl PoolProvider for FlyctlProvider {
         if ok {
             return parse_run_output(&output).ok_or_else(missing);
         }
-        if is_start_wait_failure(&output) {
-            let machines = self.list().unwrap_or_default();
-            if let Some(id) = salvaged_id(&spec.name, &output, &machines) {
-                eprintln!(
-                    "warning: flyctl gave up waiting for {} to start; watching machine {id} (a large image takes minutes to unpack)",
-                    spec.name
-                );
-                return Ok(id);
-            }
+        if is_start_wait_failure(&output)
+            && let Some(id) = self.salvage(&spec.name, &output)
+        {
+            eprintln!(
+                "warning: flyctl gave up waiting for {} to start; watching machine {id} (a large image takes minutes to unpack)",
+                spec.name
+            );
+            return Ok(id);
         }
         Err(self.failure(&args, &stderr, &secrets))
     }
@@ -313,10 +324,10 @@ pub fn is_name_taken(text: &str) -> bool {
         .any(|needle| lower.contains(needle))
 }
 
-/// Arguments for `fly machine run`. `--file-literal` takes the raw text (its
-/// help says base64, but flyctl encodes the value itself).
-/// Root disk persists and the machine never
-/// restarts on its own, so a finished machine is a stopped (free) slot.
+/// Arguments for `fly machine run`. The root disk persists and the machine
+/// never restarts on its own, so a finished machine is a stopped (free) slot.
+/// `--file-literal` takes the raw text (its help says base64, but flyctl
+/// encodes the value itself).
 #[must_use]
 pub fn run_args(app: &str, host: &PoolFly, spec: &CreateSpec) -> Vec<String> {
     let mut args: Vec<String> = [
@@ -375,17 +386,12 @@ pub fn is_start_wait_failure(text: &str) -> bool {
     text.contains("failed to reach desired start state")
 }
 
-/// The id of a machine `fly machine run` made but gave up waiting on: from the
-/// run output when it got that far, else from the listing by name (`--name`
-/// makes that deterministic).
-#[must_use]
-pub fn salvaged_id(spec_name: &str, output: &str, machines: &[MachineRecord]) -> Option<String> {
-    parse_run_output(output).or_else(|| {
-        machines
-            .iter()
-            .find(|m| m.name == spec_name)
-            .map(|m| m.id.clone())
-    })
+/// The id of the listed machine called `name`.
+fn id_named(name: &str, machines: &[MachineRecord]) -> Option<String> {
+    machines
+        .iter()
+        .find(|m| m.name == name)
+        .map(|m| m.id.clone())
 }
 
 fn scrub(text: &str, secrets: &[&str]) -> String {
@@ -448,7 +454,7 @@ pub(super) struct RawMachine {
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     #[serde(default)]
-    metadata: Option<std::collections::BTreeMap<String, String>>,
+    metadata: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]

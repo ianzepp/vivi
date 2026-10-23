@@ -151,7 +151,7 @@ fn write_status_writes_counts_then_the_delivered_line() {
     );
     st.merges = 3;
     st.closed_needs = vec![String::from("n1"), String::from("n2")];
-    write_status(&ctx, &st, &[]);
+    write_status(&ctx, &st);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 5, "{text}");
@@ -210,7 +210,7 @@ fn write_status_lists_top_blockers_after_the_stall_lines() {
         &serde_json::Value::Array(pairs).to_string(),
     );
     host.set_now(T0);
-    write_status(&ctx, &st, &[]);
+    write_status(&ctx, &st);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
         text.contains("blocker r stuck age 30m held 13"),
@@ -249,7 +249,7 @@ fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
         planner_job("plan2", JobStatus::Pending, now, None),
     );
     st.board.planner_fails.insert(String::from("n7"), 2);
-    write_status(&ctx, &st, &[]);
+    write_status(&ctx, &st);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
         text.contains("planner-job plan1 in-flight pool=here task=task-plan1 age=310s"),
@@ -292,7 +292,7 @@ fn planner_job(id: &str, status: JobStatus, queued: u64, dispatched: Option<u64>
 fn write_status_adds_no_planner_lines_when_idle() {
     let (dir, ctx, _host) = setup();
     let st = State::default();
-    write_status(&ctx, &st, &[]);
+    write_status(&ctx, &st);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines.iter().any(|line| line.starts_with("merges ")));

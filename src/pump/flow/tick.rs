@@ -33,7 +33,7 @@ use crate::pump::flow::index::{
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
-use crate::pump::flow::outcome::{StartAction, StartCx};
+use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::validate::validate;
 use crate::pump::host::Ctx;
@@ -231,6 +231,7 @@ fn first_time(ctx: &Ctx, kind: &str, unit: &str) -> bool {
     seen.insert(format!("{}\u{0}{kind}\u{0}{unit}", ctx.home.display()))
 }
 
+/// Raise an exception the first time `(kind, unit)` is seen in this process.
 pub(crate) fn raise_once(ctx: &Ctx, kind: &str, unit: &str, text: &str) {
     if first_time(ctx, kind, unit) {
         ctx.exception(kind, unit, text);
@@ -341,14 +342,13 @@ fn orphan_state(store: &PumpStore, row: &StepJobRow) -> Result<(u32, String), Vi
     Ok((run, state))
 }
 
-impl<S, M> RunCx<'_, S, M>
+impl<'a, S, M> RunCx<'a, S, M>
 where
     S: JobStore,
     M: FlowMail,
 {
     fn run(&mut self, unapplied: &[(String, StepJobRow)]) -> Result<(), VivariumError> {
         let need = self.run.need.clone();
-        let pump = self.ctx.cfg.reply_from.clone();
         // A closed need is a withdrawal, unless a join closed it: a foreign
         // close of the sentinel and the last open step leaves every unit
         // done. The guard tells the two apart (it reopens only when no run
@@ -356,6 +356,7 @@ where
         // open, and the need state is read after it.
         let record_open = MailReader::open_record(&*self.mail, &need)?.is_some();
         if record_open {
+            let pump = self.ctx.cfg.reply_from.clone();
             guard::pass(self.ctx, self.store, self.mail, &self.run, &pump)?;
         }
         if !record_open || self.mail.need_state(&need)? == NeedStatus::Done {
@@ -567,27 +568,35 @@ where
         Ok(())
     }
 
-    /// Start one pending step through its registered handler.
-    fn start_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
-        let registry = self.registry;
+    /// The handler registered for a step's node, `None` when the flow
+    /// registers none. A node the loaded flow does not have is an error.
+    fn handler_of(&self, step: &StepRow) -> Result<Option<&'a dyn StepHandler>, VivariumError> {
+        let registry: &'a Registry<S, M> = self.registry;
         let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
             return Err(VivariumError::Parse(
                 self.node_unknown_text(&step.task, &step.node, None),
             ));
         };
-        let Some(handler) = registry.handler_for(self.def.kind, node) else {
+        Ok(registry.handler_for(self.def.kind, node))
+    }
+
+    /// The read context a handler starts or polls a step in.
+    fn start_cx(&self) -> StartCx<'_> {
+        StartCx {
+            ctx: self.ctx,
+            store: self.store,
+            mail: &*self.mail,
+            run: &self.run,
+            def: &self.def,
+        }
+    }
+
+    /// Start one pending step through its registered handler.
+    fn start_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
+        let Some(handler) = self.handler_of(step)? else {
             return Ok(());
         };
-        let action = {
-            let cx = StartCx {
-                ctx: self.ctx,
-                store: self.store,
-                mail: &*self.mail,
-                run: &self.run,
-                def: &self.def,
-            };
-            handler.start(&cx, step)?
-        };
+        let action = handler.start(&self.start_cx(), step)?;
         match action {
             StartAction::Job(spec) => self.enqueue_job(step, *spec),
             StartAction::OpenAndWait => {
@@ -637,29 +646,13 @@ where
 
     /// Poll one waiting step's handler; an answer advances the step.
     fn poll_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
-        let registry = self.registry;
-        let Some(node) = self.def.nodes.iter().find(|n| n.id == step.node) else {
-            return Err(VivariumError::Parse(
-                self.node_unknown_text(&step.task, &step.node, None),
-            ));
-        };
-        let Some(handler) = registry.handler_for(self.def.kind, node) else {
+        let Some(handler) = self.handler_of(step)? else {
             return Ok(());
         };
-        let word = {
-            let cx = StartCx {
-                ctx: self.ctx,
-                store: self.store,
-                mail: &*self.mail,
-                run: &self.run,
-                def: &self.def,
-            };
-            handler.poll(&cx, step)?
+        let Some(word) = handler.poll(&self.start_cx(), step)? else {
+            return Ok(());
         };
-        match word {
-            Some(word) => self.advance_word(step, &word, serde_json::json!({"source": "poll"})),
-            None => Ok(()),
-        }
+        self.advance_word(step, &word, serde_json::json!({"source": "poll"}))
     }
 
     /// Enqueue a handler's first job for a step and mark the step running.
@@ -715,42 +708,42 @@ where
 
     /// A dispatched step job past its budget plus grace raises once.
     fn check_overdue(&mut self) -> Result<(), VivariumError> {
-        let now = self.ctx.now();
-        let late: Vec<PoolJob> = self
-            .st
-            .jobs()
-            .values()
-            .filter(|job| job.status == JobStatus::Dispatched)
-            .filter(|job| {
-                job.dispatched_at
-                    .is_some_and(|at| now > at + job.budget + OVERDUE_GRACE_SECS)
-            })
-            .cloned()
-            .collect();
-        for job in late {
+        for job in overdue_jobs(&*self.st, self.ctx.now()) {
             let Some(row) = self.store.step_job(&job.id)? else {
                 continue;
             };
             if row.run != self.run.run || self.store.step_by_task(&row.task)?.is_none() {
                 continue;
             }
-            raise_once(
-                self.ctx,
-                STEP_OVERDUE,
-                &job.id,
-                &format!(
-                    "step {} task {} job {} pool {} dispatched at {}: budget {}s + {OVERDUE_GRACE_SECS}s grace passed",
-                    row.node,
-                    row.task,
-                    job.id,
-                    job.pool.as_deref().unwrap_or("?"),
-                    job.dispatched_at.unwrap_or_default(),
-                    job.budget
-                ),
-            );
+            raise_once(self.ctx, STEP_OVERDUE, &job.id, &overdue_text(job, &row));
         }
         Ok(())
     }
+}
+
+/// Dispatched jobs past their budget plus [`OVERDUE_GRACE_SECS`] at `now`.
+fn overdue_jobs<S: JobStore>(st: &S, now: u64) -> Vec<&PoolJob> {
+    st.jobs()
+        .values()
+        .filter(|job| job.status == JobStatus::Dispatched)
+        .filter(|job| {
+            job.dispatched_at
+                .is_some_and(|at| now > at + job.budget + OVERDUE_GRACE_SECS)
+        })
+        .collect()
+}
+
+/// The overdue alarm text for `job` and its step row.
+fn overdue_text(job: &PoolJob, row: &StepJobRow) -> String {
+    format!(
+        "step {} task {} job {} pool {} dispatched at {}: budget {}s + {OVERDUE_GRACE_SECS}s grace passed",
+        row.node,
+        row.task,
+        job.id,
+        job.pool.as_deref().unwrap_or("?"),
+        job.dispatched_at.unwrap_or_default(),
+        job.budget
+    )
 }
 
 #[path = "tick_orphans.rs"]

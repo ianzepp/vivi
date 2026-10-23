@@ -396,37 +396,6 @@ impl PumpStore {
         self.load()?.save(path)
     }
 
-    /// Record one accepted plan revision.
-    ///
-    /// # Errors
-    /// Returns [`VivariumError`] when the insert fails.
-    pub fn record_plan_revision(
-        &mut self,
-        need: &str,
-        revision: u64,
-        verdict: &str,
-        reason: &str,
-        body: &str,
-        at: u64,
-    ) -> Result<(), VivariumError> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO plan_revisions
-                   (need, revision, verdict, reason, body_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    need,
-                    i64::try_from(revision).unwrap_or(0),
-                    verdict,
-                    reason,
-                    body,
-                    i64::try_from(at).unwrap_or(0),
-                ],
-            )
-            .map_err(db_err("write plan revision"))?;
-        Ok(())
-    }
-
     /// Read the exception rows, oldest first: `(at, kind, unit, text)`.
     ///
     /// # Errors
@@ -459,8 +428,24 @@ pub fn record_plan_revision(
     body: &str,
     at: u64,
 ) -> Result<(), VivariumError> {
-    let mut store = PumpStore::open(&home.join(DB_FILENAME))?;
-    store.record_plan_revision(need, revision, verdict, reason, body, at)
+    let store = PumpStore::open(&home.join(DB_FILENAME))?;
+    store
+        .conn
+        .execute(
+            "INSERT OR REPLACE INTO plan_revisions
+               (need, revision, verdict, reason, body_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                need,
+                i64::try_from(revision).unwrap_or(0),
+                verdict,
+                reason,
+                body,
+                i64::try_from(at).unwrap_or(0),
+            ],
+        )
+        .map_err(db_err("write plan revision"))?;
+    Ok(())
 }
 
 /// Append one exception row to `<home>/pump.db`. An exception is a report to
@@ -501,7 +486,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
 }
 
 /// Add columns introduced after schema version 1. A fresh schema already has
-/// them, so duplicate-column errors are expected and ignored.
+/// them, so only a column that is absent is added.
 fn migrate_older_schema(conn: &Connection) -> Result<(), VivariumError> {
     for (table, column, ddl) in [
         ("needs", "revision", "INTEGER NOT NULL DEFAULT 0"),
@@ -514,10 +499,23 @@ fn migrate_older_schema(conn: &Connection) -> Result<(), VivariumError> {
         ("unit_events", "branch", "TEXT"),
         ("unit_events", "task", "TEXT"),
     ] {
-        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}");
-        if conn.execute(&sql, []).is_err() {
-            // The column already exists (fresh schema).
+        if !has_column(conn, table, column)? {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+                [],
+            )
+            .map_err(db_err("add column"))?;
         }
     }
     Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, VivariumError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .map_err(db_err("read table columns"))
 }

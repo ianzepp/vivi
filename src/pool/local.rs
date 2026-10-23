@@ -35,9 +35,12 @@ use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
 use super::local_proc as proc;
 use super::local_slots as slots;
-use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
+use super::provider::{
+    CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider, PreparedWorkspace,
+};
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_state as state;
+use super::{local_git, local_site, ramdisk};
 use crate::error::VivariumError;
 use sha2::{Digest, Sha256};
 
@@ -46,7 +49,7 @@ mod apfs_job;
 
 /// Pool provider for this machine.
 pub struct LocalProvider {
-    site: Result<super::local_site::LocalSite, String>,
+    site: Result<local_site::LocalSite, String>,
     root: PathBuf,
     /// The repository the pool's slots are worktrees of, as configured; the
     /// doctor looks at it. The slots themselves carry what they need.
@@ -56,7 +59,7 @@ pub struct LocalProvider {
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
     workspace: PoolWorkspace,
-    ramdisk_runner: Arc<dyn crate::pool::ramdisk::Runner>,
+    ramdisk_runner: Arc<dyn ramdisk::Runner>,
     #[cfg(test)]
     available_memory: Option<u64>,
 }
@@ -65,7 +68,7 @@ impl LocalProvider {
     #[must_use]
     pub fn new(config: &PoolConfig, ctx: &super::runpod::HostContext) -> Self {
         let raw = config.local.root_or_default();
-        let site = super::local_site::resolve(
+        let site = local_site::resolve(
             raw,
             ctx.dir.parent().unwrap_or(ctx.dir.as_path()),
             &ctx.mailspace,
@@ -81,13 +84,13 @@ impl LocalProvider {
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
             workspace: config.workspace.clone(),
-            ramdisk_runner: Arc::new(crate::pool::ramdisk::RealRunner),
+            ramdisk_runner: Arc::new(ramdisk::RealRunner),
             #[cfg(test)]
             available_memory: None,
         }
     }
 
-    fn site(&self) -> Result<&super::local_site::LocalSite, VivariumError> {
+    fn site(&self) -> Result<&local_site::LocalSite, VivariumError> {
         self.site
             .as_ref()
             .map_err(|message| VivariumError::Config(message.clone()))
@@ -97,7 +100,7 @@ impl LocalProvider {
     pub(crate) fn with_runner(
         config: &PoolConfig,
         ctx: &super::runpod::HostContext,
-        runner: Arc<dyn crate::pool::ramdisk::Runner>,
+        runner: Arc<dyn ramdisk::Runner>,
     ) -> Self {
         let mut provider = Self::new(config, ctx);
         provider.ramdisk_runner = runner;
@@ -110,11 +113,11 @@ impl LocalProvider {
         self
     }
 
-    pub(super) fn root(&self) -> &std::path::Path {
+    pub(super) fn root(&self) -> &Path {
         &self.root
     }
 
-    pub(super) fn source(&self) -> Option<&std::path::Path> {
+    pub(super) fn source(&self) -> Option<&Path> {
         self.source.as_deref()
     }
 
@@ -151,10 +154,7 @@ impl LocalProvider {
 }
 
 /// The id a new slot gets from its spec and resolved storage site.
-fn new_slot_id(
-    site: &super::local_site::LocalSite,
-    spec: &CreateSpec,
-) -> Result<String, VivariumError> {
+fn new_slot_id(site: &local_site::LocalSite, spec: &CreateSpec) -> Result<String, VivariumError> {
     let field = |key: &str| {
         spec.metadata
             .get(key)
@@ -207,12 +207,11 @@ pub(super) fn refuse_foreign_worktree(
 pub(super) fn teardown_ramdisk(
     dir: &Path,
     id: &str,
-    runner: &dyn crate::pool::ramdisk::Runner,
+    runner: &dyn ramdisk::Runner,
 ) -> Result<(), VivariumError> {
     let marker_path = dir.join("ramdisk");
-    let record = match read_ramdisk_record(&marker_path, dir, id)? {
-        Some(record) => record,
-        None => return Ok(()),
+    let Some(record) = read_ramdisk_record(&marker_path, dir, id)? else {
+        return Ok(());
     };
     let disk = find_attached_ramdisk(&record, runner)?;
     teardown_owned_ramdisk(&marker_path, runner, &record, &disk)
@@ -225,8 +224,14 @@ fn read_ramdisk_record(
 ) -> Result<Option<RamDiskRecord>, VivariumError> {
     match marker_path.symlink_metadata() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(VivariumError::Message(format!(
+                "cannot inspect RAM disk marker {}: {error}",
+                marker_path.display()
+            )));
+        }
         Ok(metadata) if metadata.file_type().is_file() => {}
-        _ => {
+        Ok(_) => {
             let detail = format!(
                 "malformed RAM disk marker {}; preserving it",
                 marker_path.display()
@@ -251,19 +256,18 @@ fn read_ramdisk_record(
 
 fn find_attached_ramdisk(
     record: &RamDiskRecord,
-    runner: &dyn crate::pool::ramdisk::Runner,
-) -> Result<crate::pool::ramdisk::Disk, VivariumError> {
-    for mut disk in crate::pool::ramdisk::mounted_checked(runner).map_err(VivariumError::Message)? {
+    runner: &dyn ramdisk::Runner,
+) -> Result<ramdisk::Disk, VivariumError> {
+    for mut disk in ramdisk::mounted_checked(runner).map_err(VivariumError::Message)? {
         if disk.volume != record.volume
             || disk.mount != record.mount
-            || !crate::pool::ramdisk::same_device_id(&disk.device, &record.volume_device)
+            || !ramdisk::same_device_id(&disk.device, &record.volume_device)
         {
             continue;
         }
-        let backing =
-            crate::pool::ramdisk::backing_device_for_volume(runner, &disk.device, &disk.volume)
-                .map_err(VivariumError::Message)?;
-        if !crate::pool::ramdisk::same_device_id(&backing, &record.device) {
+        let backing = ramdisk::backing_device_for_volume(runner, &disk.device, &disk.volume)
+            .map_err(VivariumError::Message)?;
+        if !ramdisk::same_device_id(&backing, &record.device) {
             continue;
         }
         disk.backing_device = Some(record.device.clone());
@@ -281,9 +285,9 @@ fn find_attached_ramdisk(
 
 fn teardown_owned_ramdisk(
     marker_path: &Path,
-    runner: &dyn crate::pool::ramdisk::Runner,
+    runner: &dyn ramdisk::Runner,
     record: &RamDiskRecord,
-    disk: &crate::pool::ramdisk::Disk,
+    disk: &ramdisk::Disk,
 ) -> Result<(), VivariumError> {
     if let Some(error) = remove_mount_worktree(record.source.as_deref(), &record.mount) {
         eprintln!(
@@ -295,14 +299,14 @@ fn teardown_owned_ramdisk(
             record.volume
         )));
     }
-    if let Err(error) = crate::pool::ramdisk::teardown(runner, disk) {
+    if let Err(error) = ramdisk::teardown(runner, disk) {
         eprintln!(
             "warning: RAM disk {} teardown verification failed: {error}",
             record.volume
         );
         return Err(VivariumError::Message(error));
     }
-    std::fs::remove_file(&marker_path).map_err(|error| {
+    std::fs::remove_file(marker_path).map_err(|error| {
         VivariumError::Message(format!(
             "RAM disk {} detached but marker removal failed: {error}",
             record.volume
@@ -340,13 +344,11 @@ fn ramdisk_record(marker: &str, dir: &Path, id: &str) -> Option<RamDiskRecord> {
     let volume_device = field("volume_device")?.to_string();
     let volume = field("volume")?.to_string();
     let job = field("job")?.to_string();
-    let expected_volume = match pool_job_volume(id, &job) {
-        Ok(volume) => volume,
-        Err(_) => return None,
+    let Ok(expected_volume) = pool_job_volume(id, &job) else {
+        return None;
     };
-    let size_gib = match field("size_gib")?.parse() {
-        Ok(size_gib) => size_gib,
-        Err(_) => return None,
+    let Ok(size_gib) = field("size_gib")?.parse() else {
+        return None;
     };
     let mount = PathBuf::from(field("mount")?);
     let source = field("source")
@@ -360,8 +362,8 @@ fn ramdisk_record(marker: &str, dir: &Path, id: &str) -> Option<RamDiskRecord> {
                 .all(|part| matches!(part, std::path::Component::Normal(_)))
     });
     if volume != expected_volume
-        || !crate::pool::ramdisk::same_device_id(&device, &device)
-        || !crate::pool::ramdisk::same_device_id(&volume_device, &volume_device)
+        || ramdisk::normalized_disk_id(&device).is_none()
+        || ramdisk::normalized_disk_id(&volume_device).is_none()
         || job.is_empty()
         || !target_mount
     {
@@ -387,12 +389,12 @@ fn remove_mount_worktree(source: Option<&Path>, mount: &Path) -> Option<String> 
     if !worktree.join(".git").exists() {
         return None;
     }
-    let repo = crate::pool::local_git::Repo::new(source);
+    let repo = local_git::Repo::new(source);
     let expected = match repo.common_dir() {
         Ok(common) => common,
         Err(error) => return Some(error.to_string()),
     };
-    let actual = match crate::pool::local_git::Repo::new(&worktree).common_dir() {
+    let actual = match local_git::Repo::new(&worktree).common_dir() {
         Ok(common) => common,
         Err(error) => return Some(error.to_string()),
     };
@@ -413,30 +415,30 @@ fn remove_cached_worktree(source: &str, checkout: &Path) -> Result<(), VivariumE
     if !checkout.exists() {
         return Ok(());
     }
-    let repo = crate::pool::local_git::Repo::new(Path::new(source));
-    let actual = crate::pool::local_git::Repo::new(checkout).common_dir()?;
-    if actual != repo.common_dir()? {
-        return Err(VivariumError::Config(
-            "target cache belongs to another repository".into(),
-        ));
-    }
+    let repo = local_git::Repo::new(Path::new(source));
+    require_same_repository(&repo, checkout)?;
     repo.remove_worktree(checkout)
 }
 
-/// Start a remote-backed job from a fresh, empty Git repository on its RAM
-/// mount. The job runner fetches the requested commit and pushes by URL.
+/// Fail unless the checkout at `checkout` is a worktree of `repo`.
+fn require_same_repository(repo: &local_git::Repo, checkout: &Path) -> Result<(), VivariumError> {
+    if local_git::Repo::new(checkout).common_dir()? == repo.common_dir()? {
+        Ok(())
+    } else {
+        Err(VivariumError::Config(
+            "target cache belongs to another repository".into(),
+        ))
+    }
+}
+
 /// The volume label for a local slot job: `vivi-<pool>-<slot>-<job>` under a
 /// project-relative root, or `vivi-<mailspace>-<pool>-<slot>-<job>` otherwise.
 fn pool_job_volume(id: &str, job: &str) -> Result<String, VivariumError> {
     let mut parts = id.split('/');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some(pool), Some(slot), None, None) => {
-            Ok(crate::pool::ramdisk::volume_name(&[pool, slot, job]))
-        }
+        (Some(pool), Some(slot), None, None) => Ok(ramdisk::volume_name(&[pool, slot, job])),
         (Some(mailspace), Some(pool), Some(slot), None) => {
-            Ok(crate::pool::ramdisk::volume_name(&[
-                mailspace, pool, slot, job,
-            ]))
+            Ok(ramdisk::volume_name(&[mailspace, pool, slot, job]))
         }
         _ => Err(VivariumError::Message(format!("not a slot id: {id}"))),
     }
@@ -444,11 +446,7 @@ fn pool_job_volume(id: &str, job: &str) -> Result<String, VivariumError> {
 
 /// The marker stays on the SSD slot root so unclaim, destroy, and pump restart
 /// can prove ownership after the RAM volume itself is gone.
-fn ramdisk_marker(
-    disk: &crate::pool::ramdisk::Disk,
-    job: &str,
-    source: &str,
-) -> Result<String, VivariumError> {
+fn ramdisk_marker(disk: &ramdisk::Disk, job: &str, source: &str) -> Result<String, VivariumError> {
     let backing = disk.backing_device.as_deref().ok_or_else(|| {
         VivariumError::Message("new RAM disk has no verified physical backing".into())
     })?;
@@ -469,7 +467,7 @@ fn prepare_default_job_ramdisk(
     id: &str,
     job: &str,
     start: &str,
-) -> Result<super::provider::PreparedWorkspace, VivariumError> {
+) -> Result<PreparedWorkspace, VivariumError> {
     let slot = provider.known(id)?;
     let key = hex::encode(Sha256::digest(format!("{id}\0{job}")));
     let targets = slot.join("targets");
@@ -481,13 +479,13 @@ fn prepare_default_job_ramdisk(
     mount_job_ramdisk(provider, id, job, &slot, &cache, source_text.as_deref())?;
     if let Some(source) = source {
         let checkout = cache.join(slots::CHECKOUT);
-        crate::pool::local_git::Repo::new(source).add_worktree(&checkout, start)?;
+        local_git::Repo::new(source).add_worktree(&checkout, start)?;
         std::fs::write(
             cache.join(slots::WORKTREE_OF_FILE),
             source_text.as_deref().unwrap_or_default(),
         )?;
     }
-    Ok(super::provider::PreparedWorkspace {
+    Ok(PreparedWorkspace {
         cache_key: key,
         local_source: source_text,
     })
@@ -513,14 +511,9 @@ fn reject_target_symlinks(targets: &Path, cache: &Path) -> Result<(), VivariumEr
 /// `start`, and record which repository it belongs to.
 fn add_target_worktree(cache: &Path, source: &str, start: &str) -> Result<(), VivariumError> {
     let checkout = cache.join(slots::CHECKOUT);
-    let repo = super::local_git::Repo::new(Path::new(source));
+    let repo = local_git::Repo::new(Path::new(source));
     if checkout.exists() {
-        let actual = super::local_git::Repo::new(&checkout).common_dir()?;
-        if actual != repo.common_dir()? {
-            return Err(VivariumError::Config(
-                "target cache belongs to another repository".into(),
-            ));
-        }
+        require_same_repository(&repo, &checkout)?;
     } else {
         repo.add_worktree(&checkout, start)?;
     }
@@ -564,7 +557,7 @@ fn mount_job_ramdisk(
     if let Some(source) = source {
         super::ssh::one_line(source)?;
     }
-    teardown_marked_ramdisk(slot, id, provider.ramdisk_runner.as_ref())?;
+    teardown_ramdisk(slot, id, provider.ramdisk_runner.as_ref())?;
     apfs_job::teardown(slot, id, provider.ramdisk_runner.as_ref())?;
     if let Some(source) = source {
         remove_cached_worktree(source, &cache.join(slots::CHECKOUT))?;
@@ -576,22 +569,6 @@ fn mount_job_ramdisk(
     }
 }
 
-fn teardown_marked_ramdisk(
-    slot: &Path,
-    id: &str,
-    runner: &dyn crate::pool::ramdisk::Runner,
-) -> Result<(), VivariumError> {
-    let marker = slot.join("ramdisk");
-    match marker.symlink_metadata() {
-        Ok(_) => teardown_ramdisk(slot, id, runner),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(VivariumError::Message(format!(
-            "cannot inspect RAM disk marker {}: {error}",
-            marker.display()
-        ))),
-    }
-}
-
 fn mount_ramdisk_at(
     provider: &LocalProvider,
     id: &str,
@@ -600,9 +577,9 @@ fn mount_ramdisk_at(
     mount: &Path,
     source: &str,
 ) -> Result<(), VivariumError> {
-    let _admission_lock = crate::pool::ramdisk::lock_admission().map_err(VivariumError::Message)?;
+    let _admission_lock = ramdisk::lock_admission().map_err(VivariumError::Message)?;
     let want = provider.workspace.size_gib;
-    crate::pool::ramdisk::admit_with(
+    ramdisk::admit_with(
         provider.ramdisk_runner.as_ref(),
         available_memory(provider),
         want,
@@ -610,46 +587,31 @@ fn mount_ramdisk_at(
     )
     .map_err(VivariumError::Message)?;
     let volume = pool_job_volume(id, job)?;
-    let disk = crate::pool::ramdisk::mount(provider.ramdisk_runner.as_ref(), &volume, want, mount)
+    let disk = ramdisk::mount(provider.ramdisk_runner.as_ref(), &volume, want, mount)
         .map_err(VivariumError::Message)?;
-    let marker = match ramdisk_marker(&disk, job, source) {
-        Ok(marker) => marker,
-        Err(error) => {
-            if let Err(teardown) =
-                crate::pool::ramdisk::teardown(provider.ramdisk_runner.as_ref(), &disk)
-            {
-                eprintln!(
-                    "warning: RAM disk {} teardown verification failed: {teardown}",
-                    disk.volume
-                );
-            }
-            return Err(error);
-        }
-    };
-    if let Err(error) = slots::replace_file(&slot.join("ramdisk"), marker.as_bytes()) {
-        if let Err(teardown) =
-            crate::pool::ramdisk::teardown(provider.ramdisk_runner.as_ref(), &disk)
-        {
-            eprintln!(
-                "warning: RAM disk {} teardown verification failed after marker write error: {teardown}",
-                disk.volume
-            );
-        }
-        return Err(error);
+    let written = ramdisk_marker(&disk, job, source)
+        .and_then(|marker| slots::replace_file(&slot.join("ramdisk"), marker.as_bytes()));
+    if written.is_err()
+        && let Err(teardown) = ramdisk::teardown(provider.ramdisk_runner.as_ref(), &disk)
+    {
+        eprintln!(
+            "warning: RAM disk {} teardown verification failed: {teardown}",
+            disk.volume
+        );
     }
-    Ok(())
+    written
 }
 
 #[cfg(test)]
 fn available_memory(provider: &LocalProvider) -> u64 {
     provider
         .available_memory
-        .unwrap_or_else(crate::pool::ramdisk::available_bytes)
+        .unwrap_or_else(ramdisk::available_bytes)
 }
 
 #[cfg(not(test))]
 fn available_memory(_provider: &LocalProvider) -> u64 {
-    crate::pool::ramdisk::available_bytes()
+    ramdisk::available_bytes()
 }
 
 impl PoolProvider for LocalProvider {
@@ -673,7 +635,7 @@ impl PoolProvider for LocalProvider {
         target: Option<&super::dispatch::target::JobTarget>,
         start: &str,
         job: &str,
-    ) -> Result<Option<super::provider::PreparedWorkspace>, VivariumError> {
+    ) -> Result<Option<PreparedWorkspace>, VivariumError> {
         match target {
             Some(target) => self
                 .prepare_target_checkout(id, target, start, job)
@@ -839,8 +801,11 @@ impl PoolProvider for LocalProvider {
         apfs_job::teardown(&dir, id, self.ramdisk_runner.as_ref())?;
         slots::unclaim(&dir)?;
         slots::detach_if_idle(&dir);
-        let _ignored =
-            super::clean::after_slot_freed(&dir, self.build_dir.as_deref(), self.build_baseline);
+        if let Err(error) =
+            super::clean::after_slot_freed(&dir, self.build_dir.as_deref(), self.build_baseline)
+        {
+            eprintln!("warning: build reclaim of {id} failed: {error}");
+        }
         Ok(())
     }
 

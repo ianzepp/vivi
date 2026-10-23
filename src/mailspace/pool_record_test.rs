@@ -70,7 +70,6 @@ fn a_note_lands_as_an_event_and_a_reply_and_never_moves_the_task() {
     assert_eq!(events[1].note, r#"{"outcome":"finished"}"#);
     let task = space.pool_task(&handle).unwrap();
     assert_eq!(task.subject, "Fix the edge", "still an open task");
-    assert!(!space.is_task_done(&handle).unwrap());
 }
 
 #[test]

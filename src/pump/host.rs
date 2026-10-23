@@ -251,8 +251,7 @@ impl Ctx {
     /// to `" | "`, text cut at 600 chars) to `<home>/exceptions.txt` and log
     /// `EXCEPTION kind unit`.
     pub fn exception(&self, kind: &str, unit: &str, text: &str) {
-        let folded = text.replace('\n', " | ");
-        let cut: String = folded.chars().take(600).collect();
+        let cut = fold_and_cut(text);
         let now = self.host.now();
         let stamped = format!("{} {kind} {unit} {cut}", hhmmss(now));
         append_line(&self.home.join("exceptions.txt"), &stamped);
@@ -265,8 +264,7 @@ impl Ctx {
     /// `<home>/exceptions.txt`, record the resolution in the store's exception
     /// table and log `RESOLVED kind unit`.
     pub fn resolve(&self, kind: &str, unit: &str, text: &str) {
-        let folded = text.replace('\n', " | ");
-        let cut: String = folded.chars().take(600).collect();
+        let cut = fold_and_cut(text);
         let now = self.host.now();
         let stamped = format!("{} resolved {kind} {unit} {cut}", hhmmss(now));
         append_line(&self.home.join("exceptions.txt"), &stamped);
@@ -285,6 +283,12 @@ impl Ctx {
     pub fn flag(&self, name: &str) -> bool {
         self.home.join(name).exists()
     }
+}
+
+/// Fold newlines to `" | "` and cut at 600 chars, the form exception lines
+/// are recorded in.
+fn fold_and_cut(text: &str) -> String {
+    text.replace('\n', " | ").chars().take(600).collect()
 }
 
 /// Quote `s` for POSIX shells, like Python's `shlex.quote`.
@@ -313,10 +317,7 @@ pub fn shell_quote(s: &str) -> String {
 /// plain whitespace split.
 #[must_use]
 pub fn shell_split(s: &str) -> Vec<String> {
-    match try_shell_split(s) {
-        Some(words) => words,
-        None => s.split_whitespace().map(String::from).collect(),
-    }
+    try_shell_split(s).unwrap_or_else(|| s.split_whitespace().map(String::from).collect())
 }
 
 /// `true` for characters that need no quoting.
@@ -493,12 +494,12 @@ impl Host for FakeHost {
         self.clock.load(Ordering::SeqCst)
     }
 
-    fn run(&self, cmd: &str, _cwd: Option<&Path>, _timeout_secs: u64) -> CmdOutput {
+    fn run(&self, cmd: &str, _cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
         self.clock
             .fetch_add(self.advance_on_run.load(Ordering::SeqCst), Ordering::SeqCst);
         if let Ok(mut state) = self.state.lock() {
             state.commands.push(cmd.to_string());
-            state.timeouts.push(_timeout_secs);
+            state.timeouts.push(timeout_secs);
             let once = state
                 .once
                 .iter()
@@ -776,9 +777,8 @@ fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Pat
     }
     // Safety: only sets the child's own process group; no invariants involved.
     command.process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(_) => return None,
+    let Ok(mut child) = command.spawn() else {
+        return None;
     };
     let pid = child.id();
     let receipt = exit_receipt_path(out);

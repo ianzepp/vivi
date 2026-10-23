@@ -1,3 +1,6 @@
+//! `vivi board` dispatch: resolve the delta window, print the board as JSON or
+//! text, and advance the watermark file.
+
 use std::fs;
 use std::io::ErrorKind;
 

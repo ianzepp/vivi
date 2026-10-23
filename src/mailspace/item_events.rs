@@ -34,6 +34,8 @@
 //! authenticates the mailspace, not the role. A bare `local` or a legacy
 //! name domain that is not this mailspace's own is a claim anyone can make:
 //! it is filed as plain mail and never counts.
+//! The pump identity and an item's delegate also speak under the conditions
+//! `Mailspace::event_may_speak` states.
 //!
 //! One function projects a head onto the rows and the backlog node; every
 //! route that sees a letter (the owner's write, pull, fetch, resync,
@@ -120,8 +122,6 @@ pub(crate) struct EventLetter {
     /// Normalized `Message-ID`s of the events this one follows.
     pub(crate) prev: Vec<String>,
     pub(crate) from_domain: String,
-    /// The `Date` header as a Unix time; 0 when absent.
-    pub(crate) date: i64,
     /// When the event happened: `X-Vivi-Event-At` (RFC 3339) in Unix
     /// microseconds when present and parseable, else the `Date` header in
     /// whole seconds × 1 000 000.
@@ -168,7 +168,6 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
         of,
         prev,
         from_domain: from_domain_of(&parsed)?,
-        date: parsed.date().map_or(0, mail_parser::DateTime::to_timestamp),
         at: at.unwrap_or_else(|| date_micros(&parsed)),
     })
 }
@@ -224,6 +223,13 @@ struct Chain {
     /// The earliest clock reading at which an event skipped as dated past
     /// the clock — a member's, so it will count — begins to count.
     deferred_until: Option<i64>,
+}
+
+impl Chain {
+    /// The state the newest counted event says, if any.
+    fn head_kind(&self) -> Option<ItemEventKind> {
+        newest_event(&self.events).map(|head| head.kind)
+    }
 }
 
 /// Every event head of the chain, oldest to newest by the total order
@@ -434,6 +440,11 @@ impl Mailspace {
     ///   role, or one of another kind (`hand`, `auditor`, `head`, ...),
     ///   speaks for no one: the letter is ignored and counted in the
     ///   ignored tally.
+    /// * The domain is the item author's own domain: the event counts.
+    /// * The item has a delegation history, so another member's word is
+    ///   narrowed: it counts only from a role named `operator`, from the
+    ///   pump identity ([`Self::remote_pump_speaks`]), or from the item's
+    ///   delegate.
     /// * The domain is another member's prefix domain (`<8 hex>.local`):
     ///   the event counts. The receiver cannot see that mailspace's roles;
     ///   the writing CLI there enforced the same rule, and the sync
@@ -442,6 +453,9 @@ impl Mailspace {
     /// * Any other domain — a bare `local`, or a legacy name domain that is
     ///   not this mailspace's own — is a claim anyone can make, so it never
     ///   counts.
+    ///
+    /// On the own-domain branch the pump identity ([`Self::pump_spoke_for`])
+    /// and the item's delegate ([`Self::delegation_speaks`]) also count.
     pub(super) fn event_may_speak(
         &self,
         item: &HeldItem,
@@ -473,6 +487,9 @@ impl Mailspace {
         prefix_of_domain(&domain).is_some()
     }
 
+    /// Whether `from_addr` is the item's delegate and its event at `(at, id)`
+    /// does not follow the delegation's lapse. A delegate that is a `hand` in
+    /// this mailspace never speaks.
     fn delegation_speaks(&self, item: &HeldItem, from_addr: &str, at: i64, id: &str) -> bool {
         let Some(delegate) = item.delegation.delegate.as_deref() else {
             return false;
@@ -531,8 +548,7 @@ impl Mailspace {
         storage: &Storage,
         item: &HeldItem,
     ) -> Result<Option<ItemEventKind>, VivariumError> {
-        let chain = self.item_chain(storage, item)?;
-        Ok(newest_event(&chain.events).map(|head| head.kind))
+        Ok(self.item_chain(storage, item)?.head_kind())
     }
 
     /// The role that owns an item held here: the one that authored it, or the
@@ -700,8 +716,9 @@ impl Mailspace {
         Ok(changed)
     }
 
-    /// Settle one item against its newest event. Returns the rows moved plus
-    /// the nodes changed, and counts ignored events into `tally`.
+    /// Settle one item against its newest event: project its property and
+    /// assignment events, record any deferral mark, then move its rows and
+    /// backlog nodes to the head state. Counts into `tally`.
     fn settle_item(
         &self,
         storage: &Storage,
@@ -742,7 +759,7 @@ impl Mailspace {
         if sealed {
             return Ok(());
         }
-        let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
+        let Some(kind) = chain.head_kind() else {
             return Ok(());
         };
         // Sealed work stays sealed only when every row of it is absorbed:
@@ -853,6 +870,7 @@ impl Mailspace {
     /// The current state of the item `handle` names, from its events: the
     /// newest one, and how many chain heads (a fork) are held. `None` when
     /// the item has no authorized event or is not work.
+    ///
     /// # Errors
     /// Returns a [`VivariumError`] when the handle does not resolve or on
     /// storage failure.
@@ -889,7 +907,7 @@ impl Mailspace {
             return Ok(None);
         };
         let chain = self.item_chain(storage, &item)?;
-        let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
+        let Some(kind) = chain.head_kind() else {
             return Ok(None);
         };
         // A letter the clock has just passed is an arrival: it moves a

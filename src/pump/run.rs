@@ -1,10 +1,11 @@
 //! Pump tick, status, and the run/once entry points.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -26,7 +27,7 @@ use crate::pump::tick_steps;
 /// the first ingest, so a requeued unit can dispatch in the same tick. The
 /// board pass is bookkeeping; durable execution runs through dispatched pool jobs.
 pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
-    write_status(ctx, st, &[]);
+    write_status(ctx, st);
     boardpass.apply(ctx, st);
     plan::ingest(ctx, st);
     if !ctx.mailspace.is_empty() {
@@ -41,13 +42,13 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
             ctx.log(&format!(
                 "control state read failed; skipping dispatch: {error}"
             ));
-            write_status(ctx, st, &[]);
+            write_status(ctx, st);
             return Err(error);
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
         periodic(ctx, st, boardpass)?;
-        write_status(ctx, st, &[]);
+        write_status(ctx, st);
         return Ok(());
     }
     if !ctx.mailspace.is_empty() {
@@ -60,9 +61,9 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
         );
         save(ctx, st)?;
     }
-    write_status(ctx, st, &[]);
+    write_status(ctx, st);
     periodic(ctx, st, boardpass)?;
-    write_status(ctx, st, &[]);
+    write_status(ctx, st);
     Ok(())
 }
 
@@ -72,7 +73,7 @@ fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     collect::collect(ctx, st);
     ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
     save(ctx, st)?;
-    write_status(ctx, st, &[]);
+    write_status(ctx, st);
     Ok(())
 }
 
@@ -102,11 +103,10 @@ fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 /// counts, plan verdict counts, the merge counter, the stall lines from
 /// [`crate::pump::alarm::status_lines`], the blocker lines from
 /// [`crate::pump::blockers::status_lines`], the in-flight planner lines, then
-/// any lane lines supplied by a caller. The dispatcher path supplies no
-/// process-owned lane lines. An idle board adds no planner lines. A write
-/// failure is logged, never fatal.
-pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
-    let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+/// the cadence lines. An idle board adds no planner lines. A write failure is
+/// logged, never fatal.
+pub fn write_status(ctx: &Ctx, st: &State) {
+    let mut verdicts: BTreeMap<String, usize> = BTreeMap::new();
     for need in st.needs.values() {
         *verdicts.entry(need.verdict.clone()).or_default() += 1;
     }
@@ -124,7 +124,6 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     lines.extend(crate::pump::blockers::status_lines(ctx, st));
     lines.extend(planner_lines(ctx, st));
     lines.extend(crate::pump::cadence::status_lines(ctx, st));
-    lines.extend(lanes.iter().cloned());
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));
@@ -346,68 +345,64 @@ fn run_with_lock_policy(
 /// Returns [`VivariumError::Config`] when the clone is missing and no
 /// `remote_url` is set, and [`VivariumError::Message`] when the clone fails.
 pub(crate) fn ensure_repo(ctx: &Ctx) -> Result<(), VivariumError> {
-    if !ctx.cfg.targets.is_empty() {
-        for (id, target) in ctx.cfg.target_configs() {
-            let source = ctx.cfg.target_path(&ctx.project, &id).ok_or_else(|| {
-                VivariumError::Config(format!("repository target {id:?} has no path"))
-            })?;
-            if !source.is_dir() {
-                return Err(VivariumError::Config(format!(
-                    "repository target {id:?} path {} does not exist",
-                    source.display()
-                )));
-            }
-            let probe = ctx.sh(
-                &format!(
-                    "git -C {} rev-parse --show-toplevel",
-                    shell_quote(&source.to_string_lossy())
-                ),
-                None,
-                30,
-            );
-            if probe.code != 0 {
-                return Err(VivariumError::Config(format!(
-                    "repository target {id:?} path {} is not a Git repository",
-                    source.display()
-                )));
-            }
-            let remote_url = target
-                .remote_url
-                .or_else(|| {
-                    let out = ctx.sh(
-                        &format!(
-                            "git -C {} remote get-url {}",
-                            shell_quote(&source.to_string_lossy()),
-                            shell_quote(&target.remote)
-                        ),
-                        None,
-                        30,
-                    );
-                    (out.code == 0 && !out.text.trim().is_empty())
-                        .then(|| out.text.trim().to_owned())
-                })
-                .unwrap_or_else(|| source.to_string_lossy().into_owned());
-            let mut target_cfg = ctx.cfg.for_target(&id).ok_or_else(|| {
-                VivariumError::Config(format!("repository target {id:?} disappeared"))
-            })?;
-            target_cfg.remote_url = Some(remote_url);
-            let repo = ctx.cfg.target_repo_dir(&ctx.project, &id).ok_or_else(|| {
-                VivariumError::Config(format!("repository target {id:?} has no integration path"))
-            })?;
-            let target_ctx = Ctx::with_parts(
-                target_cfg,
-                ctx.host.clone(),
-                ctx.project.clone(),
-                ctx.vivi.clone(),
-                ctx.shell_prefix.clone(),
-                ctx.home.clone(),
-                repo,
-            );
-            ensure_single_repo(&target_ctx)?;
-        }
-        return Ok(());
+    if ctx.cfg.targets.is_empty() {
+        return ensure_single_repo(ctx);
     }
-    ensure_single_repo(ctx)
+    for (id, target) in ctx.cfg.target_configs() {
+        let source = ctx.cfg.target_path(&ctx.project, &id).ok_or_else(|| {
+            VivariumError::Config(format!("repository target {id:?} has no path"))
+        })?;
+        if !source.is_dir() {
+            return Err(VivariumError::Config(format!(
+                "repository target {id:?} path {} does not exist",
+                source.display()
+            )));
+        }
+        let quoted_source = shell_quote(&source.to_string_lossy());
+        let probe = ctx.sh(
+            &format!("git -C {quoted_source} rev-parse --show-toplevel"),
+            None,
+            30,
+        );
+        if probe.code != 0 {
+            return Err(VivariumError::Config(format!(
+                "repository target {id:?} path {} is not a Git repository",
+                source.display()
+            )));
+        }
+        let remote_url = target
+            .remote_url
+            .or_else(|| {
+                let out = ctx.sh(
+                    &format!(
+                        "git -C {quoted_source} remote get-url {}",
+                        shell_quote(&target.remote)
+                    ),
+                    None,
+                    30,
+                );
+                (out.code == 0 && !out.text.trim().is_empty()).then(|| out.text.trim().to_owned())
+            })
+            .unwrap_or_else(|| source.to_string_lossy().into_owned());
+        let mut target_cfg = ctx.cfg.for_target(&id).ok_or_else(|| {
+            VivariumError::Config(format!("repository target {id:?} disappeared"))
+        })?;
+        target_cfg.remote_url = Some(remote_url);
+        let repo = ctx.cfg.target_repo_dir(&ctx.project, &id).ok_or_else(|| {
+            VivariumError::Config(format!("repository target {id:?} has no integration path"))
+        })?;
+        let target_ctx = Ctx::with_parts(
+            target_cfg,
+            ctx.host.clone(),
+            ctx.project.clone(),
+            ctx.vivi.clone(),
+            ctx.shell_prefix.clone(),
+            ctx.home.clone(),
+            repo,
+        );
+        ensure_single_repo(&target_ctx)?;
+    }
+    Ok(())
 }
 
 fn ensure_single_repo(ctx: &Ctx) -> Result<(), VivariumError> {
@@ -631,7 +626,7 @@ fn load_runtime_config(project: &Path) -> Result<LoadedRuntimeConfig, VivariumEr
 struct LoadedRuntimeConfig {
     cfg: PumpConfig,
     routing: crate::routing::RoleRouting,
-    pool_sources: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pool_sources: BTreeMap<String, PathBuf>,
     actor: String,
     mailspace: String,
     fingerprint: Vec<u8>,
@@ -645,10 +640,7 @@ fn runtime_paths_match(ctx: &Ctx, cfg: &PumpConfig) -> bool {
     runtime_repo_paths(&ctx.cfg, &ctx.project) == runtime_repo_paths(cfg, &ctx.project)
 }
 
-fn runtime_repo_paths(
-    cfg: &PumpConfig,
-    project: &Path,
-) -> std::collections::BTreeMap<String, std::path::PathBuf> {
+fn runtime_repo_paths(cfg: &PumpConfig, project: &Path) -> BTreeMap<String, PathBuf> {
     cfg.target_configs()
         .keys()
         .filter_map(|id| {
@@ -774,9 +766,7 @@ pub fn closeout(
     let snapshot = read_closeout_snapshot(&home)?;
     let rows = crate::pump::closeout::complete_open(&mailspace, &snapshot)?;
     if let Some(handle) = close {
-        let current_snapshot = read_closeout_snapshot(&home)?;
-        let current_rows = crate::pump::closeout::complete_open(&mailspace, &current_snapshot)?;
-        let row = current_rows
+        let row = rows
             .iter()
             .find(|row| row.handle == handle || row.handle.starts_with(handle))
             .ok_or_else(|| {
@@ -836,7 +826,7 @@ pub fn export(project: &Path, out: &Path) -> Result<(), VivariumError> {
 
 /// `"label k=v k=v"` from sorted counts, joined with single spaces
 /// (an empty map leaves the trailing space).
-fn counts_line(label: &str, counts: &std::collections::BTreeMap<String, usize>) -> String {
+fn counts_line(label: &str, counts: &BTreeMap<String, usize>) -> String {
     let joined = counts
         .iter()
         .map(|(name, count)| format!("{name}={count}"))

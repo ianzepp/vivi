@@ -35,8 +35,9 @@ const SECTION_RECEIPT: &str = "@@vivi-pool receipt";
 const SECTION_STDERR: &str = "@@vivi-pool stderr";
 const SECTION_LOG: &str = "@@vivi-pool log";
 
-/// Runs inside the slot (`WORK` names its root where that is not `/work`). Prints nothing until the job's result exists, then
-/// the result, the receipt, and the log tails, each under a marker line.
+/// Runs inside the slot (`WORK` names its root where that is not `/work`).
+/// Prints nothing until the job's result exists, then the result, the receipt,
+/// and the log tails, each under a marker line.
 pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
@@ -144,8 +145,10 @@ impl JobResult {
             .fields
             .iter()
             .filter_map(|(k, v)| {
-                let n = k.strip_prefix(prefix)?;
-                Some((n.parse::<u64>().into_iter().next()?, v))
+                let Ok(n) = k.strip_prefix(prefix)?.parse::<u64>() else {
+                    return None;
+                };
+                Some((n, v))
             })
             .collect();
         found.sort_unstable();
@@ -451,9 +454,9 @@ fn collect_stopped(
 
 /// Free a slot held by `task`: stop it if it runs and confirm it stopped, then
 /// drop the claim marks. A slot that lives per dispatch is destroyed instead,
-/// and the call returns only once the host no longer lists it. Marks go last, so a slot never looks free while it
-/// still runs, and a slot that would not stop keeps its marks (a later
-/// `reconcile` retries). A slot that `task` no longer holds is left alone
+/// and the call returns only once the host no longer lists it. Marks go last,
+/// so a slot never looks free while it still runs, and a slot that would not
+/// stop keeps its marks (a later `reconcile` retries). A slot that `task` no longer holds is left alone
 /// unless it runs with no claim at all (a collector started it after the
 /// holder freed it): that one is stopped.
 ///
@@ -526,6 +529,10 @@ fn stop_confirmed(
     }
 }
 
+fn has_open_dispatch(open: &[OpenDispatch], slot: &SlotStatus) -> bool {
+    open.iter().any(|d| d.record.machine == slot.id)
+}
+
 /// Claimed slots with no open dispatch behind them, claimed more than `grace`
 /// seconds ago, so that no dispatch is still being set up
 /// ([`PoolProvider::setup_grace_secs`]).
@@ -539,7 +546,7 @@ pub fn stale_claims<'a>(
     slots
         .iter()
         .filter(|s| s.task.is_some())
-        .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
+        .filter(|s| !has_open_dispatch(open, s))
         .filter(|s| s.claimed_at.is_none_or(|at| now.saturating_sub(at) > grace))
         .collect()
 }
@@ -552,7 +559,7 @@ pub fn orphan_runners<'a>(slots: &'a [SlotStatus], open: &[OpenDispatch]) -> Vec
     slots
         .iter()
         .filter(|s| s.state == "busy" && s.task.is_none())
-        .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
+        .filter(|s| !has_open_dispatch(open, s))
         .collect()
 }
 
@@ -571,7 +578,7 @@ pub fn dead_slots<'a>(
         .iter()
         .filter(|s| s.task.is_none())
         .filter(|s| matches!(s.provider_state.as_str(), "stopped" | "failed"))
-        .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
+        .filter(|s| !has_open_dispatch(open, s))
         .filter(|s| {
             created_epoch(&s.created_at).is_none_or(|created| now.saturating_sub(created) > grace)
         })

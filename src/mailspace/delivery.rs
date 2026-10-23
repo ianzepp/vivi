@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use chrono::Utc;
 
@@ -39,7 +39,6 @@ impl Mailspace {
     /// # Errors
     /// Returns an error if the sender or any recipient identity cannot be
     /// resolved, if message composition fails, or if a storage operation fails.
-    #[allow(clippy::needless_pass_by_value)]
     pub fn send(&self, request: SendRequest) -> Result<DeliveryResult, VivariumError> {
         self.send_with_extras(request, &[])
     }
@@ -567,21 +566,6 @@ impl Mailspace {
         self.effective_dependency_refs(&storage, message_id, &header)
     }
 
-    /// Return whether the task identified by handle has been moved to Done.
-    ///
-    /// # Errors
-    /// Returns an error if the handle cannot be resolved.
-    pub fn is_task_done(&self, handle: &str) -> Result<bool, VivariumError> {
-        let storage = self.storage()?;
-        let message_id = storage.resolve_message_token(handle)?;
-        let Some(view) = storage.message_by_id(&message_id)? else {
-            return Err(VivariumError::Message(format!(
-                "message not found: {handle}"
-            )));
-        };
-        Ok(view.local_role == "done")
-    }
-
     /// List open tasks with their dependency handles, optionally filtered.
     ///
     /// - `blocked` keeps only tasks with at least one unmet dependency: a
@@ -670,7 +654,7 @@ impl Mailspace {
                 "--repo and --tip must be provided in matching pairs".into(),
             ));
         }
-        let mut metadata = std::collections::BTreeMap::new();
+        let mut metadata = BTreeMap::new();
         if let Some(verdict) = verdict {
             metadata.insert("verdict".into(), verdict.into());
         }
@@ -727,7 +711,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
-        metadata: Option<&std::collections::BTreeMap<String, String>>,
+        metadata: Option<&BTreeMap<String, String>>,
     ) -> Result<String, VivariumError> {
         self.move_item_outcome(identity, handle, role, note, command, metadata)
             .map(|moved| moved.handle)
@@ -746,7 +730,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
-        metadata: Option<&std::collections::BTreeMap<String, String>>,
+        metadata: Option<&BTreeMap<String, String>>,
     ) -> Result<MoveOutcome, VivariumError> {
         Self::validate_move_metadata(metadata)?;
         let identity = self.resolve_identity(identity)?;
@@ -801,7 +785,7 @@ impl Mailspace {
 
     /// Check that close provenance arrives as one nonempty branch/commit pair.
     fn validate_move_metadata(
-        metadata: Option<&std::collections::BTreeMap<String, String>>,
+        metadata: Option<&BTreeMap<String, String>>,
     ) -> Result<(), VivariumError> {
         if metadata
             .is_some_and(|fields| fields.contains_key("branch") != fields.contains_key("commit"))
@@ -827,7 +811,7 @@ impl Mailspace {
     fn store_move_metadata(
         storage: &Storage,
         message_id: &str,
-        metadata: Option<&std::collections::BTreeMap<String, String>>,
+        metadata: Option<&BTreeMap<String, String>>,
     ) -> Result<(), VivariumError> {
         if let Some(metadata) = metadata {
             storage.set_item_metadata(message_id, metadata)?;
@@ -943,7 +927,7 @@ fn work_send_kind<'a>(role: &str, kind: Option<&'a str>) -> Option<&'a str> {
     }
 }
 
-fn sorted_identity_names(names: std::collections::HashSet<String>) -> Vec<String> {
+fn sorted_identity_names(names: HashSet<String>) -> Vec<String> {
     let mut names = names.into_iter().collect::<Vec<_>>();
     names.sort();
     names

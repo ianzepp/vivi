@@ -439,8 +439,12 @@ pub fn guard_before_dispatch(space: &Mailspace, pool: &str) -> Result<(), Vivari
         return Ok(());
     }
     let st = load_state(space);
-    let _ignored = clean_pool(&handle, space, st.as_ref(), None, None, false);
-    let _ignored = clean_pump::reclaim_lanes(space, st.as_ref(), false);
+    if let Err(error) = clean_pool(&handle, space, st.as_ref(), None, None, false) {
+        eprintln!("warning: pool clean before dispatch failed: {error}");
+    }
+    if let Err(error) = clean_pump::reclaim_lanes(space, st.as_ref(), false) {
+        eprintln!("warning: merge-lane reclaim before dispatch failed: {error}");
+    }
     let left = volume_free_bytes(&root).unwrap_or(free);
     if left < DISK_REFUSE_GIB * GIB {
         return Err(VivariumError::Message(format!(
@@ -515,18 +519,9 @@ fn clean_local_pool(
         actions.extend(a);
         skips.extend(s);
         if lane_is_done(st, hint, &dir) {
-            recycle(
-                handle,
-                space,
-                st,
-                hint,
-                &dir,
-                &machine.name,
-                base,
-                dry_run,
-                &mut actions,
-                &mut skips,
-            )?;
+            let (a, s) = recycle(handle, space, st, hint, &dir, &machine.name, base, dry_run)?;
+            actions.extend(a);
+            skips.extend(s);
         }
     }
     sweep(
@@ -541,9 +536,7 @@ fn clean_local_pool(
     Ok((actions, skips))
 }
 
-fn local_pool_paths(
-    handle: &PoolHandle,
-) -> Result<(std::path::PathBuf, std::path::PathBuf), VivariumError> {
+fn local_pool_paths(handle: &PoolHandle) -> Result<(PathBuf, PathBuf), VivariumError> {
     let root = handle.provider.local_root().ok_or_else(|| {
         VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
     })?;
@@ -556,6 +549,13 @@ fn local_pool_paths(
     Ok((root, pool_dir))
 }
 
+/// The pump unit recorded by the slot's last-task / last-branch marks.
+fn marked_unit<'a>(st: Option<&'a State>, dir: &Path) -> Option<&'a Unit> {
+    let task = read_mark(dir, MARK_LAST_TASK);
+    let branch = read_mark(dir, MARK_LAST_BRANCH);
+    st.and_then(|s| unit_for(s, task.as_deref(), branch.as_deref()))
+}
+
 fn lane_is_done(st: Option<&State>, hint: Option<&Unit>, dir: &Path) -> bool {
     let task = read_mark(dir, MARK_LAST_TASK);
     let branch = read_mark(dir, MARK_LAST_BRANCH);
@@ -566,8 +566,7 @@ fn lane_is_done(st: Option<&State>, hint: Option<&Unit>, dir: &Path) -> bool {
             return is_done(unit.status);
         }
     }
-    st.and_then(|s| unit_for(s, task.as_deref(), branch.as_deref()))
-        .is_some_and(|unit| is_done(unit.status))
+    marked_unit(st, dir).is_some_and(|unit| is_done(unit.status))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -580,29 +579,21 @@ fn recycle(
     name: &str,
     base: Option<&str>,
     dry_run: bool,
-    actions: &mut Vec<CleanAction>,
-    skips: &mut Vec<CleanSkip>,
-) -> Result<(), VivariumError> {
+) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     let target = hint
-        .map(|u| u.target_id().to_string())
-        .or_else(|| {
-            let task = read_mark(dir, MARK_LAST_TASK);
-            let branch = read_mark(dir, MARK_LAST_BRANCH);
-            st.and_then(|s| unit_for(s, task.as_deref(), branch.as_deref()))
-                .map(|u: &Unit| u.target_id().to_string())
-        })
-        .unwrap_or_else(|| "default".into());
+        .or_else(|| marked_unit(st, dir))
+        .map_or_else(|| "default".into(), |u| u.target_id().to_string());
     let Some(lane) = main_ref(space, &target) else {
-        skips.push(CleanSkip {
+        let skip = CleanSkip {
             pool: handle.id.pool.clone(),
             slot: name.into(),
             kind: ActionKind::Worktree,
             reason: "no main branch in [pump]".into(),
-        });
-        return Ok(());
+        };
+        return Ok((Vec::new(), vec![skip]));
     };
     let chosen = super::reset::choose_base(space, base, hint, super::reset::ResetKind::Recycle);
-    let (a, s) = clean_work::recycle_lane(
+    clean_work::recycle_lane(
         &handle.id.pool,
         name,
         dir,
@@ -610,10 +601,7 @@ fn recycle(
         handle.config.build_dir.as_deref(),
         &chosen.name,
         dry_run,
-    )?;
-    actions.extend(a);
-    skips.extend(s);
-    Ok(())
+    )
 }
 
 fn sweep(
@@ -656,11 +644,7 @@ fn orphan_is_done(st: Option<&State>, root: &Path, path: &Path) -> bool {
     if !slot_is_free(&dir) {
         return false;
     }
-    let task = read_mark(&dir, MARK_LAST_TASK);
-    let branch = read_mark(&dir, MARK_LAST_BRANCH);
-    st.is_some_and(|s| {
-        unit_for(s, task.as_deref(), branch.as_deref()).is_some_and(|u| is_done(u.status))
-    })
+    marked_unit(st, &dir).is_some_and(|u| is_done(u.status))
 }
 
 /// `--base` on a remote pool: fetch+checkout that origin branch on every free slot.
@@ -732,12 +716,11 @@ fn reset_one_remote(
     }
 }
 
-fn slot_dir_under(root: &Path, path: &Path) -> Option<std::path::PathBuf> {
+fn slot_dir_under(root: &Path, path: &Path) -> Option<PathBuf> {
     let root = super::local_git::real_path(root);
     let path = super::local_git::real_path(path);
-    let rel = match path.strip_prefix(&root) {
-        Ok(rel) => rel,
-        Err(_) => return None,
+    let Ok(rel) = path.strip_prefix(&root) else {
+        return None;
     };
     let mut cur = root;
     for part in rel {

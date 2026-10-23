@@ -14,14 +14,14 @@ const MAX_FILE_LINES: usize = 1_000;
 const MAX_FN_LINES: usize = 60;
 
 // Banned-pattern budgets (production only). Monotonic — lower, never raise.
-const MAX_UNWRAP: usize = 2;
+const MAX_UNWRAP: usize = 0;
 const MAX_EXPECT: usize = 0;
 const MAX_PANIC: usize = 0;
-const MAX_UNREACHABLE: usize = 2;
+const MAX_UNREACHABLE: usize = 1;
 const MAX_TODO: usize = 0;
 const MAX_UNIMPLEMENTED: usize = 0;
-const MAX_LET_UNDERSCORE: usize = 23;
-const MAX_OK_DROP: usize = 9;
+const MAX_LET_UNDERSCORE: usize = 22;
+const MAX_OK_DROP: usize = 7;
 
 // Structural test-boundary budgets.
 const MAX_INLINE_TEST_MODULES: usize = 0;

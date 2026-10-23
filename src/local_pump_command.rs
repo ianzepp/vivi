@@ -1,18 +1,36 @@
 //! `vivi pump` dispatch: `run`, `once`, and `status` over the run module.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use vivi::VivariumError;
 use vivi::cli::{
     PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpRungsCommand, PumpServiceCommand,
     PumpSubcommand,
 };
+use vivi::mailspace::{Mailspace, PumpActionRequest};
 use vivi::pump::config::RungsConfig;
 use vivi::pump::control::PumpMode;
 use vivi::pump::health::{self, HealthOptions};
 use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
 use vivi::pump::priority;
 use vivi::pump::run as pump_run;
+
+/// Post an unlock action on the need's open pump record (`pump unlock`).
+fn post_unlock(
+    project: &Path,
+    need: &str,
+    entry: Option<&str>,
+    note: Option<&str>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let request = PumpActionRequest::unlock(entry, note.unwrap_or_default());
+    let posted = mailspace.pump_post_action(None, need, &request)?;
+    println!(
+        "unlock posted on {} for need {}; the pump applies it at its next tick",
+        posted.record, need
+    );
+    Ok(())
+}
 
 pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), VivariumError> {
     match command {
@@ -70,7 +88,7 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             entry,
             note,
             project,
-        } => PumpSubcommand::post_unlock(
+        } => post_unlock(
             &project_root(project),
             need,
             entry.as_deref(),

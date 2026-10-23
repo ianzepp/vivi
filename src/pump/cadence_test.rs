@@ -21,7 +21,6 @@ fn run(ended_at: Option<u64>, retry_at: Option<u64>) -> RoleRun {
     RoleRun {
         job: String::from("cadence-periodic-1"),
         task: String::from("t"),
-        read_only: true,
         started_at: 1_000,
         ended_at,
         outcome: Some(String::from(if ended_at.is_some() {
