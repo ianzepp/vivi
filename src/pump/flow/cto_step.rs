@@ -6,9 +6,9 @@ use crate::mailspace::shipped::HEAD_CTO_ROLE;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
-use crate::pump::flow::index::StepRow;
+use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
-use crate::pump::flow::verify_inputs::{capped, latest_of_class};
+use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
 use crate::pump::jobs::JobStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 
@@ -22,6 +22,11 @@ const FRONT_CAP: usize = 4_000;
 const BLOCK_CAP: usize = 30_000;
 /// The run count from which every answer but `lock` needs a new fact.
 const FACT_RUN: usize = 3;
+
+/// Largest rung failure report the brief carries per rung row.
+const RUNG_CAP: usize = 4_000;
+/// The nodes of the second verify pass.
+const SECOND_PASS: [&str; 5] = ["build2", "audit2", "test2", "judge2", "raise2"];
 
 /// What each CTO word does.
 const WORDS: &str = "## Your words\n\n\
@@ -51,6 +56,7 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
             "\nThis is run 3 or later: every answer but `lock` needs a `new_fact` in the envelope.\n",
         );
     }
+    out.push_str(&why_reached(cx)?);
     out.push_str("\n## Run history\n");
     for run in &runs {
         out.push_str(&format!(
@@ -89,9 +95,61 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     if !any {
         out.push_str("(none recorded)\n\n");
     }
+    out.push_str("## Failing rung output\n\n");
+    out.push_str(&failing_rungs(&payloads));
     out.push_str(&block_ship(&payloads));
     out.push_str(WORDS);
     Ok(out)
+}
+
+/// The step that routed to the cto, and whether it is the block-ship case.
+fn why_reached(cx: &StartCx<'_>) -> Result<String, VivariumError> {
+    let rows = cx.store.steps_of(&cx.run.need, cx.run.run)?;
+    let routed = rows.iter().rev().find(|row| {
+        row.state == StepState::Done && row.node != SENTINEL_NODE && !is_cto(cx, &row.node)
+    });
+    let mut out = String::from("\n## Why the CTO was reached\n\n");
+    let Some(row) = routed else {
+        out.push_str("No finished step precedes the cto in this run.\n");
+        return Ok(out);
+    };
+    out.push_str(&format!(
+        "{} answered {}\n",
+        row.node,
+        row.verdict.as_deref().unwrap_or("none")
+    ));
+    if SECOND_PASS.contains(&row.node.as_str()) {
+        out.push_str("Two verify passes failed: this is the automatic block-ship of the need.\n");
+    }
+    Ok(out)
+}
+
+/// Whether `node` is a cto node of the flow.
+fn is_cto(cx: &StartCx<'_>, node: &str) -> bool {
+    cx.def
+        .nodes
+        .iter()
+        .any(|n| n.id == node && n.class == NodeClass::Cto)
+}
+
+/// The stored failure facts of every rung that did not exit 0.
+fn failing_rungs(payloads: &[StepPayloadRow]) -> String {
+    let mut out = String::new();
+    for row in payloads
+        .iter()
+        .filter(|row| row.class.starts_with("rung-") && row.payload["exit"].as_i64() != Some(0))
+    {
+        out.push_str(&format!(
+            "run {} {}:\n{}\n\n",
+            row.run,
+            row.node,
+            capped(&rung_report(row), RUNG_CAP)
+        ));
+    }
+    if out.is_empty() {
+        out.push_str("(none)\n\n");
+    }
+    out
 }
 
 /// A reply front as JSON text.

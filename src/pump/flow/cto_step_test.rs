@@ -204,3 +204,51 @@ fn the_cto_class_registers_for_build() {
     };
     assert!(registry.handler_for(FlowKind::Build, &node).is_some());
 }
+
+#[test]
+fn a_second_pass_block_names_the_failing_test_and_the_automatic_block_ship() {
+    let f = fixture();
+    let run = run_row(1, "plan", "live");
+    f.store.insert_run(&run).unwrap();
+    add_step(&f, 1, "sentinel", StepState::Running, None);
+    add_step(&f, 1, "audit1", StepState::Done, Some("defects"));
+    add_step(&f, 1, "test2", StepState::Done, Some("fail"));
+    payload(
+        &f,
+        1,
+        "test1",
+        "rung-need",
+        json!({"exit": 101, "failing": ["lib::pump::flow::broken_test"], "tail": "assertion failed"}),
+    );
+    let spec = start(&f, &run);
+    assert!(
+        spec.body.contains("## Failing rung output"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("run 1 test1:"));
+    assert!(spec.body.contains("lib::pump::flow::broken_test"));
+    assert!(spec.body.contains("## Why the CTO was reached"));
+    assert!(spec.body.contains("test2 answered fail"));
+    assert!(
+        spec.body
+            .contains("Two verify passes failed: this is the automatic block-ship of the need.")
+    );
+}
+
+#[test]
+fn an_admit2_escalation_names_the_step_and_has_no_block_ship_line() {
+    let f = fixture();
+    let run = run_row(1, "plan", "live");
+    f.store.insert_run(&run).unwrap();
+    add_step(&f, 1, "sentinel", StepState::Running, None);
+    add_step(&f, 1, "admit2", StepState::Done, Some("escalate"));
+    let spec = start(&f, &run);
+    assert!(
+        spec.body.contains("admit2 answered escalate"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("automatic block-ship"));
+    assert!(spec.body.contains("## Failing rung output\n\n(none)"));
+}
