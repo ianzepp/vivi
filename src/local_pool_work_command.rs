@@ -2,6 +2,7 @@
 //! in [`vivi::pool::work`]; GitHub (token, default branch, base commit) is
 //! reached from here only.
 
+use std::path::Path;
 use std::time::Duration;
 
 use vivi::VivariumError;
@@ -19,9 +20,9 @@ use vivi::pool::plain_git::{self, RepoSource};
 use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
-use vivi::pool::provider::PoolProvider;
-use vivi::pool::provider::SlotLifetime;
+use vivi::pool::provider::{PoolProvider, SlotLifetime};
 use vivi::pool::reconcile_parallel;
+use vivi::pool::record::{self, DispatchRecord};
 use vivi::pool::role_dispatch::{self, RoleFacts};
 use vivi::pool::slot::PoolId;
 use vivi::pool::work::{self, WaitOptions, Waited};
@@ -41,11 +42,6 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
         }),
         None => Ok(job::DEFAULT_RULES.to_string()),
     }
-}
-
-/// The active `project`-scope rules, read now as the dispatch's snapshot.
-fn load_project_rules(space: &Mailspace) -> Result<String, VivariumError> {
-    role_dispatch::project_rules_snapshot(space)
 }
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
@@ -199,15 +195,15 @@ fn fresh_job_id(handle: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 fn submit_job(
     space: &Mailspace,
-    provider: &dyn vivi::pool::PoolProvider,
-    id: &vivi::pool::slot::PoolId,
+    provider: &dyn PoolProvider,
+    id: &PoolId,
     config: &PoolConfig,
     plan: &job::JobPlan,
     token: &Secret,
     start: &str,
     progress: &Progress,
     ready_timeout: Option<u64>,
-) -> Result<vivi::pool::record::DispatchRecord, VivariumError> {
+) -> Result<DispatchRecord, VivariumError> {
     let pacing = Pacing::default();
     let launch = dispatch::Launch {
         config,
@@ -237,10 +233,10 @@ fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace, task: &str) -> Op
 
 /// Note, on a per-dispatch host, when an uncollected pod gives up its job.
 fn note_uncollected(
-    provider: &dyn vivi::pool::PoolProvider,
+    provider: &dyn PoolProvider,
     config: &PoolConfig,
     ready_timeout: Option<u64>,
-    made: &vivi::pool::record::DispatchRecord,
+    made: &DispatchRecord,
     progress: &Progress,
 ) {
     if provider.slot_lifetime() != SlotLifetime::PerDispatch {
@@ -255,7 +251,7 @@ fn note_uncollected(
 }
 
 /// Record the job branch on a local slot so later clean can recycle it.
-fn note_last_branch(provider: &dyn vivi::pool::PoolProvider, machine: &str, branch: &str) {
+fn note_last_branch(provider: &dyn PoolProvider, machine: &str, branch: &str) {
     if branch.is_empty() {
         return;
     }
@@ -269,7 +265,7 @@ fn note_last_branch(provider: &dyn vivi::pool::PoolProvider, machine: &str, bran
 
 /// What the dispatch says it is about to do to the pool: rent a pod (slots
 /// made per dispatch) or claim a free resting slot.
-fn claim_note(provider: &dyn vivi::pool::PoolProvider, pool: &str, progress: &Progress) {
+fn claim_note(provider: &dyn PoolProvider, pool: &str, progress: &Progress) {
     progress.say(&if provider.slot_lifetime() == SlotLifetime::PerDispatch {
         format!("{pool}: renting a pod and starting the job")
     } else {
@@ -314,15 +310,7 @@ fn resolve_dispatch(
             job::check_model(slug, &harness.models)?;
         }
     }
-    // An addressee that is not a known local role is no role at all, not an
-    // error: the dispatch then runs without one.
-    let role = role_facts(space, task, command.role.as_deref());
-    role_dispatch::validate_publish(
-        role.as_ref(),
-        command.publish_ref.as_deref(),
-        command.publish_expect.as_deref(),
-        &configured_mains(space),
-    )?;
+    let role = dispatch_role(command, space, task)?;
     let resolved = role_dispatch::resolve(
         config,
         pool,
@@ -338,10 +326,13 @@ fn resolve_dispatch(
             &role.name,
             &role.charter,
             &pool_rules,
-            &load_project_rules(space)?,
+            &role_dispatch::project_rules_snapshot(space)?,
             config.bridge.enabled,
         ),
-        None => role_dispatch::with_project_rules(&pool_rules, &load_project_rules(space)?),
+        None => role_dispatch::with_project_rules(
+            &pool_rules,
+            &role_dispatch::project_rules_snapshot(space)?,
+        ),
     };
     let role_line = role_line(command, role.as_ref(), &resolved);
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
@@ -381,6 +372,24 @@ fn base_flags(
     }
 }
 
+/// The role a dispatch runs as, with its publish flags checked against it. An
+/// addressee that is not a known local role is no role at all, not an error:
+/// the dispatch then runs without one.
+fn dispatch_role(
+    command: &PoolDispatchCommand,
+    space: &Mailspace,
+    task: &PoolTask,
+) -> Result<Option<RoleFacts>, VivariumError> {
+    let role = role_facts(space, task, command.role.as_deref());
+    role_dispatch::validate_publish(
+        role.as_ref(),
+        command.publish_ref.as_deref(),
+        command.publish_expect.as_deref(),
+        &configured_mains(space),
+    )?;
+    Ok(role)
+}
+
 /// The main branch name of every configured pump target; empty with no
 /// `[pump]` table.
 fn configured_mains(space: &Mailspace) -> Vec<String> {
@@ -401,13 +410,7 @@ fn resolve_command_dispatch(
     task: &PoolTask,
     pool_rules: String,
 ) -> Result<(DispatchFlags, String, String), VivariumError> {
-    let role = role_facts(space, task, command.role.as_deref());
-    role_dispatch::validate_publish(
-        role.as_ref(),
-        command.publish_ref.as_deref(),
-        command.publish_expect.as_deref(),
-        &configured_mains(space),
-    )?;
+    let role = dispatch_role(command, space, task)?;
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
     let flags = base_flags(command, need, kind);
     Ok((flags, pool_rules, String::new()))
@@ -560,37 +563,37 @@ fn undo_bridge_grant(space: &Mailspace, grant: Option<&bridge::Grant>) {
 /// they apply.
 fn dispatched_text(
     task: &str,
-    made: &vivi::pool::record::DispatchRecord,
+    made: &DispatchRecord,
     bridge: Option<&bridge::Grant>,
     role: &str,
 ) -> String {
+    let start = &made.start[..12.min(made.start.len())];
+    let target = if made.read_only {
+        "read-only".to_string()
+    } else {
+        format!("branch {}", made.branch)
+    };
+    let hardware = if made.hardware.is_empty() {
+        String::new()
+    } else {
+        format!("  hardware {}", made.hardware)
+    };
     format!(
-        "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}{}",
+        "dispatched {task}  {}  {}  job {}  model {}  from {} ({start})  {target}  budget {}s{hardware}{}{}{role}{}",
         made.pool,
         made.slot,
         made.job,
         made.model,
         made.from,
-        &made.start[..12.min(made.start.len())],
-        if made.read_only {
-            "read-only".to_string()
-        } else {
-            format!("branch {}", made.branch)
-        },
         made.budget,
-        if made.hardware.is_empty() {
-            String::new()
-        } else {
-            format!("  hardware {}", made.hardware)
-        },
         with_suffix(made),
-    ) + &bridge_suffix(bridge)
-        + role
-        + &abandoned_suffix(made)
+        bridge_suffix(bridge),
+        abandoned_suffix(made),
+    )
 }
 
 /// `  with ref@commit12 ...` when the job names extra refs.
-fn with_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
+fn with_suffix(made: &DispatchRecord) -> String {
     if made.with.is_empty() {
         String::new()
     } else {
@@ -614,8 +617,8 @@ fn bridge_suffix(grant: Option<&bridge::Grant>) -> String {
 }
 
 /// `  abandoned ...` when pods were given up on before the one that works.
-fn abandoned_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
-    let text = vivi::pool::record::abandoned_text(made);
+fn abandoned_suffix(made: &DispatchRecord) -> String {
+    let text = record::abandoned_text(made);
     if text.is_empty() {
         text
     } else {
@@ -671,18 +674,9 @@ fn git_start(
         dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
     }
     progress.say(&format!("resolving {} at {remote}", plan.refs.from));
-    let start = plain_git::resolve_base(remote, Some(&plan.refs.from))?;
-    plan.refs.from = if plan.target.is_some() {
-        start.clone()
-    } else {
-        dispatch::full_from(&plan.refs.from, &start)
-    };
-    for with in &mut plan.with {
-        progress.say(&format!("resolving {}", with.name));
-        let commit = plain_git::resolve_base(remote, Some(&with.name))?;
-        with.name = dispatch::full_from(&with.name, &commit);
-        with.commit = commit;
-    }
+    let start = resolve_remote_refs(plan, progress, |name| {
+        plain_git::resolve_base(remote, Some(name))
+    })?;
     Ok((Secret::new(String::new()), start))
 }
 
@@ -710,40 +704,42 @@ fn github_start(
         dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
     }
     progress.say(&format!("resolving {}", plan.refs.from));
-    let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
+    let start = resolve_remote_refs(plan, progress, |name| {
+        github::resolve_base(&token, access.repo, Some(name))
+    })?;
+    Ok((token, start))
+}
+
+/// Resolve `from` and each extra ref of the plan against the remote with
+/// `resolve`, before any slot is claimed: an unknown ref is a refusal and never
+/// a spent job. An abbreviated hash becomes the full commit (a Git server
+/// cannot fetch an abbreviated one), which the job carries in `with.list`.
+/// Returns the commit `from` resolved to.
+fn resolve_remote_refs(
+    plan: &mut job::JobPlan,
+    progress: &Progress,
+    resolve: impl Fn(&str) -> Result<String, VivariumError>,
+) -> Result<String, VivariumError> {
+    let start = resolve(&plan.refs.from)?;
     plan.refs.from = if plan.target.is_some() {
         start.clone()
     } else {
         dispatch::full_from(&plan.refs.from, &start)
     };
-    resolve_with_github(&token, access.repo, plan, progress)?;
-    Ok((token, start))
-}
-
-/// Resolve each extra ref of the plan against the remote repository, with the
-/// same token, before any slot is claimed: an unknown ref is a refusal and
-/// never a spent job. An abbreviated hash becomes the full commit, which the
-/// job then carries in `with.list`.
-fn resolve_with_github(
-    token: &Secret,
-    repo: &str,
-    plan: &mut job::JobPlan,
-    progress: &Progress,
-) -> Result<(), VivariumError> {
     for with in &mut plan.with {
         progress.say(&format!("resolving {}", with.name));
-        let commit = github::resolve_base(token, repo, Some(&with.name))?;
+        let commit = resolve(&with.name)?;
         with.name = dispatch::full_from(&with.name, &commit);
         with.commit = commit;
     }
-    Ok(())
+    Ok(start)
 }
 
 /// Resolve each extra ref of the plan in the source repository of a worktree
 /// pool, before any slot is claimed. The refs live in the shared repository,
 /// so nothing is fetched later, but the job records them in `with.list`.
 fn resolve_with_local(
-    path: &std::path::Path,
+    path: &Path,
     plan: &mut job::JobPlan,
     progress: &Progress,
 ) -> Result<(), VivariumError> {
@@ -766,7 +762,7 @@ fn resolve_with_local(
 /// Where a job on a worktree pool starts: the branch decision, made against
 /// the local repository before any slot is claimed. There is no token.
 fn worktree_start(
-    path: &std::path::Path,
+    path: &Path,
     plan: &mut job::JobPlan,
     allow_default: bool,
     progress: &Progress,
@@ -786,7 +782,7 @@ fn worktree_start(
 /// Where a read-only job on a worktree pool starts: detached at `from`, with
 /// no branch decision at all.
 fn worktree_read_only_start(
-    path: &std::path::Path,
+    path: &Path,
     plan: &mut job::JobPlan,
     progress: &Progress,
 ) -> Result<(Secret, String), VivariumError> {
@@ -803,7 +799,7 @@ fn worktree_read_only_start(
 }
 
 /// Warn (never fail) when the host lacks harness environment the config names.
-fn warn_missing_env(provider: &dyn vivi::pool::PoolProvider, config: &PoolConfig) {
+fn warn_missing_env(provider: &dyn PoolProvider, config: &PoolConfig) {
     match run::missing_env_at_dispatch(provider, config) {
         Ok(missing) => run::env_warning(provider, &missing)
             .iter()
