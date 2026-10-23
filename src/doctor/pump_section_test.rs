@@ -130,39 +130,10 @@ fn exceptions_and_quarantines_warn_without_echoing_exception_text() {
     let facts = PumpStateFacts {
         exceptions: vec!["merge-error (u-123)".into()],
         quarantines: Some(2),
-        gates: Vec::new(),
     };
-    let report = state_findings_from(&facts, 100_000);
+    let report = state_findings_from(&facts);
     let exceptions = finding(&report, "exceptions");
     assert_eq!(exceptions.status, Status::Warn);
     assert!(exceptions.detail.contains("merge-error (u-123)"));
     assert_eq!(finding(&report, "quarantines").status, Status::Warn);
-    assert_eq!(finding(&report, "gate").status, Status::Skipped);
-}
-
-#[test]
-fn stale_running_gate_warns_and_failed_gate_names_tests() {
-    let stale = PumpStateFacts {
-        exceptions: Vec::new(),
-        quarantines: Some(0),
-        gates: vec![GateFact {
-            target: "app".into(),
-            outcome: GateOutcome::Running { started_at: 1 },
-        }],
-    };
-    let report = state_findings_from(&stale, 10_000);
-    assert_eq!(finding(&report, "gate app").status, Status::Warn);
-
-    let failed = PumpStateFacts {
-        exceptions: Vec::new(),
-        quarantines: Some(0),
-        gates: vec![GateFact {
-            target: "default".into(),
-            outcome: GateOutcome::Failed("check-a".into()),
-        }],
-    };
-    let report = state_findings_from(&failed, 10_000);
-    let gate = finding(&report, "gate default");
-    assert_eq!(gate.status, Status::Warn);
-    assert!(gate.detail.contains("check-a"));
 }

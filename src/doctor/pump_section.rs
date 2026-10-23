@@ -9,7 +9,6 @@ use std::time::SystemTime;
 use super::{Finding, Project};
 use crate::pump::config::PumpConfig;
 use crate::pump::control::PumpMode;
-use crate::pump::state::{GateRecord, State};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const SECTION: &str = "pump";
@@ -51,24 +50,6 @@ pub enum ServicePresence {
 pub struct PumpStateFacts {
     pub exceptions: Vec<String>,
     pub quarantines: Option<usize>,
-    pub gates: Vec<GateFact>,
-}
-
-/// The recorded gate state for one integration target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GateFact {
-    pub target: String,
-    pub outcome: GateOutcome,
-}
-
-/// The latest gate outcome, with no raw logs or command output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GateOutcome {
-    Never,
-    Running { started_at: u64 },
-    Passed,
-    Failed(String),
-    Unavailable,
 }
 
 /// Gather pump facts through the read-only project context.
@@ -113,9 +94,9 @@ pub fn findings_from(facts: &PumpFacts) -> Vec<Finding> {
     findings
 }
 
-/// Render store-backed exception, quarantine, and integration-gate findings.
+/// Render store-backed exception and quarantine findings.
 #[must_use]
-pub fn state_findings_from(facts: &PumpStateFacts, now_epoch: u64) -> Vec<Finding> {
+pub fn state_findings_from(facts: &PumpStateFacts) -> Vec<Finding> {
     let mut out = vec![exceptions_finding(&facts.exceptions)];
     out.push(match facts.quarantines {
         Some(0) => Finding::ok(SECTION, "quarantines", "no quarantines"),
@@ -127,11 +108,6 @@ pub fn state_findings_from(facts: &PumpStateFacts, now_epoch: u64) -> Vec<Findin
         ),
         None => Finding::skipped(SECTION, "quarantines", "integration clone unavailable"),
     });
-    if facts.gates.is_empty() {
-        out.push(Finding::skipped(SECTION, "gate", "no gate has run"));
-    } else {
-        out.extend(facts.gates.iter().map(|gate| gate_finding(gate, now_epoch)));
-    }
     out
 }
 
@@ -162,27 +138,11 @@ fn pump_state_findings(config: &PumpConfig, project: &Path, home: &Path) -> Vec<
             )];
         }
     };
-    let state = match store.load() {
-        Ok(state) => state,
-        Err(_) => {
-            return vec![Finding::fail(
-                SECTION,
-                "gate",
-                "pump state unreadable",
-                "inspect .vivi/pump/pump.db",
-            )];
-        }
-    };
-    let gates = gate_facts(&state);
     let quarantines = quarantine_count(config, project);
-    state_findings_from(
-        &PumpStateFacts {
-            exceptions,
-            quarantines,
-            gates,
-        },
-        epoch_now(),
-    )
+    state_findings_from(&PumpStateFacts {
+        exceptions,
+        quarantines,
+    })
 }
 
 fn exceptions_finding(exceptions: &[String]) -> Finding {
@@ -201,66 +161,6 @@ fn exceptions_finding(exceptions: &[String]) -> Finding {
             &format!("{} open exception(s): {shown}", exceptions.len()),
             "vivi pump log --exceptions --project <root>, then requeue or repair",
         )
-    }
-}
-
-fn gate_finding(gate: &GateFact, now_epoch: u64) -> Finding {
-    let name = format!("gate {}", gate.target);
-    match &gate.outcome {
-        GateOutcome::Never => Finding::skipped(SECTION, &name, "no gate has run"),
-        GateOutcome::Running { started_at } => {
-            let age = now_epoch.saturating_sub(*started_at);
-            if age > 3600 {
-                Finding::warn(
-                    SECTION,
-                    &name,
-                    &format!("gate running for {age}s"),
-                    "inspect .vivi/pump/gate-results and vivi pump log",
-                )
-            } else {
-                Finding::ok(SECTION, &name, &format!("gate running for {age}s"))
-            }
-        }
-        GateOutcome::Passed => Finding::ok(SECTION, &name, "last gate passed"),
-        GateOutcome::Failed(summary) => Finding::warn(
-            SECTION,
-            &name,
-            &format!("last gate failed: {summary}"),
-            "vivi pump once reruns the gate; gatefix repairs systemic failures",
-        ),
-        GateOutcome::Unavailable => Finding::skipped(SECTION, &name, "last gate result unreadable"),
-    }
-}
-
-fn gate_facts(state: &State) -> Vec<GateFact> {
-    let mut gates = vec![gate_fact("default", &state.last_gate, &state.gates)];
-    gates.extend(
-        state
-            .target_states
-            .iter()
-            .map(|(target, state)| gate_fact(target, &state.last_gate, &state.gates)),
-    );
-    gates.retain(|gate| !matches!(&gate.outcome, GateOutcome::Never));
-    gates
-}
-
-fn gate_fact(target: &str, run: &crate::pump::state::GateRun, history: &[GateRecord]) -> GateFact {
-    let outcome = if run.task.is_some() {
-        GateOutcome::Running { started_at: run.at }
-    } else if let Some(record) = history.last() {
-        match &record.names {
-            Some(names) if names.is_empty() => GateOutcome::Passed,
-            Some(names) => {
-                GateOutcome::Failed(names.iter().take(5).cloned().collect::<Vec<_>>().join(", "))
-            }
-            None => GateOutcome::Unavailable,
-        }
-    } else {
-        GateOutcome::Never
-    };
-    GateFact {
-        target: target.to_string(),
-        outcome,
     }
 }
 
@@ -298,12 +198,6 @@ fn count_quarantines(repo: &Path) -> Option<usize> {
             .filter(|line| !line.is_empty())
             .count(),
     )
-}
-
-fn epoch_now() -> u64 {
-    SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 fn missing_home_facts() -> PumpFacts {
