@@ -1,7 +1,5 @@
 //! Flow definition types: kinds, node classes, answer words, nodes and edges.
 
-/// The line a role worker ends its reply with: `ANSWER: <word>`.
-pub const ANSWER_LINE: &str = "ANSWER:";
 /// A step task's body starts with `pump-step: <need> r<run> <node>`.
 pub const STEP_MARKER: &str = "pump-step:";
 /// A run sentinel's body starts with `pump-run-sentinel: <need> r<run>`.
