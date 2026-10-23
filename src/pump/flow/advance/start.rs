@@ -206,5 +206,9 @@ where
 }
 
 #[cfg(test)]
+#[path = "start_test.rs"]
+mod tests;
+
+#[cfg(test)]
 #[path = "start_resume_test.rs"]
 mod resume_tests;
