@@ -211,14 +211,14 @@ fn bare_mcp_still_parses_as_the_bridge() {
     };
     assert!(command.command.is_none());
 
-    let flagged = Cli::try_parse_from(["vivi", "mcp", "--server", "http://s", "--name", "bob"])
+    let flagged = Cli::try_parse_from(["vivi", "mcp", "--server", "http://s", "--project-id", "p"])
         .expect("bridge flags parse");
     let CliCommand::Mcp(command) = flagged.command else {
         panic!("not the mcp command");
     };
     assert!(command.command.is_none());
     assert_eq!(command.server.as_deref(), Some("http://s"));
-    assert_eq!(command.name.as_deref(), Some("bob"));
+    assert_eq!(command.project_id.as_deref(), Some("p"));
 }
 
 #[test]

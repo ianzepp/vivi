@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-/// With no subcommand `vivi mcp` is the stdio bridge; the credential flags
-/// are global so they also follow `tools` and `call`.
+/// With no subcommand `vivi mcp` is the stdio bridge; the server and project
+/// flags are global so they also follow `tools` and `call`. The credential is
+/// an API key in VIVI_MCP_API_KEY.
 #[derive(Debug, Args)]
 pub struct McpCommand {
     #[command(subcommand)]
@@ -16,23 +17,14 @@ pub struct McpCommand {
     #[arg(long, global = true, value_name = "URL")]
     pub server: Option<String>,
 
-    /// The project's id ON THE SERVER (default: VIVI_MCP_PROJECT_ID, then
-    /// [sync] project) — not the mailspace root that --project names
+    /// The project id on the server, sent as the `project` argument of
+    /// `vivi mcp call` when the tool takes one (default: VIVI_MCP_PROJECT_ID,
+    /// then [sync] project); it is not part of the URL
     #[arg(long, global = true, value_name = "ID")]
     pub project_id: Option<String>,
 
-    /// Registered member name for an identity credential (default:
-    /// VIVI_MCP_NAME, then [sync] name); not needed with an API key
-    #[arg(long, global = true, value_name = "NAME")]
-    pub name: Option<String>,
-
-    /// 32-byte member seed file (default: VIVI_MCP_KEY_FILE); needs --name
-    #[arg(long, global = true, value_name = "PATH")]
-    pub key_file: Option<PathBuf>,
-
-    /// Project root that owns .vivi/, used only to find a [sync] table and
-    /// the mailspace's own key (also accepted globally: vivi --project
-    /// <ROOT> mcp); never created
+    /// Project root that owns .vivi/, used only to find the [sync] table
+    /// (also accepted globally: vivi --project <ROOT> mcp); never created
     #[arg(long, global = true)]
     pub project: Option<PathBuf>,
 }
