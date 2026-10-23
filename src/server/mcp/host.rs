@@ -28,6 +28,9 @@ use crate::hosted;
 use crate::projects_api::{missing_bearer, presented_bearer};
 use crate::rooms::error_response;
 
+mod rungs;
+
+use self::rungs::Rungs;
 use super::tools::{ToolError, opt_str, req_str};
 use super::{Surface, respond, tool, tool_result};
 
@@ -95,19 +98,31 @@ pub(super) fn tools_list() -> Value {
     json!({ "tools": [tool(
         "create_project",
         "Create a project on this host: a bare git repository, a project directory with an \
-         initialised mailspace and starter pump config, and a host registry entry; then serve \
-         it and mint an operator API key. Returns project_root, git_url, repo_path, \
+         initialised mailspace and starter pump config, and a host registry entry; seed the \
+         given rung commands into [pump.rungs]; then serve it and mint an operator API key. \
+         Returns project_root, git_url, repo_path, \
          mailspace_id, initial_commit, readiness (what the pump still needs), project_id, \
          mcp_path and operator_key (shown once; store it). Refuses a name that already exists.",
         json!({
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "Project name: one safe path segment" },
-                "branch": { "type": "string", "default": "main", "description": "Integration branch and the repository's default branch" },
+                "branch": { "type": "string", "default": "main", "description": "The new repository's default branch" },
                 "pool": { "type": "string", "description": "Pool whose remote_url is set to the git URL; overrides the host default" },
                 "initial_commit": { "type": "boolean", "default": false, "description": "Create an empty first commit on the branch" },
                 "pump": { "type": "boolean", "default": true, "description": "Register the project for the pump supervisor" },
-                "serve": { "type": "boolean", "default": true, "description": "Register the project for this server to host" }
+                "serve": { "type": "boolean", "default": true, "description": "Register the project for this server to host" },
+                "rungs": {
+                    "type": "object",
+                    "properties": {
+                        "task": { "type": "string" },
+                        "need": { "type": "string" },
+                        "main": { "type": "string" },
+                        "release": { "type": "string" }
+                    },
+                    "additionalProperties": false,
+                    "description": "Rung commands written to [pump.rungs] after the project is made"
+                }
             },
             "required": ["name"],
             "additionalProperties": false
@@ -132,18 +147,23 @@ pub(super) async fn call_tool(state: &AppState, name: &str, arguments: Value) ->
 static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 async fn create_project(state: &AppState, arguments: &Value) -> Result<Value, ToolError> {
-    let request = build_request(&state.host, arguments)?;
+    let (request, rungs) = build_request(&state.host, arguments)?;
     let state = state.clone();
     blocking(move || {
         let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
-        let created =
+        let mut created =
             vivi::project_create::create(&request).map_err(|e| ToolError::new(e.to_string()))?;
+        let rungs_error = rungs.seed(&mut created).err();
         let served = if request.serve {
             serve_now(&state, &created.project_root)
         } else {
             Serving::NotRequested
         };
-        Ok(answer(&created, served))
+        let mut out = answer(&created, served);
+        if let (Some(out), Some(error)) = (out.as_object_mut(), rungs_error) {
+            out.insert("rungs_error".into(), Value::String(error));
+        }
+        Ok(out)
     })
     .await
 }
@@ -157,7 +177,10 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| ToolError::new(format!("create_project task failed: {e}")))?
 }
 
-fn build_request(host: &HostConfig, arguments: &Value) -> Result<ProjectCreate, ToolError> {
+fn build_request(
+    host: &HostConfig,
+    arguments: &Value,
+) -> Result<(ProjectCreate, Rungs), ToolError> {
     let missing = |var: &str| {
         ToolError::new(format!(
             "create_project is not configured on this host: {var} is not set"
@@ -190,7 +213,7 @@ fn build_request(host: &HostConfig, arguments: &Value) -> Result<ProjectCreate, 
     request.pump = opt_bool(arguments, "pump", request.pump)?;
     request.serve = opt_bool(arguments, "serve", request.serve)?;
     request.initial_commit = opt_bool(arguments, "initial_commit", request.initial_commit)?;
-    Ok(request)
+    Ok((request, Rungs::parse(arguments)?))
 }
 
 fn opt_bool(arguments: &Value, name: &str, default: bool) -> Result<bool, ToolError> {
