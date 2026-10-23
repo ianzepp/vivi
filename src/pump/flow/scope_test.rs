@@ -2,7 +2,9 @@
 
 use tempfile::{TempDir, tempdir};
 
-use super::{BlockedScope, Resolution, ScopeState, resolve};
+use super::{
+    BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
+};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
@@ -87,7 +89,7 @@ fn a_pending_holder_makes_the_slice_wait_with_a_dependency_edge() {
     let got = f.resolve(1, &a, &["src/b.rs", "src/c.rs"], false);
     assert_eq!(got, Resolution::WaitOn(vec![b.clone()]));
     assert_eq!(f.mail.tasks[&a].depends_on, vec![b.clone()]);
-    assert_eq!(f.store.scope_holders(&a).expect("holders"), vec![b]);
+    assert_eq!(wait_holders(&f.store, &a).expect("holders"), vec![b]);
     assert_eq!(
         f.store.scope_state(&a).expect("state"),
         Some(ScopeState::Wait)
@@ -196,4 +198,39 @@ fn scope_rows_round_trip() {
     );
     assert_eq!(f.store.scope_state("nope").expect("get"), None);
     assert!(f.store.bump_scope_requests("nope").is_err());
+}
+
+#[test]
+fn granting_the_held_paths_widens_the_scope_and_the_next_request_is_the_first() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    f.slice("n1", 1, &["src/b.rs"], StepState::Running);
+    f.resolve(1, &a, &["src/b.rs", "src/c.rs"], false);
+
+    grant_held(&f.store, &a).expect("grant");
+    assert_eq!(
+        f.store.slice_scope(&a).expect("scope"),
+        Some(strings(&["src/a.rs", "src/c.rs", "src/b.rs"]))
+    );
+    finish_grant(&f.store, &a).expect("finish");
+    assert_eq!(
+        f.store.scope_state(&a).expect("state"),
+        Some(ScopeState::Granted)
+    );
+    assert!(wait_holders(&f.store, &a).expect("holders").is_empty());
+
+    // The request after the wait is a first request: it settles, no repair.
+    assert!(matches!(
+        f.resolve(1, &a, &["src/d.rs"], false),
+        Resolution::Widen(_)
+    ));
+    // The re-dispatch of a settled request clears the state; the one after
+    // that is the second.
+    f.store
+        .set_scope_state(&a, ScopeState::Clear)
+        .expect("clear");
+    assert!(matches!(
+        f.resolve(1, &a, &["src/e.rs"], false),
+        Resolution::Repair(_)
+    ));
 }

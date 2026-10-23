@@ -18,6 +18,9 @@ pub enum ScopeState {
     Wait,
     /// Waiting for the slicer to repair the scopes.
     Repair,
+    /// A wait ended: the held paths were granted and the slice went out
+    /// again. Its next request is the first of a new round, not a second.
+    Granted,
 }
 
 impl ScopeState {
@@ -28,6 +31,7 @@ impl ScopeState {
             Self::Clear => "none",
             Self::Wait => "scope-wait",
             Self::Repair => "scope-repair",
+            Self::Granted => "scope-granted",
         }
     }
 
@@ -40,6 +44,7 @@ impl ScopeState {
             "none" => Self::Clear,
             "scope-wait" => Self::Wait,
             "scope-repair" => Self::Repair,
+            "scope-granted" => Self::Granted,
             other => {
                 return Err(VivariumError::Other(format!(
                     "pump.db slice_scope: unknown scope state {other:?}"
@@ -92,10 +97,88 @@ impl ScopeMail for MailspacePort {
     }
 }
 
+/// Marks a requested-but-held path in the stored wait record (the
+/// `slice_scope.holders` list); holder task handles never start with it.
+const HELD_PATH_PREFIX: &str = "path:";
+
+/// The slice tasks a waiting slice is waiting on.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store fails.
+pub fn wait_holders(store: &PumpStore, task: &str) -> Result<Vec<String>, VivariumError> {
+    Ok(store
+        .scope_holders(task)?
+        .into_iter()
+        .filter(|entry| !entry.starts_with(HELD_PATH_PREFIX))
+        .collect())
+}
+
+/// The holders landed: add the paths the hand asked for and found held to the
+/// slice's write scope, so the re-dispatched brief grants them.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store fails.
+pub fn grant_held(store: &PumpStore, task: &str) -> Result<(), VivariumError> {
+    let held: Vec<String> = store
+        .scope_holders(task)?
+        .into_iter()
+        .filter_map(|entry| entry.strip_prefix(HELD_PATH_PREFIX).map(str::to_string))
+        .collect();
+    if held.is_empty() {
+        return Ok(());
+    }
+    store.widen_slice_scope(task, &held)
+}
+
+/// The wait is over and the slice went out again: forget the wait record and
+/// make its next request count as the first.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store fails.
+pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> {
+    store.set_scope_holders(task, &[])?;
+    store.set_scope_state(task, ScopeState::Granted)
+}
+
 /// True when a scope entry holds `path`: the same path, or a directory entry
 /// (ending in `/`) that is a prefix of it.
 fn holds(entry: &str, path: &str) -> bool {
     entry == path || (entry.ends_with('/') && path.starts_with(entry))
+}
+
+/// A request split by who holds its paths.
+struct Split {
+    /// The open slices that hold some requested path.
+    holders: Vec<String>,
+    /// Requested paths no open slice holds.
+    free: Vec<String>,
+    /// Requested paths some open slice holds.
+    held_paths: Vec<String>,
+}
+
+fn split_request(paths: &[String], others: &[(String, Vec<String>)]) -> Split {
+    let mut split = Split {
+        holders: Vec::new(),
+        free: Vec::new(),
+        held_paths: Vec::new(),
+    };
+    for path in paths {
+        let mut held = false;
+        for (other, scope) in others {
+            if scope.iter().any(|entry| holds(entry, path)) {
+                held = true;
+                if !split.holders.contains(other) {
+                    split.holders.push(other.clone());
+                }
+            }
+        }
+        if held {
+            split.held_paths.push(path.clone());
+        } else {
+            split.free.push(path.clone());
+        }
+    }
+    split
 }
 
 /// Settle a blocked-scope request from `task`, a slice of `run`.
@@ -110,7 +193,8 @@ pub fn resolve(
     req: &BlockedScope,
 ) -> Result<Resolution, VivariumError> {
     let requests = store.bump_scope_requests(task)?;
-    if requests >= 2 {
+    let after_grant = store.scope_state(task)? == Some(ScopeState::Granted);
+    if requests >= 2 && !after_grant {
         return Ok(Resolution::Repair(format!(
             "second blocked-scope request on {task}"
         )));
@@ -128,22 +212,11 @@ pub fn resolve(
         )));
     }
     let others = store.open_scopes_of_run(task, run)?;
-    let mut holders: Vec<String> = Vec::new();
-    let mut free: Vec<String> = Vec::new();
-    for path in &req.paths {
-        let mut held = false;
-        for (other, scope) in &others {
-            if scope.iter().any(|entry| holds(entry, path)) {
-                held = true;
-                if !holders.contains(other) {
-                    holders.push(other.clone());
-                }
-            }
-        }
-        if !held {
-            free.push(path.clone());
-        }
-    }
+    let Split {
+        holders,
+        free,
+        held_paths,
+    } = split_request(&req.paths, &others);
     if !free.is_empty() {
         store.widen_slice_scope(task, &free)?;
     }
@@ -153,7 +226,13 @@ pub fn resolve(
     for holder in &holders {
         mail.add_dependency(task, holder)?;
     }
-    store.set_scope_holders(task, &holders)?;
+    let mut record = holders.clone();
+    record.extend(
+        held_paths
+            .iter()
+            .map(|path| format!("{HELD_PATH_PREFIX}{path}")),
+    );
+    store.set_scope_holders(task, &record)?;
     store.set_scope_state(task, ScopeState::Wait)?;
     Ok(Resolution::WaitOn(holders))
 }
