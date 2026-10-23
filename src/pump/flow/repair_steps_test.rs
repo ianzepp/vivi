@@ -338,6 +338,81 @@ fn a_merge_without_a_tested_reply_is_an_error() -> R {
     Ok(())
 }
 
+/// Queues and finishes a rung1 job whose receipt is `receipt`, then ticks.
+fn finish_rung1(rig: &mut Rig, receipt: &str) -> R {
+    let fix = rig.fix1()?;
+    rig.store
+        .set_step_state(&fix.task, StepState::Running, None)?;
+    let rung = rig.add_step("rung1", StepState::Running)?;
+    let spec = job(rig.action(&RepairRung, &rung)?);
+    let id = spec.id.clone();
+    jobs::enqueue(&mut rig.jobs, *spec)?;
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: id.clone(),
+            run: 1,
+            node: "rung1".into(),
+            task: rung.task.clone(),
+            attempt: 1,
+        },
+    )?;
+    let queued = rig.jobs.jobs.get_mut(&id).unwrap();
+    queued.status = JobStatus::Finished;
+    queued.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: receipt.into(),
+        at: 1,
+    });
+    rig.tick()
+}
+
+#[test]
+fn an_environment_failure_posts_no_verdict_and_holds_the_rung() -> R {
+    let mut rig = rig(true)?;
+    finish_rung1(
+        &mut rig,
+        "agent exit 127 in 1s\n\n--- stderr tail\nbash: cargo: command not found\n",
+    )?;
+    let rung = rig.step("rung1")?;
+    assert_eq!(rung.state, StepState::Waiting);
+    assert_eq!(rung.verdict.as_deref(), Some("operator-hold"));
+    let replies = rig
+        .mail
+        .tasks
+        .get(&rung.task)
+        .map(|task| task.replies.clone())
+        .unwrap_or_default();
+    assert!(
+        replies
+            .iter()
+            .all(|reply| !reply.starts_with(repair::RUNG_MARKER)),
+        "{replies:?}"
+    );
+    let text = std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert_eq!(text.matches("flow-env-failure").count(), 1, "{text}");
+    Ok(())
+}
+
+#[test]
+fn step_errors_name_what_was_expected_and_what_was_found() -> R {
+    let mut bare = rig(false)?;
+    let rung = bare.add_step("rung1", StepState::Pending)?;
+    let err = bare.action(&RepairRung, &rung).unwrap_err().to_string();
+    assert!(err.contains("expected a published attempt 1"), "{err}");
+    assert!(err.contains("actual: none"), "{err}");
+    let mut with_facts = rig(true)?;
+    let merge = with_facts.add_step("merge1", StepState::Pending)?;
+    let err = with_facts
+        .action(&RepairMerge, &merge)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("expected a tested commit for merge1"), "{err}");
+    assert!(err.contains("actual: none"), "{err}");
+    Ok(())
+}
+
 #[test]
 fn parse_tested_reads_the_first_word_only() {
     let tested = |text: &str| repair::parse_tested(&marked_line(repair::RUNG_MARKER, text));
