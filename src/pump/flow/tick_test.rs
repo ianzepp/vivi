@@ -15,7 +15,7 @@ use super::{
     VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
-use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::fixture::{record_body, step_body, task_body_with};
 use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
 use crate::mailspace::pump_note::note_of;
@@ -86,10 +86,10 @@ fn seed_need_branch(store: &PumpStore) -> R {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
-    rig_with("kind: build")
+    rig_with("build")
 }
 
-fn rig_with(record: &str) -> Result<Rig, VivariumError> {
+fn rig_with(kind: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let mut routing = (*ctx.routing).clone();
@@ -106,7 +106,7 @@ fn rig_with(record: &str) -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
-    MailWriter::open_record(&mut mail, NEED, record)?;
+    MailWriter::open_record(&mut mail, NEED, &record_body(NEED, kind))?;
     Ok(Rig {
         _dir: dir,
         ctx,
@@ -579,7 +579,7 @@ fn an_overdue_job_alarms_once_naming_its_evidence() -> R {
 
 #[test]
 fn a_kind_change_alarms_once_and_changes_nothing() -> R {
-    let mut rig = rig_with("a record without a kind line")?;
+    let mut rig = rig_with("")?;
     rig.start("plan")?;
     rig.mail.set_marks(NEED, &["research"]);
     rig.tick()?;
@@ -591,7 +591,7 @@ fn a_kind_change_alarms_once_and_changes_nothing() -> R {
 
 #[test]
 fn the_landing_tick_of_a_record_kind_run_raises_no_kind_alarm() -> R {
-    let mut rig = rig_with("kind: research")?;
+    let mut rig = rig_with("research")?;
     rig.start("research")?;
     rig.role_job(
         "research",
@@ -606,7 +606,7 @@ fn the_landing_tick_of_a_record_kind_run_raises_no_kind_alarm() -> R {
 
 #[test]
 fn a_real_kind_change_on_a_live_record_kind_run_still_alarms_once() -> R {
-    let mut rig = rig_with("a record without a kind line")?;
+    let mut rig = rig_with("")?;
     rig.mail.set_marks(NEED, &["research"]);
     rig.start("research")?;
     assert_eq!(rig.store.runs_of(NEED)?[0].kind, "research");
@@ -620,7 +620,7 @@ fn a_real_kind_change_on_a_live_record_kind_run_still_alarms_once() -> R {
 
 #[test]
 fn a_record_closed_without_landing_raises_no_kind_alarm() -> R {
-    let mut rig = rig_with("kind: research")?;
+    let mut rig = rig_with("research")?;
     rig.start("research")?;
     rig.mail.close_need_by(NEED, "operator");
     rig.tick()?;

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::tick_with;
 use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
+use crate::letter::fixture::{record_body, sentinel_body, step_body};
 use crate::mailspace::RoleUpdate;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::guard::FOREIGN_CLOSE;
@@ -75,7 +75,7 @@ fn rig() -> Result<Rig, VivariumError> {
         pump_identity: PUMP.into(),
     };
     let need = p.need("guard through the tick");
-    MailWriter::open_record(&mut port, &need, "kind: build")?;
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build"))?;
     let sentinel = port.send_step(
         PUMP,
         "mind",
