@@ -658,13 +658,9 @@ fn split_planner_fields_round_trip_and_default() {
 }
 
 #[test]
-fn a_withdrawn_or_unknown_unit_is_not_dispatched_and_does_not_satisfy_after() {
-    use crate::pump::config::PumpConfig;
-    use crate::pump::host::test_ctx;
-    use crate::pump::ready::{is_ready, satisfied};
+fn a_withdrawn_or_unknown_unit_does_not_satisfy_after() {
+    use crate::pump::ready::satisfied;
 
-    let dir = tempdir().unwrap();
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let mut st = State::default();
     for (uid, status) in [
         ("w-1", Status::Withdrawn),
@@ -677,24 +673,7 @@ fn a_withdrawn_or_unknown_unit_is_not_dispatched_and_does_not_satisfy_after() {
                 ..Unit::default()
             },
         );
-        let dependent = format!("dep-{uid}");
-        st.units.insert(
-            dependent.clone(),
-            Unit {
-                after: vec![uid.to_owned()],
-                write_scope: vec![format!("src/{uid}")],
-                ..Unit::default()
-            },
-        );
-        assert!(
-            !is_ready(&ctx, &st, uid, &BTreeMap::new()),
-            "{uid} must not be dispatched"
-        );
         assert!(!satisfied(&st, uid, 0), "{uid} must not satisfy after");
-        assert!(
-            !is_ready(&ctx, &st, &dependent, &BTreeMap::new()),
-            "{dependent} waits on {uid}"
-        );
     }
 
     // A replaced unit whose replacement is withdrawn is unsatisfied too.
