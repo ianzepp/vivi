@@ -76,6 +76,28 @@ fn tested_is_optional_and_target_is_required() -> R {
 }
 
 #[test]
+fn a_padded_target_line_is_trimmed() -> R {
+    assert_eq!(record("  target:  x  \nboom\n")?.target, "x");
+    Ok(())
+}
+
+#[test]
+fn a_blank_target_names_expected_and_actual() {
+    let err = record("kind: repair\ntarget:   \nboom\n").unwrap_err();
+    assert!(
+        matches!(err, VivariumError::Parse(text) if text.contains("expected a `target:` line")
+            && text.contains("actual: none in kind: repair"))
+    );
+}
+
+#[test]
+fn the_tail_excludes_kind_target_and_tested_lines() -> R {
+    let rec = record("kind: repair\n  target: x\ntested: abc\nline one\nline two\n")?;
+    assert_eq!(rec.tail, "line one\nline two");
+    Ok(())
+}
+
+#[test]
 fn facts_round_trip_through_a_marked_line() {
     let want = facts(&"c".repeat(40));
     let text = facts_text(&want);
