@@ -26,7 +26,7 @@ const NEED_PARKED: &str = "flow-need-parked";
 
 /// A build run started at `entry` on a real mailspace.
 fn build(entry: &str) -> Result<Rig, VivariumError> {
-    let rig = rig(PumpConfig::default(), "kind: build", entry)?;
+    let rig = rig(PumpConfig::default(), "+++\nkind = \"build\"\n+++\n", entry)?;
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
          "subject": "Need", "body": "Build the thing"}

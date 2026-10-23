@@ -71,7 +71,7 @@ fn config() -> PumpConfig {
 /// [`BASE`], with main at [`MAIN`], a merge role routed and the fanout stubbed
 /// to answer `fanout`.
 fn build(fanout: &'static str) -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", "slice")?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", "slice")?;
     let mut routing = (*rig.ctx.routing).clone();
     routing.roles.push(RoutedRole {
         name: String::from("merge"),

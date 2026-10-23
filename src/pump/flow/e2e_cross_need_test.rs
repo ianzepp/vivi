@@ -72,7 +72,7 @@ fn finish(rig: &mut Rig, node: &str, receipt: &str) -> R {
 /// An ordinary build need driven to a pending `merge` (merge-main) job, with
 /// merge and auditor roles routed, main at [`MAIN`] and two free pool slots.
 fn ordinary_at_merge() -> Result<Rig, VivariumError> {
-    let mut rig = rig(config(), "kind: build", "rework1")?;
+    let mut rig = rig(config(), "+++\nkind = \"build\"\n+++\n", "rework1")?;
     let mut routing = (*rig.ctx.routing).clone();
     for (name, read_only) in [("merge", false), ("auditor", true)] {
         routing.roles.push(RoutedRole {
@@ -126,7 +126,9 @@ fn ordinary_at_merge() -> Result<Rig, VivariumError> {
 /// A repair need added to the rig and driven to its pending `merge1` job:
 /// fix1 built, main rung passed. Returns the repair need's handle.
 fn repair_at_merge1(rig: &mut Rig) -> Result<String, VivariumError> {
-    let record = format!("kind: repair\ntarget: default\ntested: {TESTED}\n\nFAILED a::b\n");
+    let record = format!(
+        "+++\nkind = \"repair\"\ntarget = \"default\"\ntested = \"{TESTED}\"\n+++\n\nFAILED a::b\n"
+    );
     let need = rig.add_need("a repair need beside a build need", &record, "fix1")?;
     rig.tick_until("a fix1 job", |rig| rig.open_job("fix1").is_some())?;
     let fix = open_job(rig, "fix1")?;
@@ -207,7 +209,11 @@ fn a_repair_merge_main_is_dispatched_before_an_older_ordinary_merge_main() -> R 
 /// after whatever the rig already holds. Returns that job.
 fn second_ordinary_at_merge(rig: &mut Rig) -> Result<PoolJob, VivariumError> {
     let known: Vec<String> = rig.jobs.jobs.keys().cloned().collect();
-    let need = rig.add_need("a second build need", "kind: build", "rework1")?;
+    let need = rig.add_need(
+        "a second build need",
+        "+++\nkind = \"build\"\n+++\n",
+        "rework1",
+    )?;
     rig.store.upsert_need_branch(&NeedBranchRow {
         need: need.clone(),
         branch: format!("vivi/need/{need}"),
