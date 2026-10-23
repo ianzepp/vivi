@@ -27,6 +27,7 @@ use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep, res
 use super::graph::GraphNodeView;
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
+use crate::letter::{Front, LetterError};
 use crate::message::normalize_message_id;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, Storage, StoredMessage,
@@ -63,10 +64,33 @@ pub(super) struct MissingEdge {
     pub(super) dependency: String,
 }
 
-/// The dependency references a letter's bytes name: trimmed, in header
-/// order, without duplicates.
+/// The dependency references a letter's bytes name: trimmed, in order,
+/// without duplicates. A format-1 work letter names them in its front matter;
+/// an old letter in `X-Vivi-Depends-On` headers.
 pub(crate) fn depends_on_refs(bytes: &[u8]) -> Vec<String> {
-    let Some(parsed) = mail_parser::MessageParser::default().parse(bytes) else {
+    let listed: Vec<String> = match crate::letter::of_message(bytes, "") {
+        Ok(letter) => match letter.front {
+            Front::Need(front) => front.depends_on,
+            Front::Want(front) => front.depends_on,
+            Front::Task(front) => front.depends_on,
+            _ => return Vec::new(),
+        },
+        Err(LetterError::Legacy { .. }) => return legacy_depends_on(bytes),
+        Err(_) => return Vec::new(),
+    };
+    let mut refs: Vec<String> = Vec::new();
+    for value in listed {
+        let value = value.trim().to_string();
+        if !value.is_empty() && !refs.contains(&value) {
+            refs.push(value);
+        }
+    }
+    refs
+}
+
+// TRANSITIONAL (W3-B2): deleted by W3B2-39
+fn legacy_depends_on(bytes: &[u8]) -> Vec<String> {
+    let Some(parsed) = MessageParser::default().parse(bytes) else {
         return Vec::new();
     };
     let mut refs: Vec<String> = Vec::new();
@@ -84,10 +108,22 @@ pub(crate) fn depends_on_refs(bytes: &[u8]) -> Vec<String> {
     refs
 }
 
-/// The normalized RFC `Message-ID` a letter names in its `X-Vivi-Parent`
-/// header: the source a `task from` was lowered from. `None` when the letter
-/// carries no such header (plain mail, an event letter).
+/// The normalized RFC `Message-ID` a task letter names as its parent: the
+/// source a `task from` was lowered from. `None` when the letter names none
+/// (plain mail, an event letter).
 pub(crate) fn parent_ref(bytes: &[u8]) -> Option<String> {
+    match crate::letter::of_message(bytes, "") {
+        Ok(letter) => match letter.front {
+            Front::Task(front) => front.parent.as_deref().and_then(normalize_message_id),
+            _ => None,
+        },
+        Err(LetterError::Legacy { .. }) => legacy_parent_ref(bytes),
+        Err(_) => None,
+    }
+}
+
+// TRANSITIONAL (W3-B2): deleted by W3B2-39
+fn legacy_parent_ref(bytes: &[u8]) -> Option<String> {
     let parsed = MessageParser::default().parse(bytes)?;
     parsed.headers().iter().find_map(|header| {
         if !header.name().eq_ignore_ascii_case(PARENT_HEADER) {

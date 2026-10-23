@@ -556,7 +556,7 @@ impl Mailspace {
 
     /// Extract the dependency handles recorded on a task message.
     ///
-    /// Dependencies are stored as repeated `X-Vivi-Depends-On` headers, then
+    /// Dependencies are stored in the task's `depends_on` front matter, then
     /// changed by any `dependency-added` / `dependency-removed` letters on the
     /// task: the newest letter per dependency wins over the header.
     ///
@@ -565,21 +565,7 @@ impl Mailspace {
     pub fn task_depends_on(&self, message_id: &str) -> Result<Vec<String>, VivariumError> {
         let storage = self.storage()?;
         let data = storage.read_message(message_id)?;
-        let parsed = mail_parser::MessageParser::default()
-            .parse(&data)
-            .ok_or_else(|| VivariumError::Parse("failed to parse task message".into()))?;
-        let header: Vec<String> = parsed
-            .headers()
-            .iter()
-            .filter(|h| h.name().eq_ignore_ascii_case("X-Vivi-Depends-On"))
-            .filter_map(|h| {
-                if let mail_parser::HeaderValue::Text(text) = h.value() {
-                    Some(text.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let header = super::dependencies::depends_on_refs(&data);
         self.effective_dependency_refs(&storage, message_id, &header)
     }
 

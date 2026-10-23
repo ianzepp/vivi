@@ -254,3 +254,14 @@ fn a_reply_found_through_a_reference_links_to_its_parent() {
     assert_eq!(report.linked, 1);
     assert!(w.state().dangling.is_empty());
 }
+
+#[test]
+fn a_format_one_letters_front_matter_depends_on_is_a_reference() {
+    let bytes = eml(
+        "work",
+        "+++\ndepends_on = [\"msg_00000e0e00000000000000f0\"]\n+++\nprose\r\n",
+        "X-Vivi-Format: 1\r\nX-Vivi-Kind: task\r\n",
+    );
+
+    assert_eq!(references_in(&bytes), vec!["00000e0e"]);
+}
