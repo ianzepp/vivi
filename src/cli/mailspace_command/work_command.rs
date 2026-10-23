@@ -556,24 +556,6 @@ pub enum WantCommand {
         project: Option<PathBuf>,
     },
 
-    /// Promote a want from Wants to Needs
-    Promote {
-        /// Want handle or unambiguous prefix
-        handle: String,
-
-        /// Identity promoting the want
-        #[arg(long = "for")]
-        for_identity: String,
-
-        /// Optional promotion note recorded in the mailspace event ledger
-        #[arg(long)]
-        note: Option<String>,
-
-        /// Project root to use
-        #[arg(long)]
-        project: Option<PathBuf>,
-    },
-
     /// Move a want from Wants to Done
     Done {
         /// Want handle or unambiguous prefix

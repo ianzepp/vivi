@@ -235,20 +235,6 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
             },
             project.as_deref(),
         )?,
-        WantCommand::Promote {
-            handle,
-            for_identity,
-            note,
-            project,
-        } => move_item(
-            handle,
-            for_identity,
-            note.as_ref(),
-            project.as_deref(),
-            "needs",
-            "want promote",
-            "promoted",
-        )?,
         WantCommand::Done {
             handle,
             for_identity,

@@ -190,7 +190,7 @@ fn need_marks_are_events_and_round_trip_through_show_and_list() {
 }
 
 #[test]
-fn want_mark_survives_promote_and_done() {
+fn want_mark_survives_done() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let root = project.path().to_str().unwrap();
@@ -223,34 +223,6 @@ fn want_mark_survives_promote_and_done() {
 
     assert_success(&vivi([
         "want",
-        "promote",
-        &want,
-        "--for",
-        "cto",
-        "--project",
-        root,
-    ]));
-    let show = stdout(&vivi(["need", "show", &want, "--project", root]));
-    assert!(show.contains("Marks: bug"), "{show}");
-    let still_want = vivi([
-        "want",
-        "mark",
-        &want,
-        "docs",
-        "--for",
-        "cto",
-        "--project",
-        root,
-    ]);
-    assert!(!still_want.status.success());
-    assert!(
-        stderr(&still_want).contains("is not a want"),
-        "{}",
-        stderr(&still_want)
-    );
-
-    assert_success(&vivi([
-        "need",
         "done",
         &want,
         "--for",
@@ -259,7 +231,7 @@ fn want_mark_survives_promote_and_done() {
         root,
     ]));
     let done = stdout(&vivi([
-        "need",
+        "want",
         "list",
         "--for",
         "cto",
@@ -271,7 +243,7 @@ fn want_mark_survives_promote_and_done() {
         root,
     ]));
     assert!(done.contains(&want), "{done}");
-    assert!(stdout(&vivi(["need", "show", &want, "--project", root])).contains("Marks: bug"));
+    assert!(stdout(&vivi(["want", "show", &want, "--project", root])).contains("Marks: bug"));
 }
 
 #[test]

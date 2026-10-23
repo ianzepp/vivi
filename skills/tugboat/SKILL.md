@@ -1925,7 +1925,7 @@ vivi need done --project "$ROOT" --for mind <handle>
 vivi need reopen --project "$ROOT" --for mind <handle>
 vivi want done --project "$ROOT" --for mind <handle>
 vivi want drop --project "$ROOT" --for mind <handle>
-vivi want promote --project "$ROOT" --for mind <handle>   # when a want becomes must-do (need)
+vivi need send --project "$ROOT" --from mind --to mind --serves <handle> --subject '...' --done-when '...'   # a need that serves the want
 
 # Sync (only where the mailspace has [sync]); nothing travels otherwise
 vivi sync status --project "$ROOT"          # unsent, history floor, held for unknown roles
