@@ -66,6 +66,7 @@ fn flags(model: &str) -> DispatchFlags {
         allow_default_branch: false,
         read_only: false,
         reasoning: None,
+        command: None,
     }
 }
 
@@ -918,4 +919,37 @@ fn guarded_need_publication_and_cleanup_flags_are_validated_before_dispatch() {
     cleanup.publish_ref = None;
     cleanup.read_only = true;
     assert!(plan(&cleanup).is_err());
+}
+
+#[test]
+fn a_no_model_job_runs_the_command_as_the_harness() {
+    let flags = DispatchFlags {
+        command: Some("cargo test --quiet".into()),
+        ..flags("")
+    };
+    // The harness template needs a reasoning level and the model list is
+    // empty: neither applies to a command job.
+    let mut config = reasoning_config("fake --model {model} --thinking {reasoning}");
+    config.harness.as_mut().unwrap().models.clear();
+    let p = plan_job(
+        &config,
+        "p",
+        ("abcd1234", "Subject line", "body text"),
+        &flags,
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap();
+    assert_eq!(p.harness_cmd, "cargo test --quiet");
+    assert!(p.model.is_empty());
+}
+
+#[test]
+fn without_a_command_an_unlisted_model_is_still_refused() {
+    assert!(plan(&flags("")).is_err());
+    let flags = DispatchFlags {
+        command: Some("true".into()),
+        ..flags("")
+    };
+    assert_eq!(plan(&flags).unwrap().harness_cmd, "true");
 }

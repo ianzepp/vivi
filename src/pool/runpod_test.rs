@@ -41,6 +41,7 @@ fn plan(r: &Rig) -> JobPlan {
         allow_default_branch: false,
         read_only: false,
         reasoning: None,
+        command: None,
     };
     plan_job(
         &r.config,
