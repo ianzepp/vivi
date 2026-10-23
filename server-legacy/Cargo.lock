@@ -2747,6 +2747,7 @@ dependencies = [
  "sha2",
  "subtle",
  "tokio",
+ "toml_edit",
  "tower",
  "tower-http",
  "tracing",

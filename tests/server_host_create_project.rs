@@ -373,3 +373,63 @@ async fn bad_rungs_are_refused_before_anything_is_created() {
         "{value}"
     );
 }
+
+#[tokio::test]
+async fn create_project_writes_rung_timeout_and_pools() {
+    let fx = fixture("rungsettings", Some(TOKEN), true);
+    let (errored, made) = fx
+        .create(json!({
+            "name": "timed",
+            "rungs": {"need": "make need", "timeout": 900, "pools": ["rung"]}
+        }))
+        .await;
+    assert!(!errored, "{made}");
+    assert!(made.get("rungs_error").is_none(), "{made}");
+
+    let root = fx.projects.join("timed").canonicalize().unwrap();
+    let raw = std::fs::read_to_string(root.join(".vivi").join("mailspace.toml")).unwrap();
+    assert!(raw.contains("timeout = 900"), "{raw}");
+    assert!(raw.contains("pools = [\"rung\"]"), "{raw}");
+    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let rungs = space.config.pump.unwrap().rungs;
+    assert_eq!(rungs.need.as_deref(), Some("make need"));
+    assert_eq!(rungs.timeout, Some(900));
+    assert_eq!(rungs.pools, vec!["rung".to_owned()]);
+}
+
+#[tokio::test]
+async fn create_project_writes_rung_timeout_alone() {
+    let fx = fixture("rungtimeout", Some(TOKEN), true);
+    let (errored, made) = fx
+        .create(json!({"name": "onlytimeout", "rungs": {"timeout": 60}}))
+        .await;
+    assert!(!errored, "{made}");
+    assert!(made.get("rungs_error").is_none(), "{made}");
+    let root = fx.projects.join("onlytimeout").canonicalize().unwrap();
+    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    assert_eq!(space.config.pump.unwrap().rungs.timeout, Some(60));
+}
+
+#[tokio::test]
+async fn bad_rung_timeout_and_pools_are_refused_before_anything_is_created() {
+    let fx = fixture("badsettings", Some(TOKEN), true);
+    let cases = [
+        (json!({"timeout": 0}), "rungs.timeout"),
+        (json!({"timeout": -5}), "rungs.timeout"),
+        (json!({"timeout": "900"}), "rungs.timeout"),
+        (json!({"timeout": 1.5}), "rungs.timeout"),
+        (json!({"pools": "rung"}), "rungs.pools"),
+        (json!({"pools": [""]}), "rungs.pools"),
+        (json!({"pools": ["ok", 3]}), "rungs.pools"),
+    ];
+    for (rungs, expect) in cases {
+        let (errored, value) = fx
+            .create(json!({"name": "nosettings", "rungs": rungs}))
+            .await;
+        assert!(errored, "{value}");
+        let message = value["error"].as_str().unwrap();
+        assert!(message.contains(expect), "{message}");
+        assert!(!fx.projects.join("nosettings").exists(), "{message}");
+        assert!(!fx.lanes.join("nosettings.git").exists(), "{message}");
+    }
+}
