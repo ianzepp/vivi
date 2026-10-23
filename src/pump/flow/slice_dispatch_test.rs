@@ -223,7 +223,7 @@ fn dispatching_the_same_attempt_again_queues_nothing_new() -> R {
     let second = rig.dispatch(&slice, 1)?;
     assert_eq!(first, second);
     assert_eq!(rig.jobs.jobs.len(), 1);
-    assert_eq!(rig.store.attempts_of(&slice.task)?, 1);
+    assert_eq!(rig.store.last_attempt(&slice.task)?, 1);
     Ok(())
 }
 
@@ -299,7 +299,7 @@ fn retry_runs_the_same_task_with_a_new_job_id_and_exhausts_at_the_cap() -> R {
     assert_eq!(second, format!("slice-{}-a2", slice.task));
     assert_eq!(rig.job(&second).task, rig.job(&first).task);
     assert_eq!(rig.store.step_job(&second)?.unwrap().attempt, 2);
-    assert_eq!(rig.store.attempts_of(&slice.task)?, 2);
+    assert_eq!(rig.store.last_attempt(&slice.task)?, 2);
     // The failed attempt's record went to the slice task.
     let mails = rig.host.commands();
     let record = format!("mail reply {} ", slice.task);
