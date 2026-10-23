@@ -124,16 +124,13 @@ impl PumpConfig {
         self.validate_workspace(&mut found);
         self.validate_dispatch(pools, hand_role_pool, &mut found);
         validate_rungs("[pump.rungs]", &self.rungs, pools, &mut found);
-        validate_rung_pools("[pump.rungs]", &self.effective_rungs(None), &mut found);
+        if self.targets.is_empty() {
+            validate_rung_pools("[pump.rungs]", &self.effective_rungs(None), &mut found);
+        }
         for (id, target) in &self.targets {
             let scope = format!("[pump.targets.{id}.rungs]");
             validate_rungs(&scope, &target.rungs, pools, &mut found);
-            if RUNG_NAMES
-                .iter()
-                .any(|name| target.rungs.command(name).is_some())
-            {
-                validate_rung_pools(&scope, &self.effective_rungs(Some(id)), &mut found);
-            }
+            validate_rung_pools(&scope, &self.effective_rungs(Some(id)), &mut found);
         }
         if self.targets.is_empty() {
             if self.branch.is_empty() {
