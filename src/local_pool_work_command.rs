@@ -254,23 +254,17 @@ fn submit_job(
         start,
         progress,
         ready_timeout,
-        reset_base: dispatch_reset_base(config, space, &plan.task),
+        reset_base: dispatch_reset_base(config, space),
     };
     work::submit(space, provider, id, &launch, &pacing)
         .inspect_err(|_| undo_bridge_grant(space, plan.bridge.as_ref()))
 }
 
-fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace, task: &str) -> Option<String> {
+fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace) -> Option<String> {
     if config.provider != "local" {
         return None;
     }
-    let st = vivi::pool::clean_pump::load_state(space);
-    let unit = st
-        .as_ref()
-        .and_then(|s| vivi::pool::clean_pump::unit_for(s, Some(task), None));
-    let chosen =
-        vivi::pool::reset::choose_base(space, None, unit, vivi::pool::reset::ResetKind::Dispatch);
-    Some(chosen.name)
+    Some(vivi::pool::reset::choose_base(space, None).name)
 }
 
 /// Note, on a per-dispatch host, when an uncollected pod gives up its job.

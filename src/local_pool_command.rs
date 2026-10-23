@@ -422,12 +422,7 @@ fn reset(command: &PoolResetCommand) -> Result<(), VivariumError> {
     }
     let space = Mailspace::discover(command.project.as_deref())?;
     let handle = pools::open_one(&space, command.pool.as_deref())?;
-    let chosen = vivi::pool::reset::choose_base(
-        &space,
-        command.base.as_deref(),
-        None,
-        vivi::pool::reset::ResetKind::Recycle,
-    );
+    let chosen = vivi::pool::reset::choose_base(&space, command.base.as_deref());
     let machines = handle.provider.list()?;
     let slots = vivi::pool::slot::pool_slots(&handle.id, &machines);
     let targets: Vec<vivi::pool::slot::SlotStatus> = match &command.slot {
