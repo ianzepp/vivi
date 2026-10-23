@@ -23,6 +23,10 @@ const WORKERS: &[(&str, &str, &str)] = &[
     ("digest-survival", "digest", "digest"),
     ("hand-survival", "hand", "hand"),
 ];
+/// Every slot is a git worktree made by `pool create` (about 1.3 s each), so a
+/// test asks for the few slots it needs, not a large pool.
+const WORKER_SLOTS: usize = WORKERS.len() + 2;
+const MERGE_SLOTS: usize = 2;
 const TEST_HARNESS: &str = r#"#!/bin/sh
 set -eu
 brief="$1"
@@ -93,7 +97,7 @@ impl Drop for PumpChild {
 
 #[test]
 fn local_pool_jobs_survive_sigkill_and_apply_once() {
-    let rig = scaffold();
+    let rig = scaffold(WORKER_SLOTS);
     seed_state(&rig);
 
     let mut first = pump_child(&rig);
@@ -190,7 +194,7 @@ fn local_pool_jobs_survive_sigkill_and_apply_once() {
 /// moves by exactly one merge commit and the flow step advances once.
 #[test]
 fn flow_merge_main_job_survives_sigkill_and_applies_once() {
-    let rig = scaffold();
+    let rig = scaffold(MERGE_SLOTS);
     let seeded = seed_merge_run(&rig);
     let main_before = git_output(&rig.seed, &["rev-parse", "main"]);
 
@@ -425,7 +429,7 @@ fn step_state(rig: &Rig, task: &str) -> StepState {
     open_store(rig).step_by_task(task).unwrap().unwrap().state
 }
 
-fn scaffold() -> Rig {
+fn scaffold(slots: usize) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().canonicalize().unwrap();
     let project = base.join("project");
@@ -463,10 +467,11 @@ fn scaffold() -> Rig {
     // `mailspace init` writes a starter [pump]; this test supplies its own.
     parsed.as_table_mut().unwrap().remove("pump");
     let additions = format!(
-        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nfrom = []\npull = false\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
+        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nfrom = []\npull = false\n\n[pools.p]\nprovider = \"local\"\nslots = {}\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
         toml_string(&project.join(".vivi/pump-home")),
         toml_string(&repo),
         toml_string(&bare),
+        slots,
         toml_string(&base.join("lanes")),
         toml_string(&repo),
         script.display(),
