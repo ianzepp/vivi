@@ -28,7 +28,7 @@ pub fn step_replies(mail: &dyn SliceMail, task: &str) -> Result<Vec<String>, Viv
     replies.reverse();
     Ok(replies
         .into_iter()
-        .map(|(_, text)| hand_message(&text))
+        .map(|(_, text)| hand_message(&text.replace("\r\n", "\n")))
         .collect())
 }
 
