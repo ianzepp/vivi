@@ -3,6 +3,7 @@
 
 use crate::error::VivariumError;
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
+use crate::pump::flow::decide;
 use crate::pump::flow::def::{FAILED, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
@@ -16,7 +17,6 @@ const NEED_RUNG: &str = "need";
 /// Attempts a rung step makes before a lost or timed-out job answers `failed`.
 const MAX_ATTEMPTS: u32 = 2;
 /// The class of the audit step whose payload may name a raised rung.
-const AUDITOR_CLASS: &str = "auditor";
 
 /// The rung job for `step`: [`rung::spec`] bound to the step task. N6 and N7
 /// call this for rung-main (main tip, repair branch tip).
@@ -44,7 +44,7 @@ pub(crate) fn job(
 /// Starts a need-rung step at the need-branch tip.
 struct RungStart;
 
-/// Starts a rung-raised step: the rung the newest audit named, else `need`.
+/// Starts a rung-raised step: the sticky raise of the run (see `decide::sticky_raise`), else `need`.
 struct RaisedStart;
 
 impl StepHandler for RungStart {
@@ -55,18 +55,7 @@ impl StepHandler for RungStart {
 
 impl StepHandler for RaisedStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
-        let raised = cx
-            .store
-            .step_payloads_of_run(&cx.run.need, cx.run.run)?
-            .into_iter()
-            .rev()
-            .find(|row| row.class == AUDITOR_CLASS)
-            .and_then(|row| {
-                row.payload["front"]["raise_rung"]
-                    .as_str()
-                    .filter(|rung| !rung.is_empty())
-                    .map(str::to_owned)
-            });
+        let raised = decide::sticky_raise(cx.store, &cx.run.need, cx.run.run)?;
         start_rung(cx, step, raised.as_deref().unwrap_or(NEED_RUNG))
     }
 }

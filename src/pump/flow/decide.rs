@@ -18,6 +18,7 @@ const AUDIT_WORDS: [&str; 4] = ["clean_pass", "residual", "block_range", "block_
 const RUNG_WORDS: [&str; 2] = ["pass", "fail"];
 const FAILED: &str = "failed";
 const AUDITOR_CLASS: &str = "auditor";
+const REWORK_ENTRY: &str = "rework1";
 
 fn bad(node: &FlowNode, why: impl std::fmt::Display) -> VivariumError {
     VivariumError::Parse(format!("decision node `{}`: {why}", node.id))
@@ -77,7 +78,7 @@ fn join(store: &PumpStore, node: &FlowNode, inputs: &[JoinInput]) -> Result<Stri
         ("block_range" | "block_ship", _) => "block",
         (_, FAILED) => FAILED,
         (_, "fail") => "judge",
-        _ if raise_rung(store, &audit.task)?.is_some() => "raised",
+        _ if audit_raise(store, &audit.task)?.is_some() => "raised",
         _ => "verified",
     };
     Ok(word.into())
@@ -97,12 +98,7 @@ fn raisecheck(
     let Some((need, run)) = store.step_run_of(&input.task)? else {
         return Err(bad(node, format!("unknown step task `{}`", input.task)));
     };
-    let audit = store
-        .step_payloads_of_run(&need, run)?
-        .into_iter()
-        .rev()
-        .find(|row| row.class == AUDITOR_CLASS);
-    let raised = audit.is_some_and(|row| rung_of(&row.payload).is_some());
+    let raised = sticky_raise(store, &need, run)?.is_some();
     Ok(if raised { "raised" } else { "none" }.into())
 }
 
@@ -118,10 +114,51 @@ fn is_rung_or_failed(word: &str) -> bool {
     is_rung(word) || word == FAILED
 }
 
-fn raise_rung(store: &PumpStore, task: &str) -> Result<Option<String>, VivariumError> {
+/// The sticky raise for the run an audit task belongs to. The run comes from the step table, else
+/// from the audit's own stored payload.
+fn audit_raise(store: &PumpStore, task: &str) -> Result<Option<String>, VivariumError> {
+    let place = match store.step_run_of(task)? {
+        Some(place) => Some(place),
+        None => store.step_payload(task)?.map(|row| (row.need, row.run)),
+    };
+    match place {
+        Some((need, run)) => sticky_raise(store, &need, run),
+        None => Ok(None),
+    }
+}
+
+/// The rung a raise names for this run: the newest non-empty `raise_rung` among all of the run's
+/// auditor payloads. A raise is sticky within a run, so a later audit without one does not clear
+/// it. A run that entered at `rework1` also carries the raise of the run before it, the one the
+/// CTO rework restarted.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+pub(crate) fn sticky_raise(
+    store: &PumpStore,
+    need: &str,
+    run: u32,
+) -> Result<Option<String>, VivariumError> {
+    if let Some(rung) = newest_raise(store, need, run)? {
+        return Ok(Some(rung));
+    }
+    let rework = store
+        .runs_of(need)?
+        .iter()
+        .any(|row| row.run == run && row.entry == REWORK_ENTRY);
+    match run.checked_sub(1) {
+        Some(prior) if rework && prior > 0 => newest_raise(store, need, prior),
+        _ => Ok(None),
+    }
+}
+
+fn newest_raise(store: &PumpStore, need: &str, run: u32) -> Result<Option<String>, VivariumError> {
     Ok(store
-        .step_payload(task)?
-        .and_then(|row| rung_of(&row.payload)))
+        .step_payloads_of_run(need, run)?
+        .into_iter()
+        .rev()
+        .filter(|row| row.class == AUDITOR_CLASS)
+        .find_map(|row| rung_of(&row.payload)))
 }
 
 fn rung_of(payload: &Value) -> Option<String> {
