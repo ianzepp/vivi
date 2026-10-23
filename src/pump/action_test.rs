@@ -473,3 +473,30 @@ fn a_tick_applies_a_posted_action_and_saves_it() {
     assert_eq!(st.units["u1"].task, None);
     assert!(saved(&project).board.actions.contains_key(&id));
 }
+
+#[test]
+fn an_unlock_action_is_neither_applied_nor_marked_by_the_old_pump() {
+    let project = project();
+    project.host.reply("ls-remote", 0, "");
+    let ctx = project.pump_ctx();
+    let need = project.need("fix auth");
+    open_record(&project, &need);
+    let mut st = planned(&need, &[("u1", Status::Stuck)]);
+    let id = post(
+        &project,
+        &need,
+        &PumpActionRequest::unlock(Some("slice"), ""),
+    );
+    project.host.set_now(T0);
+
+    let (mut pass, requests, results) = crate::pump::boardpass::BoardPass::detached();
+    crate::pump::run::tick(&ctx, &mut st, &mut pass).unwrap();
+    pass.serve(&ctx, &mut st, &requests, &results);
+
+    assert!(
+        !st.board.actions.contains_key(&id),
+        "the old pump marked an unlock"
+    );
+    assert!(!saved(&project).board.actions.contains_key(&id));
+    assert_eq!(st.units["u1"].status, Status::Stuck);
+}
