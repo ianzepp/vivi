@@ -13,10 +13,10 @@ use std::collections::BTreeMap;
 use crate::error::VivariumError;
 use crate::pump::envelope::roles::{Slice, Slicer};
 use crate::pump::envelope::{EnvelopeError, parse};
+use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FAILED, STEP_MARKER};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
-use crate::pump::flow::run::SENTINEL_NODE;
+use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, TaskStatus};
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
@@ -229,6 +229,59 @@ fn topological_order<'a>(
         }
     }
     Ok(placed)
+}
+
+/// Close a slice task with `verdict` and mark its step row done.
+///
+/// This is the one way a slice closes: the dispatchers only start slices and
+/// collect their jobs, and the fanout reports the result upward through
+/// [`settle`]. `verdict` is [`VERDICT_NO_DEFECT`] (or [`VERDICT_MERGED`]).
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the close or the index write fails.
+pub fn close_slice<M: MailWriter>(
+    store: &PumpStore,
+    mail: &mut M,
+    task: &str,
+    verdict: &str,
+) -> Result<(), VivariumError> {
+    mail.close_task(task, verdict, None, None)?;
+    store.set_step_state(task, StepState::Done, Some(verdict))
+}
+
+/// The mailspace write a slice's dependency edge needs.
+pub trait SliceEdges {
+    /// Make `task` depend on `depends_on`, after both were sent.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the edge cannot be written.
+    fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError>;
+}
+
+impl SliceEdges for MailspacePort {
+    fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError> {
+        self.mailspace
+            .set_dependencies(
+                &self.pump_identity,
+                task,
+                "task",
+                &[depends_on.to_string()],
+                &[],
+            )
+            .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+impl SliceEdges for crate::pump::flow::fake_mail::FakeMail {
+    fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError> {
+        let entry = self
+            .tasks
+            .get_mut(task)
+            .ok_or_else(|| VivariumError::Message(format!("fake mail: no task {task}")))?;
+        entry.depends_on.push(depends_on.to_string());
+        Ok(())
+    }
 }
 
 /// Record that a slice ran out of attempts. The fanout then settles `failed`.

@@ -3,7 +3,7 @@
 //! other open slices. No model is involved.
 
 use crate::error::VivariumError;
-use crate::pump::flow::mail::MailspacePort;
+use crate::pump::flow::fanout::SliceEdges;
 use crate::pump::store::PumpStore;
 
 /// A request for more paths than this goes to the slicer.
@@ -72,29 +72,6 @@ pub enum Resolution {
     WaitOn(Vec<String>),
     /// The slicer must repair the scopes; the reason says why.
     Repair(String),
-}
-
-/// The mailspace write `resolve` needs: a dependency edge between tasks.
-pub trait ScopeMail {
-    /// Make `task` depend on `depends_on`.
-    ///
-    /// # Errors
-    /// Returns [`VivariumError`] when the edge cannot be written.
-    fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError>;
-}
-
-impl ScopeMail for MailspacePort {
-    fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError> {
-        self.mailspace
-            .set_dependencies(
-                &self.pump_identity,
-                task,
-                "task",
-                &[depends_on.to_string()],
-                &[],
-            )
-            .map(|_| ())
-    }
 }
 
 /// Marks a requested-but-held path in the stored wait record (the
@@ -187,7 +164,7 @@ fn split_request(paths: &[String], others: &[(String, Vec<String>)]) -> Split {
 /// Returns [`VivariumError`] when the store or the mailspace fails.
 pub fn resolve(
     store: &PumpStore,
-    mail: &mut impl ScopeMail,
+    mail: &mut impl SliceEdges,
     run: u32,
     task: &str,
     req: &BlockedScope,
@@ -235,18 +212,6 @@ pub fn resolve(
     store.set_scope_holders(task, &record)?;
     store.set_scope_state(task, ScopeState::Wait)?;
     Ok(Resolution::WaitOn(holders))
-}
-
-#[cfg(test)]
-impl ScopeMail for crate::pump::flow::fake_mail::FakeMail {
-    fn add_dependency(&mut self, task: &str, depends_on: &str) -> Result<(), VivariumError> {
-        let entry = self
-            .tasks
-            .get_mut(task)
-            .ok_or_else(|| VivariumError::Message(format!("fake mail: no task {task}")))?;
-        entry.depends_on.push(depends_on.to_string());
-        Ok(())
-    }
 }
 
 #[cfg(test)]
