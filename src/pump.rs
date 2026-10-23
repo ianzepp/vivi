@@ -19,6 +19,7 @@ pub mod config;
 pub mod control;
 pub(crate) mod cycle;
 pub mod dispatch;
+pub mod envelope;
 pub mod envfail;
 pub mod flow;
 pub mod gate;
