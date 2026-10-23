@@ -20,8 +20,6 @@ use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
 
-pub(super) const BODY: &str = "done_when: it works\n";
-
 fn alice() -> Checkout {
     checkout("alice", &["mind"])
 }

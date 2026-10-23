@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
+use crate::letter::fixture::{sentinel_body, step_body};
 use crate::letter::read::step_of;
 use crate::letter::work::StepFront;
 use crate::pump::flow::mail::{
@@ -584,9 +585,9 @@ fn calls_are_recorded_in_order() -> R {
 #[test]
 fn sentinels_marks_and_records() -> R {
     let mut mail = FakeMail::new("pump");
-    let s1 = step(&mut mail, "pump-run-sentinel: n1 r1")?;
-    let s2 = step(&mut mail, "pump-run-sentinel: n1 r2")?;
-    let plain = step(&mut mail, "pump-step: n1 r2 plan")?;
+    let s1 = step(&mut mail, &sentinel_body("n1", 1, ""))?;
+    let s2 = step(&mut mail, &sentinel_body("n1", 2, ""))?;
+    let plain = step(&mut mail, &step_body("n1", 2, "plan", ""))?;
     mail.bind("n1", &[s1, s2, plain])?;
     assert_eq!(mail.sentinel_count("n1")?, 2);
     mail.set_marks("n1", &["kind-fix"]);
