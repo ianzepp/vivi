@@ -389,14 +389,6 @@ impl PumpStore {
         Ok(())
     }
 
-    /// Write the whole state as the `state.json` shape at `path`.
-    ///
-    /// # Errors
-    /// Returns [`VivariumError`] when loading or writing fails.
-    pub fn export_json(&self, path: &Path) -> Result<(), VivariumError> {
-        self.load()?.save(path)
-    }
-
     /// Read the exception rows, oldest first: `(at, kind, unit, text)`.
     ///
     /// # Errors

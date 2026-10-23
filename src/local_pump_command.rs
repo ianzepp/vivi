@@ -1,4 +1,4 @@
-//! `vivi pump` dispatch: `run`, `once`, and `status` over the run module.
+//! `vivi pump` dispatch: `run`, `once`, control, records and operator actions.
 
 use std::path::{Path, PathBuf};
 
@@ -40,20 +40,8 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         }
         PumpSubcommand::Run(cmd) => pump_run::run(&project_root(&cmd.project), false),
         PumpSubcommand::Once(cmd) => pump_run::run(&project_root(&cmd.project), true),
-        PumpSubcommand::Status(cmd) => {
-            let text = pump_run::status(&project_root(&cmd.project))?;
-            print!("{text}");
-            Ok(())
-        }
         PumpSubcommand::Health(cmd) => pump_health(cmd),
         PumpSubcommand::Log(cmd) => pump_log(cmd),
-        PumpSubcommand::Export(cmd) => pump_run::export(&project_root(&cmd.project), &cmd.json),
-        PumpSubcommand::Closeout(cmd) => pump_run::closeout(
-            &project_root(&cmd.project),
-            cmd.json,
-            cmd.close.as_deref(),
-            cmd.for_identity.as_deref(),
-        ),
         PumpSubcommand::Pause(cmd) => {
             vivi::pump::control::set_project_mode(&project_root(&cmd.project), PumpMode::Paused)
         }
@@ -96,7 +84,6 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             entry.as_deref(),
             note.as_deref(),
         ),
-        PumpSubcommand::Adopt(cmd) => vivi::pump::adopt::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Send(cmd) => crate::local_pump_record_command::send(cmd),
         PumpSubcommand::List(cmd) => crate::local_pump_record_command::list(cmd),
         PumpSubcommand::Show(cmd) => crate::local_pump_record_command::show(cmd),
@@ -132,11 +119,7 @@ fn pump_log(cmd: &PumpLogCommand) -> Result<(), VivariumError> {
     let options = ShowOptions {
         count: cmd.lines,
         follow: cmd.follow,
-        filter: LogFilter::new(
-            cmd.lane.as_deref(),
-            cmd.unit.as_deref(),
-            cmd.grep.as_deref(),
-        ),
+        filter: LogFilter::new(cmd.unit.as_deref(), cmd.grep.as_deref()),
     };
     logview::run(&project_root(&cmd.project), file, &options)
 }

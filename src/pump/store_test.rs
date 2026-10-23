@@ -410,20 +410,6 @@ fn an_unknown_status_survives_the_round_trip() {
 }
 
 #[test]
-fn export_writes_the_state_json_shape() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join(DB_FILENAME);
-    let mut store = PumpStore::open(&path).unwrap();
-    store.save(&sample()).unwrap();
-    let out = dir.path().join("export.json");
-    store.export_json(&out).unwrap();
-    let text = std::fs::read_to_string(&out).unwrap();
-    assert!(text.contains("\"u1\""), "{text}");
-    let back = State::load(&out).unwrap();
-    assert_eq!(back.units["u1"].status, Status::Merged);
-}
-
-#[test]
 fn an_exception_is_recorded_in_the_database() {
     let dir = tempdir().unwrap();
     crate::pump::store::append_exception(dir.path(), 42, "stuck", "u1", "needs a person");

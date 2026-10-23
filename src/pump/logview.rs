@@ -35,18 +35,15 @@ impl LogFile {
 /// Line filters; all set filters must match (AND).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogFilter {
-    /// Merge-lane id, normalized to `<target>/<n>` form.
-    lane: Option<String>,
     unit: Option<String>,
     grep: Option<String>,
 }
 
 impl LogFilter {
-    /// Build a filter; a lane without `/` is shorthand for `default/<lane>`.
+    /// Build a filter from a handle token and a text substring.
     #[must_use]
-    pub fn new(lane: Option<&str>, unit: Option<&str>, grep: Option<&str>) -> Self {
+    pub fn new(unit: Option<&str>, grep: Option<&str>) -> Self {
         Self {
-            lane: lane.map(normalize_lane),
             unit: unit.map(str::to_owned),
             grep: grep.map(str::to_owned),
         }
@@ -55,48 +52,11 @@ impl LogFilter {
     /// True when `line` passes every set filter.
     #[must_use]
     pub fn matches(&self, line: &str) -> bool {
-        self.lane
+        self.unit
             .as_deref()
-            .is_none_or(|lane| has_lane_prefix(line, lane))
-            && self
-                .unit
-                .as_deref()
-                .is_none_or(|unit| contains_token(line, unit))
+            .is_none_or(|unit| contains_token(line, unit))
             && self.grep.as_deref().is_none_or(|text| line.contains(text))
     }
-}
-
-fn normalize_lane(lane: &str) -> String {
-    if lane.contains('/') {
-        lane.to_owned()
-    } else {
-        format!("default/{lane}")
-    }
-}
-
-/// The text after a leading `HH:MM:SS ` stamp (the whole line if unstamped).
-fn after_timestamp(line: &str) -> &str {
-    match line.split_once(' ') {
-        Some((stamp, rest)) if is_clock(stamp) => rest,
-        _ => line,
-    }
-}
-
-fn is_clock(text: &str) -> bool {
-    let parts: Vec<&str> = text.split(':').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// True when the text after the stamp starts with `lane <lane>:` or `lane <lane> `.
-fn has_lane_prefix(line: &str, lane: &str) -> bool {
-    let Some(rest) = after_timestamp(line).strip_prefix("lane ") else {
-        return false;
-    };
-    rest.strip_prefix(lane)
-        .is_some_and(|tail| tail.starts_with(':') || tail.starts_with(' '))
 }
 
 fn is_token_byte(byte: u8) -> bool {
