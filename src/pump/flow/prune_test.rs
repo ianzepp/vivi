@@ -192,6 +192,39 @@ fn a_repair_run_also_prunes_its_repair_branches() -> Result<(), VivariumError> {
 }
 
 #[test]
+fn a_restarted_repair_need_prunes_the_refs_of_every_run() -> Result<(), VivariumError> {
+    let mut rig = rig()?;
+    rig.land("repair")?;
+    rig.store.set_run_state(NEED, 1, "superseded")?;
+    rig.store.insert_run(&RunRow {
+        need: NEED.into(),
+        run: 2,
+        flow: "repair".into(),
+        flow_version: 1,
+        kind: "repair".into(),
+        entry: "fix1".into(),
+        state: "done".into(),
+    })?;
+    rig.remote_has(&[
+        "vivi/repair/n1-r1-a1",
+        "vivi/repair/n1-r1-a2",
+        "vivi/repair/n1-r2-a1",
+        "vivi/repair/n2-r1-a1",
+        "vivi/repair/n1-r2-a1/x",
+    ]);
+    rig.tick()?;
+    let ids: BTreeSet<&str> = rig.jobs.jobs.keys().map(String::as_str).collect();
+    let want: BTreeSet<&str> = [
+        "prune-n1-vivi-repair-n1-r1-a1",
+        "prune-n1-vivi-repair-n1-r1-a2",
+        "prune-n1-vivi-repair-n1-r2-a1",
+    ]
+    .into();
+    assert_eq!(ids, want);
+    Ok(())
+}
+
+#[test]
 fn a_second_tick_enqueues_nothing() -> Result<(), VivariumError> {
     let mut rig = rig()?;
     rig.land("build")?;

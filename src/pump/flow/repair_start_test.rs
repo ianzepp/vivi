@@ -9,6 +9,8 @@ use super::RepairerStart;
 use crate::error::VivariumError;
 use crate::mailspace::marked_line;
 use crate::pump::config::PumpConfig;
+use crate::pump::flow::advance::restart::restart;
+use crate::pump::flow::advance::start::start as start_run;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -94,13 +96,16 @@ fn step(node: &str, task: &str, state: StepState, verdict: Option<&str>) -> Step
 }
 
 fn start(rig: &Rig, step: &StepRow) -> Result<StartAction, VivariumError> {
+    start_in(rig, &run(), step)
+}
+
+fn start_in(rig: &Rig, run: &RunRow, step: &StepRow) -> Result<StartAction, VivariumError> {
     let def = load(FlowKind::Repair)?;
-    let run = run();
     let cx = StartCx {
         ctx: &rig.ctx,
         store: &rig.store,
         mail: &rig.mail,
-        run: &run,
+        run,
         def: &def,
     };
     RepairerStart.start(&cx, step)
@@ -209,5 +214,70 @@ fn a_node_without_an_attempt_is_an_error() -> R {
     let rig = rig(true, RECORD)?;
     let err = start(&rig, &step("unrepaired", "t1", StepState::Pending, None)).unwrap_err();
     assert!(matches!(err, VivariumError::Parse(_)), "{err}");
+    Ok(())
+}
+
+#[test]
+fn a_restarted_repair_run_publishes_to_fresh_refs() -> R {
+    let mut rig = rig(true, RECORD)?;
+    let old = start_run(&rig.ctx, &rig.store, &mut rig.mail, NEED, Some("fix1"))?;
+    let rows = rig.store.steps_of(NEED, old.run)?;
+    let fix1 = rows
+        .iter()
+        .find(|row| row.node == "fix1")
+        .expect("fix1 row")
+        .clone();
+    let fix2 = rig.mail.send_step("mind", "mind", "fix2", "b", &[])?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: old.run,
+            node: "fix2".into(),
+            task: fix2.clone(),
+            state: StepState::Running,
+            verdict: None,
+        },
+    )?;
+    let mut old_refs = Vec::new();
+    for (attempt, task) in [(1, &fix1.task), (2, &fix2)] {
+        let branch = repair::branch(NEED, old.run, attempt);
+        let facts = AttemptFacts {
+            branch: branch.clone(),
+            commit: "c".repeat(40),
+            base: MAIN_A.into(),
+        };
+        rig.mail.reply(
+            task,
+            &marked_line(repair::ATTEMPT_MARKER, &repair::facts_text(&facts)),
+        )?;
+        old_refs.push(branch);
+    }
+    main_tip(&rig.host, MAIN_A);
+    let first = job(start_in(&rig, &old, &fix1)?);
+    assert_eq!(first.branch.as_deref(), Some(old_refs[0].as_str()));
+    assert_eq!(rig.store.need_branch(NEED)?.expect("row").run, 1);
+
+    let next = restart(&rig.ctx, &rig.store, &mut rig.mail, &old, "fix1")?;
+
+    assert_eq!(next.run, 2);
+    let new_fix1 = rig
+        .store
+        .steps_of(NEED, next.run)?
+        .into_iter()
+        .find(|row| row.node == "fix1")
+        .expect("new fix1 row");
+    main_tip(&rig.host, MAIN_B);
+    let spec = job(start_in(&rig, &next, &new_fix1)?);
+    let want = format!("vivi/repair/{NEED}-r2-a1");
+    assert_eq!(spec.branch.as_deref(), Some(want.as_str()));
+    assert_eq!(
+        spec.publish_ref.as_deref(),
+        Some(format!("refs/heads/{want}").as_str())
+    );
+    assert!(old_refs.iter().all(|old| *old != want));
+    assert!(!spec.body.contains("Prior attempt"));
+    let row = rig.store.need_branch(NEED)?.expect("row");
+    assert_eq!(row.run, 2);
+    assert_eq!(row.base.as_deref(), Some(MAIN_B));
     Ok(())
 }
