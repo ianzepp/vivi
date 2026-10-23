@@ -14,8 +14,10 @@ use crate::pump::flow::def::{SENTINEL_MARKER, STEP_MARKER};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
+use crate::pump::flow::reslice::RESLICE_NODE_PREFIX;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -489,6 +491,63 @@ fn two_fanouts_of_one_run_keep_their_slices_apart() -> R {
     r.store.set_open_fanout(NEED, 1, "fan2")?;
     r.expand(&[slice("A", &[]), slice("B", &[])])?;
     assert_eq!(slice_tasks_titled(&r, "A").len(), 2, "fan2 sends its own A");
+    assert_eq!(r.settle()?, None);
+    Ok(())
+}
+
+fn reslice_row(r: &Rig, task: &str, state: StepState, fanout: Option<&str>) -> R {
+    r.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: format!("{RESLICE_NODE_PREFIX}A"),
+            task: task.into(),
+            state,
+            verdict: None,
+        },
+    )?;
+    r.store.link_slice(&SliceLink {
+        task: task.into(),
+        need: NEED.into(),
+        run: 1,
+        fanout: fanout.map(str::to_string),
+        deps: vec![],
+    })
+}
+
+#[test]
+fn an_open_reslice_row_holds_the_fanout() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    reslice_row(&r, "rs1", StepState::Running, None)?;
+    assert_eq!(r.settle()?, None);
+    r.store.set_step_state("rs1", StepState::Done, None)?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    Ok(())
+}
+
+#[test]
+fn a_waiting_reslice_row_holds_and_a_failed_one_does_not() -> R {
+    let mut r = rig()?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    reslice_row(&r, "rs1", StepState::Waiting, None)?;
+    assert_eq!(r.settle()?, None);
+    r.store.set_step_state("rs1", StepState::Failed, None)?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    Ok(())
+}
+
+#[test]
+fn a_reslice_row_of_another_fanout_does_not_hold_this_one() -> R {
+    let mut r = rig()?;
+    r.store.set_open_fanout(NEED, 1, "fan1")?;
+    r.expand(&[slice("A", &[])])?;
+    r.close("A", "merged")?;
+    reslice_row(&r, "rs1", StepState::Running, Some("fan2"))?;
+    assert_eq!(r.settle()?, Some(BUILT));
+    reslice_row(&r, "rs2", StepState::Running, Some("fan1"))?;
     assert_eq!(r.settle()?, None);
     Ok(())
 }

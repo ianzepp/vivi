@@ -17,6 +17,7 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FAILED, STEP_MARKER};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, TaskStatus};
+use crate::pump::flow::reslice::RESLICE_NODE_PREFIX;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
@@ -443,7 +444,26 @@ pub fn settle<M: MailReader>(
             unsettled = true;
         }
     }
+    if reslice_open(store, run, open.as_deref())? {
+        return Ok(None);
+    }
     Ok((slices > 0 && !unsettled).then_some(BUILT))
+}
+
+/// True when a slicer job on one slice of `fanout` is still open: a reslice
+/// row that is neither Done nor Failed and is linked to that fanout.
+fn reslice_open(
+    store: &PumpStore,
+    run: &RunRow,
+    fanout: Option<&str>,
+) -> Result<bool, VivariumError> {
+    for row in store.steps_of(&run.need, run.run)? {
+        let open = !matches!(row.state, StepState::Done | StepState::Failed);
+        if row.node.starts_with(RESLICE_NODE_PREFIX) && open && in_fanout(store, &row, fanout)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// True when the slice row belongs to `fanout`; a row with no link counts as
