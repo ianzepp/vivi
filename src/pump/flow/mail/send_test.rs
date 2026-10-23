@@ -89,3 +89,22 @@ fn a_reply_lands_on_the_task() {
     let kids = storage.reply_child_contents(&view.content_id).unwrap();
     assert_eq!(kids.len(), 1);
 }
+
+#[test]
+fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
+    use crate::mailspace::marked_line;
+    use crate::pump::flow::slice_dispatch::SliceMail;
+
+    let p = project();
+    let port = port(&p);
+    let task = port.send_step("mind", "mind", "t", "x", &[]).unwrap();
+    port.reply(&task, &marked_line("pump-attempt:", "hello"))
+        .unwrap();
+    let replies = port.marked_replies(&task, "pump-attempt:").unwrap();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0].1, "pump-attempt: hello");
+    let from_pump = port
+        .marked_replies_from(&task, "pump-attempt:", "mind")
+        .unwrap();
+    assert_eq!(from_pump.len(), 1, "{from_pump:?}");
+}

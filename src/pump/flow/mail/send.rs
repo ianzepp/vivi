@@ -51,7 +51,9 @@ impl MailspacePort {
         self.mailspace.backlog_bind_units(need, units)
     }
 
-    /// Post a reply on the task `handle` as the pump identity.
+    /// Post a reply on the task `handle` as the pump identity. The reply goes
+    /// to the pump identity itself: step tasks are sent pump to pump, so the
+    /// parent has no other recipient, and the sent copy is the thread record.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the handle does not resolve or delivery
@@ -60,7 +62,7 @@ impl MailspacePort {
         self.mailspace.reply(
             handle,
             &self.pump_identity,
-            Vec::new(),
+            vec![self.pump_identity.clone()],
             Vec::new(),
             None,
             body.into(),
