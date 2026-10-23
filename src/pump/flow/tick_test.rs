@@ -740,6 +740,59 @@ fn a_start_answer_advances_the_step_and_records_its_payload() -> R {
     Ok(())
 }
 
+struct StartsAJob;
+
+impl StepHandler for StartsAJob {
+    fn start(&self, _cx: &StartCx<'_>, _step: &StepRow) -> Result<StartAction, VivariumError> {
+        let mut spec = JobSpec::new("started", "planner", "pump-planner", "s", "b");
+        spec.payload = serde_json::json!({"attempt": 9, "keep": "me"});
+        Ok(StartAction::Job(Box::new(spec)))
+    }
+}
+
+fn tick_starting_a_job(rig: &mut Rig) -> R {
+    let mut registry = Registry::new();
+    registry.node_handler(FlowKind::Build, "plan", Box::new(StartsAJob));
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )
+}
+
+#[test]
+fn a_fresh_step_starts_at_attempt_one_with_payload_and_row_equal() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    tick_starting_a_job(&mut rig)?;
+
+    let plan = rig.step("plan")?;
+    let row = rig.store.step_job("started")?.expect("step job row");
+    assert_eq!(row.attempt, 1);
+    let payload = &rig.jobs.jobs["started"].payload;
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["task"], plan.task.as_str());
+    assert_eq!(payload["keep"], "me");
+    assert_eq!(payload["kind"], "build");
+    Ok(())
+}
+
+#[test]
+fn a_step_with_an_earlier_attempt_row_starts_at_the_next_attempt() -> R {
+    let mut rig = rig()?;
+    rig.start("plan")?;
+    let plan = rig.step("plan")?;
+    rig.store.insert_step_job(NEED, &plan.job("earlier", 1))?;
+    tick_starting_a_job(&mut rig)?;
+
+    let row = rig.store.step_job("started")?.expect("step job row");
+    assert_eq!(row.attempt, 2);
+    assert_eq!(rig.jobs.jobs["started"].payload["attempt"], 2);
+    Ok(())
+}
+
 #[test]
 fn every_shipped_flow_is_validated_at_startup() -> R {
     let kinds = [
