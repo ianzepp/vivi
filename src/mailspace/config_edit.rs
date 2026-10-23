@@ -12,6 +12,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value, value};
 use super::config_file::{edit_document, parse_document, read_raw, write_raw};
 use crate::error::VivariumError;
 
+mod guard;
 mod identity;
 mod pool;
 
@@ -19,6 +20,7 @@ mod pool;
 #[path = "config_edit_test.rs"]
 mod tests;
 
+pub use guard::{GuardedWrite, guard_file, guarded};
 pub use identity::{IdentityPatch, insert_identity, patch_identity, rename_identity};
 pub use pool::{
     PoolAdd, remove_pool, set_band, set_pool_key, unset_band, unset_pool_key, upsert_pool,
