@@ -67,7 +67,7 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     let mut issues = Vec::new();
     check_role_pools(&routing, &mut issues);
     check_pool_fallbacks(&routing, &mut issues);
-    check_bands(config, &routing, &mut issues);
+    check_bands(&routing, &mut issues);
     check_models(config, &routing, &mut issues);
     check_read_only(&routing, &mut issues);
     if let Some(pump) = &config.pump {
@@ -185,12 +185,8 @@ fn report_fallback_cycles(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     }
 }
 
-fn check_bands(config: &MailspaceConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
+fn check_bands(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     let any_bands = routing.pools.values().any(|pool| pool.has_bands);
-    let lanes = config
-        .pump
-        .as_ref()
-        .is_some_and(|pump| !pump.dispatch.lanes.is_empty());
     for role in &routing.roles {
         let Some(model) = role.model.as_deref() else {
             continue;
@@ -198,7 +194,7 @@ fn check_bands(config: &MailspaceConfig, routing: &RoleRouting, issues: &mut Vec
         if parse_band(model).is_none() {
             continue;
         }
-        push_band_issue(routing, role, model, any_bands, lanes, issues);
+        push_band_issue(routing, role, model, any_bands, issues);
     }
 }
 
@@ -207,7 +203,6 @@ fn push_band_issue(
     role: &RoutedRole,
     model: &str,
     any_bands: bool,
-    lanes: bool,
     issues: &mut Vec<Issue>,
 ) {
     match role.pool.as_deref() {
@@ -220,8 +215,7 @@ fn push_band_issue(
             let fallback = routing
                 .pools
                 .get(pool)
-                .is_some_and(|entry| !entry.caps.is_empty())
-                || lanes;
+                .is_some_and(|entry| !entry.caps.is_empty());
             let message = format!(
                 "role {} uses band `{model}` but [pools.{pool}] has no bands table; \
                  add one with `vivi pool bands set {pool} {} <model> <reasoning>`",
@@ -308,12 +302,6 @@ fn check_read_only(routing: &RoleRouting, issues: &mut Vec<Issue>) {
                 role.default_read_only()
             )));
         }
-        if role.name.eq_ignore_ascii_case("gate") && !role.is_read_only() {
-            issues.push(Issue::error(format!(
-                "role {} is the gate and must be read-only",
-                role.name
-            )));
-        }
     }
 }
 
@@ -323,83 +311,27 @@ fn check_pump(
     pools: &BTreeMap<String, PoolConfig>,
     issues: &mut Vec<Issue>,
 ) {
-    need_role(routing, "hand", &pump.to, legacy_hand(pump), issues);
+    need_role(routing, "hand", &pump.to, issues);
     issues.extend(
         pump_role_checks_of(pump, routing, pools)
             .into_iter()
             .flat_map(|check| check.issues),
     );
-    need_role(routing, "gate", "gate", true, issues);
-    warn_legacy(pump, routing, issues);
 }
 
-fn legacy_hand(pump: &PumpConfig) -> bool {
-    !pump.dispatch.kinds.is_empty() || !pump.dispatch.lanes.is_empty()
-}
-
-fn need_role(
-    routing: &RoleRouting,
-    label: &str,
-    name: &str,
-    legacy: bool,
-    issues: &mut Vec<Issue>,
-) {
+fn need_role(routing: &RoleRouting, label: &str, name: &str, issues: &mut Vec<Issue>) {
     match routing.lookup(name) {
         Some(role) if role.pool.is_some() => {}
-        Some(role) if legacy => issues.push(Issue::warning(format!(
-            "role {} has no pool; the pump is using legacy [pump] routing for {label}",
-            role.name
-        ))),
         Some(role) => issues.push(Issue::not_ready(
             format!("{label} pool"),
             format!(
-                "role {} has no pool and the pump has no legacy {label} routing; \
-                 set one with `vivi role pool {} <pool>`",
+                "role {} has no pool; set one with `vivi role pool {} <pool>`",
                 role.name, role.name
             ),
         )),
-        None if legacy => {}
         None => issues.push(Issue::not_ready(
             format!("{label} pool"),
-            format!(
-                "the pump needs a {label} role with a pool (add `{name}` or keep the legacy [pump] tables)"
-            ),
+            format!("the pump needs a {label} role with a pool (add `{name}`)"),
         )),
-    }
-}
-
-fn warn_legacy(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
-    if pump.planner.split_timeout_present {
-        issues.push(Issue::warning(
-            "[pump.planner] split_timeout is deprecated and accepted as split_hard_cap; \
-             rename it (split_hard_cap wins when both are set)",
-        ));
-    }
-    let hand_assigned = routing
-        .hand(&pump.to)
-        .and_then(|role| role.pool.as_deref())
-        .is_some();
-    if hand_assigned
-        && pump
-            .dispatch
-            .kinds
-            .values()
-            .any(|kind| !kind.pools.is_empty())
-    {
-        issues.push(Issue::warning(
-            "[pump.dispatch.kinds.*].pools are unused for hand roles with a pool; kind max and skip_proof still apply",
-        ));
-    }
-    if hand_assigned && !pump.dispatch.lanes.is_empty() {
-        let used = routing
-            .hand(&pump.to)
-            .and_then(|role| role.pool.as_deref())
-            .and_then(|name| routing.pools.get(name))
-            .is_some_and(|pool| !pool.caps.is_empty());
-        if used {
-            issues.push(Issue::warning(
-                "[pump.dispatch.lanes] is unused; per-model caps live on [pools.<name>.caps]",
-            ));
-        }
     }
 }

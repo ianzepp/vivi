@@ -44,7 +44,7 @@ fn faber_project() -> tempfile::TempDir {
 }
 
 #[test]
-fn config_validate_and_show_report_legacy_warnings() {
+fn config_validate_and_show_carry_no_legacy_or_gate_routing() {
     let dir = project_with(
         r#"
 name = "demo"
@@ -53,6 +53,7 @@ id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 [[identities]]
 name = "hand"
 kind = "hand"
+pool = "glm"
 model = "P2-S0"
 
 [[identities]]
@@ -115,13 +116,6 @@ P2 = [{ model = "m/ok", reasoning = "high" }]
 to = "hand"
 committer_name = "t"
 committer_email = "t@t"
-[pump.dispatch]
-default_kind = "plain"
-[[pump.dispatch.lanes]]
-model = "m/a"
-cap = 1
-[pump.dispatch.kinds.plain]
-pools = ["glm"]
 [pump.rungs]
 task = "true"
 need = "true"
@@ -133,16 +127,20 @@ pools = ["glm"]
     let validate = vivi(&["config", "validate", "--project", root]);
     assert_success(&validate);
     let text = stdout(&validate);
-    assert!(text.contains("legacy"), "{text}");
+    assert!(!text.contains("legacy"), "{text}");
+    assert!(!text.contains("gate"), "{text}");
 
     let show = vivi(&["config", "show", "--porcelain", "--project", root]);
     assert_success(&show);
     let shown = stdout(&show);
     assert!(shown.contains("role hand"), "{shown}");
-    assert!(
-        shown.contains("pump.dispatch.kinds") || shown.contains("glm"),
-        "{shown}"
-    );
+    assert!(!shown.contains("pump.dispatch.kinds"), "{shown}");
+    assert!(!shown.contains("gate"), "{shown}");
+    let flow = shown
+        .lines()
+        .find(|line| line.starts_with("flow "))
+        .unwrap_or_default();
+    assert_eq!(flow.split_whitespace().count(), 5, "{shown}");
 }
 
 #[test]
