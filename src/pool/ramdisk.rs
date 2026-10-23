@@ -8,7 +8,8 @@
 //! `vivi-<mailspace>-<slot>-<job>` so orphans stay recognizable. Before a job
 //! starts, admission checks that free memory (minus memory already held by
 //! other disks and a compiler safety margin) covers the job size; when it
-//! does not, the job stays queued and the caller reports [`wait_error`].
+//! does not, [`admit_with`] returns a `ramdisk-wait:` error and the job stays
+//! queued.
 //!
 //! Two layers live here. The pure core — naming, sizing, admission, and the
 //! `mount` / `df -g` parsers — has no process spawning. The OS layer shells
@@ -87,58 +88,37 @@ pub fn admits(available: u64, held_gib: u64, want_gib: u64, margin_gib: u64) -> 
 
 /// The queued-job message when admission fails. The `ramdisk-wait:` prefix
 /// is a cross-unit contract; other units match on it.
-#[must_use]
-pub fn wait_error(want_gib: u64, free_gib: u64, held_gib: u64, margin_gib: u64) -> String {
+fn wait_error(want_gib: u64, free_gib: u64, held_gib: u64, margin_gib: u64) -> String {
     format!(
         "ramdisk-wait: need {want_gib} GiB, {free_gib} GiB free, \
          {held_gib} GiB held, {margin_gib} GiB margin"
     )
 }
 
-/// The memory held by the RAM disks attached now: the sum of the sizes
-/// [`mounted`] reports. A disk missing from the `df` listing counts as zero.
-#[must_use]
-pub fn held_gib(runner: &dyn Runner) -> u64 {
-    mounted(runner).iter().map(|disk| disk.size_gib).sum()
-}
-
-/// The memory held by attached RAM disks, or an error when either inventory
-/// listing failed and the admission total cannot be trusted.
-pub fn held_gib_checked(runner: &dyn Runner) -> Result<u64, String> {
-    Ok(mounted_checked(runner)?
-        .iter()
-        .map(|disk| disk.size_gib)
-        .sum())
-}
-
 /// Admit a job wanting `want_gib` against `available` bytes of memory, with
-/// `margin_gib` kept free for the compiler and the system. This is the half
-/// tests drive directly, since it never reads real memory.
+/// `margin_gib` kept free for the compiler and the system. The memory already
+/// held by attached disks is the sum of their sizes; callers pass `available`
+/// so tests never read real memory.
 ///
 /// # Errors
-/// Returns [`wait_error`], whose `ramdisk-wait:` prefix is the cross-unit
-/// contract, when the job does not fit. The job then waits queued: there is no
-/// SSD fallback.
+/// Returns a `ramdisk-wait:` error (the cross-unit contract) when the job does
+/// not fit, or when the disk inventory cannot be listed and the held total
+/// would be a guess. The job then waits queued: there is no SSD fallback.
 pub fn admit_with(
     runner: &dyn Runner,
     available: u64,
     want_gib: u64,
     margin_gib: u64,
 ) -> Result<(), String> {
-    let held = held_gib_checked(runner)
-        .map_err(|error| format!("ramdisk-wait: cannot inventory held disks: {error}"))?;
+    let held: u64 = mounted_checked(runner)
+        .map_err(|error| format!("ramdisk-wait: cannot inventory held disks: {error}"))?
+        .iter()
+        .map(|disk| disk.size_gib)
+        .sum();
     if admits(available, held, want_gib, margin_gib) {
         return Ok(());
     }
     Err(wait_error(want_gib, available / GIB, held, margin_gib))
-}
-
-/// Admit a job wanting `want_gib` against the memory the OS reports free now.
-///
-/// # Errors
-/// Same as [`admit_with`]: a `ramdisk-wait:` error means the job waits queued.
-pub fn admit(runner: &dyn Runner, want_gib: u64, margin_gib: u64) -> Result<(), String> {
-    admit_with(runner, available_bytes(), want_gib, margin_gib)
 }
 
 /// Available memory in bytes, as `sysinfo` reports it right now.
@@ -147,38 +127,6 @@ pub(crate) fn available_bytes() -> u64 {
         RefreshKind::new().with_memory(MemoryRefreshKind::new().with_ram()),
     );
     system.available_memory()
-}
-
-/// Whether `text` reports a full disk (ENOSPC): the kernel phrase or the
-/// `os error 28` form.
-#[must_use]
-pub fn enospc(text: &str) -> bool {
-    text.contains("No space left on device") || text.contains("os error 28")
-}
-
-/// `(device, mount point)` pairs from `mount` output lines shaped
-/// `<dev> on <mount> (<options>)`, keeping only mounts whose final path
-/// component starts with [`VOLUME_PREFIX`]. The device is returned raw
-/// (`/dev/disk5s1`); dropping the slice suffix for the whole-disk id is not
-/// done here.
-#[must_use]
-pub fn parse_mounts(text: &str) -> Vec<(String, String)> {
-    parse_mount_rows(text)
-        .into_iter()
-        .filter(|(_, mount)| last_component(mount).starts_with(VOLUME_PREFIX))
-        .collect()
-}
-
-/// `(mount point, size in GiB)` pairs from `df -g` output, keeping rows
-/// whose mount path's final component starts with [`VOLUME_PREFIX`]; the
-/// size is the 1G-blocks column. The header row drops out on the numeric
-/// parse.
-#[must_use]
-pub fn parse_df_gib(text: &str) -> Vec<(String, u64)> {
-    parse_df_rows(text)
-        .into_iter()
-        .filter(|(mount, _)| last_component(mount).starts_with(VOLUME_PREFIX))
-        .collect()
 }
 
 /// Every well-shaped `(device, mount point)` row from `mount` output.
@@ -197,9 +145,8 @@ fn parse_df_rows(text: &str) -> Vec<(String, u64)> {
     text.lines()
         .filter_map(|line| {
             let cols: Vec<&str> = line.split_whitespace().collect();
-            let size = match cols.get(1)?.parse::<u64>() {
-                Ok(size) => size,
-                Err(_) => return None,
+            let Ok(size) = cols.get(1)?.parse::<u64>() else {
+                return None;
             };
             Some((cols.last()?.to_string(), size))
         })
@@ -208,7 +155,7 @@ fn parse_df_rows(text: &str) -> Vec<(String, u64)> {
 
 /// The final `/`-separated path component (`""` for a root path).
 fn last_component(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or_default()
+    path.rsplit_once('/').map_or(path, |(_, last)| last)
 }
 
 /// One command line: `argv[0]` is the program, the rest its arguments, and
@@ -389,7 +336,7 @@ fn pool_marker(mount: &Path, device: &str) -> Option<(String, Option<u64>)> {
     let job = field("job")?;
     if !volume.starts_with(VOLUME_PREFIX)
         || job.is_empty()
-        || !same_device_id(marked_device, marked_device)
+        || normalized_disk_id(marked_device).is_none()
         || !same_device_id(marked_volume_device, device)
         || marked_mount != mount.to_string_lossy()
     {
@@ -507,17 +454,8 @@ fn attached_container_volumes(
     container: &str,
     physical: &str,
 ) -> Result<Vec<Value>, String> {
-    let apfs_xml = runner.run(
-        &["diskutil", "apfs", "list", "-plist", &container],
-        DISKUTIL_SECS,
-    )?;
-    let apfs = plist_json(runner, &apfs_xml, "APFS container list")?;
-    let containers = apfs
-        .get("Containers")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "ramdisk: APFS list has no Containers array".to_string())?;
-    let container_info = matching_container(containers, container)?;
-    if !container_backed_by(container_info, physical) {
+    let container_info = listed_container(runner, container, "APFS container list")?;
+    if !container_backed_by(&container_info, physical) {
         return Err(format!(
             "ramdisk: APFS container `{container}` is not backed by attached disk `{physical}`"
         ));
@@ -529,7 +467,21 @@ fn attached_container_volumes(
         .ok_or_else(|| format!("ramdisk: APFS container `{container}` has no Volumes"))
 }
 
-fn matching_container<'a>(containers: &'a [Value], container: &str) -> Result<&'a Value, String> {
+/// The `diskutil apfs list` entry for `container`, which must be listed once.
+fn listed_container(
+    runner: &dyn Runner,
+    container: &str,
+    description: &str,
+) -> Result<Value, String> {
+    let apfs_xml = runner.run(
+        &["diskutil", "apfs", "list", "-plist", container],
+        DISKUTIL_SECS,
+    )?;
+    let apfs = plist_json(runner, &apfs_xml, description)?;
+    let containers = apfs
+        .get("Containers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ramdisk: APFS list has no Containers array".to_string())?;
     let matching_containers: Vec<&Value> = containers
         .iter()
         .filter(|entry| {
@@ -539,7 +491,7 @@ fn matching_container<'a>(containers: &'a [Value], container: &str) -> Result<&'
         })
         .collect();
     match matching_containers.as_slice() {
-        [container_info] => Ok(*container_info),
+        [container_info] => Ok((*container_info).clone()),
         _ => Err(format!(
             "ramdisk: APFS container `{container}` is missing or ambiguous"
         )),
@@ -633,16 +585,7 @@ pub(crate) fn backing_device_for_volume(
     let container = normalized_disk_id(raw_container)
         .filter(|id| whole_disk(id) == *id)
         .ok_or_else(|| format!("ramdisk: attached volume `{name}` has an invalid container"))?;
-    let apfs_xml = runner.run(
-        &["diskutil", "apfs", "list", "-plist", &container],
-        DISKUTIL_SECS,
-    )?;
-    let apfs = plist_json(runner, &apfs_xml, "attached APFS container")?;
-    let containers = apfs
-        .get("Containers")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "ramdisk: APFS list has no Containers array".to_string())?;
-    let container_info = matching_container(containers, &container)?;
+    let container_info = listed_container(runner, &container, "attached APFS container")?;
     let volumes = container_info
         .get("Volumes")
         .and_then(Value::as_array)
@@ -653,7 +596,7 @@ pub(crate) fn backing_device_for_volume(
             "ramdisk: volume `{name}` is no longer on `{logical_device}`"
         ));
     }
-    unique_physical_store(container_info, &container, name)
+    unique_physical_store(&container_info, &container, name)
 }
 
 fn unique_physical_store(
@@ -679,8 +622,7 @@ fn physical_store_ids(container_info: &Value) -> Option<Vec<String>> {
         .iter()
         .filter_map(|store| plist_string(store, "DeviceIdentifier"))
         .filter_map(normalized_disk_id)
-        .map(|store| normalized_disk_id(&whole_disk(&store)))
-        .flatten()
+        .map(|store| whole_disk(&store))
         .collect();
     physical_ids.sort();
     physical_ids.dedup();
@@ -910,7 +852,9 @@ pub(crate) fn whole_disk(device: &str) -> String {
 fn drain(mut pipe: impl Read + Send + 'static) -> JoinHandle<String> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        pipe.read_to_end(&mut bytes).map(drop).unwrap_or_default();
+        // `read_to_end` keeps what it read before an error; partial output
+        // still feeds the failure tail.
+        drop(pipe.read_to_end(&mut bytes));
         String::from_utf8_lossy(&bytes).into_owned()
     })
 }
