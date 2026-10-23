@@ -36,7 +36,9 @@ fn config() -> PumpConfig {
 /// A repair run at `fix1` with a repairer, merge and auditor roles and a main
 /// at `MAIN_A`.
 fn start() -> Result<Rig, VivariumError> {
-    let record = format!("kind: repair\ntarget: default\ntested: {TESTED}\n\nFAILED a::b\n");
+    let record = format!(
+        "+++\nkind = \"repair\"\ntarget = \"default\"\ntested = \"{TESTED}\"\n+++\nFAILED a::b\n"
+    );
     let mut rig = rig(config(), &record, "fix1")?;
     let mut routing = (*rig.ctx.routing).clone();
     for (name, read_only) in [("merge", false), ("auditor", true)] {

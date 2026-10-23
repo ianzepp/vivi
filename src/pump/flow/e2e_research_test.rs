@@ -72,7 +72,11 @@ fn research_rig() -> Result<(Rig, String), VivariumError> {
         mailspace: project.mailspace.clone(),
         pump_identity: PUMP.into(),
     };
-    MailWriter::open_record(&mut port, &need, "kind: research")?;
+    MailWriter::open_record(
+        &mut port,
+        &need,
+        &crate::letter::fixture::record_body(&need, "research"),
+    )?;
     start(&ctx, &store, &mut port, &need, Some("research"))?;
     let registry = shipped::<Jobs, MailspacePort>(&ctx);
     let rig = Rig {
