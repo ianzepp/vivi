@@ -72,7 +72,7 @@ pub(crate) fn hand_commit(job: &PoolJob) -> Option<String> {
 /// The job that merges the hand commit of `slice` onto the need branch.
 ///
 /// # Errors
-/// Returns [`VivariumError`] for a slice task with no `target:` line, an
+/// Returns [`VivariumError`] for a slice task with no `target`, an
 /// unknown target, a project with no merge role, an unconfigured `task` rung,
 /// a hand job with no published commit or branch, or a failed ls-remote.
 ///
@@ -89,8 +89,12 @@ pub(crate) fn spec<M: SliceMail + ?Sized>(
 ) -> Result<JobSpec, VivariumError> {
     let body = mail.task_body(&slice.task)?;
     let target = fanout::target_of(&body).ok_or_else(|| {
-        VivariumError::Parse(format!("slice task {} names no target", slice.task))
+        VivariumError::Parse(format!(
+            "slice task {} names no target in its front matter",
+            slice.task
+        ))
     })?;
+    let target = target.as_str();
     let tctx = ctx
         .for_target(target)
         .ok_or_else(|| VivariumError::Config(format!("unknown target {target}")))?;
