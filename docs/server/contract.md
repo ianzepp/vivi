@@ -409,7 +409,10 @@ under the item's own kind; that still works and is folded the same way.
   prerequisites after the send; this server files those letters and serves
   them to every member as event letters, and does not fold them into its own
   `graph` projection, which reads `X-Vivi-Depends-On` headers only. A hosted
-  project's `graph` folds them, through the library.
+  project's `graph` folds them, through the library. The pump identity's
+  events count by the same rule: its letter is From `<pump identity>@<prefix>.local`
+  where the prefix is the pumping member's stamped prefix (the host's own on a
+  hosted project), never by role name.
 - **Order.** The key is `(instant, causal depth, Message-ID)`, compared
   lexicographically; the largest is newest. The instant is the event's
   `X-Vivi-Event-At` (RFC 3339, microseconds), else its `Date` in whole
@@ -465,7 +468,7 @@ Every member is served the event by its header. Any other caller files a
 plain report reply and writes no event. `reopen` of an absorbed item is an error; so is
 `done` of an item absorbed open.
 
-## Pump health (1.6.0)
+## Pump health (1.6.0; body follows vivi 20)
 
 ### `GET /v1/projects/{id}/pump/health` — hosted pump verdict (bearer)
 
@@ -491,7 +494,6 @@ end has no pump: `404 not_hosted`.
 | `units` | Count per unit status |
 | `merges` | `{total, recent: [{unit, need, title, commit, at}]}`, newest first, ten at most |
 | `blocked` | Stuck, quarantined, needs-replan and held units, then needs parked on a verdict: `{kind, id, need, state, age_secs, reason}` |
-| `planner_parked`, `baseline_red` | Parked need handles; failing baseline test names |
 | `complete_open_needs` | As `vivi pump closeout --json` |
 | `exceptions` | `{at, kind, unit, text}` after `since`, else in the last hour; fifty at most |
 | `changed_since` | Only with `since`: `{since, units: [{unit, need, status, at}], merges, exceptions}` |
@@ -503,9 +505,15 @@ Verdict rules, first match wins:
 2. `stalled`: control `running` and either the writer runs with no tick inside
    `stale_after`, or there is no writer and `status.txt` is older than
    `stale_after`.
-3. `degraded`: control paused or stopped; no writer but a fresh status; any
-   stuck, quarantined or needs-replan unit; planner-parked needs; a red
-   baseline; or `stall-*` exceptions in the window.
+3. `degraded`: control paused, stopped or unreadable; writer state unknown;
+   no writer but a fresh status; any stuck, quarantined or needs-replan unit;
+   or `stall-*` exceptions in the window.
 4. `ok`.
+
+Not-ready fold, applied after the rules above (vivi 20, `add_not_ready`): a
+project missing config the pump needs adds a `not ready: ...` reason. If it
+never ticked, the verdict is `unknown` and that reason replaces the others. If
+it did tick, the verdict stays as judged, the reason comes first, and `ok` is
+lowered to `degraded`.
 
 MCP `pump` answers the same JSON with the same two arguments.

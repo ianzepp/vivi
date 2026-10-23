@@ -135,14 +135,24 @@ mailspace).
   (`mode`, `shutdown_requested`). The key must be minted by the host's own
   member (the creator whose mailspace id is the hosted mailspace's) and act as
   a role of kind `operator`; a member token or any other key is refused.
-- **`pump_gate`.** Operator-only, with `pump_control`'s authorization (one
-  shared check): `action` is `show` or `set`; `set` takes a `command` and
-  writes `[pump.gate] command` in the host's `.vivi/mailspace.toml` through
-  `vivi::pump::gate_config::set_command` (format-preserving, under the
-  mailspace config lock); a blank command is refused by the library. Both
-  answer `{command}` (`null` when unset or blank). `set` is rate limited as a
-  write. This is the only config the server edits: pools, roles and free-form
-  config are deliberately not exposed, because a member who could repoint a
+- **`pump_rungs`.** Operator-only, with `pump_control`'s authorization (one
+  shared check, `show` included): `action` is `show` or `set`, with an optional
+  `target` (a pump target id; without it the workspace table, `[pump.rungs]`).
+  `set` takes a `rung` (`task`, `need`, `main` or `release`) and a non-blank
+  `command`, and goes through `vivi::pump::config::RungsConfig::set`
+  (format-preserving, under the mailspace config lock; `[pump.rungs]`, or
+  `[pump.targets.<id>.rungs]` with `target`). `show` ignores `rung` and
+  `command`. Both answer the table as it stands afterwards, parsed:
+  `{target, task, need, main, release, timeout, pools}`, with `null` for an
+  unset command; with `target` it is that target's effective table (its own
+  rung command, else the workspace one). Errors: a missing `rung` or `command`
+  on `set`, an unknown rung, a blank command (the library refuses these), and
+  an unknown target (``unknown pump target `<id>` ``). `set` is rate limited
+  as a write. The tool edits rung commands only: `timeout` and `pools` are
+  shown but not settable here, and a set rung with no rung `pools` leaves the
+  config invalid until the host sets `pools` (rung jobs cannot dispatch). This
+  and `pool_bands` are the only config the server edits: pools, roles, remotes
+  and free-form config stay with the host, because a member who could repoint a
   pool's `remote_url` could send code elsewhere.
 - **`pool_bands`.** Operator-only, with `pump_control`'s authorization (one
   shared check, `show` included): `action` is `show`, `set` or `unset`, with
@@ -157,7 +167,7 @@ mailspace).
   rate limited as writes. Only that one pool's bands table is reachable:
   bands select among models the host already allowed and cannot repoint a
   remote or a harness, so the rule that pools, roles and other config stay
-  with the host (see `pump_gate`) holds.
+  with the host (see `pump_rungs`) holds.
 - **`pump_send`, `pump_list`, `pump_show`.** Operator-only, with
   `pump_control`'s authorization (one shared check): the pump record verbs
   `vivi pump send|list|show`, through `Mailspace::pump_send`, `pump_list` and
@@ -229,10 +239,19 @@ JSON-RPC plumbing as the project endpoint). It has one tool, `create_project`.
 - **Config.** `HOST_PROJECTS_ROOT`, `HOST_LANES_ROOT`, `HOST_GIT_URL_PREFIX`,
   and optionally `HOST_DEFAULT_POOL`. A missing required one makes the tool
   answer with an error naming the variable.
-- **Call.** `create_project {name, gate?, branch?, pool?, initial_commit?,
+- **Call.** `create_project {name, branch?, pool?, initial_commit?, rungs?,
   pump?, serve?}` runs `vivi::project_create::create` on a blocking thread
   (git repository, mailspace with the starter pump config, host registry
-  entry). It rolls back on failure and refuses a name that exists.
+  entry). It rolls back on failure and refuses a name that exists. `branch`
+  is the new repository's default branch (default `main`). `rungs` is an
+  object of rung commands `task`, `need`, `main`, `release` (non-blank
+  strings) plus optional `timeout` (whole seconds, at least 1) and `pools` (an
+  array of pool names); any other key is refused. It is parsed and validated
+  before anything is created, then written into `[pump.rungs]` after the
+  create (commands through `RungsConfig::set`, `timeout` and `pools` through
+  `config_edit`) and the answer's `readiness` is recomputed. A write failure
+  after the create does not roll the project back: the answer carries
+  `rungs_error` naming what was not written. There is no `gate` argument.
 - **Served at once.** The registry watcher polls every 3 s, so a project
   registered with `serve = true` is served within a few seconds even without
   this tool. `create_project` does not wait: it runs `hosted::reconcile_registry`
@@ -242,6 +261,7 @@ JSON-RPC plumbing as the project endpoint). It has one tool, `create_project`.
   `repo_path`, `mailspace_id`, `initial_commit`, `readiness`) plus `served`,
   `project_id`, `mcp_path`, `member`, and `operator_key`. The key is minted
   in-process for the host's own member with identity `operator`, the shape
-  `pump_control` and `pump_gate` require. It is shown once; the server keeps
+  `pump_control` and `pump_rungs` require. It is shown once; the server keeps
   only a digest, and never logs it. If serving failed, `served` is false and
-  `serve_error` says why.
+  `serve_error` says why. `rungs_error` is present only when seeding `rungs`
+  failed after the project was created.
