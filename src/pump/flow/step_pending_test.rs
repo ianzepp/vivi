@@ -190,6 +190,31 @@ fn a_pending_job_of_the_run_raises_past_its_budget_but_a_fresh_one_does_not()
 }
 
 #[test]
+fn a_held_overdue_job_raises_no_step_pending() -> Result<(), VivariumError> {
+    let mut rig = rig("held")?;
+    rig.store
+        .set_step_state("P-held", StepState::Running, None)?;
+    rig.pending_job("held-job", "hand");
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "held-job".into(),
+            run: 1,
+            node: "plan".into(),
+            task: "P-held".into(),
+            attempt: 1,
+        },
+    )?;
+    if let Some(job) = rig.jobs.jobs.get_mut("held-job") {
+        job.held = Some(String::from("no usable bridge"));
+    }
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0);
+    Ok(())
+}
+
+#[test]
 fn a_reslice_job_of_the_run_counts_and_another_runs_job_does_not() -> Result<(), VivariumError> {
     let mut rig = rig("reslice")?;
     rig.store

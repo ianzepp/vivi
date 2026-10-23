@@ -116,8 +116,12 @@ fn check_step(ctx: &Ctx, run: &RunRow, step: &StepRow) {
     }
 }
 
-/// Raise when a Pending job has waited longer than its budget plus grace.
+/// Raise when a Pending job has waited longer than its budget plus grace. A
+/// held job already raised `job-dispatch-refused`, so it raises nothing here.
 fn check_job(ctx: &Ctx, run: &RunRow, job: &PoolJob) {
+    if job.held.is_some() {
+        return;
+    }
     let waited = ctx.now().saturating_sub(job.queued_at);
     let limit = job.budget + GRACE_SECS;
     if waited > limit {
