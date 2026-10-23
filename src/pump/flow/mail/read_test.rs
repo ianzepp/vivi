@@ -4,6 +4,7 @@ use super::{run_count, sentinel_count_of};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::project;
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskStatus};
+use crate::pump::flow::slice_dispatch::SliceMail;
 
 /// A task from `mind` to `elsewhere`; the handle `elsewhere` holds.
 fn send_task(mailspace: &Mailspace, subject: &str, body: &str) -> String {
@@ -163,5 +164,41 @@ fn sent_step_finds_the_open_task_not_the_closed_one() {
     assert_eq!(
         port.sent_step("other", "pump-step: n r1 slice").unwrap(),
         None
+    );
+}
+
+#[test]
+fn task_body_and_replies_have_no_cr_for_a_multi_line_body() {
+    let project = project();
+    let port = MailspacePort {
+        mailspace: project.mailspace,
+        pump_identity: "mind".into(),
+    };
+    let task = port
+        .send_step(
+            "mind",
+            "elsewhere",
+            "step",
+            "pump-step: n r1 plan\ntarget: vivi\n\nthe brief",
+            &[],
+        )
+        .unwrap();
+    let reply = crate::mailspace::marked_line(
+        "pool result ",
+        "j1: finished\nsummary\n\nthe answer\n\n--- stderr tail\nnoise",
+    );
+    port.reply(&task, &reply).unwrap();
+
+    let body = SliceMail::task_body(&port, &task).unwrap();
+    let replies = SliceMail::marked_replies(&port, &task, "pool result ").unwrap();
+
+    assert!(!body.contains('\r'), "{body:?}");
+    assert!(body.contains("target: vivi\n\nthe brief"), "{body:?}");
+    assert_eq!(replies.len(), 1);
+    assert!(!replies[0].1.contains('\r'), "{:?}", replies[0].1);
+    assert!(
+        replies[0].1.contains("summary\n\nthe answer"),
+        "{:?}",
+        replies[0].1
     );
 }
