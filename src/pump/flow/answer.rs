@@ -11,12 +11,16 @@
 //! Every answer letter is applied or refused exactly once: its id goes into
 //! `applied_actions` either way, and a refusal raises `flow-answer-refused`
 //! naming the reason. A transient routing or write error is not a refusal:
-//! the letter stays unapplied and the next tick tries again.
+//! the letter stays unapplied and the next tick tries again, with a
+//! `flow-answer-retrying` alarm raised once per letter; after
+//! [`MAX_RETRIES`] retries in this process the letter is refused.
 //!
 //! A slice task takes only `merged`, `no-defect` or `failed`, and the fanout
 //! settles it (`close_slice`, `mark_exhausted`); a slice answer is not routed.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, PumpAction, PumpActionKind};
@@ -27,11 +31,18 @@ use crate::pump::flow::fanout;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
+use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
 
 /// The exception kind raised for an answer that cannot be applied.
 pub const ANSWER_REFUSED: &str = "flow-answer-refused";
+
+/// The exception kind raised once per letter whose routing keeps failing.
+pub const ANSWER_RETRYING: &str = "flow-answer-retrying";
+
+/// Retries a letter gets in this process before it is refused.
+const MAX_RETRIES: u32 = 3;
 
 /// The run state of a run that is still being advanced.
 const RUN_LIVE: &str = "live";
@@ -103,13 +114,69 @@ pub(crate) fn apply_pending<M: MailWriter + MailReader>(
             Applied::Applied => ctx.log(&format!("answer applied: {task}")),
             Applied::Refused(reason) => ctx.exception(ANSWER_REFUSED, &task, &reason),
             Applied::Retry(reason) => {
-                ctx.log(&format!("answer retry: {task}: {reason}"));
-                continue;
+                if !retry_or_refuse(ctx, &action, &task, &reason) {
+                    continue;
+                }
             }
         }
+        forget_retries(ctx, &action.id);
         store.mark_action_applied(&action.id, ctx.host.now())?;
     }
     Ok(())
+}
+
+/// The per-process retry count of a letter, keyed by home and action id.
+fn retry_count(
+    ctx: &Ctx,
+    id: &str,
+    change: impl FnOnce(&mut HashMap<String, u32>, &str) -> u32,
+) -> u32 {
+    static RETRIES: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+    let mut counts = RETRIES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    change(&mut counts, &format!("{}\u{0}{id}", ctx.home.display()))
+}
+
+/// Count one more failed apply of the letter. Under the cap, alarm once and
+/// return false (leave it unapplied). Over it, refuse the letter (alarm
+/// [`ANSWER_REFUSED`]) and return true so the caller marks it applied.
+fn retry_or_refuse(ctx: &Ctx, action: &PumpAction, task: &str, reason: &str) -> bool {
+    let tries = retry_count(ctx, &action.id, |counts, key| {
+        let tries = counts.entry(key.to_string()).or_insert(0);
+        *tries += 1;
+        *tries
+    });
+    let word = action.request.word.as_deref().unwrap_or_default();
+    if tries > MAX_RETRIES {
+        ctx.exception(
+            ANSWER_REFUSED,
+            task,
+            &format!(
+                "answer `{word}` on {task} failed {tries} times, more than {MAX_RETRIES} retries; last error: {reason}"
+            ),
+        );
+        return true;
+    }
+    ctx.log(&format!("answer retry: {task}: {reason}"));
+    raise_once(
+        ctx,
+        ANSWER_RETRYING,
+        &action.id,
+        &format!(
+            "answer `{word}` on step task {task} was not applied (failure {tries} of {MAX_RETRIES} retries): {reason}"
+        ),
+    );
+    false
+}
+
+/// Drop the retry count of a letter that has ended.
+fn forget_retries(ctx: &Ctx, id: &str) {
+    retry_count(ctx, id, |counts, key| {
+        counts.remove(key);
+        0
+    });
 }
 
 /// Apply one answer.
