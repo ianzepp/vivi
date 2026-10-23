@@ -109,7 +109,7 @@ An optional external gate runner can provide a result file for a pinned tip unde
 
 - **Promotion** jobs ask the release role, or merge role when no release role exists, to confirm the exact gated tip. The runner alone can publish it to the configured main ref.
 - **Cadence** and **digest** jobs are addressed to the role whose schedule is due. Cadence and digest jobs always run read-only; their output is mail (wants and needs).
-- **Research** needs are filed by head-ceo with **vivi need send --mark research --explores &lt;want&gt; --done-when "..."**. The research flow runs the researcher and posts the analysis on the want.
+- **Research** needs are filed by head-ceo with **vivi need send --mark research --explores &lt;want&gt; --done-when "..."**, then **vivi pump send --need &lt;need&gt;** (mark first; the open pump record starts the run). The research flow runs the researcher and posts the analysis on the want.
 - **Reclaim** jobs are local-only cleanup jobs sent to the reclaim role or the hand role. They cannot spill onto remote pools.
 
 ## Retired tooling

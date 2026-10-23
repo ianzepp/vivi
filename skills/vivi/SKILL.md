@@ -351,12 +351,13 @@ error is rolled back, and a write that reaches a different load error is kept.
 read_only table plus the merge/gate flow. `validate` checks those together
 and also runs at `vivi pump run|once` start. `mailspace init` writes a starter
 `[pump]` table with empty required values. A project missing things the pump
-needs (committer, branch, gate command, shared checks, roles, pools, and a task,
-need and main rung for each target) is **not ready**, not invalid: `validate` prints `not ready:` with each missing item and
+needs (the committer name and email, roles and pools, and a task, need and main
+rung for each target; there is no branch, gate-command or shared-checks item) is
+**not ready**, not invalid: `validate` prints `not ready:` with each missing item and
 exits 3 (a wrong value is an error and exits 1; ready exits 0). The pump on a
-not-ready project dispatches nothing, exits cleanly, shows the items in its
-status and `vivi pump health`, and starts by itself once they are supplied. A
-fresh `pump.db` starts stopped, so a new project also needs `vivi pump start`.
+not-ready project dispatches nothing, exits cleanly, and shows the items in its
+status and `vivi pump health`. A fresh `pump.db` starts stopped, so once the
+project is ready it also needs `vivi pump start`.
 A pump role charter that predates the v20 reply envelope is an error
 (`charter <role>: no v20 reply envelope`), and `config migrate --write` fixes it
 by installing the shipped charter. Retired target-level merge keys are named by
@@ -2554,6 +2555,11 @@ A fresh **pump.db** starts stopped: run **vivi pump start** to enable the
 pump (the service starts it when registered). **pump target add|remove** and
 **pump rungs set** are config writes: they are refused while the pump runs
 (**vivi pump pause** first) and keep a **mailspace.toml.bak.&lt;stamp&gt;** backup.
+A rung runs on **[pump.rungs] pools** (or the target's own rung pools), and
+those must name a pool before a rung command is accepted: on a fresh project
+both commands are rolled back ("sets a rung command but its effective pools are
+empty") until **vivi pool add** has made a pool and **vivi config set
+pump.rungs.pools '["&lt;pool&gt;"]'** names it.
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
 addressed to the pump's own identity (**[pump] reply_from**, default
@@ -2787,9 +2793,11 @@ filter; split multiple filters into separate commands.
 An invalid proof in a new plan rejects that plan with **bad-plan**. If proof
 validation fails again just before dispatch, the unit is parked as
 **needs-replan** and the pump requests a planner revision instead of charging
-a hand attempt. Every hand brief ends with a **done_when:** line: all listed
-PROOF commands exit 0 and the configured rules pass, or the reply ends with
-**VERDICT: no-defect** and evidence.
+a hand attempt. A brief no longer ends with a **done_when:** body line: a
+task's **done_when** is a front matter list (`done_when = [...]`), and the
+needs the pump files itself (follow-ups, residual findings) carry it from
+**--done-when**. Proof stays a list of commands that must exit 0 and pass the
+configured rules, or a reply ending with **VERDICT: no-defect** and evidence.
 
 **Plan checks.** Beyond proof validation, the pump runs deterministic checks
 on every plan and revision it ingests, and rejects the plan when one fails.
@@ -2858,7 +2866,10 @@ gets a durable role job. The board shows **next_due_at** and the latest result;
 pump status shows cadence schedules and run results.
 
 Head-ceo research needs are filed with **vivi need send --mark research
---explores &lt;want&gt; --done-when "..."**. The research flow hands the researcher
+--explores &lt;want&gt; --done-when "..."**, followed by **vivi pump send --need
+&lt;need&gt;** (the mark is written first; flow intake reads the run kind from it
+when the open pump record appears, and a need with no record never runs). The
+research flow hands the researcher
 the need thread and the want that the need's front matter **explores** names.
 Head-ceo files at most two research needs for one want.
 
