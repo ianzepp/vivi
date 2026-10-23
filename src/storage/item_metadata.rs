@@ -67,4 +67,62 @@ impl Storage {
         }
         Ok(metadata)
     }
+
+    /// The message id of every live row whose metadata holds `key` = `value`,
+    /// in message-id order.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn rows_with_item_metadata(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<Vec<String>, VivariumError> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn
+            .prepare(
+                "SELECT md.message_id FROM mailspace_item_metadata md
+                 JOIN messages m ON m.message_id = md.message_id
+                 WHERE md.key = ?1 AND md.value = ?2 AND m.deleted_at IS NULL
+                 ORDER BY md.message_id",
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to prepare metadata query: {e}")))?;
+        let rows = stmt
+            .query_map(params![key, value], |row| row.get::<_, String>(0))
+            .map_err(|e| VivariumError::Other(format!("failed to query metadata: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read metadata row: {e}")))
+        })
+        .collect()
+    }
+
+    /// Every `(message_id, value)` of the live rows that hold `key`, in
+    /// message-id order.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn item_metadata_values(&self, key: &str) -> Result<Vec<(String, String)>, VivariumError> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn
+            .prepare(
+                "SELECT md.message_id, md.value FROM mailspace_item_metadata md
+                 JOIN messages m ON m.message_id = md.message_id
+                 WHERE md.key = ?1 AND m.deleted_at IS NULL
+                 ORDER BY md.message_id",
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to prepare metadata query: {e}")))?;
+        let rows = stmt
+            .query_map(params![key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| VivariumError::Other(format!("failed to query metadata: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read metadata row: {e}")))
+        })
+        .collect()
+    }
 }
+
+#[cfg(test)]
+#[path = "item_metadata_test.rs"]
+mod tests;
