@@ -485,6 +485,7 @@ fn post_failed_attempt(ctx: &Ctx, task: &str, job: &PoolJob) {
     post_on_task(
         ctx,
         task,
+        job,
         &Ending::failed(&why, &detail, receipt),
         receipt.unwrap_or_default(),
     );
