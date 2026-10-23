@@ -23,6 +23,7 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, guard, terminal};
 use crate::pump::flow::answer;
 use crate::pump::flow::collect_step::RunCx;
+use crate::pump::flow::cto_step::unchanged_text;
 use crate::pump::flow::def::{FlowDef, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fanout::{self, is_slice_row};
 use crate::pump::flow::handlers::{self, FlowMail, Registry};
@@ -372,10 +373,31 @@ where
         };
         for step in self.open_rows()? {
             if self.class_of(&step.node) == Some(NodeClass::Fanout) {
-                self.advance_word(&step, word, serde_json::json!({"source": "fanout"}))?;
+                let payload = self.fanout_payload(&step, word)?;
+                self.advance_word(&step, word, payload)?;
             }
         }
         Ok(())
+    }
+
+    /// The step payload of a settled fanout: an `unchanged` word says why.
+    fn fanout_payload(
+        &self,
+        step: &StepRow,
+        word: &str,
+    ) -> Result<serde_json::Value, VivariumError> {
+        if word != fanout::UNCHANGED {
+            return Ok(serde_json::json!({"source": "fanout"}));
+        }
+        let reason = unchanged_text(
+            self.ctx,
+            self.store,
+            &self.run.need,
+            self.run.run,
+            &step.node,
+            &step.task,
+        )?;
+        Ok(serde_json::json!({"source": "fanout", "reason": reason}))
     }
 
     /// Open step rows (not sentinel, not slices) in index order.

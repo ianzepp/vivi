@@ -15,9 +15,11 @@ use super::{
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fanout::{self, VERDICT_NO_DEFECT, slice_node};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -753,5 +755,67 @@ fn every_shipped_flow_is_validated_at_startup() -> R {
         validate(&def).map_err(|problems| VivariumError::Parse(problems.join("; ")))?;
     }
     assert_eq!(VALIDATED.len(), kinds.len());
+    Ok(())
+}
+
+/// Expand two slices under `fanout_task` and close both no-defect.
+fn unchanged_fanout(rig: &mut Rig, fanout_task: &str) -> R {
+    rig.store.set_open_fanout(NEED, 1, fanout_task)?;
+    let run = rig
+        .store
+        .live_runs()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| VivariumError::Message("no live run".into()))?;
+    let slicer = rig.step("slice")?;
+    let slices = ["a", "b"].map(|id| Slice {
+        id: id.into(),
+        title: format!("title {id}"),
+        brief: format!("brief {id}"),
+        target: "default".into(),
+        write_scope: vec![format!("src/{id}.rs")],
+        deps: Vec::new(),
+    });
+    fanout::expand(&rig.ctx, &rig.store, &mut rig.mail, &run, &slicer, &slices)?;
+    for id in ["a", "b"] {
+        let task = rig.step(&slice_node(id))?.task;
+        fanout::close_slice(&rig.store, &mut rig.mail, &task, VERDICT_NO_DEFECT)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unchanged_fanout_payload_says_why() -> R {
+    let mut rig = rig()?;
+    rig.start("slice")?;
+    let slicer = rig.step("slice")?;
+    rig.store
+        .set_step_state(&slicer.task, StepState::Done, Some("sliced"))?;
+    let task = rig.mail.send_step(
+        "mind",
+        "mind",
+        "build1",
+        &format!("pump-step: {NEED} r1 build1"),
+        &[],
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: "build1".into(),
+            task: task.clone(),
+            state: StepState::Running,
+            verdict: None,
+        },
+    )?;
+    unchanged_fanout(&mut rig, &task)?;
+    rig.tick()?;
+    let row = rig.step("build1")?;
+    assert_eq!(row.verdict.as_deref(), Some(fanout::UNCHANGED));
+    let stored = rig.store.step_payload(&task)?.expect("payload row");
+    assert_eq!(stored.payload["source"], "fanout");
+    let reason = stored.payload["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("expected a change"), "{reason}");
+    assert!(reason.contains("0 merged"), "{reason}");
     Ok(())
 }
