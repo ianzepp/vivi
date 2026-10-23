@@ -1,6 +1,5 @@
 //! `vivi pump`: the pump as a state machine; see skills/vivi/references/pump-contract.md.
 
-pub mod action;
 pub mod alarm;
 pub mod amend;
 pub mod apfssweep;

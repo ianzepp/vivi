@@ -255,17 +255,8 @@ fn posted(project: &Project) -> Vec<PumpAction> {
         .unwrap()
 }
 
-/// The pump's saved state.
-fn saved(project: &Project) -> State {
-    PumpStore::open_read_only(&project.home().join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .load()
-        .unwrap()
-}
-
 #[test]
-fn run_replan_posts_an_action_on_the_open_record_and_the_tick_applies_it() {
+fn run_replan_posts_an_action_on_the_open_record() {
     let project = project();
     let need = project.need("fix auth");
     let record = project.mailspace.pump_send(None, &need, None).unwrap();
@@ -277,11 +268,6 @@ fn run_replan_posts_an_action_on_the_open_record_and_the_tick_applies_it() {
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].record, record.handle);
     assert!(!actions[0].request.force);
-    let ctx = project.pump_ctx();
-    let mut st = saved(&project);
-    crate::pump::action::apply_pending(&ctx, &mut st);
-    assert!(!st.needs.contains_key(&need));
-    assert_eq!(project.mailspace.pump_history(&need).unwrap().len(), 2);
 }
 
 #[test]

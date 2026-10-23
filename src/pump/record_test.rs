@@ -313,7 +313,6 @@ fn a_context_without_a_mailspace_closes_nothing_and_does_not_fail() {
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     assert!(!Path::new(&ctx.project).exists());
     assert_eq!(finish(&ctx, "n1", WITHDRAWN, "x"), None);
-    crate::pump::action::apply_pending(&ctx, &mut State::default());
     settle_closed_needs(&ctx, &State::default(), &closed("n1"));
     assert!(
         host.logs()
