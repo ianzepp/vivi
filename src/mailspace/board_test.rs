@@ -56,7 +56,7 @@ fn board_lists_open_need() {
     assert_eq!(cto.actionable_open, 1);
     assert_eq!(board.totals.needs_open, 1);
     assert_eq!(board.totals.actionable_open, 1);
-    assert!(board.graphs.is_none() && board.pump.is_none());
+    assert!(board.graphs.is_none());
 }
 
 #[test]

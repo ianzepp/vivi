@@ -668,7 +668,6 @@ fn list_tasks(
             to,
             &[],
             json,
-            false,
         );
     }
     crate::local_work_list::print_work_lists(
@@ -680,7 +679,6 @@ fn list_tasks(
         to,
         &[],
         json,
-        false,
     )
 }
 

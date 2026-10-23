@@ -77,7 +77,6 @@ pub(crate) fn print_work_lists(
     to: Option<&str>,
     marks: &[String],
     json: bool,
-    pump: bool,
 ) -> Result<(), VivariumError> {
     let from = crate::local_mail_list::resolve_list_header(mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(mailspace, to);
@@ -103,7 +102,7 @@ pub(crate) fn print_work_lists(
                 )
         }));
     }
-    render_work_list(mailspace, messages, kind, roles, marks, json, pump)
+    render_work_list(mailspace, messages, kind, roles, marks, json)
 }
 
 /// List work this mailspace holds for another mailspace, across every folder
@@ -118,7 +117,6 @@ pub(crate) fn print_held_work_lists(
     to: Option<&str>,
     marks: &[String],
     json: bool,
-    pump: bool,
 ) -> Result<(), VivariumError> {
     let from = crate::local_mail_list::resolve_list_header(mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(mailspace, to);
@@ -147,7 +145,7 @@ pub(crate) fn print_held_work_lists(
             }
         }
     }
-    render_work_list(mailspace, messages, kind, &folders, marks, json, pump)
+    render_work_list(mailspace, messages, kind, &folders, marks, json)
 }
 
 fn render_work_list(
@@ -157,7 +155,6 @@ fn render_work_list(
     roles: &[&str],
     marks: &[String],
     json: bool,
-    pump: bool,
 ) -> Result<(), VivariumError> {
     let storage = mailspace.storage()?;
     let message_ids = messages
@@ -178,56 +175,9 @@ fn render_work_list(
     if json {
         print_json(&items)
     } else {
-        let suffixes = if pump {
-            pump_suffixes(mailspace, &items)
-        } else {
-            Default::default()
-        };
-        print_human(kind, roles, &items, &suffixes);
+        print_human(kind, roles, &items);
         Ok(())
     }
-}
-
-/// `handle -> "pump 3/4 merged, open"` for the needs this host's pump has
-/// planned. A missing or unreadable database yields no suffixes.
-fn pump_suffixes(
-    mailspace: &Mailspace,
-    items: &[WorkListItem],
-) -> std::collections::BTreeMap<String, String> {
-    let Some(home) = mailspace
-        .config
-        .pump
-        .as_ref()
-        .map(|config| config.home_dir(&mailspace.root))
-    else {
-        return Default::default();
-    };
-    let vivi::pump::report::PumpRead::Ready(snapshot) =
-        vivi::pump::report::read(&home).unwrap_or(vivi::pump::report::PumpRead::Missing)
-    else {
-        return Default::default();
-    };
-    items
-        .iter()
-        .filter_map(|item| {
-            let summary = snapshot.need(&item.handle)?;
-            let merged = summary.counts.get("merged").copied().unwrap_or(0);
-            let state = if summary.amendment_pending {
-                "amending"
-            } else if summary.complete {
-                "complete"
-            } else {
-                "open"
-            };
-            Some((
-                item.handle.clone(),
-                format!(
-                    "pump r{} {merged}/{} merged, {state}",
-                    summary.revision, summary.units_total
-                ),
-            ))
-        })
-        .collect()
 }
 
 fn work_list_item(
@@ -359,12 +309,7 @@ fn print_json(items: &[impl serde::Serialize]) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn print_human(
-    kind: &str,
-    roles: &[&str],
-    items: &[WorkListItem],
-    pump: &std::collections::BTreeMap<String, String>,
-) {
+fn print_human(kind: &str, roles: &[&str], items: &[WorkListItem]) {
     if items.is_empty() {
         let shown: Vec<&str> = roles
             .iter()
@@ -375,7 +320,7 @@ fn print_human(
         return;
     }
     if items.iter().any(|item| item.held_for.is_some()) {
-        print_held_human(items, pump);
+        print_held_human(items);
         return;
     }
     println!("  handle  status  role  date  from  subject  last_event");
@@ -384,11 +329,8 @@ fn print_human(
             .last_event
             .as_ref()
             .map_or("-", |event| event.command.as_str());
-        let suffix = pump
-            .get(&item.handle)
-            .map_or(String::new(), |text| format!("  [{text}]"));
         println!(
-            "  {}  {}  {}  {}  {}  {}  {}{suffix}",
+            "  {}  {}  {}  {}  {}  {}  {}",
             item.handle, item.status, item.role, item.date, item.from, item.subject, last_event
         );
     }
@@ -396,18 +338,15 @@ fn print_human(
 
 /// The same rows with the foreign address each is held under, after the
 /// role column; listings of own roles print exactly as before.
-fn print_held_human(items: &[WorkListItem], pump: &std::collections::BTreeMap<String, String>) {
+fn print_held_human(items: &[WorkListItem]) {
     println!("  handle  status  role  held_for  date  from  subject  last_event");
     for item in items {
         let last_event = item
             .last_event
             .as_ref()
             .map_or("-", |event| event.command.as_str());
-        let suffix = pump
-            .get(&item.handle)
-            .map_or(String::new(), |text| format!("  [{text}]"));
         println!(
-            "  {}  {}  {}  {}  {}  {}  {}  {}{suffix}",
+            "  {}  {}  {}  {}  {}  {}  {}  {}",
             item.handle,
             item.status,
             item.role,
