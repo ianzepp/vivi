@@ -9,6 +9,7 @@
 
 use std::rc::Rc;
 
+use crate::letter::fixture::need_body;
 use crate::mailspace::{
     AbsorbConfig, ItemEventState, Mailspace, MoveOutcome, RoleUpdate, SendRequest,
 };
@@ -68,7 +69,7 @@ fn pair() -> Pair {
             cc: vec![a.address("mind")],
             bcc: Vec::new(),
             subject: "prove the ruling".into(),
-            body: "done_when: both mailspaces agree\n".into(),
+            body: need_body(&["both mailspaces agree"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,

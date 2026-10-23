@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::boot::BootReport;
+use crate::letter::fixture::{need_body, task_body};
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
@@ -20,7 +21,7 @@ fn pair() -> (Rc<FakeServer>, Checkout, Checkout, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "delegated need".into(),
-            body: "done_when: its units are complete\n".into(),
+            body: need_body(&["its units are complete"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -41,7 +42,7 @@ fn send_unit(mailspace: &Mailspace, role: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: accepted\n".into(),
+            body: task_body("accepted\n"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
@@ -311,7 +312,10 @@ fn assigned_delivery_need_appears_in_merge_boot_and_close_syncs_home() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "Delivery: mind/review".into(),
-            body: r#"{"schema":1,"branch":"mind/review","local_branch":"review","tip":"deadbeef1","base":"cafebabe2","remote":"origin","push":{"status":"pushed","remote_ref":"refs/heads/mind/review","detail":null},"gate":{"command":"cargo test","result":"passed"},"closes":[],"blocked":[],"filed":[]}"#.into(),
+            body: need_body(
+                &["branch mind/review at deadbeef1 is merged into cafebabe2"],
+                r#"{"schema":1,"branch":"mind/review","local_branch":"review","tip":"deadbeef1","base":"cafebabe2","remote":"origin","push":{"status":"pushed","remote_ref":"refs/heads/mind/review","detail":null},"gate":{"command":"cargo test","result":"passed"},"closes":[],"blocked":[],"filed":[]}"#,
+            ),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
