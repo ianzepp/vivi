@@ -1,5 +1,5 @@
 //! Attempt records: the pump's account of one hand attempt, posted as a
-//! `pump-attempt:` reply on the slice task when the attempt ends.
+//! `pump.note = "attempt"` reply on the slice task when the attempt ends.
 //!
 //! The reply names the unit, attempt, model, pool, how it ended, the branch,
 //! the task, the failing command with a short excerpt, and the hand's own
@@ -225,7 +225,7 @@ struct Facts {
     message: String,
 }
 
-/// Post the record of one attempt as a `pump-attempt:` reply on the slice
+/// Post the record of one attempt as a `pump.note = "attempt"` reply on the slice
 /// task itself, from the pump identity, so the next attempt's brief carries
 /// it. `facts_text` is the task receipt; the ending's own receipt wins when
 /// it has one. Returns whether the reply went out; a failure is logged and
@@ -258,11 +258,19 @@ pub fn post_on_task(
         failing: ending.failing.clone(),
         message: tail(&parse_receipt(receipt).message, FINAL_MESSAGE_CHARS),
     };
-    let body = format!(
-        "{}\n{}",
-        crate::mailspace::marked_line(crate::mailspace::ATTEMPT_MARKER, &ending.label),
-        compose(&facts)
-    );
+    let body = match crate::mailspace::pump_note::note_body(
+        crate::letter::records::NoteWord::Attempt,
+        Some(&ending.label),
+        &compose(&facts),
+    ) {
+        Ok(body) => body,
+        Err(err) => {
+            ctx.log(&format!(
+                "attempt record render failed on task {task}: {err}"
+            ));
+            return false;
+        }
+    };
     let sent = reply_on_task(
         ctx,
         task,
