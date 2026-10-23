@@ -183,7 +183,7 @@ impl Rig {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: format!("job {}", self.sent),
-                body: "a throwaway task\n".into(),
+                body: crate::letter::fixture::task_body("a throwaway task\n"),
                 role: "tasks".into(),
                 kind: Some("task".into()),
                 reply_to: None,
