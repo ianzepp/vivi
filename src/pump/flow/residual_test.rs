@@ -279,3 +279,23 @@ fn the_shipped_registry_files_residual_needs_from_a_build_audit() -> Result<(), 
     assert_eq!(audit.verdict.as_deref(), Some("residual"));
     Ok(())
 }
+
+#[test]
+fn need_handle_comes_from_the_created_line_then_the_sent_line() {
+    use super::parse_need_handle;
+    assert_eq!(
+        parse_need_handle("created mind 1a2b3c4d\n").as_deref(),
+        Some("1a2b3c4d")
+    );
+    assert_eq!(
+        parse_need_handle("sent 5e6f7a8b\n").as_deref(),
+        Some("5e6f7a8b")
+    );
+    assert_eq!(
+        parse_need_handle("sent 5e6f7a8b\ncreated mind 1a2b3c4d\n").as_deref(),
+        Some("1a2b3c4d")
+    );
+    assert_eq!(parse_need_handle(""), None);
+    assert_eq!(parse_need_handle("garbled output\nnothing here"), None);
+    assert_eq!(parse_need_handle("created mind"), None);
+}
