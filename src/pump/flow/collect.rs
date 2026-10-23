@@ -22,6 +22,8 @@ use crate::pump::jobs::{JobStatus, PoolJob};
 const MAX_ATTEMPTS: u32 = 2;
 /// Corrections a step may spend on one broken envelope chain.
 pub const MAX_CORRECTIONS: u32 = 2;
+/// From this run on, a head-cto answer other than `lock` needs a `new_fact`.
+const NEW_FACT_RUN: u32 = 3;
 
 /// Exception kind: the envelope never parsed.
 pub const ENVELOPE_FAILED: &str = "flow-envelope-failed";
@@ -71,7 +73,9 @@ pub fn collect<M: MailWriter>(
     }
     let message = final_message(job);
     match parse_for(kind, &message) {
-        Ok(parsed) => judged(class, parsed).unwrap_or_else(|error| broken(ctx, job, step, error)),
+        Ok(parsed) => {
+            judged(class, parsed, step.run).unwrap_or_else(|error| broken(ctx, job, step, error))
+        }
         Err(error) => broken(ctx, job, step, error),
     }
 }
@@ -92,16 +96,35 @@ fn final_message(job: &PoolJob) -> String {
         .unwrap_or_default()
 }
 
-/// A parsed envelope whose word the class accepts is the outcome.
-fn judged(class: &NodeClass, parsed: Parsed) -> Result<Collected, EnvelopeError> {
+/// A parsed envelope whose word the class accepts is the outcome. From run
+/// `NEW_FACT_RUN` on, a head-cto answer other than `lock` must also carry a
+/// non-empty `new_fact` (the field is checked for presence, not for truth).
+fn judged(class: &NodeClass, parsed: Parsed, run: u32) -> Result<Collected, EnvelopeError> {
     if !class.words().contains(&parsed.answer.as_str()) {
         return Err(EnvelopeError::Invalid(format!(
             "answer {:?} is not one of this step's words",
             parsed.answer
         )));
     }
+    if *class == NodeClass::Cto
+        && run >= NEW_FACT_RUN
+        && parsed.answer != "lock"
+        && !has_new_fact(&parsed.front)
+    {
+        return Err(EnvelopeError::Invalid(format!(
+            "run {run}: every head-cto answer but `lock` needs a non-empty `new_fact` \
+             (expected a new fact since the last run; actual: none)"
+        )));
+    }
     let payload = json!({"front": parsed.front, "body": parsed.body});
     Ok(Collected::Outcome(parsed.answer, payload))
+}
+
+fn has_new_fact(front: &serde_json::Value) -> bool {
+    front
+        .get("new_fact")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|fact| !fact.trim().is_empty())
 }
 
 /// A broken envelope: a correction while some remain, then `failed`.

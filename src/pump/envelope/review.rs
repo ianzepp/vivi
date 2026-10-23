@@ -212,8 +212,8 @@ pub enum CtoAnswer {
     Lock,
 }
 
-/// A head-cto envelope. `new_fact` is optional here; the run-3 rule belongs
-/// to the charter, not the parser.
+/// A head-cto envelope. `new_fact` is optional here; the flow collector
+/// enforces it from run 3 on for every answer but `lock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cto {
