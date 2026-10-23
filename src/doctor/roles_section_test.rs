@@ -138,6 +138,9 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
         names,
         [
             "pump role pump-planner",
+            "pump role researcher",
+            "pump role admitter",
+            "pump role slicer",
             "pump role merge kind",
             "pump role auditor",
             "pump role hand kind"
@@ -151,13 +154,13 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
         .map(|f| f.name.as_str())
         .collect();
     assert!(failing.is_empty(), "{failing:?}");
-    assert_eq!(models[1].status, Status::Skipped, "{models:#?}");
+    assert_eq!(models[4].status, Status::Skipped, "{models:#?}");
     assert!(
-        models[1].detail.contains("[pools.here.harness]"),
+        models[4].detail.contains("[pools.here.harness]"),
         "{models:#?}"
     );
     assert!(
-        models[1]
+        models[4]
             .detail
             .contains("vivi pool bands set <pool> <band> <model> <reasoning> --project <root>"),
         "{models:#?}"
@@ -176,14 +179,14 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
         }
     }
     assert!(findings[0].detail.contains("pump-planner"));
-    assert!(findings[2].detail.contains("must name a pool"));
-    assert!(findings[3].detail.contains("not authorized to publish"));
+    assert!(findings[5].detail.contains("must name a pool"));
+    assert!(findings[6].detail.contains("not authorized to publish"));
 }
 
 #[test]
 fn doctor_passes_a_pump_with_every_required_role() {
     let config = pump_config(
-        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\nmodel = \"P2\"\n[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n",
+        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"researcher\"\nkind = \"researcher\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"admitter\"\nkind = \"admitter\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"slicer\"\nkind = \"slicer\"\npool = \"here\"\nmodel = \"P2\"\n[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n",
     );
     assert!(
         pump_role_findings(&config)
