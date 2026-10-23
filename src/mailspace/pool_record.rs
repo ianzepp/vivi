@@ -33,6 +33,16 @@ pub struct PoolEventRow {
 /// First line of a pump attempt-context reply on a slice task.
 const ATTEMPT_MARKER: &str = "pump-attempt:";
 
+/// First line of a pump brief reply on a preset task.
+const BRIEF_MARKER: &str = "pump-brief:";
+
+/// The marked replies found on one task's thread.
+#[derive(Default)]
+struct ThreadReplies {
+    briefs: Vec<String>,
+    attempts: Vec<String>,
+}
+
 /// Heading under which a task's earlier attempts are appended to its body.
 const ATTEMPTS_HEADING: &str = "## Earlier attempts";
 
@@ -66,10 +76,16 @@ impl Mailspace {
             )));
         }
         let data = storage.read_message(&id)?;
-        let body = with_attempts(
-            text_body(&data),
-            self.attempt_replies(&storage.display_handle(&id)?, &id)?,
-        );
+        let handle = storage.display_handle(&id)?;
+        let thread = self.marked_thread_replies(&handle, &id)?;
+        // A preset-task job carries its brief as a reply; the newest brief
+        // replaces the task body, which it already contains.
+        let body = thread
+            .briefs
+            .into_iter()
+            .next_back()
+            .unwrap_or_else(|| text_body(&data));
+        let body = with_attempts(body, thread.attempts);
         // The copy is held under the recipient's account; a recipient that
         // is not a known local role leaves no addressee.
         let addressee = match self.resolve_identity(&view.account) {
@@ -84,15 +100,27 @@ impl Mailspace {
         })
     }
 
-    /// The `pump-attempt:` replies on a task's thread, oldest first.
-    fn attempt_replies(&self, handle: &str, task_id: &str) -> Result<Vec<String>, VivariumError> {
+    /// The `pump-brief:` and `pump-attempt:` replies on a task's thread,
+    /// each oldest first.
+    fn marked_thread_replies(
+        &self,
+        handle: &str,
+        task_id: &str,
+    ) -> Result<ThreadReplies, VivariumError> {
         let thread = self.thread(handle, false, usize::MAX, usize::MAX)?;
-        Ok(thread
-            .into_iter()
-            .filter(|message| message.event.is_none() && message.message_id != task_id)
-            .map(|message| message.body.trim().to_owned())
-            .filter(|body| body.starts_with(ATTEMPT_MARKER))
-            .collect())
+        let mut found = ThreadReplies::default();
+        for message in thread {
+            if message.event.is_some() || message.message_id == task_id {
+                continue;
+            }
+            let body = message.body.trim();
+            if body.starts_with(ATTEMPT_MARKER) {
+                found.attempts.push(body.to_owned());
+            } else if body.starts_with(BRIEF_MARKER) {
+                found.briefs.push(body.to_owned());
+            }
+        }
+        Ok(found)
     }
 
     /// The display handle of any item, for matching against pool events.
