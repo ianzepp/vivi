@@ -88,7 +88,6 @@ fn row(snapshot: &Snapshot, message: &crate::storage::StoredMessageView) -> Clos
 /// holder, or an item that is no longer open).
 pub fn close(
     mailspace: &Mailspace,
-    _snapshot: &Snapshot,
     row: &CloseoutRow,
     for_identity: Option<&str>,
 ) -> Result<String, VivariumError> {

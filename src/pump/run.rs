@@ -753,8 +753,7 @@ pub fn closeout(
             .ok_or_else(|| {
                 VivariumError::Message(format!("{handle}: not a complete-but-open need"))
             })?;
-        let receipt =
-            crate::pump::closeout::close(&mailspace, &current_snapshot, row, for_identity)?;
+        let receipt = crate::pump::closeout::close(&mailspace, row, for_identity)?;
         println!("{receipt}");
         return Ok(());
     }
