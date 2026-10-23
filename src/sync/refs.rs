@@ -1,7 +1,7 @@
 //! Reference follow: after a pull, look up the letters its new letters point
 //! at and the mailspace does not hold.
 //!
-//! A reference is a value of an `X-Vivi-Depends-On` header, or a whole-word
+//! A reference is a value of the `depends_on` front-matter key, or a whole-word
 //! 8-hex token in the subject or body. Each further hop scans only what the
 //! previous hop filed. A token that matches nothing is ignored (counted).
 
@@ -52,8 +52,8 @@ impl RefsReport {
     }
 }
 
-/// The 8-hex references a letter's bytes carry: `X-Vivi-Depends-On` values
-/// and whole-word 8-hex tokens in the subject and body, lowercased, in first
+/// The 8-hex references a letter's bytes carry: `depends_on` front-matter
+/// values and whole-word 8-hex tokens in the subject and body, lowercased, in first
 /// appearance order, without duplicates.
 #[must_use]
 pub fn references_in(bytes: &[u8]) -> Vec<String> {

@@ -232,11 +232,11 @@ impl Mailspace {
         Ok(())
     }
 
-    /// Rebuild this item's need bind from the `X-Vivi-Parent` headers the
+    /// Rebuild this item's need bind from the `parent` front-matter key the
     /// letters carry. A `task from` a need binds its unit locally and writes
     /// no bind letter, so a mailspace that receives the letter learns the
-    /// bind from the header instead: the item's own `X-Vivi-Parent` naming a
-    /// need held here, and each reply of it whose header names this item.
+    /// bind from the front matter instead: the item's own `parent` naming a
+    /// need held here, and each reply of it whose `parent` names this item.
     /// That covers both arrival orders — the task after the need, and the
     /// task before it, once the reply link is made. Idempotent: a unit whose
     /// node already carries a `subgraph` is left alone, so a later pull of

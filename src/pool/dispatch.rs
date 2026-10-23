@@ -315,7 +315,7 @@ fn plan_reasoning(
     let Some(level) = flags.reasoning.as_deref() else {
         return Err(VivariumError::Message(format!(
             "harness.run uses {{reasoning}} but no reasoning level was chosen for this job; \
-             dispatch by band (a `band:` line in the task, or a role with a band) or remove \
+             dispatch by band (the `band` key in the task front matter, or a role with a band) or remove \
              {{reasoning}} from [pools.{pool}.harness].run"
         )));
     };
