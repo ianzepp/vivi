@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
+use serde::Serialize;
 use vivi::VivariumError;
 use vivi::cli::{
     Command, CycleCommand, LocalSendCommand, MailCommand, MailListCommand, MailReplyCommand,
@@ -15,6 +17,13 @@ use vivi::storage::StoredMessageView;
 mod mail;
 
 use mail::{mail_absorb_filter, mail_dump_request, print_local_messages};
+
+fn print_json(value: &impl Serialize) -> Result<(), VivariumError> {
+    let encoded = serde_json::to_string_pretty(value)
+        .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?;
+    println!("{encoded}");
+    Ok(())
+}
 
 pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumError> {
     match command {
@@ -106,12 +115,7 @@ fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumEr
             }
             let status = mailspace.status()?;
             if *json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&status).map_err(|e| {
-                        VivariumError::Other(format!("failed to encode JSON: {e}"))
-                    })?
-                );
+                print_json(&status)?;
             } else {
                 vivi::mailspace::print_status(&status);
             }
@@ -134,7 +138,7 @@ fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumEr
         } => handle_archive_command(project.as_deref(), set.as_deref(), *clear, command.as_ref())?,
         MailspaceCommand::Watch(command) => run_watch(&command.common, &command.kinds)?,
         MailspaceCommand::Import(command) | MailspaceCommand::Merge(command) => {
-            import_mailspace(command)?;
+            import_mailspace(command)?
         }
         MailspaceCommand::Identity { command } => handle_mailspace_identity_command(command)?,
     }
@@ -142,7 +146,7 @@ fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumEr
 }
 
 pub(crate) fn handle_archive_command(
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
     set: Option<&str>,
     clear: bool,
     command: Option<&vivi::cli::MailspaceArchiveCommand>,
@@ -172,19 +176,11 @@ pub(crate) fn handle_archive_command(
     Ok(())
 }
 
-pub(crate) fn export_archive(
-    project: Option<&std::path::Path>,
-    json: bool,
-) -> Result<(), VivariumError> {
+pub(crate) fn export_archive(project: Option<&Path>, json: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let report = mailspace.export_archive()?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
-        );
-        return Ok(());
+        return print_json(&report);
     }
     println!(
         "scanned {}  written {}  unchanged {}",
@@ -239,11 +235,7 @@ fn import_mailspace(command: &MailspaceImportCommand) -> Result<(), VivariumErro
         },
     )?;
     if command.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
-        );
+        print_json(&report)?;
         return report.binding_conflict_error().map_or(Ok(()), Err);
     }
     let mode = if report.dry_run { "dry run" } else { "applied" };
@@ -288,11 +280,7 @@ fn handle_cycle_command(command: &CycleCommand) -> Result<(), VivariumError> {
             let intake =
                 mailspace.cycle_intake(for_identity, cursor_file.as_deref(), *write_cursor)?;
             if *json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&intake)
-                        .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
-                );
+                print_json(&intake)?;
             } else {
                 print_cycle_intake(&intake);
             }
@@ -328,9 +316,7 @@ fn handle_mail_command(command: &MailCommand) -> Result<(), VivariumError> {
             let mailspace = Mailspace::discover(project.as_deref())?;
             print_local_messages(&mailspace, handles, *json)?;
         }
-        MailCommand::Thread(command) => {
-            print_local_thread(command)?;
-        }
+        MailCommand::Thread(command) => print_local_thread(command)?,
         MailCommand::Absorb(command) => absorb_record("mail", command)?,
         MailCommand::Dump(command) => {
             let mailspace = Mailspace::discover(command.project.as_deref())?;
@@ -372,9 +358,9 @@ fn handle_trace_command(command: &TraceCommand) -> Result<(), VivariumError> {
 }
 
 fn deliver_local_mail(
-    path: &std::path::Path,
+    path: &Path,
     folder: &str,
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let data = std::fs::read(path)?;
@@ -435,7 +421,8 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
         MemoCommand::List { for_identity, tags, exclude_tags, since, limit, all, json, project } => {
             let mailspace = Mailspace::discover(project.as_deref())?;
             let filter = memo_filter(&mailspace, tags, exclude_tags, since, *limit, *all)?;
-            print_memo_list(&mailspace, for_identity, &filter, *json)?;
+            let memos = mailspace.list_memos_filtered(for_identity, &filter)?;
+            print_memo_list_items(&memos, *json)?;
         }
         MemoCommand::Search { query, for_identity, subject, tags, exclude_tags, since, limit, all, json, project } => {
             let mailspace = Mailspace::discover(project.as_deref())?;
@@ -485,16 +472,6 @@ fn memo_filter(
     })
 }
 
-fn print_memo_list(
-    mailspace: &Mailspace,
-    identity: &str,
-    filter: &vivi::mailspace::memos::MemoFilter,
-    json: bool,
-) -> Result<(), VivariumError> {
-    let memos = mailspace.list_memos_filtered(identity, filter)?;
-    print_memo_list_items(&memos, json)
-}
-
 fn print_memo_list_items(
     memos: &[(StoredMessageView, Vec<String>)],
     json: bool,
@@ -511,12 +488,7 @@ fn print_memo_list_items(
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&items)
-                .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
-        );
-        return Ok(());
+        return print_json(&items);
     }
     if memos.is_empty() {
         println!("  no memos");
@@ -540,9 +512,9 @@ fn print_memo_list_items(
 fn dump_memos(
     for_identity: &str,
     json: bool,
-    output: Option<&std::path::Path>,
+    output: Option<&Path>,
     confirm_large: bool,
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let request = MailDumpRequest {
@@ -555,10 +527,6 @@ fn dump_memos(
     };
     let records = mailspace.dump_mail(request)?;
     crate::local_mailspace_dump::write_dump("Vivi Memo Dump", &records, json, output, confirm_large)
-}
-
-fn send_local_mail(command: &LocalSendCommand) -> Result<(), VivariumError> {
-    send_mail(command, "inbox", "mail", "delivered")
 }
 
 fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
@@ -602,7 +570,14 @@ fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
             for_identity,
             note,
             project,
-        } => reopen_task(handle, for_identity, note.as_deref(), project.as_deref())?,
+        } => move_task(
+            handle,
+            for_identity,
+            note.as_deref(),
+            project.as_deref(),
+            false,
+            &BTreeMap::new(),
+        )?,
     }
     Ok(())
 }
@@ -616,43 +591,13 @@ fn done_task(
     tip: &[String],
     branch: Option<&str>,
     commit: Option<&str>,
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
 ) -> Result<(), VivariumError> {
-    move_task(
-        handle,
-        for_identity,
-        note,
-        project,
-        "done",
-        verdict,
-        repo,
-        tip,
-        branch,
-        commit,
-    )?;
+    let metadata = done_metadata(verdict, repo, tip, branch, commit)?;
+    move_task(handle, for_identity, note, project, true, &metadata)?;
     // Task threads carry the pool's result replies, not attempt records.
     crate::local_work_command::print_close_timing(project, handle, true);
     Ok(())
-}
-
-fn reopen_task(
-    handle: &str,
-    for_identity: &str,
-    note: Option<&str>,
-    project: Option<&std::path::Path>,
-) -> Result<(), VivariumError> {
-    move_task(
-        handle,
-        for_identity,
-        note,
-        project,
-        "tasks",
-        None,
-        &[],
-        &[],
-        None,
-        None,
-    )
 }
 
 fn run_task_list(command: &TaskCommand) -> Result<(), VivariumError> {
@@ -704,7 +649,7 @@ fn list_tasks(
     to: Option<&str>,
     status: &vivi::cli::TaskStatus,
     json: bool,
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
     held: Option<&crate::local_work_list::HeldScope>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
@@ -744,7 +689,7 @@ fn list_tasks_with_deps(
     blocked: bool,
     blocking: Option<&str>,
     json: bool,
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let tasks = mailspace.list_tasks_with_deps(for_identity, blocked, blocking)?;
@@ -755,11 +700,10 @@ fn show_task(
     handle: &str,
     json: bool,
     latest: bool,
-    project: Option<&std::path::Path>,
+    project: Option<&Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
-    Ok(())
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)
 }
 
 fn task_from_source(command: &vivi::cli::TaskFromCommand) -> Result<(), VivariumError> {
@@ -833,12 +777,7 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn send_mail(
-    command: &LocalSendCommand,
-    role: &str,
-    kind: &str,
-    delivered_label: &str,
-) -> Result<(), VivariumError> {
+fn send_local_mail(command: &LocalSendCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
     let result = mailspace.send(SendRequest {
         from: command.from.clone(),
@@ -850,16 +789,13 @@ fn send_mail(
             command.body.as_deref(),
             command.body_file.as_deref(),
         )?,
-        role: role.into(),
-        kind: Some(kind.into()),
+        role: "inbox".into(),
+        kind: Some("mail".into()),
         reply_to: command.reply_to.clone(),
         depends_on: Vec::new(),
     })?;
     for delivered in result.delivered {
-        println!(
-            "{delivered_label} {} {}",
-            delivered.identity, delivered.handle
-        );
+        println!("delivered {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
     mailspace.announce_remote(&result.remote);
@@ -912,19 +848,15 @@ pub(crate) fn run_watch(
     vivi::mailspace::run_watch(&mailspace, request)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn move_task(
-    handle: &str,
-    for_identity: &str,
-    note: Option<&str>,
-    project: Option<&std::path::Path>,
-    role: &str,
+/// Metadata recorded on a task closed as done: verdict, per-repo tips, and the
+/// branch/commit pair. Repo/tip and branch/commit must each come as a pair.
+fn done_metadata(
     verdict: Option<&str>,
     repo: &[String],
     tip: &[String],
     branch: Option<&str>,
     commit: Option<&str>,
-) -> Result<(), VivariumError> {
+) -> Result<BTreeMap<String, String>, VivariumError> {
     if repo.len() != tip.len() {
         return Err(VivariumError::Other(
             "--repo and --tip must be provided in matching pairs".into(),
@@ -935,8 +867,7 @@ fn move_task(
             "--branch and --commit must be provided together".into(),
         ));
     }
-    let mailspace = Mailspace::discover(project)?;
-    let mut metadata = std::collections::BTreeMap::new();
+    let mut metadata = BTreeMap::new();
     if let Some(verdict) = verdict {
         metadata.insert("verdict".into(), verdict.to_string());
     }
@@ -947,19 +878,32 @@ fn move_task(
         metadata.insert("branch".into(), branch.to_string());
         metadata.insert("commit".into(), commit.to_string());
     }
+    Ok(metadata)
+}
+
+/// Move a task to `done` or back to `tasks` and print the receipt.
+fn move_task(
+    handle: &str,
+    for_identity: &str,
+    note: Option<&str>,
+    project: Option<&Path>,
+    done: bool,
+    metadata: &BTreeMap<String, String>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let (role, reason, verb) = if done {
+        ("done", "task done", "done")
+    } else {
+        ("tasks", "task reopen", "reopened")
+    };
     let moved = mailspace.move_item_outcome(
         for_identity,
         handle,
         role,
         note,
-        if role == "done" {
-            "task done"
-        } else {
-            "task reopen"
-        },
-        (!metadata.is_empty()).then_some(&metadata),
+        reason,
+        (!metadata.is_empty()).then_some(metadata),
     )?;
-    let verb = if role == "done" { "done" } else { "reopened" };
     crate::local_work_command::print_move_receipt(&moved, verb);
     Ok(())
 }
