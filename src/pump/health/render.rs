@@ -16,27 +16,11 @@ pub fn render(h: &PumpHealth) -> String {
         || String::from("never"),
         |tick| format!("{}s ago", tick.age_secs),
     );
-    let units = h
-        .units
-        .iter()
-        .map(|(state, count)| format!("{state}={count}"))
-        .collect::<Vec<_>>()
-        .join(" ");
     lines.extend([
         format!("control  {}", h.control.as_deref().unwrap_or("unknown")),
         format!("writer   {} ({}){pid}", h.writer.state, h.writer.source),
         format!("tick     {tick} (stale after {}s)", h.stale_after_secs),
-        format!(
-            "units    {}",
-            if units.is_empty() { "none" } else { &units }
-        ),
-        format!(
-            "merges   {} total; blocked {}; complete-but-open {}; exceptions {}",
-            h.merges.total,
-            h.blocked.len(),
-            h.complete_open_needs.len(),
-            h.exceptions.len()
-        ),
+        format!("exceptions {}", h.exceptions.len()),
         format!("as_of    {}", h.as_of),
     ]);
     let mut out = lines.join("\n");
