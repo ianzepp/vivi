@@ -102,7 +102,8 @@ pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace}
 pub use mermaid::is_gate_kind;
 pub use mermaid::{MermaidEdge, MermaidFlowchart, MermaidNode, parse_flowchart};
 pub use pool_record::{
-    POOL_EVENT_TYPES, PoolEventRow, PoolTask, marked_line, marked_payload, order_marked,
+    ATTEMPT_MARKER, BRIEF_MARKER, POOL_EVENT_TYPES, PoolEventRow, PoolTask, marked_line,
+    marked_payload, order_marked,
 };
 pub use pump_action::{
     PUMP_ACTION_HEADER, PUMP_RECORD_HEADER, PumpAction, PumpActionKind, PumpActionRequest,

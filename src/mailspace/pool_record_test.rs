@@ -256,3 +256,23 @@ fn stamps_strictly_increase_and_payload_drops_them() {
     assert_eq!(marked_payload("pump-brief: j1", "pump-brief:"), Some("j1"));
     assert_eq!(marked_payload("other: j1", "pump-brief:"), None);
 }
+
+#[test]
+fn the_shared_markers_read_back_as_attempt_and_brief() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nBRIEF BODY", marked_line(BRIEF_MARKER, "job-a")),
+    );
+    reply_on_task(
+        &space,
+        &handle,
+        &format!("{}\nATTEMPT BODY", marked_line(ATTEMPT_MARKER, "first")),
+    );
+    let body = space.pool_task(&handle).unwrap().body;
+    assert!(body.starts_with(BRIEF_MARKER), "{body}");
+    assert!(body.contains("BRIEF BODY"), "{body}");
+    assert!(body.contains("## Earlier attempts"), "{body}");
+    assert!(body.contains("ATTEMPT BODY"), "{body}");
+}

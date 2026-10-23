@@ -32,10 +32,10 @@ pub struct PoolEventRow {
 }
 
 /// First line of a pump attempt-context reply on a slice task.
-const ATTEMPT_MARKER: &str = "pump-attempt:";
+pub const ATTEMPT_MARKER: &str = "pump-attempt:";
 
 /// First line of a pump brief reply on a preset task.
-const BRIEF_MARKER: &str = "pump-brief:";
+pub const BRIEF_MARKER: &str = "pump-brief:";
 
 /// The last order stamp handed out by [`marked_line`].
 static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
