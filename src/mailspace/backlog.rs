@@ -165,11 +165,7 @@ impl Mailspace {
     /// storage failure.
     pub fn backlog_bind_units(&self, parent: &str, units: &[String]) -> Result<(), VivariumError> {
         validate_source_id(parent)?;
-        if units.is_empty() {
-            return Err(VivariumError::Message(
-                "bind needs at least one unit handle".into(),
-            ));
-        }
+        require_units(units)?;
         let storage = self.storage()?;
         let graph = storage
             .work_graph_by_code(BACKLOG_GRAPH_CODE)?
@@ -177,30 +173,10 @@ impl Mailspace {
         let nodes = storage.work_graph_nodes(&graph.handle)?;
         let parent_node = backlog_node_by_token(&storage, &nodes, parent)?
             .ok_or_else(|| VivariumError::Message(format!("need not found: {parent}")))?;
-        if parent_node.kind != "need" {
-            return Err(VivariumError::Message(format!(
-                "bind lowers unit tasks onto needs; '{}' is a {}",
-                parent, parent_node.kind
-            )));
-        }
-        if parent_node.state != "open" {
-            return Err(VivariumError::Message(format!(
-                "cannot bind units to need '{parent}' in state '{}'",
-                parent_node.state
-            )));
-        }
-        let mut unit_handles = Vec::with_capacity(units.len());
-        let mut unit_sources = Vec::with_capacity(units.len());
-        for unit in units {
-            let unit_node = backlog_node_by_token(&storage, &nodes, unit)?.ok_or_else(|| {
-                VivariumError::Message(format!(
-                    "unit '{unit}' has no graph node; send it before binding (vivi graph \
-                         audit --repair recovers untracked items)"
-                ))
-            })?;
-            unit_handles.push(unit_node.handle.clone());
-            unit_sources.push(unit_node.source_id.clone());
-        }
+        require_open_need(&parent_node, parent)?;
+        let unit_nodes = unit_nodes(&storage, &nodes, units)?;
+        let unit_handles: Vec<String> = unit_nodes.iter().map(|n| n.handle.clone()).collect();
+        let unit_sources: Vec<String> = unit_nodes.into_iter().map(|n| n.source_id).collect();
         drop(storage);
         let stamp = self.emit_bound_letter(&parent_node.source_id, &unit_sources)?;
         let storage = self.storage()?;
@@ -231,11 +207,7 @@ impl Mailspace {
         units: &[String],
     ) -> Result<(), VivariumError> {
         validate_source_id(parent)?;
-        if units.is_empty() {
-            return Err(VivariumError::Message(
-                "bind needs at least one unit handle".into(),
-            ));
-        }
+        require_units(units)?;
         let storage = self.storage()?;
         let graph = storage
             .work_graph_by_code(BACKLOG_GRAPH_CODE)?
@@ -254,28 +226,11 @@ impl Mailspace {
         }
         let parent_node = parent_node
             .ok_or_else(|| VivariumError::Message(format!("need not found: {parent}")))?;
-        if parent_node.kind != "need" {
-            return Err(VivariumError::Message(format!(
-                "bind lowers unit tasks onto needs; '{parent}' is a {}",
-                parent_node.kind
-            )));
-        }
-        if parent_node.state != "open" {
-            return Err(VivariumError::Message(format!(
-                "cannot bind units to need '{parent}' in state '{}'",
-                parent_node.state
-            )));
-        }
-        let mut unit_handles = Vec::with_capacity(units.len());
-        for unit in units {
-            let unit_node = backlog_node_by_token(&storage, &nodes, unit)?.ok_or_else(|| {
-                VivariumError::Message(format!(
-                    "unit '{unit}' has no graph node; send it before binding (vivi graph \
-                         audit --repair recovers untracked items)"
-                ))
-            })?;
-            unit_handles.push(unit_node.handle.clone());
-        }
+        require_open_need(&parent_node, parent)?;
+        let unit_handles: Vec<String> = unit_nodes(&storage, &nodes, units)?
+            .into_iter()
+            .map(|n| n.handle)
+            .collect();
         let stamp = local_bind_stamp();
         storage.bind_backlog_units(
             &graph.handle,
@@ -477,9 +432,8 @@ impl Mailspace {
         joined: &mut Vec<String>,
     ) -> Result<(), VivariumError> {
         let storage = self.storage()?;
-        let message_id = match storage.resolve_message_token(handle) {
-            Ok(message_id) => message_id,
-            Err(_) => return Ok(()),
+        let Ok(message_id) = storage.resolve_message_token(handle) else {
+            return Ok(());
         };
         let Some(view) = storage.message_by_id(&message_id)? else {
             return Ok(());
@@ -707,6 +661,53 @@ impl Mailspace {
     }
 }
 
+/// A bind needs at least one unit.
+fn require_units(units: &[String]) -> Result<(), VivariumError> {
+    if units.is_empty() {
+        return Err(VivariumError::Message(
+            "bind needs at least one unit handle".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Units bind only to an open need; `token` is the handle the caller named.
+fn require_open_need(node: &WorkGraphNodeRow, token: &str) -> Result<(), VivariumError> {
+    if node.kind != "need" {
+        return Err(VivariumError::Message(format!(
+            "bind lowers unit tasks onto needs; '{token}' is a {}",
+            node.kind
+        )));
+    }
+    if node.state != "open" {
+        return Err(VivariumError::Message(format!(
+            "cannot bind units to need '{token}' in state '{}'",
+            node.state
+        )));
+    }
+    Ok(())
+}
+
+/// The backlog node of every unit token, or an error naming the first
+/// token without one.
+fn unit_nodes(
+    storage: &Storage,
+    nodes: &[WorkGraphNodeRow],
+    units: &[String],
+) -> Result<Vec<WorkGraphNodeRow>, VivariumError> {
+    units
+        .iter()
+        .map(|unit| {
+            backlog_node_by_token(storage, nodes, unit)?.ok_or_else(|| {
+                VivariumError::Message(format!(
+                    "unit '{unit}' has no graph node; send it before binding (vivi graph \
+                     audit --repair recovers untracked items)"
+                ))
+            })
+        })
+        .collect()
+}
+
 /// One bound unit of a need, as shown by `need show`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BacklogBoundUnit {
@@ -888,21 +889,13 @@ pub(super) fn canonical_content_handle(
 /// Display handles of the other active copies of this handle's content.
 fn sibling_display_handles(storage: &Storage, handle: &str) -> Result<Vec<String>, VivariumError> {
     let message_id = storage.resolve_message_token(handle)?;
-    content_sibling_handles(storage, &message_id)
-}
-
-/// Display handles of the other active copies of this message's content.
-fn content_sibling_handles(
-    storage: &Storage,
-    message_id: &str,
-) -> Result<Vec<String>, VivariumError> {
-    let Some(view) = storage.message_by_id(message_id)? else {
+    let Some(view) = storage.message_by_id(&message_id)? else {
         return Ok(Vec::new());
     };
     storage
         .message_ids_by_content(&view.content_id)?
         .into_iter()
-        .filter(|candidate| candidate != message_id)
+        .filter(|candidate| *candidate != message_id)
         .map(|candidate| storage.display_handle(&candidate))
         .collect()
 }
