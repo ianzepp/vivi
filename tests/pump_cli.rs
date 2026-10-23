@@ -182,7 +182,7 @@ fn requeue_and_withdraw_post_actions_on_the_open_record() {
 }
 
 #[test]
-fn pump_send_refuses_a_need_not_addressed_to_the_pump() {
+fn pump_send_opens_a_record_for_a_need_addressed_to_a_third_identity() {
     let project = temp_mailspace();
     let _ = send_need(&project);
     let out = vivi([
@@ -206,7 +206,7 @@ fn pump_send_refuses_a_need_not_addressed_to_the_pump() {
         .unwrap()
         .to_owned();
 
-    let refused = vivi([
+    let sent = vivi([
         "pump",
         "send",
         "--need",
@@ -215,12 +215,9 @@ fn pump_send_refuses_a_need_not_addressed_to_the_pump() {
         root(&project),
     ]);
 
-    assert!(!refused.status.success(), "{}", stdout(&refused));
-    let error = stderr(&refused);
-    assert!(
-        error.contains("not addressed to the pump identity 'mind'"),
-        "{error}"
-    );
+    assert_success(&sent);
+    let listed = vivi(["pump", "list", "--json", "--project", root(&project)]);
+    assert!(stdout(&listed).contains(&stray), "{}", stdout(&listed));
 }
 
 #[test]

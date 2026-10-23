@@ -289,7 +289,7 @@ fn a_refused_send_leaves_the_mailspace_unchanged() {
 }
 
 #[test]
-fn send_is_refused_for_a_need_the_pump_could_never_plan() {
+fn send_admits_a_need_addressed_to_a_third_identity() {
     let (mut mailspace, _tmp) = roster();
     mailspace.add_identity("elsewhere").unwrap();
     let stray = mailspace
@@ -310,18 +310,11 @@ fn send_is_refused_for_a_need_the_pump_could_never_plan() {
         .remove(0)
         .handle;
 
-    let error = mailspace
-        .pump_send(None, &stray, None)
-        .unwrap_err()
-        .to_string();
+    let record = mailspace.pump_send(None, &stray, None).unwrap();
 
-    assert!(
-        error.contains("not addressed to the pump identity 'mind'"),
-        "{error}"
-    );
-    assert!(mailspace.pump_list(None, None).unwrap().is_empty());
-    let routed = send_need(&mailspace, "for the pump");
-    mailspace.pump_send(None, &routed, None).unwrap();
+    assert_eq!(record.need, stray);
+    assert_eq!(record.status, PumpState::Open);
+    assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 1);
 }
 
 #[test]
@@ -383,13 +376,8 @@ fn a_need_the_pump_identity_sent_itself_gets_a_record_whoever_it_is_addressed_to
 
     assert_eq!(record.need, own);
     assert_eq!(record.status, PumpState::Open);
-    // A need another identity sent to a third party is still refused.
-    let error = mailspace
-        .pump_send(None, &stray, None)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("not addressed to the pump identity"),
-        "{error}"
-    );
+    // A need another identity sent to a third party is admitted too.
+    let other = mailspace.pump_send(None, &stray, None).unwrap();
+    assert_eq!(other.need, stray);
+    assert_eq!(other.status, PumpState::Open);
 }

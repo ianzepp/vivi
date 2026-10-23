@@ -3,7 +3,8 @@
 //! One dispatch is one pump record. A record names exactly one need (the
 //! `X-Vivi-Need` header), is addressed to the pump's own identity (`[pump]
 //! reply_from`, the identity the pump reads needs as and replies as), and
-//! covers that dispatch end to end. Redispatching the same need is a new
+//! covers that dispatch end to end. An open record alone admits a need: the
+//! need's own addressee plays no part. Redispatching the same need is a new
 //! record, so a need's pump history is its list of records. At most one
 //! record per need is open.
 //!
@@ -106,7 +107,6 @@ impl Mailspace {
     ) -> Result<PumpRecord, VivariumError> {
         let (default_from, to) = self.pump_names();
         let (need_handle, need_subject) = self.resolve_need(storage, need)?;
-        self.ensure_reaches_pump(storage, &need_handle, &to)?;
         if let Some(open) = self.open_record_of(storage, &need_handle)? {
             return Err(VivariumError::Message(format!(
                 "need {need_handle} already has an open pump record {}; close it with `vivi pump done {}` first",
@@ -142,60 +142,6 @@ impl Mailspace {
             .ok_or_else(|| VivariumError::Message("the pump record was not delivered".into()))?;
         let row = self.record_row(storage, &delivered.handle)?;
         self.record_of(storage, &row)
-    }
-
-    /// Refuse a need the pump could never plan, so a record cannot sit open
-    /// and unplannable. The board reads the open needs addressed to the pump's
-    /// identity (`to`, as `[pump] reply_from` names it) and the needs this
-    /// mailspace holds for another mailspace's address; a need that is neither
-    /// is invisible to it. A need the pump identity itself sent is the pump's
-    /// own, so it needs no addressing.
-    fn ensure_reaches_pump(
-        &self,
-        storage: &Storage,
-        need: &str,
-        to: &str,
-    ) -> Result<(), VivariumError> {
-        let message_id = storage.resolve_message_token(need)?;
-        let view = storage
-            .message_by_id(&message_id)?
-            .ok_or_else(|| VivariumError::Message(format!("unknown need '{need}'")))?;
-        let name = self.resolve_identity(to).unwrap_or_else(|_| to.to_string());
-        let needles = [
-            self.address_for(&name).to_ascii_lowercase(),
-            format!("{name}@{}", self.legacy_domain()).to_ascii_lowercase(),
-            to.trim().to_ascii_lowercase(),
-        ];
-        let addressed = [&view.to_addr, &view.cc_addr].iter().any(|header| {
-            let header = header.to_ascii_lowercase();
-            needles
-                .iter()
-                .any(|needle| header.contains(needle.as_str()))
-        });
-        let held = storage
-            .live_messages_for_content(&view.content_id)?
-            .iter()
-            .any(|row| super::is_foreign_account(&row.account));
-        // A need the pump identity sent itself (a gate fix need, a repair
-        // need) is the pump's own work: it never reaches the board through an
-        // inbox, the pump already holds it, and it may be addressed to an
-        // operator so a person can read it.
-        let own = view
-            .from_addr
-            .to_ascii_lowercase()
-            .contains(needles[0].as_str())
-            || view
-                .from_addr
-                .to_ascii_lowercase()
-                .contains(needles[1].as_str());
-        if addressed || held || own {
-            return Ok(());
-        }
-        Err(VivariumError::Message(format!(
-            "need {need} is not addressed to the pump identity '{to}' (it goes to {}), so the board would never plan it; \
-             address the need to {to}, or set `[pump] reply_from` to the identity it is addressed to",
-            view.to_addr
-        )))
     }
 
     /// The open pump record of `need`, when it has one.
