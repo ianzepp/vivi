@@ -249,7 +249,6 @@ fn a_send_to_a_local_role_and_a_remote_one_does_both() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
 

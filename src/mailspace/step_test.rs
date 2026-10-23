@@ -62,7 +62,6 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str, body:
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -327,7 +326,6 @@ fn blocked_nodes_do_not_appear() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let blocked_item = &result.delivered[0].handle;

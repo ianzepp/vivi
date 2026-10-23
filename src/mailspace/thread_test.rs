@@ -54,7 +54,6 @@ fn thread_bodies_come_back_with_lf_line_ends() {
         role: "tasks".into(),
         kind: Some("task".into()),
         reply_to,
-        depends_on: Vec::new(),
     };
     let task = space.send(request(None, "one\ntwo\nthree\n")).unwrap();
     let handle = task.delivered[0].handle.clone();

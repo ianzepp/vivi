@@ -39,7 +39,6 @@ fn need_to(p: &Project, from: &str, to: &[&str]) -> String {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

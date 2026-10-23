@@ -25,7 +25,6 @@ fn pair() -> (Rc<FakeServer>, Checkout, Checkout, String) {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let need = sent.delivered.first().unwrap().handle.clone();
@@ -46,7 +45,6 @@ fn send_unit(mailspace: &Mailspace, role: &str, subject: &str) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered
@@ -319,7 +317,6 @@ fn assigned_delivery_need_appears_in_merge_boot_and_close_syncs_home() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

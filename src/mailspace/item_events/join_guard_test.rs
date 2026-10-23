@@ -35,7 +35,6 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str) -> St
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

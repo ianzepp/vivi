@@ -29,7 +29,6 @@ fn space_with_task() -> (tempfile::TempDir, Mailspace, String) {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();

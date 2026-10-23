@@ -133,7 +133,6 @@ impl Mailspace {
                 role: "pumps".into(),
                 kind: Some("pump".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             },
             &extras,
         )?;

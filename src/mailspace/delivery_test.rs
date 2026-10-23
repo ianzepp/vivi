@@ -37,7 +37,6 @@ fn request(to: &str, body: String) -> SendRequest {
         role: "inbox".into(),
         kind: Some("mail".into()),
         reply_to: None,
-        depends_on: Vec::new(),
     }
 }
 
@@ -92,7 +91,6 @@ fn a_reply_records_a_replied_event_on_the_parent_need() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -149,7 +147,6 @@ fn a_task_reply_does_not_rekind_its_mail_parent() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: Some(handle),
-            depends_on: Vec::new(),
         })
         .unwrap();
 
@@ -335,7 +332,6 @@ fn a_close_with_verdict_carries_it_as_letter_headers() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered.remove(0).handle;
@@ -381,7 +377,6 @@ fn a_report_with_verdict_carries_it_as_a_letter() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered.remove(0).handle;

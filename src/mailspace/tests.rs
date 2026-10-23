@@ -35,7 +35,6 @@ fn local_delivery_rejects_unknown_identity() {
             role: "inbox".into(),
             kind: None,
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap_err();
 
@@ -72,7 +71,6 @@ fn absorb_mail_marks_message_read() {
             role: "inbox".into(),
             kind: None,
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -104,7 +102,6 @@ fn absorb_rejects_mutation_and_is_idempotent() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -162,7 +159,6 @@ fn set_archive_requires_git_repo_and_absorb_writes_once() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -208,7 +204,6 @@ fn export_archive_writes_prior_absorbs_and_is_idempotent() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -260,7 +255,6 @@ fn export_archive_includes_done_work_items_but_not_done_mail() {
                 role: role.into(),
                 kind: kind.map(str::to_owned),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap()
             .delivered[0]
@@ -328,7 +322,6 @@ fn task_move_keeps_handle_stable() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -362,7 +355,6 @@ fn task_done_records_verdict_and_tips() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -405,7 +397,6 @@ fn lifecycle_note_on_self_addressed_item_leaves_no_inbox_twin() {
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -452,7 +443,6 @@ fn lifecycle_note_delivers_receipt_to_parent_sender() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -485,7 +475,6 @@ fn rename_identity_keeps_historical_mail_and_old_alias_working() {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let handle = sent.delivered[0].handle.clone();
@@ -626,7 +615,6 @@ fn fixture_with_noise(noise: usize) -> (tempfile::TempDir, Mailspace, String) {
                 role: "inbox".into(),
                 kind: None,
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
     }
@@ -641,7 +629,6 @@ fn fixture_with_noise(noise: usize) -> (tempfile::TempDir, Mailspace, String) {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     (tmp, mailspace, sent.delivered[0].handle.clone())
@@ -890,7 +877,6 @@ fn schedule_report_skips_outbound_query_without_cadence() {
             role: "inbox".into(),
             kind: None,
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let report = mailspace.schedule_report("hand").unwrap();
@@ -939,7 +925,6 @@ fn list_kind_all_keeps_a_need_reply_linked_to_a_want() {
             role: String::from("wants"),
             kind: Some(String::from("want")),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered[0]
@@ -962,7 +947,6 @@ fn list_kind_all_keeps_a_need_reply_linked_to_a_want() {
             role: String::from("needs"),
             kind: Some(String::from("need")),
             reply_to: Some(want),
-            depends_on: Vec::new(),
         })
         .unwrap();
 
@@ -996,7 +980,6 @@ fn thread_outline_lists_the_anchor_then_every_reply() {
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let root = sent.delivered[0].handle.clone();
@@ -1013,7 +996,6 @@ fn thread_outline_lists_the_anchor_then_every_reply() {
                 role: "inbox".into(),
                 kind: None,
                 reply_to: Some(root.clone()),
-                depends_on: Vec::new(),
             })
             .unwrap();
     }
@@ -1048,7 +1030,6 @@ fn thread_outline_stays_complete_where_the_capped_thread_stops() {
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let root = sent.delivered[0].handle.clone();
@@ -1064,7 +1045,6 @@ fn thread_outline_stays_complete_where_the_capped_thread_stops() {
                 role: "inbox".into(),
                 kind: None,
                 reply_to: Some(root.clone()),
-                depends_on: Vec::new(),
             })
             .unwrap();
     }
@@ -1093,7 +1073,6 @@ fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
                 role: role.into(),
                 kind: Some(kind.into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap()
     };

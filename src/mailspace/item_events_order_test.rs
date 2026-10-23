@@ -38,7 +38,6 @@ fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let delivered = result

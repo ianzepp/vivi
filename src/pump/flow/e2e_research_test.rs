@@ -104,7 +104,6 @@ fn send(
         role: role.into(),
         kind: Some(kind.into()),
         reply_to: None,
-        depends_on: Vec::new(),
     })?;
     if result.delivered.is_empty() {
         return Err(VivariumError::Message(format!("{subject}: not delivered")));

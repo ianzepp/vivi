@@ -22,7 +22,6 @@ fn push_skips_pump_records_as_a_local_kind() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

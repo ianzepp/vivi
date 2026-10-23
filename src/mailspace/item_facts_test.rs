@@ -94,7 +94,6 @@ fn a_held_item_reads_rows_and_marks_from_a_real_mailspace() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

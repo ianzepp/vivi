@@ -399,7 +399,6 @@ impl Mailspace {
                 role: "inbox".into(),
                 kind: Some("mail".into()),
                 reply_to: Some(letter.record.to_string()),
-                depends_on: Vec::new(),
             },
             &extras,
         )?;

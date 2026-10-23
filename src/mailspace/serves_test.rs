@@ -22,7 +22,6 @@ fn send(mailspace: &Mailspace, kind: &str, body: String) -> Result<String, Strin
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .map_err(|err| err.to_string())?;
     Ok(result.delivered[0].handle.clone())

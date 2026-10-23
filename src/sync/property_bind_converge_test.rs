@@ -50,7 +50,6 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result
@@ -137,7 +136,6 @@ fn send_work(from: &Checkout, role: &str, kind: &str, to: &[String], subject: &s
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

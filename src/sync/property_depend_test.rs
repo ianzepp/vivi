@@ -88,7 +88,6 @@ impl World {
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
         result

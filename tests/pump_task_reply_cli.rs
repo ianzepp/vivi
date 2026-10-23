@@ -28,7 +28,6 @@ fn self_task(mailspace: &Mailspace) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

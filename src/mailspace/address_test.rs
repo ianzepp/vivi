@@ -31,7 +31,6 @@ fn send(mailspace: &Mailspace, to: &[&str], role: &str, kind: Option<&str>) -> S
         role: role.into(),
         kind: kind.map(String::from),
         reply_to: None,
-        depends_on: Vec::new(),
     }
 }
 

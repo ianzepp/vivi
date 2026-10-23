@@ -41,7 +41,6 @@ fn send_work(from: &Checkout, role: &str, kind: &str, to: &str, subject: &str) -
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

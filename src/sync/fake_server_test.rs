@@ -553,7 +553,6 @@ impl Checkout {
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
-                depends_on: Vec::new(),
             })
             .unwrap();
         result
@@ -576,7 +575,6 @@ impl Checkout {
                 role: "inbox".into(),
                 kind: Some("mail".into()),
                 reply_to: Some(parent.into()),
-                depends_on: Vec::new(),
             })
             .unwrap();
         result

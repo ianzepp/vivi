@@ -26,11 +26,10 @@ pub struct Sugar {
     pub depends_on: Vec<String>,
 }
 
-/// The body to send and the dependencies still sent beside it.
+/// The body to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sugared {
     pub body: String,
-    pub depends_on: Vec<String>,
 }
 
 /// True when the first non-blank line of `body` is the front matter fence.
@@ -55,11 +54,10 @@ pub fn apply(kind: &str, body: &str, sugar: &Sugar) -> Result<Sugared, LetterErr
     } else if sugar.has_front_flags() {
         built(kind, body, sugar)
     } else {
-        // TRANSITIONAL (W3-B2): a prose body sent as today; W3B2-37 and
-        // W3B2-38 remove this branch.
+        // TRANSITIONAL (W3-B2): a prose body with no flag is sent as today;
+        // W3B2-38 removes this branch.
         Ok(Sugared {
             body: body.to_string(),
-            depends_on: sugar.depends_on.clone(),
         })
     }
 }
@@ -72,6 +70,7 @@ impl Sugar {
             || self.serves.is_some()
             || self.explores.is_some()
             || self.question.is_some()
+            || !self.depends_on.is_empty()
     }
 
     /// The first flag given, as (front matter key, flag name).
@@ -116,7 +115,6 @@ fn whole_letter(kind: &str, body: &str, sugar: &Sugar) -> Result<Sugared, Letter
     }
     Ok(Sugared {
         body: body.to_string(),
-        depends_on: Vec::new(),
     })
 }
 
@@ -140,10 +138,7 @@ fn built(kind: &str, body: &str, sugar: &Sugar) -> Result<Sugared, LetterError> 
             )));
         }
     };
-    Ok(Sugared {
-        body: rendered,
-        depends_on: Vec::new(),
-    })
+    Ok(Sugared { body: rendered })
 }
 
 fn need_letter(body: &str, sugar: &Sugar) -> Result<String, LetterError> {

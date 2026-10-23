@@ -109,7 +109,6 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result

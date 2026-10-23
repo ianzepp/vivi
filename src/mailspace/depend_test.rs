@@ -40,7 +40,6 @@ fn send_item(
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     (result.sent, result.delivered[0].handle.clone())
@@ -252,7 +251,6 @@ fn a_mind_that_did_not_author_the_item_may_change_it() {
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     let held = result.delivered[0].handle.clone();
