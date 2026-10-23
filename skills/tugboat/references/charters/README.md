@@ -21,7 +21,8 @@ unit:
 ROOT=/path/to/project
 C=skills/tugboat/references/charters   # in the vivi checkout
 
-# The model field is a band (see the roster), not a provider slug.
+# The model field is a band (see the roster); that is Tugboat policy. Vivi
+# also accepts a model slug listed in the pool's harness.models.
 vivi role add hand --project "$ROOT" --kind hand --model P2-S0
 vivi role charter set hand --project "$ROOT" --body-file "$C/hand.md"
 
@@ -57,8 +58,8 @@ incident, the dates, the handles, and the item lists.
 
 ## The roster
 
-`Band` is the row from the protocol's model table; a task may override it with
-a `band:` line.
+`Band` is the row from the protocol's model table; a task overrides it with the
+front matter key `band = "P1"`.
 
 | Charter | Seat | Band | What it is |
 | --- | --- | --- | --- |
