@@ -3,7 +3,6 @@
 //! skip list, planner expiry and planner launch, driven through
 //! [`FakeHost`] replies.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -298,15 +297,6 @@ fn an_unreadable_need_list_keeps_what_the_other_list_gave() {
         ),
         "logs: {logs}"
     );
-}
-
-#[test]
-fn read_skip_reads_whitespace_separated_handles() {
-    let (_dir, ctx, _host) = setup();
-    assert_eq!(read_skip(&ctx), BTreeSet::new());
-    fs::write(ctx.home.join("skip.txt"), "n1 n2\n  n3\n").unwrap();
-    let want: BTreeSet<String> = ["n1", "n2", "n3"].iter().map(|h| (*h).to_owned()).collect();
-    assert_eq!(read_skip(&ctx), want);
 }
 
 #[test]

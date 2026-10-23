@@ -178,16 +178,6 @@ pub(crate) fn unfinished_closed_need_unit(unit: &Unit) -> bool {
     )
 }
 
-/// Whitespace-separated handles of `<home>/skip.txt`; missing file means
-/// nothing is skipped.
-#[must_use]
-pub fn read_skip(ctx: &Ctx) -> BTreeSet<String> {
-    match fs::read_to_string(ctx.home.join("skip.txt")) {
-        Ok(text) => text.split_whitespace().map(String::from).collect(),
-        Err(_) => BTreeSet::new(),
-    }
-}
-
 /// The log line a pass writes when control stops it between two needs.
 const STOP_NOTE: &str = "board: control stop requested; finishing the pass early";
 
