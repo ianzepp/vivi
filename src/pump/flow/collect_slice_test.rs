@@ -11,9 +11,11 @@ use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Hand;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::collect_step::RunCx;
+use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::index::{StepRow, StepState};
+use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
+use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskStatus};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, DEVIATIONS_MARKER};
@@ -198,5 +200,74 @@ fn a_registry_built_by_hand_still_posts_the_default_notes() -> R {
 
     let replies = &rig.mail.tasks[&slice.task].replies;
     assert!(replies.iter().any(|r| r.contains("changed a signature")));
+    Ok(())
+}
+
+/// A cx over the rig's run 1, for calling collection helpers directly.
+fn with_cx<T>(
+    rig: &mut Rig,
+    body: impl FnOnce(&mut RunCx<'_, Jobs, FakeMail>) -> Result<T, VivariumError>,
+) -> Result<T, VivariumError> {
+    let run = rig.store.runs_of(NEED)?.remove(0);
+    let registry = Registry::<Jobs, FakeMail>::new();
+    let decide = |_: &_, _: &_| Err(VivariumError::Message("no decision".into()));
+    let mut cx = RunCx {
+        ctx: &rig.ctx,
+        st: &mut rig.jobs,
+        store: &rig.store,
+        mail: &mut rig.mail,
+        registry: &registry,
+        decide: &decide,
+        def: load(FlowKind::Build)?,
+        run,
+    };
+    body(&mut cx)
+}
+
+#[test]
+fn the_attempt_comes_from_the_step_jobs_row_not_the_job_payload() -> R {
+    let mut rig = rig()?;
+    let slice = built_slice(&mut rig)?;
+    for job in rig.jobs.jobs.values_mut() {
+        if let Some(payload) = job.payload.as_object_mut() {
+            payload.remove("attempt");
+        }
+    }
+    assert!(
+        rig.jobs
+            .jobs
+            .values()
+            .all(|job| job.payload.get("attempt").is_none())
+    );
+
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "slice-second".into(),
+            run: 1,
+            node: slice.node.clone(),
+            task: slice.task.clone(),
+            attempt: 2,
+        },
+    )?;
+
+    let attempt = with_cx(&mut rig, |cx| cx.current_attempt(&slice.task))?;
+
+    assert_eq!(attempt, 2);
+    Ok(())
+}
+
+#[test]
+fn a_task_with_no_step_jobs_row_is_an_error_naming_the_task() -> R {
+    let mut rig = rig()?;
+    start(&rig.ctx, &rig.store, &mut rig.mail, NEED, Some("plan"))?;
+
+    let err = with_cx(&mut rig, |cx| cx.current_attempt("t-none")).err();
+
+    let text = err.map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        text.contains("slice t-none: expected a step_jobs row; actual: none"),
+        "{text}"
+    );
     Ok(())
 }
