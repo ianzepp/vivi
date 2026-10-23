@@ -1,5 +1,5 @@
 use super::*;
-use crate::letter::records::ActionWord;
+use crate::letter::records::{ActionWord, MailFront};
 
 fn letter(front: &str, prose: &str) -> String {
     format!("+++\n{front}+++\n\n{prose}\n")
@@ -174,8 +174,8 @@ fn mail_with_only_a_pump_note_stays_mail() {
 #[test]
 fn a_broken_mail_front_reports_the_mail_error() {
     assert_eq!(
-        parse_kind(&LetterKind::Mail, "no fence"),
-        Err(LetterError::NoOpening)
+        parse_kind(&LetterKind::Mail, "+++\nunclosed"),
+        Err(LetterError::Unclosed)
     );
     assert!(matches!(
         parse_kind(&LetterKind::Mail, &letter("action = = 1\n", "x")),
@@ -245,4 +245,30 @@ fn every_role_is_listed_once() {
     for (index, role) in all.iter().enumerate() {
         assert!(!all[index + 1..].contains(role), "{role:?} listed twice");
     }
+}
+
+#[test]
+fn a_mail_or_chat_with_no_front_matter_is_prose_with_an_empty_front() {
+    let mail = parse_kind(&LetterKind::Mail, "\nhello there\n").unwrap();
+    assert_eq!(mail.kind, LetterKind::Mail);
+    assert_eq!(mail.front, Front::Mail(MailFront::default()));
+    assert_eq!(mail.prose, "hello there");
+    let chat = parse_kind(&LetterKind::Chat, "hi").unwrap();
+    assert_eq!(chat.front, Front::Chat);
+    assert_eq!(chat.prose, "hi");
+}
+
+#[test]
+fn a_wrapped_mail_and_chat_body_still_parses() {
+    let mail = parse_kind(&LetterKind::Mail, "+++\n+++\n\nold").unwrap();
+    assert_eq!(mail.front, Front::Mail(MailFront::default()));
+    assert_eq!(mail.prose, "old");
+    let chat = parse_kind(&LetterKind::Chat, "+++\n+++\n\nold").unwrap();
+    assert_eq!(chat.front, Front::Chat);
+    assert_eq!(chat.prose, "old");
+}
+
+#[test]
+fn an_invalid_chat_front_is_still_refused() {
+    assert!(parse_kind(&LetterKind::Chat, "+++\ncolour = \"red\"\n+++\n\nhi").is_err());
 }
