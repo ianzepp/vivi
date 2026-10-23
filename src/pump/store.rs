@@ -19,6 +19,7 @@ use crate::error::VivariumError;
 
 mod codec;
 mod flow_index;
+mod main_state;
 mod need_branch;
 mod priority;
 mod promotions;
