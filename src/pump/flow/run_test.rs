@@ -163,3 +163,38 @@ fn a_mark_added_after_start_leaves_the_runs_kind_unchanged() {
     assert_eq!(stored[0].kind, "build");
     assert_eq!(stored[0].flow, "build");
 }
+
+#[test]
+fn the_run_start_post_follows_the_bind_and_precedes_any_close() {
+    let (_project, ctx, store, mut mail) = setup();
+    start(&ctx, &store, &mut mail, NEED, None).unwrap();
+    let steps = store.steps_of(NEED, 1).unwrap();
+    let entry = steps.iter().find(|s| s.node == "plan").unwrap();
+    // A step finishing after the start closes its task; the post is already out.
+    MailWriter::close_task(&mut mail, &entry.task, "ok", None, None).unwrap();
+    MailWriter::close_need(&mut mail, NEED, "done").unwrap();
+
+    let post = mail
+        .position(|c| matches!(c, Call::PostToNeed { .. }))
+        .expect("a run-start post");
+    let bind = mail.position(|c| matches!(c, Call::Bind { .. })).unwrap();
+    let close_step = mail
+        .position(|c| matches!(c, Call::CloseTask { .. }))
+        .unwrap();
+    let close_need = mail
+        .position(|c| matches!(c, Call::CloseNeed { .. }))
+        .unwrap();
+    assert!(bind < post && post < close_step && post < close_need);
+    let posts: Vec<&Call> = mail
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::PostToNeed { .. }))
+        .collect();
+    assert_eq!(
+        posts,
+        vec![&Call::PostToNeed {
+            need: NEED.into(),
+            body: "pump: run r1 started (build, entry plan)".into(),
+        }]
+    );
+}

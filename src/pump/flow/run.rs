@@ -63,6 +63,13 @@ where
         &[],
     )?;
     mail.bind(need, &[sentinel.clone(), step.clone()])?;
+    // The Q7 remote rule: another member takes the pump's close only after
+    // the pump has posted on the need's thread. Post to everyone who holds
+    // the need, before any step can finish.
+    mail.post_to_need_audience(
+        need,
+        &format!("pump: run r{run} started ({}, entry {entry})", kind.name()),
+    )?;
 
     let row = record_run(store, need, run, kind, &entry, [&sentinel, &step])?;
 

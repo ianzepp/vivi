@@ -6,7 +6,7 @@
 
 use super::MailspacePort;
 use crate::error::VivariumError;
-use crate::mailspace::SendRequest;
+use crate::mailspace::{Recipient, SendRequest};
 
 impl MailspacePort {
     /// Send a step task from `from` to `to`, blocked on `depends_on`; returns
@@ -66,6 +66,65 @@ impl MailspacePort {
             body.into(),
         )?;
         Ok(())
+    }
+
+    /// Post a plain note on the need `need`, addressed to the need's own
+    /// recipient set (its `From`, `To` and `Cc`, minus the pump identity), so
+    /// every member that holds the need receives it. [`MailspacePort::reply`]
+    /// goes to the sender only. A need with no one else on it gets no post.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] when the need does not resolve, cannot be
+    /// parsed, or delivery fails.
+    pub fn post_to_need_audience(&self, need: &str, body: &str) -> Result<(), VivariumError> {
+        let (mut to, mut cc) = self.need_audience(need)?;
+        if to.is_empty() {
+            std::mem::swap(&mut to, &mut cc);
+        }
+        if to.is_empty() {
+            return Ok(());
+        }
+        self.mailspace
+            .reply(need, &self.pump_identity, to, cc, None, body.into())?;
+        Ok(())
+    }
+
+    /// The need's `From` and `To` (first list) and `Cc` (second list), each
+    /// as a local identity or a remote address, without the pump identity.
+    fn need_audience(&self, need: &str) -> Result<(Vec<String>, Vec<String>), VivariumError> {
+        let bytes = {
+            let storage = self.mailspace.storage()?;
+            let id = storage.resolve_message_token(need)?;
+            storage.read_message(&id)?
+        };
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&bytes)
+            .ok_or_else(|| VivariumError::Parse(format!("need {need}: unreadable message")))?;
+        let mut to = Vec::new();
+        for header in [parsed.from(), parsed.to()] {
+            self.collect_audience(header, &mut to);
+        }
+        let mut cc = Vec::new();
+        self.collect_audience(parsed.cc(), &mut cc);
+        cc.retain(|who| !to.contains(who));
+        Ok((to, cc))
+    }
+
+    fn collect_audience(&self, header: Option<&mail_parser::Address<'_>>, out: &mut Vec<String>) {
+        let Some(addresses) = header else { return };
+        for address in addresses.iter() {
+            let Some(value) = address.address.as_deref() else {
+                continue;
+            };
+            let who = match self.mailspace.classify_recipient(value) {
+                Ok(Recipient::Local(identity)) if identity != self.pump_identity => identity,
+                Ok(Recipient::Remote(remote)) => remote,
+                _ => continue,
+            };
+            if !out.contains(&who) {
+                out.push(who);
+            }
+        }
     }
 }
 

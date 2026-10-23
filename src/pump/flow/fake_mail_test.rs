@@ -30,6 +30,10 @@ pub(crate) enum Call {
         handle: String,
         body: String,
     },
+    PostToNeed {
+        need: String,
+        body: String,
+    },
     CloseTask {
         handle: String,
         verdict: String,
@@ -260,6 +264,14 @@ impl MailWriter for FakeMail {
         }
         self.calls.push(Call::Reply {
             handle: handle.to_string(),
+            body: body.to_string(),
+        });
+        Ok(())
+    }
+
+    fn post_to_need_audience(&mut self, need: &str, body: &str) -> Result<(), VivariumError> {
+        self.calls.push(Call::PostToNeed {
+            need: need.to_string(),
             body: body.to_string(),
         });
         Ok(())
