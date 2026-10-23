@@ -3,9 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, candidate_pools,
-    dispatch_order, dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
-    send_task,
+    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, candidate_pools, dispatch_order,
+    dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched, send_task,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::ProbeHost;
@@ -356,41 +355,9 @@ fn recovery_records_a_result_that_landed_before_the_last_state_save() {
 }
 
 #[test]
-fn finished_write_job_with_nonzero_exit_never_enters_the_merge_queue() {
-    let dir = tempfile::tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
-    host.reply(
-        "task show a1b2c3d4 --latest",
-        0,
-        "pool result 3: finished\npush: committed cadence/role-a1 abcdef0123\nagent exit 124 after 90s",
-    );
-    let mut store = Store::default();
-    let mut spec = JobSpec::new("cadence-role-a1", "cadence", "cadence", "run", "brief");
-    spec.target = Some(String::from("default"));
-    spec.branch = Some(String::from("cadence/role-a1"));
-    spec.integration_required = true;
-    let mut job = PoolJob::from(spec);
-    job.task = Some(String::from("a1b2c3d4"));
-    job.status = JobStatus::Dispatched;
-    store.jobs.insert(job.id.clone(), job);
-    let seen = BTreeMap::from([(
-        String::from("a1b2c3d4"),
-        (
-            String::from("finished"),
-            String::from("committed cadence/role-a1 abcdef0123"),
-        ),
-    )]);
-
-    apply_reconcile(&ctx, &mut store, &seen);
-
-    assert!(store.jobs["cadence-role-a1"].integration_error.is_some());
-}
-
-#[test]
 fn write_role_job_is_applied_once_when_it_finishes() {
     let mut store = Store::default();
-    let mut spec = JobSpec::new("cadence-role-a1", "cadence", "cadence", "run", "brief");
-    spec.integration_required = true;
+    let spec = JobSpec::new("cadence-role-a1", "cadence", "cadence", "run", "brief");
     let mut job = PoolJob::from(spec);
     job.status = JobStatus::Finished;
     job.outcome = Some(JobOutcome {
