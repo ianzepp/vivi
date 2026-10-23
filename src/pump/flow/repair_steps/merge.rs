@@ -34,7 +34,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairMergeMain {
         match merge_main::classify(job) {
             None => Ok(()),
             Some(MergeMainResult::Merged(sha)) => {
-                cx.advance_word(step, "merged", merged_payload(&sha))
+                cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &sha))
             }
             Some(MergeMainResult::Conflict) => {
                 let reason = if merge_main::main_moved(job) {
@@ -117,7 +117,7 @@ fn settle<S: JobStore, M: FlowMail>(
     let need_tip = payload_str(job, "need_tip")?;
     let base = payload_str(job, "main_tip")?;
     match verify::ref_contains(cx.ctx, &target, &publish_ref, need_tip) {
-        Ok(Some(tip)) => cx.advance_word(step, "merged", merged_payload(&tip)),
+        Ok(Some(tip)) => cx.advance_word(step, "merged", merged_payload(cx.ctx, job, &tip)),
         Ok(None) => match main_now(cx, &target) {
             Ok(now) if now != base => {
                 let reason = format!("main moved from {base} to {now} without {need_tip}");

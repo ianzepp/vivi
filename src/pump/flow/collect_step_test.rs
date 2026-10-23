@@ -149,3 +149,35 @@ fn rerun_with_applies_the_edit_and_inserts_the_next_attempt() -> R {
     assert_eq!(rig.plan_step()?.state, StepState::Running);
     Ok(())
 }
+
+fn merge_job(publish_ref: Option<&str>, target: Option<&str>) -> PoolJob {
+    let mut spec = JobSpec::new("j1", "merge", "merge", "s", "b");
+    spec.publish_ref = publish_ref.map(str::to_owned);
+    spec.target = target.map(str::to_owned);
+    let mut jobs = Jobs::default();
+    assert!(jobs::enqueue(&mut jobs, spec).is_ok());
+    jobs.jobs["j1"].clone()
+}
+
+#[test]
+fn a_merged_payload_names_the_branch_from_the_publish_ref() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let job = merge_job(Some("refs/heads/vivi/need/n1"), Some("default"));
+    let payload = super::merged_payload(&ctx, &job, "abc");
+    assert_eq!(
+        payload,
+        serde_json::json!({"sha": "abc", "commit": "abc", "branch": "vivi/need/n1"})
+    );
+}
+
+#[test]
+fn a_merged_payload_without_a_publish_ref_names_the_targets_main() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let expected = ctx.for_target("default").unwrap().cfg.main.clone();
+    let job = merge_job(None, Some("default"));
+    let payload = super::merged_payload(&ctx, &job, "abc");
+    assert_eq!(payload["branch"], serde_json::json!(expected));
+    assert_eq!(payload["commit"], serde_json::json!("abc"));
+}
