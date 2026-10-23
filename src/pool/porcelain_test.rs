@@ -417,3 +417,29 @@ fn reset_lines_name_the_origin_base() {
         "slot p p-slot-1 m1 free - - - main@abc123def456 - 2026-10-11T10:00:00Z -"
     );
 }
+
+#[test]
+fn refused_round_trips_a_reason_with_spaces_and_quotes() {
+    for reason in [
+        "no from: pass --from",
+        r#"model "x" is not a band"#,
+        "tab\there\nline \\ slash",
+        "plain",
+    ] {
+        let said = refused("hand-1", reason);
+        assert!(said.starts_with("refused hand-1 "), "{said}");
+        assert_eq!(refused_reason(&said).as_deref(), Some(reason), "{said}");
+    }
+    let mixed = format!("note\n{}\ntrailing", refused("t", "why not"));
+    assert_eq!(refused_reason(&mixed).as_deref(), Some("why not"));
+}
+
+#[test]
+fn output_without_a_refused_line_gives_none() {
+    assert_eq!(refused_reason(""), None);
+    assert_eq!(
+        refused_reason("dispatched t p s j m main x - 1 write 0 -"),
+        None
+    );
+    assert_eq!(refused_reason("not refused here"), None);
+}

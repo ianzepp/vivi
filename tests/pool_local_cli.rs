@@ -631,3 +631,44 @@ fn a_model_flag_still_works_on_a_role_task_and_read_only_still_forces() {
     );
     assert_eq!(heads.lines().count(), 3, "{heads}");
 }
+
+fn porcelain_dispatch(rig: &Rig, subject: &str, more: &[&str]) -> Output {
+    let task = handle(rig, subject);
+    let mut args = vec![
+        "pool",
+        "dispatch",
+        "--porcelain",
+        "--pool",
+        "wt",
+        &task,
+        "--model",
+        "standin",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ];
+    args.extend_from_slice(more);
+    vivi(&args)
+}
+
+#[test]
+fn a_porcelain_dispatch_with_no_from_prints_a_refused_line() {
+    let rig = rig("");
+    let out = porcelain_dispatch(&rig, "nofrom", &["--read-only"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let reason = vivi::pool::porcelain::refused_reason(&stdout);
+    assert!(
+        !out.status.success() && reason.is_some_and(|r| r.contains("no from")),
+        "{stdout}"
+    );
+    nothing_was_made(&rig);
+}
+
+#[test]
+fn a_porcelain_dispatch_that_fails_after_planning_prints_no_refused_line() {
+    let rig = rig("");
+    let out = porcelain_dispatch(&rig, "feat/a", &["--from", "main", "--branch", "feat/a"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("already exists"), "{}", text(&out));
+    assert_eq!(vivi::pool::porcelain::refused_reason(&stdout), None);
+}
