@@ -1,8 +1,10 @@
 //! The provider seam: what the pool needs from a machine host.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use super::collect::STALE_CLAIM_SECS;
+use super::dispatch::target::JobTarget;
 use super::doctor::Check;
 use super::progress::Progress;
 use super::slot::PoolId;
@@ -175,18 +177,28 @@ pub struct OpenedSlot {
     pub abandoned: Vec<Abandoned>,
 }
 
+/// The answer of a host that has no local worktrees to a target that names one.
+fn refuse_local_source(target: &JobTarget) -> Result<(), VivariumError> {
+    if target.local_source.is_some() {
+        return Err(VivariumError::Config(
+            "local repository targets require a local provider".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A machine host. Implementations must keep secrets out of errors.
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
     /// Resolved root a local slot id is joined to. Directory providers use
     /// this so commands act on the same site the provider opened.
-    fn local_root(&self) -> Option<std::path::PathBuf> {
+    fn local_root(&self) -> Option<PathBuf> {
         None
     }
 
     /// Resolved directory containing this provider's slots. A clean sweep
     /// uses it as the boundary for orphan worktrees.
-    fn local_pool_dir(&self) -> Option<std::path::PathBuf> {
+    fn local_pool_dir(&self) -> Option<PathBuf> {
         None
     }
 
@@ -201,7 +213,7 @@ pub trait PoolProvider {
     fn prepare_job(
         &self,
         id: &str,
-        target: Option<&super::dispatch::target::JobTarget>,
+        target: Option<&JobTarget>,
         start: &str,
         job: &str,
     ) -> Result<Option<PreparedWorkspace>, VivariumError> {
@@ -217,16 +229,11 @@ pub trait PoolProvider {
     fn prepare_target_checkout(
         &self,
         _id: &str,
-        target: &super::dispatch::target::JobTarget,
+        target: &JobTarget,
         _start: &str,
         _job: &str,
     ) -> Result<(), VivariumError> {
-        if target.local_source.is_some() {
-            return Err(VivariumError::Config(
-                "local repository targets require a local provider".into(),
-            ));
-        }
-        Ok(())
+        refuse_local_source(target)
     }
 
     /// Prepare a read-only extra checkout (`--also-target`) beside the job's
@@ -235,15 +242,10 @@ pub trait PoolProvider {
     fn prepare_extra_checkout(
         &self,
         _id: &str,
-        target: &super::dispatch::target::JobTarget,
+        target: &JobTarget,
         _start: &str,
     ) -> Result<(), VivariumError> {
-        if target.local_source.is_some() {
-            return Err(VivariumError::Config(
-                "local repository targets require a local provider".into(),
-            ));
-        }
-        Ok(())
+        refuse_local_source(target)
     }
 
     /// How this host's slots live. Resting unless the host says otherwise.
