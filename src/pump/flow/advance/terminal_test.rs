@@ -162,6 +162,7 @@ fn done_closes_step_then_need_then_sentinel_then_record() -> R {
 fn restart_binds_the_new_sentinel_before_the_old_one_closes() -> R {
     let mut rig = rig()?;
     let cto = rig.step("cto", "rework")?;
+    let other = rig.step("build1", "")?.task;
     rig.mail.calls.clear();
 
     let advanced = rig.advance(&cto)?;
@@ -188,6 +189,21 @@ fn restart_binds_the_new_sentinel_before_the_old_one_closes() -> R {
         rig.mail.task_state(&rig.sentinel)?.verdict.as_deref(),
         Some("superseded")
     );
+    // The old run's other open task closes superseded, before its sentinel.
+    assert_eq!(
+        rig.mail.task_state(&other)?.verdict.as_deref(),
+        Some("superseded")
+    );
+    assert!(close_pos(&rig, &other) < close_pos(&rig, &rig.sentinel));
+    assert_eq!(
+        rig.store
+            .steps_of(NEED, 1)?
+            .iter()
+            .find(|r| r.task == other)
+            .map(|r| r.state),
+        Some(StepState::Done)
+    );
+    assert_eq!(rig.store.runs_of(NEED)?[0].state, "superseded");
     // The need stays open: the new sentinel is open.
     assert_eq!(rig.mail.need_state(NEED)?, NeedStatus::Open);
     assert_eq!(rig.mail.task_state(&new_sentinel)?.status, TaskStatus::Open);
