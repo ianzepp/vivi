@@ -219,5 +219,10 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
         assert!(spec.read_only, "{kind}");
         assert!(spec.branch.is_none(), "{kind}");
         assert!(spec.target.is_none(), "{kind}");
+        assert_eq!(
+            spec.from_ref.as_deref(),
+            Some(ctx.cfg.main.as_str()),
+            "{kind}"
+        );
     }
 }
