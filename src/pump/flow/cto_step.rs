@@ -7,6 +7,7 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
+use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
 use crate::pump::jobs::JobStore;
@@ -25,6 +26,8 @@ const FACT_RUN: usize = 3;
 
 /// Largest rung failure report the brief carries per rung row.
 const RUNG_CAP: usize = 4_000;
+/// The fanout answer that merged no slice.
+const UNCHANGED: &str = "unchanged";
 /// The nodes of the second verify pass.
 const SECOND_PASS: [&str; 5] = ["build2", "audit2", "test2", "judge2", "raise2"];
 
@@ -118,10 +121,31 @@ fn why_reached(cx: &StartCx<'_>) -> Result<String, VivariumError> {
         row.node,
         row.verdict.as_deref().unwrap_or("none")
     ));
-    if SECOND_PASS.contains(&row.node.as_str()) {
+    if row.verdict.as_deref() == Some(UNCHANGED) {
+        out.push_str(&unchanged_line(cx, row)?);
+    } else if SECOND_PASS.contains(&row.node.as_str()) {
         out.push_str("Two verify passes failed: this is the automatic block-ship of the need.\n");
     }
     Ok(out)
+}
+
+/// The expected-against-actual line of a fanout that merged nothing.
+fn unchanged_line(cx: &StartCx<'_>, row: &StepRow) -> Result<String, VivariumError> {
+    let need = &cx.run.need;
+    let slices = cx
+        .store
+        .slice_links_of_run(need, cx.run.run)?
+        .iter()
+        .filter(|link| link.fanout.as_deref() == Some(row.task.as_str()))
+        .count();
+    let current = need_branch::tip(cx.ctx, cx.store, need)?;
+    let start = cx.store.fanout_start(&row.task)?.flatten();
+    Ok(format!(
+        "expected a change on vivi/need/{need} in fanout {} ({slices} slices); actual: 0 merged, need tip {} == fanout start {}\n",
+        row.node,
+        current.as_deref().unwrap_or("none"),
+        start.as_deref().unwrap_or("none")
+    ))
 }
 
 /// Whether `node` is a cto node of the flow.

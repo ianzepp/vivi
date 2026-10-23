@@ -1,7 +1,8 @@
 //! Fanout start: expands the slicer's slices once the slicer step is done.
 //!
 //! The slices come from the slicer's reply on the slicer step task (never
-//! from pump.db), newest reply first, so a later correction wins.
+//! from pump.db), newest reply first, so a later correction wins. The need
+//! branch tip at the start is recorded once per fanout for the CTO brief.
 
 use crate::error::VivariumError;
 use crate::pump::envelope::roles::{Slice, SlicerAnswer};
@@ -9,6 +10,7 @@ use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fanout::{SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
+use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
@@ -41,6 +43,8 @@ impl StepHandler for FanoutStart {
         if !problems.is_empty() {
             return Ok(invalid(cx, step, &problems.join("; ")));
         }
+        let tip = need_branch::tip(cx.ctx, cx.store, &cx.run.need)?;
+        cx.store.set_fanout_start(&step.task, tip.as_deref())?;
         cx.store
             .set_open_fanout(&cx.run.need, cx.run.run, &step.task)?;
         Ok(StartAction::Fanout {

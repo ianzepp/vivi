@@ -121,3 +121,20 @@ fn reopening_the_file_keeps_the_rows() {
         Some("plan".into())
     );
 }
+
+#[test]
+fn fanout_start_keeps_the_first_tip_and_tells_none_from_unset() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    assert_eq!(store.fanout_start("t-a").expect("read"), None);
+    store.set_fanout_start("t-a", None).expect("set none");
+    assert_eq!(store.fanout_start("t-a").expect("read"), Some(None));
+    store.set_fanout_start("t-a", Some("abc")).expect("ignored");
+    assert_eq!(store.fanout_start("t-a").expect("read"), Some(None));
+    store.set_fanout_start("t-b", Some("abc")).expect("set");
+    store.set_fanout_start("t-b", Some("def")).expect("ignored");
+    assert_eq!(
+        store.fanout_start("t-b").expect("read"),
+        Some(Some("abc".into()))
+    );
+}
