@@ -100,10 +100,14 @@ fn plan(f: &Fixture) {
 }
 
 fn payload(f: &Fixture, task: &str, node: &str, class: &str, body: serde_json::Value) {
+    payload_in(f, 1, task, node, class, body);
+}
+
+fn payload_in(f: &Fixture, run: u32, task: &str, node: &str, class: &str, body: serde_json::Value) {
     f.store
         .record_step_payload(&StepPayloadRow {
             need: NEED.into(),
-            run: 1,
+            run,
             node: node.into(),
             class: class.into(),
             task: task.into(),
@@ -113,16 +117,24 @@ fn payload(f: &Fixture, task: &str, node: &str, class: &str, body: serde_json::V
 }
 
 fn start(f: &Fixture, node: &str) -> Result<JobSpec, crate::error::VivariumError> {
+    start_in(f, 1, node)
+}
+
+fn start_in(f: &Fixture, run: u32, node: &str) -> Result<JobSpec, crate::error::VivariumError> {
     let def = load(FlowKind::Build)?;
+    let run_row = RunRow {
+        run,
+        ..f.run.clone()
+    };
     let cx = StartCx {
         ctx: &f.ctx,
         store: &f.store,
         mail: &f.mail,
-        run: &f.run,
+        run: &run_row,
         def: &def,
     };
     let step = StepRow {
-        run: 1,
+        run,
         node: node.into(),
         task: format!("t-{node}"),
         state: StepState::Waiting,
@@ -180,6 +192,54 @@ fn a_second_pass_carries_the_prior_audit_and_the_rework_slices() {
     assert!(spec.body.contains("PRIOR FINDINGS"));
     assert!(spec.body.contains("defects"));
     assert!(spec.body.contains("fix-1"));
+}
+
+fn run_one_audit(f: &Fixture) {
+    payload_in(
+        f,
+        1,
+        "t-audit1",
+        "audit1",
+        "auditor",
+        json!({"front": {"finding": [{"id": "F-1"}]}, "body": "RUN ONE BODY"}),
+    );
+}
+
+#[test]
+fn a_second_pass_after_a_rework_restart_finds_the_audit_of_the_earlier_run() {
+    let f = fixture();
+    with_branch(&f);
+    plan(&f);
+    run_one_audit(&f);
+    payload_in(
+        &f,
+        2,
+        "t-rework1-r2",
+        "rework1",
+        "slicer",
+        json!({"front": {"slice": [{"id": "rw-1", "title": "Rework it"}]}}),
+    );
+    let spec = start_in(&f, 2, "audit2").unwrap();
+    assert!(
+        spec.body.contains("## Second pass: prior audit (run 1)"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("F-1"));
+    assert!(spec.body.contains("RUN ONE BODY"));
+    assert!(spec.body.contains("## Rework slices"));
+    assert!(spec.body.contains("rw-1"));
+}
+
+#[test]
+fn a_first_pass_never_falls_back_to_an_earlier_run() {
+    let f = fixture();
+    with_branch(&f);
+    plan(&f);
+    run_one_audit(&f);
+    let spec = start_in(&f, 2, "audit1").unwrap();
+    assert!(!spec.body.contains("Second pass"), "{}", spec.body);
+    assert!(!spec.body.contains("F-1"));
 }
 
 #[test]
