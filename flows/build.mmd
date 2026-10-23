@@ -1,0 +1,90 @@
+flowchart TD
+  research[Research]:::researcher --> rq{analysis}
+  rq -->|READY| plan
+  rq -->|NOT READY, NEEDS FURTHER REVIEW, failed| cto
+  plan[Plan]:::planner --> pq{plan}
+  pq -->|planned| admit1
+  pq -->|delivered| done
+  pq -->|operator, hold| parked
+  pq -->|design, failed| cto
+  admit1[Admit 1]:::admitter --> a1{admit 1}
+  a1 -->|admitted| slice
+  a1 -->|revise| plan2
+  a1 -->|escalate, failed| cto
+  plan2[Plan revision 1]:::planner --> pq2{plan 2}
+  pq2 -->|planned| admit2
+  pq2 -->|delivered| done
+  pq2 -->|operator, hold| parked
+  pq2 -->|design, failed| cto
+  admit2[Admit 2]:::admitter --> a2{admit 2}
+  a2 -->|admitted| slice
+  a2 -->|revise, escalate, failed| cto
+  slice[Slice]:::slicer --> sq{slice}
+  sq -->|sliced| build1
+  sq -->|escalate, failed| cto
+  subgraph pass1 [Verify 1]
+    build1[Slice tasks: hand, merge onto need branch, task rung]:::fanout --> b1{build 1}
+    b1 -->|built| audit1[Audit 1]:::auditor
+    b1 -->|built| test1[Need rung 1]:::rung-need
+    audit1 --> j1{join 1}:::join
+    test1 --> j1
+    j1 -->|judge| judge1[Judge 1]:::judge
+    judge1 --> jq1{judge 1}
+    jq1 -->|residual| rc1{raise check 1}:::raisecheck
+    rc1 -->|raised| raise1[Requested higher rung 1]:::rung-raised
+    j1 -->|raised| raise1
+    raise1 --> rr1{rung 1}
+  end
+  b1 -->|failed| cto
+  j1 -->|verified| merge
+  j1 -->|block| repair1
+  j1 -->|failed| cto
+  jq1 -->|block| repair1
+  jq1 -->|failed| cto
+  rc1 -->|none| merge
+  rr1 -->|pass| merge
+  rr1 -->|fail| repair1
+  rr1 -->|failed| cto
+  repair1[Repair 1: findings and failures to repair slices]:::slicer --> rs1{repair slice}
+  rs1 -->|sliced| build2
+  rs1 -->|escalate, failed| cto
+  subgraph pass2 [Verify 2]
+    build2[Repair tasks]:::fanout --> b2{build 2}
+    b2 -->|built| audit2[Audit 2, prior context]:::auditor
+    b2 -->|built| test2[Need rung 2]:::rung-need
+    audit2 --> j2{join 2}:::join
+    test2 --> j2
+    j2 -->|judge| judge2[Judge 2]:::judge
+    judge2 --> jq2{judge 2}
+    jq2 -->|residual| rc2{raise check 2}:::raisecheck
+    rc2 -->|raised| raise2[Requested higher rung 2]:::rung-raised
+    j2 -->|raised| raise2
+    raise2 --> rr2{rung 2}
+  end
+  b2 -->|failed| cto
+  j2 -->|verified| merge
+  j2 -->|block, failed| cto
+  jq2 -->|block, failed| cto
+  rc2 -->|none| merge
+  rr2 -->|pass| merge
+  rr2 -->|fail, failed| cto
+  merge[Merge to main]:::merge-main --> mq{merge}
+  mq -->|merged| done([Done])
+  mq -->|conflict| sync1
+  mq -->|failed| cto
+  sync1[Sync main into need branch]:::merge --> sy1{sync}
+  sy1 -->|merged| st1[Need rung after sync]:::rung-need
+  sy1 -->|conflict, failed| cto
+  st1 --> sr1{rung after sync}
+  sr1 -->|pass| merge2[Merge to main 2]:::merge-main
+  sr1 -->|fail, failed| cto
+  merge2 --> mq2{merge 2}
+  mq2 -->|merged| done
+  mq2 -->|conflict, failed| cto
+  cto[CTO: P0, full history, block-ship]:::cto --> cq{cto}
+  cq -->|research| r_research([New run: research]):::restart-research
+  cq -->|plan| r_plan([New run: plan]):::restart-plan
+  cq -->|slice| r_slice([New run: slice]):::restart-slice
+  cq -->|repair| r_repair([New run: repair]):::restart-repair
+  cq -->|lock, failed| locked([Locked: operator only]):::lock
+  parked([Parked: a newer reply restarts at plan]):::park
