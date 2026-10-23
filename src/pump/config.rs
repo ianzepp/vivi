@@ -13,7 +13,7 @@ mod planner;
 mod rungs;
 mod validate;
 
-pub use flow::FlowConfig;
+pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
 pub use validate::{Findings, Missing};
@@ -103,6 +103,9 @@ pub struct PumpConfig {
     /// Flow settings (the `[pump.flow]` table).
     #[serde(skip_serializing_if = "FlowConfig::is_empty")]
     pub flow: FlowConfig,
+    /// Slice settings (the `[pump.slice]` table).
+    #[serde(skip_serializing_if = "SliceConfig::is_empty")]
+    pub slice: SliceConfig,
 }
 
 impl Default for PumpConfig {
@@ -139,6 +142,7 @@ impl Default for PumpConfig {
             need: NeedConfig::default(),
             rungs: RungsConfig::default(),
             flow: FlowConfig::default(),
+            slice: SliceConfig::default(),
         }
     }
 }
