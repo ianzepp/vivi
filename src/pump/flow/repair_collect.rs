@@ -21,6 +21,12 @@ use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 /// The answer word of a repairer job that ran past its time cap.
 const OVERTIME: &str = "overtime";
 
+/// The answer word of a `built` attempt that changed nothing.
+const UNCHANGED: &str = "unchanged";
+
+/// The runner's `push:` word for an attempt with no change.
+const NO_CHANGES: &str = "no_changes";
+
 /// Collects the finished jobs of repair-flow `fix` steps.
 pub(crate) struct RepairerCollector;
 
@@ -73,8 +79,8 @@ fn built<S: JobStore, M: FlowMail>(
         .unwrap_or(job)
         .clone();
     let Some(facts) = published(&original) else {
-        let reason = "built but nothing published";
-        return cx.advance_word(step, FAILED, json!({"job": job.id, "reason": reason}));
+        let (word, reason) = unpublished(&original);
+        return cx.advance_word(step, word, json!({"job": job.id, "reason": reason}));
     };
     let text = repair::facts_text(&facts);
     cx.mail
@@ -82,6 +88,53 @@ fn built<S: JobStore, M: FlowMail>(
     payload["branch"] = json!(facts.branch);
     payload["commit"] = json!(facts.commit);
     cx.advance_word(step, "built", payload)
+}
+
+/// The pool summary's `push: <word>` of a receipt: only the lines before the
+/// first section and before the hand's own text count. Empty when absent.
+fn push_word(receipt: &str) -> &str {
+    let summary = receipt
+        .split("\n\n--- ")
+        .next()
+        .and_then(|head| head.split("hand's final message:").next())
+        .unwrap_or_default();
+    summary
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("push: "))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_default()
+}
+
+/// The word and reason for a `built` envelope whose publish does not hold: an
+/// empty attempt (`push: no_changes`) is `unchanged`, anything else `failed`.
+fn unpublished(original: &PoolJob) -> (&'static str, String) {
+    let publish_ref = original.publish_ref.as_deref().unwrap_or("none");
+    let receipt = original
+        .outcome
+        .as_ref()
+        .map(|outcome| outcome.receipt.as_str())
+        .unwrap_or_default();
+    let word = push_word(receipt);
+    if word == NO_CHANGES {
+        let base = original.from_ref.as_deref().unwrap_or("none");
+        let reason = format!(
+            "expected a commit on {publish_ref} from base {base}; actual: the runner saw no change (push {NO_CHANGES})"
+        );
+        return (UNCHANGED, reason);
+    }
+    let runner = original
+        .outcome
+        .as_ref()
+        .and_then(|outcome| outcome.runner_publish())
+        .map_or_else(
+            || String::from("none"),
+            |publish| format!("{} {}", publish.state, publish.reference),
+        );
+    let shown = if word.is_empty() { "none" } else { word };
+    let reason = format!(
+        "expected a publish of {publish_ref}; actual: push {shown}, runner publish {runner}"
+    );
+    (FAILED, reason)
 }
 
 /// What the runner published for `job`, when its receipt shows the job's own

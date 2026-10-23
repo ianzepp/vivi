@@ -66,7 +66,10 @@ fn join_and_raisecheck_words_follow_the_table() {
 
 #[test]
 fn repairer_words_include_overtime() {
-    assert_eq!(NodeClass::Repairer.words(), &["built", "overtime", FAILED]);
+    assert_eq!(
+        NodeClass::Repairer.words(),
+        &["built", "overtime", "unchanged", FAILED]
+    );
 }
 
 #[test]

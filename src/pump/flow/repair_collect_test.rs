@@ -72,7 +72,7 @@ fn rig() -> Result<Rig, VivariumError> {
         jobs: Jobs::default(),
         registry,
     };
-    rig.fix_job()?;
+    rig.fix_job("fix1", "fix-j1")?;
     Ok(rig)
 }
 
@@ -86,9 +86,9 @@ impl Rig {
             .ok_or_else(|| VivariumError::Message(format!("no step {node}")))
     }
 
-    fn fix_job(&mut self) -> R {
-        let step = self.step("fix1")?;
-        let mut spec = JobSpec::new("fix-j1", "repairer", "repairer", "s", "b");
+    fn fix_job(&mut self, node: &str, id: &str) -> R {
+        let step = self.step(node)?;
+        let mut spec = JobSpec::new(id, "repairer", "repairer", "s", "b");
         spec.task = Some(step.task.clone());
         spec.from_ref = Some(BASE.into());
         spec.publish_ref = Some(format!("refs/heads/{BRANCH}"));
@@ -96,9 +96,9 @@ impl Rig {
         self.store.insert_step_job(
             NEED,
             &StepJobRow {
-                job: "fix-j1".into(),
+                job: id.into(),
                 run: 1,
-                node: "fix1".into(),
+                node: node.into(),
                 task: step.task.clone(),
                 attempt: 1,
             },
@@ -108,7 +108,11 @@ impl Rig {
     }
 
     fn end(&mut self, status: JobStatus, receipt: Option<String>) {
-        let job = self.jobs.jobs.get_mut("fix-j1").unwrap();
+        self.end_job("fix-j1", status, receipt);
+    }
+
+    fn end_job(&mut self, id: &str, status: JobStatus, receipt: Option<String>) {
+        let job = self.jobs.jobs.get_mut(id).unwrap();
         job.status = status;
         job.outcome = receipt.map(|receipt| JobOutcome {
             state: "finished".into(),
@@ -217,5 +221,60 @@ fn a_failed_envelope_routes_to_the_second_attempt() -> R {
     rig.tick()?;
     assert_eq!(rig.step("fix1")?.verdict.as_deref(), Some("failed"));
     assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    Ok(())
+}
+
+fn no_changes() -> String {
+    "push: no_changes".into()
+}
+
+#[test]
+fn an_empty_attempt_answers_unchanged_and_routes_to_the_second_attempt() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(receipt(&no_changes(), BUILT)));
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.state, StepState::Done);
+    assert_eq!(fix.verdict.as_deref(), Some("unchanged"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+    let reason = payload["reason"].as_str().unwrap();
+    assert!(reason.contains("no_changes"), "{reason}");
+    assert!(reason.contains(BASE), "{reason}");
+    assert!(reason.contains(BRANCH), "{reason}");
+    assert_eq!(payload["job"], "fix-j1");
+    Ok(())
+}
+
+#[test]
+fn an_empty_second_attempt_routes_to_unrepaired() -> R {
+    let mut rig = rig()?;
+    rig.end(JobStatus::Finished, Some(receipt("", FAILED)));
+    rig.tick()?;
+    rig.fix_job("fix2", "fix-j2")?;
+    rig.end_job(
+        "fix-j2",
+        JobStatus::Finished,
+        Some(receipt(&no_changes(), BUILT)),
+    );
+    rig.tick()?;
+    assert_eq!(rig.step("fix2")?.verdict.as_deref(), Some("unchanged"));
+    assert_eq!(rig.step("unrepaired")?.node, "unrepaired");
+    Ok(())
+}
+
+#[test]
+fn a_refused_push_answers_failed_naming_it() -> R {
+    let mut rig = rig()?;
+    let refused =
+        format!("push: push_refused\nrunner publish: failed refs/heads/{BRANCH} {CAND} {CAND}");
+    rig.end(JobStatus::Finished, Some(receipt(&refused, BUILT)));
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    let payload = rig.store.step_payload(&fix.task)?.unwrap().payload;
+    let reason = payload["reason"].as_str().unwrap();
+    assert!(reason.contains("push_refused"), "{reason}");
+    assert!(reason.contains(BRANCH), "{reason}");
     Ok(())
 }
