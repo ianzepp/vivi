@@ -246,7 +246,8 @@ fn last_plan_marker(ctx: &Ctx, need: &str, messages: &[Value]) -> Option<usize> 
         .filter(|(index, message)| {
             is_generated_pump_reply(ctx, need, *index, message)
                 && message["body"].as_str().is_some_and(|body| {
-                    body.starts_with("pump: planned") || body.starts_with("pump: revised")
+                    let prose = crate::letter::prose_of(body);
+                    prose.starts_with("pump: planned") || prose.starts_with("pump: revised")
                 })
         })
         .map(|(index, _)| index)

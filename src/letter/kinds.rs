@@ -157,12 +157,40 @@ fn parse_event(kind: &LetterKind, verb: &str, text: &str) -> Result<Letter, Lett
 }
 
 /// A mail letter whose front matter has a top-level `action` key is a pump
-/// action; any other mail is plain mail with an optional pump note.
+/// action; any other mail is plain mail with an optional pump note, or a role
+/// reply envelope (a seat's report sent with `vivi mail reply`).
 fn parse_mail(text: &str) -> Result<Letter, LetterError> {
     if names_action(text) {
         return stored(&LetterKind::Action, text, Front::Action);
     }
-    stored(&LetterKind::Mail, text, Front::Mail)
+    let error = match stored(&LetterKind::Mail, text, Front::Mail) {
+        Ok(letter) => return Ok(letter),
+        Err(error) => error,
+    };
+    for role in RoleKind::ALL {
+        if let Ok(parsed) = roles::parse_for(role, text) {
+            return Ok(Letter {
+                kind: LetterKind::Reply(role),
+                prose: parsed.body.clone(),
+                front: Front::Reply(parsed),
+            });
+        }
+    }
+    Err(not_an_envelope(error))
+}
+
+/// The mail error, told that the front matter is not a role envelope either.
+/// A split failure is about the fence, not the keys: it is left as is.
+fn not_an_envelope(error: LetterError) -> LetterError {
+    const NOTE: &str = " (and the front matter is not a role reply envelope)";
+    match error {
+        LetterError::Toml { line, message } => LetterError::Toml {
+            line,
+            message: format!("{message}{NOTE}"),
+        },
+        LetterError::Invalid(reason) => LetterError::Invalid(format!("{reason}{NOTE}")),
+        other => other,
+    }
 }
 
 /// A split or TOML error is not an action: the mail parse reports it.

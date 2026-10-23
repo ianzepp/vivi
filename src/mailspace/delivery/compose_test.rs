@@ -197,3 +197,162 @@ fn a_raw_letter_with_an_unknown_format_is_refused() {
         .to_string();
     assert!(err.contains("letter format:"), "{err}");
 }
+
+fn mail(kind: Option<&str>, role: &str, body: &str) -> SendRequest {
+    SendRequest {
+        from: "mind".into(),
+        to: vec!["hand".into()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "s".into(),
+        body: body.into(),
+        role: role.into(),
+        kind: kind.map(Into::into),
+        reply_to: None,
+    }
+}
+
+const HAND_ENVELOPE: &str =
+    "+++\nanswer = \"built\"\nchange = []\ndeviations = []\nremaining = []\n+++\n\nall done\n";
+
+/// The stored letter with LF line ends.
+fn flat(mailspace: &Mailspace, handle: &str) -> String {
+    stored(mailspace, handle).replace("\r\n", "\n")
+}
+
+fn nothing_mailed(mailspace: &Mailspace) {
+    assert!(mailspace.list("hand", "inbox").unwrap().is_empty());
+    assert!(mailspace.list("mind", "sent").unwrap().is_empty());
+}
+
+#[test]
+fn a_prose_mail_is_wrapped_in_empty_front_matter_with_the_format_and_kind_headers() {
+    let (_tmp, mailspace) = space();
+    for kind in [Some("mail"), None] {
+        let result = mailspace.send(mail(kind, "inbox", "hello there")).unwrap();
+        let eml = flat(&mailspace, &result.delivered[0].handle);
+        assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
+        assert!(eml.contains("X-Vivi-Kind: mail"), "{eml}");
+        assert!(eml.contains("+++\n+++\n\nhello there"), "{eml}");
+    }
+}
+
+#[test]
+fn a_prose_reply_is_wrapped_and_formatted() {
+    let (_tmp, mailspace) = space();
+    let first = mailspace
+        .send(mail(Some("mail"), "inbox", "question"))
+        .unwrap();
+    let handle = &first.delivered[0].handle;
+    let result = mailspace
+        .reply(
+            handle,
+            "hand",
+            Vec::new(),
+            Vec::new(),
+            None,
+            "answer".into(),
+        )
+        .unwrap();
+    let eml = flat(&mailspace, &result.sent);
+    assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
+    assert!(eml.contains("X-Vivi-Kind: mail"), "{eml}");
+    assert!(eml.contains("+++\n+++\n\nanswer"), "{eml}");
+}
+
+#[test]
+fn a_mail_front_that_fits_no_front_is_refused_and_nothing_is_stored() {
+    let (_tmp, mailspace) = space();
+    let err = mailspace
+        .send(mail(
+            Some("mail"),
+            "inbox",
+            "+++\ncolour = \"red\"\n+++\n\nhi\n",
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("colour"), "{err}");
+    assert!(err.contains("not a role reply envelope"), "{err}");
+    nothing_mailed(&mailspace);
+}
+
+#[test]
+fn a_pump_record_with_a_prose_body_is_refused_and_nothing_is_stored() {
+    let (_tmp, mailspace) = space();
+    let err = mailspace
+        .send(mail(Some("pump"), "pumps", "Dispatch of a need."))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("front matter fence"), "{err}");
+    assert!(mailspace.list("hand", "pumps").unwrap().is_empty());
+    assert!(mailspace.list("mind", "sent").unwrap().is_empty());
+}
+
+#[test]
+fn a_pump_record_with_invalid_front_matter_is_refused() {
+    let (_tmp, mailspace) = space();
+    let err = mailspace
+        .send(mail(Some("pump"), "pumps", "+++\nneed = \"\"\n+++\n\nx\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("need"), "{err}");
+    assert!(mailspace.list("mind", "sent").unwrap().is_empty());
+}
+
+#[test]
+fn an_action_front_passes_as_mail() {
+    let (_tmp, mailspace) = space();
+    let body = "+++\naction = \"withdraw\"\nneed = \"abc\"\n+++\n\nstop\n";
+    let result = mailspace.send(mail(Some("mail"), "inbox", body)).unwrap();
+    let eml = flat(&mailspace, &result.delivered[0].handle);
+    assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
+    assert!(eml.contains("action = \"withdraw\""), "{eml}");
+}
+
+#[test]
+fn a_hand_envelope_is_accepted_unchanged_by_send_and_by_reply() {
+    let (_tmp, mailspace) = space();
+    let sent = mailspace
+        .send(mail(Some("mail"), "inbox", HAND_ENVELOPE))
+        .unwrap();
+    let eml = flat(&mailspace, &sent.delivered[0].handle);
+    assert!(eml.contains("answer = \"built\"\nchange = []"), "{eml}");
+    assert_eq!(eml.matches("+++\n").count(), 2, "{eml}");
+    let handle = &sent.delivered[0].handle;
+    let reply = mailspace
+        .reply(
+            handle,
+            "hand",
+            Vec::new(),
+            Vec::new(),
+            None,
+            HAND_ENVELOPE.into(),
+        )
+        .unwrap();
+    let eml = flat(&mailspace, &reply.sent);
+    assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
+    assert!(eml.contains("answer = \"built\"\nchange = []"), "{eml}");
+    assert_eq!(eml.matches("+++\n").count(), 2, "{eml}");
+}
+
+#[test]
+fn chat_is_wrapped_in_empty_front_matter() {
+    let (_tmp, mailspace) = space();
+    let result = mailspace.send(mail(Some("chat"), "inbox", "hi")).unwrap();
+    let eml = flat(&mailspace, &result.delivered[0].handle);
+    assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
+    assert!(eml.contains("X-Vivi-Kind: chat"), "{eml}");
+    assert!(eml.contains("+++\n+++\n\nhi"), "{eml}");
+}
+
+#[test]
+fn a_memo_kind_send_is_unchanged_and_unformatted() {
+    let (_tmp, mailspace) = space();
+    let result = mailspace
+        .send(mail(Some("memo"), "inbox", "plain note"))
+        .unwrap();
+    let eml = flat(&mailspace, &result.delivered[0].handle);
+    assert!(!eml.contains("X-Vivi-Format"), "{eml}");
+    assert!(eml.contains("X-Vivi-Kind: memo"), "{eml}");
+    assert!(!eml.contains("+++"), "{eml}");
+}

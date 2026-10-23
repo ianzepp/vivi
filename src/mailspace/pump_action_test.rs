@@ -311,27 +311,24 @@ fn an_unlock_carries_its_entry_in_the_word_and_none_without_one() {
     assert_eq!(pending[1].request.word, None);
 }
 
-/// Post `body` as a reply on `record` the way `send_letter` does, with the
-/// given extra headers, and log its `posted` event.
+/// Post `body` as a raw reply on `record` (no `X-Vivi-Format` header, so the
+/// send gate does not see it), with the given extra headers, and log its
+/// `posted` event.
 fn post_raw(mailspace: &Mailspace, record: &str, body: &str, extras: &[(String, String)]) {
-    let result = mailspace
-        .send_with_extras(
-            SendRequest {
-                from: "operator".into(),
-                to: vec!["mind".into()],
-                cc: Vec::new(),
-                bcc: Vec::new(),
-                subject: "pump: old action".into(),
-                body: body.into(),
-                role: "inbox".into(),
-                kind: Some("mail".into()),
-                reply_to: Some(record.to_string()),
-            },
-            extras,
-        )
-        .unwrap();
+    let headers: String = extras
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
+    let raw = format!(
+        "From: {}\r\nTo: {}\r\nSubject: pump: old action\r\nMessage-ID: <old-action@x.test>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: mail\r\n{headers}\r\n{body}\r\n",
+        mailspace.address_for("operator"),
+        mailspace.address_for("mind"),
+    );
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+    let posted = result.delivered[0].handle.clone();
     let storage = mailspace.storage().unwrap();
-    let id = storage.resolve_message_token(&result.sent).unwrap();
+    let id = storage.resolve_message_token(&posted).unwrap();
     let view = storage.message_by_id(&id).unwrap().unwrap();
     storage
         .append_mailspace_event(&MailspaceEventInput {

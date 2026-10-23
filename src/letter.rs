@@ -156,6 +156,17 @@ pub fn split(text: &str) -> Result<(&str, &str), LetterError> {
     split_pieces(text).map(|pieces| (pieces.front, pieces.body))
 }
 
+/// The prose of a stored letter body: what follows the front matter when the
+/// body opens with it, else the body. Surrounding blank space is trimmed, as
+/// `parse_letter` trims it.
+#[must_use]
+pub fn prose_of(body: &str) -> &str {
+    match split(body) {
+        Ok((_, prose)) => prose.trim(),
+        Err(_) => body,
+    }
+}
+
 /// Tables that belong in the front matter; written below the fence they are lost.
 const FRONT_TABLES: [&str; 2] = ["[[follow_up]]", "[[check]]"];
 

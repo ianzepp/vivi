@@ -95,7 +95,7 @@ pub(super) fn is_generated_pump_reply(
     configured_pump_sender(ctx, message)
         && message["body"]
             .as_str()
-            .is_some_and(|body| body.starts_with("pump: "))
+            .is_some_and(|body| crate::letter::prose_of(body).starts_with("pump: "))
 }
 
 fn configured_pump_sender(ctx: &Ctx, message: &Value) -> bool {

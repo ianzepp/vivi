@@ -62,14 +62,9 @@ impl Mailspace {
                 "Bcc is not supported for local mailspace delivery in v1".into(),
             ));
         }
-        let work_letter = compose::work_letter(self, request.kind.as_deref(), &request.body)?;
-        let depends_on = work_letter
-            .as_ref()
-            .map(|w| w.depends_on.clone())
-            .unwrap_or_default();
-        if let Some(work) = &work_letter {
-            request.body.clone_from(&work.body);
-        }
+        let gated = compose::gate(self, request.kind.as_deref(), &request.role, &request.body)?;
+        let depends_on = gated.depends_on.clone();
+        request.body.clone_from(&gated.body);
         let work_kind = work_send_kind(&request.role, request.kind.as_deref());
         if work_kind.is_some() && !depends_on.is_empty() {
             self.backlog_validate_deps(&depends_on)?;
@@ -92,7 +87,7 @@ impl Mailspace {
             &request,
             reply_parent.as_ref().map(|(_, data)| data.as_slice()),
             extras,
-            work_letter.is_some(),
+            &gated,
         )?;
         self.check_letter_size(eml.len())?;
         if work_kind.is_some() {
@@ -122,7 +117,7 @@ impl Mailspace {
         let delivered = delivered_with_handles(&storage, delivered_ids)?;
         let sent_handle = storage.display_handle(&sent.message_id)?;
         if let Some(kind) = work_kind {
-            let letter = work_letter.as_ref().map(|w| &w.letter);
+            let letter = gated.letter.as_ref();
             self.attach_sent_work(
                 kind,
                 &request,
@@ -226,7 +221,7 @@ impl Mailspace {
         request: &SendRequest,
         parent: Option<&[u8]>,
         extras: &[(String, String)],
-        work_letter: bool,
+        gated: &compose::Gated,
     ) -> Result<String, VivariumError> {
         let to = self.addresses_for(&request.to)?;
         let cc = self.addresses_for(&request.cc)?;
@@ -239,10 +234,10 @@ impl Mailspace {
             body: request.body.clone(),
             html_body: None,
         })?;
-        if let Some(kind) = &request.kind {
+        if let Some(kind) = &gated.kind {
             eml = add_header(&eml, "X-Vivi-Kind", kind)?;
         }
-        if work_letter {
+        if gated.formatted {
             eml = add_header(&eml, FORMAT_HEADER, FORMAT_VERSION)?;
         }
         for (name, value) in extras {

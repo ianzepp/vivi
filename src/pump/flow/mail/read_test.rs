@@ -258,22 +258,29 @@ fn task_body_and_replies_have_no_cr_for_a_multi_line_body() {
     );
 }
 
-/// Send `body` with `kind` and `role` from the operator to the mind; the
-/// handle the mind holds.
-fn send_as(mailspace: &Mailspace, kind: &str, role: &str, body: &str, reply_to: Option<&str>) {
+/// Ingest an old-form letter raw (no `X-Vivi-Format` header), which the send
+/// gate would refuse or wrap: `body` with `kind` and `extra` header lines
+/// ("Name: value\r\n" each) from the operator to the mind, into `folder`.
+/// Returns the handle the mind holds.
+fn raw_old_letter(
+    mailspace: &Mailspace,
+    kind: &str,
+    folder: &str,
+    extra: &str,
+    body: &str,
+) -> String {
+    let raw = format!(
+        "From: {}\r\nTo: {}\r\nSubject: old\r\nMessage-ID: <old-{kind}@x.test>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nX-Vivi-Kind: {kind}\r\n{extra}\r\n{body}\r\n",
+        mailspace.address_for("operator"),
+        mailspace.address_for("mind"),
+    );
     mailspace
-        .send(SendRequest {
-            from: "operator".into(),
-            to: vec!["mind".into()],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: "old".into(),
-            body: body.into(),
-            role: role.into(),
-            kind: Some(kind.into()),
-            reply_to: reply_to.map(ToString::to_string),
-        })
-        .unwrap();
+        .deliver_raw(raw.as_bytes(), folder)
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
 }
 
 #[test]
@@ -284,13 +291,34 @@ fn a_legacy_record_letter_is_unreadable_and_not_an_open_record_need() {
         .mailspace
         .pump_send(None, &good, Some(&record_body(&good, "build")))
         .unwrap();
-    send_as(
+    let old = raw_old_letter(
         &project.mailspace,
         "pump",
         "pumps",
+        "",
         "Dispatch of an old record.",
-        None,
     );
+    let storage = project.mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&old).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    storage
+        .append_mailspace_event(&crate::storage::MailspaceEventInput {
+            command: "pump send".into(),
+            event_type: "delivered".into(),
+            actor_identity: Some("operator".into()),
+            account: "mind".into(),
+            message_id: view.message_id.clone(),
+            content_id: view.content_id.clone(),
+            from_role: None,
+            to_role: Some("pumps".into()),
+            from_identity: Some("operator".into()),
+            to_identity: Some("mind".into()),
+            subject: view.subject.clone(),
+            note: None,
+        })
+        .unwrap();
+    drop(storage);
+
     let port = MailspacePort {
         mailspace: project.mailspace,
         pump_identity: "mind".into(),
@@ -343,23 +371,18 @@ fn a_header_only_action_letter_is_unreadable_until_it_is_applied() {
         .mailspace
         .pump_send(None, &need, Some(&record_body(&need, "build")))
         .unwrap();
-    send_as(
+    let letter = raw_old_letter(
         &project.mailspace,
         "mail",
         "inbox",
+        &format!(
+            "X-Vivi-Pump-Action: withdraw\r\nX-Vivi-Pump-Record: {}\r\n",
+            record.handle
+        ),
         "stop it",
-        Some(&record.handle),
     );
     let storage = project.mailspace.storage().unwrap();
-    let thread = project
-        .mailspace
-        .thread(&record.handle, false, usize::MAX, usize::MAX)
-        .unwrap();
-    let letter = thread
-        .iter()
-        .find(|row| row.handle != record.handle)
-        .expect("the reply");
-    let id = storage.resolve_message_token(&letter.handle).unwrap();
+    let id = storage.resolve_message_token(&letter).unwrap();
     let view = storage.message_by_id(&id).unwrap().unwrap();
     storage
         .append_mailspace_event(&MailspaceEventInput {

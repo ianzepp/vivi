@@ -123,7 +123,7 @@ fn research_replies(rig: &Rig, want: &str) -> Result<Vec<String>, VivariumError>
         .thread(want, false, 50, 8)?
         .into_iter()
         .map(|message| message.body)
-        .filter(|body| body.starts_with("pump: research"))
+        .filter(|body| crate::letter::prose_of(body).starts_with("pump: research"))
         .collect())
 }
 
