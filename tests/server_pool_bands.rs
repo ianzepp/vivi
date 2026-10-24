@@ -2,7 +2,8 @@
 //! band table in a hosted project, through the vivi library's config editor.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -26,6 +27,7 @@ fn scratch(name: &str) -> PathBuf {
 struct Fx {
     app: Router,
     state: AppState,
+    data: PathBuf,
     root: PathBuf,
     project: String,
     /// The host's own member, which the operator's key authenticates as.
@@ -60,6 +62,12 @@ root = "~/lanes2"
 
 /// A served host root with two pools and `operator` and `hand` roles.
 fn fixture(name: &str) -> Fx {
+    fixture_with(name, "")
+}
+
+/// The same fixture with extra config text appended, for tests that need a
+/// `[pump]` table (the config write guard checks the pump's control mode).
+fn fixture_with(name: &str, extra: &str) -> Fx {
     let base = scratch(name);
     let root = base.join("hosts").join("app");
     let mut ms = Mailspace::init(Some(&root)).unwrap();
@@ -75,8 +83,10 @@ fn fixture(name: &str) -> Fx {
     let toml = root.join(".vivi").join("mailspace.toml");
     let mut text = std::fs::read_to_string(&toml).unwrap();
     text.push_str(POOLS);
+    text.push_str(extra);
     std::fs::write(&toml, text).unwrap();
-    let state = app_state(base.join("data"), None, None);
+    let data = base.join("data");
+    let state = app_state(data.clone(), None, None);
     let report = hosted::reconcile(
         &state.projects,
         &state.identities,
@@ -85,6 +95,7 @@ fn fixture(name: &str) -> Fx {
     assert!(report.refused.is_empty(), "{report:?}");
     Fx {
         app: router(state.clone()),
+        data,
         root,
         project: report.served[0].project_id.clone(),
         member: report.served[0].member.clone(),
@@ -431,6 +442,85 @@ async fn unset_removes_the_band_and_refuses_one_that_is_not_set() {
     assert!(message.contains("bands"), "{message}");
 }
 
+fn audit_lines(dir: &Path) -> Vec<Value> {
+    fs::read_to_string(dir.join("audit.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn hold_pump_lock(root: &Path) -> std::fs::File {
+    let home = root.join(".vivi/pump");
+    fs::create_dir_all(&home).unwrap();
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.join("lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    lock
+}
+
+fn backup_names(root: &Path) -> Vec<String> {
+    fs::read_dir(root.join(".vivi"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".bak."))
+        .collect()
+}
+
+/// `set` and `unset` write under the config write guard: refused while the
+/// pump runs with the guard's message, one refused audit line each, and
+/// writable while the pump is paused, leaving a backup and one ok line.
+#[tokio::test]
+async fn set_and_unset_write_through_the_guard() {
+    let fx = fixture_with("guard", "\n[pump]\ntick = 20\n");
+    let key = fx.key_by(&fx.member, None);
+    let before = fx.config_text();
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Running)
+        .unwrap();
+    let lock = hold_pump_lock(&fx.root);
+    for arguments in [
+        json!({"action": "set", "pool": "main", "band": "P2", "model": "other/model"}),
+        json!({"action": "unset", "pool": "main", "band": "P1"}),
+    ] {
+        let message = fx.refused(&key, arguments).await;
+        assert!(message.contains("the pump is running"), "{message}");
+        assert_eq!(fx.config_text(), before);
+    }
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["tool"] == "pool_bands"));
+    assert!(lines.iter().all(|line| line["outcome"] == "refused"));
+    drop(lock);
+
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Paused).unwrap();
+    let _lock = hold_pump_lock(&fx.root);
+    let set = fx
+        .bands(
+            &key,
+            json!({"action": "set", "pool": "main", "band": "P2", "model": "other/model"}),
+        )
+        .await;
+    assert_eq!(
+        set["bands"]["P2"],
+        json!([{"model": "other/model", "reasoning": "xhigh"}])
+    );
+    assert!(fx.config_text().contains("other/model"));
+    assert!(
+        !backup_names(&fx.root).is_empty(),
+        "a guarded write keeps a backup"
+    );
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[2]["tool"], "pool_bands");
+    assert_eq!(lines[2]["outcome"], "ok");
+}
+
 #[tokio::test]
 async fn a_member_token_is_refused_and_changes_nothing() {
     let fx = fixture("token");
@@ -511,7 +601,8 @@ async fn a_key_that_is_not_the_operators_is_refused() {
 #[tokio::test]
 async fn a_project_that_is_not_hosted_is_refused() {
     let base = scratch("owned");
-    let state = app_state(base.join("data"), None, None);
+    let data = base.join("data");
+    let state = app_state(data.clone(), None, None);
     let meta = state
         .projects
         .create_project_with_creator(&spki_pem(7), "alice")
@@ -530,6 +621,7 @@ async fn a_project_that_is_not_hosted_is_refused() {
     let fx = Fx {
         app: router(state.clone()),
         state,
+        data,
         root: base,
         project,
         member: "alice".into(),

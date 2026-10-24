@@ -251,14 +251,6 @@ fn hold_pump_lock(root: &Path) -> std::fs::File {
     lock
 }
 
-fn models_toml(models: &[&str]) -> String {
-    let mut array = toml_edit::Array::new();
-    for model in models {
-        array.push(*model);
-    }
-    array.to_string()
-}
-
 #[tokio::test]
 async fn the_tools_are_listed_with_their_arguments() {
     let fx = fixture("list");
@@ -415,15 +407,39 @@ async fn pool_allow_set_matches_the_library_and_refuses_a_bad_type() {
         )
         .await;
     assert!(message.contains("array of strings"), "{message}");
-    assert_eq!(fx.config_text(), before, "a bad type writes nothing");
+    // The library's own checks, before anything is written.
+    let message = fx
+        .refused(
+            &key,
+            "pool_allow_set",
+            json!({"pool": "glm", "models": ["m1/a", "m1/a"]}),
+        )
+        .await;
+    assert!(message.contains("duplicate"), "{message}");
+    let message = fx
+        .refused(
+            &key,
+            "pool_allow_set",
+            json!({"pool": "glm", "models": ["not a slug!"]}),
+        )
+        .await;
+    assert!(message.contains("characters outside"), "{message}");
+    let message = fx
+        .refused(
+            &key,
+            "pool_allow_set",
+            json!({"pool": "nope", "models": ["m1/a"]}),
+        )
+        .await;
+    assert!(message.contains("unknown pool"), "{message}");
+    assert_eq!(fx.config_text(), before, "every refusal wrote nothing");
 
-    let models = ["m1/a", "m2/b"];
-    let raw = models_toml(&models);
+    let models: Vec<String> = ["m1/a", "m2/b"]
+        .iter()
+        .map(|model| model.to_string())
+        .collect();
     let twin_root = twin(&fx.root);
-    config_edit::guarded(&twin_root, |doc| {
-        config_edit::set_pool_key(doc, "glm", "harness.models", &raw)
-    })
-    .unwrap();
+    vivi::pool::config_allow::set_allow(&twin_root, "glm", &models).unwrap();
     let got = fx
         .call(
             &key,
@@ -433,15 +449,15 @@ async fn pool_allow_set_matches_the_library_and_refuses_a_bad_type() {
         .await;
     assert_eq!(got["pool"], "glm");
     assert_eq!(got["key"], "pools.glm.harness.models");
-    assert_eq!(got["models"], json!(models));
+    assert_eq!(got["models"], json!(["m1/a", "m2/b"]));
     assert_eq!(fx.config_text(), config_text(&twin_root));
     assert!(fx.config_text().contains("m1/a"), "{}", fx.config_text());
     assert!(!fx.config_text().contains("old/m"), "{}", fx.config_text());
-    // The two type refusals and the successful write: three lines, the last ok.
+    // Five refusals and the successful write: six lines, the last ok.
     let lines = audit_lines(&fx.data);
-    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines.len(), 6, "{lines:?}");
     assert!(lines.iter().all(|line| line["tool"] == "pool_allow_set"));
-    assert_eq!(lines[2]["outcome"], "ok");
+    assert_eq!(lines[5]["outcome"], "ok");
     let _ = fs::remove_dir_all(&twin_root);
 }
 
@@ -538,6 +554,19 @@ async fn writes_are_refused_while_the_pump_runs_and_a_paused_pump_is_writable() 
     assert_eq!(lines.len(), 7, "{lines:?}");
     assert_eq!(lines[6]["tool"], "config_set");
     assert_eq!(lines[6]["outcome"], "ok");
+    let got = fx
+        .call(
+            &key,
+            "pool_allow_set",
+            json!({"pool": "glm", "models": ["m9/z"]}),
+        )
+        .await;
+    assert_eq!(got["models"], json!(["m9/z"]));
+    assert!(fx.config_text().contains("m9/z"));
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 8, "{lines:?}");
+    assert_eq!(lines[7]["tool"], "pool_allow_set");
+    assert_eq!(lines[7]["outcome"], "ok");
 }
 
 #[tokio::test]
