@@ -155,7 +155,10 @@ mailspace).
   dispatch). `timeout` and `pools` are shown but not settable here. Other
   config writes are the operator tools `config_migrate`, `config_set`,
   `config_unset`, `pool_allow_set`, `target_add` and `target_remove`, each
-  through the library's guarded write (see the contract).
+  through the library's guarded write (see the contract). The role and
+  charter writes `role_add`, `role_set` and `charter_set` are operator
+  tools too, over the CLI's `vivi role add|set` and `vivi role charter
+  set` arguments and the same guard.
 - **`pool_bands`.** Operator-only, with `pump_control`'s authorization (one
   shared check, `show` included): `action` is `show`, `set` or `unset`, with
   `pool`, and `band` (`P0` to `P5`) for set and unset, `model` and optional
