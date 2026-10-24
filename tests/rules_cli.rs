@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use vivi::storage::Storage;
+use vivi::storage::{MessageIngestRequest, Storage};
 
 #[test]
 fn active_rules_are_visible_to_every_seat() {
@@ -160,10 +160,20 @@ fn supersede_replaces_the_active_rule() {
     assert_eq!(actors, vec![Some("cto".to_string())]);
 
     let bytes = message_text(project.path(), new_id);
-    assert!(
-        bytes.contains(&format!("X-Vivi-Supersedes: {old_id}")),
-        "{bytes}"
-    );
+    assert!(bytes.contains("X-Vivi-Format: 1"), "{bytes}");
+    for header in ["X-Vivi-Rule-Scope", "X-Vivi-Supersedes"] {
+        assert!(
+            !bytes.contains(&format!("{header}:")),
+            "rule fact stayed a header: {bytes}"
+        );
+    }
+    let parsed = vivi::letter::of_message(bytes.as_bytes(), new_id).unwrap();
+    assert_eq!(parsed.kind, vivi::letter::LetterKind::Rule);
+    let vivi::letter::Front::Rule(front) = parsed.front else {
+        panic!("not a rule letter: {bytes}")
+    };
+    assert_eq!(front.scope, Some(vivi::letter::plain::RuleScope::Local));
+    assert_eq!(front.supersedes.as_deref(), Some(old_id));
 
     let again = vivi([
         "rule",
@@ -184,6 +194,43 @@ fn supersede_replaces_the_active_rule() {
         "{}",
         stderr(&again)
     );
+}
+
+#[test]
+fn a_legacy_rule_letter_is_history_whose_headers_are_not_read() {
+    let project = tempfile::tempdir().unwrap();
+    init_roster(project.path());
+    let root = project.path().to_str().unwrap();
+    let letter = "From: ceo@local.test\r\nTo: ceo@local.test\r\nSubject: old law\r\n\
+         Message-ID: <legacy-rule@local.test>\r\nX-Vivi-Kind: rule\r\n\
+         X-Vivi-Rule-Scope: local\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nold text\r\n";
+    let storage = Storage::open_mailspace(&project.path().join(".vivi")).unwrap();
+    let stored = storage
+        .ingest_message(
+            &MessageIngestRequest {
+                account: "ceo".into(),
+                local_role: "rules".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: "legacy-rule".into(),
+                remote: None,
+            },
+            letter.as_bytes(),
+        )
+        .unwrap();
+    let handle = storage.display_handle(&stored.message_id).unwrap();
+
+    let history = stdout(&vivi(["rule", "list", "--all", "--project", root]));
+    assert!(history.contains("old law"), "{history}");
+    let shown = stdout(&vivi(["rule", "show", &handle, "--project", root]));
+    assert!(shown.contains("old text"), "{shown}");
+
+    let json = show_json(root, &handle);
+    assert_eq!(json["scope"], "project");
+    assert_eq!(json["state"], "active");
 }
 
 #[test]
