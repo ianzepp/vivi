@@ -46,7 +46,6 @@ pub struct ParsedLetter {
     pub event_units: Vec<String>,
     /// `X-Vivi-Event-State` of an `absorbed` event, lowercased.
     pub event_state: Option<String>,
-    pub depends_on: Vec<String>,
     pub body: String,
 }
 
@@ -164,7 +163,6 @@ fn parse_header_block(header_text: &str) -> ParsedLetter {
                 }
             }
             "date" => parsed.date = date_micros(&value),
-            "x-vivi-depends-on" => parsed.depends_on.push(value),
             _ => {}
         }
     }
