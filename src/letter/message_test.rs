@@ -191,6 +191,86 @@ fn a_done_event_letter_round_trips_its_close_front_through_the_wire() {
 }
 
 #[test]
+fn a_format_one_letter_with_a_moved_content_header_is_refused_per_family() {
+    // W3-B4 moved seven content headers into front matter. A format-1
+    // letter that still carries one is malformed and refused, whatever the
+    // family shape: memo (tag), rule (scope, supersedes), note/mail (close
+    // facts) and the close-event parse path (front lacking the fact).
+    let prose = plain::render(&MemoFront::default(), "plain prose").unwrap();
+    let close = plain::render(&CloseFront::default(), "closed it").unwrap();
+    let cases = [
+        (
+            "memo",
+            "X-Vivi-Kind: memo\r\n",
+            "X-Vivi-Tag: ops\r\n",
+            prose.clone(),
+        ),
+        (
+            "rule",
+            "X-Vivi-Kind: rule\r\n",
+            "X-Vivi-Rule-Scope: local\r\nX-Vivi-Supersedes: abc\r\n",
+            prose.clone(),
+        ),
+        (
+            "note",
+            "X-Vivi-Kind: mail\r\n",
+            "X-Vivi-Verdict: fixed\r\n",
+            prose.clone(),
+        ),
+        (
+            "report",
+            "X-Vivi-Kind: mail\r\n",
+            "X-Vivi-Branch: mind/review\r\nX-Vivi-Commit: deadbeef\r\nX-Vivi-Repo: vivi=sha9\r\n",
+            prose,
+        ),
+        (
+            "close event",
+            "X-Vivi-Kind: mail\r\nX-Vivi-Event: done\r\n",
+            "X-Vivi-Verdict: fixed\r\n",
+            close,
+        ),
+    ];
+    for (family, kind, moved, body) in &cases {
+        let raw = stored(&format!("X-Vivi-Format: 1\r\n{kind}{moved}"), body);
+        let err = of_message(&raw, "h1").unwrap_err();
+        assert!(matches!(err, LetterError::Invalid(_)), "{family}: {err:?}");
+        let text = err.to_string();
+        let first = moved
+            .lines()
+            .next()
+            .and_then(|line| line.split_once(':').map(|(name, _)| name.trim()))
+            .unwrap_or_default();
+        assert!(text.contains(first), "{family}: {text}");
+        assert!(
+            text.contains("letter h1") && text.contains("front matter"),
+            "{family}: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_legacy_letter_keeps_its_moved_content_headers_ignored() {
+    // No `X-Vivi-Format`: history. The letter reads as legacy and the moved
+    // headers stay unread, exactly as before W3-B4.
+    let raw = stored("X-Vivi-Kind: memo\r\nX-Vivi-Tag: ops\r\n", "plain prose");
+    assert_eq!(
+        of_message(&raw, "h1"),
+        Err(LetterError::Legacy {
+            handle: "h1".to_string(),
+            kind: "memo".to_string(),
+        })
+    );
+    let event = stored(
+        "X-Vivi-Kind: mail\r\nX-Vivi-Event: done\r\nX-Vivi-Verdict: fixed\r\n",
+        "closed it",
+    );
+    assert!(matches!(
+        of_message(&event, "h1"),
+        Err(LetterError::Legacy { .. })
+    ));
+}
+
+#[test]
 fn letters_with_an_empty_front_carry_no_fence_through_the_wire() {
     let bodies = [
         plain::render(&MemoFront::default(), "plain note").unwrap(),

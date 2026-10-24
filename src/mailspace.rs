@@ -68,6 +68,9 @@ mod trace;
 mod want_node;
 pub mod want_state;
 mod watch;
+#[cfg(test)]
+#[path = "mailspace/writers_test.rs"]
+mod writers_test;
 
 pub use address::{Recipient, prefix_of_domain};
 pub use archive::ArchiveExportReport;

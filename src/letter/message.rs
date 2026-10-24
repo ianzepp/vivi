@@ -6,12 +6,29 @@ use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterError};
 const KIND_HEADER: &str = "X-Vivi-Kind";
 const EVENT_HEADER: &str = "X-Vivi-Event";
 
+/// The content headers W3-B4 moved into front matter. A format-1 letter
+/// that carries one states a fact in a retired place, and the header is
+/// never read, so the parse refuses it; the fact belongs in the front
+/// matter. A legacy letter (no `X-Vivi-Format`) keeps them ignored as
+/// history.
+const MOVED_CONTENT_HEADERS: [&str; 7] = [
+    "X-Vivi-Verdict",
+    "X-Vivi-Repo",
+    "X-Vivi-Branch",
+    "X-Vivi-Commit",
+    "X-Vivi-Tag",
+    "X-Vivi-Rule-Scope",
+    "X-Vivi-Supersedes",
+];
+
 /// The values of the headers a letter read needs, from the header block only.
 #[derive(Default)]
 struct Headers {
     format: Option<String>,
     kind: Option<String>,
     event: Option<String>,
+    /// The first moved content header the header block carries, if any.
+    moved: Option<&'static str>,
 }
 
 fn read_headers(raw: &[u8]) -> Headers {
@@ -25,6 +42,14 @@ fn read_headers(raw: &[u8]) -> Headers {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        if headers.moved.is_none()
+            && let Some(moved) = MOVED_CONTENT_HEADERS
+                .iter()
+                .copied()
+                .find(|moved| name.eq_ignore_ascii_case(moved))
+        {
+            headers.moved = Some(moved);
+        }
         let slot = if name.eq_ignore_ascii_case(FORMAT_HEADER) {
             &mut headers.format
         } else if name.eq_ignore_ascii_case(KIND_HEADER) {
@@ -59,9 +84,11 @@ fn body_text(raw: &[u8], handle: &str) -> Result<String, LetterError> {
 ///
 /// Returns `LetterError::Legacy` for a letter with no `X-Vivi-Format` header
 /// (history, never parsed), `LetterError::UnknownFormat` for a format this
-/// vivi does not read, `LetterError::UnknownKind` for a missing or unknown
-/// kind, `LetterError::Invalid` when the bytes are not a mail message, and the
-/// body's own parse error otherwise.
+/// vivi does not read, `LetterError::Invalid` for a format-1 letter that
+/// carries one of the content headers W3-B4 moved into front matter (the
+/// header is not read; the fact belongs in the front matter) or for bytes
+/// that are not a mail message, `LetterError::UnknownKind` for a missing or
+/// unknown kind, and the body's own parse error otherwise.
 pub fn of_message(raw: &[u8], handle: &str) -> Result<Letter, LetterError> {
     let headers = read_headers(raw);
     let Some(format) = headers.format else {
@@ -77,6 +104,12 @@ pub fn of_message(raw: &[u8], handle: &str) -> Result<Letter, LetterError> {
     };
     if format != FORMAT_VERSION {
         return Err(LetterError::UnknownFormat(format));
+    }
+    if let Some(header) = headers.moved {
+        return Err(LetterError::Invalid(format!(
+            "letter {handle} carries `{header}` as a header: a format-1 letter \
+             states that fact in its front matter, and the header is not read"
+        )));
     }
     let kind = LetterKind::from_headers(headers.kind.as_deref(), headers.event.as_deref())?;
     let body = body_text(raw, handle)?;

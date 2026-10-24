@@ -1231,6 +1231,34 @@ fn replies_and_lifecycle_notes_assemble_cross_kind_threads() {
     assert_eq!(done_messages.as_array().unwrap().len(), 4);
     assert!(stdout(&done_thread).contains("Follow-up is complete."));
 
+    // W3-B4: a plain reply note and an empty-front done event render with
+    // no `+++` fence anywhere in the thread, --json here and text below.
+    for prose in ["I reviewed it.", "Follow-up is complete."] {
+        let message = done_messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| {
+                message["body"]
+                    .as_str()
+                    .is_some_and(|body| body.contains(prose))
+            })
+            .unwrap_or_else(|| panic!("no message with {prose}: {done_messages}"));
+        let body = message["body"].as_str().unwrap();
+        assert!(!body.contains("+++"), "empty front must not fence: {body}");
+    }
+    let done_text = vivi([
+        "mail",
+        "thread",
+        "--project",
+        project.path().to_str().unwrap(),
+        &task_handle,
+    ]);
+    assert_success(&done_text);
+    let text = stdout(&done_text);
+    assert!(text.contains("I reviewed it."), "{text}");
+    assert!(text.contains("Follow-up is complete."), "{text}");
+
     let dump = vivi([
         "mail",
         "dump",
@@ -1245,6 +1273,76 @@ fn replies_and_lifecycle_notes_assemble_cross_kind_threads() {
     assert_success(&dump);
     assert!(stdout(&dump).contains("parent_content_id"));
     assert!(stdout(&dump).contains("captured"));
+}
+
+#[test]
+fn an_untagged_memo_thread_shows_no_fence_in_text_or_json() {
+    let project = tempfile::tempdir().unwrap();
+    init_roster(project.path());
+    let p = project.path().to_str().unwrap();
+
+    // A memo with no tags has an empty front: its prose is stored as
+    // written, so a thread of it shows no `+++` fence at all (W3-B4).
+    let saved = vivi([
+        "memo",
+        "save",
+        "--for",
+        "ceo",
+        "--subject",
+        "field note",
+        "--body",
+        "prose as written",
+        "--project",
+        p,
+    ]);
+    assert_success(&saved);
+    let memo = handle_after(&stdout(&saved), "saved ");
+
+    let text = vivi(["mail", "thread", "--project", p, &memo]);
+    assert_success(&text);
+    let shown = stdout(&text);
+    assert!(shown.contains("prose as written"), "{shown}");
+    assert!(
+        !shown.contains("+++"),
+        "empty front must not fence: {shown}"
+    );
+
+    let json = vivi(["mail", "thread", "--project", p, "--json", &memo]);
+    assert_success(&json);
+    let messages: Value = serde_json::from_str(&stdout(&json)).unwrap();
+    let body = messages[0]["body"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no body: {messages}"));
+    assert_eq!(body.trim(), "prose as written");
+    assert!(!body.contains("+++"), "empty front must not fence: {body}");
+
+    // A rule always carries its scope front, so its thread shows that fence
+    // with content in it — never an empty `+++` pair.
+    let rule = vivi([
+        "rule",
+        "save",
+        "--for",
+        "ceo",
+        "--subject",
+        "code style",
+        "--body",
+        "two spaces, always",
+        "--project",
+        p,
+    ]);
+    assert_success(&rule);
+    let rule_handle = handle_after(&stdout(&rule), "saved ");
+    let rule_json = vivi(["mail", "thread", "--project", p, "--json", &rule_handle]);
+    assert_success(&rule_json);
+    let rule_messages: Value = serde_json::from_str(&stdout(&rule_json)).unwrap();
+    let rule_body = rule_messages[0]["body"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no body: {rule_messages}"));
+    assert!(rule_body.contains("two spaces, always"), "{rule_body}");
+    assert!(
+        rule_body.contains("scope =") && !rule_body.contains("+++\n+++"),
+        "rule front must render with content, never an empty fence: {rule_body}"
+    );
 }
 
 #[test]
