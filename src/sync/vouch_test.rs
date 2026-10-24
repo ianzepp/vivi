@@ -52,6 +52,29 @@ fn the_letter_parses_back_to_the_member_and_key() {
 }
 
 #[test]
+fn a_vouch_is_format_one_mail_and_of_message_reads_the_json_prose() {
+    let letter = composed();
+    let text = String::from_utf8(letter.raw_eml.clone()).unwrap();
+    assert!(
+        text.contains("X-Vivi-Format: 1\n"),
+        "format header missing: {text}"
+    );
+    assert!(text.contains("X-Vivi-Kind: mail\n"), "{text}");
+
+    let parsed = crate::letter::of_message(&letter.raw_eml, "vouch-bob").unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
+    assert!(matches!(parsed.front, crate::letter::Front::Mail(_)));
+    assert!(
+        !parsed.prose.starts_with("+++"),
+        "the vouch fact is prose, not front matter: {}",
+        parsed.prose
+    );
+    let body: Value = serde_json::from_str(&parsed.prose).unwrap();
+    assert_eq!(body["vouch"]["name"], "bob");
+    assert_eq!(body["vouch"]["public_key_pem"], GOOD_PEM);
+}
+
+#[test]
 fn bad_names_and_bad_pems_are_refused_without_a_transport_call() {
     let server = FakeServer::new();
     for member in ["", " ", "bob carol", "bob\t", "\nbob"] {

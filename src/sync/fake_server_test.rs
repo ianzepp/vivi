@@ -460,17 +460,18 @@ impl FakeClient {
     }
 }
 
-/// A letter to `postmaster` whose body is the vouch JSON admits the named
-/// member's key when the sender is admitted; anything else is not a vouch.
-/// The first key admitted under a name wins.
+/// A letter to `postmaster` admits the named member's key when the sender
+/// is admitted. The fact is the JSON prose after the header block
+/// (`{"vouch": {"name", "public_key_pem"}}`). `X-Vivi-Format` and
+/// `X-Vivi-Kind` are not the fact. The first key admitted under a name wins.
 fn admit_vouch(inner: &mut Inner, from: &str, to: &str, bytes: &[u8]) {
     if to != "postmaster" || !inner.admitted.contains_key(from) {
         return;
     }
-    let Some(split) = bytes.windows(2).position(|pair| pair == b"\n\n") else {
+    let Some(prose) = letter_body(bytes) else {
         return;
     };
-    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&bytes[split + 2..]) else {
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(prose) else {
         return;
     };
     let vouch = body.get("vouch");
@@ -486,6 +487,18 @@ fn admit_vouch(inner: &mut Inner, from: &str, to: &str, bytes: &[u8]) {
         .admitted
         .entry(name.to_string())
         .or_insert_with(|| pem.to_string());
+}
+
+/// The bytes after the first blank line (`\r\n\r\n` or `\n\n`, whichever
+/// occurs first). Same cut the server uses to read a vouch.
+fn letter_body(raw: &[u8]) -> Option<&[u8]> {
+    let crlf = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
+    let lf = raw.windows(2).position(|w| w == b"\n\n").map(|p| p + 2);
+    let start = match (crlf, lf) {
+        (Some(a), Some(b)) => a.min(b),
+        (a, b) => a.or(b)?,
+    };
+    Some(&raw[start..])
 }
 
 /// A real temp mailspace with sync settings, standing in for one member's
