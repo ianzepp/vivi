@@ -9,6 +9,8 @@ use super::{
     ItemEventKind, chain_heads, dated_within_clock, held_item, role_move,
 };
 use crate::error::VivariumError;
+use crate::letter::plain::CloseFront;
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterKind, parse_kind};
 use crate::mailspace::Mailspace;
 use crate::mailspace::Recipient;
 use crate::mailspace::delivery::add_header;
@@ -31,9 +33,11 @@ pub(super) struct EmitRequest<'a> {
     pub(super) command: &'a str,
     /// Why, when no person acted (`join`): the lifecycle row's note.
     pub(super) via: Option<&'a str>,
-    /// Extra letter headers the event carries (a close's verdict, repo tips,
-    /// and integration branch/commit), beyond the event chain's own.
-    pub(super) headers: Vec<(String, String)>,
+    /// Close metadata the event letter carries as its front matter: the
+    /// verdict, repo tips and integration branch/commit of a close. A close
+    /// that travels as an event letter carries them to every mailspace
+    /// holding the item.
+    pub(super) close: CloseFront,
 }
 
 impl EmitRequest<'_> {
@@ -65,28 +69,29 @@ struct EventLetterDraft {
 }
 
 impl Mailspace {
-    /// Close metadata as letter headers: `verdict` becomes `X-Vivi-Verdict`,
-    /// each `repo:<name>` becomes `X-Vivi-Repo: <name>=<tip>`, and the
-    /// integration `branch` and `commit` each get their own header. A close
-    /// that travels as an event letter carries them to every mailspace holding
-    /// the item.
-    pub(in crate::mailspace) fn verdict_headers(
+    /// Close metadata as the front matter of the event letter: `verdict`,
+    /// `branch`, `commit` and each `repo:<name>` key. The front matter's own
+    /// rules (branch and commit together, no blank fact) are checked when
+    /// the letter is composed, so a writer bug is an error at write time.
+    pub(in crate::mailspace) fn close_front(
         metadata: &BTreeMap<String, String>,
-    ) -> Vec<(String, String)> {
-        let mut headers = Vec::new();
-        if let Some(verdict) = metadata.get("verdict") {
-            headers.push(("X-Vivi-Verdict".into(), verdict.clone()));
-        }
-        if let (Some(branch), Some(commit)) = (metadata.get("branch"), metadata.get("commit")) {
-            headers.push(("X-Vivi-Branch".into(), branch.clone()));
-            headers.push(("X-Vivi-Commit".into(), commit.clone()));
-        }
+    ) -> Result<CloseFront, VivariumError> {
+        let mut front = CloseFront {
+            verdict: metadata.get("verdict").cloned(),
+            branch: metadata.get("branch").cloned(),
+            commit: metadata.get("commit").cloned(),
+            repos: BTreeMap::new(),
+        };
         for (key, tip) in metadata {
             if let Some(repo) = key.strip_prefix("repo:") {
-                headers.push(("X-Vivi-Repo".into(), format!("{repo}={tip}")));
+                front.repos.insert(repo.to_string(), tip.clone());
+            } else if !matches!(key.as_str(), "verdict" | "branch" | "commit") {
+                return Err(VivariumError::Message(format!(
+                    "unknown close metadata key `{key}`"
+                )));
             }
         }
-        headers
+        Ok(front)
     }
 
     /// Write the event letter for a `done` or `reopen` move by a role that may
@@ -106,7 +111,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
-        extras: &[(String, String)],
+        close: CloseFront,
         joined: &mut Vec<String>,
     ) -> Result<Option<String>, VivariumError> {
         if before.local_role == "wants" && role == "needs" {
@@ -154,7 +159,7 @@ impl Mailspace {
             note,
             command,
             via: None,
-            headers: extras.to_vec(),
+            close,
         };
         self.emit_item_event(storage, &item, &request, joined)
             .map(Some)
@@ -202,7 +207,7 @@ impl Mailspace {
             note: None,
             command,
             via: Some(via),
-            headers: Self::verdict_headers(&metadata),
+            close: Self::close_front(&metadata)?,
         };
         self.emit_item_event(storage, &item, &request, joined)?;
         if !metadata.is_empty() {
@@ -334,14 +339,17 @@ impl Mailspace {
             moves: &moves,
         })?;
         if closes_or_reopens(request.kind) {
+            // A close with no provenance still writes the pair, empty: the
+            // reset marker `item_metadata` hides, so a later unlocated close
+            // clears what an older one named.
             let location = BTreeMap::from([
                 (
                     "branch".into(),
-                    close_header_value(&request.headers, "X-Vivi-Branch").unwrap_or_default(),
+                    request.close.branch.clone().unwrap_or_default(),
                 ),
                 (
                     "commit".into(),
-                    close_header_value(&request.headers, "X-Vivi-Commit").unwrap_or_default(),
+                    request.close.commit.clone().unwrap_or_default(),
                 ),
             ]);
             storage.set_item_metadata(&request.before.message_id, &location)?;
@@ -410,9 +418,17 @@ impl Mailspace {
             .message_id()
             .ok_or_else(|| VivariumError::Message("the item has no Message-ID".into()))?;
         let (from, to, cc, local) = self.event_recipients(&parsed, request);
-        let body = request
+        let verb = request.kind.header();
+        let prose = request
             .note
-            .map_or_else(|| request.kind.header().to_string(), str::to_string);
+            .map_or_else(|| verb.to_string(), str::to_string);
+        // Close metadata travels as front matter; an empty front stores the
+        // prose as written, with no fence. The composed body is parsed back
+        // as the event kind, so a writer bug is an error at write time.
+        let body = crate::letter::plain::render(&request.close, &prose)
+            .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;
+        parse_kind(&LetterKind::Event(verb.to_string()), &body)
+            .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;
         let mut data = build_compose_draft(&ComposeDraft {
             from,
             to,
@@ -423,22 +439,12 @@ impl Mailspace {
             html_body: None,
         })?;
         data = add_header(&data, "X-Vivi-Kind", "mail")?;
-        data = add_header(&data, EVENT_HEADER, request.kind.header())?;
+        data = add_header(&data, FORMAT_HEADER, FORMAT_VERSION)?;
+        data = add_header(&data, EVENT_HEADER, verb)?;
         data = add_header(&data, EVENT_OF_HEADER, &format!("<{item_id}>"))?;
         data = add_header(&data, EVENT_AT_HEADER, at)?;
         for prev in prevs {
             data = add_header(&data, EVENT_PREV_HEADER, &format!("<{prev}>"))?;
-        }
-        for (name, value) in &request.headers {
-            data = add_header(&data, name, value)?;
-        }
-        if closes_or_reopens(request.kind)
-            && close_header_value(&request.headers, "X-Vivi-Branch").is_none()
-            && close_header_value(&request.headers, "X-Vivi-Commit").is_none()
-        {
-            for name in ["X-Vivi-Branch", "X-Vivi-Commit"] {
-                data = add_header(&data, name, super::property::PROVENANCE_CLEAR_SENTINEL)?;
-            }
         }
         data = add_reply_headers(&data, &item.bytes)?;
         Ok(EventLetterDraft {
@@ -518,13 +524,6 @@ impl Mailspace {
 /// A close or reopen restates where the work was integrated; a promotion does not.
 fn closes_or_reopens(kind: ItemEventKind) -> bool {
     matches!(kind, ItemEventKind::Done | ItemEventKind::Reopened)
-}
-
-fn close_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
-    headers
-        .iter()
-        .find(|(header, _)| header.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.clone())
 }
 
 /// The `X-Vivi-Event-At` value for a new event: the clock, or one

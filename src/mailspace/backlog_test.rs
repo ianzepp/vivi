@@ -324,8 +324,13 @@ fn joined_need_uses_common_unit_branch_and_latest_unit_commit() {
         .unwrap();
     let bytes = storage.read_message(&event.message_id).unwrap();
     let letter = String::from_utf8_lossy(&bytes);
-    assert!(letter.contains("X-Vivi-Branch: mind/review"), "{letter}");
-    assert!(letter.contains("X-Vivi-Commit: 2222222"), "{letter}");
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
+    let parsed = crate::letter::of_message(&bytes, &state.event).unwrap();
+    let crate::letter::Front::Event(front) = parsed.front else {
+        panic!("not a close front: {letter}");
+    };
+    assert_eq!(front.branch.as_deref(), Some("mind/review"));
+    assert_eq!(front.commit.as_deref(), Some("2222222"));
 }
 
 #[test]

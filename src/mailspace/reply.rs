@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::delivery::add_header;
 use super::{DeliveryResult, Mailspace, Recipient, SendRequest};
 use crate::error::VivariumError;
@@ -10,6 +12,32 @@ pub(super) struct NoteReply {
 }
 
 impl Mailspace {
+    /// Close metadata as note-letter headers: `verdict` becomes
+    /// `X-Vivi-Verdict`, each `repo:<name>` becomes `X-Vivi-Repo:
+    /// <name>=<tip>`, and the integration `branch` and `commit` each get
+    /// their own header. A local report's note carries them, so the owner
+    /// sees what the report settled. Interim (W3-B4): the fold no longer
+    /// reads these headers, and the note letter takes front matter when its
+    /// writer is converted.
+    pub(in crate::mailspace) fn verdict_headers(
+        metadata: &BTreeMap<String, String>,
+    ) -> Vec<(String, String)> {
+        let mut headers = Vec::new();
+        if let Some(verdict) = metadata.get("verdict") {
+            headers.push(("X-Vivi-Verdict".into(), verdict.clone()));
+        }
+        if let (Some(branch), Some(commit)) = (metadata.get("branch"), metadata.get("commit")) {
+            headers.push(("X-Vivi-Branch".into(), branch.clone()));
+            headers.push(("X-Vivi-Commit".into(), commit.clone()));
+        }
+        for (key, tip) in metadata {
+            if let Some(repo) = key.strip_prefix("repo:") {
+                headers.push(("X-Vivi-Repo".into(), format!("{repo}={tip}")));
+            }
+        }
+        headers
+    }
+
     /// Reply to an existing message. Resolves recipients from the parent
     /// message if none are specified: its sender, local or remote.
     ///

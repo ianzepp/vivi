@@ -1053,7 +1053,10 @@ fn a_reopen_and_a_later_unlocated_close_clear_stale_branch_provenance() {
 fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
     let p = pair();
     // hand is the assignee, so its close travels as a report letter
-    // carrying the verdict headers, not an event letter.
+    // carrying the verdict headers, not an event letter. W3-B4: close
+    // metadata rides event-letter front matter and the fold no longer
+    // reads header-carried facts, so the report's verdict reaches the owner
+    // again once note letters carry front matter.
     p.b.mailspace
         .move_task_outcome(
             "hand",
@@ -1074,8 +1077,11 @@ fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
             .unwrap()
             .item_metadata(&p.a.id_of(&p.task))
             .unwrap();
-    assert_eq!(metadata.get("verdict").map(String::as_str), Some("fixed"));
-    assert_eq!(metadata.get("repo:vivi").map(String::as_str), Some("sha9"));
+    assert!(
+        !metadata.contains_key("verdict"),
+        "legacy headers fold nothing: {metadata:?}"
+    );
+    assert!(!metadata.contains_key("repo:vivi"), "{metadata:?}");
     assert_eq!(
         role_of(&p.a, &p.task),
         "sent",

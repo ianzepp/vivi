@@ -10,6 +10,7 @@ use super::{
     canonical_local_role,
 };
 use crate::error::VivariumError;
+use crate::letter::plain::CloseFront;
 use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Letter};
 use crate::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 use crate::storage::{
@@ -758,7 +759,7 @@ impl Mailspace {
         // A role that may close the work (its author, or a mind) writes an
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
-        let extras = metadata.map(Self::verdict_headers).unwrap_or_default();
+        let (close, extras) = close_parts(metadata)?;
         let event = self.try_emit_for_move(
             &storage,
             &identity,
@@ -766,7 +767,7 @@ impl Mailspace {
             &role,
             note,
             command,
-            &extras,
+            close,
             &mut joined_needs,
         )?;
         if event.is_none() {
@@ -915,6 +916,20 @@ impl Mailspace {
 /// A verdict-only report still sends a letter, so the owner sees the verdict.
 fn report_note<'a>(note: Option<&'a str>, extras: &[(String, String)]) -> Option<&'a str> {
     note.or((!extras.is_empty()).then_some("done"))
+}
+
+/// The two shapes close metadata takes on a move: the event letter's front
+/// matter, and the note headers a local report still writes until note
+/// letters take front matter (W3-B4).
+fn close_parts(
+    metadata: Option<&BTreeMap<String, String>>,
+) -> Result<(CloseFront, Vec<(String, String)>), VivariumError> {
+    let close = metadata
+        .map(Mailspace::close_front)
+        .transpose()?
+        .unwrap_or_default();
+    let extras = metadata.map(Mailspace::verdict_headers).unwrap_or_default();
+    Ok((close, extras))
 }
 
 fn role_implies_kind(role: &str, kind: &str) -> bool {

@@ -319,7 +319,7 @@ fn deliver_keeps_an_attachment_letter_byte_for_byte() {
 }
 
 #[test]
-fn a_close_with_verdict_carries_it_as_letter_headers() {
+fn a_close_with_verdict_carries_it_as_front_matter() {
     let (_tmp, mailspace) = space(false);
     let mut sent = mailspace
         .send(SendRequest {
@@ -353,14 +353,65 @@ fn a_close_with_verdict_carries_it_as_letter_headers() {
     let event = outcome.event.unwrap();
     let id = storage.resolve_message_token(&event).unwrap();
     let letter = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
+    for header in [
+        "X-Vivi-Verdict",
+        "X-Vivi-Repo",
+        "X-Vivi-Branch",
+        "X-Vivi-Commit",
+    ] {
+        assert!(
+            !letter.contains(&format!("{header}:")),
+            "close metadata stayed a header: {letter}"
+        );
+    }
+    let parsed = crate::letter::of_message(letter.as_bytes(), &event).unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Event("done".into()));
+    let crate::letter::Front::Event(front) = parsed.front else {
+        panic!("not a close front: {letter}");
+    };
+    assert_eq!(front.verdict.as_deref(), Some("accepted"));
+    assert_eq!(front.repos.get("vivi").map(String::as_str), Some("abc123"));
+}
+
+#[test]
+fn a_close_without_metadata_stores_its_note_with_no_fence() {
+    let (_tmp, mailspace) = space(false);
+    let mut sent = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "unit".into(),
+            body: task_body("lands"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = sent.delivered.remove(0).handle;
+
+    let outcome = mailspace
+        .move_task_outcome("mind", &handle, "done", Some("all landed"), None, &[], &[])
+        .unwrap();
+
+    let storage = mailspace.storage().unwrap();
+    let id = storage
+        .resolve_message_token(outcome.event.as_deref().unwrap())
+        .unwrap();
+    let letter = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
     assert!(
-        letter.contains("X-Vivi-Verdict: accepted"),
-        "no verdict header: {letter}"
+        !letter.contains("+++"),
+        "an empty front shows no fence: {letter}"
     );
-    assert!(
-        letter.contains("X-Vivi-Repo: vivi=abc123"),
-        "no repo header: {letter}"
-    );
+    let parsed = crate::letter::of_message(letter.as_bytes(), &handle).unwrap();
+    let crate::letter::Front::Event(front) = &parsed.front else {
+        panic!("not a close front: {letter}");
+    };
+    assert_eq!(front, &crate::letter::plain::CloseFront::default());
+    assert_eq!(parsed.prose, "all landed");
 }
 
 #[test]
