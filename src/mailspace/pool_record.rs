@@ -8,7 +8,7 @@
 use super::Mailspace;
 use super::thread::{MailspaceThreadMessage, text_body};
 use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
+use crate::letter::records::{MailFront, NoteWord, PoolNote};
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
 
 /// A task as the pool reads it.
@@ -179,7 +179,8 @@ impl Mailspace {
     }
 
     /// Record a pool event on a task together with a reply note carrying
-    /// `text`. Both land in one transaction.
+    /// `text` and the event's machine record as its `[pool]` front matter.
+    /// Both land in one transaction.
     ///
     /// # Errors
     /// Returns an error if the task cannot be resolved or is absorbed, or the
@@ -199,7 +200,14 @@ impl Mailspace {
         let identity = self
             .identity_owning_account(&view.account)
             .unwrap_or_else(|| view.account.clone());
-        let reply = self.note_reply(&storage, &identity, &view, text, &[])?;
+        let front = MailFront {
+            pool: Some(PoolNote {
+                event: event_type.to_string(),
+                record: record.to_string(),
+            }),
+            ..MailFront::default()
+        };
+        let reply = self.note_reply(&storage, &identity, &view, text, front)?;
         let event = pool_event(&view, &identity, event_type, record);
         storage.note_message_with_reply(&MailspaceNoteWithReply {
             message_id: &id,

@@ -50,8 +50,8 @@ use super::{
     date_micros, from_domain_of, rfc3339_micros, role_move,
 };
 use crate::error::VivariumError;
-use crate::letter::plain::CLOSE_EVENTS;
-use crate::letter::{Front, LetterKind, of_message};
+use crate::letter::plain::{CLOSE_EVENTS, CloseFront};
+use crate::letter::{Front, Letter, LetterKind, of_message};
 use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::marks::{folded_marks, mark_event};
 use crate::message::normalize_message_id;
@@ -212,7 +212,9 @@ struct LetterVerdict {
 
 /// The close metadata a letter carries — the `verdict`, `repos`,
 /// `branch` and `commit` keys of a format-1 `done`/`reopened` event's
-/// close front matter — each stamped with the letter's instant
+/// close front matter, or of a report note's `[close]` table (the `mail`
+/// letter a close by a role that may not write the event letter reports
+/// through) — each stamped with the letter's instant
 /// (`X-Vivi-Event-At` RFC 3339, else `Date`) and normalized `Message-ID`.
 /// Empty for a letter that is none of that: legacy letters carry their close
 /// facts in headers this fold no longer reads (W3-B4: headers carry
@@ -228,13 +230,7 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
     let Ok(letter) = of_message(bytes, "") else {
         return Vec::new();
     };
-    let LetterKind::Event(verb) = &letter.kind else {
-        return Vec::new();
-    };
-    if !CLOSE_EVENTS.contains(&verb.as_str()) {
-        return Vec::new();
-    }
-    let Front::Event(front) = &letter.front else {
+    let Some(front) = close_front_of(&letter) else {
         return Vec::new();
     };
     let mut values: Vec<(String, String)> = Vec::new();
@@ -267,6 +263,24 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
         .collect()
 }
 
+/// The close front matter a letter carries: a format-1 `done`/`reopened`
+/// event letter's own front, or the `[close]` table of a report note — a
+/// `mail` letter a close by a role that may not write the event letter
+/// reports through. A report note with an empty `[close]` table carries no
+/// fact.
+fn close_front_of(letter: &Letter) -> Option<&CloseFront> {
+    match (&letter.kind, &letter.front) {
+        (LetterKind::Event(verb), Front::Event(front)) if CLOSE_EVENTS.contains(&verb.as_str()) => {
+            Some(front)
+        }
+        (LetterKind::Mail, Front::Mail(front)) => match front.close.as_ref() {
+            Some(close) if close != &CloseFront::default() => Some(close),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The letter's `X-Vivi-Event-At` (RFC 3339) as Unix microseconds, when
 /// present and parseable.
 fn event_at_of(parsed: &Message<'_>) -> Option<i64> {
@@ -282,8 +296,8 @@ fn event_at_of(parsed: &Message<'_>) -> Option<i64> {
 
 /// True when the letter carries close metadata: a format-1 `done` or
 /// `reopened` event letter, which always contributes its branch/commit pair
-/// (empty for an unlocated close). The letter a report about closed work
-/// travels as.
+/// (empty for an unlocated close), or a report note with a `[close]` table.
+/// The letter a report about closed work travels as.
 pub(super) fn carries_verdict(bytes: &[u8]) -> bool {
     !parse_letter_verdicts(bytes).is_empty()
 }

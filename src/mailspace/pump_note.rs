@@ -55,7 +55,7 @@ pub fn note_body(
             t: next_stamp(),
             reference: reference.map(str::to_owned),
         }),
-        job: None,
+        ..MailFront::default()
     };
     crate::letter::render(&front, prose)
         .map_err(|err| VivariumError::Message(format!("pump note: {err}")))
@@ -74,6 +74,7 @@ pub fn brief_body(job: JobFront, prose: &str) -> Result<String, VivariumError> {
             reference: None,
         }),
         job: Some(job),
+        ..MailFront::default()
     };
     crate::letter::render(&front, prose)
         .map_err(|err| VivariumError::Message(format!("pump brief: {err}")))

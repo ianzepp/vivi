@@ -455,14 +455,30 @@ fn a_report_with_verdict_carries_it_as_a_letter() {
         .unwrap();
     let letter =
         String::from_utf8_lossy(&storage.read_message(&reply.message_id).unwrap()).into_owned();
-    assert!(
-        letter.contains("X-Vivi-Verdict: fixed"),
-        "no verdict header: {letter}"
-    );
-    assert!(
-        letter.contains("X-Vivi-Repo: vivi=sha1"),
-        "no repo header: {letter}"
-    );
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
+    for header in [
+        "X-Vivi-Verdict",
+        "X-Vivi-Repo",
+        "X-Vivi-Branch",
+        "X-Vivi-Commit",
+    ] {
+        assert!(
+            !letter.contains(&format!("{header}:")),
+            "close metadata stayed a header: {letter}"
+        );
+    }
+    let parsed = crate::letter::of_message(letter.as_bytes(), &handle).unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
+    let crate::letter::Front::Mail(front) = parsed.front else {
+        panic!("not a mail front: {letter}");
+    };
+    let close = front
+        .close
+        .as_ref()
+        .unwrap_or_else(|| panic!("no close front: {letter}"));
+    assert_eq!(close.verdict.as_deref(), Some("fixed"));
+    assert_eq!(close.repos.get("vivi").map(String::as_str), Some("sha1"));
+    assert_eq!(parsed.prose, "done");
 }
 
 #[test]

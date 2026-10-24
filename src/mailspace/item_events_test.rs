@@ -141,6 +141,25 @@ fn a_letter_carries_verdict_only_as_close_front_matter() {
         "branch = \"mind/review\"\n",
         "done"
     )));
+    // A report note — a `mail` letter — carries its facts as a `[close]`
+    // table; an empty table and a plain note carry none.
+    let note = |front: &str, body: &str| {
+        letter(&format!(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\n+++\r\n{front}\r\n+++\r\n\r\n{body}"
+        ))
+    };
+    assert!(carries_verdict(&note(
+        "[close]\nverdict = \"fixed\"\n",
+        "done"
+    )));
+    assert!(carries_verdict(&note(
+        "[close]\nverdict = \"fixed\"\n\n[close.repos]\nvivi = \"sha9\"\n",
+        "done"
+    )));
+    assert!(!carries_verdict(&note("[close]\n", "done")));
+    assert!(!carries_verdict(&letter(
+        "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\ndone\r\n"
+    )));
 }
 
 #[test]
