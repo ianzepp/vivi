@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use crate::cli::PumpReplanCommand;
 use crate::mailspace::PumpAction;
 use crate::pump::fixture::{Project, project};
-use crate::pump::replan::run;
+use crate::pump::replan::{replan, run};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -70,4 +70,25 @@ fn run_replan_without_a_pump_database_is_refused() {
     let error = run(project.root(), &command("n1")).unwrap_err();
 
     assert!(error.to_string().contains("no pump.db at"));
+}
+
+#[test]
+fn replan_returns_the_need_and_record_it_posted_on() {
+    let project = project();
+    let need = project.need("fix auth");
+    let record = project.mailspace.pump_send(None, &need, None).unwrap();
+    seed_db(&project);
+
+    let result = replan(project.root(), &need).unwrap();
+
+    assert_eq!(result.need, need);
+    assert_eq!(result.record, record.handle);
+    assert_eq!(
+        result.to_string(),
+        format!("replan {need} requested; the pump applies it at its next tick")
+    );
+    let actions = posted(&project);
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].id, result.id);
+    assert_eq!(actions[0].record, record.handle);
 }

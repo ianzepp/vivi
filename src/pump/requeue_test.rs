@@ -9,7 +9,7 @@ use crate::mailspace::PumpAction;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::index::{RunRow, StepState};
 use crate::pump::jobs::{JobSpec, JobStatus, enqueue};
-use crate::pump::requeue::run;
+use crate::pump::requeue::{RequeueResult, RequeueTarget, requeue, run};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -211,4 +211,94 @@ fn run_requeue_without_a_step_is_refused() {
     let err = run(project.root(), &command(&[])).unwrap_err();
     assert!(err.to_string().contains("at least one step"), "{err}");
     assert!(posted(&project).is_empty());
+}
+
+#[test]
+fn requeue_returns_the_step_it_posted_and_a_dry_run_posts_nothing() {
+    let project = project();
+    let need = project.need("fix auth");
+    let record = project.mailspace.pump_send(None, &need, None).unwrap();
+    seed_flow_step(&project, &need, "step-task-1");
+    let tasks = vec![String::from("step-task-1")];
+
+    let preview = requeue(
+        project.root(),
+        &RequeueTarget::Steps {
+            tasks: &tasks,
+            reason: None,
+        },
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        preview,
+        vec![RequeueResult::StepPreview {
+            task: String::from("step-task-1"),
+            need: need.clone(),
+        }]
+    );
+    assert_eq!(
+        preview[0].to_string(),
+        format!("would requeue flow step step-task-1 of need {need}")
+    );
+    assert!(posted(&project).is_empty(), "a dry run posts nothing");
+
+    let done = requeue(
+        project.root(),
+        &RequeueTarget::Steps {
+            tasks: &tasks,
+            reason: Some("again"),
+        },
+        false,
+    )
+    .unwrap();
+    let RequeueResult::Step {
+        task,
+        need: got,
+        record: posted_on,
+        id,
+    } = &done[0]
+    else {
+        panic!("expected a posted step, got {done:?}");
+    };
+    assert_eq!(task, "step-task-1");
+    assert_eq!(got, &need);
+    assert_eq!(posted_on, &record.handle);
+    let actions = posted(&project);
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].id, *id);
+    assert_eq!(actions[0].request.reason, "again");
+    assert_eq!(
+        done[0].to_string(),
+        "requeue step-task-1 requested; the pump applies it at its next tick"
+    );
+}
+
+#[test]
+fn requeue_job_returns_the_release_line() {
+    let project = project();
+    let store = seed_jobs(&project);
+
+    let preview = requeue(project.root(), &RequeueTarget::Job("m1"), true).unwrap();
+    assert_eq!(
+        preview,
+        vec![RequeueResult::JobPreview {
+            id: String::from("m1"),
+        }]
+    );
+    assert_eq!(preview[0].to_string(), "would request release of job m1");
+    assert!(store.take_job_releases().unwrap().is_empty(), "dry run");
+
+    let done = requeue(project.root(), &RequeueTarget::Job("m1"), false).unwrap();
+    assert_eq!(
+        done,
+        vec![RequeueResult::Job {
+            id: String::from("m1"),
+        }]
+    );
+    assert_eq!(
+        done[0].to_string(),
+        "release of job m1 requested; the pump applies it at its next tick"
+    );
+    assert_eq!(store.take_job_releases().unwrap(), ["m1"]);
 }

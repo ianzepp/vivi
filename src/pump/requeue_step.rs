@@ -69,8 +69,8 @@ fn active_need(store: &PumpStore, task: &str) -> Result<Option<String>, Vivarium
 }
 
 /// Check that every step's need has an open pump record, then post one
-/// requeue action per step, or only print what would be posted when
-/// `dry_run`. Nothing is posted when any need has no open record.
+/// requeue action per step. `dry_run` returns what would be posted and posts
+/// nothing. Nothing is posted when any need has no open record. Does not print.
 ///
 /// # Errors
 /// Returns [`VivariumError::Message`] for a step whose need has no open pump
@@ -80,17 +80,12 @@ pub(super) fn post(
     steps: &[StepTarget],
     reason: &str,
     dry_run: bool,
-) -> Result<(), VivariumError> {
+) -> Result<Vec<super::RequeueResult>, VivariumError> {
     if steps.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mailspace = Mailspace::discover(Some(project))?;
-    let open: BTreeSet<String> = mailspace
-        .pump_list(None, Some(PumpState::Open))?
-        .into_iter()
-        .filter(|record| record.letter_error.is_none())
-        .map(|record| record.need)
-        .collect();
+    let open = open_needs(&mailspace)?;
     for (task, need) in steps {
         if !open.contains(need) {
             return Err(VivariumError::Message(format!(
@@ -98,14 +93,43 @@ pub(super) fn post(
             )));
         }
     }
+    let mut done = Vec::with_capacity(steps.len());
     for (task, need) in steps {
-        if dry_run {
-            println!("would requeue flow step {task} of need {need}");
-            continue;
-        }
-        let request = PumpActionRequest::requeue(task, reason);
-        mailspace.pump_post_action(None, need, &request)?;
-        println!("{}", super::requested_line(task));
+        done.push(one(&mailspace, task, need, reason, dry_run)?);
     }
-    Ok(())
+    Ok(done)
+}
+
+/// Needs with an open pump record whose letter parsed.
+fn open_needs(mailspace: &Mailspace) -> Result<BTreeSet<String>, VivariumError> {
+    Ok(mailspace
+        .pump_list(None, Some(PumpState::Open))?
+        .into_iter()
+        .filter(|record| record.letter_error.is_none())
+        .map(|record| record.need)
+        .collect())
+}
+
+/// Post one step, or record the preview line a dry run would print.
+fn one(
+    mailspace: &Mailspace,
+    task: &str,
+    need: &str,
+    reason: &str,
+    dry_run: bool,
+) -> Result<super::RequeueResult, VivariumError> {
+    if dry_run {
+        return Ok(super::RequeueResult::StepPreview {
+            task: task.to_owned(),
+            need: need.to_owned(),
+        });
+    }
+    let request = PumpActionRequest::requeue(task, reason);
+    let posted = mailspace.pump_post_action(None, need, &request)?;
+    Ok(super::RequeueResult::Step {
+        task: task.to_owned(),
+        need: need.to_owned(),
+        record: posted.record,
+        id: posted.id,
+    })
 }

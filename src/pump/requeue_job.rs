@@ -15,13 +15,18 @@ use crate::pump::jobs::JobStatus;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// Ask the pump to release held job `id`. Refuses an unknown job and one that
-/// is not held, naming its status. `dry_run` checks and prints, writes nothing.
+/// is not held, naming its status. `dry_run` checks and returns a preview,
+/// writes nothing. Does not print.
 ///
 /// # Errors
 /// Returns [`VivariumError::Message`] for a mailspace with no pump database,
 /// an unknown job, or a job that is not held, and whatever writing the
 /// request fails with.
-pub(super) fn request(home: &Path, id: &str, dry_run: bool) -> Result<(), VivariumError> {
+pub(super) fn request(
+    home: &Path,
+    id: &str,
+    dry_run: bool,
+) -> Result<super::RequeueResult, VivariumError> {
     let path = home.join(DB_FILENAME);
     let st = load_state(&path)?;
     let job = st
@@ -35,13 +40,11 @@ pub(super) fn request(home: &Path, id: &str, dry_run: bool) -> Result<(), Vivari
         )));
     }
     if dry_run {
-        println!("would request release of job {id}");
-        return Ok(());
+        return Ok(super::RequeueResult::JobPreview { id: id.to_owned() });
     }
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
     PumpStore::open(&path)?.request_job_release(id, at)?;
-    println!("release of job {id} requested; the pump applies it at its next tick");
-    Ok(())
+    Ok(super::RequeueResult::Job { id: id.to_owned() })
 }

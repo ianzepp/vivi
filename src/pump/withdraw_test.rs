@@ -10,7 +10,7 @@ use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, WantState, held_item,
 use crate::pump::fixture::project;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
-use crate::pump::withdraw::run;
+use crate::pump::withdraw::{WithdrawClose, run, withdraw};
 
 fn command(needs: &[&str], reason: &str) -> PumpWithdrawCommand {
     PumpWithdrawCommand {
@@ -231,4 +231,41 @@ fn run_withdraw_closes_a_need_an_assignee_reported_done_but_nobody_accepted() {
     let report = project.mailspace.want_state(&want).unwrap();
     assert_eq!(report.state, WantState::Done);
     assert_eq!(report.serving[0].verdict.as_deref(), Some("withdrawn"));
+}
+
+#[test]
+fn withdraw_returns_closed_then_already_closed() {
+    let project = project();
+    let need = project.need("fix auth");
+    let record = project.mailspace.pump_send(None, &need, None).unwrap();
+    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
+    store.save(&State::default()).unwrap();
+    let needs = vec![need.clone()];
+
+    let posted = withdraw(project.root(), &needs, " stale ").unwrap();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(posted[0].need, need);
+    assert_eq!(posted[0].record, record.handle);
+    assert_eq!(posted[0].close, WithdrawClose::Closed);
+    assert_eq!(
+        posted[0].to_string(),
+        format!(
+            "withdraw {need} requested; need closed withdrawn; the pump applies the rest at its next tick"
+        )
+    );
+    let actions = project
+        .mailspace
+        .pump_pending_actions(&BTreeSet::new())
+        .unwrap();
+    assert_eq!(actions[0].id, posted[0].id);
+    assert_eq!(actions[0].request.reason, "stale");
+
+    let again = withdraw(project.root(), &needs, "stale").unwrap();
+    assert_eq!(again[0].close, WithdrawClose::AlreadyClosed);
+    assert_eq!(
+        again[0].to_string(),
+        format!(
+            "withdraw {need} requested; need already closed; the pump applies the rest at its next tick"
+        )
+    );
 }
