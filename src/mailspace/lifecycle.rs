@@ -643,7 +643,10 @@ fn task_body(body: &str, parent: Option<String>) -> Result<String, VivariumError
     if parent.is_some() {
         front.parent = parent;
     }
-    crate::letter::render(&front, &prose).map_err(message)
+    // Parsed back as a task, so a writer bug is an error before send stores it.
+    let rendered = crate::letter::render(&front, &prose).map_err(message)?;
+    crate::letter::parse_kind(&crate::letter::LetterKind::Task, &rendered).map_err(message)?;
+    Ok(rendered)
 }
 
 fn insert_optional(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
