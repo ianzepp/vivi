@@ -52,13 +52,37 @@ fn a_verdict_letter_is_marked_touched_for_the_settle() {
     let to = c.address("mind");
     let letter = format!(
         "Message-ID: <r1@example.com>\r\nFrom: hand@example.com\r\nTo: {to}\r\n\
-         In-Reply-To: <task@example.com>\r\nX-Vivi-Verdict: fixed\r\n\r\n\
-         done: the unit landed\r\n"
+         In-Reply-To: <task@example.com>\r\nX-Vivi-Format: 1\r\nX-Vivi-Event: done\r\n\r\n\
+         +++\r\nverdict = \"fixed\"\r\n+++\r\n\r\ndone: the unit landed\r\n"
     );
     let bytes = letter.into_bytes();
     let record = Record {
         sequence: 1,
         message_id: "msg_000000010000000000000000".into(),
+        from: "hand@example.com".into(),
+        to: Some(to.clone()),
+        kind: None,
+        content_sha256: sha256_hex(&bytes),
+        from_prefix: None,
+        appended_at: None,
+        raw_eml: b64::encode(&bytes),
+    };
+    let mut report = PullReport::default();
+    filer
+        .file_record(&storage, &record, &mut report, &mut Vec::new())
+        .unwrap();
+    assert_eq!(report.touched, vec![sha256_hex(&bytes)]);
+
+    // A legacy verdict letter (headers, no format) is history: not touched.
+    let legacy = format!(
+        "Message-ID: <r2@example.com>\r\nFrom: hand@example.com\r\nTo: {to}\r\n\
+         In-Reply-To: <task@example.com>\r\nX-Vivi-Verdict: fixed\r\n\r\n\
+         done: the unit landed\r\n"
+    );
+    let bytes = legacy.into_bytes();
+    let record = Record {
+        sequence: 2,
+        message_id: "msg_000000020000000000000000".into(),
         from: "hand@example.com".into(),
         to: Some(to),
         kind: None,
@@ -71,5 +95,5 @@ fn a_verdict_letter_is_marked_touched_for_the_settle() {
     filer
         .file_record(&storage, &record, &mut report, &mut Vec::new())
         .unwrap();
-    assert_eq!(report.touched, vec![sha256_hex(&bytes)]);
+    assert!(report.touched.is_empty(), "{:?}", report.touched);
 }

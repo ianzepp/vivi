@@ -43,13 +43,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mail_parser::{HeaderValue, MessageParser};
+use mail_parser::{HeaderValue, Message, MessageParser};
 
 use super::{
     EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, EventTally, HeldItem, ItemEventKind, Mailspace,
     date_micros, from_domain_of, rfc3339_micros, role_move,
 };
 use crate::error::VivariumError;
+use crate::letter::plain::CLOSE_EVENTS;
+use crate::letter::{Front, LetterKind, of_message};
 use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::marks::{folded_marks, mark_event};
 use crate::message::normalize_message_id;
@@ -62,12 +64,6 @@ const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
 const EVENT_DEP_HEADER: &str = "X-Vivi-Event-Dep";
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 const EVENT_STATE_HEADER: &str = "X-Vivi-Event-State";
-const VERDICT_HEADER: &str = "X-Vivi-Verdict";
-const REPO_HEADER: &str = "X-Vivi-Repo";
-const BRANCH_HEADER: &str = "X-Vivi-Branch";
-const COMMIT_HEADER: &str = "X-Vivi-Commit";
-/// Paired on an event letter to clear the latest branch/commit metadata.
-pub(super) const PROVENANCE_CLEAR_SENTINEL: &str = "-";
 
 /// What a property event puts on an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,12 +210,14 @@ struct LetterVerdict {
     stamp: (i64, String),
 }
 
-/// The close metadata a letter carries — `X-Vivi-Verdict` (single),
-/// repeatable `X-Vivi-Repo: <repo>=<tip>`, and paired `X-Vivi-Branch` /
-/// `X-Vivi-Commit` headers a close writes via
-/// [`Mailspace::verdict_headers`] — each stamped with the letter's instant
+/// The close metadata a letter carries — the `verdict`, `repos`,
+/// `branch` and `commit` keys of a format-1 `done`/`reopened` event's
+/// close front matter — each stamped with the letter's instant
 /// (`X-Vivi-Event-At` RFC 3339, else `Date`) and normalized `Message-ID`.
-/// Empty for a letter that carries neither, or has no `Message-ID`.
+/// Empty for a letter that is none of that: legacy letters carry their close
+/// facts in headers this fold no longer reads (W3-B4: headers carry
+/// transport only), and a legacy letter's rows keep what an earlier fold
+/// already persisted.
 fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
     let Some(parsed) = MessageParser::default().parse(bytes) else {
         return Vec::new();
@@ -227,39 +225,38 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
     let Some(id) = parsed.message_id().and_then(normalize_message_id) else {
         return Vec::new();
     };
-    let mut at = None;
+    let Ok(letter) = of_message(bytes, "") else {
+        return Vec::new();
+    };
+    let LetterKind::Event(verb) = &letter.kind else {
+        return Vec::new();
+    };
+    if !CLOSE_EVENTS.contains(&verb.as_str()) {
+        return Vec::new();
+    }
+    let Front::Event(front) = &letter.front else {
+        return Vec::new();
+    };
     let mut values: Vec<(String, String)> = Vec::new();
-    let mut branch = None;
-    let mut commit = None;
-    for header in parsed.headers() {
-        let HeaderValue::Text(text) = header.value() else {
-            continue;
-        };
-        let name = header.name();
-        if name.eq_ignore_ascii_case(EVENT_AT_HEADER) {
-            at = rfc3339_micros(text);
-        } else if name.eq_ignore_ascii_case(VERDICT_HEADER) {
-            values.push(("verdict".into(), text.trim().to_string()));
-        } else if name.eq_ignore_ascii_case(REPO_HEADER)
-            && let Some((repo, tip)) = text.trim().split_once('=')
-        {
-            values.push((format!("repo:{}", repo.trim()), tip.trim().to_string()));
-        } else if name.eq_ignore_ascii_case(BRANCH_HEADER) {
-            branch = Some(text.trim().to_string());
-        } else if name.eq_ignore_ascii_case(COMMIT_HEADER) {
-            commit = Some(text.trim().to_string());
-        }
+    if let Some(verdict) = &front.verdict {
+        values.push(("verdict".into(), verdict.clone()));
     }
-    if let (Some(branch), Some(commit)) = (branch, commit) {
-        if branch == PROVENANCE_CLEAR_SENTINEL && commit == PROVENANCE_CLEAR_SENTINEL {
-            values.push(("branch".into(), String::new()));
-            values.push(("commit".into(), String::new()));
-        } else {
-            values.push(("branch".into(), branch));
-            values.push(("commit".into(), commit));
-        }
+    for (repo, tip) in &front.repos {
+        values.push((format!("repo:{repo}"), tip.clone()));
     }
-    let stamp = (at.unwrap_or_else(|| date_micros(&parsed)), id);
+    // A close that names no location still carries the branch/commit pair,
+    // empty: the reset marker `item_metadata` hides, so an unlocated close
+    // clears what an older letter named.
+    let (branch, commit) = match (&front.branch, &front.commit) {
+        (Some(branch), Some(commit)) => (branch.clone(), commit.clone()),
+        _ => (String::new(), String::new()),
+    };
+    values.push(("branch".into(), branch));
+    values.push(("commit".into(), commit));
+    let stamp = (
+        event_at_of(&parsed).unwrap_or_else(|| date_micros(&parsed)),
+        id,
+    );
     values
         .into_iter()
         .map(|(key, value)| LetterVerdict {
@@ -270,17 +267,30 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
         .collect()
 }
 
-/// True when the letter carries close metadata — `X-Vivi-Verdict`, a
-/// well-formed `X-Vivi-Repo: <repo>=<tip>`, or paired branch/commit headers —
-/// stamped with a `Message-ID`:
-/// the letter a report about closed work travels as.
+/// The letter's `X-Vivi-Event-At` (RFC 3339) as Unix microseconds, when
+/// present and parseable.
+fn event_at_of(parsed: &Message<'_>) -> Option<i64> {
+    for header in parsed.headers() {
+        if let HeaderValue::Text(text) = header.value()
+            && header.name().eq_ignore_ascii_case(EVENT_AT_HEADER)
+        {
+            return rfc3339_micros(text);
+        }
+    }
+    None
+}
+
+/// True when the letter carries close metadata: a format-1 `done` or
+/// `reopened` event letter, which always contributes its branch/commit pair
+/// (empty for an unlocated close). The letter a report about closed work
+/// travels as.
 pub(super) fn carries_verdict(bytes: &[u8]) -> bool {
     !parse_letter_verdicts(bytes).is_empty()
 }
 
 /// The live row a verdict-carrying report letter replies to: the item the
 /// report settles, whose rows take the report's verdict metadata. `None`
-/// when the letter carries no verdict headers, has no `In-Reply-To`, or
+/// when the letter carries no close metadata, has no `In-Reply-To`, or
 /// no live row holds the parent.
 pub(super) fn verdict_report_item(
     storage: &Storage,
