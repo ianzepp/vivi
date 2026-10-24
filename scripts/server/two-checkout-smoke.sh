@@ -249,7 +249,7 @@ handle_of() { awk '/^created/ {c=$3} /^sent/ {s=$2} END {print (c != "" ? c : s)
 PRIOR=$("$VIVI" need send --from mind --to mind --subject "prior local need" --body "an earlier local item" --done-when "an earlier local item" --project "$A" 2>/dev/null | handle_of)
 [ -n "$PRIOR" ] && ok "A filed a prior local need ($PRIOR)" || bad "A prior local need"
 # `chat send --ref` is `need send --depends-on`: the cited handle travels in
-# the letter's X-Vivi-Depends-On header.
+# the letter's front matter (`depends_on`).
 NEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "cross-checkout need" --body "supersedes $PRIOR; please do the thing" --done-when "please do the thing" --depends-on "$PRIOR" --project "$A" 2>/tmp/vc8-need-send.err | handle_of)
 echo "$NEED" | grep -qE '^[0-9a-f]{8}$' && ok "A sends a need citing $PRIOR (handle $NEED)" || { bad "A need send"; cat /tmp/vc8-need-send.err; }
 "$VIVI" sync --project "$A" >/tmp/vc8-pull-a1.log 2>&1

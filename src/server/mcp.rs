@@ -438,7 +438,7 @@ fn tools_list() -> Value {
                 },
                 "additionalProperties": false
             })),
-            tool("graph", "Ready/blocked/done projection of work items from depends-on headers and event letters.", json!({
+            tool("graph", "Ready/blocked/done projection of work items from `depends_on` in the letter's front matter and from event letters. A legacy letter (no format header) contributes no dependencies.", json!({
                 "type": "object",
                 "properties": {
                     "view": { "type": "string", "enum": ["ready", "status"], "default": "status" }

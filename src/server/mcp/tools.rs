@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use serde_json::{Value, json};
+use vivi::letter::{Front, of_message};
 use vivi::message::{render_message, to_json_message};
 use vivi::storage::{MessageIngestRequest, Storage};
 
@@ -15,9 +16,8 @@ use crate::projects::{ProjectError, ProjectRecord, ProjectStore, Scan, Viewer};
 use crate::safety::RateLimiter;
 
 use super::letters::{
-    EventFold, ItemState, ParsedLetter, append_composed, caller_address, compose_event,
-    compose_reply, compose_send, handle_of, item_status, parse_headers, parse_letter, state_of,
-    valid_handle,
+    EventFold, ItemState, append_composed, caller_address, compose_event, compose_reply,
+    compose_send, handle_of, item_status, parse_headers, parse_letter, state_of, valid_handle,
 };
 
 const LIST_DEFAULT: usize = 50;
@@ -518,7 +518,7 @@ fn graph(
             done.push(item);
             continue;
         }
-        let open_deps = open_dependencies(&letter, &by_handle, &states);
+        let open_deps = open_dependencies(&depends_of(record), &by_handle, &states);
         if open_deps.is_empty() {
             ready.push(item);
         } else {
@@ -623,7 +623,7 @@ fn summary(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> Value
         "subject": letter.subject,
         "status": item_status(record, &letter, states),
         "appended_at": record.appended_at,
-        "depends_on": letter.depends_on,
+        "depends_on": depends_of(record),
     });
     if let Some(event) = &letter.event {
         item["event"] = json!(event);
@@ -662,21 +662,33 @@ fn ready_handles(records: &[ProjectRecord], states: &HashMap<String, ItemState>)
     records
         .iter()
         .filter(|record| record.kind.is_some() && item_is_open(record, states))
-        .filter(|record| {
-            let letter = parse_headers(&record.raw_eml);
-            open_dependencies(&letter, &by_handle, states).is_empty()
-        })
+        .filter(|record| open_dependencies(&depends_of(record), &by_handle, states).is_empty())
         .filter_map(|record| handle_of(&record.message_id).map(str::to_owned))
         .collect()
 }
 
+/// `depends_on` from the letter's front matter. A legacy letter (no
+/// `X-Vivi-Format`) and a letter that claims a format but does not parse
+/// contribute none, and neither fails the graph: stored history stays readable.
+fn depends_of(record: &ProjectRecord) -> Vec<String> {
+    let handle = handle_of(&record.message_id).unwrap_or("");
+    let Ok(letter) = of_message(&record.raw_eml, handle) else {
+        return Vec::new();
+    };
+    match letter.front {
+        Front::Need(front) => front.depends_on,
+        Front::Want(front) => front.depends_on,
+        Front::Task(front) => front.depends_on,
+        _ => Vec::new(),
+    }
+}
+
 fn open_dependencies(
-    letter: &ParsedLetter,
+    depends_on: &[String],
     by_handle: &HashMap<String, &ProjectRecord>,
     states: &HashMap<String, ItemState>,
 ) -> Vec<String> {
-    letter
-        .depends_on
+    depends_on
         .iter()
         .filter(|dep| match by_handle.get(&dep.to_ascii_lowercase()) {
             Some(dep_record) => item_is_open(dep_record, states),
@@ -1064,5 +1076,67 @@ mod tests {
             "{stamp}"
         );
         assert!(stamp.starts_with("20"), "{stamp}");
+    }
+
+    fn record(raw: Vec<u8>) -> ProjectRecord {
+        ProjectRecord {
+            sequence: 1,
+            message_id: "msg_abcd12340000000000000000".to_owned(),
+            from: "a".to_owned(),
+            from_prefix: None,
+            to: None,
+            kind: Some("need".to_owned()),
+            content_sha256: String::new(),
+            appended_at: "2026-10-23T00:00:00Z".to_owned(),
+            raw_eml: raw,
+        }
+    }
+
+    /// Headers in front of a composed letter, the shape `of_message` reads.
+    fn drafted(headers: &str, body: &str) -> Vec<u8> {
+        let drafted = vivi::message::build_compose_draft(&vivi::message::ComposeDraft {
+            from: "a@b.local".to_owned(),
+            to: vec!["a@b.local".to_owned()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "s".to_owned(),
+            body: body.to_owned(),
+            html_body: None,
+        })
+        .expect("compose");
+        format!("{headers}{drafted}").into_bytes()
+    }
+
+    #[test]
+    fn graph_dependencies_come_from_front_matter() {
+        let need = "+++\ndone_when = [\"landed\"]\ndepends_on = [\"abcd1234\"]\n+++\n\nprose\n";
+        let formatted = drafted("X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n", need);
+        assert_eq!(depends_of(&record(formatted)), vec!["abcd1234".to_string()]);
+
+        let task = drafted(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: task\r\n",
+            "+++\ndepends_on = [\"task00aa\"]\n+++\n\nstep\n",
+        );
+        assert_eq!(depends_of(&record(task)), vec!["task00aa".to_string()]);
+
+        let want = drafted(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: want\r\n",
+            "+++\nquestion = \"q\"\ndepends_on = [\"want00bb\"]\n+++\n\nwhy\n",
+        );
+        assert_eq!(depends_of(&record(want)), vec!["want00bb".to_string()]);
+
+        // No format header: legacy, even when the body carries a front.
+        let legacy = drafted("X-Vivi-Kind: need\r\n", need);
+        assert!(depends_of(&record(legacy)).is_empty());
+
+        // A claimed format that does not parse contributes nothing, and does
+        // not error.
+        let broken = drafted(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n",
+            "not a letter\n",
+        );
+        assert!(depends_of(&record(broken)).is_empty());
+        let unknown = drafted("X-Vivi-Format: 2\r\nX-Vivi-Kind: need\r\n", need);
+        assert!(depends_of(&record(unknown)).is_empty());
     }
 }

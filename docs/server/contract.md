@@ -347,7 +347,7 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `done` | `handle`, `note?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report |
 | `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
-| `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
+| `graph` | `view?` ready\|status | Ready / blocked / done from `depends_on` in the letter's front matter and from events. A legacy letter (no `X-Vivi-Format`) contributes no dependencies |
 
 Writes share the per-identity send budget (30/min by default; a deployment may configure it, `0` = none), and a refusal reads `over N writes/min/identity`. Tool failures are
 `isError: true` with a text body, HTTP 200. `kind=chat` is accepted on
@@ -424,7 +424,7 @@ under the item's own kind; that still works and is folded the same way.
   `dependency-removed` (`X-Vivi-Event-Dep`, repeatable) to change an item's
   prerequisites after the send; this server files those letters and serves
   them to every member as event letters, and does not fold them into its own
-  `graph` projection, which reads `X-Vivi-Depends-On` headers only. A hosted
+  `graph` projection, which reads `depends_on` from the letter's front matter only. A legacy letter (no `X-Vivi-Format` header) contributes no dependencies, and so does a letter that claims a format but does not parse; the graph does not error on that stored history. A hosted
   project's `graph` folds them, through the library. The pump identity's
   events count by the same rule: its letter is From `<pump identity>@<prefix>.local`
   where the prefix is the pumping member's stamped prefix (the host's own on a

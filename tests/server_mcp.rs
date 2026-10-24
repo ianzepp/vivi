@@ -677,22 +677,23 @@ async fn graph_blocks_on_an_open_dependency() {
             &fx.token,
             "send",
             json!({
-                "kind": "task",
+                "kind": "need",
                 "to": address("creator"),
                 "subject": "child",
                 "body": "after parent",
+                "done_when": "after the parent",
                 "depends_on": parent
             }),
         )
         .await;
     let child = task["handle"].as_str().unwrap().to_owned();
-    // A dependency named at send rides in the letter's front matter, never
-    // in an X-Vivi-Depends-On header. The graph reader moves to front
-    // matter in its own task; until then a legacy letter that carries the
-    // header is what still blocks.
+    // A dependency named at send rides in the letter's front matter. The
+    // graph reads that list. A legacy letter (no format header) that still
+    // carries an X-Vivi-Depends-On header contributes no dependency.
     let raw = fx
         .raw_letter(&fx.token, task["message_id"].as_str().unwrap())
         .await;
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
     assert!(
         raw.contains(&format!("depends_on = [\"{parent}\"]")),
         "{raw}"
@@ -729,9 +730,59 @@ async fn graph_blocks_on_an_open_dependency() {
         .iter()
         .map(|i| i["handle"].as_str().unwrap().to_owned())
         .collect();
+    let blocked_child = graph["blocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["handle"] == child)
+        .unwrap_or_else(|| panic!("child should be blocked on its front matter: {graph}"));
+    assert_eq!(blocked_child["depends_on"], json!([parent.clone()]));
+    assert_eq!(blocked_child["blocked_by"], json!([parent.clone()]));
     assert!(ready.contains(&parent), "{graph}");
-    assert!(ready.contains(&child), "{graph}");
-    assert!(blocked.contains(&legacy_handle), "{graph}");
+    assert!(!ready.contains(&child), "{graph}");
+    assert!(blocked.contains(&child), "{graph}");
+    assert!(ready.contains(&legacy_handle), "{graph}");
+    assert!(!blocked.contains(&legacy_handle), "{graph}");
+    let legacy_item = graph["ready"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["handle"] == legacy_handle)
+        .unwrap_or_else(|| panic!("legacy letter should be ready: {graph}"));
+    assert_eq!(legacy_item["depends_on"], json!([]));
+
+    // Closing the parent drops the open edge. The front-matter dependency
+    // stays on the child; it is no longer blocked.
+    let closed = fx
+        .call(
+            &fx.token,
+            "done",
+            json!({"handle": parent, "note": "landed"}),
+        )
+        .await;
+    assert_eq!(closed["mode"], "closed", "{closed}");
+    let after = fx.call(&fx.token, "graph", json!({"view": "status"})).await;
+    let ready_after: Vec<_> = after["ready"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["handle"].as_str().unwrap().to_owned())
+        .collect();
+    let blocked_after: Vec<_> = after["blocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["handle"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(ready_after.contains(&child), "{after}");
+    assert!(!blocked_after.contains(&child), "{after}");
+    let child_after = after["ready"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["handle"] == child)
+        .unwrap_or_else(|| panic!("child should be ready once the parent closes: {after}"));
+    assert_eq!(child_after["depends_on"], json!([parent]));
 }
 
 #[tokio::test]
