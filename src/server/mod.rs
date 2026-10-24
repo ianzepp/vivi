@@ -57,8 +57,8 @@ pub struct AppState {
     /// The vivi identity an API key without its own `identity` acts as on a
     /// hosted project (`HOSTED_DEFAULT_IDENTITY`, default `operator`).
     pub hosted_default_identity: Arc<str>,
-    /// `HOST_OPERATOR_TOKEN`: the Bearer for `POST /v1/host/mcp`. Unset
-    /// disables that endpoint (it answers 404).
+    /// `HOST_OPERATOR_TOKEN`: a built-in host principal on `POST /v1/mcp`
+    /// (host tools only). Unset means host tools need a minted host key.
     pub host_operator_token: Option<Arc<str>>,
     /// Where `create_project` puts repositories and projects.
     pub host: mcp::host::HostConfig,
@@ -102,11 +102,12 @@ pub fn app_state(
         .map(Arc::new);
     let server_keys = grants::ServerKeyStore::new(&data_dir)
         .unwrap_or_else(|err| panic!("vivi-server: cannot load the server key store: {err:?}"));
-    // The retired per-project key registries are never read again. The
-    // rename only moves files: the per-project routes still work for
-    // identity tokens, a fresh self-service mint re-creates `api_keys.json`
-    // with just the mirrored key, and keys minted before the upgrade are
-    // dead on those routes (they are re-issued as server keys).
+    // Legacy per-project key files are renamed aside once, at the first
+    // boot, and are not read. A fresh self-service mint re-creates
+    // `api_keys.json` with just the mirrored key: rooms auth and the letter
+    // wire read that file, and a later boot leaves it. That mirror is the
+    // only writer of new per-project keys. Keys minted before the upgrade
+    // stay dead.
     for (project, dead) in grants::retire_legacy_project_keys(&data_dir) {
         tracing::info!(
             "retired {dead} legacy api key(s) of project {project} \
@@ -163,13 +164,11 @@ pub fn router(state: AppState) -> Router {
             "/v1/projects/{id}/pump/health",
             get(pump_health::pump_health_handler),
         )
-        .route("/v1/projects/{id}/mcp", post(mcp::mcp_handler))
-        .route("/v1/rooms/{id}/mcp", post(mcp::mcp_handler))
-        // The server-level MCP endpoint: a server key (or the host
-        // operator token) reaches every granted project through one URL.
+        // Chat rooms only. Project and host MCP are `POST /v1/mcp`.
+        .route("/v1/rooms/{id}/mcp", post(mcp::rooms_mcp_handler))
+        // One server endpoint: a server key (or the host operator token)
+        // reaches every granted project. `project` is required on project tools.
         .route("/v1/mcp", post(mcp::server::server_mcp_handler))
-        // Host operator endpoint; answers 404 when HOST_OPERATOR_TOKEN is unset.
-        .route("/v1/host/mcp", post(mcp::host::host_mcp_handler))
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(

@@ -68,8 +68,11 @@ pub struct ServerKeyRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrincipalRecord {
-    /// Stable principal id: `<member>@<project_id>` for self-service
-    /// keys, a fixed name such as `host` for host-operator tokens.
+    /// Stable principal id. A self-service mint with no acting identity
+    /// is `<member>@<project_id>`; one that names an identity is
+    /// `<member>.<role>@<project_id>`, so a later key does not resolve
+    /// the first grant. A host-operator token uses a fixed name such as
+    /// `host`.
     pub principal: String,
     #[serde(default)]
     pub host: bool,
@@ -564,14 +567,32 @@ struct LegacyKeysFile {
     keys: Vec<serde_json::Value>,
 }
 
-/// Rename each `DATA_DIR/projects/<id>/api_keys.json` to
-/// `api_keys.json.retired` so the retired per-project registry is never
-/// read again, and report `(project_id, dead_key_count)` per renamed
-/// project for the boot log lines. A project whose `.retired` name
-/// already exists is skipped untouched; so is a project with no live key
-/// file. An unreadable file is renamed with a count of 0. For boot
-/// wiring after the route cutover; nothing calls it in production yet.
+/// Rename each pre-upgrade `DATA_DIR/projects/<id>/api_keys.json` to
+/// `api_keys.json.retired` once per data directory, and report
+/// `(project_id, dead_key_count)` per renamed project. The sweep records
+/// `DATA_DIR/api_keys.retirement` and later boots leave live files alone:
+/// a self-service mint after the sweep re-creates `api_keys.json` for
+/// rooms auth and the letter wire, and a restart must not retire that
+/// mirror. A project whose `.retired` name already exists is skipped
+/// during the one sweep; so is a project with no live key file. An
+/// unreadable file is renamed with a count of 0.
 pub fn retire_legacy_project_keys(data_dir: &Path) -> Vec<(String, usize)> {
+    let marker = data_dir.join("api_keys.retirement");
+    if marker.is_file() {
+        return Vec::new();
+    }
+    let retired = retire_legacy_project_keys_once(data_dir);
+    if let Err(err) = std::fs::create_dir_all(data_dir) {
+        tracing::warn!("failed to record api key retirement: {err}");
+        return retired;
+    }
+    if let Err(err) = std::fs::write(&marker, b"retired\n") {
+        tracing::warn!("failed to record api key retirement: {err}");
+    }
+    retired
+}
+
+fn retire_legacy_project_keys_once(data_dir: &Path) -> Vec<(String, usize)> {
     let root = data_dir.join("projects");
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();

@@ -1,7 +1,7 @@
-//! MCP on a hosted project: an API key acts on the host's own mailspace
+//! MCP on a hosted project: a server key acts on the host's own mailspace
 //! through the vivi library, as a mapped vivi identity, exactly as the CLI
-//! would. A project the server owns, and a member-token caller, keep the
-//! transport tools.
+//! would. A project the server owns keeps the transport tools. A member
+//! token is not accepted on `/v1/mcp`.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tower::util::ServiceExt;
 use vivi::mailspace::board::BoardOptions;
 use vivi::mailspace::{Mailspace, RoleUpdate, SendRequest, folded_marks};
+use vivi_server::grants::{GrantLevel, GrantRecord};
 use vivi_server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
@@ -77,14 +78,21 @@ impl Fx {
     }
 
     fn key(&self, identity: Option<&str>) -> String {
-        self.state
-            .keys
-            .mint(&self.project, &self.member, "test", identity)
-            .unwrap()
-            .key
+        server_key(&self.state, &self.project, &self.member, identity)
     }
 
-    async fn rpc(&self, token: &str, method: &str, params: Value) -> Value {
+    async fn post(&self, token: &str, method: &str, mut params: Value) -> (StatusCode, Value) {
+        if method == "tools/call" {
+            let args = params
+                .as_object_mut()
+                .unwrap()
+                .entry("arguments")
+                .or_insert_with(|| json!({}));
+            if let Some(args) = args.as_object_mut() {
+                args.entry("project")
+                    .or_insert_with(|| json!(self.project.clone()));
+            }
+        }
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         let response = self
             .app
@@ -92,7 +100,7 @@ impl Fx {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/projects/{}/mcp", self.project))
+                    .uri("/v1/mcp")
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
@@ -100,9 +108,18 @@ impl Fx {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn rpc(&self, token: &str, method: &str, params: Value) -> Value {
+        let (status, value) = self.post(token, method, params).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        value
     }
 
     async fn call(&self, token: &str, name: &str, arguments: Value) -> Value {
@@ -153,6 +170,34 @@ fn library_need(ms: &Mailspace, from: &str, to: &str, subject: &str) -> String {
         })
         .unwrap();
     result.delivered[0].handle.clone()
+}
+
+/// One server key granted on `project` as `member`, acting as `identity`
+/// when one is named. Level is metadata; the tools re-check the operator rule.
+fn server_key(state: &AppState, project: &str, member: &str, identity: Option<&str>) -> String {
+    let level = match identity {
+        None | Some("operator") => GrantLevel::Operator,
+        Some(_) => GrantLevel::Member,
+    };
+    // Grants live on the principal, and the first grant for a project wins.
+    // A separate principal per acting identity keeps each key's grant alone.
+    let tag = identity.unwrap_or("default");
+    state
+        .server_keys
+        .mint(
+            &format!("{member}.{tag}@{project}"),
+            false,
+            vec![GrantRecord {
+                project_id: project.to_owned(),
+                member: member.to_owned(),
+                identity: identity.map(str::to_owned),
+                level,
+            }],
+            "test",
+            member,
+        )
+        .unwrap()
+        .key
 }
 
 fn handles(views: &[vivi::storage::StoredMessageView]) -> Vec<String> {
@@ -742,7 +787,7 @@ async fn the_configured_write_limit_reaches_mcp_writes() {
             json!({"action": "save", "subject": "note 2", "body": "b"}),
         )
         .await;
-    assert_eq!(message, "over 2 writes/min/identity");
+    assert_eq!(message, "over 2 writes/min for this key");
     // Reads are not writes, and another identity has its own budget.
     fx.call(&mind, "memo", json!({})).await;
     let hand = fx.key(Some("hand"));
@@ -771,10 +816,11 @@ async fn zero_unlimits_mcp_writes() {
 }
 
 #[tokio::test]
-async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
+async fn a_member_token_on_a_hosted_project_is_refused() {
     let fx = fixture("token");
     let key = fx.key(None);
-    // Not a key: a registered member's own bearer.
+    // Not a key: a registered member's own bearer. It used to reach the
+    // transport tools. `/v1/mcp` refuses it before any tool runs.
     let bearer = fx
         .state
         .identities
@@ -786,30 +832,45 @@ async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
         )
         .unwrap()
         .token;
-    // `mark` and `board` are hosted-key tools; the transport path says so.
-    let message = fx.call_err(&bearer, "board", json!({})).await;
-    assert!(message.contains("API key"), "{message}");
-    let message = fx
-        .call_err(&bearer, "mark", json!({"handle": "deadbeef", "marks": "x"}))
-        .await;
-    assert!(message.contains("API key"), "{message}");
-    // A member token reads the transport index (which the hosted indexer
-    // keeps current), never the live mailspace: items carry the transport
-    // shape (`appended_at`), not the live one (`role`, `last_event`).
-    library_need(&fx.ms(), "operator", "mind", "read through the index");
-    let listed = fx.call(&bearer, "list", json!({})).await;
-    for item in listed["items"].as_array().unwrap() {
+    for (name, arguments) in [
+        ("board", json!({})),
+        ("list", json!({})),
+        ("mark", json!({"handle": "deadbeef", "marks": "x"})),
+    ] {
+        let (status, value) = fx
+            .post(
+                &bearer,
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{name}: {value}");
+        let message = value["error"]["message"].as_str().unwrap();
         assert!(
-            item.get("role").is_none(),
-            "live shape on a token read: {item}"
+            message.contains("identity tokens are not accepted on /v1/mcp"),
+            "{name}: {message}"
         );
-        assert!(
-            item.get("last_event").is_none(),
-            "live shape on a token read: {item}"
-        );
+        assert!(message.contains("server key"), "{name}: {message}");
     }
-    // The key sees the mailspace: mind's need is not the operator's item,
-    // but the operator's sent copy is open outbound work only when remote.
+    // A per-project key is not a server key, so it cannot call `/v1/mcp`.
+    let old = fx
+        .state
+        .keys
+        .mint(&fx.project, &fx.member, "legacy", None)
+        .unwrap()
+        .key;
+    let (status, value) = fx
+        .post(
+            &old,
+            "tools/call",
+            json!({"name": "overview", "arguments": {}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    assert_eq!(value["error"]["message"], "invalid bearer token");
+
+    // The server key still sees the live mailspace.
+    library_need(&fx.ms(), "operator", "mind", "read through the index");
     let live = fx.call(&key, "overview", json!({})).await;
     assert_eq!(live["you"]["name"], "operator");
 }
@@ -911,11 +972,7 @@ async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
             "0a0a0a0a-1111-4222-8333-444444444444",
         )
         .ok();
-    let key = state
-        .keys
-        .mint(&project, "alice", "bot", Some("operator"))
-        .unwrap()
-        .key;
+    let key = server_key(&state, &project, "alice", Some("operator"));
     let fx = Fx {
         app: router(state.clone()),
         state,

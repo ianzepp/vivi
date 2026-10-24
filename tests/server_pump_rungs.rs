@@ -11,6 +11,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 use vivi::mailspace::{Mailspace, RoleUpdate};
+use vivi_server::grants::{GrantLevel, GrantRecord};
 use vivi_server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
@@ -69,14 +70,21 @@ fn fixture(name: &str) -> Fx {
 
 impl Fx {
     fn key_by(&self, member: &str, identity: Option<&str>) -> String {
-        self.state
-            .keys
-            .mint(&self.project, member, "test", identity)
-            .unwrap()
-            .key
+        server_key(&self.state, &self.project, member, identity)
     }
 
-    async fn rpc(&self, token: &str, method: &str, params: Value) -> Value {
+    async fn post(&self, token: &str, method: &str, mut params: Value) -> (StatusCode, Value) {
+        if method == "tools/call" {
+            let args = params
+                .as_object_mut()
+                .unwrap()
+                .entry("arguments")
+                .or_insert_with(|| json!({}));
+            if let Some(args) = args.as_object_mut() {
+                args.entry("project")
+                    .or_insert_with(|| json!(self.project.clone()));
+            }
+        }
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         let response = self
             .app
@@ -84,7 +92,7 @@ impl Fx {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/projects/{}/mcp", self.project))
+                    .uri("/v1/mcp")
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
@@ -92,9 +100,18 @@ impl Fx {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn rpc(&self, token: &str, method: &str, params: Value) -> Value {
+        let (status, value) = self.post(token, method, params).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        value
     }
 
     async fn rungs(&self, token: &str, arguments: Value) -> Value {
@@ -142,6 +159,32 @@ impl Fx {
     }
 }
 
+fn server_key(state: &AppState, project: &str, member: &str, identity: Option<&str>) -> String {
+    let level = match identity {
+        None | Some("operator") => GrantLevel::Operator,
+        Some(_) => GrantLevel::Member,
+    };
+    // Grants live on the principal, and the first grant for a project wins.
+    // A separate principal per acting identity keeps each key's grant alone.
+    let tag = identity.unwrap_or("default");
+    state
+        .server_keys
+        .mint(
+            &format!("{member}.{tag}@{project}"),
+            false,
+            vec![GrantRecord {
+                project_id: project.to_owned(),
+                member: member.to_owned(),
+                identity: identity.map(str::to_owned),
+                level,
+            }],
+            "test",
+            member,
+        )
+        .unwrap()
+        .key
+}
+
 fn spki_pem(seed: u8) -> String {
     use base64::Engine;
     const PREFIX: &[u8] = &[
@@ -183,7 +226,10 @@ async fn show_on_a_fresh_project_is_unset_and_set_round_trips_per_rung() {
         properties["rung"]["enum"],
         json!(["task", "need", "main", "release"])
     );
-    assert_eq!(tool["inputSchema"]["required"], json!(["action"]));
+    assert_eq!(
+        tool["inputSchema"]["required"],
+        json!(["project", "action"])
+    );
 
     // The answer is a parsed structure, not the `{text}` of RungsConfig::show.
     let shown = fx.rungs(&key, json!({"action": "show"})).await;
@@ -381,8 +427,20 @@ async fn a_member_token_is_refused_and_changes_nothing() {
         json!({"action": "set", "rung": "need", "command": "evil"}),
         json!({"action": "show"}),
     ] {
-        let message = fx.refused(&bearer, arguments).await;
-        assert!(message.contains("operator's API key"), "{message}");
+        let (status, value) = fx
+            .post(
+                &bearer,
+                "tools/call",
+                json!({"name": "pump_rungs", "arguments": arguments}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("identity tokens are not accepted on /v1/mcp"),
+            "{message}"
+        );
+        assert!(message.contains("server key"), "{message}");
     }
     assert!(!fx.config_text().contains("evil"));
 }
@@ -446,11 +504,7 @@ async fn a_project_that_is_not_hosted_is_refused() {
             "0a0a0a0a-1111-4222-8333-444444444444",
         )
         .ok();
-    let key = state
-        .keys
-        .mint(&project, "alice", "bot", Some("operator"))
-        .unwrap()
-        .key;
+    let key = server_key(&state, &project, "alice", Some("operator"));
     let fx = Fx {
         app: router(state.clone()),
         state,

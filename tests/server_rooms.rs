@@ -322,7 +322,7 @@ async fn mcp_alias_sends_chat() {
     let (status, sent) = send(
         &app,
         rpc(
-            format!("/v1/projects/{room}/mcp"),
+            format!("/v1/rooms/{room}/mcp"),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
                 "name":"send","arguments":{
                     "kind":"chat","subject":"hi","body":"from mcp"
@@ -334,6 +334,18 @@ async fn mcp_alias_sends_chat() {
     assert_eq!(status, StatusCode::OK, "{sent}");
     let text = sent["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("\"handle\""), "{text}");
+
+    let (status, gone) = send(
+        &app,
+        rpc(
+            format!("/v1/projects/{room}/mcp"),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+                "name":"list","arguments":{"kind":"chat","status":"all"}
+            }}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{gone}");
 
     let (status, listed) = send(
         &app,

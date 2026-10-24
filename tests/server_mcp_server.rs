@@ -894,14 +894,28 @@ fn boot_retires_legacy_project_key_files_once() {
         "no live file reappeared"
     );
 
-    // The old registry re-creates its file on the next mint: the mirror
-    // keeps the per-project routes working until they are removed.
+    // A later mint re-creates the live file. Rooms auth and the letter wire
+    // read it; project MCP does not.
     state
         .keys
         .mint("p1", "creator", "after retirement", None)
         .unwrap();
     assert!(dir.join("projects/p1/api_keys.json").exists());
     assert!(dir.join("projects/p1/api_keys.json.retired").exists());
+
+    // A project that appears after the sweep keeps its mirror across a boot.
+    // Rooms auth and the letter wire read that file.
+    std::fs::create_dir_all(dir.join("projects/p3")).unwrap();
+    state
+        .keys
+        .mint("p3", "creator", "after the sweep", None)
+        .unwrap();
+    let _third = app_state(dir.clone(), None, None);
+    assert!(
+        dir.join("projects/p3/api_keys.json").is_file(),
+        "a mirror written after the sweep survives the next boot"
+    );
+    assert!(!dir.join("projects/p3/api_keys.json.retired").exists());
 }
 
 // ---------------------------------------------------------- self-service
@@ -931,12 +945,21 @@ async fn the_self_service_mint_yields_a_working_server_key() {
         "{minted}"
     );
 
-    // The key works on /v1/mcp with its grant ...
+    // The key works on /v1/mcp with its grant.
     let overview = call_ok(&fx.app, &key, "overview", json!({"project": fx.project})).await;
     assert_eq!(overview["you"]["name"], "creator");
-    // ... and, through the mirror, on the per-project route.
-    let old = old_route_call(&fx.app, &key, "overview", &fx.project).await;
-    assert_eq!(old["you"]["name"], "creator", "{old}");
+    // The per-project route is gone. The mirror file is still written:
+    // rooms auth and the letter wire read it.
+    let (status, old) = old_route_call(&fx.app, &key, "overview", &fx.project).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{old}");
+    assert!(
+        fx.dir
+            .join("projects")
+            .join(&fx.project)
+            .join("api_keys.json")
+            .is_file(),
+        "self-service mint still mirrors the secret"
+    );
 
     // Revoking through the per-project route kills the server twin too.
     let (status, _) = delete(
@@ -1025,8 +1048,8 @@ async fn delete(app: &Router, uri: &str, token: &str) -> (StatusCode, Value) {
     (status, value)
 }
 
-/// One tool call through the per-project MCP route.
-async fn old_route_call(app: &Router, key: &str, name: &str, project: &str) -> Value {
+/// One tool call through the removed per-project MCP route.
+async fn old_route_call(app: &Router, key: &str, name: &str, project: &str) -> (StatusCode, Value) {
     let body = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": name, "arguments": {}}
@@ -1044,9 +1067,12 @@ async fn old_route_call(app: &Router, key: &str, name: &str, project: &str) -> V
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let value: Value = serde_json::from_slice(&bytes).unwrap();
-    let text = value["result"]["content"][0]["text"].as_str().unwrap();
-    serde_json::from_str(text).unwrap()
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, value)
 }

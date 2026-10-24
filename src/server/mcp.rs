@@ -1,9 +1,11 @@
-//! Streamable HTTP MCP for a project mailspace (phase-03 decided item 15).
+//! Streamable HTTP MCP.
 //!
-//! One endpoint per project: `POST /v1/projects/{id}/mcp`. The URL names the
-//! project so a connector added by URL does not have to pass it, and the
-//! Bearer (identity token or API key) is always the caller. Tools are a
-//! curated, parameterized subset of the vivi command tree.
+//! Project and host tools are served at `POST /v1/mcp` ([`server`]): a server
+//! key, and a required `project` on every project tool. Chat rooms stay at
+//! `POST /v1/rooms/{id}/mcp` ([`rooms_mcp_handler`]): the URL names the room,
+//! and the Bearer is an identity token or a per-project key the self-service
+//! mint mirrored. Tools are a curated, parameterized subset of the vivi
+//! command tree.
 
 pub mod host;
 pub mod letters;
@@ -38,8 +40,13 @@ struct JsonRpcRequest {
     params: Value,
 }
 
-/// `POST /v1/projects/:id/mcp` — Streamable HTTP MCP (JSON-RPC 2.0).
-pub async fn mcp_handler(
+/// `POST /v1/rooms/:id/mcp` — Streamable HTTP MCP for one chat room.
+///
+/// The handler is the old project handler narrowed to this route: auth still
+/// accepts an identity token or a per-project key, and a durable id posted
+/// here behaves as it did when both routes shared this function. Project MCP
+/// is `POST /v1/mcp`.
+pub async fn rooms_mcp_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
     headers: HeaderMap,
@@ -67,17 +74,14 @@ pub async fn mcp_handler(
     .await
 }
 
-/// Which endpoint a JSON-RPC body is for: one project's tools (the caller
-/// already authenticated), the host's, or the server-level endpoint
-/// (`/v1/mcp`, authenticated by a server key or the host operator token).
+/// Which endpoint a JSON-RPC body is for: one room (the caller already
+/// authenticated), or the server-level endpoint (`/v1/mcp`, authenticated
+/// by a server key or the host operator token).
 enum Surface<'a> {
     Project {
         state: &'a AppState,
         project_id: &'a str,
         caller: &'a Caller,
-    },
-    Host {
-        state: &'a AppState,
     },
     Server {
         state: &'a AppState,
@@ -160,7 +164,6 @@ async fn handle_one(surface: &Surface<'_>, value: &Value) -> Result<Option<Value
         "ping" => json!({}),
         "tools/list" => match surface {
             Surface::Project { .. } => tools_list(),
-            Surface::Host { .. } => host::tools_list(),
             Surface::Server { .. } => server::tools_list(),
         },
         "tools/call" => {
@@ -172,7 +175,6 @@ async fn handle_one(surface: &Surface<'_>, value: &Value) -> Result<Option<Value
                     project_id,
                     caller,
                 } => call_tool(state, project_id, caller, name, arguments).await?,
-                Surface::Host { state } => host::call_tool(state, name, arguments).await,
                 Surface::Server { state, auth } => {
                     server::call_tool(state, auth, name, arguments).await?
                 }
@@ -213,8 +215,8 @@ async fn call_tool(
 /// Dispatch one project tool call, unwrapped: the inner result is the
 /// tool's own answer or tool error; the outer `Err` is an infrastructure
 /// failure (an HTTP 500 response). `limiter` is the write limiter the
-/// tools see: the shared one for the per-project routes, an unlimited one
-/// for `/v1/mcp`, which counts writes itself keyed by key.
+/// tools see: the shared one for the rooms route, an unlimited one for
+/// `/v1/mcp`, which counts writes itself keyed by key.
 async fn dispatch_tool(
     state: &AppState,
     limiter: RateLimiter,
@@ -339,7 +341,6 @@ fn initialize(params: &Value, surface: &Surface<'_>) -> Value {
     };
     let instructions = match surface {
         Surface::Project { .. } => PROJECT_INSTRUCTIONS,
-        Surface::Host { .. } => host::INSTRUCTIONS,
         Surface::Server { .. } => server::INSTRUCTIONS,
     };
     json!({

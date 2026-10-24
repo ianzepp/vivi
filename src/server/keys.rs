@@ -201,9 +201,9 @@ impl ApiKeyRegistry {
     }
 
     /// Record an already-minted server key (same key id, digest and
-    /// metadata) so the per-project routes accept the same secret. The
-    /// transitional mirror for `/v1/mcp` self-service keys; the registry is
-    /// removed with those routes.
+    /// metadata) so rooms auth accepts the same secret. The only writer of
+    /// new per-project keys: self-service mint calls this, and nothing else
+    /// mints into the registry.
     pub fn adopt(
         &self,
         project_id: &str,
@@ -419,8 +419,9 @@ fn identity_token_only(
 /// `POST /v1/projects/:id/keys` — mint a server key (identity token). The
 /// key's principal is `<member>@<project_id>` with one grant on this
 /// project (operator when today's operator rule holds for this mint), and
-/// the same secret is mirrored into the per-project registry so the
-/// per-project routes keep accepting it until they are removed.
+/// the same secret is mirrored into the per-project registry so rooms
+/// auth (and the letter wire) keep accepting it. That mirror is the only
+/// writer of new per-project keys.
 pub async fn mint_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -470,7 +471,13 @@ pub async fn mint_handler(
             &identity,
             acting.as_deref(),
         );
-        let principal = format!("{}@{project_id}", identity.name);
+        // Grants live on the principal, and the first grant for a project
+        // is the one a call resolves. A second key for another acting
+        // identity needs its own principal, or it would act as the first.
+        let principal = match acting.as_deref() {
+            Some(role) => format!("{}.{role}@{project_id}", identity.name),
+            None => format!("{}@{project_id}", identity.name),
+        };
         let grant = crate::grants::GrantRecord {
             project_id: project_id.clone(),
             member: identity.name.clone(),
@@ -482,8 +489,8 @@ pub async fn mint_handler(
                 .server_keys
                 .mint(&principal, false, vec![grant], &label, &identity.name)?;
         // The mirror: the per-project registry holds the same secret so
-        // `/v1/projects/{id}/mcp` keeps working until it is removed. A
-        // failure keeps the server key (it works on /v1/mcp) and is logged.
+        // rooms auth keeps accepting it. A failure keeps the server key
+        // (it works on /v1/mcp) and is logged.
         let digest = sha256_hex(minted.key.as_bytes());
         if let Err(err) = old_keys.adopt(
             &project_id,

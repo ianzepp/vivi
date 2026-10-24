@@ -225,9 +225,12 @@ items_as() { # key query -> body on stdout
 mcp_tool() { # key tool args-json -> the tool's text result on stdout
   python3 -c '
 import json, sys
+args = json.loads(sys.argv[2])
+if isinstance(args, dict) and "project" not in args:
+    args["project"] = sys.argv[3]
 print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                  "params": {"name": sys.argv[1], "arguments": json.loads(sys.argv[2])}}))' "$2" "$3" \
-    | curl -s -m 15 -X POST "$BASE/v1/projects/$PID/mcp" -H 'content-type: application/json' \
+                  "params": {"name": sys.argv[1], "arguments": args}}))' "$2" "$3" "$PID" \
+    | curl -s -m 15 -X POST "$BASE/v1/mcp" -H 'content-type: application/json' \
         -H "authorization: Bearer $1" -d @- \
     | python3 -c 'import json,sys; r = json.load(sys.stdin); print(r.get("result", {}).get("content", [{}])[0].get("text", ""))'
 }

@@ -1,42 +1,26 @@
-//! The host MCP endpoint, `POST /v1/host/mcp`: tools that act on the host
-//! rather than on one project. Today that is `create_project`.
-//!
-//! The caller is the host operator, never a project member: the Bearer must
-//! equal `HOST_OPERATOR_TOKEN` (constant-time compare). Without that variable
-//! the endpoint answers 404 and does nothing, so it is never open. A project
-//! identity token or API key is not the operator token and is refused.
+//! Host tools for `POST /v1/mcp`. Today that is `create_project`: it acts on
+//! the host rather than on one project, and only a host principal may call it.
 //!
 //! `create_project` calls [`vivi::project_create::create`] (bare repository,
 //! project directory with an initialised mailspace, host registry entry) with
 //! the roots from [`HostConfig`], then reconciles the host registry now so the
-//! new project is served at its project endpoint without waiting for the
-//! registry watcher, and mints an operator API key for it.
+//! new project is served without waiting for the registry watcher, and mints
+//! an operator server key granted on it. The answer's `mcp_path` is `/v1/mcp`.
 
 use std::path::{Path, PathBuf};
 
-use axum::body::Bytes;
-use axum::extract::State;
-use axum::extract::rejection::BytesRejection;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
 use serde_json::{Value, json};
-use subtle::ConstantTimeEq;
 use vivi::project_create::{ProjectCreate, ProjectCreated};
 
 use crate::AppState;
+use crate::grants::{GrantLevel, GrantRecord};
 use crate::hosted;
-use crate::projects_api::{missing_bearer, presented_bearer};
-use crate::rooms::error_response;
 
 mod rungs;
 
 use self::rungs::Rungs;
+use super::tool;
 use super::tools::{ToolError, opt_str, req_str};
-use super::{Surface, respond, tool, tool_result};
-
-pub(super) const INSTRUCTIONS: &str = "This is the vivi host endpoint, for the host operator. \
-create_project makes a project (git repository, mailspace, host registration) and serves it; \
-the answer carries the project id, its MCP path, and an operator API key shown once.";
 
 /// Environment variable names for the host's project layout.
 pub const ENV_PROJECTS_ROOT: &str = "HOST_PROJECTS_ROOT";
@@ -66,32 +50,6 @@ impl HostConfig {
             default_pool: get(ENV_DEFAULT_POOL).map(|v| v.trim().to_owned()),
         }
     }
-}
-
-/// `POST /v1/host/mcp` — Streamable HTTP MCP for the host operator.
-pub async fn host_mcp_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
-    let Some(expected) = state.host_operator_token.as_deref() else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            "host_endpoint_disabled",
-            "the host endpoint is disabled: HOST_OPERATOR_TOKEN is not set",
-        );
-    };
-    let Some(provided) = presented_bearer(&headers) else {
-        return missing_bearer();
-    };
-    if !bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "host_unauthorized",
-            "the host operator token is required; a project token or API key is not accepted",
-        );
-    }
-    respond(&Surface::Host { state: &state }, &headers, body).await
 }
 
 pub(super) fn tools_list() -> Value {
@@ -132,24 +90,12 @@ pub(super) fn tools_list() -> Value {
     )] })
 }
 
-pub(super) async fn call_tool(state: &AppState, name: &str, arguments: Value) -> Value {
-    let result = match name {
-        "create_project" => create_project(state, &arguments).await,
-        other => Err(ToolError::new(format!("unknown tool '{other}'"))),
-    };
-    match result {
-        Ok(value) => tool_result(value, false),
-        Err(err) => tool_result(json!({ "error": err.message }), true),
-    }
-}
-
 /// One creation at a time: the host registry takes a non-waiting lock, so
 /// two creations in flight would fail the second with "another registry
 /// update is running".
 static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Create one project. Shared by `/v1/host/mcp` and the server-level
-/// `/v1/mcp` host tool.
+/// Create one project. The `/v1/mcp` host tool.
 pub(super) async fn create_project(
     state: &AppState,
     arguments: &Value,
@@ -231,13 +177,19 @@ fn opt_bool(arguments: &Value, name: &str, default: bool) -> Result<bool, ToolEr
     }
 }
 
+/// The operator server key `create_project` shows once.
+struct OperatorKey {
+    key: String,
+    key_id: String,
+}
+
 /// What came of serving a created project.
 enum Serving {
     NotRequested,
     Served {
         project_id: String,
         member: String,
-        key: Result<crate::keys::MintedKey, String>,
+        key: Result<OperatorKey, String>,
     },
     Failed(String),
 }
@@ -249,15 +201,7 @@ fn serve_now(state: &AppState, root: &Path) -> Serving {
         return Serving::Failed("the host registry could not be read".into());
     };
     if let Some(served) = report.served.iter().find(|s| same_dir(&s.root, root)) {
-        let key = state
-            .keys
-            .mint(
-                &served.project_id,
-                &served.member,
-                "operator (create_project)",
-                Some("operator"),
-            )
-            .map_err(|e| format!("{e:?}"));
+        let key = mint_operator_key(state, &served.project_id, &served.member);
         return Serving::Served {
             project_id: served.project_id.clone(),
             member: served.member.clone(),
@@ -273,6 +217,34 @@ fn serve_now(state: &AppState, root: &Path) -> Serving {
             |r| r.reason.clone(),
         );
     Serving::Failed(reason)
+}
+
+/// A server key granted on the new project, acting as the operator role.
+/// Not a per-project key: those do not authenticate on `/v1/mcp`.
+fn mint_operator_key(
+    state: &AppState,
+    project_id: &str,
+    member: &str,
+) -> Result<OperatorKey, String> {
+    let minted = state
+        .server_keys
+        .mint(
+            &format!("{member}@{project_id}"),
+            false,
+            vec![GrantRecord {
+                project_id: project_id.to_owned(),
+                member: member.to_owned(),
+                identity: Some("operator".to_owned()),
+                level: GrantLevel::Operator,
+            }],
+            "operator (create_project)",
+            member,
+        )
+        .map_err(|err| format!("{err:?}"))?;
+    Ok(OperatorKey {
+        key: minted.key,
+        key_id: minted.key_id,
+    })
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -294,14 +266,14 @@ fn answer(created: &ProjectCreated, serving: Serving) -> Value {
             let mut fields = json!({
                 "served": true,
                 "project_id": project_id,
-                "mcp_path": format!("/v1/projects/{project_id}/mcp"),
+                "mcp_path": "/v1/mcp",
                 "member": member,
             });
             fields["operator_key"] = match key {
                 Ok(minted) => json!({
                     "key": minted.key,
                     "key_id": minted.key_id,
-                    "identity": minted.identity,
+                    "identity": "operator",
                     "note": "shown once; the server keeps only a digest",
                 }),
                 Err(error) => json!({ "error": format!("could not mint: {error}") }),
