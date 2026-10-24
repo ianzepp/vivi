@@ -23,7 +23,6 @@ pub mod rule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Build,
-    Worktree,
     Reset,
 }
 
@@ -33,7 +32,6 @@ impl ActionKind {
     pub const fn word(self) -> &'static str {
         match self {
             Self::Build => "build",
-            Self::Worktree => "worktree",
             Self::Reset => "reset",
         }
     }

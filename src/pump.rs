@@ -1,16 +1,13 @@
 //! `vivi pump`: the pump as a state machine; see skills/vivi/references/pump-contract.md.
 
-pub mod alarm;
 pub mod amend;
 pub mod apfssweep;
 pub mod attempt_read;
 pub mod attempt_record;
-pub mod blockers;
 pub mod board;
 pub mod boardpass;
 pub mod brief;
 pub mod cadence;
-pub mod closeout;
 pub mod collect;
 pub mod config;
 pub mod control;
@@ -24,7 +21,6 @@ pub mod host;
 pub mod jobs;
 pub mod logview;
 pub mod need;
-pub mod oversight;
 pub(crate) mod par;
 pub mod plan;
 pub(crate) mod plan_check;
@@ -135,14 +131,6 @@ mod run_test;
 #[cfg(test)]
 #[path = "pump/tick_steps_test.rs"]
 mod tick_steps_test;
-
-#[cfg(test)]
-#[path = "pump/blockers_test.rs"]
-mod blockers_test;
-
-#[cfg(test)]
-#[path = "pump/alarm_test.rs"]
-mod alarm_test;
 
 #[cfg(test)]
 #[path = "pump/quarantine_test.rs"]
