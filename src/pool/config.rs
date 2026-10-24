@@ -23,6 +23,9 @@ use crate::error::VivariumError;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
 
+// The `pool list` / `pool show` views, named at the config path for callers.
+pub use super::config_view::{BandRow, PoolRow, PoolShow, list_view, show_view};
+
 /// Machine hosts the pool can run on.
 pub const PROVIDERS: [&str; 6] = ["fly", "docker", "ssh", "local", "runpod", "worker"];
 const DEFAULT_PROVIDER: &str = "fly";

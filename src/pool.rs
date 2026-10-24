@@ -37,6 +37,7 @@ pub mod config_bands;
 pub mod config_bridge;
 pub mod config_depth;
 pub mod config_restore;
+pub mod config_view;
 pub mod config_worker;
 pub mod dispatch;
 pub mod docker;
