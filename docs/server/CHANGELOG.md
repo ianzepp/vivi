@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **MCP role and charter writes (wave 3 D4).** Hosted, operator-only
+  tools on `POST /v1/mcp`: `role_add` and `role_set`
+  (`Mailspace::add_role` / `set_role`, with the CLI's `vivi role
+  add|set` arguments, including the pump-hand-role default kind and the
+  at-least-one-field rule; the CLI's unguarded `--pid`/`--host` runtime
+  binding is not exposed) and `charter_set` (`Mailspace::set_charter`,
+  guarding the charter file). Each write is wrapped in the config write
+  guard (refused while the project's pump runs; a paused pump stays
+  writable), and each write call appends one audit line.
 - **MCP config writes (wave 3 D4).** Hosted, operator-only tools on
   `POST /v1/mcp`: `config_migrate` (`pump::config::migrate`; `write: true`
   is wrapped in `config_edit::guard_file`, a dry run is a read),

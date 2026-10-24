@@ -410,7 +410,8 @@ or expired chat project reads as ungranted.
 The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
 `config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
-`target_add`, `target_remove`, `pump_send`, `pump_list`, `pump_show`);
+`target_add`, `target_remove`, `role_add`, `role_set`, `charter_set`,
+`pump_send`, `pump_list`, `pump_show`);
 each also takes the required `project` argument on top of the arguments
 shown.
 
@@ -453,6 +454,19 @@ one audit line. A dry run is not.
 | `target_remove` | `id` | `pump::config::targets::remove`. Returns `{id, removed: true}` |
 
 `pump_rungs` `set` is the same guard (`RungsConfig::set`).
+
+#### Role and charter writes
+
+The same operator rule and the same guard as the config writes above.
+`role_add`, `role_set` and `charter_set` call `Mailspace::add_role`,
+`set_role` and `set_charter` with the arguments the CLI's
+`vivi role add`, `vivi role set` and `vivi role charter set` take.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `role_add` | `role`, `kind?`, `harness?`, `provider?`, `model?`, `thinking?`, `status?`, `labels?`, `cadence?`, `pool?`, `read_only?`, `models?` | `Mailspace::add_role` under `guard_file`, then the CLI's adoption of letters held under the new name (with the CLI's default: the pump's hand role, `[pump] to`, gets kind `hand` when `kind` is absent). A duplicate name is refused. Returns `{added, adopted, role}` |
+| `role_set` | `role`, plus each of `kind`, `harness`, `provider`, `model`, `thinking`, `cadence`, `pool`, `read_only`, `models` with a `clear_<field>` form, and `status`, `labels`, `clear_labels` | `Mailspace::set_role` under `guard_file`. At least one field must be named (the CLI's rule). The CLI's `--pid`/`--host` (a live seat's runtime binding, the one unguarded `role set` write) is not exposed. Returns the `role_show` view |
+| `charter_set` | `role`, `charter` (the body text; the CLI's `@path` and `--body-file` forms are not accepted) | `Mailspace::set_charter` guarding the charter file the CLI guards. Returns the `charter_show` envelope plus `bytes` |
 
 #### Host tools
 

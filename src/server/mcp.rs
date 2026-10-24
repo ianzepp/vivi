@@ -747,12 +747,41 @@ fn tools_list() -> Value {
                 "required": ["role"],
                 "additionalProperties": false
             })),
+            tool("role_add", "Hosted projects only, operator only. `vivi role add` (through `Mailspace::add_role`, a guarded write): the same arguments the CLI takes — kind (the pump's hand role, `[pump] to`, defaults to kind hand when absent), harness, provider, model, thinking, status, labels, cadence, pool, read_only, models. Same authorization as pump_control. A duplicate name is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Letters held under the new name are adopted, as the CLI does. Returns {added, adopted, role} with the same view `role_show` answers.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name (local-part), e.g. hand-1 or head-ceo" },
+                    "kind": { "type": "string", "description": "Process class (hand, head, mind, operator, steward, or freeform)" },
+                    "harness": { "type": "string", "description": "Execution home (subagent, tmux, vivi_pty, …)" },
+                    "provider": { "type": "string", "description": "Inference provider / account lane" },
+                    "model": { "type": "string", "description": "Model id" },
+                    "thinking": { "type": "string", "description": "Thinking / reasoning effort" },
+                    "status": { "type": "string", "description": "Lifecycle status (active, parked, retired, or freeform)" },
+                    "labels": { "type": "array", "items": { "type": "string" }, "description": "Freeform label slugs" },
+                    "cadence": { "type": "string", "description": "Desired maximum silence between outbound signals (e.g. 15m, 1h)" },
+                    "pool": { "type": "string", "description": "Pool this role dispatches to" },
+                    "read_only": { "type": "boolean", "description": "Override the kind's read-only default" },
+                    "models": { "type": "array", "items": { "type": "string" }, "description": "Preferred model slugs or bands" }
+                },
+                "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("role_set", "Hosted projects only, operator only. `vivi role set` (through `Mailspace::set_role`, a guarded write): the CLI's configuration fields, each as a set and a clear_<field> form — kind, harness, provider, model, thinking, cadence, pool, read_only, models — plus status, labels and clear_labels. At least one field must be named. The CLI's --pid/--host (a live seat's runtime binding, an unguarded write) is not exposed. Same authorization as pump_control. An unknown role is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns the same view `role_show` answers.", role_set_schema()),
             tool("charter_show", "Hosted projects only, operator only. Read-only `vivi role charter show <role> --json`: the role's charter body (an empty string when it has none), by name or alias, with its name, address and has_charter. Same authorization as pump_control.", json!({
                 "type": "object",
                 "properties": {
                     "role": { "type": "string", "description": "Role name or alias" }
                 },
                 "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("charter_set", "Hosted projects only, operator only. `vivi role charter set` (through `Mailspace::set_charter`, guarding the charter file the CLI guards): replace one role's charter body with `charter` (the CLI's @path and --body-file forms are not accepted; the text is taken as given). Same authorization as pump_control. An unknown role is refused; refused while the pump runs. Rate limited as a write. Returns the same envelope `charter_show` answers plus `bytes`.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name or alias" },
+                    "charter": { "type": "string", "description": "Charter body, literal text" }
+                },
+                "required": ["role", "charter"],
                 "additionalProperties": false
             })),
             tool("target_list", "Hosted projects only, operator only. Read-only `vivi pump target list`: the configured pump targets, each {id, path, main, rungs}. Same authorization as pump_control.", json!({
@@ -776,6 +805,50 @@ fn tools_list() -> Value {
             })),
         ]
     })
+}
+
+/// The `role_set` schema: the set fields as a literal, then one generated
+/// `clear_<field>` boolean per clearable field — one 22-property `json!`
+/// literal exceeds the macro's default recursion limit.
+fn role_set_schema() -> Value {
+    let mut schema = json!({
+        "type": "object",
+        "properties": {
+            "role": { "type": "string", "description": "Role name or alias" },
+            "kind": { "type": "string", "description": "Process class" },
+            "harness": { "type": "string", "description": "Execution home" },
+            "provider": { "type": "string", "description": "Inference provider" },
+            "model": { "type": "string", "description": "Model id" },
+            "thinking": { "type": "string", "description": "Thinking / reasoning effort" },
+            "cadence": { "type": "string", "description": "Desired maximum silence between outbound signals (e.g. 15m, 1h)" },
+            "status": { "type": "string", "description": "Lifecycle status" },
+            "labels": { "type": "array", "items": { "type": "string" }, "description": "Freeform label slugs to add" },
+            "clear_labels": { "type": "array", "items": { "type": "string" }, "description": "Label slugs to remove" },
+            "pool": { "type": "string", "description": "Pool this role dispatches to" },
+            "read_only": { "type": "boolean", "description": "Override the kind's read-only default" },
+            "models": { "type": "array", "items": { "type": "string" }, "description": "Preferred model slugs or bands (replaces the list)" }
+        },
+        "required": ["role"],
+        "additionalProperties": false
+    });
+    let properties = schema["properties"].as_object_mut().unwrap();
+    for (field, describe) in [
+        ("kind", "Clear kind"),
+        ("harness", "Clear harness"),
+        ("provider", "Clear provider"),
+        ("model", "Clear model"),
+        ("thinking", "Clear thinking"),
+        ("cadence", "Clear cadence (the role is not on a schedule)"),
+        ("pool", "Clear the assigned pool"),
+        ("read_only", "Clear the explicit read-only flag"),
+        ("models", "Clear the models list"),
+    ] {
+        properties.insert(
+            format!("clear_{field}"),
+            json!({ "type": "boolean", "description": describe }),
+        );
+    }
+    schema
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {

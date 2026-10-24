@@ -140,7 +140,7 @@ pub(in crate::mcp) fn target_remove(
     Ok(json!({"id": id, "removed": true}))
 }
 
-fn open<'a>(
+pub(super) fn open<'a>(
     tool: &str,
     purpose: &str,
     root: &Path,

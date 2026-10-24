@@ -21,6 +21,7 @@ mod pool_bands;
 mod pump;
 mod pump_record;
 mod read;
+mod role_write;
 mod views;
 mod write;
 
@@ -41,6 +42,7 @@ use config_write::{
 use pool_bands::pool_bands;
 use pump::{pump_control, pump_rungs};
 use pump_record::{pump_list, pump_send, pump_show};
+use role_write::{charter_set, role_add, role_set};
 
 /// The one live helper the durable tools share: a string-or-list argument.
 pub(in crate::mcp) use read::string_list;
@@ -79,7 +81,10 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pool_show" => Some(views::pool_show),
         "role_list" => Some(views::role_list),
         "role_show" => Some(views::role_show),
+        "role_add" => Some(role_add),
+        "role_set" => Some(role_set),
         "charter_show" => Some(views::charter_show),
+        "charter_set" => Some(charter_set),
         "target_list" => Some(views::target_list),
         _ => None,
     }
