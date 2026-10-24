@@ -32,6 +32,21 @@ fn parse_headers_flags_close_facts_in_front_matter() {
 }
 
 #[test]
+fn parse_headers_flags_a_report_notes_close_front() {
+    let reported = letter(
+        "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\n\
+         +++\r\n[close]\r\nverdict = \"fixed\"\r\n[close.repos]\r\nvivi = \"sha9\"\r\n+++\r\n\r\ndone\r\n",
+    );
+    let plain_note = letter("X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\ndone\r\n");
+    let empty_close = letter(
+        "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\n+++\r\n[close]\r\n+++\r\n\r\ndone\r\n",
+    );
+    assert!(parse_headers(&reported).has_verdict);
+    assert!(!parse_headers(&plain_note).has_verdict);
+    assert!(!parse_headers(&empty_close).has_verdict);
+}
+
+#[test]
 fn parse_headers_ignores_legacy_close_headers() {
     let legacy = letter("X-Vivi-Verdict: fixed\r\n");
     let legacy_repo = letter("X-Vivi-Repo: vivi=sha9\r\n");

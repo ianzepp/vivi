@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::letter::plain::CloseFront;
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::JobFront;
 use crate::letter::{LetterError, Validate, check_text, parse_letter};
@@ -213,6 +214,17 @@ pub struct PumpNote {
     pub reference: Option<String>,
 }
 
+/// The `[pool]` table of a `mail` letter: one pool event note on a task,
+/// carrying the machine-readable record the event log holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolNote {
+    /// The event word (`pool_dispatched`, `pool_collected`).
+    pub event: String,
+    /// The JSON record of the event, as the event log stores it.
+    pub record: String,
+}
+
 /// Front matter of a `mail` letter; empty for plain mail.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -222,6 +234,14 @@ pub struct MailFront {
     /// The pump job a brief note carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<JobFront>,
+    /// The close facts a report note carries: a close by a role that may
+    /// not write the event letter reports its verdict, repo tips and
+    /// integration branch/commit here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close: Option<CloseFront>,
+    /// The pool event a pool note carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<PoolNote>,
 }
 
 impl Validate for MailFront {
@@ -241,6 +261,13 @@ impl Validate for MailFront {
         }
         if let Some(job) = &self.job {
             job.validate()?;
+        }
+        if let Some(close) = &self.close {
+            close.validate()?;
+        }
+        if let Some(pool) = &self.pool {
+            check_text("pool.event", &pool.event)?;
+            check_text("pool.record", &pool.record)?;
         }
         let Some(pump) = &self.pump else {
             return Ok(());

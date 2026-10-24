@@ -26,10 +26,11 @@ pub struct LetterHeaders {
     /// The letter carries an `X-Vivi-Event` header: it is an item-state
     /// event, which files read.
     pub is_event: bool,
-    /// The letter carries close metadata as the front matter of a
-    /// format-1 close event: the letter a report about closed work travels
-    /// as. Legacy letters that carry their close facts in headers are not
-    /// read (W3-B4: headers carry transport only).
+    /// The letter carries close metadata as front matter: a format-1 close
+    /// event, or the report note a close by a role that may not write the
+    /// event letter travels as. The letter a report about closed work
+    /// travels as. Legacy letters that carry their close facts in headers
+    /// are not read (W3-B4: headers carry transport only).
     pub has_verdict: bool,
 }
 
@@ -97,17 +98,23 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
 
 /// Whether the letter carries close facts in its front matter: a format-1
 /// `done`/`reopened` event letter naming a verdict, a repo tip or an
-/// integration branch/commit. A letter with no `X-Vivi-Format` header is
-/// history and carries nothing, whatever headers it holds.
+/// integration branch/commit, or the `[close]` front of a report note (a
+/// `mail` letter). A letter with no `X-Vivi-Format` header is history and
+/// carries nothing, whatever headers it holds.
 fn carries_close_facts(bytes: &[u8]) -> bool {
     let Ok(letter) = of_message(bytes, "") else {
         return false;
     };
-    matches!(&letter.kind, LetterKind::Event(verb) if CLOSE_EVENTS.contains(&verb.as_str()))
-        && matches!(
-            &letter.front,
-            Front::Event(front) if front != &CloseFront::default()
-        )
+    match (&letter.kind, &letter.front) {
+        (LetterKind::Event(verb), Front::Event(front)) if CLOSE_EVENTS.contains(&verb.as_str()) => {
+            front != &CloseFront::default()
+        }
+        (LetterKind::Mail, Front::Mail(front)) => front
+            .close
+            .as_ref()
+            .is_some_and(|close| close != &CloseFront::default()),
+        _ => false,
+    }
 }
 
 /// Record that the content `child_content_id` answers the live row carrying

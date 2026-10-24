@@ -1,4 +1,5 @@
 use super::*;
+use crate::letter::plain::CloseFront;
 use crate::letter::{LetterError, parse, render};
 
 fn round_trip<T>(front: &T) -> T
@@ -199,6 +200,7 @@ fn mail_round_trips_empty_and_noted() {
             reference: Some("job-1 reason text".to_string()),
         }),
         job: None,
+        ..MailFront::default()
     };
     assert_eq!(round_trip(&noted), noted);
     let bare = MailFront {
@@ -208,8 +210,41 @@ fn mail_round_trips_empty_and_noted() {
             reference: None,
         }),
         job: None,
+        ..MailFront::default()
     };
     assert_eq!(round_trip(&bare), bare);
+}
+
+#[test]
+fn mail_round_trips_close_and_pool_tables() {
+    let close = MailFront {
+        close: Some(CloseFront {
+            verdict: Some("fixed".to_string()),
+            branch: Some("mind/review".to_string()),
+            commit: Some("deadbeef".to_string()),
+            repos: [("vivi".to_string(), "sha9".to_string())]
+                .into_iter()
+                .collect(),
+        }),
+        ..MailFront::default()
+    };
+    assert_eq!(round_trip(&close), close);
+    let pool = MailFront {
+        pool: Some(PoolNote {
+            event: "pool_dispatched".to_string(),
+            record: "{\"job\":\"j1\"}".to_string(),
+        }),
+        ..MailFront::default()
+    };
+    assert_eq!(round_trip(&pool), pool);
+    invalid_naming::<MailFront>(
+        "+++\n[pool]\nevent = \"pool_dispatched\"\nrecord = \" \"\n+++\n",
+        &["pool.record"],
+    );
+    invalid_naming::<MailFront>(
+        "+++\n[pool]\nevent = \" \"\nrecord = \"{}\"\n+++\n",
+        &["pool.event"],
+    );
 }
 
 #[test]
@@ -237,6 +272,7 @@ fn every_note_word_round_trips() {
                 kind: "build".to_string(),
                 builtin_role: None,
             }),
+            ..MailFront::default()
         };
         assert_eq!(round_trip(&front), front);
     }
@@ -284,6 +320,7 @@ fn brief_note_carries_a_job() {
             kind: "build".to_string(),
             builtin_role: Some("hand".to_string()),
         }),
+        ..MailFront::default()
     };
     assert_eq!(round_trip(&brief), brief);
     invalid_naming::<MailFront>(
