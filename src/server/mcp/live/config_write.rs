@@ -6,14 +6,16 @@
 //! A dry run calls `migrate` with `write` false and is a read.
 //! `config_set` / `config_unset` are `config_edit::set_key` / `unset_key`.
 //! `pool_allow_set` writes `[pools.<pool>.harness] models` — the allow list
-//! `pool_bands` checks — through `set_pool_key`, after checking `models` is
-//! an array of strings. `target_add` / `target_remove` are
+//! `pool_bands` checks — through `vivi::pool::config_allow::set_allow`
+//! (check-then-write, guarded), after checking `models` is an array of
+//! strings. `target_add` / `target_remove` are
 //! `pump::config::targets::add` / `remove`.
 
 use std::path::Path;
 
 use serde_json::{Value, json};
 use vivi::mailspace::config_edit;
+use vivi::pool::config_allow;
 use vivi::pump::config::targets::{self, TargetSpec};
 
 use crate::identities::IdentityRecord;
@@ -22,8 +24,6 @@ use crate::safety::RateLimiter;
 
 use super::lib_error;
 use super::pump::{acting_key, authorize};
-
-const HARNESS_MODELS: &str = "harness.models";
 
 pub(in crate::mcp) fn config_migrate(
     limiter: &RateLimiter,
@@ -92,14 +92,10 @@ pub(in crate::mcp) fn pool_allow_set(
     let pool = req_str(arguments, "pool")?;
     let models = string_array(arguments, "models")?;
     rate_limit(limiter, project_id, &hosted.actor)?;
-    let raw = toml_string_array(&models);
-    config_edit::guarded(root, |doc| {
-        config_edit::set_pool_key(doc, pool, HARNESS_MODELS, &raw)
-    })
-    .map_err(lib_error)?;
+    config_allow::set_allow(root, pool, &models).map_err(lib_error)?;
     Ok(json!({
         "pool": pool,
-        "key": format!("pools.{pool}.{HARNESS_MODELS}"),
+        "key": format!("pools.{pool}.harness.models"),
         "models": models,
     }))
 }
@@ -263,12 +259,4 @@ fn string_array(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError>
                 .ok_or_else(|| ToolError::new(format!("{name} must be an array of strings")))
         })
         .collect()
-}
-
-fn toml_string_array(items: &[String]) -> String {
-    let mut array = toml_edit::Array::new();
-    for item in items {
-        array.push(item.as_str());
-    }
-    array.to_string()
 }
