@@ -3,10 +3,13 @@
 //! `vivi::message::build_compose_draft` and append as the authenticated
 //! caller — the server mints the traveling id (decided item 15).
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use serde_json::{Value, json};
+use vivi::letter::plain::{CloseFront, MemoFront, render as render_front};
+use vivi::letter::sugar::opens_with_fence;
 use vivi::letter::{Front, of_message};
 use vivi::message::{render_message, to_json_message};
 use vivi::storage::{MessageIngestRequest, Storage};
@@ -19,6 +22,7 @@ use super::letters::{
     EventFold, ItemState, append_composed, caller_address, compose_event, compose_reply,
     compose_send, handle_of, item_status, parse_headers, parse_letter, state_of, valid_handle,
 };
+use super::live::string_list;
 
 const LIST_DEFAULT: usize = 50;
 const LIST_MAX: usize = 100;
@@ -428,6 +432,14 @@ fn settle(
             "mode": "already_open",
         }));
     }
+    // Close metadata rides the event letter's front matter; a report reply
+    // (below) carries none, and a reopen keeps the facts of its done event.
+    let close = close_arguments(arguments)?;
+    if event != "done" && close.is_some() {
+        return Err(ToolError::new(
+            "reopen takes no close metadata: the facts belong to the done event",
+        ));
+    }
     let caller_prefix = identity.mailspace_prefix();
     let item_domain = parsed.from_domain.as_deref();
     let may_close = match (caller_prefix, item_domain) {
@@ -441,8 +453,22 @@ fn settle(
         let prevs = state
             .map(|state| state.heads.as_slice())
             .unwrap_or_default();
-        compose_event(identity, &parent, note, event, &at, prevs).map_err(ToolError::new)?
+        compose_event(
+            identity,
+            &parent,
+            note,
+            event,
+            &at,
+            prevs,
+            close.unwrap_or_default(),
+        )
+        .map_err(ToolError::new)?
     } else {
+        if close.is_some() {
+            return Err(ToolError::new(
+                "close metadata rides the stamped event letter; this caller files a report reply",
+            ));
+        }
         compose_reply(identity, &parent, note).map_err(ToolError::new)?
     };
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
@@ -484,7 +510,16 @@ fn memo(
             if subject.trim().is_empty() || body.trim().is_empty() {
                 return Err(ToolError::new("subject and body must be non-empty"));
             }
-            save_memo(store, project_id, identity, subject, body)
+            // Tags ride the memo's front matter; a body that opens with `+++`
+            // is the whole letter, and tags beside it are refused, as the
+            // send tool refuses sugar beside a whole letter.
+            let tags = string_list(arguments, "tags")?;
+            if !tags.is_empty() && opens_with_fence(body) {
+                return Err(ToolError::new(
+                    "the body is a whole letter (it opens with +++): put tags in its front matter instead of passing tags",
+                ));
+            }
+            save_memo(store, project_id, identity, subject, body, tags)
         }
         other => Err(ToolError::new(format!(
             "memo action must be list, show, or save; got '{other}'"
@@ -770,10 +805,22 @@ fn save_memo(
     identity: &IdentityRecord,
     subject: &str,
     body: &str,
+    tags: Vec<String>,
 ) -> Result<Value, ToolError> {
     let from = caller_address(identity).map_err(ToolError::new)?;
-    let composed = compose_send(identity, std::slice::from_ref(&from), subject, body, "memo")
-        .map_err(ToolError::new)?;
+    // A memo is a letter: its tags ride `MemoFront` front matter (bare prose
+    // when there are none) and the composer's gate writes the format header.
+    let tags = normalized_memo_tags(&tags).map_err(ToolError::new)?;
+    let body = render_front(&MemoFront { tags }, body)
+        .map_err(|error| ToolError::new(format!("memo letter: {error}")))?;
+    let composed = compose_send(
+        identity,
+        std::slice::from_ref(&from),
+        subject,
+        &body,
+        "memo",
+    )
+    .map_err(ToolError::new)?;
     let traveling_id = composed.traveling_id.clone();
     let storage = open_mailspace(store, project_id)?;
     storage
@@ -950,6 +997,58 @@ pub(super) fn sugared_body(kind: &str, body: &str, arguments: &Value) -> Result<
             given.join(", ")
         )))
     }
+}
+
+/// The close metadata a `done` call passes: `verdict`, `branch`, `commit`
+/// and a `repos` object of repo name to tip, exactly the front matter the
+/// event letter carries. `Ok(None)` when the call passes none. The front's
+/// own rules (branch and commit together, no blank fact) are checked when
+/// the letter is composed.
+pub(super) fn close_arguments(arguments: &Value) -> Result<Option<CloseFront>, ToolError> {
+    if ["verdict", "branch", "commit", "repos"]
+        .iter()
+        .all(|key| matches!(arguments.get(*key), None | Some(Value::Null)))
+    {
+        return Ok(None);
+    }
+    let repos = match arguments.get("repos") {
+        None | Some(Value::Null) => BTreeMap::new(),
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(repo, tip)| {
+                tip.as_str()
+                    .map(|tip| (repo.clone(), tip.to_owned()))
+                    .ok_or_else(|| ToolError::new("repos must map repo names to tip commits"))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?,
+        _ => {
+            return Err(ToolError::new(
+                "repos must be an object of repo name to tip commit",
+            ));
+        }
+    };
+    Ok(Some(CloseFront {
+        verdict: opt_str(arguments, "verdict")?.map(str::to_owned),
+        branch: opt_str(arguments, "branch")?.map(str::to_owned),
+        commit: opt_str(arguments, "commit")?.map(str::to_owned),
+        repos,
+    }))
+}
+
+/// Trim memo tags and refuse ones that are empty or contain whitespace, so
+/// every stored tag is a single token (vivi's own rule for memo tags).
+fn normalized_memo_tags(tags: &[String]) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(tags.len());
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() || tag.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "memo tag {tag:?} must be non-empty and contain no whitespace"
+            ));
+        }
+        normalized.push(tag.to_owned());
+    }
+    Ok(normalized)
 }
 
 pub(super) fn req_str<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, ToolError> {

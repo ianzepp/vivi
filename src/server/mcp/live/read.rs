@@ -31,7 +31,7 @@ const BOARD_GRAPH_DEFAULT: usize = 25;
 const NOTE_PREVIEW_CHARS: usize = 80;
 
 /// `marks` and friends: one slug or a list, as a string or an array.
-pub(super) fn string_list(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError> {
+pub(in crate::mcp) fn string_list(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError> {
     match arguments.get(name) {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::String(raw)) => Ok(raw
