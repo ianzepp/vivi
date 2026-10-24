@@ -1,11 +1,11 @@
-//! `vivi pump` dispatch: `run`, `once`, control, records and operator actions.
+//! `vivi pump` dispatch: `run`, `once`, control, reset, records and operator actions.
 
 use std::path::{Path, PathBuf};
 
 use vivi::VivariumError;
 use vivi::cli::{
-    PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpRungsCommand, PumpServiceCommand,
-    PumpSubcommand, PumpTargetCommand,
+    PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpResetCommand, PumpRungsCommand,
+    PumpServiceCommand, PumpSubcommand, PumpTargetCommand,
 };
 use vivi::mailspace::{Mailspace, PumpActionRequest};
 use vivi::pump::config::RungsConfig;
@@ -14,6 +14,7 @@ use vivi::pump::control::PumpMode;
 use vivi::pump::health::{self, HealthOptions};
 use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
 use vivi::pump::priority;
+use vivi::pump::reset::ResetReport;
 use vivi::pump::run as pump_run;
 
 /// Post an unlock action on the need's open pump record (`pump unlock`).
@@ -51,6 +52,7 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         PumpSubcommand::Stop(cmd) => {
             vivi::pump::control::set_project_mode(&project_root(&cmd.project), PumpMode::Stopped)
         }
+        PumpSubcommand::Reset(cmd) => pump_reset(cmd),
         PumpSubcommand::Priority { command } => match command {
             PumpPriorityCommand::Set(cmd) => {
                 priority::run_set(&project_root(&cmd.project), &cmd.need, cmd.level)
@@ -108,6 +110,41 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             )),
         },
     }
+}
+
+const RESET_NOTE: &str = "pump records are letters: the next tick re-ingests every open record and starts fresh runs; use vivi pump withdraw to stop a need instead";
+
+fn pump_reset(cmd: &PumpResetCommand) -> Result<(), VivariumError> {
+    let report = vivi::pump::reset::archive(&project_root(&cmd.project))?;
+    print_reset(&report, cmd.json)
+}
+
+fn print_reset(report: &ResetReport, json: bool) -> Result<(), VivariumError> {
+    if json {
+        let text = reset_json(report)?;
+        println!("{text}");
+        return Ok(());
+    }
+    println!("{}", report.archive_dir.display());
+    for name in &report.moved {
+        println!("moved {name}");
+    }
+    println!("control: {}", report.mode);
+    println!("open pump records: {}", report.open_records);
+    println!("{RESET_NOTE}");
+    Ok(())
+}
+
+fn reset_json(report: &ResetReport) -> Result<String, VivariumError> {
+    let value = serde_json::json!({
+        "archive_dir": report.archive_dir.display().to_string(),
+        "moved": &report.moved,
+        "mode": report.mode.to_string(),
+        "open_records": report.open_records,
+        "note": RESET_NOTE,
+    });
+    serde_json::to_string_pretty(&value)
+        .map_err(|error| VivariumError::Message(format!("cannot encode reset: {error}")))
 }
 
 fn pump_log(cmd: &PumpLogCommand) -> Result<(), VivariumError> {
