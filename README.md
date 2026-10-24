@@ -272,7 +272,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `mcp` | Needs a server: a stdio bridge to the server-level MCP endpoint (`<server>/v1/mcp`); `tools` lists its tools and `call <tool> [json]` runs one |
 | `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor` |
 | `config` | `show [--resolved]`, `validate`, `migrate [--write]`, `set <key> <value>`, `unset <key>` |
-| `pump` | `run`, `once`, `start`, `pause`, `resume`, `stop`, `log` (`-n`, `-f`, `--unit`, `--grep`, `--exceptions`), `priority`, `target list\|add\|remove`, `rungs show\|set`, `service`, `send --need <need>`, the actions on a need's open pump record (`requeue <step-task>...` or `requeue --job <job>`, `withdraw <need>...`, `replan <need>`, `answer <step-task> <word>`, `unlock <need>`) and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
+| `pump` | `run`, `health`, `once`, `start`, `pause`, `resume`, `stop`, `log` (`-n`, `-f`, `--unit`, `--grep`, `--exceptions`), `priority`, `target list\|add\|remove`, `rungs show\|set`, `service`, `send --need <need>`, the actions on a need's open pump record (`requeue <step-task>...` or `requeue --job <job>`, `withdraw <need>...`, `replan <need>`, `answer <step-task> <word>`, `unlock <need>`) and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
 | `flow` | `list`; `show <kind> [--need <need>]`: the shipped flows, and a need's runs through one (read-only) |
 | `delivery` | `send` a structured branch handoff to a merge role; `close` after merge |
 | `monitor` | Read-only live pump and pool-slot view; `--project` adds roots, `--once [--json]` prints a snapshot |

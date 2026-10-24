@@ -151,8 +151,8 @@ enum FlowAccess {
 fn check_flow_role(routing: &RoleRouting, name: &str, access: FlowAccess, issues: &mut Vec<Issue>) {
     let Some(role) = routing.lookup(name) else {
         issues.push(Issue::warning(format!(
-            "the pump flows need an active {name} role assigned to a pool for durable jobs \
-             (required once the flow engine dispatches role steps): run `vivi config migrate`"
+            "the flow engine dispatches role steps, so the pump flows need an active {name} role \
+             assigned to a pool for durable jobs: run `vivi config migrate`"
         )));
         return;
     };
@@ -167,8 +167,8 @@ fn check_flow_role(routing: &RoleRouting, name: &str, access: FlowAccess, issues
     }
     if role.pool.is_none() {
         issues.push(Issue::warning(format!(
-            "role {} must name a pool for durable {name} jobs (required once the flow engine \
-             dispatches role steps): run `vivi config migrate` or `vivi role pool {} <pool>`",
+            "role {} must name a pool for durable {name} jobs, because the flow engine dispatches \
+             role steps: run `vivi config migrate` or `vivi role pool {} <pool>`",
             role.name, role.name
         )));
     }
@@ -217,7 +217,7 @@ fn check_flow_role_runs(
     check_role_runs(role, pools, &mut found);
     issues.extend(found.into_iter().map(|issue| {
         Issue::warning(format!(
-            "{} (required once the flow engine dispatches role steps)",
+            "{} (the flow engine dispatches role steps to this role)",
             issue.message
         ))
     }));

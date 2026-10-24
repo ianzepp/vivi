@@ -207,9 +207,8 @@ brief, see below), `deviations` (a hand's deviations), `follow-up` (a hand's
 follow-up items), `slice-env` (an environment failure of a slice, `ref` is the
 hand job), `repair-attempt` and `repair-rung` (the repair flow), `main-red` (a
 red main reported on its repair need), `abandoned` (job ids a restarted run
-gave up), `slice-merge` (why a slice merge failed, `ref` is the merge job) and
-`result` (accepted, never written). The prose below the front matter is the
-note text.
+gave up) and `slice-merge` (why a slice merge failed, `ref` is the merge
+job). The prose below the front matter is the note text.
 
 ```
 +++

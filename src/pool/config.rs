@@ -114,7 +114,7 @@ pub struct PoolConfig {
     #[serde(default, skip_serializing_if = "PoolBands::is_empty")]
     pub bands: PoolBands,
     /// Per-model concurrency caps inside this pool. Absent means only
-    /// `slots` limits concurrency (or legacy `[pump.dispatch.lanes]`).
+    /// `slots` limits concurrency.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub caps: BTreeMap<String, u32>,
     /// Settings that belong to the `fly` machine host.

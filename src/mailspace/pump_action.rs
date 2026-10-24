@@ -47,15 +47,15 @@ const EVENT_TYPE: &str = "posted";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PumpActionKind {
-    /// Put one stuck, quarantined, splitting or withdrawn unit back in line.
+    /// Put one step task of a flow run back in line.
     Requeue,
-    /// Withdraw the need's unfinished units and close the dispatch.
+    /// Withdraw the need and close its pump record.
     Withdraw,
     /// Throw the plan away and plan the need again on a fresh record.
     Replan,
-    /// Answer a flow step by hand; applied by the flow engine, not the old pump.
+    /// Answer a flow step by hand; applied by the flow engine.
     Answer,
-    /// Release a locked flow run; applied by the flow engine, not the old pump.
+    /// Release a locked flow run; applied by the flow engine.
     Unlock,
 }
 
