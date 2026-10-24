@@ -6,13 +6,18 @@ use super::super::Mailspace;
 use super::add_header;
 use super::retention::prune_retained_memos;
 use crate::error::VivariumError;
+use crate::letter::gate as letter_gate;
+use crate::letter::plain::{MemoFront, render};
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION};
 use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{MessageIngestRequest, StoredMessageView};
 
 impl Mailspace {
     /// Save a self-addressed memo into the identity's `memos` folder.
     /// Unlike `send`, this creates no sent copy and no recipient delivery —
-    /// it is a single-actor persistence operation.
+    /// it is a single-actor persistence operation. The memo is a letter: its
+    /// tags ride the `MemoFront` front matter (bare prose when there are
+    /// none) and the stored bytes carry `X-Vivi-Format: 1`.
     ///
     /// # Errors
     /// Returns an error if the identity cannot be resolved, a tag is empty or
@@ -28,18 +33,22 @@ impl Mailspace {
         let tags = normalized_memo_tags(tags)?;
         let identity = self.resolve_identity(identity)?;
         let address = self.address_for(&identity);
+        let body = render(&MemoFront { tags: tags.clone() }, body)
+            .map_err(|err| VivariumError::Message(format!("memo letter: {err}")))?;
+        let gated = letter_gate::gate("memo", &body)
+            .map_err(|err| VivariumError::Message(err.to_string()))?;
         let mut eml = build_compose_draft(&ComposeDraft {
             from: address.clone(),
             to: vec![address],
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.to_string(),
-            body: body.to_string(),
+            body,
             html_body: None,
         })?;
-        eml = add_header(&eml, "X-Vivi-Kind", "memo")?;
-        for tag in &tags {
-            eml = add_header(&eml, "X-Vivi-Tag", tag)?;
+        eml = add_header(&eml, "X-Vivi-Kind", &gated.kind)?;
+        if gated.formatted {
+            eml = add_header(&eml, FORMAT_HEADER, FORMAT_VERSION)?;
         }
         let seed = Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let storage = self.storage()?;
