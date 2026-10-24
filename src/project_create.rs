@@ -9,8 +9,8 @@
 //! The work is two halves, because a host can own the two roots with two
 //! users (one for the lanes root, one for the projects root):
 //!
-//! - the **lanes half** ([`lane::create_lane`]): the bare repository and its
-//!   optional seed commit;
+//! - the **lanes half** ([`lane::create_lane`]): the bare repository, the
+//!   sibling group and ACL copy, and its optional seed commit;
 //! - the **projects half** ([`create_project_half`]): the mailspace, the
 //!   project's own values, and the host registration.
 //!

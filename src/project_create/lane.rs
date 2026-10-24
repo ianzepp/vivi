@@ -1,21 +1,25 @@
 //! The lanes half of a creation: the bare group-shared repository.
 //!
 //! [`create_lane`] makes `<lanes_root>/<name>.git` with `--shared=group`
-//! and the optional seed commit. A host can own the lanes root with a
-//! different user than the projects root, so the half is public on its own;
-//! the seed commit's identity comes from the config chain at the identity
-//! root, which is what a new mailspace inherits.
+//! and the optional seed commit. After `git init` and before that commit,
+//! Linux copies the new directory's owning group and ACL from the
+//! lexicographically first sibling `<name>.git` whose ACL `getfacl` can
+//! read. Off Linux, or when that copy cannot be done, it is skipped with
+//! one warning and the lane is still created. A host can own the lanes root
+//! with a different user than the projects root, so the half is public on
+//! its own; the seed commit's identity comes from the config chain at the
+//! identity root, which is what a new mailspace inherits.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::{
-    Git, Step, Undo, check_branch, check_name, config, existing_dir, git, refuse_existing,
-};
+use super::{Step, Undo, check_branch, check_name, existing_dir, git, refuse_existing};
 use crate::VivariumError;
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, inherit};
+
+mod acl;
 
 /// Author and committer of the initial commit when the project's `[pump]`
 /// names no committer.
@@ -71,6 +75,7 @@ pub struct LaneCreated {
 /// # Errors
 /// Fails on an invalid name or branch, a missing lanes root, a repository
 /// that already exists, or git failing; the repository is then removed.
+/// Copying a sibling's group and ACL is best effort and never fails this call.
 pub fn create_lane(request: &LaneCreate) -> Result<LaneCreated, VivariumError> {
     check_name(&request.name)?;
     check_branch(&request.branch)?;
@@ -99,11 +104,23 @@ pub(super) struct LanePlan {
 }
 
 /// The lanes half: the bare, group-shared repository and its optional seed
-/// commit. `undo.repo` is set once the directory exists.
+/// commit. `undo.repo` is set once the directory exists. The sibling ACL
+/// copy never fails this call.
 pub(super) fn run_lane_steps(
     plan: &LanePlan,
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
     undo: &mut Undo,
+) -> Result<LaneCreated, VivariumError> {
+    run_lane_steps_with(plan, inject, undo, &acl::apply)
+}
+
+/// [`run_lane_steps`] with the ACL copy supplied by the caller. A skip or a
+/// failed copy does not fail the lane: the seed commit still runs.
+fn run_lane_steps_with(
+    plan: &LanePlan,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+    undo: &mut Undo,
+    copy_acl: &dyn Fn(&Path) -> acl::AclCopy,
 ) -> Result<LaneCreated, VivariumError> {
     inject(Step::Repo)?;
     fs::create_dir(&plan.repo)?;
@@ -114,7 +131,9 @@ pub(super) fn run_lane_steps(
     )
     .arg(&plan.repo)
     .run()?;
-    // W3E3-3 copies a sibling repository's group and ACL entries here.
+    // Best effort. A wrong ACL is recoverable by the lanes owner; failing
+    // the lane here would throw away a repository that git init already made.
+    acl::report(&copy_acl(&plan.repo));
     inject(Step::Commit)?;
     let initial_commit = if plan.initial_commit {
         let identity = resolve_committer(&plan.identity_root)?;
@@ -178,3 +197,7 @@ fn make_initial_commit(
     .run()?;
     Ok(commit)
 }
+
+#[cfg(test)]
+#[path = "lane_test.rs"]
+mod tests;
