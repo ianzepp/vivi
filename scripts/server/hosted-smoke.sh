@@ -149,7 +149,7 @@ status_of() { # http status of an MCP call with $1 as the key (project overview)
   && ok "both keys authenticate on /v1/projects/<id>/mcp" || bad "key status: $(status_of "$KEY_OP") $(status_of "$KEY_MIND")"
 
 # --- send over MCP -> the CLI sees it at once --------------------------------
-SENT=$(mcp "$KEY_OP" send '{"kind":"need","to":"mind","subject":"hosted smoke need","body":"ship it\n\ndone_when: shipped"}')
+SENT=$(mcp "$KEY_OP" send '{"kind":"need","to":"mind","subject":"hosted smoke need","body":"+++\ndone_when = [\"shipped\"]\n+++\n\nship it"}')
 HANDLE=$(echo "$SENT" | jget '["handle"]' 2>/dev/null)
 [ "$(echo "$SENT" | jget '["from"]' 2>/dev/null)" = operator ] && echo "$HANDLE" | grep -qE '^[0-9a-f]{8}$' \
   && ok "MCP send as operator to mind ($HANDLE)" || die "MCP send: $SENT"
