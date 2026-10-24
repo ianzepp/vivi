@@ -4,6 +4,7 @@
 //! the typed fields and the Markdown prose is the body. A role reply envelope
 //! is one kind of letter.
 
+pub mod gate;
 pub mod kinds;
 pub mod message;
 pub mod plain;
@@ -12,6 +13,7 @@ pub mod records;
 pub mod sugar;
 pub mod work;
 
+pub use gate::{Gated, gate};
 pub use kinds::{Front, Letter, LetterKind, parse_kind};
 pub use message::of_message;
 
@@ -291,6 +293,10 @@ pub fn check_list(key: &str, items: &[String]) -> Result<(), String> {
 #[cfg(test)]
 #[path = "letter_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "letter/gate_test.rs"]
+mod gate_test;
 
 #[cfg(test)]
 #[path = "letter/fixture_test.rs"]
