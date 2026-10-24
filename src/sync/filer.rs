@@ -157,8 +157,11 @@ impl<'a> Filer<'a> {
 
     /// Hold a letter whose front matter will not parse: exact bytes plus a
     /// receipt under `.vivi/quarantine/`. The cursor has already advanced
-    /// past the record, so the letter is held, not dropped; the same
-    /// content arriving again finds the receipt and does not alarm again.
+    /// past the record, so the letter is held, not dropped. The record is
+    /// named whether this hold is new or a receipt is already live (a
+    /// discard that failed, or the same content arriving again): already
+    /// held is not filed-clean, and the reason named is the live
+    /// receipt's.
     fn hold_letter(
         &self,
         record: &Record,
@@ -168,12 +171,15 @@ impl<'a> Filer<'a> {
         report: &mut PullReport,
     ) -> Result<(), VivariumError> {
         let held = quarantine::HeldLetter::new(record, reason);
-        if quarantine::hold(&self.mailspace.dir, bytes, &held)? {
-            report.quarantined.push(QuarantinedRecord {
-                id: content_id.to_string(),
-                reason: held.reason.clone(),
-            });
-        }
+        let reason = if quarantine::hold(&self.mailspace.dir, bytes, &held)? {
+            held.reason.clone()
+        } else {
+            quarantine::reason_of(&self.mailspace.dir, content_id)
+        };
+        report.quarantined.push(QuarantinedRecord {
+            id: content_id.to_string(),
+            reason,
+        });
         Ok(())
     }
 

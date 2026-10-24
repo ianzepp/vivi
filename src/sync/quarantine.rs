@@ -5,8 +5,10 @@
 //! format — files the exact bytes under `<project>/.vivi/quarantine/` with a
 //! JSON receipt and moves on: the cursor has already advanced, so the letter
 //! is held, not dropped and not re-fetched. [`crate::sync::pull::PullReport`]
-//! names each newly held letter once; the same content arriving again finds
-//! the receipt and is silent.
+//! names each letter it held this run, new or already held: a plain re-pull
+//! is silent because the cursor is already past the record, while the same
+//! content arriving again through a fresh push or window is named again
+//! from its live receipt ([`reason_of`]).
 //!
 //! Files only — no table, no state beyond them. [`discard`] moves a held
 //! pair under `dropped/`; [`refile`] re-runs the filer on the held bytes
@@ -74,8 +76,10 @@ impl HeldLetter {
 
 /// Hold `bytes` with their receipt. Returns whether this call newly held
 /// the letter: the same content arriving again finds the receipt and
-/// returns `false`, so no caller alarms twice. The receipt is written last
-/// (temp file, then rename): its presence is what marks the letter held.
+/// returns `false` — the write is idempotent, and the caller still names
+/// the letter, with the live receipt's reason ([`reason_of`]). The receipt
+/// is written last (temp file, then rename): its presence is what marks
+/// the letter held.
 ///
 /// # Errors
 /// Returns an error when the quarantine directory or either file cannot be
@@ -140,6 +144,19 @@ pub fn held(vivi_dir: &Path, id: &str) -> Result<HeldLetter, VivariumError> {
         VivariumError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => not_held(id),
         other => other,
     })
+}
+
+/// The reason the live receipt of `id` names, for a caller that meets the
+/// same content again: why the letter was first held, not a fresh parse.
+/// A receipt that cannot be read (missing or corrupt) is not an error
+/// here — the letter is held either way — so the answer degrades to a
+/// generic reason.
+#[must_use]
+pub fn reason_of(vivi_dir: &Path, id: &str) -> String {
+    match held(vivi_dir, id) {
+        Ok(receipt) => receipt.reason,
+        Err(_) => "held (receipt unreadable)".to_string(),
+    }
 }
 
 /// The exact held bytes of `id`.
