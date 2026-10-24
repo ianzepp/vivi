@@ -230,7 +230,7 @@ async fn a_need_body_without_done_when_is_refused() {
             json!({"kind": "need", "to": "mind", "subject": "s", "body": "just do it"}),
         )
         .await;
-    assert!(message.contains("done_when"), "{message}");
+    assert!(message.contains("need has no done_when"), "{message}");
     // Nothing was sent: the refusal left no letter behind.
     assert!(
         fx.ms()
@@ -238,6 +238,112 @@ async fn a_need_body_without_done_when_is_refused() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn a_hosted_send_builds_front_matter_from_the_sugar_arguments() {
+    let fx = fixture("sugar");
+    let key = fx.key(None);
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "sugared",
+                   "body": "the prose",
+                   "done_when": ["it is done"], "target": "repo"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap();
+    // The stored raw bytes are a format-1 letter whose front matter the
+    // sugar arguments built; vivi's send wrote the header, the gate the body.
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    let raw = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(raw.contains("done_when = [\"it is done\"]"), "{raw}");
+    assert!(raw.contains("target = \"repo\""), "{raw}");
+    assert!(raw.contains("the prose"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_dependency_named_at_send_rides_in_the_front_matter() {
+    let fx = fixture("sugar-depends");
+    let key = fx.key(None);
+    let first = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "first",
+                   "body": "one", "done_when": "first done"}),
+        )
+        .await;
+    let first_handle = first["handle"].as_str().unwrap().to_owned();
+    let second = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "task", "to": "mind", "subject": "second",
+                   "body": "two", "depends_on": first_handle}),
+        )
+        .await;
+    let handle = second["handle"].as_str().unwrap();
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    let raw = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(
+        raw.contains(&format!("depends_on = [\"{first_handle}\"]")),
+        "{raw}"
+    );
+    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+}
+
+#[tokio::test]
+async fn sugar_arguments_beside_a_whole_letter_body_are_refused() {
+    let fx = fixture("sugar-whole");
+    let key = fx.key(None);
+    let message = fx
+        .call_err(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "s",
+                   "body": "+++\ndone_when = [\"y\"]\n+++\n\nx",
+                   "target": "repo"}),
+        )
+        .await;
+    // vivi's own refusal, naming the front-matter key.
+    assert!(message.contains("whole letter"), "{message}");
+    assert!(
+        message.contains("put target in its front matter"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn mail_takes_no_sugar_arguments_and_prose_mail_still_sends() {
+    let fx = fixture("sugar-mail");
+    let key = fx.key(None);
+    let message = fx
+        .call_err(
+            &key,
+            "send",
+            json!({"kind": "mail", "to": "mind", "subject": "s", "body": "prose",
+                   "done_when": "never"}),
+        )
+        .await;
+    assert!(
+        message.contains("mail takes no sugar arguments"),
+        "{message}"
+    );
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "mail", "to": "mind", "subject": "plain", "body": "prose"}),
+        )
+        .await;
+    assert_eq!(fx.ms().list("mind", "inbox").unwrap().len(), 1, "{sent}");
 }
 
 #[tokio::test]
@@ -708,6 +814,21 @@ async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
     assert_eq!(live["you"]["name"], "operator");
 }
 
+/// The flow tick's job shelf: jobs the run enqueues stay in memory; nothing
+/// dispatches them (that is the outer pump loop's work, not the flow's).
+#[derive(Default)]
+struct Jobs(std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob>);
+
+impl vivi::pump::jobs::JobStore for Jobs {
+    fn jobs(&self) -> &std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob> {
+        &self.0
+    }
+
+    fn jobs_mut(&mut self) -> &mut std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob> {
+        &mut self.0
+    }
+}
+
 fn spki_pem(seed: u8) -> String {
     use base64::Engine;
     const PREFIX: &[u8] = &[
@@ -807,7 +928,8 @@ async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
         .call(
             &key,
             "send",
-            json!({"kind": "need", "to": "alice@0a0a0a0a.local", "subject": "s", "body": "b"}),
+            json!({"kind": "need", "to": "alice@0a0a0a0a.local", "subject": "s", "body": "b",
+                   "done_when": "y"}),
         )
         .await;
     assert!(sent["message_id"].is_string(), "{sent}");
@@ -826,6 +948,65 @@ async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
     for tool in ["mark", "unmark", "depend", "board", "send", "overview"] {
         assert!(names.contains(&tool), "{tool} in {names:?}");
     }
+}
+
+/// The release cross-check (W3-C3): a need sent through hosted MCP `send`
+/// with the `done_when` sugar, dispatched as `vivi pump send --need` files
+/// it, and one v21 pump tick starts a run — intake accepts the letter and
+/// raises no `flow-letter-invalid`.
+#[tokio::test]
+async fn a_pumped_need_the_server_composed_starts_a_run() {
+    use vivi::pump::flow::index::run_state;
+    let fx = fixture("pump-run");
+    let key = fx.key(None);
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "pump me",
+                   "body": "the prose", "done_when": ["it is done"]}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    // File the pump record for the need, as `vivi pump send --need <handle>`
+    // does, then read the flow's view through the pump's own store.
+    let need = {
+        let ms = fx.ms();
+        let record = ms.pump_send(None, &handle, None).unwrap();
+        assert_eq!(record.status, vivi::mailspace::PumpState::Open);
+        record.need
+    };
+
+    // One pump tick (`vivi pump once`'s flow half) over the hosted root.
+    let home = scratch("pump-run-home");
+    let mut cfg = vivi::pump::config::PumpConfig::default();
+    cfg.home = Some(home.to_string_lossy().into_owned());
+    let mailspace = fx.ms();
+    let ctx = vivi::pump::host::Ctx::new(
+        cfg,
+        std::sync::Arc::new(vivi::pump::host::RealHost::new(&home)),
+        fx.root.clone(),
+        "vivi".into(),
+    )
+    .with_mailspace(mailspace.mailspace_id().to_owned());
+    drop(mailspace);
+    let mut jobs = Jobs::default();
+    vivi::pump::flow::tick::tick(&ctx, &mut jobs).unwrap();
+
+    // A run exists for the need ...
+    let store =
+        vivi::pump::store::PumpStore::open(&home.join(vivi::pump::store::DB_FILENAME)).unwrap();
+    let runs = store.runs_of(&need).unwrap();
+    assert!(!runs.is_empty(), "no run for need {need}");
+    let states: Vec<&str> = runs.iter().map(|run| run.state.as_str()).collect();
+    assert!(
+        states.iter().all(|state| matches!(*state, run_state::LIVE)),
+        "run states {states:?}"
+    );
+    // ... and the intake never refused the letter.
+    let exceptions = std::fs::read_to_string(home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!exceptions.contains("flow-letter-invalid"), "{exceptions}");
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 use vivi::mailspace::{DeliveryResult, SendRequest, folded_marks};
 
-use crate::mcp::tools::{ToolError, opt_str, parse_depends, parse_to, rate_limit, req_str};
+use crate::mcp::tools::{ToolError, opt_str, parse_to, rate_limit, req_str, sugared_body};
 use crate::safety::RateLimiter;
 
 use super::read::{memo_items, string_list};
@@ -57,14 +57,10 @@ pub(super) fn send(
     let to = parse_to(arguments)?;
     let subject = req_str(arguments, "subject")?;
     let body = req_str(arguments, "body")?;
-    // Parsed and checked, but not carried into the letter: vivi 21 takes
-    // dependencies from the body's front matter (W3-C3 wires the argument).
-    let depends_on = parse_depends(arguments)?;
-    if !is_work(kind) && !depends_on.is_empty() {
-        return Err(ToolError::new(
-            "depends_on applies to a need, task, or want",
-        ));
-    }
+    // The sugar arguments build the work letter's front matter, as the
+    // CLI's flags do; vivi's send gate re-checks the built letter, so its
+    // refusal text reaches the caller unchanged.
+    let body = sugared_body(kind, body, arguments)?;
     let result =
         h.ms.send(SendRequest {
             from: h.actor.clone(),
@@ -72,7 +68,7 @@ pub(super) fn send(
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.to_owned(),
-            body: body.to_owned(),
+            body,
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,

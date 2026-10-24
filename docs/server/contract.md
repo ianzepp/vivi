@@ -297,6 +297,50 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   [`phase-02-identity-and-sync.md`](phase-02-identity-and-sync.md), the
   phase 02 delivery home.
 
+## Project letter append
+
+Durable member push is `PUT /v1/projects/{id}/items/{message_id}` on a
+project the server stores. The body is the raw letter. A hosted project
+files through the host and is not covered here. The rest of the wire is
+in [`phase-03-project-mailspace-hub.md`](phase-03-project-mailspace-hub.md)
+under Append.
+
+### Letter format (v1)
+
+A v1 letter is TOML front matter between two `+++` fences, then the
+Markdown prose:
+
+```
++++
+done_when = ["the smoke passes"]
+target = "repo"
++++
+
+Prose follows the front matter.
+```
+
+Every letter the server composes carries `X-Vivi-Format: 1`: the need,
+want, task, mail and chat letters of MCP `send` and `reply` (hosted and
+durable; prose mail included), and the pump record a hosted project's
+`vivi pump send` files. Memos and event letters carry no format header
+yet. A member-appended letter may omit the header; a legacy letter (no
+`X-Vivi-Format`) contributes no dependencies to `graph`.
+
+On a work send (`kind` need, task or want) the `send` tool takes vivi's
+sugar arguments and renders them into the front matter: `done_when`,
+`target`, `write_scope`, `serves`, `explores`, `question`, `depends_on`
+(strings or lists of strings). A body that opens with `+++` is the whole
+letter: the sugar arguments are refused beside it — name those keys in
+the front matter instead. `mail` and `chat` take no sugar arguments.
+
+A letter that carries `X-Vivi-Format: 1` must parse as a v1 letter. A
+letter that claims format 1 and fails to parse, or names an unknown
+format, is refused `422` `letter_format`. The body is
+`{"error": {"code": "letter_format", "message": "<the parser's message>"}}`
+and nothing is stored. A letter with no `X-Vivi-Format` header is legacy
+and is accepted for now. A replay of an already-stored letter keeps its
+duplicate or conflict outcome and is not judged again.
+
 ## Project MCP (1.2.0)
 
 Additive alongside the rooms contract and the project letter wire in
@@ -331,7 +375,7 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `done` | `handle`, `note?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report |
 | `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
-| `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
+| `graph` | `view?` ready\|status | Ready / blocked / done from `depends_on` in the letter's front matter and from events. A legacy letter (no `X-Vivi-Format`) contributes no dependencies |
 
 Writes share the per-identity send budget (30/min by default; a deployment may configure it, `0` = none), and a refusal reads `over N writes/min/identity`. Tool failures are
 `isError: true` with a text body, HTTP 200. `kind=chat` is accepted on
@@ -408,7 +452,7 @@ under the item's own kind; that still works and is folded the same way.
   `dependency-removed` (`X-Vivi-Event-Dep`, repeatable) to change an item's
   prerequisites after the send; this server files those letters and serves
   them to every member as event letters, and does not fold them into its own
-  `graph` projection, which reads `X-Vivi-Depends-On` headers only. A hosted
+  `graph` projection, which reads `depends_on` from the letter's front matter only. A legacy letter (no `X-Vivi-Format` header) contributes no dependencies, and so does a letter that claims a format but does not parse; the graph does not error on that stored history. A hosted
   project's `graph` folds them, through the library. The pump identity's
   events count by the same rule: its letter is From `<pump identity>@<prefix>.local`
   where the prefix is the pumping member's stamped prefix (the host's own on a

@@ -358,7 +358,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("send", "Send a need, task, want, chat, or mail as the authenticated caller. The server composes the letter and mints its id. For kind=chat, to is optional.", json!({
+            tool("send", "Send a need, task, want, chat, or mail as the authenticated caller. The server composes the letter and mints its id. For kind=chat, to is optional. For a need, task, or want the sugar arguments build the letter's front matter as the CLI's flags do (a need needs done_when, a want needs question; a missing one is refused with vivi's message). A body that opens with +++ is the whole letter, and a sugar argument beside it is refused. Mail and chat take no sugar arguments.", json!({
                 "type": "object",
                 "properties": {
                     "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail"] },
@@ -369,8 +369,27 @@ fn tools_list() -> Value {
                         ]
                     },
                     "subject": { "type": "string" },
-                    "body": { "type": "string" },
+                    "body": { "type": "string", "description": "The prose, or the whole letter when it opens with +++" },
+                    "done_when": {
+                        "description": "need (required there) or task: what must be true for the work to be done",
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ]
+                    },
+                    "target": { "type": "string", "description": "need or task: the repo or checkout the work targets" },
+                    "write_scope": {
+                        "description": "need or task: paths the work may change",
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ]
+                    },
+                    "serves": { "type": "string", "description": "need: the want this need serves" },
+                    "explores": { "type": "string", "description": "need: the want this research need explores" },
+                    "question": { "type": "string", "description": "want (required there): the question or goal the want explores" },
                     "depends_on": {
+                        "description": "need, task, or want: handles of the items this one waits for; rides in the letter's front matter",
                         "oneOf": [
                             { "type": "string" },
                             { "type": "array", "items": { "type": "string" } }
@@ -419,7 +438,7 @@ fn tools_list() -> Value {
                 },
                 "additionalProperties": false
             })),
-            tool("graph", "Ready/blocked/done projection of work items from depends-on headers and event letters.", json!({
+            tool("graph", "Ready/blocked/done projection of work items from `depends_on` in the letter's front matter and from event letters. A legacy letter (no format header) contributes no dependencies.", json!({
                 "type": "object",
                 "properties": {
                     "view": { "type": "string", "enum": ["ready", "status"], "default": "status" }
