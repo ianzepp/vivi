@@ -572,9 +572,6 @@ impl Default for DispatchConfig {
 pub struct MergeConfig {
     /// Format command run after merging.
     pub format: String,
-    /// Optional wall-clock budget for quarantine repair units.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repair_budget: Option<u64>,
     /// Seconds a claimed merge may take.
     pub remote_limit: u64,
     /// Files the merge lane regenerates instead of resolving by hand.
@@ -585,7 +582,6 @@ impl Default for MergeConfig {
     fn default() -> Self {
         Self {
             format: String::new(),
-            repair_budget: None,
             remote_limit: 1800,
             generated: Vec::new(),
         }

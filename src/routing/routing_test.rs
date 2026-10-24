@@ -495,49 +495,32 @@ lanes = 2
 }
 
 #[test]
-fn migrate_rewrites_the_legacy_planner_split_timeout_key() {
-    let raw = r#"
-# keep-me
-name = "t"
-
-[pump]
-branch = "next"
-
-[pump.planner]
-run = "planner-run"
-split_timeout = 1800
-"#;
-    let config: MailspaceConfig = toml::from_str(raw).expect("mailspace toml");
-    let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
-    assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
-    assert_eq!(plan.renames[0].from, "split_timeout");
-    assert_eq!(plan.renames[0].to, "split_hard_cap");
-    let mut doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
-    apply_plan_to_document(&mut doc, &plan).unwrap();
-    let after = doc.to_string();
-    assert!(after.contains("split_hard_cap = 1800"), "{after}");
-    assert!(!after.contains("split_timeout"), "{after}");
-    assert!(after.contains("# keep-me"), "{after}");
-
-    let both = r#"
-name = "t"
-
-[pump]
-branch = "next"
-
-[pump.planner]
-run = "planner-run"
-split_hard_cap = 2700
-split_timeout = 1800
-"#;
-    let config: MailspaceConfig = toml::from_str(both).expect("mailspace toml");
-    let plan = plan_migrate(&config, &both.parse().unwrap(), &MigrateInputs::default());
-    assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
-    let mut doc = both.parse::<toml_edit::DocumentMut>().unwrap();
-    apply_plan_to_document(&mut doc, &plan).unwrap();
-    let after = doc.to_string();
-    assert!(after.contains("split_hard_cap = 2700"), "{after}");
-    assert!(!after.contains("split_timeout"), "{after}");
+fn migrate_removes_the_whole_planner_table_split_keys_included() {
+    for planner in [
+        "split_timeout = 1800",
+        "split_hard_cap = 2700\nsplit_timeout = 1800",
+    ] {
+        let raw = format!(
+            "# keep-me\nname = \"t\"\n\n[pump]\nbranch = \"next\"\n\n[pump.planner]\n\
+             run = \"planner-run\"\n{planner}\n"
+        );
+        let config: MailspaceConfig = toml::from_str(&raw).expect("mailspace toml");
+        let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
+        assert!(
+            plan.removals
+                .iter()
+                .any(|row| row.table == "pump" && row.key == "planner"),
+            "{:?}",
+            plan.removals
+        );
+        let mut doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
+        apply_plan_to_document(&mut doc, &plan).unwrap();
+        let after = doc.to_string();
+        for gone in ["[pump.planner]", "split_hard_cap", "split_timeout", "run ="] {
+            assert!(!after.contains(gone), "{gone} still in:\n{after}");
+        }
+        assert!(after.contains("# keep-me"), "{after}");
+    }
 }
 
 #[test]

@@ -168,7 +168,7 @@ fn validate_cmd(json: bool, project: Option<&Path>) -> Result<(), VivariumError>
     let origins = origins_of(&mailspace)?;
     let mut issues = vivi::pump::readiness::assess(&mailspace);
     issues.extend(missing_rung_issues(&mailspace));
-    issues.extend(retired_key_warnings(&mailspace)?);
+    issues.extend(retired_key_issues(&mailspace)?);
     issues.extend(
         origins
             .warnings()
@@ -212,17 +212,21 @@ fn missing_rung_issues(mailspace: &Mailspace) -> Vec<vivi::routing::Issue> {
         .collect()
 }
 
-/// One warning per retired key the project file still carries, from the same
-/// list `config migrate` removes.
-fn retired_key_warnings(mailspace: &Mailspace) -> Result<Vec<vivi::routing::Issue>, VivariumError> {
+/// One error per key the project file carries that vivi no longer reads, from
+/// the same list `config migrate` removes. The message says how to fix it.
+fn retired_key_issues(mailspace: &Mailspace) -> Result<Vec<vivi::routing::Issue>, VivariumError> {
     let doc = config_edit::load(&mailspace.config_path())?;
     let plan = plan_migrate(&mailspace.config, &doc, &MigrateInputs::default());
     Ok(plan
         .removals
         .into_iter()
         .map(|removal| vivi::routing::Issue {
-            severity: vivi::routing::Severity::Warning,
-            message: format!("[{}] {}: {}", removal.table, removal.key, removal.reason),
+            severity: vivi::routing::Severity::Error,
+            message: format!(
+                "[{}] {}: {}; fix: run `vivi config migrate --write` (it removes the key) or \
+                 delete the key",
+                removal.table, removal.key, removal.reason
+            ),
             item: None,
         })
         .collect())
