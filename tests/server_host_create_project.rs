@@ -313,11 +313,28 @@ async fn bad_arguments_are_refused() {
     assert!(!fx.projects.join("x").exists());
 }
 
+/// A parent base defining `name`, so a project's `[pump.rungs] pools` can
+/// name a real pool. A name that is not a pool is a config error and the
+/// guarded write rolls it back.
+fn base_pool(projects: &std::path::Path, name: &str) {
+    let vivi = projects.join(".vivi");
+    std::fs::create_dir_all(&vivi).unwrap();
+    std::fs::write(
+        vivi.join("mailspace.toml"),
+        format!("base = true\n\n[pools.{name}]\nprovider = \"local\"\nslots = 1\n"),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn create_project_seeds_the_given_rungs_and_answers_the_readiness_after() {
     let fx = fixture("rungs", Some(TOKEN), true);
+    base_pool(&fx.projects, "rung");
     let (errored, made) = fx
-        .create(json!({"name": "laddered", "rungs": {"need": "make need", "main": "make main"}}))
+        .create(json!({
+            "name": "laddered",
+            "rungs": {"need": "make need", "main": "make main", "pools": ["rung"]}
+        }))
         .await;
     assert!(!errored, "{made}");
     assert!(made.get("rungs_error").is_none(), "{made}");
@@ -377,6 +394,7 @@ async fn bad_rungs_are_refused_before_anything_is_created() {
 #[tokio::test]
 async fn create_project_writes_rung_timeout_and_pools() {
     let fx = fixture("rungsettings", Some(TOKEN), true);
+    base_pool(&fx.projects, "rung");
     let (errored, made) = fx
         .create(json!({
             "name": "timed",
@@ -395,6 +413,66 @@ async fn create_project_writes_rung_timeout_and_pools() {
     assert_eq!(rungs.need.as_deref(), Some("make need"));
     assert_eq!(rungs.timeout, Some(900));
     assert_eq!(rungs.pools, vec!["rung".to_owned()]);
+}
+
+#[tokio::test]
+async fn create_project_with_rungs_and_pools_lands_every_command() {
+    let fx = fixture("rungsandpools", Some(TOKEN), true);
+    base_pool(&fx.projects, "rung");
+    let (errored, made) = fx
+        .create(json!({
+            "name": "complete",
+            "rungs": {
+                "task": "make task",
+                "need": "make need",
+                "main": "make main",
+                "release": "make release",
+                "pools": ["rung"]
+            }
+        }))
+        .await;
+    assert!(!errored, "{made}");
+    assert!(made.get("rungs_error").is_none(), "{made}");
+
+    let root = fx.projects.join("complete").canonicalize().unwrap();
+    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let issues = vivi::pump::readiness::assess(&space);
+    let rungs = space.config.pump.unwrap().rungs;
+    assert_eq!(rungs.task.as_deref(), Some("make task"));
+    assert_eq!(rungs.need.as_deref(), Some("make need"));
+    assert_eq!(rungs.main.as_deref(), Some("make main"));
+    assert_eq!(rungs.release.as_deref(), Some("make release"));
+    assert_eq!(rungs.pools, vec!["rung".to_owned()]);
+    assert_eq!(
+        made["readiness"]["ready"],
+        vivi::pump::readiness::is_ready(&issues)
+    );
+    let listed: Vec<_> = vivi::routing::not_ready(&issues)
+        .map(|issue| issue.item.clone().unwrap_or_default())
+        .collect();
+    let answered: Vec<_> = made["readiness"]["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["item"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(answered, listed, "{made}");
+    assert!(
+        answered.iter().all(|item| !item.starts_with("pump.rungs")),
+        "set rungs are not missing: {answered:?}"
+    );
+    let details: Vec<_> = made["readiness"]["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["detail"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("effective pools")),
+        "rung pools are set, so they are not missing: {details:?}"
+    );
 }
 
 #[tokio::test]
