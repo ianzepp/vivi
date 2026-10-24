@@ -6,7 +6,10 @@ use std::process::Command;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{ProjectCreate, Step, check_name, create_at, execute};
+use super::{
+    Half, LaneCreate, ProjectCreate, Roots, Step, check_name, create_at, create_lane,
+    create_project_half, create_split_at, execute, shell_arg, split_execute,
+};
 use crate::VivariumError;
 use crate::registry;
 
@@ -425,4 +428,259 @@ fn without_an_initial_commit_the_repo_stays_empty() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+}
+
+#[cfg(unix)]
+fn deny_writes(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap();
+}
+
+#[cfg(unix)]
+fn allow_writes(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn split_runs_both_halves_when_both_roots_are_writable() {
+    let host = Host::new();
+    let mut request = host.request("app");
+    request.initial_commit = true;
+    let split = create_split_at(&request, &host.registry).unwrap();
+
+    assert!(split.remaining.is_none(), "{split:?}");
+    let created = split.full().unwrap();
+    assert_eq!(created.project_root, host.project("app"));
+    assert_eq!(created.repo_path, host.repo("app"));
+    assert!(created.initial_commit.is_some());
+    assert_eq!(
+        git(&host.repo("app"), &["rev-list", "--count", "--all"]),
+        "1"
+    );
+    assert!(host.project("app").join(".vivi/mailspace.toml").is_file());
+    assert_eq!(host.registered(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unwritable_lanes_root_runs_only_the_projects_half() {
+    let host = Host::new();
+    let mut request = host.request("app");
+    request.branch = "trunk".into();
+    request.initial_commit = true;
+    deny_writes(&host.lanes);
+    let split = create_split_at(&request, &host.registry).unwrap();
+    allow_writes(&host.lanes);
+
+    assert!(split.lane.is_none(), "{split:?}");
+    let project = split.project.as_ref().unwrap();
+    assert_eq!(project.project_root, host.project("app"));
+    assert!(host.project("app").join(".vivi/mailspace.toml").is_file());
+    assert!(!host.repo("app").exists());
+    assert_eq!(host.registered(), 1);
+
+    let remaining = split.remaining.as_ref().unwrap();
+    assert_eq!(remaining.half, Half::Lanes);
+    assert_eq!(remaining.root, host.lanes);
+    // The exact command for the user who owns the lanes root.
+    assert_eq!(
+        remaining.command,
+        format!(
+            "vivi project create app --projects-root {} --lanes-root {} \
+             --git-url-prefix {PREFIX} --branch trunk --initial-commit",
+            host.projects.display(),
+            host.lanes.display()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unwritable_projects_root_runs_only_the_lanes_half() {
+    let host = Host::new();
+    host.write_base(
+        "base = true\n[pump]\ncommitter_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n",
+    );
+    let mut request = host.request("app");
+    request.initial_commit = true;
+    deny_writes(&host.projects);
+    let split = create_split_at(&request, &host.registry).unwrap();
+    allow_writes(&host.projects);
+
+    assert!(split.project.is_none(), "{split:?}");
+    let lane = split.lane.as_ref().unwrap();
+    assert_eq!(lane.repo_path, host.repo("app"));
+    assert!(lane.initial_commit.is_some());
+    assert_eq!(
+        git(&host.repo("app"), &["rev-parse", "--is-bare-repository"]),
+        "true"
+    );
+    // The seed commit's identity comes from the base above the projects
+    // root, read-only here, exactly as a both-halves run would resolve it.
+    assert_eq!(
+        git(
+            &host.repo("app"),
+            &["log", "-1", "--format=%an <%ae>", "main"]
+        ),
+        "Pump <pump@example.com>"
+    );
+    assert!(!host.project("app").exists());
+    assert_eq!(host.registered(), 0);
+
+    let remaining = split.remaining.as_ref().unwrap();
+    assert_eq!(remaining.half, Half::Projects);
+    assert_eq!(remaining.root, host.projects);
+    assert_eq!(
+        remaining.command,
+        format!(
+            "vivi project create app --projects-root {} --lanes-root {} \
+             --git-url-prefix {PREFIX} --initial-commit",
+            host.projects.display(),
+            host.lanes.display()
+        )
+    );
+}
+
+#[test]
+fn no_writable_root_is_an_error_that_names_both_roots() {
+    let host = Host::new();
+    let dirs = Roots::of(&host.request("app")).unwrap();
+    let error = split_execute(
+        &host.request("app"),
+        &host.registry,
+        &dirs,
+        &|_| Ok(()),
+        false,
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("no half can be created"), "{error}");
+    assert!(
+        error.contains(host.lanes.display().to_string().as_str())
+            && error.contains(host.projects.display().to_string().as_str()),
+        "{error}"
+    );
+    assert!(!host.repo("app").exists() && !host.project("app").exists());
+    assert_eq!(host.registered(), 0);
+}
+
+#[test]
+fn a_lanes_half_failure_rolls_back_only_the_repository() {
+    for step in [Step::Repo, Step::Commit] {
+        let host = Host::new();
+        let mut request = host.request("app");
+        request.initial_commit = true;
+        let dirs = Roots::of(&request).unwrap();
+        let error = split_execute(&request, &host.registry, &dirs, &fail_at(step), true, false)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "injected failure", "{step:?}");
+        assert!(!host.repo("app").exists(), "{step:?}");
+        assert!(!host.project("app").exists(), "{step:?}");
+        assert_eq!(host.registered(), 0, "{step:?}");
+    }
+}
+
+#[test]
+fn a_projects_half_failure_leaves_a_repo_it_did_not_create_alone() {
+    for step in [Step::Mailspace, Step::Values, Step::Register, Step::Done] {
+        let host = Host::new();
+        // The lanes owner already made the repository.
+        create_lane(&LaneCreate::new("app", &host.lanes, &host.project("app"))).unwrap();
+        let request = host.request("app");
+        let dirs = Roots::of(&request).unwrap();
+        let error = split_execute(&request, &host.registry, &dirs, &fail_at(step), false, true)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "injected failure", "{step:?}");
+        assert!(!host.project("app").exists(), "{step:?}");
+        assert_eq!(host.registered(), 0, "{step:?}");
+        assert!(
+            host.repo("app").exists(),
+            "the lanes half's repository is not this run's to remove: {step:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_values_failure_in_split_mode_leaves_the_lanes_owners_repo() {
+    let host = Host::new();
+    create_lane(&LaneCreate::new("app", &host.lanes, &host.project("app"))).unwrap();
+    let mut request = host.request("app");
+    request.pool = Some("studio".into());
+    deny_writes(&host.lanes);
+    let error = create_split_at(&request, &host.registry)
+        .unwrap_err()
+        .to_string();
+    allow_writes(&host.lanes);
+    assert!(error.contains("not defined by a base"), "{error}");
+    assert!(!host.project("app").exists());
+    assert_eq!(host.registered(), 0);
+    assert!(host.repo("app").exists());
+}
+
+#[test]
+fn create_lane_makes_a_bare_group_shared_repository() {
+    let host = Host::new();
+    host.write_base(
+        "base = true\n[pump]\ncommitter_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n",
+    );
+    let mut request = LaneCreate::new("app", &host.lanes, &host.project("app"));
+    request.branch = "trunk".into();
+    request.initial_commit = true;
+    let created = create_lane(&request).unwrap();
+
+    assert_eq!(created.repo_path, host.repo("app"));
+    assert!(created.initial_commit.is_some());
+    let repo = host.repo("app");
+    assert_eq!(git(&repo, &["rev-parse", "--is-bare-repository"]), "true");
+    let shared = git(&repo, &["config", "core.sharedRepository"]);
+    assert!(shared == "1" || shared == "group", "{shared}");
+    assert_eq!(git(&repo, &["symbolic-ref", "HEAD"]), "refs/heads/trunk");
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%an <%ae>", "trunk"]),
+        "Pump <pump@example.com>"
+    );
+
+    let again = create_lane(&request).unwrap_err().to_string();
+    assert!(again.contains("already exists"), "{again}");
+    // Nothing outside the lanes root is touched.
+    assert!(!host.project("app").exists());
+    assert_eq!(host.registered(), 0);
+}
+
+#[test]
+fn create_project_half_attaches_to_an_existing_repository() {
+    let host = Host::new();
+    host.write_base(BASE);
+    create_lane(&LaneCreate::new("app", &host.lanes, &host.project("app"))).unwrap();
+    let mut request = host.request("app");
+    request.pool = Some("studio".into());
+    let created = create_project_half(&request, &host.registry).unwrap();
+
+    assert_eq!(created.project_root, host.project("app"));
+    assert_eq!(
+        created.git_url, "git@hub.example.ts.net:app.git",
+        "{:?}",
+        created.git_url
+    );
+    let text = config_text(&host.project("app"));
+    assert!(
+        text.contains("remote_url = \"git@hub.example.ts.net:app.git\""),
+        "{text}"
+    );
+    assert_eq!(host.registered(), 1);
+    assert!(
+        host.repo("app").exists(),
+        "the repo is not this half's to touch"
+    );
+}
+
+#[test]
+fn unsafe_words_in_the_remainder_command_are_quoted() {
+    assert_eq!(shell_arg("app-1.x"), "app-1.x");
+    assert_eq!(shell_arg("two words"), "'two words'");
+    assert_eq!(shell_arg("it's"), "'it'\\''s'");
+    assert_eq!(shell_arg(""), "''");
 }
