@@ -98,3 +98,4 @@ and the E3 ACL-copy-from-sibling path is needed (no inherited defaults).
 - Campaign greps: vivi-server src config_edit::apply = 0; vivi src moved-header writers = 0 (only the of_message refusal list names them).
 - Deviations recorded: E3 linux ACL test typechecked not executed (no Linux box in lane); vouch raw-wire workaround in two-checkout-smoke (revert when the pin's vivi ships W3B5-5 — it does as of c28474b2, so the script CAN revert at next touch; recorded); pump_action posts while running (documented ruling); lane_create projects-half-only per settled recommendation; the need/w3-b5 accident merge + additive revert; the D4 merge restore commits.
 - Nothing pushed, tagged, bumped, or installed. vivi ahead of origin by ~14 commits since v21.0.0; vivi-server ahead by ~20 since v2.0.0.
+- Closeout evidence commit: vivi 1165838e (docs/factory/w3-phase2: ledger + 7 audit files). vivi 14 commits ahead of origin; vivi-server 20 ahead.
