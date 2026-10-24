@@ -1,4 +1,4 @@
-//! Create a project on a host in one operation.
+//! Create a project on a host, in halves a host can split across users.
 //!
 //! [`create`] makes a group-shared bare git repository, a project directory
 //! with an initialised mailspace (starter `[pump]` included), writes the
@@ -6,21 +6,35 @@
 //! It takes explicit inputs, prints nothing, and returns a
 //! [`ProjectCreated`]; the CLI and `vivi-server` both call it.
 //!
+//! The work is two halves, because a host can own the two roots with two
+//! users (one for the lanes root, one for the projects root):
+//!
+//! - the **lanes half** ([`create_lane`]): the bare repository and its
+//!   optional seed commit;
+//! - the **projects half** ([`create_project_half`]): the mailspace, the
+//!   project's own values, and the host registration.
+//!
+//! [`create_split_at`] probes both roots, performs every half the caller can
+//! write, and reports the exact `vivi project create` command for the user
+//! who owns the rest. Both halves share the input validation.
+//!
 //! Steps run in order and each is undone when a later one fails. Only paths
-//! this call created are removed: a name that already exists on either side
-//! is refused up front, and the directories are made with `create_dir`, which
-//! fails on an existing path, so a race cannot make the call delete someone
-//! else's work. A rollback failure is reported with the original error.
+//! this call created are removed: a name that already exists is refused up
+//! front, and `create_dir` fails on an existing path, so a race cannot make
+//! the call delete someone else's work. A half that was never started is
+//! never rolled back. A rollback failure is reported with the original error.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use toml_edit::{Item, value};
 
 use crate::VivariumError;
-use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace, config_edit};
+use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace, config_edit, inherit};
 use crate::pool::config::check_pool_name;
 use crate::pool::plain_git::check_address;
 use crate::pump::readiness;
@@ -85,6 +99,40 @@ impl ProjectCreate {
     }
 }
 
+/// The lanes half's input: the bare repository under the lanes root.
+#[derive(Clone, Debug)]
+pub struct LaneCreate {
+    /// Project name: the repository is `<lanes_root>/<name>.git`.
+    pub name: String,
+    /// Existing directory that holds bare repositories.
+    pub lanes_root: PathBuf,
+    /// Root whose config chain names the seed commit's identity (the
+    /// project's `[pump]` committer, else the vivi fallback).
+    pub identity_root: PathBuf,
+    /// The new repo's default branch.
+    pub branch: String,
+    /// Create the seed commit on `branch`.
+    pub initial_commit: bool,
+}
+
+impl LaneCreate {
+    /// A lanes-half request with the defaults: branch `main`, no seed commit.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        lanes_root: impl Into<PathBuf>,
+        identity_root: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            lanes_root: lanes_root.into(),
+            identity_root: identity_root.into(),
+            branch: DEFAULT_BRANCH.into(),
+            initial_commit: false,
+        }
+    }
+}
+
 /// What [`create`] made.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProjectCreated {
@@ -98,6 +146,28 @@ pub struct ProjectCreated {
     pub mailspace_id: String,
     /// Commit created on the branch when `initial_commit` was set.
     pub initial_commit: Option<String>,
+    /// Whether the pump can run the project yet.
+    pub readiness: Readiness,
+}
+
+/// What the lanes half made.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LaneCreated {
+    /// The bare repository (canonical parent).
+    pub repo_path: PathBuf,
+    /// Commit created on the branch when `initial_commit` was set.
+    pub initial_commit: Option<String>,
+}
+
+/// What the projects half made.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectHalfCreated {
+    /// The project root (canonical), which owns `.vivi/`.
+    pub project_root: PathBuf,
+    /// `<git_url_prefix><name>.git`.
+    pub git_url: String,
+    /// The new mailspace's id.
+    pub mailspace_id: String,
     /// Whether the pump can run the project yet.
     pub readiness: Readiness,
 }
@@ -118,13 +188,84 @@ pub struct MissingItem {
     pub detail: String,
 }
 
+/// One half of a creation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Half {
+    /// The bare repository under the lanes root.
+    Lanes,
+    /// The mailspace, values and registration under the projects root.
+    Projects,
+}
+
+/// The half of a creation this caller could not perform.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RemainingHalf {
+    /// Which half remains.
+    pub half: Half,
+    /// The root the performing user must be able to write.
+    pub root: PathBuf,
+    /// The exact `vivi project create` command for the remaining half; run
+    /// by a user who can write its root, it performs that half by the same probes.
+    pub command: String,
+}
+
+/// What a split creation performed, and what remains for another user.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SplitCreated {
+    /// The lanes half's result when this run performed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<LaneCreated>,
+    /// The projects half's result when this run performed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectHalfCreated>,
+    /// The half this run could not write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<RemainingHalf>,
+}
+
+impl SplitCreated {
+    /// A both-halves outcome from a full [`create_at`] result.
+    fn of(created: ProjectCreated) -> Self {
+        Self {
+            lane: Some(LaneCreated {
+                repo_path: created.repo_path,
+                initial_commit: created.initial_commit,
+            }),
+            project: Some(ProjectHalfCreated {
+                project_root: created.project_root,
+                git_url: created.git_url,
+                mailspace_id: created.mailspace_id,
+                readiness: created.readiness,
+            }),
+            remaining: None,
+        }
+    }
+
+    /// The both-halves result when this run performed everything.
+    #[must_use]
+    pub fn full(&self) -> Option<ProjectCreated> {
+        match (&self.lane, &self.project, self.remaining.as_ref()) {
+            (Some(lane), Some(project), None) => Some(ProjectCreated {
+                project_root: project.project_root.clone(),
+                git_url: project.git_url.clone(),
+                repo_path: lane.repo_path.clone(),
+                mailspace_id: project.mailspace_id.clone(),
+                initial_commit: lane.initial_commit.clone(),
+                readiness: project.readiness.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// The steps of a creation, in order; the failure seam of the tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Step {
     Repo,
+    Commit,
     Mailspace,
     Values,
-    Commit,
     Register,
     Done,
 }
@@ -151,17 +292,221 @@ pub fn create_at(
     execute(request, registry_file, &|_| Ok(()))
 }
 
+/// The lanes half of [`create`], alone: a group-shared bare repository with
+/// the optional seed commit, for a user who can write the lanes root while
+/// another owns the projects half.
+///
+/// # Errors
+/// Fails on an invalid name or branch, a missing lanes root, a repository
+/// that already exists, or git failing; the repository is then removed.
+pub fn create_lane(request: &LaneCreate) -> Result<LaneCreated, VivariumError> {
+    check_name(&request.name)?;
+    check_branch(&request.branch)?;
+    let lanes_dir = existing_dir(&request.lanes_root, "lanes root")?;
+    let repo = lanes_dir.join(format!("{}.git", request.name));
+    refuse_existing(&repo, "repository")?;
+    let plan = LanePlan {
+        repo: repo.clone(),
+        branch: request.branch.clone(),
+        initial_commit: request.initial_commit,
+        identity_root: request.identity_root.clone(),
+    };
+    let mut undo = Undo::default();
+    match run_lane_steps(&plan, &|_| Ok(()), &mut undo) {
+        Ok(lane) => Ok(lane),
+        Err(error) => Err(undo.roll_back(error, Some(&repo), None)),
+    }
+}
+
+/// The projects half of [`create`], alone: the mailspace with the starter
+/// `[pump]`, the project's own values, and the host registration. A user who
+/// can write the projects root runs this when another user owns the lanes
+/// half; the repository itself is never touched, so it may already exist.
+///
+/// # Errors
+/// Fails on invalid input, a name that already exists (project root or
+/// registration), or any step failing; everything this call created is then
+/// removed, and a failed removal is named in the error.
+pub fn create_project_half(
+    request: &ProjectCreate,
+    registry_file: &Path,
+) -> Result<ProjectHalfCreated, VivariumError> {
+    let git_url = validate_shared(request)?;
+    let projects_dir = existing_dir(&request.projects_root, "projects root")?;
+    let root = projects_dir.join(&request.name);
+    refuse_existing(&root, "project root")?;
+    refuse_registered(&root, registry_file)?;
+    let mut undo = Undo::default();
+    match run_project_steps(
+        request,
+        &root,
+        &git_url,
+        registry_file,
+        &|_| Ok(()),
+        &mut undo,
+    ) {
+        Ok(created) => Ok(created),
+        Err(error) => Err(undo.roll_back(error, None, Some((&root, registry_file)))),
+    }
+}
+
+/// [`create`] by halves against the host registry (`VIVI_CONFIG_DIR` or the
+/// user config directory); see [`create_split_at`].
+///
+/// # Errors
+/// As [`create_split_at`], plus a registry path that cannot be determined.
+pub fn create_split(request: &ProjectCreate) -> Result<SplitCreated, VivariumError> {
+    create_split_at(request, &registry::path()?)
+}
+
+/// [`create`] split across owners: probe both roots, perform every half the
+/// caller can write, and report the exact command for the user who owns the
+/// rest. When the caller can write both roots this is exactly [`create_at`].
+///
+/// # Errors
+/// As [`create_at`] for the halves performed, plus an error naming both
+/// roots when the caller can write neither.
+pub fn create_split_at(
+    request: &ProjectCreate,
+    registry_file: &Path,
+) -> Result<SplitCreated, VivariumError> {
+    validate_shared(request)?;
+    let dirs = Roots::of(request)?;
+    let lanes_writable = writable_root(&dirs.lanes)?;
+    let projects_writable = writable_root(&dirs.projects)?;
+    split_execute(
+        request,
+        registry_file,
+        &dirs,
+        &|_| Ok(()),
+        lanes_writable,
+        projects_writable,
+    )
+}
+
 fn execute(
     request: &ProjectCreate,
     registry_file: &Path,
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
 ) -> Result<ProjectCreated, VivariumError> {
-    let plan = Plan::validate(request, registry_file)?;
-    let mut undo = Undo::default();
-    match run_steps(request, &plan, registry_file, inject, &mut undo) {
-        Ok(created) => Ok(created),
-        Err(error) => Err(undo.roll_back(error, &plan, registry_file)),
+    let git_url = validate_shared(request)?;
+    let dirs = Roots::of(request)?;
+    run_all(request, registry_file, &dirs, &git_url, inject)
+}
+
+/// Perform every half the caller can write; the flags come from real probes
+/// (see [`writable_root`]) or a test.
+fn split_execute(
+    request: &ProjectCreate,
+    registry_file: &Path,
+    dirs: &Roots,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+    lanes_writable: bool,
+    projects_writable: bool,
+) -> Result<SplitCreated, VivariumError> {
+    let git_url = validate_shared(request)?;
+    match (lanes_writable, projects_writable) {
+        (true, true) => Ok(SplitCreated::of(run_all(
+            request,
+            registry_file,
+            dirs,
+            &git_url,
+            inject,
+        )?)),
+        (true, false) => lanes_only(request, dirs, inject),
+        (false, true) => projects_only(request, registry_file, dirs, &git_url, inject),
+        (false, false) => Err(config(&format!(
+            "no half can be created: no write permission on the lanes root {} or the projects \
+             root {}",
+            dirs.lanes.display(),
+            dirs.projects.display()
+        ))),
     }
+}
+
+/// Both halves in one call, with one shared validation and one rollback.
+fn run_all(
+    request: &ProjectCreate,
+    registry_file: &Path,
+    dirs: &Roots,
+    git_url: &str,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+) -> Result<ProjectCreated, VivariumError> {
+    let root = dirs.projects.join(&request.name);
+    let repo = dirs.lanes.join(format!("{}.git", request.name));
+    refuse_existing(&root, "project root")?;
+    refuse_existing(&repo, "repository")?;
+    refuse_registered(&root, registry_file)?;
+    let plan = Plan {
+        root,
+        repo,
+        git_url: git_url.to_string(),
+    };
+    let mut undo = Undo::default();
+    match run_all_steps(request, &plan, registry_file, inject, &mut undo) {
+        Ok(created) => Ok(created),
+        Err(error) => {
+            Err(undo.roll_back(error, Some(&plan.repo), Some((&plan.root, registry_file))))
+        }
+    }
+}
+
+/// The lanes half alone, plus the command for the projects-half owner.
+fn lanes_only(
+    request: &ProjectCreate,
+    dirs: &Roots,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+) -> Result<SplitCreated, VivariumError> {
+    let repo = dirs.lanes.join(format!("{}.git", request.name));
+    refuse_existing(&repo, "repository")?;
+    let plan = LanePlan {
+        repo: repo.clone(),
+        branch: request.branch.clone(),
+        initial_commit: request.initial_commit,
+        identity_root: dirs.projects.join(&request.name),
+    };
+    let mut undo = Undo::default();
+    let lane = match run_lane_steps(&plan, inject, &mut undo) {
+        Ok(lane) => lane,
+        Err(error) => return Err(undo.roll_back(error, Some(&repo), None)),
+    };
+    Ok(SplitCreated {
+        lane: Some(lane),
+        project: None,
+        remaining: Some(RemainingHalf {
+            half: Half::Projects,
+            root: dirs.projects.clone(),
+            command: remainder_command(request, dirs),
+        }),
+    })
+}
+
+/// The projects half alone, plus the command for the lanes-half owner.
+fn projects_only(
+    request: &ProjectCreate,
+    registry_file: &Path,
+    dirs: &Roots,
+    git_url: &str,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+) -> Result<SplitCreated, VivariumError> {
+    let root = dirs.projects.join(&request.name);
+    refuse_existing(&root, "project root")?;
+    refuse_registered(&root, registry_file)?;
+    let mut undo = Undo::default();
+    let project = match run_project_steps(request, &root, git_url, registry_file, inject, &mut undo)
+    {
+        Ok(created) => created,
+        Err(error) => return Err(undo.roll_back(error, None, Some((&root, registry_file)))),
+    };
+    Ok(SplitCreated {
+        lane: None,
+        project: Some(project),
+        remaining: Some(RemainingHalf {
+            half: Half::Lanes,
+            root: dirs.lanes.clone(),
+            command: remainder_command(request, dirs),
+        }),
+    })
 }
 
 /// Validated paths and URL.
@@ -171,29 +516,47 @@ struct Plan {
     git_url: String,
 }
 
-impl Plan {
-    fn validate(request: &ProjectCreate, registry_file: &Path) -> Result<Self, VivariumError> {
-        check_name(&request.name)?;
-        check_branch(&request.branch)?;
-        if let Some(pool) = &request.pool {
-            check_pool_name(pool)?;
-        }
-        let git_url = format!("{}{}.git", request.git_url_prefix, request.name);
-        check_address(request.pool.as_deref().unwrap_or("pool"), &git_url)?;
-        let root = existing_dir(&request.projects_root, "projects root")?.join(&request.name);
-        let repo =
-            existing_dir(&request.lanes_root, "lanes root")?.join(format!("{}.git", request.name));
-        refuse_existing(&root, "project root")?;
-        refuse_existing(&repo, "repository")?;
-        if registry::load_at(registry_file)?.get(&root).is_some() {
-            return Err(config(&format!("{} is already registered", root.display())));
-        }
+/// The canonical roots both halves live under.
+struct Roots {
+    projects: PathBuf,
+    lanes: PathBuf,
+}
+
+impl Roots {
+    fn of(request: &ProjectCreate) -> Result<Self, VivariumError> {
         Ok(Self {
-            root,
-            repo,
-            git_url,
+            projects: existing_dir(&request.projects_root, "projects root")?,
+            lanes: existing_dir(&request.lanes_root, "lanes root")?,
         })
     }
+}
+
+/// Validated lanes-half inputs.
+struct LanePlan {
+    repo: PathBuf,
+    branch: String,
+    initial_commit: bool,
+    identity_root: PathBuf,
+}
+
+/// The checks every half shares: the name, the branch, the pool name and the
+/// git URL. Returns the git URL.
+fn validate_shared(request: &ProjectCreate) -> Result<String, VivariumError> {
+    check_name(&request.name)?;
+    check_branch(&request.branch)?;
+    if let Some(pool) = &request.pool {
+        check_pool_name(pool)?;
+    }
+    let git_url = format!("{}{}.git", request.git_url_prefix, request.name);
+    check_address(request.pool.as_deref().unwrap_or("pool"), &git_url)?;
+    Ok(git_url)
+}
+
+fn refuse_registered(root: &Path, registry_file: &Path) -> Result<(), VivariumError> {
+    if registry::load_at(registry_file)?.get(root).is_some() {
+        return Err(config(&format!("{} is already registered", root.display())));
+    }
+    Ok(())
 }
 
 /// What this call has created so far.
@@ -205,26 +568,40 @@ struct Undo {
 }
 
 impl Undo {
-    /// Remove what was created, newest first. Returns the original error, or
-    /// the original error with every rollback failure appended.
-    fn roll_back(self, error: VivariumError, plan: &Plan, registry_file: &Path) -> VivariumError {
+    /// Remove what was created, newest first; a half that never ran (its
+    /// path is `None`) is never rolled back. Returns the original error with
+    /// every rollback failure appended.
+    fn roll_back(
+        self,
+        error: VivariumError,
+        repo: Option<&Path>,
+        projects: Option<(&Path, &Path)>,
+    ) -> VivariumError {
         let mut failures = Vec::new();
-        if self.registered {
-            let removed = registry::update_at(registry_file, |registry| {
-                registry.remove(&plan.root);
-                Ok(())
-            });
-            if let Err(failure) = removed {
-                failures.push(format!(
-                    "could not unregister {}: {failure}",
-                    plan.root.display()
-                ));
+        if let Some((root, registry_file)) = projects {
+            if self.registered {
+                let removed = registry::update_at(registry_file, |registry| {
+                    registry.remove(root);
+                    Ok(())
+                });
+                if let Err(failure) = removed {
+                    failures.push(format!(
+                        "could not unregister {}: {failure}",
+                        root.display()
+                    ));
+                }
+            }
+            if self.root
+                && let Err(failure) = fs::remove_dir_all(root)
+            {
+                failures.push(format!("could not remove {}: {failure}", root.display()));
             }
         }
-        for (made, path) in [(self.root, &plan.root), (self.repo, &plan.repo)] {
-            if made && let Err(failure) = fs::remove_dir_all(path) {
-                failures.push(format!("could not remove {}: {failure}", path.display()));
-            }
+        if let Some(repo) = repo
+            && self.repo
+            && let Err(failure) = fs::remove_dir_all(repo)
+        {
+            failures.push(format!("could not remove {}: {failure}", repo.display()));
         }
         if failures.is_empty() {
             error
@@ -237,54 +614,97 @@ impl Undo {
     }
 }
 
-fn run_steps(
+fn run_all_steps(
     request: &ProjectCreate,
     plan: &Plan,
     registry_file: &Path,
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
     undo: &mut Undo,
 ) -> Result<ProjectCreated, VivariumError> {
+    let lane_plan = LanePlan {
+        repo: plan.repo.clone(),
+        branch: request.branch.clone(),
+        initial_commit: request.initial_commit,
+        identity_root: plan.root.clone(),
+    };
+    let lane = run_lane_steps(&lane_plan, inject, undo)?;
+    let project = run_project_steps(
+        request,
+        &plan.root,
+        &plan.git_url,
+        registry_file,
+        inject,
+        undo,
+    )?;
+    Ok(ProjectCreated {
+        project_root: plan.root.clone(),
+        git_url: plan.git_url.clone(),
+        repo_path: lane.repo_path,
+        mailspace_id: project.mailspace_id,
+        initial_commit: lane.initial_commit,
+        readiness: project.readiness,
+    })
+}
+
+/// The lanes half: the bare, group-shared repository and its optional seed
+/// commit. `undo.repo` is set once the directory exists.
+fn run_lane_steps(
+    plan: &LanePlan,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+    undo: &mut Undo,
+) -> Result<LaneCreated, VivariumError> {
     inject(Step::Repo)?;
     fs::create_dir(&plan.repo)?;
     undo.repo = true;
     git(
         None,
-        &["init", "--bare", "--shared=group", "-b", &request.branch],
+        &["init", "--bare", "--shared=group", "-b", &plan.branch],
     )
     .arg(&plan.repo)
     .run()?;
-
-    inject(Step::Mailspace)?;
-    fs::create_dir(&plan.root)?;
-    undo.root = true;
-    Mailspace::init_with_defaults(Some(&plan.root))?;
-
-    inject(Step::Values)?;
-    write_values(request, plan)?;
-    let mailspace = Mailspace::open_root(plan.root.clone())?;
-
+    // W3E3-3 copies a sibling repository's group and ACL entries here.
     inject(Step::Commit)?;
-    let initial_commit = if request.initial_commit {
-        Some(make_initial_commit(
-            &plan.repo,
-            &request.branch,
-            &mailspace,
-        )?)
+    let initial_commit = if plan.initial_commit {
+        let identity = resolve_committer(&plan.identity_root)?;
+        Some(make_initial_commit(&plan.repo, &plan.branch, &identity)?)
     } else {
         None
     };
+    Ok(LaneCreated {
+        repo_path: plan.repo.clone(),
+        initial_commit,
+    })
+}
+
+/// The projects half: the mailspace with the starter `[pump]`, the project's
+/// own values, and the host registration. `undo.root` and
+/// `undo.registered` are set as each is created.
+fn run_project_steps(
+    request: &ProjectCreate,
+    root: &Path,
+    git_url: &str,
+    registry_file: &Path,
+    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
+    undo: &mut Undo,
+) -> Result<ProjectHalfCreated, VivariumError> {
+    inject(Step::Mailspace)?;
+    fs::create_dir(root)?;
+    undo.root = true;
+    Mailspace::init_with_defaults(Some(root))?;
+
+    inject(Step::Values)?;
+    write_values(request, root, git_url)?;
+    let mailspace = Mailspace::open_root(root.to_path_buf())?;
 
     inject(Step::Register)?;
     let issues = readiness::assess(&mailspace);
-    undo.registered = register(request, plan, registry_file, &issues)?;
+    undo.registered = register(request, root, registry_file, &issues)?;
     inject(Step::Done)?;
 
-    Ok(ProjectCreated {
-        project_root: plan.root.clone(),
-        git_url: plan.git_url.clone(),
-        repo_path: plan.repo.clone(),
+    Ok(ProjectHalfCreated {
+        project_root: root.to_path_buf(),
+        git_url: git_url.to_string(),
         mailspace_id: mailspace.config.id.clone().unwrap_or_default(),
-        initial_commit,
         readiness: summarize(&issues),
     })
 }
@@ -294,7 +714,7 @@ fn run_steps(
 /// true when this call added the entry.
 fn register(
     request: &ProjectCreate,
-    plan: &Plan,
+    root: &Path,
     registry_file: &Path,
     issues: &[routing::Issue],
 ) -> Result<bool, VivariumError> {
@@ -306,34 +726,31 @@ fn register(
         serve: request.serve,
     };
     registry::update_at(registry_file, |registry| {
-        if registry.add(plan.root.clone(), flags) {
+        if registry.add(root.to_path_buf(), flags) {
             Ok(true)
         } else {
-            Err(config(&format!(
-                "{} is already registered",
-                plan.root.display()
-            )))
+            Err(config(&format!("{} is already registered", root.display())))
         }
     })
 }
 
 /// Write the pool's `remote_url` into the project's own config file.
-fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumError> {
-    let path = plan.root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
+fn write_values(request: &ProjectCreate, root: &Path, git_url: &str) -> Result<(), VivariumError> {
+    let path = root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
     if let Some(pool) = &request.pool {
-        let mailspace = Mailspace::open_root(plan.root.clone())?;
+        let mailspace = Mailspace::open_root(root.to_path_buf())?;
         if !mailspace.config.pools.contains_key(pool) {
             return Err(config(&format!(
                 "pool `{pool}` is not defined by a base config above {}; a project's own \
                  [pools.{pool}] only overrides remote_url on an inherited pool",
-                plan.root.display()
+                root.display()
             )));
         }
     }
     config_edit::apply(&path, |doc| {
         if let Some(pool) = &request.pool {
             let table = config_edit::table_at(doc.as_table_mut(), &["pools", pool])?;
-            table["remote_url"] = value(&plan.git_url);
+            table["remote_url"] = value(git_url);
             if let Some(pools) = doc.get_mut("pools").and_then(Item::as_table_mut) {
                 pools.set_implicit(true);
             }
@@ -343,22 +760,42 @@ fn write_values(request: &ProjectCreate, plan: &Plan) -> Result<(), VivariumErro
     Ok(())
 }
 
-/// An empty commit on `refs/heads/<branch>` of the bare repo, authored by the
-/// project's `[pump]` committer when both parts are set, else `vivi
-/// <vivi@localhost>`. Returns the commit id.
+/// The seed commit's author and committer: the `[pump]` committer of the
+/// config chain at `root` — its own file when it exists, else the bases
+/// above it, which is what a new mailspace inherits — when both parts are
+/// set, else the vivi fallback. An unreadable chain falls back quietly, as
+/// config inheritance does.
+fn resolve_committer(root: &Path) -> Result<(String, String), VivariumError> {
+    let path = root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
+    let raw = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        // The project does not exist yet: stand in for the `name`-only file
+        // `Mailspace::init` will write, so the base chain merges as it will
+        // after creation.
+        Err(_) => format!(
+            "name = {:?}\n",
+            root.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    };
+    let config = inherit::load_config(&path, &raw)?;
+    let pump = config
+        .pump
+        .as_ref()
+        .filter(|pump| !pump.committer_name.is_empty() && !pump.committer_email.is_empty());
+    Ok(match pump {
+        Some(pump) => (pump.committer_name.clone(), pump.committer_email.clone()),
+        None => (FALLBACK_IDENTITY.0.into(), FALLBACK_IDENTITY.1.into()),
+    })
+}
+
+/// An empty commit on `refs/heads/<branch>` of the bare repo, authored by
+/// the given identity. Returns the commit id.
 fn make_initial_commit(
     repo: &Path,
     branch: &str,
-    mailspace: &Mailspace,
+    identity: &(String, String),
 ) -> Result<String, VivariumError> {
-    let (name, email) = mailspace
-        .config
-        .pump
-        .as_ref()
-        .filter(|pump| !pump.committer_name.is_empty() && !pump.committer_email.is_empty())
-        .map_or(FALLBACK_IDENTITY, |pump| {
-            (pump.committer_name.as_str(), pump.committer_email.as_str())
-        });
+    let (name, email) = identity;
     let tree = git(Some(repo), &["mktree"]).run()?;
     let commit = git(Some(repo), &["commit-tree", &tree, "-m", "Initial commit"])
         .env("GIT_AUTHOR_NAME", name)
@@ -372,6 +809,61 @@ fn make_initial_commit(
     )
     .run()?;
     Ok(commit)
+}
+
+/// The exact `vivi project create` command that performs the remaining half
+/// when run by a user who can write its root, with the same inputs.
+fn remainder_command(request: &ProjectCreate, dirs: &Roots) -> String {
+    let mut command = format!(
+        "vivi project create {} --projects-root {} --lanes-root {} --git-url-prefix {}",
+        shell_arg(&request.name),
+        shell_arg(&dirs.projects.display().to_string()),
+        shell_arg(&dirs.lanes.display().to_string()),
+        shell_arg(&request.git_url_prefix),
+    );
+    if let Some(pool) = &request.pool {
+        command.push_str(&format!(" --pool {}", shell_arg(pool)));
+    }
+    if request.branch != DEFAULT_BRANCH {
+        command.push_str(&format!(" --branch {}", shell_arg(&request.branch)));
+    }
+    if !request.pump {
+        command.push_str(" --no-pump");
+    }
+    if !request.serve {
+        command.push_str(" --no-serve");
+    }
+    if request.initial_commit {
+        command.push_str(" --initial-commit");
+    }
+    command
+}
+
+/// Quote one shell word unless every character is safe unquoted.
+fn shell_arg(arg: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-_./:=@+%".contains(c);
+    if !arg.is_empty() && arg.chars().all(safe) {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+/// Whether this process can create entries in `dir`, probed by making and
+/// removing one throwaway directory. A permission denial means no; any other
+/// failure is an error.
+fn writable_root(dir: &Path) -> Result<bool, VivariumError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    let probe = dir.join(format!(".vivi-probe-{}-{nanos}", std::process::id()));
+    match fs::create_dir(&probe) {
+        Ok(()) => {
+            fs::remove_dir(&probe)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn summarize(issues: &[routing::Issue]) -> Readiness {

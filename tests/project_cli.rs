@@ -121,3 +121,68 @@ fn create_refuses_an_http_prefix() {
     assert!(!output.status.success());
     assert!(!lanes.join("app.git").exists() && !projects.join("app").exists());
 }
+
+#[cfg(unix)]
+mod split_ownership {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_read_only_lanes_root_creates_the_projects_half_and_prints_the_lanes_command() {
+        let tmp = tempdir().unwrap();
+        let (projects, lanes, config) = (
+            tmp.path().join("projects"),
+            tmp.path().join("lanes"),
+            tmp.path().join("config"),
+        );
+        fs::create_dir(&projects).unwrap();
+        fs::create_dir(&lanes).unwrap();
+        let (p, l) = (projects.to_str().unwrap(), lanes.to_str().unwrap());
+        fs::set_permissions(&lanes, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let output = vivi(&config, &create_args(p, l));
+        fs::set_permissions(&lanes, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "",
+            "the library prints nothing"
+        );
+
+        // The projects half ran; the lanes half did not.
+        assert!(projects.join("app/.vivi/mailspace.toml").is_file());
+        assert!(!lanes.join("app.git").exists());
+        let registry = fs::read_to_string(config.join("vivi/pump-service.toml")).unwrap();
+        assert!(registry.contains("app"), "{registry}");
+
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert!(out.contains("created   "), "{out}");
+        assert!(
+            out.contains("git url   git@hub.example.ts.net:app.git"),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "remaining lanes half: no write permission on {}",
+                lanes.canonicalize().unwrap().display()
+            )),
+            "{out}"
+        );
+        assert!(out.contains("run, as a user who can write it:"), "{out}");
+        // The printed remainder is the exact lanes-half command: the same
+        // invocation, which the lanes owner's run splits the same way.
+        assert!(
+            out.contains(&format!(
+                "vivi project create app --projects-root {} --lanes-root {} \
+                 --git-url-prefix git@hub.example.ts.net:",
+                projects.canonicalize().unwrap().display(),
+                lanes.canonicalize().unwrap().display()
+            )),
+            "the exact command\n{out}"
+        );
+    }
+}
