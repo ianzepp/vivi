@@ -2,26 +2,6 @@
 
 ## Unreleased
 
-- **MCP role and charter writes (wave 3 D4).** Hosted, operator-only
-  tools on `POST /v1/mcp`: `role_add` and `role_set`
-  (`Mailspace::add_role` / `set_role`, with the CLI's `vivi role
-  add|set` arguments, including the pump-hand-role default kind and the
-  at-least-one-field rule; the CLI's unguarded `--pid`/`--host` runtime
-  binding is not exposed) and `charter_set` (`Mailspace::set_charter`,
-  guarding the charter file). Each write is wrapped in the config write
-  guard (refused while the project's pump runs; a paused pump stays
-  writable), and each write call appends one audit line.
-- **MCP config writes (wave 3 D4).** Hosted, operator-only tools on
-  `POST /v1/mcp`: `config_migrate` (`pump::config::migrate`; `write: true`
-  is wrapped in `config_edit::guard_file`, a dry run is a read),
-  `config_set` / `config_unset` (`config_edit::set_key` / `unset_key`),
-  `pool_allow_set` (writes `pools.<pool>.harness.models`, the allow list
-  `pool_bands` checks, and refuses a `models` value that is not an array
-  of strings), and `target_add` / `target_remove`
-  (`pump::config::targets::add` / `remove`). Each write is guarded
-  (refused while the project's pump runs; a paused pump stays writable),
-  and each write call appends one audit line. `pump_rungs` `set` was
-  already `RungsConfig::set`, which is the same guard.
 - **Every server letter is format 1 (wave 3 B4).** The `done`/`reopen`
   event letters the MCP tools compose carry `X-Vivi-Format: 1` with their
   close metadata as front matter: `done` takes `verdict`, `branch`+

@@ -9,9 +9,10 @@
 //!
 //! `pump_rungs` shows or sets the rung commands (`[pump.rungs]`, or
 //! `[pump.targets.<id>.rungs]` for one target) through
-//! [`vivi::pump::config::RungsConfig`]. `RungsConfig::set` is a guarded write.
-//! This tool edits rung commands only; config, pool allow lists and targets
-//! are the config write tools.
+//! [`vivi::pump::config::RungsConfig`]. Rung commands are the only config the
+//! server edits through this tool: pools, roles, remotes and free-form config
+//! stay with the host, because a member who could repoint a pool's
+//! `remote_url` could send code elsewhere.
 //!
 //! The caller of either tool must be the operator:
 //!

@@ -420,8 +420,6 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
     assert!(tools.len() > 10, "{tools:?}");
     let bare = [
         "projects",
-        "server_version",
-        "project_list",
         "create_project",
         "key_mint",
         "key_list",
