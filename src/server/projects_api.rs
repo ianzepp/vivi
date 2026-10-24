@@ -80,6 +80,9 @@ pub(crate) fn project_error(err: ProjectError) -> Response {
         ProjectError::BadRequest(message) => {
             error_response(StatusCode::BAD_REQUEST, "invalid_request", &message)
         }
+        ProjectError::LetterFormat(message) => {
+            error_response(StatusCode::UNPROCESSABLE_ENTITY, "letter_format", &message)
+        }
         ProjectError::TooLarge => error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
             "body_too_large",

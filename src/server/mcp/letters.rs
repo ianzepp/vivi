@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use vivi::letter::{FORMAT_HEADER, FORMAT_VERSION, Gated, gate};
 use vivi::message::{ComposeDraft, build_compose_draft, normalize_message_id};
 
 use crate::auth::AuthError;
@@ -45,7 +46,6 @@ pub struct ParsedLetter {
     pub event_units: Vec<String>,
     /// `X-Vivi-Event-State` of an `absorbed` event, lowercased.
     pub event_state: Option<String>,
-    pub depends_on: Vec<String>,
     pub body: String,
 }
 
@@ -163,11 +163,28 @@ fn parse_header_block(header_text: &str) -> ParsedLetter {
                 }
             }
             "date" => parsed.date = date_micros(&value),
-            "x-vivi-depends-on" => parsed.depends_on.push(value),
             _ => {}
         }
     }
     parsed
+}
+
+/// The compose gate on a body about to be stored: vivi's storage-free
+/// `letter::gate`, whose error names what to fix. A body the gate refuses
+/// is refused before anything is written.
+fn gate_body(kind: &str, body: &str) -> Result<Gated, String> {
+    gate(kind, body).map_err(|e| e.to_string())
+}
+
+/// The format header the gate called for: a formatted body carries
+/// `X-Vivi-Format: 1`; a pass-through kind (memo) stores none and keeps
+/// today's shape.
+fn set_format_header(eml: String, gated: &Gated) -> Result<String, String> {
+    if gated.formatted {
+        set_header(&eml, FORMAT_HEADER, FORMAT_VERSION)
+    } else {
+        Ok(eml)
+    }
 }
 
 pub fn compose_send(
@@ -176,8 +193,8 @@ pub fn compose_send(
     subject: &str,
     body: &str,
     kind: &str,
-    depends_on: &[String],
 ) -> Result<ComposedLetter, String> {
+    let gated = gate_body(kind, body)?;
     let from = caller_address(identity)?;
     if to.is_empty() {
         return Err("send needs at least one to address".to_owned());
@@ -200,9 +217,7 @@ pub fn compose_send(
         &format!("<{traveling_id}@{prefix}.local>"),
     )?;
     eml = set_header(&eml, "X-Vivi-Kind", kind)?;
-    for dep in depends_on {
-        eml = add_header(&eml, "X-Vivi-Depends-On", dep)?;
-    }
+    eml = set_format_header(eml, &gated)?;
     let envelope_kind = match kind {
         "need" | "task" | "want" | "chat" => Some(kind.to_owned()),
         _ => None,
@@ -221,6 +236,12 @@ pub fn compose_reply(
     body: &str,
 ) -> Result<ComposedLetter, String> {
     let from = caller_address(identity)?;
+    let (header_kind, envelope_kind) = if parent.kind.as_deref() == Some("chat") {
+        ("chat", Some("chat".to_owned()))
+    } else {
+        ("mail", None)
+    };
+    let gated = gate_body(header_kind, body)?;
     let parsed = parse_letter(&parent.raw_eml);
     let mut to = Vec::new();
     push_unique(&mut to, parent_from_address(&parsed, parent));
@@ -250,12 +271,8 @@ pub fn compose_reply(
         "Message-ID",
         &format!("<{traveling_id}@{prefix}.local>"),
     )?;
-    let (header_kind, envelope_kind) = if parent.kind.as_deref() == Some("chat") {
-        ("chat", Some("chat".to_owned()))
-    } else {
-        ("mail", None)
-    };
     eml = set_header(&eml, "X-Vivi-Kind", header_kind)?;
+    eml = set_format_header(eml, &gated)?;
     if let Some(rfc_id) = parsed
         .rfc_id
         .as_deref()

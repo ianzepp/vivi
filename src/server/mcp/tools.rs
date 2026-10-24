@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use serde_json::{Value, json};
+use vivi::letter::{Front, of_message};
 use vivi::message::{render_message, to_json_message};
 use vivi::storage::{MessageIngestRequest, Storage};
 
@@ -15,9 +16,8 @@ use crate::projects::{ProjectError, ProjectRecord, ProjectStore, Scan, Viewer};
 use crate::safety::RateLimiter;
 
 use super::letters::{
-    EventFold, ItemState, ParsedLetter, append_composed, caller_address, compose_event,
-    compose_reply, compose_send, handle_of, item_status, parse_headers, parse_letter, state_of,
-    valid_handle,
+    EventFold, ItemState, append_composed, caller_address, compose_event, compose_reply,
+    compose_send, handle_of, item_status, parse_headers, parse_letter, state_of, valid_handle,
 };
 
 const LIST_DEFAULT: usize = 50;
@@ -335,9 +335,11 @@ fn send(
     if subject.trim().is_empty() || body.trim().is_empty() {
         return Err(ToolError::new("subject and body must be non-empty"));
     }
-    let depends_on = parse_depends(arguments)?;
-    let composed =
-        compose_send(identity, &to, subject, body, kind, &depends_on).map_err(ToolError::new)?;
+    // The sugar arguments build the work letter's front matter, and the
+    // dependencies ride in it; the composer gates the body and writes the
+    // format header.
+    let body = sugared_body(kind, body, arguments)?;
+    let composed = compose_send(identity, &to, subject, &body, kind).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -516,7 +518,7 @@ fn graph(
             done.push(item);
             continue;
         }
-        let open_deps = open_dependencies(&letter, &by_handle, &states);
+        let open_deps = open_dependencies(&depends_of(record), &by_handle, &states);
         if open_deps.is_empty() {
             ready.push(item);
         } else {
@@ -621,7 +623,7 @@ fn summary(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> Value
         "subject": letter.subject,
         "status": item_status(record, &letter, states),
         "appended_at": record.appended_at,
-        "depends_on": letter.depends_on,
+        "depends_on": depends_of(record),
     });
     if let Some(event) = &letter.event {
         item["event"] = json!(event);
@@ -660,21 +662,33 @@ fn ready_handles(records: &[ProjectRecord], states: &HashMap<String, ItemState>)
     records
         .iter()
         .filter(|record| record.kind.is_some() && item_is_open(record, states))
-        .filter(|record| {
-            let letter = parse_headers(&record.raw_eml);
-            open_dependencies(&letter, &by_handle, states).is_empty()
-        })
+        .filter(|record| open_dependencies(&depends_of(record), &by_handle, states).is_empty())
         .filter_map(|record| handle_of(&record.message_id).map(str::to_owned))
         .collect()
 }
 
+/// `depends_on` from the letter's front matter. A legacy letter (no
+/// `X-Vivi-Format`) and a letter that claims a format but does not parse
+/// contribute none, and neither fails the graph: stored history stays readable.
+fn depends_of(record: &ProjectRecord) -> Vec<String> {
+    let handle = handle_of(&record.message_id).unwrap_or("");
+    let Ok(letter) = of_message(&record.raw_eml, handle) else {
+        return Vec::new();
+    };
+    match letter.front {
+        Front::Need(front) => front.depends_on,
+        Front::Want(front) => front.depends_on,
+        Front::Task(front) => front.depends_on,
+        _ => Vec::new(),
+    }
+}
+
 fn open_dependencies(
-    letter: &ParsedLetter,
+    depends_on: &[String],
     by_handle: &HashMap<String, &ProjectRecord>,
     states: &HashMap<String, ItemState>,
 ) -> Vec<String> {
-    letter
-        .depends_on
+    depends_on
         .iter()
         .filter(|dep| match by_handle.get(&dep.to_ascii_lowercase()) {
             Some(dep_record) => item_is_open(dep_record, states),
@@ -758,15 +772,8 @@ fn save_memo(
     body: &str,
 ) -> Result<Value, ToolError> {
     let from = caller_address(identity).map_err(ToolError::new)?;
-    let composed = compose_send(
-        identity,
-        std::slice::from_ref(&from),
-        subject,
-        body,
-        "memo",
-        &[],
-    )
-    .map_err(ToolError::new)?;
+    let composed = compose_send(identity, std::slice::from_ref(&from), subject, body, "memo")
+        .map_err(ToolError::new)?;
     let traveling_id = composed.traveling_id.clone();
     let storage = open_mailspace(store, project_id)?;
     storage
@@ -857,6 +864,94 @@ pub(super) fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError>
     }
 }
 
+/// The sugar arguments of a `send`, as the CLI's flags: the front matter a
+/// need, task, or want is built from. Every field is empty when its
+/// argument is absent.
+pub(super) fn parse_sugar(arguments: &Value) -> Result<vivi::letter::sugar::Sugar, ToolError> {
+    Ok(vivi::letter::sugar::Sugar {
+        done_when: sugar_list(arguments, "done_when")?,
+        target: opt_str(arguments, "target")?.map(str::to_owned),
+        write_scope: sugar_list(arguments, "write_scope")?,
+        serves: opt_str(arguments, "serves")?.map(str::to_owned),
+        explores: opt_str(arguments, "explores")?.map(str::to_owned),
+        question: opt_str(arguments, "question")?.map(str::to_owned),
+        depends_on: parse_depends(arguments)?,
+    })
+}
+
+/// A string-or-list sugar argument as a list; blank entries are refused.
+fn sugar_list(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError> {
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::String(raw)) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![trimmed.to_owned()])
+            }
+        }
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let text = item
+                    .as_str()
+                    .map(str::trim)
+                    .ok_or_else(|| ToolError::new(format!("{name} entries must be strings")))?;
+                if text.is_empty() {
+                    return Err(ToolError::new(format!("{name} entries must not be blank")));
+                }
+                Ok(text.to_owned())
+            })
+            .collect(),
+        _ => Err(ToolError::new(format!(
+            "{name} must be a string or a list of strings"
+        ))),
+    }
+}
+
+/// The sugar arguments `sugar` carries, by name, in schema order: what a
+/// refusal of a sugarless kind names.
+fn sugar_given(sugar: &vivi::letter::sugar::Sugar) -> Vec<&'static str> {
+    [
+        (!sugar.done_when.is_empty(), "done_when"),
+        (sugar.target.is_some(), "target"),
+        (!sugar.write_scope.is_empty(), "write_scope"),
+        (sugar.serves.is_some(), "serves"),
+        (sugar.explores.is_some(), "explores"),
+        (sugar.question.is_some(), "question"),
+        (!sugar.depends_on.is_empty(), "depends_on"),
+    ]
+    .into_iter()
+    .filter(|(present, _)| *present)
+    .map(|(_, name)| name)
+    .collect()
+}
+
+/// The body a `send` sends. For a need, task, or want the sugar arguments
+/// build its front matter, exactly as the CLI's flags do; `apply` speaks
+/// for every refusal (a need without `done_when`, a want without
+/// `question`, or a sugar argument beside a body that already opens with
+/// `+++`, the whole letter). Any other kind takes no sugar argument, and
+/// its prose passes as written.
+pub(super) fn sugared_body(kind: &str, body: &str, arguments: &Value) -> Result<String, ToolError> {
+    let sugar = parse_sugar(arguments)?;
+    if matches!(kind, "need" | "task" | "want") {
+        let sugared = vivi::letter::sugar::apply(kind, body, &sugar)
+            .map_err(|error| ToolError::new(error.to_string()))?;
+        return Ok(sugared.body);
+    }
+    let given = sugar_given(&sugar);
+    if given.is_empty() {
+        Ok(body.to_owned())
+    } else {
+        Err(ToolError::new(format!(
+            "{kind} takes no sugar arguments: {}",
+            given.join(", ")
+        )))
+    }
+}
+
 pub(super) fn req_str<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, ToolError> {
     arguments
         .get(name)
@@ -918,6 +1013,7 @@ pub(super) fn rate_limit(
 pub(super) fn map_project(err: ProjectError) -> ToolError {
     match err {
         ProjectError::BadRequest(message) => ToolError::new(message),
+        ProjectError::LetterFormat(message) => ToolError::new(message),
         ProjectError::TooLarge => ToolError::new("letter over 64 KiB"),
         ProjectError::Conflict(message) => ToolError::new(message),
         ProjectError::ProjectNotFound => ToolError::new("unknown project"),
@@ -980,5 +1076,67 @@ mod tests {
             "{stamp}"
         );
         assert!(stamp.starts_with("20"), "{stamp}");
+    }
+
+    fn record(raw: Vec<u8>) -> ProjectRecord {
+        ProjectRecord {
+            sequence: 1,
+            message_id: "msg_abcd12340000000000000000".to_owned(),
+            from: "a".to_owned(),
+            from_prefix: None,
+            to: None,
+            kind: Some("need".to_owned()),
+            content_sha256: String::new(),
+            appended_at: "2026-10-23T00:00:00Z".to_owned(),
+            raw_eml: raw,
+        }
+    }
+
+    /// Headers in front of a composed letter, the shape `of_message` reads.
+    fn drafted(headers: &str, body: &str) -> Vec<u8> {
+        let drafted = vivi::message::build_compose_draft(&vivi::message::ComposeDraft {
+            from: "a@b.local".to_owned(),
+            to: vec!["a@b.local".to_owned()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "s".to_owned(),
+            body: body.to_owned(),
+            html_body: None,
+        })
+        .expect("compose");
+        format!("{headers}{drafted}").into_bytes()
+    }
+
+    #[test]
+    fn graph_dependencies_come_from_front_matter() {
+        let need = "+++\ndone_when = [\"landed\"]\ndepends_on = [\"abcd1234\"]\n+++\n\nprose\n";
+        let formatted = drafted("X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n", need);
+        assert_eq!(depends_of(&record(formatted)), vec!["abcd1234".to_string()]);
+
+        let task = drafted(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: task\r\n",
+            "+++\ndepends_on = [\"task00aa\"]\n+++\n\nstep\n",
+        );
+        assert_eq!(depends_of(&record(task)), vec!["task00aa".to_string()]);
+
+        let want = drafted(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: want\r\n",
+            "+++\nquestion = \"q\"\ndepends_on = [\"want00bb\"]\n+++\n\nwhy\n",
+        );
+        assert_eq!(depends_of(&record(want)), vec!["want00bb".to_string()]);
+
+        // No format header: legacy, even when the body carries a front.
+        let legacy = drafted("X-Vivi-Kind: need\r\n", need);
+        assert!(depends_of(&record(legacy)).is_empty());
+
+        // A claimed format that does not parse contributes nothing, and does
+        // not error.
+        let broken = drafted(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n",
+            "not a letter\n",
+        );
+        assert!(depends_of(&record(broken)).is_empty());
+        let unknown = drafted("X-Vivi-Format: 2\r\nX-Vivi-Kind: need\r\n", need);
+        assert!(depends_of(&record(unknown)).is_empty());
     }
 }
