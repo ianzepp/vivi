@@ -594,6 +594,74 @@ fn tools_list() -> Value {
                 "required": ["action", "pool"],
                 "additionalProperties": false
             })),
+            tool("config_migrate", "Hosted projects only, operator only. Plan a config migration, as `vivi config migrate` does, through `pump::config::migrate`. Same authorization as pump_control. Without `write` (or with `write: false`) this is a dry run and a read: nothing is written. `write: true` applies the plan under the config write guard (refused while the pump runs, a backup first, rolled back when the write adds a new config error) and is rate limited as a write. Returns {plan, diff, dry_run, wrote, charters: [{role, origin, bytes}]}.", json!({
+                "type": "object",
+                "properties": {
+                    "write": { "type": "boolean", "default": false, "description": "Apply the plan. False (the default) is a dry run." }
+                },
+                "additionalProperties": false
+            })),
+            tool("config_set", "Hosted projects only, operator only. Set one dotted config key to a TOML value, as `vivi config set` does (`config_edit::set_key`). Same authorization as pump_control. `value` is TOML text: a bare word that is not valid TOML is a string. Refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns {key, value, kind} where value is the TOML that was stored and kind is its TOML type.", json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Dotted key path, quoted segments allowed" },
+                    "value": { "type": "string", "description": "TOML text of the value, as the CLI argument" }
+                },
+                "required": ["key", "value"],
+                "additionalProperties": false
+            })),
+            tool("config_unset", "Hosted projects only, operator only. Remove one dotted config key, as `vivi config unset` does (`config_edit::unset_key`). Same authorization as pump_control. A missing key is refused. Refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns {key, unset: true}.", json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Dotted key path to remove" }
+                },
+                "required": ["key"],
+                "additionalProperties": false
+            })),
+            tool("pool_allow_set", "Hosted projects only, operator only. Replace one pool's allow list (`pools.<pool>.harness.models`, the list `pool_bands` checks) with `models`, as `vivi pool set <pool> harness.models` does (`config_edit::set_pool_key` under the guard). Same authorization as pump_control. `models` must be an array of strings; anything else is refused before a write. An unknown pool is refused. Refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns {pool, key, models}.", json!({
+                "type": "object",
+                "properties": {
+                    "pool": { "type": "string", "description": "Pool name" },
+                    "models": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Model slugs allowed for this pool"
+                    }
+                },
+                "required": ["pool", "models"],
+                "additionalProperties": false
+            })),
+            tool("target_add", "Hosted projects only, operator only. Add `[pump.targets.<id>]`, as `vivi pump target add` does (`pump::config::targets::add`, a guarded write). Same authorization as pump_control. `path` is the repository path. Optional `remote_url`, `remote`, `main`, `github_repo`. `rungs` is NAME=CMD strings (task, need, main, or release). `merge` is KEY=VALUE strings (format or remote_limit; the value is TOML). Refused while the pump runs, for an id that already exists, or when the write adds a new config error (rolled back). Rate limited as a write. Returns {id, path, main, rungs}.", json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Target id, the [pump.targets.<id>] key" },
+                    "path": { "type": "string", "description": "Repository path, relative to the project root or absolute" },
+                    "remote_url": { "type": "string" },
+                    "remote": { "type": "string" },
+                    "main": { "type": "string", "description": "Main branch name" },
+                    "github_repo": { "type": "string", "description": "GitHub repository, as owner/name" },
+                    "rungs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Rung commands as NAME=CMD"
+                    },
+                    "merge": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Merge settings as KEY=VALUE (format or remote_limit)"
+                    }
+                },
+                "required": ["id", "path"],
+                "additionalProperties": false
+            })),
+            tool("target_remove", "Hosted projects only, operator only. Remove `[pump.targets.<id>]`, as `vivi pump target remove` does (`pump::config::targets::remove`, a guarded write). Same authorization as pump_control. An unknown id is refused. Refused while the pump runs. Rate limited as a write. Returns {id, removed: true}.", json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Target id to remove" }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            })),
             tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need not addressed to the pump identity, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
                 "type": "object",
                 "properties": {

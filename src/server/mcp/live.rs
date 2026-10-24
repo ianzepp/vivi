@@ -16,6 +16,7 @@
 //! Each call opens the mailspace afresh (a tool call is short-lived and the
 //! pump is another process on the same files).
 
+mod config_write;
 mod pool_bands;
 mod pump;
 mod pump_record;
@@ -33,6 +34,9 @@ use crate::safety::RateLimiter;
 
 use super::tools::ToolError;
 
+use config_write::{
+    config_migrate, config_set, config_unset, pool_allow_set, target_add, target_remove,
+};
 use pool_bands::pool_bands;
 use pump::{pump_control, pump_rungs};
 use pump_record::{pump_list, pump_send, pump_show};
@@ -57,6 +61,12 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_control" => Some(pump_control),
         "pump_rungs" => Some(pump_rungs),
         "pool_bands" => Some(pool_bands),
+        "config_migrate" => Some(config_migrate),
+        "config_set" => Some(config_set),
+        "config_unset" => Some(config_unset),
+        "pool_allow_set" => Some(pool_allow_set),
+        "target_add" => Some(target_add),
+        "target_remove" => Some(target_remove),
         "pump_send" => Some(pump_send),
         "pump_list" => Some(pump_list),
         "pump_show" => Some(pump_show),
