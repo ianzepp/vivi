@@ -17,7 +17,9 @@ use vivi::registry::{self, Flags};
 use vivi_server::hosted::{self, Report};
 use vivi_server::identities::IdentityRegistry;
 use vivi_server::ids::{mint_room_id, room_id_from_uuid};
-use vivi_server::projects::{AppendItem, ProjectError, ProjectMeta, ProjectStore, Viewer};
+use vivi_server::projects::{
+    AppendItem, ListQuery, ProjectError, ProjectMeta, ProjectStore, Viewer,
+};
 
 fn scratch(name: &str) -> PathBuf {
     let dir =
@@ -355,6 +357,293 @@ fn a_hosted_project_accepts_an_append_and_files_it_in_the_host() {
     // The host mailspace holds the letter (an address of no local role).
     let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
     assert_eq!(storage.list_messages().unwrap().len(), 1);
+}
+
+/// A need letter with `front` as its front matter; `format_header` adds
+/// `X-Vivi-Format: 1`, without it the letter is legacy.
+fn need_eml(id: &str, format_header: bool, front: &str) -> Vec<u8> {
+    let format = if format_header {
+        "X-Vivi-Format: 1\n"
+    } else {
+        ""
+    };
+    format!(
+        "From: a@p.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: need\n{format}\n+++\n{front}\n+++\n\nbody"
+    )
+    .into_bytes()
+}
+
+/// Nothing held under the host mailspace's quarantine: no letter and no
+/// receipt at the top of `.vivi/quarantine/` (the discard trail under
+/// `dropped/` does not count).
+fn assert_nothing_quarantined(vivi_dir: &Path) {
+    assert!(vivi::sync::quarantine::list(vivi_dir).unwrap().is_empty());
+    let held = std::fs::read_dir(vivi_dir.join("quarantine"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_file())
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(held, 0, "a held letter remains under .vivi/quarantine/");
+}
+
+fn bad_format1(n: u64) -> AppendItem {
+    let mid = format!("msg_{:08x}{:016x}", n, 0);
+    AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, true, "frob = \"nope\""),
+    )
+    .unwrap()
+}
+
+/// The push answer for a quarantined letter: 400, not a storage 500, and
+/// the parser reason is in the message.
+fn assert_refused(err: ProjectError) -> String {
+    let ProjectError::BadRequest(message) = err else {
+        panic!("a quarantined letter is refused, not stored as {err:?}");
+    };
+    assert!(message.starts_with("letter refused: "), "{message}");
+    assert!(
+        message.contains("unknown field") && message.contains("frob"),
+        "{message}"
+    );
+    message
+}
+
+/// The transport window after a refusal. A row recorded for a letter that
+/// was never filed has no blob: `read_page` then fails the whole page, and
+/// `list_messages() == 0` would still pass. Empty and readable is the pin.
+fn assert_transport_page_empty(env: &Env, id: &str) {
+    let member = env.identities.list(id)[0].name.clone();
+    let viewer = Viewer {
+        name: &member,
+        prefix: None,
+    };
+    let page = env
+        .projects
+        .read_page(id, &ListQuery::since(0), &viewer)
+        .unwrap_or_else(|err| {
+            panic!("a refused push must leave a readable empty page, got {err:?}")
+        });
+    assert!(
+        page.records.is_empty(),
+        "a refused letter was recorded in the transport index"
+    );
+    assert!(!page.has_more);
+    assert_eq!(page.next_cursor, 0);
+}
+
+/// Files under `dir`, relative, directories walked but not listed.
+fn files_under(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    fn walk(dir: &Path, prefix: &str, names: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if path.is_dir() {
+                walk(&path, &rel, names);
+            } else {
+                names.push(rel);
+            }
+        }
+    }
+    walk(dir, "", &mut names);
+    names.sort();
+    names
+}
+
+/// Exactly one discarded pair: `<id>.eml` and `<id>.json` under `dropped/`,
+/// and nothing else under the quarantine directory.
+fn assert_one_dropped_pair(vivi_dir: &Path) -> Vec<String> {
+    let files = files_under(&vivi_dir.join("quarantine"));
+    assert_eq!(files.len(), 2, "quarantine residue: {files:?}");
+    assert!(
+        files.iter().all(|file| file.starts_with("dropped/")),
+        "{files:?}"
+    );
+    let stems: BTreeSet<_> = files
+        .iter()
+        .filter_map(|file| {
+            let name = file.rsplit_once('/').map(|(_, name)| name)?;
+            name.rsplit_once('.').map(|(stem, _)| stem.to_owned())
+        })
+        .collect();
+    assert_eq!(stems.len(), 1, "not one dropped pair: {files:?}");
+    files
+}
+
+#[test]
+fn a_bad_format1_letter_is_refused_at_push_and_nothing_is_filed_or_held() {
+    let env = env("quarantine-refused");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    // An unknown front-matter key: format 1 is claimed, the parse refuses.
+    let mid = format!("msg_{:08x}{:016x}", 2, 0);
+    let item = AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, true, "frob = \"nope\""),
+    )
+    .unwrap();
+
+    let err = env.projects.append(&id, &item).unwrap_err();
+    assert_refused(err);
+
+    // Nothing filed, and nothing held: the server discards its copy of a
+    // letter it cannot read instead of quarantining it. The transport page
+    // over the whole window is empty — a row with no blob would fail it.
+    let vivi_dir = root.join(".vivi");
+    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 0);
+    assert_nothing_quarantined(&vivi_dir);
+    assert_one_dropped_pair(&vivi_dir);
+    assert_transport_page_empty(&env, &id);
+}
+
+#[test]
+fn a_good_format1_need_still_files_on_a_hosted_push() {
+    let env = env("quarantine-good");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let mid = format!("msg_{:08x}{:016x}", 3, 0);
+    let item = AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, true, "done_when = [\"the smoke passes\"]"),
+    )
+    .unwrap();
+
+    let outcome = env.projects.append(&id, &item).unwrap();
+    assert!(!outcome.duplicate);
+    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 1);
+}
+
+#[test]
+fn a_legacy_letter_files_as_history_on_a_hosted_push() {
+    // The hosted wire follows the filer's rule, not the durable push's:
+    // a letter with no `X-Vivi-Format` header is history and is filed,
+    // never refused.
+    let env = env("quarantine-legacy");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let mid = format!("msg_{:08x}{:016x}", 4, 0);
+    let item = AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, false, "done_when = [\"the smoke passes\"]"),
+    )
+    .unwrap();
+
+    let outcome = env.projects.append(&id, &item).unwrap();
+    assert!(!outcome.duplicate);
+    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 1);
+}
+
+#[test]
+fn pushing_the_same_bad_letter_again_refuses_it_and_keeps_one_dropped_pair() {
+    let env = env("quarantine-second");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let item = bad_format1(5);
+    let vivi_dir = root.join(".vivi");
+
+    let first = assert_refused(env.projects.append(&id, &item).unwrap_err());
+    let pair = assert_one_dropped_pair(&vivi_dir);
+    assert_nothing_quarantined(&vivi_dir);
+    assert_transport_page_empty(&env, &id);
+
+    // Discard moved the pair, so the second push holds again and refuses
+    // again. The dropped pair is overwritten, not doubled, and no row is
+    // recorded either time.
+    let second = assert_refused(env.projects.append(&id, &item).unwrap_err());
+    assert_eq!(
+        second, first,
+        "the second push must refuse with the same receipt reason"
+    );
+    assert_eq!(
+        assert_one_dropped_pair(&vivi_dir),
+        pair,
+        "discard must overwrite the one pair, not leave another"
+    );
+    assert_nothing_quarantined(&vivi_dir);
+    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 0);
+    assert_transport_page_empty(&env, &id);
+}
+
+#[test]
+fn a_refused_push_leaves_the_transport_page_empty() {
+    let env = env("quarantine-page");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let vivi_dir = root.join(".vivi");
+
+    assert_refused(env.projects.append(&id, &bad_format1(6)).unwrap_err());
+
+    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 0);
+    assert_transport_page_empty(&env, &id);
+}
+
+#[test]
+fn a_discard_failure_still_refuses_the_letter_and_records_nothing() {
+    let env = env("quarantine-discard-fails");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let vivi_dir = root.join(".vivi");
+    let quarantine = vivi_dir.join("quarantine");
+    std::fs::create_dir_all(&quarantine).unwrap();
+    // `discard` creates `dropped/` before it moves the pair. A file there
+    // makes that create fail, so the receipt stays live.
+    let blocker = quarantine.join("dropped");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+
+    let message = assert_refused(env.projects.append(&id, &bad_format1(7)).unwrap_err());
+
+    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 0);
+    assert_transport_page_empty(&env, &id);
+    assert!(
+        blocker.is_file(),
+        "discard replaced the blocker; the failure was not simulated"
+    );
+    let held = vivi::sync::quarantine::list(&vivi_dir).unwrap();
+    assert_eq!(
+        held.len(),
+        1,
+        "a failed discard must leave the receipt live"
+    );
+    assert_eq!(message, format!("letter refused: {}", held[0].reason));
+
+    // Undo the simulation. The live receipt is the failed discard's
+    // residue, not part of the sabotage.
+    std::fs::remove_file(&blocker).unwrap();
+    assert!(
+        !blocker.exists(),
+        "the discard-failure simulation was not cleaned up"
+    );
 }
 
 #[tokio::test]
