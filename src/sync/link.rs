@@ -6,6 +6,8 @@
 //! the live rows' `Message-ID` headers, never by wire id.
 
 use crate::error::VivariumError;
+use crate::letter::plain::{CLOSE_EVENTS, CloseFront};
+use crate::letter::{Front, LetterKind, of_message};
 use crate::mailspace::EVENT_HEADER;
 use crate::message::normalize_message_id;
 use crate::storage::Storage;
@@ -24,8 +26,11 @@ pub struct LetterHeaders {
     /// The letter carries an `X-Vivi-Event` header: it is an item-state
     /// event, which files read.
     pub is_event: bool,
-    /// The letter carries close metadata: an `X-Vivi-Verdict`,
-    /// `X-Vivi-Repo`, `X-Vivi-Branch`, or `X-Vivi-Commit` header.
+    /// The letter carries close metadata as front matter: a format-1 close
+    /// event, or the report note a close by a role that may not write the
+    /// event letter travels as. The letter a report about closed work
+    /// travels as. Legacy letters that carry their close facts in headers
+    /// are not read (W3-B4: headers carry transport only).
     pub has_verdict: bool,
 }
 
@@ -80,13 +85,7 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
         .headers()
         .iter()
         .any(|header| header.name().eq_ignore_ascii_case(EVENT_HEADER));
-    let has_verdict = parsed.headers().iter().any(|header| {
-        let name = header.name();
-        name.eq_ignore_ascii_case("X-Vivi-Verdict")
-            || name.eq_ignore_ascii_case("X-Vivi-Repo")
-            || name.eq_ignore_ascii_case("X-Vivi-Branch")
-            || name.eq_ignore_ascii_case("X-Vivi-Commit")
-    });
+    let has_verdict = carries_close_facts(data);
     LetterHeaders {
         subject: parsed.subject().unwrap_or_default().to_string(),
         parent: cited.and_then(normalize_message_id),
@@ -94,6 +93,27 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
         recipients,
         is_event,
         has_verdict,
+    }
+}
+
+/// Whether the letter carries close facts in its front matter: a format-1
+/// `done`/`reopened` event letter naming a verdict, a repo tip or an
+/// integration branch/commit, or the `[close]` front of a report note (a
+/// `mail` letter). A letter with no `X-Vivi-Format` header is history and
+/// carries nothing, whatever headers it holds.
+fn carries_close_facts(bytes: &[u8]) -> bool {
+    let Ok(letter) = of_message(bytes, "") else {
+        return false;
+    };
+    match (&letter.kind, &letter.front) {
+        (LetterKind::Event(verb), Front::Event(front)) if CLOSE_EVENTS.contains(&verb.as_str()) => {
+            front != &CloseFront::default()
+        }
+        (LetterKind::Mail, Front::Mail(front)) => front
+            .close
+            .as_ref()
+            .is_some_and(|close| close != &CloseFront::default()),
+        _ => false,
     }
 }
 

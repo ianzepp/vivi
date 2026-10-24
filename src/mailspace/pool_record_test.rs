@@ -88,6 +88,41 @@ fn a_note_lands_as_an_event_and_a_reply_and_never_moves_the_task() {
 }
 
 #[test]
+fn a_pool_note_letter_carries_the_record_in_its_front_matter() {
+    let (_tmp, space, handle) = space_with_task("mind", "hand");
+    space
+        .record_pool_note(
+            &handle,
+            "pool_dispatched",
+            r#"{"job":"j1"}"#,
+            "dispatched to slot 1",
+        )
+        .unwrap();
+    let thread = space.thread(&handle, false, 10, 10).unwrap();
+    let storage = space.storage().unwrap();
+    let task_id = storage.resolve_message_token(&handle).unwrap();
+    let reply = thread
+        .iter()
+        .find(|message| message.message_id != task_id)
+        .unwrap();
+    let bytes = storage.read_message(&reply.message_id).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    assert!(text.contains("X-Vivi-Format: 1"), "{text}");
+    let parsed = crate::letter::of_message(&bytes, &handle).unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
+    let crate::letter::Front::Mail(front) = parsed.front else {
+        panic!("not a mail front: {text}");
+    };
+    let pool = front
+        .pool
+        .as_ref()
+        .unwrap_or_else(|| panic!("no [pool] table: {text}"));
+    assert_eq!(pool.event, "pool_dispatched");
+    assert_eq!(pool.record, r#"{"job":"j1"}"#);
+    assert_eq!(parsed.prose, "dispatched to slot 1");
+}
+
+#[test]
 fn a_self_addressed_task_takes_notes_too() {
     let (_tmp, space, handle) = space_with_task("mind", "mind");
     space

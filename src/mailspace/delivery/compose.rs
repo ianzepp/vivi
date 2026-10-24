@@ -27,8 +27,8 @@ pub(super) struct Gated {
 /// Check `body` for its kind: the request `kind`, else the kind of the
 /// `role`, else mail. The format step is the storage-free `letter::gate`; the
 /// storage step canonicalizes a need's `serves`/`explores` against the
-/// mailspace and re-renders the body when that changed. Memo, rule and any
-/// other kind pass unchanged and unformatted.
+/// mailspace and re-renders the body when that changed. Any kind
+/// `letter::gate` does not know passes unchanged and unformatted.
 ///
 /// # Errors
 /// Returns the `LetterError` text when the front matter is invalid, or the

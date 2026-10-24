@@ -1112,6 +1112,17 @@ fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
         "{task_bytes}"
     );
     assert!(!task_bytes.contains("X-Vivi-Parent"), "{task_bytes}");
+    assert!(task_bytes.contains("X-Vivi-Format: 1"), "{task_bytes}");
+    let parsed = crate::letter::of_message(task_bytes.as_bytes(), &task).unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Task);
+    let crate::letter::Front::Task(front) = parsed.front else {
+        panic!("task from did not parse as a task: {task_bytes}");
+    };
+    assert_eq!(
+        front.parent.as_deref(),
+        Some(format!("<{parent}>").as_str())
+    );
+    assert_eq!(parsed.prose, "do the first part");
     assert_eq!(source_kind.as_deref(), Some("need"));
 
     let show = mailspace.graph_show("backlog").unwrap();
@@ -1143,4 +1154,19 @@ fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
         })
         .unwrap();
     assert_eq!(want_task.source_kind, "want");
+    let want_bytes = {
+        let storage = mailspace.storage().unwrap();
+        let id = storage
+            .resolve_message_token(&want_task.delivered[0].handle)
+            .unwrap();
+        storage.read_message(&id).unwrap()
+    };
+    let want_letter = crate::letter::of_message(&want_bytes, "want-task").unwrap();
+    assert_eq!(want_letter.kind, crate::letter::LetterKind::Task);
+    assert!(
+        String::from_utf8_lossy(&want_bytes).contains("X-Vivi-Format: 1"),
+        "{}",
+        String::from_utf8_lossy(&want_bytes)
+    );
+    assert_eq!(want_letter.prose, "still allowed");
 }

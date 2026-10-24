@@ -1052,8 +1052,9 @@ fn a_reopen_and_a_later_unlocated_close_clear_stale_branch_provenance() {
 #[test]
 fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
     let p = pair();
-    // hand is the assignee, so its close travels as a report letter
-    // carrying the verdict headers, not an event letter.
+    // hand is the assignee, so its close travels as a report letter — a
+    // `mail` note whose `[close]` front matter carries the close facts —
+    // not an event letter.
     p.b.mailspace
         .move_task_outcome(
             "hand",
@@ -1074,13 +1075,54 @@ fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
             .unwrap()
             .item_metadata(&p.a.id_of(&p.task))
             .unwrap();
-    assert_eq!(metadata.get("verdict").map(String::as_str), Some("fixed"));
-    assert_eq!(metadata.get("repo:vivi").map(String::as_str), Some("sha9"));
+    assert_eq!(
+        metadata.get("verdict").map(String::as_str),
+        Some("fixed"),
+        "{metadata:?}"
+    );
+    assert_eq!(
+        metadata.get("repo:vivi").map(String::as_str),
+        Some("sha9"),
+        "{metadata:?}"
+    );
     assert_eq!(
         role_of(&p.a, &p.task),
         "sent",
         "the report still does not move the owner's row"
     );
+}
+
+#[test]
+fn a_pulled_legacy_report_letter_with_verdict_headers_folds_nothing() {
+    let w = World::new();
+    w.put(1, "item", &need_body(&["x"], ""));
+    // The report letter's pre-format shape: close facts as headers, no
+    // `X-Vivi-Format`. It is history; a fresh read folds none of them.
+    let item = format!("{}@x.test", wire_id(1, 0));
+    let headers =
+        format!("In-Reply-To: <{item}>\r\nX-Vivi-Verdict: fixed\r\nX-Vivi-Repo: vivi=sha9\r\n");
+    w.put_full(
+        &wire_id(2, 0),
+        "mail",
+        &w.bob.address("mind"),
+        "Re: item",
+        "done",
+        "Sun, 11 Oct 2026 12:00:00 +0000",
+        &headers,
+    );
+
+    w.bob.pull(&w.bob_client);
+
+    let handle = crate::sync::fake_server::handle(1);
+    let metadata = w
+        .bob
+        .mailspace
+        .storage()
+        .unwrap()
+        .item_metadata(&w.bob.id_of(&handle))
+        .unwrap();
+    assert!(!metadata.contains_key("verdict"), "{metadata:?}");
+    assert!(!metadata.contains_key("repo:vivi"), "{metadata:?}");
 }
 
 #[test]

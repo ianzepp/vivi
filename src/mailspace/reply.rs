@@ -1,6 +1,12 @@
+use std::collections::BTreeSet;
+
 use super::delivery::add_header;
 use super::{DeliveryResult, Mailspace, Recipient, SendRequest};
 use crate::error::VivariumError;
+use crate::letter::gate as letter_gate;
+use crate::letter::plain;
+use crate::letter::records::MailFront;
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION};
 use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{MessageIngestRequest, Storage, StoredMessageView};
 
@@ -51,13 +57,17 @@ impl Mailspace {
         })
     }
 
+    /// Compose the note reply on an item: `front` is the note letter's
+    /// front matter (empty for plain prose mail). The note goes through the
+    /// letter gate, so the stored bytes carry `X-Vivi-Format: 1` and parse
+    /// as the mail letter they are — a writer bug is an error at write time.
     pub(super) fn note_reply(
         &self,
         storage: &Storage,
         identity: &str,
         parent: &StoredMessageView,
         note: &str,
-        extras: &[(String, String)],
+        front: MailFront,
     ) -> Result<NoteReply, VivariumError> {
         let original = storage.read_message(&parent.message_id)?;
         let parsed = mail_parser::MessageParser::default()
@@ -74,48 +84,64 @@ impl Mailspace {
             self.addresses_for(&targets)?
         };
         let (recipients, _) = self.split_recipients(&targets, &[])?;
+        let body = plain::render(&front, note)
+            .map_err(|err| VivariumError::Message(format!("note letter: {err}")))?;
+        let gated = letter_gate::gate("mail", &body)
+            .map_err(|err| VivariumError::Message(err.to_string()))?;
         let mut data = build_compose_draft(&ComposeDraft {
             from: self.address_for(identity),
             to,
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: reply_subject(parsed.subject().unwrap_or("(no subject)")),
-            body: note.into(),
+            body,
             html_body: None,
         })?;
-        data = add_header(&data, "X-Vivi-Kind", "mail")?;
-        for (name, value) in extras {
-            data = add_header(&data, name, value)?;
+        data = add_header(&data, "X-Vivi-Kind", &gated.kind)?;
+        if gated.formatted {
+            data = add_header(&data, FORMAT_HEADER, FORMAT_VERSION)?;
         }
         data = add_reply_headers(&data, &original)?;
-        let mut requests = recipients
-            .into_iter()
-            .map(|recipient| MessageIngestRequest {
-                account: recipient,
-                local_role: "inbox".into(),
-                read_state: false,
-                starred: false,
-                message_id_hint: None,
-                presented_id: None,
-                seed_hint: format!("lifecycle-note\0{}\0{}", parent.content_id, note),
-                remote: None,
-            })
-            .collect::<Vec<_>>();
-        requests.push(MessageIngestRequest {
-            account: identity.into(),
-            local_role: "sent".into(),
-            read_state: true,
-            starred: false,
-            message_id_hint: None,
-            presented_id: None,
-            seed_hint: format!("lifecycle-note-sent\0{}\0{}", parent.content_id, note),
-            remote: None,
-        });
+        let requests = note_requests(recipients, identity, parent, note);
         Ok(NoteReply {
             data: data.into_bytes(),
             requests,
         })
     }
+}
+
+/// The ingest requests for a note reply: an inbox copy per other local
+/// recipient, plus the actor's own `sent` copy.
+fn note_requests(
+    recipients: BTreeSet<String>,
+    identity: &str,
+    parent: &StoredMessageView,
+    note: &str,
+) -> Vec<MessageIngestRequest> {
+    let mut requests = recipients
+        .into_iter()
+        .map(|recipient| MessageIngestRequest {
+            account: recipient,
+            local_role: "inbox".into(),
+            read_state: false,
+            starred: false,
+            message_id_hint: None,
+            presented_id: None,
+            seed_hint: format!("lifecycle-note\0{}\0{}", parent.content_id, note),
+            remote: None,
+        })
+        .collect::<Vec<_>>();
+    requests.push(MessageIngestRequest {
+        account: identity.into(),
+        local_role: "sent".into(),
+        read_state: true,
+        starred: false,
+        message_id_hint: None,
+        presented_id: None,
+        seed_hint: format!("lifecycle-note-sent\0{}\0{}", parent.content_id, note),
+        remote: None,
+    });
+    requests
 }
 
 pub(super) fn resolve_reply_parent(
@@ -230,3 +256,7 @@ fn has_reply_prefix(subject: &str) -> bool {
         .get(closing + 1..)
         .is_some_and(|value| value.starts_with(':'))
 }
+
+#[cfg(test)]
+#[path = "reply_test.rs"]
+mod tests;

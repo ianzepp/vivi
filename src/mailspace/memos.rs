@@ -1,4 +1,4 @@
-//! Memo tags and filtering: repeated `X-Vivi-Tag` headers, the shared memo
+//! Memo tags and filtering: letter front-matter tags, the shared memo
 //! filter, `--since` cutoffs, human window labels, and the `[memo]` config
 //! table (hidden tags and per-tag retention).
 
@@ -10,38 +10,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
 use crate::error::VivariumError;
+use crate::letter::{Front, of_message};
 use crate::mailspace::Mailspace;
 use crate::storage::StoredMessageView;
-
-/// Header that stores one memo tag; a memo carries one header per tag.
-const TAG_HEADER: &str = "X-Vivi-Tag";
 
 /// Tags hidden from memo listings unless the caller asks for them.
 const DEFAULT_HIDDEN_TAG: &str = "digest";
 
-/// Parse the `X-Vivi-Tag` headers out of a raw eml message.
-///
-/// Header names match case-insensitively, values are trimmed, empty values
-/// are dropped, exact duplicates are removed, and the first-seen order is
-/// kept. An unparseable message yields no tags.
+/// The tags of a stored memo: the front matter of its format-1 letter. A
+/// legacy memo (tag header, no format header) is history: its header tag is
+/// ignored. An unparseable message yields no tags.
 #[must_use]
 pub fn parse_tags(raw: &[u8]) -> Vec<String> {
-    let mut tags: Vec<String> = Vec::new();
-    let Some(parsed) = mail_parser::MessageParser::default().parse(raw) else {
-        return tags;
-    };
-    for header in parsed.headers().iter() {
-        if !header.name().eq_ignore_ascii_case(TAG_HEADER) {
-            continue;
-        }
-        if let mail_parser::HeaderValue::Text(text) = header.value() {
-            let tag = text.trim().to_string();
-            if !tag.is_empty() && !tags.contains(&tag) {
-                tags.push(tag);
-            }
-        }
+    match of_message(raw, "") {
+        Ok(letter) => match letter.front {
+            Front::Memo(front) => front.tags,
+            _ => Vec::new(),
+        },
+        Err(_) => Vec::new(),
     }
-    tags
 }
 
 /// The shared memo list/search filter: tag selection, exclusion, a time
@@ -253,7 +240,7 @@ fn sort_and_limit(
 impl Mailspace {
     /// List memos for `identity` with `filter` applied, newest first.
     ///
-    /// Each memo comes back with its parsed `X-Vivi-Tag` tags. Hidden tags
+    /// Each memo comes back with its parsed front-matter tags. Hidden tags
     /// (the built-in `digest` default plus the configured `hidden_tags`) are
     /// dropped unless `filter.include_hidden` is set.
     ///

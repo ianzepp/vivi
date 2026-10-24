@@ -107,21 +107,59 @@ fn a_property_event_without_its_payload_or_a_matching_reply_is_plain_mail() {
 }
 
 #[test]
-fn a_letter_carries_verdict_only_with_the_verdict_headers() {
-    assert!(carries_verdict(&letter("X-Vivi-Verdict: fixed\r\n")));
-    assert!(carries_verdict(&letter("X-Vivi-Repo: vivi=sha9\r\n")));
+fn a_letter_carries_verdict_only_as_close_front_matter() {
+    let front = |front: &str, body: &str| {
+        letter(&format!(
+            "X-Vivi-Format: 1\r\nX-Vivi-Event: done\r\n\r\n+++\r\n{front}\r\n+++\r\n\r\n{body}"
+        ))
+    };
+    assert!(carries_verdict(&front("verdict = \"fixed\"\n", "done")));
+    assert!(carries_verdict(&front(
+        "[repos]\nvivi = \"sha9\"\n",
+        "done"
+    )));
+    assert!(carries_verdict(&front(
+        "branch = \"mind/review\"\ncommit = \"deadbeef\"\n",
+        "done"
+    )));
+    // An unlocated close carries its (clearing) branch/commit pair too.
     assert!(carries_verdict(&letter(
+        "X-Vivi-Format: 1\r\nX-Vivi-Event: done\r\n\r\ndone\r\n"
+    )));
+    // Legacy close headers (no format) are history: a fresh read folds none.
+    assert!(!carries_verdict(&letter("X-Vivi-Verdict: fixed\r\n")));
+    assert!(!carries_verdict(&letter(
         "X-Vivi-Branch: mind/review\r\nX-Vivi-Commit: deadbeef\r\n"
     )));
-    assert!(carries_verdict(&letter(
-        "X-Vivi-Branch: -\r\nX-Vivi-Commit: -\r\n"
+    // Not a close event: no facts, whatever its front.
+    assert!(!carries_verdict(&letter(
+        "X-Vivi-Format: 1\r\nX-Vivi-Event: marked\r\n\r\nX-Vivi-Event-Slug: ready\r\n"
     )));
-    assert!(!carries_verdict(&letter("X-Vivi-Branch: mind/review\r\n")));
-    assert!(
-        !carries_verdict(&letter("X-Vivi-Repo: no-tip\r\n")),
-        "a repo header without '=' carries nothing"
-    );
     assert!(!carries_verdict(&letter("X-Vivi-Note: hi\r\n")));
+    // A branch without its commit does not parse: it carries nothing.
+    assert!(!carries_verdict(&front(
+        "branch = \"mind/review\"\n",
+        "done"
+    )));
+    // A report note — a `mail` letter — carries its facts as a `[close]`
+    // table; an empty table and a plain note carry none.
+    let note = |front: &str, body: &str| {
+        letter(&format!(
+            "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\n+++\r\n{front}\r\n+++\r\n\r\n{body}"
+        ))
+    };
+    assert!(carries_verdict(&note(
+        "[close]\nverdict = \"fixed\"\n",
+        "done"
+    )));
+    assert!(carries_verdict(&note(
+        "[close]\nverdict = \"fixed\"\n\n[close.repos]\nvivi = \"sha9\"\n",
+        "done"
+    )));
+    assert!(!carries_verdict(&note("[close]\n", "done")));
+    assert!(!carries_verdict(&letter(
+        "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\n\r\ndone\r\n"
+    )));
 }
 
 #[test]
@@ -149,22 +187,27 @@ fn a_verdict_report_letter_names_the_live_item_it_replies_to() {
     let held = verdict_report_item(
         &storage,
         &report(format!(
-            "In-Reply-To: <{}>\r\nX-Vivi-Verdict: fixed\r\n",
+            "In-Reply-To: <{}>\r\nX-Vivi-Format: 1\r\nX-Vivi-Event: done\r\n\r\n\
+             +++\r\nverdict = \"fixed\"\r\n+++\r\n\r\ndone\r\n",
             rfc_id
         )),
     )
     .unwrap();
     assert_eq!(held.as_deref(), Some(row.content_id.as_str()));
-    // Replies to a held row but carries no verdict headers.
+    // Replies to a held row but carries no close facts.
     assert_eq!(
         verdict_report_item(&storage, &report(format!("In-Reply-To: <{rfc_id}>\r\n"))).unwrap(),
         None
     );
-    // Carries verdict headers but replies to a row nothing here holds.
+    // Carries close facts but replies to a row nothing here holds.
     assert_eq!(
         verdict_report_item(
             &storage,
-            &report("In-Reply-To: <nope@x.test>\r\nX-Vivi-Verdict: fixed\r\n".into()),
+            &report(
+                "In-Reply-To: <nope@x.test>\r\nX-Vivi-Format: 1\r\nX-Vivi-Event: done\r\n\r\n\
+                 +++\r\nverdict = \"fixed\"\r\n+++\r\n\r\ndone\r\n"
+                    .into(),
+            ),
         )
         .unwrap(),
         None

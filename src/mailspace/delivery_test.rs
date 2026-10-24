@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use chrono::Utc;
 
 use crate::letter::fixture::{body_for, body_with_deps, need_body, task_body};
-use crate::mailspace::memos::MemoConfig;
+use crate::letter::plain::MemoFront;
+use crate::letter::{FENCE, Front, LetterKind, of_message};
+use crate::mailspace::memos::{MemoConfig, MemoFilter};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{MessageIngestRequest, StoredMessageView};
 use crate::sync::SyncConfig;
@@ -319,7 +321,7 @@ fn deliver_keeps_an_attachment_letter_byte_for_byte() {
 }
 
 #[test]
-fn a_close_with_verdict_carries_it_as_letter_headers() {
+fn a_close_with_verdict_carries_it_as_front_matter() {
     let (_tmp, mailspace) = space(false);
     let mut sent = mailspace
         .send(SendRequest {
@@ -353,14 +355,65 @@ fn a_close_with_verdict_carries_it_as_letter_headers() {
     let event = outcome.event.unwrap();
     let id = storage.resolve_message_token(&event).unwrap();
     let letter = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
+    for header in [
+        "X-Vivi-Verdict",
+        "X-Vivi-Repo",
+        "X-Vivi-Branch",
+        "X-Vivi-Commit",
+    ] {
+        assert!(
+            !letter.contains(&format!("{header}:")),
+            "close metadata stayed a header: {letter}"
+        );
+    }
+    let parsed = crate::letter::of_message(letter.as_bytes(), &event).unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Event("done".into()));
+    let crate::letter::Front::Event(front) = parsed.front else {
+        panic!("not a close front: {letter}");
+    };
+    assert_eq!(front.verdict.as_deref(), Some("accepted"));
+    assert_eq!(front.repos.get("vivi").map(String::as_str), Some("abc123"));
+}
+
+#[test]
+fn a_close_without_metadata_stores_its_note_with_no_fence() {
+    let (_tmp, mailspace) = space(false);
+    let mut sent = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "unit".into(),
+            body: task_body("lands"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = sent.delivered.remove(0).handle;
+
+    let outcome = mailspace
+        .move_task_outcome("mind", &handle, "done", Some("all landed"), None, &[], &[])
+        .unwrap();
+
+    let storage = mailspace.storage().unwrap();
+    let id = storage
+        .resolve_message_token(outcome.event.as_deref().unwrap())
+        .unwrap();
+    let letter = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
     assert!(
-        letter.contains("X-Vivi-Verdict: accepted"),
-        "no verdict header: {letter}"
+        !letter.contains("+++"),
+        "an empty front shows no fence: {letter}"
     );
-    assert!(
-        letter.contains("X-Vivi-Repo: vivi=abc123"),
-        "no repo header: {letter}"
-    );
+    let parsed = crate::letter::of_message(letter.as_bytes(), &handle).unwrap();
+    let crate::letter::Front::Event(front) = &parsed.front else {
+        panic!("not a close front: {letter}");
+    };
+    assert_eq!(front, &crate::letter::plain::CloseFront::default());
+    assert_eq!(parsed.prose, "all landed");
 }
 
 #[test]
@@ -404,14 +457,30 @@ fn a_report_with_verdict_carries_it_as_a_letter() {
         .unwrap();
     let letter =
         String::from_utf8_lossy(&storage.read_message(&reply.message_id).unwrap()).into_owned();
-    assert!(
-        letter.contains("X-Vivi-Verdict: fixed"),
-        "no verdict header: {letter}"
-    );
-    assert!(
-        letter.contains("X-Vivi-Repo: vivi=sha1"),
-        "no repo header: {letter}"
-    );
+    assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
+    for header in [
+        "X-Vivi-Verdict",
+        "X-Vivi-Repo",
+        "X-Vivi-Branch",
+        "X-Vivi-Commit",
+    ] {
+        assert!(
+            !letter.contains(&format!("{header}:")),
+            "close metadata stayed a header: {letter}"
+        );
+    }
+    let parsed = crate::letter::of_message(letter.as_bytes(), &handle).unwrap();
+    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
+    let crate::letter::Front::Mail(front) = parsed.front else {
+        panic!("not a mail front: {letter}");
+    };
+    let close = front
+        .close
+        .as_ref()
+        .unwrap_or_else(|| panic!("no close front: {letter}"));
+    assert_eq!(close.verdict.as_deref(), Some("fixed"));
+    assert_eq!(close.repos.get("vivi").map(String::as_str), Some("sha1"));
+    assert_eq!(parsed.prose, "done");
 }
 
 #[test]
@@ -505,7 +574,8 @@ fn retention_prunes_expired_memos_when_a_tagged_memo_is_saved() {
     let old_date = (Utc::now() - chrono::Duration::days(100)).to_rfc2822();
     let raw = format!(
         "From: {address}\r\nTo: {address}\r\nDate: {old_date}\r\n\
-         Subject: old digest\r\nX-Vivi-Kind: memo\r\nX-Vivi-Tag: digest\r\n\r\nold body\r\n"
+         Subject: old digest\r\nX-Vivi-Kind: memo\r\nX-Vivi-Format: 1\r\n\r\n\
+         +++\ntags = [\"digest\"]\n+++\n\nold body\r\n"
     );
     mailspace
         .storage()
@@ -541,7 +611,7 @@ fn retention_prunes_expired_memos_when_a_tagged_memo_is_saved() {
 }
 
 #[test]
-fn memo_save_stores_tag_headers() {
+fn memo_save_stores_tags_as_letter_front_matter() {
     let tmp = tempfile::tempdir().unwrap();
     let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
     mailspace.add_identity("hand").unwrap();
@@ -561,13 +631,68 @@ fn memo_save_stores_tag_headers() {
         .unwrap();
     let storage = mailspace.storage().unwrap();
     let id = storage.resolve_message_token(&handle).unwrap();
-    let memo = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    let raw = storage.read_message(&id).unwrap();
+    let memo = String::from_utf8_lossy(&raw).into_owned();
     assert!(
-        memo.contains("X-Vivi-Tag: digest"),
-        "no digest tag header: {memo}"
+        memo.contains("X-Vivi-Format: 1"),
+        "no format header: {memo}"
     );
+    assert!(!memo.contains("X-Vivi-Tag"), "stale tag header: {memo}");
+    let letter = of_message(&raw, &handle).unwrap();
+    assert_eq!(letter.kind, LetterKind::Memo);
+    assert_eq!(
+        letter.front,
+        Front::Memo(MemoFront {
+            tags: vec!["digest".into(), "ops".into()],
+        }),
+        "{memo}"
+    );
+}
+
+#[test]
+fn memo_save_without_tags_stores_bare_prose() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("hand").unwrap();
+
+    let handle = mailspace
+        .save_memo("hand", "bare", "prose as written", &[])
+        .unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let raw = storage.read_message(&id).unwrap();
+    let memo = String::from_utf8_lossy(&raw).into_owned();
     assert!(
-        memo.contains("X-Vivi-Tag: ops"),
-        "no ops tag header: {memo}"
+        memo.contains("X-Vivi-Format: 1"),
+        "no format header: {memo}"
     );
+    assert!(!memo.contains(FENCE), "no fence on an empty front: {memo}");
+    let letter = of_message(&raw, &handle).unwrap();
+    assert_eq!(letter.front, Front::Memo(MemoFront::default()));
+    assert_eq!(letter.prose, "prose as written");
+}
+
+#[test]
+fn memo_tag_search_finds_a_tagged_memo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("hand").unwrap();
+
+    mailspace
+        .save_memo("hand", "runbook", "restart steps", &["ops".to_string()])
+        .unwrap();
+    mailspace
+        .save_memo("hand", "groceries", "milk and eggs", &[])
+        .unwrap();
+
+    let filter = MemoFilter {
+        tags: vec!["ops".to_string()],
+        ..MemoFilter::default()
+    };
+    let found = mailspace
+        .search_memos_filtered("hand", "restart", false, &filter)
+        .unwrap();
+    assert_eq!(found.len(), 1, "only the tagged memo matches");
+    assert_eq!(found[0].0.subject, "runbook");
+    assert_eq!(found[0].1, vec!["ops".to_string()]);
 }
