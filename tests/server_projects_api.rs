@@ -90,6 +90,13 @@ fn eml(id: &str, body: &str) -> Vec<u8> {
     format!("From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\n{body}").into_bytes()
 }
 
+/// Raw letter bytes: `headers` (no trailing blank line) then `body`.
+fn raw_letter(headers: &str, body: &str) -> Vec<u8> {
+    format!("{headers}\r\n\r\n{body}").into_bytes()
+}
+
+const FORMAT_ONE_NEED: &str = "X-Vivi-Format: 1\r\nX-Vivi-Kind: need";
+
 async fn request(
     app: &Router,
     method: &str,
@@ -568,6 +575,142 @@ async fn idempotency_matrix() {
     let (status, next_created) = fx.append(&next, &eml(&next, "next"), None, None).await;
     assert_eq!(status, StatusCode::CREATED, "{next_created}");
     assert_eq!(next_created["sequence"], 2);
+}
+
+/// Push `raw` and require `422 letter_format` whose message is the parser's.
+async fn assert_letter_format(fx: &Fixture, id: &str, raw: &[u8]) -> Value {
+    let expected = vivi::letter::of_message(raw, "")
+        .expect_err("a refused letter is not one the parser accepts");
+    assert!(
+        !matches!(expected, vivi::letter::LetterError::Legacy { .. }),
+        "legacy must not be refused: {expected}"
+    );
+    let (status, value) = fx.append(id, raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{value}");
+    assert_eq!(value["error"]["code"], "letter_format");
+    assert_eq!(value["error"]["message"], expected.to_string());
+    value
+}
+
+#[tokio::test]
+async fn a_broken_or_unknown_format_claim_is_refused_and_stores_nothing() {
+    let fx = fixture("letter-format", 61).await;
+    assert!(ids(&read(&fx.app, &fx.project, &fx.token, 0).await).is_empty());
+
+    // Format 1 with an unknown front-matter key.
+    let unknown_key = raw_letter(
+        FORMAT_ONE_NEED,
+        "+++\ndone_when = [\"it works\"]\nbogus = 1\n+++\n\nBuild the thing.\n",
+    );
+    let refused = assert_letter_format(&fx, &traveling(1), &unknown_key).await;
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("bogus"),
+        "{refused}"
+    );
+
+    // Format 1 need front with no done_when.
+    let no_done_when = raw_letter(
+        FORMAT_ONE_NEED,
+        "+++\ntarget = \"vivi\"\n+++\n\nBuild the thing.\n",
+    );
+    let refused = assert_letter_format(&fx, &traveling(2), &no_done_when).await;
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("done_when"),
+        "{refused}"
+    );
+
+    // A format this vivi does not read.
+    let unknown_format = raw_letter(
+        "X-Vivi-Format: 2\r\nX-Vivi-Kind: need",
+        "+++\ndone_when = [\"it works\"]\n+++\n\nBuild the thing.\n",
+    );
+    let refused = assert_letter_format(&fx, &traveling(3), &unknown_format).await;
+    assert!(
+        refused["error"]["message"].as_str().unwrap().contains('2'),
+        "{refused}"
+    );
+
+    // The same broken bytes again are still a refusal, not a duplicate:
+    // nothing was stored for replay to find.
+    assert_letter_format(&fx, &traveling(1), &unknown_key).await;
+    assert!(ids(&read(&fx.app, &fx.project, &fx.token, 0).await).is_empty());
+}
+
+#[tokio::test]
+async fn a_format_one_letter_that_parses_is_accepted() {
+    let fx = fixture("letter-format-ok", 62).await;
+    let id = traveling(1);
+    let raw = raw_letter(
+        FORMAT_ONE_NEED,
+        "+++\ndone_when = [\"it works\"]\n+++\n\nBuild the thing.\n",
+    );
+    assert!(vivi::letter::of_message(&raw, "").is_ok());
+    let (status, created) = fx.append(&id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(ids(&items), vec![id]);
+    let served = STANDARD
+        .decode(items["records"][0]["raw_eml"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(served, raw);
+}
+
+/// A letter with no `X-Vivi-Format` header is legacy and is still filed.
+/// W3-B4 tightens this; that change has to move this test on purpose.
+#[tokio::test]
+async fn a_legacy_letter_without_a_format_header_is_still_accepted() {
+    let fx = fixture("letter-legacy", 63).await;
+    let id = traveling(1);
+    let raw = raw_letter("X-Vivi-Kind: need", "plain body, no front matter\n");
+    assert!(
+        !raw.windows(b"X-Vivi-Format".len())
+            .any(|w| w == b"X-Vivi-Format")
+    );
+    assert!(matches!(
+        vivi::letter::of_message(&raw, "").unwrap_err(),
+        vivi::letter::LetterError::Legacy { .. }
+    ));
+
+    let (status, created) = fx.append(&id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(ids(&items), vec![id.clone()]);
+    let served = STANDARD
+        .decode(items["records"][0]["raw_eml"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(served, raw);
+
+    // Replay of an already-accepted letter keeps the duplicate outcome.
+    let (status, again) = fx.append(&id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["duplicate"], true);
+    assert_eq!(again["message_id"], id);
+    assert_eq!(
+        ids(&read(&fx.app, &fx.project, &fx.token, 0).await),
+        vec![id.clone()]
+    );
+
+    // Different bytes under the same id conflict, even when those bytes
+    // would themselves be a format refusal. Replay runs first.
+    let broken = raw_letter(
+        FORMAT_ONE_NEED,
+        "+++\ndone_when = [\"it works\"]\nbogus = 1\n+++\n\nnope\n",
+    );
+    let (status, conflict) = fx.append(&id, &broken, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(conflict["error"]["code"], "conflict");
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(ids(&items), vec![id]);
+    let served = STANDARD
+        .decode(items["records"][0]["raw_eml"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(served, raw);
 }
 
 #[tokio::test]

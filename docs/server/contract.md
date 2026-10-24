@@ -297,6 +297,22 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   [`phase-02-identity-and-sync.md`](phase-02-identity-and-sync.md), the
   phase 02 delivery home.
 
+## Project letter append
+
+Durable member push is `PUT /v1/projects/{id}/items/{message_id}` on a
+project the server stores. The body is the raw letter. A hosted project
+files through the host and is not covered here. The rest of the wire is
+in [`phase-03-project-mailspace-hub.md`](phase-03-project-mailspace-hub.md)
+under Append.
+
+A letter that carries `X-Vivi-Format: 1` must parse as a v1 letter. A
+letter that claims format 1 and fails to parse, or names an unknown
+format, is refused `422` `letter_format`. The body is
+`{"error": {"code": "letter_format", "message": "<the parser's message>"}}`
+and nothing is stored. A letter with no `X-Vivi-Format` header is legacy
+and is accepted for now. A replay of an already-stored letter keeps its
+duplicate or conflict outcome and is not judged again.
+
 ## Project MCP (1.2.0)
 
 Additive alongside the rooms contract and the project letter wire in

@@ -24,6 +24,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use vivi::letter::{LetterError, of_message};
 use vivi::mailspace::Mailspace;
 use vivi::storage::{IngestOutcome, MessageIngestRequest, Storage, is_traveling_id};
 
@@ -85,6 +86,9 @@ pub enum ProjectError {
     TooLarge,
     /// A presented id already names different bytes in this project.
     Conflict(String),
+    /// A letter that claims `X-Vivi-Format` and does not parse. The string
+    /// is the parser's message.
+    LetterFormat(String),
     /// Storage or IO failure.
     Storage(String),
     /// A chat project is closed or past its TTL (item 17).
@@ -1024,6 +1028,15 @@ fn parse_vouch(raw: &[u8]) -> Result<Vouch, ProjectError> {
         .map_err(|_| bad_vouch())
 }
 
+/// A claimed format must parse. No `X-Vivi-Format` header is legacy and is
+/// accepted: vivi 21 still writes some letters without one.
+fn check_letter_format(raw: &[u8]) -> Result<(), ProjectError> {
+    match of_message(raw, "") {
+        Ok(_) | Err(LetterError::Legacy { .. }) => Ok(()),
+        Err(error) => Err(ProjectError::LetterFormat(error.to_string())),
+    }
+}
+
 fn admission_error(err: AdmissionError) -> ProjectError {
     match err {
         AdmissionError::InvalidKey => {
@@ -1322,6 +1335,9 @@ impl ProjectStore {
     /// serialized by the append lock. The decision matrix is in
     /// [`Project::find_replay`]; a fresh letter is filed verbatim in the
     /// project mailspace first, then recorded as the next transport row.
+    /// A fresh letter that claims `X-Vivi-Format` and does not parse is
+    /// refused before that write. Hosted projects return earlier and are
+    /// not checked here.
     pub fn append(&self, raw_id: &str, item: &AppendItem) -> Result<AppendOutcome, ProjectError> {
         let _guard = append_lock();
         let meta = self.refuse_if_chat_over(raw_id)?;
@@ -1339,6 +1355,9 @@ impl ProjectStore {
         if let Some(outcome) = project.find_replay(&item.id, &item.from, &content_sha256)? {
             return Ok(outcome);
         }
+        // Replay keeps its outcome, so only a fresh letter is judged, and
+        // the check runs before the vouch so a refusal admits nobody.
+        check_letter_format(&item.raw_eml)?;
         // Governance vouch (decided item 8): the admission is written FIRST,
         // then the letter is stored; both are idempotent, so a crash between
         // them converges on replay.
