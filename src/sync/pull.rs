@@ -35,6 +35,19 @@ pub struct RefusedRecord {
     pub reason: String,
 }
 
+/// A letter this pull held under `.vivi/quarantine/`: its bytes carry
+/// format 1 but would not parse (a newer member's front matter this vivi
+/// does not read, or a broken fence), so it was held — not filed, not
+/// dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedRecord {
+    /// The letter's content id (sha256 of its bytes): the quarantine file
+    /// name, and the id `vivi sync quarantine list|retry|drop` takes.
+    pub id: String,
+    /// Why the parser refused the bytes, one line.
+    pub reason: String,
+}
+
 /// What one pull did, for the operator.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PullReport {
@@ -49,6 +62,10 @@ pub struct PullReport {
     /// not hold after the link pass; `vivi sync pull --refs` finds them.
     pub unlinked: usize,
     pub refused: Vec<RefusedRecord>,
+    /// Letters held under `.vivi/quarantine/` this run because their
+    /// format-1 front matter would not parse. The same content arriving
+    /// again finds the held file and is silent.
+    pub quarantined: Vec<QuarantinedRecord>,
     /// Problems that did not stop the pull (a binding that could not be
     /// written).
     pub warnings: Vec<String>,
@@ -108,6 +125,7 @@ impl PullReport {
             new = format!("{new}, {} restored", self.restored);
         }
         let refused = self.refused_note();
+        let quarantined = self.quarantine_note();
         let governance = (self.governance > 0)
             .then(|| format!(", {} governance letter(s)", self.governance))
             .unwrap_or_default();
@@ -131,7 +149,7 @@ impl PullReport {
             .unwrap_or_default();
         format!(
             "sync pull: {} fetched, {new}, {} already present, {} reply link(s), \
-             {refused}{governance}{held}{unlinked}{}{}, {}",
+             {refused}{quarantined}{governance}{held}{unlinked}{}{}, {}",
             self.fetched,
             self.existing,
             self.linked,
@@ -156,6 +174,26 @@ impl PullReport {
             String::new()
         };
         format!("{} refused: {ids}{tail}", self.refused.len())
+    }
+
+    /// `, N quarantined: <id> (<reason>), ...` for the first five, then a
+    /// tail count; nothing when nothing was held this run.
+    fn quarantine_note(&self) -> String {
+        if self.quarantined.is_empty() {
+            return String::new();
+        }
+        let shown = self
+            .quarantined
+            .iter()
+            .take(5)
+            .map(|held| format!("{} ({})", held.id, held.reason))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = self.quarantined.len().saturating_sub(5);
+        let tail = (more > 0)
+            .then(|| format!(", ... and {more} more"))
+            .unwrap_or_default();
+        format!(", {} quarantined: {shown}{tail}", self.quarantined.len())
     }
 
     /// The summary's tail: `cursor N` plainly, or, when the server's cursor
@@ -208,10 +246,28 @@ impl PullReport {
     /// Why the command should exit non-zero, if it should.
     #[must_use]
     pub fn failure(&self) -> Option<String> {
-        (!self.refused.is_empty()).then(|| {
-            format!(
+        if !self.refused.is_empty() {
+            return Some(format!(
                 "{} record(s) refused (hash, envelope or From mismatch, id clash, or bad id); see above",
                 self.refused.len()
+            ));
+        }
+        (!self.quarantined.is_empty()).then(|| {
+            let ids: Vec<&str> = self
+                .quarantined
+                .iter()
+                .take(5)
+                .map(|held| held.id.as_str())
+                .collect();
+            let more = self.quarantined.len().saturating_sub(5);
+            let tail = (more > 0)
+                .then(|| format!(", ... and {more} more"))
+                .unwrap_or_default();
+            format!(
+                "{} letter(s) quarantined under .vivi/quarantine/ (a letter format \
+                 this vivi cannot read): {}{tail}; run vivi sync quarantine list",
+                self.quarantined.len(),
+                ids.join(", ")
             )
         })
     }
