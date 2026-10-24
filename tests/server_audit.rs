@@ -70,7 +70,7 @@ fn record_appends_one_line_with_the_pinned_shape() {
 }
 
 #[test]
-fn two_records_append_two_lines_and_omitted_fields_stay_absent() {
+fn two_records_append_two_lines_with_null_key_and_project_fields() {
     let dir = scratch("two-lines");
     let log = AuditLog::new(&dir);
     log.record(AuditEvent {
@@ -95,11 +95,13 @@ fn two_records_append_two_lines_and_omitted_fields_stay_absent() {
     assert_eq!(lines.len(), 2);
     let first: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
     let second: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+    // The contract pins key_id and project_id as null, never omitted;
+    // principal (never None from a writer today) stays absent.
     assert!(first.as_object().unwrap().contains_key("key_id"));
+    assert_eq!(first["project_id"], serde_json::Value::Null);
     assert!(!first.as_object().unwrap().contains_key("principal"));
-    assert!(!first.as_object().unwrap().contains_key("project_id"));
     assert_eq!(first["outcome"], "refused");
-    assert!(!second.as_object().unwrap().contains_key("key_id"));
+    assert_eq!(second["key_id"], serde_json::Value::Null);
     assert_eq!(second["principal"], "host");
     assert_eq!(second["outcome"], "error");
 }

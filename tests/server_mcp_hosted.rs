@@ -240,6 +240,98 @@ async fn a_key_without_identity_sends_as_the_default_operator() {
     assert_eq!(items["items"][0]["role"], "needs");
 }
 
+/// A member-level key without an acting identity acts as the GRANT'S
+/// member, never as the hosted project's default operator identity; the
+/// operator tools still apply their own rule (adversarial P2).
+#[tokio::test]
+async fn a_member_level_key_acts_as_the_member_not_the_default_operator() {
+    let base = scratch("member-actor");
+    let root = base.join("hosts").join("app");
+    let mut ms = Mailspace::init(Some(&root)).unwrap();
+    ms.ensure_operator_role().unwrap();
+    // A role named like an admitted member, so the member identity is a
+    // role the mail tools can act as.
+    ms.add_role(
+        "bot",
+        RoleUpdate {
+            kind: Some(Some("hand".into())),
+            ..RoleUpdate::default()
+        },
+    )
+    .unwrap();
+    let state = app_state(base.join("data"), None, None);
+    let report = hosted::reconcile(
+        &state.projects,
+        &state.identities,
+        &BTreeSet::from([root.clone()]),
+    );
+    assert!(report.refused.is_empty(), "{report:?}");
+    let project = report.served[0].project_id.clone();
+    let member = report.served[0].member.clone();
+    // An admitted member who is not the host's own member.
+    state
+        .identities
+        .register(
+            &project,
+            "bot",
+            &spki_pem(9),
+            "0c0c0c0c-1111-4222-8333-444444444444",
+        )
+        .unwrap();
+    let fx = Fx {
+        app: router(state.clone()),
+        state,
+        root,
+        project: project.clone(),
+        member,
+    };
+
+    // The member-level key, no acting identity.
+    let bot_key = fx
+        .state
+        .server_keys
+        .mint(
+            &format!("bot.default@{project}"),
+            false,
+            vec![GrantRecord {
+                project_id: project.clone(),
+                member: "bot".to_owned(),
+                identity: None,
+                level: GrantLevel::Member,
+            }],
+            "test",
+            "bot",
+        )
+        .unwrap()
+        .key;
+    let sent = fx
+        .call(
+            &bot_key,
+            "send",
+            json!({"kind": "mail", "to": "operator", "subject": "s", "body": "b"}),
+        )
+        .await;
+    assert_eq!(sent["from"], "bot", "{sent}");
+
+    // The pump tools keep their own rule and refuse the other member.
+    let message = fx
+        .call_err(&bot_key, "pump_control", json!({"action": "pause"}))
+        .await;
+    assert!(message.contains("host's own member"), "{message}");
+
+    // An operator-grant key of the host's own member still acts as the
+    // default operator identity.
+    let operator = fx.key(None);
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "mail", "to": "bot", "subject": "s", "body": "b"}),
+        )
+        .await;
+    assert_eq!(sent["from"], "operator", "{sent}");
+}
+
 #[tokio::test]
 async fn a_hosted_send_stores_a_format_one_letter_with_done_when() {
     let fx = fixture("letter-bytes");

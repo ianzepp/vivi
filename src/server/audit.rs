@@ -20,16 +20,18 @@ pub enum AuditOutcome {
 }
 
 /// One audit line, in wire order: `at`, `key_id`, `principal`,
-/// `project_id`, `tool`, `outcome`, `summary`.
+/// `project_id`, `tool`, `outcome`, `summary`. `key_id` and `project_id`
+/// are written as `null`, never omitted, as the contract pins; `principal`
+/// is absent when there is none.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditRecord {
     pub at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub key_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_id: Option<String>,
     pub tool: String,
     pub outcome: AuditOutcome,

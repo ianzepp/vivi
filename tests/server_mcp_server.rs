@@ -364,7 +364,7 @@ async fn a_key_granted_on_a_cannot_reach_b_by_read_or_write() {
     assert_eq!(lines[0]["outcome"], "refused");
     assert_eq!(lines[0]["principal"], format!("creator@{}", fx.project));
     assert!(lines[0]["key_id"].as_str().unwrap().starts_with("key_"));
-    assert!(lines[0].get("project_id").is_none(), "{lines:?}");
+    assert_eq!(lines[0]["project_id"], Value::Null, "{lines:?}");
 
     // An unknown project shares the text, so a key cannot probe.
     let err = call_err(&fx.app, &key, "overview", json!({"project": "nope"})).await;
@@ -974,6 +974,249 @@ async fn the_self_service_mint_yields_a_working_server_key() {
 }
 
 #[tokio::test]
+async fn a_self_service_mint_never_shares_a_derived_principal() {
+    // Order one: the plain derivation holds the principal first.
+    let fx = durable("collision-plain-first");
+    let ops_token = fx
+        .state
+        .identities
+        .register(
+            &fx.project,
+            "creator.ops",
+            &spki_pem(&key(3)),
+            &mailspace_for("creator.ops"),
+        )
+        .unwrap()
+        .token;
+    let (status, plain) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "plain"})),
+        Some(&ops_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{plain}");
+    // `creator` minting with identity `ops` derives the same principal
+    // name as the member literally called `creator.ops`: refused, with
+    // both derivations named.
+    let (status, err) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "collide", "identity": "ops"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    let message = err["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!("creator.ops@{}", fx.project)),
+        "{message}"
+    );
+    assert!(
+        message.contains("member 'creator.ops' with no acting identity"),
+        "{message}"
+    );
+    assert!(
+        message.contains("member 'creator' acting as 'ops'"),
+        "{message}"
+    );
+
+    // Order two: the identity derivation holds it first.
+    let fx = durable("collision-identity-first");
+    let (status, named) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "named", "identity": "ops"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{named}");
+    let ops_token = fx
+        .state
+        .identities
+        .register(
+            &fx.project,
+            "creator.ops",
+            &spki_pem(&key(3)),
+            &mailspace_for("creator.ops"),
+        )
+        .unwrap()
+        .token;
+    let (status, err) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "plain"})),
+        Some(&ops_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    let message = err["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("member 'creator' acting as 'ops'"),
+        "{message}"
+    );
+    assert!(
+        message.contains("member 'creator.ops' with no acting identity"),
+        "{message}"
+    );
+
+    // The same derivation may re-mint (the existing re-mint semantics).
+    let (status, again) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "again", "identity": "ops"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
+}
+
+#[tokio::test]
+async fn a_host_key_revoke_kills_the_per_project_mirror() {
+    let fx = durable_with("mirror-revoke", |state| {
+        state.host_operator_token = Some("host-tok".into());
+    });
+    let (status, minted) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "bot"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{minted}");
+    let key = minted["key"].as_str().unwrap().to_owned();
+    let key_id = minted["key_id"].as_str().unwrap().to_owned();
+
+    // The mirror is live: rooms auth accepts the same secret.
+    let (status, value) = rooms_call(&fx.app, &key, "overview", &fx.project).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+
+    // Host revoke on /v1/mcp.
+    let answer = call_ok(&fx.app, "host-tok", "key_revoke", json!({"key_id": key_id})).await;
+    assert_eq!(answer["revoked"], key_id.as_str());
+
+    // Dead on /v1/mcp AND on the rooms route: the mirror entry is revoked.
+    let (status, value) = rpc(&fx.app, &key, "ping", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    let (status, value) = rooms_call(&fx.app, &key, "overview", &fx.project).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    let mirror: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fx.dir
+                .join("projects")
+                .join(&fx.project)
+                .join("api_keys.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let entry = mirror["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|key| key["key_id"] == key_id.as_str())
+        .unwrap_or_else(|| panic!("{mirror}"));
+    assert!(entry["revoked_at"].as_str().is_some(), "{mirror}");
+}
+
+#[tokio::test]
+async fn a_host_grant_remove_revokes_that_projects_mirror_only() {
+    let fx = durable_with("mirror-grant-remove", |state| {
+        state.host_operator_token = Some("host-tok".into());
+    });
+    let other = fx.second_project();
+    // `bob` is a registered member of the second project.
+    let bob_token = fx
+        .state
+        .identities
+        .register(&other, "bob", &spki_pem(&key(2)), &mailspace_for("bob"))
+        .unwrap()
+        .token;
+    let (status, mine) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "mine"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{mine}");
+    let key_a = mine["key"].as_str().unwrap().to_owned();
+    let (status, bobs) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{other}/keys"),
+        Some(json!({"label": "bobs"})),
+        Some(&bob_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{bobs}");
+    let key_b = bobs["key"].as_str().unwrap().to_owned();
+
+    // The host drops creator's grant on the first project.
+    call_ok(
+        &fx.app,
+        "host-tok",
+        "grant_remove",
+        json!({"principal": format!("creator@{}", fx.project), "project_id": fx.project}),
+    )
+    .await;
+
+    // The key is ungranted on /v1/mcp ...
+    let err = call_err(&fx.app, &key_a, "overview", json!({"project": fx.project})).await;
+    assert_eq!(err, format!("this key has no grant on {}", fx.project));
+    // ... and its mirror in that project died with the grant.
+    let (status, value) = rooms_call(&fx.app, &key_a, "overview", &fx.project).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    // The other project's mirror is untouched.
+    let (status, value) = rooms_call(&fx.app, &key_b, "overview", &other).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+}
+
+#[tokio::test]
+async fn self_service_mint_and_revoke_each_write_one_audit_line() {
+    let fx = durable("self-service-audit");
+    let (status, minted) = post_json(
+        &fx.app,
+        &format!("/v1/projects/{}/keys", fx.project),
+        Some(json!({"label": "bot"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{minted}");
+    let key_id = minted["key_id"].as_str().unwrap().to_owned();
+
+    let lines = audit_lines(&fx.dir);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["tool"], "self_service_mint");
+    assert_eq!(lines[0]["outcome"], "ok");
+    assert_eq!(lines[0]["key_id"], key_id.as_str());
+    assert_eq!(lines[0]["principal"], format!("creator@{}", fx.project));
+    assert_eq!(lines[0]["project_id"], fx.project);
+    assert!(
+        lines[0]["summary"].as_str().unwrap().contains(&key_id),
+        "{lines:?}"
+    );
+
+    let (status, _) = delete(
+        &fx.app,
+        &format!("/v1/projects/{}/keys/{key_id}", fx.project),
+        &fx.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let lines = audit_lines(&fx.dir);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1]["tool"], "self_service_revoke");
+    assert_eq!(lines[1]["outcome"], "ok");
+    assert_eq!(lines[1]["key_id"], key_id.as_str());
+    assert_eq!(lines[1]["principal"], format!("creator@{}", fx.project));
+    assert_eq!(lines[1]["project_id"], fx.project);
+    assert!(
+        lines[1]["summary"].as_str().unwrap().contains(&key_id),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_identity_token_is_refused_with_a_server_key_hint() {
     let fx = durable("identity-token");
     let (status, value) = rpc(&fx.app, &fx.token, "ping", json!({})).await;
@@ -1060,6 +1303,36 @@ async fn old_route_call(app: &Router, key: &str, name: &str, project: &str) -> (
             Request::builder()
                 .method("POST")
                 .uri(format!("/v1/projects/{project}/mcp"))
+                .header("authorization", format!("Bearer {key}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, value)
+}
+
+/// One tool call through the rooms MCP route, which authenticates the
+/// per-project mirror (`api_keys.json`), not the server store.
+async fn rooms_call(app: &Router, key: &str, name: &str, project: &str) -> (StatusCode, Value) {
+    let body = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": name, "arguments": {}}
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/rooms/{project}/mcp"))
                 .header("authorization", format!("Bearer {key}"))
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))

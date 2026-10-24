@@ -229,13 +229,15 @@ async fn dispatch_tool(
     let project_id = project_id.to_owned();
     let identity = caller.identity.clone();
     let acting_as = caller.acting_as.clone();
-    // A key on a hosted project acts on the host's mailspace as a vivi
-    // identity: the key's own, else the server's default.
+    let via_key = caller.via_key;
+    // An operator tool takes the identity the key names, else the
+    // server default; it re-checks the operator rule itself.
     let hosted_as = caller.via_key.then(|| {
         acting_as
             .clone()
             .unwrap_or_else(|| state.hosted_default_identity.to_string())
     });
+    let state_default = state.hosted_default_identity.clone();
     let name = name.to_owned();
     match tokio::task::spawn_blocking(move || {
         if name == "pump" {
@@ -256,19 +258,19 @@ async fn dispatch_tool(
                 &arguments,
             );
         }
-        if let Some(requested) = &hosted_as {
-            if let Some(root) = live::hosted_root(&store, &project_id) {
-                if live::handles(&name) {
-                    return live::dispatch(
-                        &limiter,
-                        &project_id,
-                        &root,
-                        requested,
-                        &name,
-                        &arguments,
-                    );
-                }
-            }
+        if via_key
+            && let Some(root) = live::hosted_root(&store, &project_id)
+            && live::handles(&name)
+        {
+            // The mail tools act as one resolved identity: the key's own,
+            // else the default for the host's own member, else the
+            // grant's member — a key minted by any other member never
+            // silently acts as the operator default.
+            let requested = match acting_as.as_deref() {
+                Some(named) => named.to_owned(),
+                None => live::fallback_actor(&root, &state_default, &identity),
+            };
+            return live::dispatch(&limiter, &project_id, &root, &requested, &name, &arguments);
         }
         tools::dispatch(
             &store,
