@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 use vivi::mailspace::{Mailspace, RoleUpdate};
-use vivi::pump::control::{PumpMode, inspect, project_home};
+use vivi::pump::control::{PumpMode, inspect, project_home, set_project_mode};
 use vivi_server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
@@ -189,6 +189,8 @@ async fn a_key_acting_as_the_operator_role_by_name_is_accepted() {
 #[tokio::test]
 async fn a_member_token_is_refused_and_changes_nothing() {
     let fx = fixture("token");
+    // vivi 21 starts a fresh pump stopped; the refusal must change nothing from running.
+    set_project_mode(&fx.root, PumpMode::Running).unwrap();
     let bearer = fx
         .state
         .identities
@@ -208,6 +210,8 @@ async fn a_member_token_is_refused_and_changes_nothing() {
 #[tokio::test]
 async fn a_key_that_is_not_the_operators_is_refused() {
     let fx = fixture("others");
+    // vivi 21 starts a fresh pump stopped; the refusal must change nothing from running.
+    set_project_mode(&fx.root, PumpMode::Running).unwrap();
     // A key acting as a role that is not of kind operator.
     let hand = fx.key_by(&fx.member, Some("hand"));
     let message = fx.refused(&hand, "pause").await;
@@ -231,6 +235,8 @@ async fn a_key_that_is_not_the_operators_is_refused() {
 #[tokio::test]
 async fn an_unknown_action_is_refused() {
     let fx = fixture("unknown");
+    // vivi 21 starts a fresh pump stopped; the refusal must change nothing from running.
+    set_project_mode(&fx.root, PumpMode::Running).unwrap();
     let key = fx.key_by(&fx.member, None);
     let message = fx.refused(&key, "restart").await;
     assert!(
@@ -238,6 +244,13 @@ async fn an_unknown_action_is_refused() {
         "{message}"
     );
     assert_eq!(fx.mode(), PumpMode::Running);
+}
+
+#[tokio::test]
+async fn a_fresh_project_starts_stopped() {
+    // vivi 21 changed the fresh pump default from running to stopped.
+    let fx = fixture("fresh");
+    assert_eq!(fx.mode(), PumpMode::Stopped);
 }
 
 #[tokio::test]
