@@ -26,6 +26,9 @@ pub mod config_workspace;
 // The `pool list` / `pool show` views, named at the config path for callers.
 pub use super::config_view::{BandRow, PoolRow, PoolShow, list_view, show_view};
 
+// The `harness.models` allow-list check and write, named at the config path.
+pub use super::config_allow::{harness_models, set_allow, validate_allow};
+
 /// Machine hosts the pool can run on.
 pub const PROVIDERS: [&str; 6] = ["fly", "docker", "ssh", "local", "runpod", "worker"];
 const DEFAULT_PROVIDER: &str = "fly";
@@ -873,7 +876,7 @@ fn validate_build_dir(dir: &str) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn is_model_slug(value: &str) -> bool {
+pub(super) fn is_model_slug(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '@' | '+' | '-')

@@ -33,6 +33,7 @@ pub mod clean_slot;
 pub mod collect;
 pub mod commit_hygiene;
 pub mod config;
+pub mod config_allow;
 pub mod config_bands;
 pub mod config_bridge;
 pub mod config_depth;
