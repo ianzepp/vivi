@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use tower::util::ServiceExt;
 use vivi::mailspace::Mailspace;
 use vivi::pump::health::HealthOptions;
-use vivi::pump::state::{State, Status, Unit};
-use vivi::pump::store::{DB_FILENAME, PumpStore};
+use vivi::pump::state::State;
+use vivi::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION, append_exception};
 use vivi_server::{AppState, app_state, hosted, pump_health, router};
 
 fn scratch(name: &str) -> PathBuf {
@@ -69,36 +69,23 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// A pump home with one merged and one stuck unit and a fresh tick.
+/// A pump home with a paused control row, a fresh tick, one exception inside
+/// the last hour and one older.
 fn write_pump(root: &Path, at: u64) {
     let home = root.join(".vivi").join("pump");
     std::fs::create_dir_all(&home).unwrap();
-    let mut st = State {
-        merges: 1,
-        ..State::default()
-    };
-    let mut merged = Unit {
-        need: "n1".into(),
-        status: Status::Merged,
-        since: at - 30,
-        ..Unit::default()
-    };
-    merged.commit = Some("abc1234".into());
-    merged.merged_at = Some(at - 30);
-    st.units.insert("u1".into(), merged);
-    st.units.insert(
-        "u2".into(),
-        Unit {
-            need: "n1".into(),
-            status: Status::Stuck,
-            since: at - 4000,
-            ..Unit::default()
-        },
-    );
     let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
-    store.save(&st).unwrap();
-    store.set_control_mode("running").unwrap();
+    store.save(&State::default()).unwrap();
+    store.initialize_control("paused").unwrap();
     drop(store);
+    append_exception(
+        &home,
+        at - 150,
+        "dispatch-failed",
+        "u1",
+        "agent replied nothing",
+    );
+    append_exception(&home, at - 50, "merge-conflict", "u2", "rebase failed");
     let tick = json!({"id": "t1", "started_at": at - 2, "ended_at": at - 1,
         "duration_secs": 1, "outcome": "ok"});
     std::fs::write(home.join("monitor-cycles.jsonl"), format!("{tick}\n")).unwrap();
@@ -189,27 +176,93 @@ async fn a_saved_pump_reads_as_json_with_changes_since_a_cursor() {
     let since = at - 100;
     let (status, body) = fx.get(&format!("?since={since}"), Some(&fx.key())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["verdict"], "degraded", "{body}");
-    assert!(
-        body["reasons"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("1 units stuck")),
+    // The vivi 21 field set, exactly: none of the removed fields remains.
+    let mut fields: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        vec![
+            "as_of",
+            "changed_since",
+            "control",
+            "exceptions",
+            "last_tick",
+            "reasons",
+            "schema",
+            "shutdown_requested",
+            "stale_after_secs",
+            "status_age_secs",
+            "tick_secs",
+            "verdict",
+            "writer",
+        ],
         "{body}"
     );
-    assert_eq!(body["control"], "running");
-    assert_eq!(body["units"]["merged"], 1);
-    assert_eq!(body["units"]["stuck"], 1);
-    assert_eq!(body["merges"]["recent"][0]["commit"], "abc1234");
-    assert_eq!(body["blocked"][0]["id"], "u2");
+    // A paused control is a degraded pump whatever the platform's writer
+    // probe says. The fixture mailspace is not pump-ready, so the not-ready
+    // fold leads the reasons while the ticked verdict stands.
+    assert_eq!(body["verdict"], "degraded", "{body}");
+    let reasons = body["reasons"].as_array().unwrap();
+    assert_eq!(reasons.len(), 2, "{body}");
+    assert!(
+        reasons[0].as_str().unwrap().starts_with("not ready: "),
+        "{body}"
+    );
+    assert_eq!(reasons[1], "control paused", "{body}");
+    assert_eq!(body["control"], "paused");
+    assert_eq!(body["shutdown_requested"], false);
+    // The writer is exact on Linux (`/proc/locks`, no lock file held),
+    // inferred from the fresh tick elsewhere.
+    if cfg!(target_os = "linux") {
+        assert_eq!(body["writer"]["state"], "not_running", "{body}");
+        assert_eq!(body["writer"]["source"], "proc_locks", "{body}");
+    } else {
+        assert_eq!(body["writer"]["state"], "running", "{body}");
+        assert_eq!(body["writer"]["source"], "tick_freshness", "{body}");
+    }
+    assert_eq!(body["writer"]["pid"], Value::Null, "{body}");
     assert_eq!(body["tick_secs"], 20);
     assert_eq!(body["stale_after_secs"], 600);
-    assert_eq!(body["changed_since"]["since"], since);
-    assert_eq!(body["changed_since"]["merges"], 1);
-    assert_eq!(body["changed_since"]["units"][0]["unit"], "u1");
+    assert!(body["as_of"].as_u64().unwrap() >= at, "{body}");
+    let tick = &body["last_tick"];
+    assert_eq!(tick["id"], "t1", "{body}");
+    assert_eq!(tick["started_at"], at - 2);
+    assert_eq!(tick["ended_at"], at - 1);
+    assert_eq!(tick["duration_secs"], 1);
+    assert_eq!(tick["outcome"], "ok");
+    assert!(tick["age_secs"].as_u64().unwrap() < 120, "{body}");
+    assert!(body["status_age_secs"].as_u64().unwrap() < 120, "{body}");
+    assert_eq!(body["schema"], SCHEMA_VERSION);
+    // The cursor is the exceptions window: the row inside it, not the older
+    // one.
+    let exceptions = body["exceptions"].as_array().unwrap();
+    assert_eq!(exceptions.len(), 1, "{body}");
+    assert_eq!(exceptions[0]["at"], at - 50);
+    assert_eq!(exceptions[0]["kind"], "merge-conflict");
+    assert_eq!(exceptions[0]["unit"], "u2");
+    assert_eq!(exceptions[0]["text"], "rebase failed");
+    let changed = &body["changed_since"];
+    let mut changed_fields: Vec<&str> = changed
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    changed_fields.sort_unstable();
+    assert_eq!(changed_fields, vec!["exceptions", "since"], "{changed}");
+    assert_eq!(changed["since"], since);
+    assert_eq!(changed["exceptions"], 1);
+    // Without a cursor there is no changed_since, and the window is the
+    // last hour: both exception rows.
     let (_, plain) = fx.get("?stale_after=5", Some(&fx.key())).await;
     assert_eq!(plain["stale_after_secs"], 5);
     assert!(plain.get("changed_since").is_none(), "{plain}");
+    assert_eq!(plain["exceptions"].as_array().unwrap().len(), 2, "{plain}");
 }
 
 #[tokio::test]

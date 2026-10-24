@@ -1044,6 +1044,51 @@ async fn board_graph_lists_a_capped_frontier_without_the_node_table() {
 }
 
 #[tokio::test]
+async fn a_want_on_the_board_lists_its_serving_needs_with_state() {
+    let fx = fixture("board-serving");
+    let operator = fx.key(None);
+    let want = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "want", "to": "mind", "subject": "maybe",
+                   "body": "+++\nquestion = \"worth it?\"\n+++\n\nw"}),
+        )
+        .await;
+    let want_handle = want["handle"].as_str().unwrap().to_owned();
+    // A format-1 need whose front matter `serves` names the want; the
+    // library resolves the handle to the want.
+    let need = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "serve it",
+                   "body": format!("+++\ndone_when = [\"served\"]\nserves = \"{want_handle}\"\n+++\n\ns")}),
+        )
+        .await;
+    let need_handle = need["handle"].as_str().unwrap().to_owned();
+
+    let mind = fx.key(Some("mind"));
+    let board = fx.call(&mind, "board", json!({})).await;
+    let entry = board["identities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["identity"] == "mind")
+        .unwrap()["wants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["handle"] == want_handle)
+        .unwrap();
+    assert_eq!(
+        entry["serving"],
+        json!([{ "handle": need_handle, "state": "open" }]),
+        "{entry}"
+    );
+}
+
+#[tokio::test]
 async fn overview_ready_is_the_open_work_the_caller_holds_and_is_capped() {
     let fx = fixture("overview-ready");
     let ms = fx.ms();

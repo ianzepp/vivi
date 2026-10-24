@@ -479,7 +479,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, unit counts, recent merges, blocked units, complete-but-open needs, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({
+            tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "minimum": 0, "description": "Epoch seconds, a previous answer's as_of" },
@@ -545,7 +545,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
+            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, each want's `serving` needs with their state, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
                 "type": "object",
                 "properties": {
                     "for": { "type": "string", "description": "Only this role's board" },
