@@ -162,11 +162,20 @@ send flags (`--done-when`, `--question`, `--target`, `--write-scope`,
 `--depends-on`, `--serves`, `--explores`) build the front matter for you. A body
 whose first line is `+++` is taken as the whole letter, and a flag beside it is
 refused. A need with no `done_when` is refused at send and nothing is stored.
-Mail and replies are gated too: every send carries `X-Vivi-Format: 1`, a
-plain-prose message is stored exactly as written, and a body that opens with
-`+++` must be a pump note, a pump action or a role reply envelope, or the send
-is refused. The [envelope reference](skills/vivi/references/envelope.md) has the
-parser rules.
+Every letter vivi writes is a format-1 letter — mail and replies, memos,
+rules, notes and lifecycle events included — stamped `X-Vivi-Format: 1`. Kind
+facts are front matter: a memo carries `tags`, a rule carries `scope` and
+`supersedes`, a done or reopened event carries its verdict, branch, commit
+and repos there, a report note carries them in a `[close]` table, and a pool
+result note carries `[pool]`. A front with no keys stores the prose as
+written, with no `+++` fence. The content headers vivi once wrote for these
+facts (`X-Vivi-Verdict`, `-Repo`, `-Branch`, `-Commit`, `-Tag`,
+`-Rule-Scope`, `-Supersedes`) are gone; headers carry transport only. A
+format-1 letter carrying one is refused at parse, and legacy letters stay
+readable as history with those headers ignored. A plain-prose message is
+stored exactly as written, and a body that opens with `+++` must be a pump
+note, a pump action or a role reply envelope, or the send is refused. The
+[envelope reference](skills/vivi/references/envelope.md) has the parser rules.
 
 **Wants.** A want is where a discussion lives; it is never dispatched. Work
 goes out as needs: `vivi need send --serves <want> --done-when "..."`, one

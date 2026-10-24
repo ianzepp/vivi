@@ -59,12 +59,20 @@ consistently:
 
 ### Letters
 
-Need, want and task letters are TOML front matter between two `+++` lines,
-then Markdown prose. Every need, want, task, pump, mail and chat send carries
-the header `X-Vivi-Format: 1`; a memo or a rule does not. Vivi reads the front
+Every letter vivi writes — work, pump record, mail, chat, note, memo, rule,
+lifecycle event — is a format-1 letter: TOML front matter between two `+++`
+lines, then Markdown prose, stamped `X-Vivi-Format: 1`. Vivi reads the front
 matter and never the prose. Required keys: a need needs a non-empty
-`done_when` list, a want needs a `question`; a task needs neither. Send flags
-build the front matter:
+`done_when` list, a want needs a `question`; a task needs neither. Kind facts
+are front matter: a done or reopened event carries its verdict, branch,
+commit and repos there, a report note carries them in a `[close]` table, a
+pool result note carries `[pool]`, a memo carries `tags`, a rule carries
+`scope` and `supersedes`. A front with no keys stores the prose as written,
+with no `+++` fence. The content headers vivi once wrote for these facts
+(`X-Vivi-Verdict`, `-Repo`, `-Branch`, `-Commit`, `-Tag`, `-Rule-Scope`,
+`-Supersedes`) are gone; headers carry transport only. A format-1 letter
+carrying one is refused at parse, and legacy letters stay readable as
+history with those headers ignored. Send flags build the front matter:
 
 ```sh
 vivi need send --from mind --to hand-1 --subject "Add a greeting" \
@@ -732,10 +740,10 @@ supersede. Absorbing a retired or superseded rule is allowed; superseded
 still outranks retired, and retired still outranks absorbed. Any mailspace
 identity may retire, supersede, or absorb. `--for` records who acted.
 
-`--local` writes `X-Vivi-Rule-Scope: local` on that rule. Without it the
-scope is `project`. Scope is fixed when the rule is saved. A superseding
-rule has its own scope. Nothing syncs rules yet. The header is the mark a
-later sync will use to skip a local rule.
+`--local` writes `scope = "local"` in the rule's front matter. Without it
+the scope is `project`. Scope is fixed when the rule is saved. A superseding
+rule has its own scope. Nothing syncs rules yet. The front-matter scope is
+the mark a later sync will use to skip a local rule.
 
 List, search, and boot show the active set. `--all` includes retired,
 superseded, and absorbed rules. `--for` on list and search keeps rules that
