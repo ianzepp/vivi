@@ -239,13 +239,11 @@ fn off_linux_creation_skips_acl_copy_and_still_creates_the_repo() {
     );
 }
 
+// Missing tools or a no-op `setfacl` fail this test. A skip would be a false pass.
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_copies_group_and_acl_from_the_lexicographic_sibling() {
-    if !linux_acl_tools() {
-        eprintln!("skipping linux ACL runtime test: getfacl, setfacl, or chgrp is missing");
-        return;
-    }
+    linux_require_acl_tools();
     let tmp = tempdir().unwrap();
     let lanes = tmp.path().join("lanes");
     fs::create_dir(&lanes).unwrap();
@@ -255,28 +253,79 @@ fn linux_copies_group_and_acl_from_the_lexicographic_sibling() {
     fs::create_dir(&second).unwrap();
     fs::write(lanes.join("0.git"), b"not a directory").unwrap();
     let uid = linux_stdout("id", &["-u"]);
-    if !linux_setfacl(&first, &format!("u:{uid}:rwx"))
-        || !linux_setfacl(&second, &format!("u:{uid}:r-x"))
-    {
-        eprintln!("skipping linux ACL runtime test: this filesystem rejected setfacl");
-        return;
-    }
-    if linux_chgrp_other(&first) {
-        assert_ne!(linux_gid(&first), linux_gid(&second));
+    linux_must_setfacl(&first, &format!("u:{uid}:rwx"));
+    linux_must_setfacl(&second, &format!("u:{uid}:r-x"));
+    let first_acl = linux_acl_body(&first);
+    let second_acl = linux_acl_body(&second);
+    linux_require_acl_entry(&first_acl, &format!("user:{uid}:rwx"));
+    linux_require_acl_entry(&second_acl, &format!("user:{uid}:r-x"));
+    assert_ne!(first_acl, second_acl, "fixture ACLs are not distinct");
+    let distinct_group = linux_chgrp_other(&first);
+    if distinct_group {
+        assert_ne!(
+            linux_owning_group(&first),
+            linux_owning_group(&second),
+            "fixture groups are not distinct"
+        );
     }
     let identity = tmp.path().join("identity");
     fs::create_dir(&identity).unwrap();
     let created = create_lane(&LaneCreate::new("new", &lanes, &identity)).unwrap();
-    assert_eq!(linux_acl_body(&created.repo_path), linux_acl_body(&first));
-    assert_ne!(linux_acl_body(&first), linux_acl_body(&second));
-    assert_eq!(linux_gid(&created.repo_path), linux_gid(&first));
+    let copied = linux_acl_body(&created.repo_path);
+    assert_eq!(
+        copied, first_acl,
+        "ACL entries were not copied from the lexicographic sibling"
+    );
+    assert_ne!(copied, second_acl, "ACL was copied from the later sibling");
+    linux_require_acl_entry(&copied, &format!("user:{uid}:rwx"));
+    assert_eq!(
+        linux_owning_group(&created.repo_path),
+        linux_owning_group(&first),
+        "owning group was not copied from the lexicographic sibling"
+    );
+    if distinct_group {
+        assert_ne!(
+            linux_owning_group(&created.repo_path),
+            linux_owning_group(&second),
+            "owning group still matches the untouched sibling"
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn linux_acl_tools() -> bool {
-    ["getfacl", "setfacl", "chgrp"]
+fn linux_require_acl_tools() {
+    let missing = ["getfacl", "setfacl", "chgrp"]
         .into_iter()
-        .all(linux_program_runs)
+        .filter(|program| !linux_program_runs(program))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "getfacl/setfacl/chgrp are required for this test; missing {}",
+        missing.join(", ")
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn linux_must_setfacl(path: &Path, spec: &str) {
+    let output = std::process::Command::new("setfacl")
+        .args(["-m", spec])
+        .arg(path)
+        .output()
+        .unwrap_or_else(|error| panic!("setfacl is required for this test: {error}"));
+    assert!(
+        output.status.success(),
+        "setfacl rejected {spec} on {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn linux_require_acl_entry(acl: &str, entry: &str) {
+    assert!(
+        acl.lines().any(|line| line == entry),
+        "setfacl did nothing: {entry} is absent:\n{acl}"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -301,15 +350,6 @@ fn linux_stdout(program: &str, args: &[&str]) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_setfacl(path: &Path, entry: &str) -> bool {
-    std::process::Command::new("setfacl")
-        .args(["-m", entry])
-        .arg(path)
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-#[cfg(target_os = "linux")]
 fn linux_chgrp_other(path: &Path) -> bool {
     let groups = linux_stdout("id", &["-G"]);
     let primary = linux_stdout("id", &["-g"]);
@@ -324,9 +364,25 @@ fn linux_chgrp_other(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_gid(path: &Path) -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).unwrap().gid()
+fn linux_owning_group(path: &Path) -> String {
+    let output = std::process::Command::new("getfacl")
+        .args(["--numeric"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "getfacl {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("# group:"))
+        .map(str::trim)
+        .filter(|group| !group.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| panic!("getfacl reported no owning group for {}", path.display()))
 }
 
 #[cfg(target_os = "linux")]

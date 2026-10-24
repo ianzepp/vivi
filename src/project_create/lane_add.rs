@@ -146,7 +146,7 @@ fn add_split_with(
             &url,
             inject,
         ),
-        (true, false) => lanes_only(request, &lanes_dir, &project_dir, &repo, inject),
+        (true, false) => lanes_only(request, &lanes_dir, &project_dir, inject),
         (false, true) => projects_only(
             request,
             &repo,
@@ -197,7 +197,6 @@ fn lanes_only(
     request: &LaneAdd,
     lanes_dir: &Path,
     project_dir: &Path,
-    repo: &Path,
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
 ) -> Result<LaneAdded, VivariumError> {
     let lane = run_lane_half(request, lanes_dir, project_dir, inject)?;
