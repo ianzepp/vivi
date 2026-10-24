@@ -5,12 +5,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use vivi::VivariumError;
 use vivi::cli::FlowCommand;
-use vivi::mailspace::Mailspace;
-use vivi::pump::config::PumpConfig;
 use vivi::pump::flow::def::FlowKind;
 use vivi::pump::flow::index::{RunRow, StepRow, StepState};
-use vivi::pump::flow::registry::{self, FLOW_VERSION};
-use vivi::pump::store::{DB_FILENAME, PumpStore};
+use vivi::pump::flow::registry::FLOW_VERSION;
+use vivi::pump::flow::view;
 
 const KINDS: [FlowKind; 4] = [
     FlowKind::Build,
@@ -19,8 +17,6 @@ const KINDS: [FlowKind; 4] = [
     FlowKind::Repair,
 ];
 const NO_DB: &str = "no pump.db here";
-
-type Runs = Vec<(RunRow, Vec<StepRow>)>;
 
 pub(crate) fn handle_flow_command(command: &FlowCommand) -> Result<(), VivariumError> {
     match command {
@@ -56,51 +52,26 @@ fn show(
             "unknown flow kind {kind:?}; expected build, research, release or repair"
         ))
     })?;
-    let source = registry::shipped(kind).ok_or_else(|| {
-        VivariumError::Message(format!("the {} flow is not shipped yet", kind.name()))
-    })?;
-    // Outer Option: `--need` given. Inner Option: a pump.db exists.
-    let runs: Option<Option<Runs>> = match need {
-        Some(need) => Some(run_index(need, &project_root(project))?),
-        None => None,
-    };
+    let flow = view(&project_root(project), kind, need)?;
     if json {
         let mut out = json!({
-            "kind": kind.name(),
+            "kind": flow.kind.name(),
             "version": FLOW_VERSION,
-            "mermaid": source,
+            "mermaid": flow.mermaid,
         });
-        if let Some(runs) = &runs {
+        if let Some(runs) = &flow.runs {
             out["runs"] = runs.as_deref().map_or(Value::Null, runs_json);
         }
         return print_json(&out);
     }
-    print!("{source}");
-    if !source.ends_with('\n') {
+    print!("{}", flow.mermaid);
+    if !flow.mermaid.ends_with('\n') {
         println!();
     }
-    if let (Some(need), Some(runs)) = (need, &runs) {
+    if let (Some(need), Some(runs)) = (need, &flow.runs) {
         print_runs(need, runs.as_deref());
     }
     Ok(())
-}
-
-/// The runs of `need` with their steps, or `None` when there is no pump.db.
-fn run_index(need: &str, project: &Path) -> Result<Option<Runs>, VivariumError> {
-    let cfg = match Mailspace::discover(Some(project)) {
-        Ok(mailspace) => mailspace.config.pump.clone().unwrap_or_default(),
-        Err(_) => PumpConfig::default(),
-    };
-    let path = cfg.home_dir(project).join(DB_FILENAME);
-    let Some(store) = PumpStore::open_read_only(&path)? else {
-        return Ok(None);
-    };
-    let mut runs = Vec::new();
-    for run in store.runs_of(need)? {
-        let steps = store.steps_of(need, run.run)?;
-        runs.push((run, steps));
-    }
-    Ok(Some(runs))
 }
 
 fn print_runs(need: &str, runs: Option<&[(RunRow, Vec<StepRow>)]>) {
