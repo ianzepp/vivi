@@ -32,7 +32,7 @@ use std::hash::{Hash, Hasher};
 use crate::AppState;
 use crate::audit::{AuditEvent, AuditOutcome};
 use crate::auth::constant_time_eq;
-use crate::grants::{GrantLevel, GrantRecord, GrantsError, ServerKeyStore};
+use crate::grants::{GrantLevel, GrantRecord, GrantsError};
 use crate::identities::IdentityRecord;
 use crate::keys::Caller;
 use crate::projects::ProjectMeta;
@@ -152,7 +152,9 @@ pub(super) fn tools_list() -> Value {
             "additionalProperties": false
         }),
     ));
-    tools.push(super::host::tools_list()["tools"][0].clone());
+    if let Some(host_tools) = super::host::tools_list()["tools"].as_array() {
+        tools.extend(host_tools.iter().cloned());
+    }
     tools.push(tool(
         "key_mint",
         "Host only. Mint a server key for `principal` (created when absent), carrying `grants` \
@@ -575,10 +577,11 @@ async fn host_tool(
     if write && let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
         return Ok(refused(state, auth, None, name, write, &message).await);
     }
-    let store = state.server_keys.clone();
+    let admin_state = state.clone();
     let owned_name = name.to_owned();
     let result =
-        match tokio::task::spawn_blocking(move || key_admin(&store, &owned_name, &arguments)).await
+        match tokio::task::spawn_blocking(move || key_admin(&admin_state, &owned_name, &arguments))
+            .await
         {
             Ok(result) => result,
             Err(err) => {
@@ -617,8 +620,12 @@ async fn host_tool(
     }
 }
 
-/// The key and grant admin tools over the one key store.
-fn key_admin(store: &ServerKeyStore, name: &str, arguments: &Value) -> Result<Value, ToolError> {
+/// The key and grant admin tools over the one key store. A revocation
+/// also retires the per-project mirror of a self-service key (rooms auth
+/// and the letter wire read that file with no grant check), in every
+/// project the key's principal is granted on.
+fn key_admin(state: &AppState, name: &str, arguments: &Value) -> Result<Value, ToolError> {
+    let store = &state.server_keys;
     match name {
         "key_mint" => {
             let host = opt_bool(arguments, "host", false)?;
@@ -652,6 +659,17 @@ fn key_admin(store: &ServerKeyStore, name: &str, arguments: &Value) -> Result<Va
         "key_list" => Ok(json!({ "principals": store.list() })),
         "key_revoke" => {
             let key_id = req_str(arguments, "key_id")?;
+            // The mirror dies with the key, first: a storage failure then
+            // leaves the key live everywhere rather than live in the
+            // mirror alone.
+            if let Some((_, projects)) = store.holder_of_key(key_id) {
+                for project in projects {
+                    state
+                        .keys
+                        .revoke_mirrored(&project, &[key_id])
+                        .map_err(mirror_error)?;
+                }
+            }
             store.revoke_key(key_id).map_err(grants_error)?;
             Ok(json!({ "revoked": key_id }))
         }
@@ -669,6 +687,17 @@ fn key_admin(store: &ServerKeyStore, name: &str, arguments: &Value) -> Result<Va
         "grant_remove" => {
             let principal = req_str(arguments, "principal")?;
             let project_id = req_str(arguments, "project_id")?;
+            // This project's mirror entries of the principal's keys die
+            // with the grant, first (same failure order as `key_revoke`);
+            // other projects' mirrors are untouched. The project id is
+            // normalized exactly as `remove_grant` normalizes it.
+            if let Some(key_ids) = store.key_ids_of_principal(principal) {
+                let ids: Vec<&str> = key_ids.iter().map(String::as_str).collect();
+                state
+                    .keys
+                    .revoke_mirrored(project_id.trim(), &ids)
+                    .map_err(mirror_error)?;
+            }
             store
                 .remove_grant(principal, project_id)
                 .map_err(|err| match err {
@@ -681,6 +710,15 @@ fn key_admin(store: &ServerKeyStore, name: &str, arguments: &Value) -> Result<Va
         }
         other => Err(ToolError::new(format!("unknown tool '{other}'"))),
     }
+}
+
+/// A per-project mirror revocation failure: the storage error is logged
+/// and the caller sees the shared refusal.
+fn mirror_error(err: crate::keys::KeyError) -> ToolError {
+    if let crate::keys::KeyError::Storage(message) = &err {
+        tracing::error!("api key mirror failure: {message}");
+    }
+    ToolError::new("storage failure".to_owned())
 }
 
 fn grants_error(err: GrantsError) -> ToolError {
@@ -698,6 +736,7 @@ fn grants_error(err: GrantsError) -> ToolError {
         }
         GrantsError::HostWithGrants => "a host principal carries no project grants".to_owned(),
         GrantsError::HostMismatch => "that principal exists with a different host flag".to_owned(),
+        GrantsError::PrincipalCollision(message) => message,
         GrantsError::LimitReached => "that principal already has 32 live keys".to_owned(),
         GrantsError::NotFound => "no such principal or key".to_owned(),
         GrantsError::Storage(message) => {

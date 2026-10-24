@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::AppState;
+use crate::audit::{AuditEvent, AuditOutcome};
 use crate::auth::{AuthError, constant_time_eq, mint_token, rfc3339, sha256_hex};
 use crate::identities::{IdentityRecord, IdentityRegistry};
 use crate::projects_api::{json_body, require_existing_project};
@@ -258,6 +259,29 @@ impl ApiKeyRegistry {
         Ok(())
     }
 
+    /// Revoke the mirrored server keys `key_ids` in `project_id`'s file,
+    /// whoever minted them: the server store revoked the key or dropped
+    /// its grant on this project, and a mirror must not outlive what it
+    /// mirrors (rooms auth and the letter wire read this file with no
+    /// grant check). Unknown key ids and already-revoked entries change
+    /// nothing; the ids come from the server store, which never lies.
+    pub fn revoke_mirrored(&self, project_id: &str, key_ids: &[&str]) -> Result<(), KeyError> {
+        let _guard = self.lock();
+        let mut file = self.load(project_id);
+        let now = rfc3339(chrono::Utc::now());
+        let mut changed = false;
+        for key in &mut file.keys {
+            if key.revoked_at.is_none() && key_ids.contains(&key.key_id.as_str()) {
+                key.revoked_at = Some(now.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.save(project_id, &file).map_err(KeyError::Storage)?;
+        }
+        Ok(())
+    }
+
     /// The minting identity name (and the identity it acts as, if set) for a
     /// live key, if `presented` matches.
     pub fn verify(&self, project_id: &str, presented: &str) -> Option<VerifiedKey> {
@@ -418,10 +442,12 @@ fn identity_token_only(
 
 /// `POST /v1/projects/:id/keys` — mint a server key (identity token). The
 /// key's principal is `<member>@<project_id>` with one grant on this
-/// project (operator when today's operator rule holds for this mint), and
-/// the same secret is mirrored into the per-project registry so rooms
-/// auth (and the letter wire) keep accepting it. That mirror is the only
-/// writer of new per-project keys.
+/// project (operator when today's operator rule holds for this mint), or
+/// `<member>.<role>@<project_id>` when an acting identity is named; a
+/// principal another member/identity derivation already holds is refused
+/// (409). The same secret is mirrored into the per-project registry so
+/// rooms auth (and the letter wire) keep accepting it. That mirror is the
+/// only writer of new per-project keys.
 pub async fn mint_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -460,6 +486,7 @@ pub async fn mint_handler(
     let mcp_state = state.clone();
     let old_keys = state.keys.clone();
     let project_id = id.clone();
+    let member = identity.name.clone();
     let identity = identity.clone();
     let label = req.label;
     let acting = req.identity.clone();
@@ -471,23 +498,17 @@ pub async fn mint_handler(
             &identity,
             acting.as_deref(),
         );
-        // Grants live on the principal, and the first grant for a project
-        // is the one a call resolves. A second key for another acting
-        // identity needs its own principal, or it would act as the first.
-        let principal = match acting.as_deref() {
-            Some(role) => format!("{}.{role}@{project_id}", identity.name),
-            None => format!("{}@{project_id}", identity.name),
-        };
-        let grant = crate::grants::GrantRecord {
-            project_id: project_id.clone(),
-            member: identity.name.clone(),
-            identity: acting.clone(),
+        // The derived principal (see `PrincipalRecord`) is minted in the
+        // store, under the store's lock: a derivation that would share a
+        // principal with another member/identity derivation is refused
+        // there, not silently upserted onto the first grant.
+        let minted = mcp_state.server_keys.mint_derived(
+            &project_id,
+            &member,
+            acting.as_deref(),
             level,
-        };
-        let minted =
-            mcp_state
-                .server_keys
-                .mint(&principal, false, vec![grant], &label, &identity.name)?;
+            &label,
+        )?;
         // The mirror: the per-project registry holds the same secret so
         // rooms auth keeps accepting it. A failure keeps the server key
         // (it works on /v1/mcp) and is logged.
@@ -511,6 +532,18 @@ pub async fn mint_handler(
     .await
     {
         Ok(Ok(minted)) => {
+            audit_key_change(
+                state.audit.clone(),
+                AuditEvent {
+                    key_id: Some(minted.key_id.clone()),
+                    principal: Some(minted.principal.clone()),
+                    project_id: Some(id.clone()),
+                    tool: "self_service_mint".to_owned(),
+                    outcome: AuditOutcome::Ok,
+                    summary: format!("minted {} for {}", minted.key_id, minted.principal),
+                },
+            )
+            .await;
             let mut body = json!({
                 "key_id": minted.key_id,
                 "key": minted.key,
@@ -557,6 +590,9 @@ fn grants_error(err: crate::grants::GrantsError) -> Response {
                 "invalid_request",
                 "invalid principal for a self-service key",
             )
+        }
+        GrantsError::PrincipalCollision(message) => {
+            error_response(StatusCode::CONFLICT, "principal_conflict", &message)
         }
         GrantsError::NotFound => {
             error_response(StatusCode::NOT_FOUND, "key_not_found", "unknown key")
@@ -621,22 +657,43 @@ pub async fn revoke_handler(
     };
     let keys = state.keys.clone();
     let server_key_id = key_id.clone();
-    let project_id = id;
-    match tokio::task::spawn_blocking(move || keys.revoke(&project_id, &key_id, &identity.name))
-        .await
-    {
+    let project_id = id.clone();
+    let actor = identity.name.clone();
+    match tokio::task::spawn_blocking(move || keys.revoke(&project_id, &key_id, &actor)).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => return key_error(err),
         Err(err) => return key_error(KeyError::Storage(format!("key task failed: {err}"))),
     }
     // The server-store twin of a self-service key dies with it. An
-    // old-registry-only key has no twin (`NotFound`).
+    // old-registry-only key has no twin (`NotFound`); the audit line
+    // carries the twin's principal when there is one.
     let server_keys = state.server_keys.clone();
-    match tokio::task::spawn_blocking(move || server_keys.revoke_key(&server_key_id)).await {
-        Ok(Ok(())) | Ok(Err(crate::grants::GrantsError::NotFound)) => {
+    let audit_key_id = server_key_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let holder = server_keys
+            .holder_of_key(&server_key_id)
+            .map(|(principal, _)| principal);
+        let revoked = server_keys.revoke_key(&server_key_id);
+        (holder, revoked)
+    })
+    .await
+    {
+        Ok((holder, Ok(())) | (holder, Err(crate::grants::GrantsError::NotFound))) => {
+            audit_key_change(
+                state.audit.clone(),
+                AuditEvent {
+                    key_id: Some(audit_key_id.clone()),
+                    principal: holder,
+                    project_id: Some(id),
+                    tool: "self_service_revoke".to_owned(),
+                    outcome: AuditOutcome::Ok,
+                    summary: format!("revoked {audit_key_id}"),
+                },
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(Err(crate::grants::GrantsError::Storage(message))) => {
+        Ok((_, Err(crate::grants::GrantsError::Storage(message)))) => {
             tracing::error!("server key storage failure: {message}");
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -644,7 +701,16 @@ pub async fn revoke_handler(
                 "storage failure",
             )
         }
-        Ok(Err(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok((_, Err(_))) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => key_error(KeyError::Storage(format!("key task failed: {err}"))),
+    }
+}
+
+/// One audit line for a self-service key change (the off-MCP twin of the
+/// `/v1/mcp` key-admin lines): a successful mint or revoke writes exactly
+/// one line naming the key, the principal and the project.
+async fn audit_key_change(log: crate::audit::AuditLog, event: AuditEvent) {
+    if let Ok(Err(err)) = tokio::task::spawn_blocking(move || log.record(event)).await {
+        tracing::error!("audit write failed: {err}");
     }
 }

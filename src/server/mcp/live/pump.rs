@@ -154,8 +154,7 @@ pub(super) fn require_operator(
     hosted: &Hosted,
     caller: &IdentityRecord,
 ) -> Result<(), ToolError> {
-    let is_host = caller.mailspace_id.as_deref() == Some(hosted.ms.mailspace_id());
-    if !is_host {
+    if !super::is_own_member(&hosted.ms, caller) {
         return Err(ToolError::new(format!(
             "{tool} needs an API key minted by the host's own member; this key was \
              minted by another member"

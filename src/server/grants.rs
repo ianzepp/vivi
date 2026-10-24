@@ -72,7 +72,8 @@ pub struct PrincipalRecord {
     /// is `<member>@<project_id>`; one that names an identity is
     /// `<member>.<role>@<project_id>`, so a later key does not resolve
     /// the first grant. A host-operator token uses a fixed name such as
-    /// `host`.
+    /// `host`. Two derivations never share a principal:
+    /// [`ServerKeyStore::mint_derived`] refuses the second to arrive.
     pub principal: String,
     #[serde(default)]
     pub host: bool,
@@ -143,6 +144,10 @@ pub enum GrantsError {
     HostWithGrants,
     /// A principal was minted again with a different `host` flag.
     HostMismatch,
+    /// A self-service mint derived a principal that already exists under
+    /// a different member/identity derivation. The message names both
+    /// derivations; it is a refusal, never a silent upsert.
+    PrincipalCollision(String),
     LimitReached,
     NotFound,
     Storage(String),
@@ -234,6 +239,19 @@ impl ServerKeyStore {
             return Err(GrantsError::HostWithGrants);
         }
         let mut state = self.state();
+        self.mint_locked(&mut state, principal, host, grants, label, &created_by)
+    }
+
+    /// The mint itself, under the caller's lock.
+    fn mint_locked(
+        &self,
+        state: &mut StoreState,
+        principal: String,
+        host: bool,
+        grants: Vec<GrantRecord>,
+        label: String,
+        created_by: &str,
+    ) -> Result<MintedServerKey, GrantsError> {
         let pos = match state
             .file
             .principals
@@ -303,6 +321,108 @@ impl ServerKeyStore {
         Self::save(&self.path, &state.file).map_err(GrantsError::Storage)?;
         state.index = build_index(&state.file);
         Ok(out)
+    }
+
+    /// Mint the self-service key for `member` on `project_id` — the
+    /// grant `level` the caller derived, acting as `acting` when one is
+    /// named — on the derived principal (see [`PrincipalRecord`]). A
+    /// derivation never silently adopts an existing principal: when that
+    /// principal already exists, every grant it holds must carry the same
+    /// member and acting identity (a re-mint), else the mint is refused —
+    /// two derivations on one principal would let the later key resolve
+    /// the first grant and act as another member. Member names allow `.`,
+    /// so `creator` acting as `ops` and a member literally named
+    /// `creator.ops` derive the same principal; the second derivation to
+    /// arrive loses.
+    pub fn mint_derived(
+        &self,
+        project_id: &str,
+        member: &str,
+        acting: Option<&str>,
+        level: GrantLevel,
+        label: &str,
+    ) -> Result<MintedServerKey, GrantsError> {
+        let label = validate_label(label)?;
+        let member = validate_member(member)?;
+        let acting = acting.map(validate_member).transpose()?;
+        let mut grant = GrantRecord {
+            project_id: project_id.to_owned(),
+            member: member.clone(),
+            identity: acting.clone(),
+            level,
+        };
+        validate_grant(&mut grant)?;
+        let principal = self_service_principal(&grant.project_id, &member, acting.as_deref());
+        let principal = validate_principal(&principal)?;
+        let mut state = self.state();
+        if let Some(existing) = state
+            .file
+            .principals
+            .iter()
+            .find(|p| p.principal == principal)
+        {
+            let deviating: Vec<&GrantRecord> = existing
+                .grants
+                .iter()
+                .filter(|grant| {
+                    (grant.member.as_str(), grant.identity.as_deref())
+                        != (member.as_str(), acting.as_deref())
+                })
+                .collect();
+            if !deviating.is_empty() {
+                let held = deviating
+                    .iter()
+                    .map(|grant| describe_derivation(&grant.member, grant.identity.as_deref()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(GrantsError::PrincipalCollision(format!(
+                    "principal '{principal}' is already derived from {held}; this mint derives \
+                     it from {}. A principal name cannot be shared across member/identity \
+                     derivations",
+                    describe_derivation(&member, acting.as_deref())
+                )));
+            }
+        }
+        self.mint_locked(&mut state, principal, false, vec![grant], label, &member)
+    }
+
+    /// The principal that holds `key_id` (live or revoked) and the project
+    /// ids of its grants — where the per-project mirror of a self-service
+    /// key can live. `None` when no principal holds that key id.
+    pub fn holder_of_key(&self, key_id: &str) -> Option<(String, Vec<String>)> {
+        let state = self.state();
+        let principal = state
+            .file
+            .principals
+            .iter()
+            .find(|p| p.keys.iter().any(|key| key.key_id == key_id))?;
+        Some((
+            principal.principal.clone(),
+            principal
+                .grants
+                .iter()
+                .map(|grant| grant.project_id.clone())
+                .collect(),
+        ))
+    }
+
+    /// The key ids of `principal` (revoked and live), normalized as
+    /// [`Self::remove_grant`] normalizes, `None` for an unknown or
+    /// invalid principal.
+    pub fn key_ids_of_principal(&self, principal: &str) -> Option<Vec<String>> {
+        let principal = validate_principal(principal).ok()?;
+        let state = self.state();
+        Some(
+            state
+                .file
+                .principals
+                .iter()
+                .find(|p| p.principal == principal)?
+                .keys
+                .iter()
+                .map(|key| key.key_id.clone())
+                .collect(),
+        )
     }
 
     /// List principals, their keys (digests only) and their grants.
@@ -494,6 +614,23 @@ fn validate_principal(principal: &str) -> Result<String, GrantsError> {
         Ok(trimmed.to_owned())
     } else {
         Err(GrantsError::InvalidPrincipal)
+    }
+}
+
+/// The principal a self-service mint derives from `member` on
+/// `project_id` ([`PrincipalRecord`]'s naming scheme).
+fn self_service_principal(project_id: &str, member: &str, acting: Option<&str>) -> String {
+    match acting {
+        Some(role) => format!("{member}.{role}@{project_id}"),
+        None => format!("{member}@{project_id}"),
+    }
+}
+
+/// How one member/identity derivation reads in a collision refusal.
+fn describe_derivation(member: &str, identity: Option<&str>) -> String {
+    match identity {
+        Some(role) => format!("member '{member}' acting as '{role}'"),
+        None => format!("member '{member}' with no acting identity"),
     }
 }
 

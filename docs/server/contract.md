@@ -463,10 +463,14 @@ is not granted on.
 
 One audit line is appended per **write** tool call, whatever came of it
 (`ok`, `refused`, `error`), and per key/grant change; reads are not
-logged. The log is `DATA_DIR/audit.jsonl`: one JSON object per line,
-0600, append-only, no fsync, no read API yet. A line is, in wire order:
-`at` (RFC 3339), `key_id`, `principal`, `project_id` (null for host
-tools), `tool`, `outcome` (`ok`|`refused`|`error`), and `summary` (a
+logged. The self-service key routes write the same shape themselves:
+`self_service_mint` on a successful `POST /v1/projects/{id}/keys` and
+`self_service_revoke` on a successful `DELETE /v1/projects/{id}/keys/
+{key_id}`, exactly one line each. The log is `DATA_DIR/audit.jsonl`: one
+JSON object per line, 0600, append-only, no fsync, no read API yet. A
+line is, in wire order: `at` (RFC 3339), `key_id`, `principal`,
+`project_id` (null for host tools), `tool`, `outcome`
+(`ok`|`refused`|`error`), and `summary` (a
 short description, capped at 200 chars).
 
 Writes are rate limited **per (project, key)** — `host` is the bucket
@@ -490,7 +494,11 @@ possession), not another key.
   today's operator rule holds at mint time, else `member`. The answer
   is `{key_id, key, label, created_by, created_at, grants}` (plus
   `identity` when one was named); the raw `key` is returned once
-  (`vivi_` + random). At most 32 live keys per principal.
+  (`vivi_` + random). At most 32 live keys per principal. A derived
+  principal that already exists under a different member/identity
+  derivation is refused `409 principal_conflict` naming both
+  derivations (member names allow `.`): the second derivation to arrive
+  never joins the first's grants.
 - `GET /v1/projects/{id}/keys` (identity token or key) → `{keys:
   [{key_id, label, created_by, created_at, identity?, revoked_at?}]}`
   from the per-project mirror. No secrets.
@@ -501,7 +509,11 @@ possession), not another key.
 The same secret is mirrored into the per-project registry
 (`DATA_DIR/projects/<id>/api_keys.json`) at mint, so rooms auth and the
 letter wire keep accepting it; the mirror is the only writer of new
-per-project keys. A revoked or unknown key is the same `401` as a bad
+per-project keys. A mirror dies with what it mirrors: `key_revoke` on
+`/v1/mcp` revokes the entry in every project the key's principal is
+granted on, and `grant_remove` revokes that principal's entries in that
+one project's file (other projects' mirrors stand). A revoked or
+unknown key is the same `401` as a bad
 identity token on those routes. A live key is accepted on every project
 bearer route, including the letter wire.
 
