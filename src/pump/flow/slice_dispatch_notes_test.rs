@@ -60,7 +60,7 @@ fn the_real_port_reads_notes_of_one_word_oldest_first() {
     );
     let attempts = port.notes(&task, NoteWord::Attempt).unwrap();
     assert_eq!(prose_of(&attempts), ["other word"]);
-    assert!(port.notes(&task, NoteWord::Result).unwrap().is_empty());
+    assert!(port.notes(&task, NoteWord::SliceEnv).unwrap().is_empty());
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn the_real_port_notes_from_keeps_only_the_senders() {
         .unwrap();
     port.reply(
         &task,
-        &note_body(NoteWord::Result, None, "from mind").unwrap(),
+        &note_body(NoteWord::Deviations, None, "from mind").unwrap(),
     )
     .unwrap();
     p.mailspace
@@ -87,23 +87,27 @@ fn the_real_port_notes_from_keeps_only_the_senders() {
             vec!["mind".into()],
             Vec::new(),
             None,
-            note_body(NoteWord::Result, None, "from operator").unwrap(),
+            note_body(NoteWord::Deviations, None, "from operator").unwrap(),
         )
         .unwrap();
 
     assert_eq!(
-        prose_of(&port.notes_from(&task, NoteWord::Result, "mind").unwrap()),
+        prose_of(
+            &port
+                .notes_from(&task, NoteWord::Deviations, "mind")
+                .unwrap()
+        ),
         ["from mind"]
     );
     assert_eq!(
         prose_of(
             &port
-                .notes_from(&task, NoteWord::Result, "operator")
+                .notes_from(&task, NoteWord::Deviations, "operator")
                 .unwrap()
         ),
         ["from operator"]
     );
-    assert_eq!(port.notes(&task, NoteWord::Result).unwrap().len(), 2);
+    assert_eq!(port.notes(&task, NoteWord::Deviations).unwrap().len(), 2);
 }
 
 #[test]

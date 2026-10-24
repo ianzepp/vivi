@@ -26,8 +26,8 @@ fn stamps_strictly_increase() {
         assert!(next > last, "{next} after {last}");
         last = next;
     }
-    let a = note_of(&note_body(NoteWord::Result, None, "").unwrap()).unwrap();
-    let b = note_of(&note_body(NoteWord::Result, None, "").unwrap()).unwrap();
+    let a = note_of(&note_body(NoteWord::Deviations, None, "").unwrap()).unwrap();
+    let b = note_of(&note_body(NoteWord::Deviations, None, "").unwrap()).unwrap();
     assert!(b.pump.t > a.pump.t);
 }
 

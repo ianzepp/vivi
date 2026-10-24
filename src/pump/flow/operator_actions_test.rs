@@ -148,7 +148,7 @@ fn a_run_in_an_active_state_counts_and_a_missing_one_does_not() -> R {
 #[test]
 fn a_replan_restarts_the_live_run_at_plan_once() -> R {
     let mut rig = rig()?;
-    let id = rig.post(&PumpActionRequest::replan(false))?;
+    let id = rig.post(&PumpActionRequest::replan())?;
     rig.phase()?;
 
     let runs = rig.store.runs_of(&rig.need)?;
@@ -184,9 +184,7 @@ fn a_withdraw_closes_the_record_once() -> R {
 fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     let mut rig = rig()?;
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(
-        &step, None, false, false, "again",
-    ))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "again"))?;
     rig.phase()?;
     rig.phase()?;
 
@@ -207,9 +205,7 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     if let Some(job) = rig.jobs.jobs.get_mut("hand-a2-q1") {
         job.status = JobStatus::Finished;
     }
-    let again = rig.post(&PumpActionRequest::requeue(
-        &step, None, false, false, "twice",
-    ))?;
+    let again = rig.post(&PumpActionRequest::requeue(&step, "twice"))?;
     rig.phase()?;
     assert!(rig.jobs.jobs().contains_key("hand-a2-q2"));
     assert!(rig.applied(&again)?);
@@ -219,13 +215,7 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
 #[test]
 fn a_requeue_of_a_task_outside_the_run_is_refused_and_spent() -> R {
     let mut rig = rig()?;
-    let id = rig.post(&PumpActionRequest::requeue(
-        "no-such-task",
-        None,
-        false,
-        false,
-        "x",
-    ))?;
+    let id = rig.post(&PumpActionRequest::requeue("no-such-task", "x"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -274,7 +264,7 @@ fn a_withdraw_on_a_need_that_never_had_a_run_closes_its_record() -> R {
 fn a_replan_on_a_need_without_a_run_is_refused_once() -> R {
     let mut rig = rig()?;
     rig.store.set_run_state(&rig.need, 1, "done")?;
-    let id = rig.post(&PumpActionRequest::replan(false))?;
+    let id = rig.post(&PumpActionRequest::replan())?;
     rig.phase()?;
     let alarms = rig.exceptions();
     rig.phase()?;
@@ -296,9 +286,7 @@ fn a_replan_on_a_need_without_a_run_is_refused_once() -> R {
 fn a_requeue_on_a_need_without_a_run_is_refused_once() -> R {
     let mut rig = rig()?;
     rig.store.set_run_state(&rig.need, 1, "withdrawn")?;
-    let id = rig.post(&PumpActionRequest::requeue(
-        &rig.step, None, false, false, "x",
-    ))?;
+    let id = rig.post(&PumpActionRequest::requeue(&rig.step, "x"))?;
     rig.phase()?;
     let alarms = rig.exceptions();
     rig.phase()?;
@@ -318,7 +306,7 @@ fn a_requeue_of_a_dispatched_job_is_refused_and_queues_nothing() -> R {
         job.status = JobStatus::Dispatched;
     }
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "x"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "x"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -369,7 +357,7 @@ fn a_requeue_releases_a_held_pending_job_and_dispatch_offers_it_again() -> R {
     assert!(dispatch_pending(&ctx, &mut rig.jobs)?.is_empty());
 
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -412,7 +400,7 @@ fn a_requeue_releases_a_held_correction_job_in_place() -> R {
         },
     )?;
 
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -434,7 +422,7 @@ fn a_requeue_releases_a_held_slice_merge_job_and_reruns_no_hand_job() -> R {
     enqueue(&mut rig.jobs, spec)?;
     hold(&mut rig.jobs, "merge-s1", &need, &step);
 
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -454,7 +442,7 @@ fn a_requeue_on_a_done_step_is_refused_and_queues_nothing() -> R {
     rig.store
         .set_step_state(&rig.step, StepState::Done, Some("built"))?;
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "x"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "x"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);

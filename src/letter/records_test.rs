@@ -89,10 +89,6 @@ fn action_round_trips_full_and_minimal() {
         action: ActionWord::Requeue,
         need: "n".to_string(),
         unit: Some("u1".to_string()),
-        attempts: Some(3),
-        fresh: true,
-        refund: true,
-        force: false,
         step: None,
         word: None,
     };
@@ -101,17 +97,12 @@ fn action_round_trips_full_and_minimal() {
         action: ActionWord::Answer,
         need: "n".to_string(),
         unit: None,
-        attempts: None,
-        fresh: false,
-        refund: false,
-        force: false,
         step: Some("s".to_string()),
         word: Some("pass".to_string()),
     };
     assert_eq!(round_trip(&answer), answer);
     let replan = ActionFront {
         action: ActionWord::Replan,
-        force: true,
         step: None,
         word: None,
         ..answer.clone()
@@ -120,7 +111,6 @@ fn action_round_trips_full_and_minimal() {
     for word in [ActionWord::Withdraw, ActionWord::Unlock] {
         let bare = ActionFront {
             action: word,
-            force: false,
             step: None,
             word: None,
             ..answer.clone()
@@ -157,6 +147,22 @@ fn action_structural_refusals() {
 }
 
 #[test]
+fn action_refuses_the_retired_keys() {
+    for line in [
+        "attempts = 2",
+        "fresh = true",
+        "refund = true",
+        "force = true",
+    ] {
+        let body = action(&format!("action = \"requeue\"\nunit = \"u\"\n{line}\n"));
+        assert!(
+            matches!(refused::<ActionFront>(&body), LetterError::Toml { .. }),
+            "{line}"
+        );
+    }
+}
+
+#[test]
 fn action_conditionals_name_key_and_action() {
     invalid_naming::<ActionFront>(&action("action = \"requeue\"\n"), &["unit", "requeue"]);
     invalid_naming::<ActionFront>(
@@ -168,28 +174,12 @@ fn action_conditionals_name_key_and_action() {
         &["word", "answer"],
     );
     invalid_naming::<ActionFront>(
-        &action("action = \"withdraw\"\nforce = true\n"),
-        &["force", "withdraw"],
-    );
-    invalid_naming::<ActionFront>(
         &action("action = \"replan\"\nunit = \"u\"\n"),
         &["unit", "replan"],
     );
     invalid_naming::<ActionFront>(
         &action("action = \"unlock\"\nstep = \"s\"\n"),
         &["step", "unlock"],
-    );
-    invalid_naming::<ActionFront>(
-        &action("action = \"answer\"\nstep = \"s\"\nword = \"w\"\nfresh = true\n"),
-        &["fresh", "answer"],
-    );
-    invalid_naming::<ActionFront>(
-        &action("action = \"withdraw\"\nattempts = 2\n"),
-        &["attempts", "withdraw"],
-    );
-    invalid_naming::<ActionFront>(
-        &action("action = \"withdraw\"\nrefund = true\n"),
-        &["refund", "withdraw"],
     );
     invalid_naming::<ActionFront>(
         &action("action = \"requeue\"\nunit = \" \"\n"),
@@ -213,7 +203,7 @@ fn mail_round_trips_empty_and_noted() {
     assert_eq!(round_trip(&noted), noted);
     let bare = MailFront {
         pump: Some(PumpNote {
-            note: NoteWord::Result,
+            note: NoteWord::MainRed,
             t: 5,
             reference: None,
         }),
@@ -235,7 +225,6 @@ fn every_note_word_round_trips() {
         NoteWord::MainRed,
         NoteWord::Abandoned,
         NoteWord::SliceMerge,
-        NoteWord::Result,
     ] {
         let front = MailFront {
             pump: Some(PumpNote {

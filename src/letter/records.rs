@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::JobFront;
-use crate::letter::{LetterError, Validate, check_text, is_false, parse_letter};
+use crate::letter::{LetterError, Validate, check_text, parse_letter};
 use crate::pump::flow::def::FlowKind;
 
 /// The flow a pump record asks for.
@@ -129,14 +129,6 @@ pub struct ActionFront {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempts: Option<u32>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub fresh: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub refund: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub force: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word: Option<String>,
@@ -144,14 +136,10 @@ pub struct ActionFront {
 
 impl ActionFront {
     /// The keys that are set, each with the actions that read it.
-    fn keys(&self) -> [(&'static str, bool, &'static [ActionWord]); 7] {
-        use ActionWord::{Answer, Replan, Requeue, Unlock};
+    fn keys(&self) -> [(&'static str, bool, &'static [ActionWord]); 3] {
+        use ActionWord::{Answer, Requeue, Unlock};
         [
             ("unit", self.unit.is_some(), &[Requeue]),
-            ("attempts", self.attempts.is_some(), &[Requeue]),
-            ("fresh", self.fresh, &[Requeue]),
-            ("refund", self.refund, &[Requeue]),
-            ("force", self.force, &[Replan]),
             ("step", self.step.is_some(), &[Answer]),
             ("word", self.word.is_some(), &[Answer, Unlock]),
         ]
@@ -213,7 +201,6 @@ pub enum NoteWord {
     MainRed,
     Abandoned,
     SliceMerge,
-    Result,
 }
 
 /// The `[pump]` table of a `mail` letter: one pump note.

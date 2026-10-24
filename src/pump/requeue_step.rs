@@ -103,7 +103,7 @@ pub(super) fn post(
             println!("would requeue flow step {task} of need {need}");
             continue;
         }
-        let request = PumpActionRequest::requeue(task, None, false, false, reason);
+        let request = PumpActionRequest::requeue(task, reason);
         mailspace.pump_post_action(None, need, &request)?;
         println!("{}", super::requested_line(task));
     }

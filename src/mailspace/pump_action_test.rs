@@ -40,7 +40,7 @@ fn a_posted_action_is_a_reply_on_the_open_record_with_front_matter_and_no_pump_h
     let (mailspace, _tmp) = roster();
     let need = send_need(&mailspace, "fix auth");
     let record = mailspace.pump_send(None, &need, None).unwrap();
-    let request = PumpActionRequest::requeue("u1", Some(2), false, true, "host was down");
+    let request = PumpActionRequest::requeue("u1", "host was down");
 
     let posted = mailspace.pump_post_action(None, &need, &request).unwrap();
 
@@ -68,10 +68,6 @@ fn a_posted_action_is_a_reply_on_the_open_record_with_front_matter_and_no_pump_h
             action: ActionWord::Requeue,
             need: need.clone(),
             unit: Some("u1".into()),
-            attempts: Some(2),
-            fresh: false,
-            refund: true,
-            force: false,
             step: None,
             word: None,
         }
@@ -88,9 +84,9 @@ fn every_kind_round_trips_through_the_letter() {
     let need = send_need(&mailspace, "fix auth");
     mailspace.pump_send(None, &need, None).unwrap();
     let requests = [
-        PumpActionRequest::requeue("u1", None, true, false, "start over"),
+        PumpActionRequest::requeue("u1", "start over"),
         PumpActionRequest::withdraw("operator changed their mind"),
-        PumpActionRequest::replan(true),
+        PumpActionRequest::replan(),
     ];
     for request in &requests {
         mailspace.pump_post_action(None, &need, request).unwrap();
@@ -124,7 +120,7 @@ fn an_action_needs_an_open_record_and_says_how_to_open_one() {
         .pump_done(&record.handle, Some("gave-up"))
         .unwrap();
     let error = mailspace
-        .pump_post_action(None, &need, &PumpActionRequest::replan(false))
+        .pump_post_action(None, &need, &PumpActionRequest::replan())
         .unwrap_err()
         .to_string();
     assert!(error.contains("no open pump record"), "{error}");
@@ -144,7 +140,7 @@ fn a_requeue_names_its_unit_and_a_non_need_is_refused() {
         .to_string();
     assert!(error.contains("names the unit"), "{error}");
     let error = mailspace
-        .pump_post_action(None, "nonsense", &PumpActionRequest::replan(false))
+        .pump_post_action(None, "nonsense", &PumpActionRequest::replan())
         .unwrap_err()
         .to_string();
     assert!(error.contains("unknown need"), "{error}");
@@ -159,7 +155,7 @@ fn applied_actions_and_actions_on_closed_records_are_not_pending() {
     let record = mailspace.pump_send(None, &need, None).unwrap();
     mailspace.pump_send(None, &other, None).unwrap();
     let first = mailspace
-        .pump_post_action(None, &need, &PumpActionRequest::replan(false))
+        .pump_post_action(None, &need, &PumpActionRequest::replan())
         .unwrap();
     let second = mailspace
         .pump_post_action(None, &other, &PumpActionRequest::withdraw("stop"))
@@ -360,7 +356,7 @@ fn an_old_header_only_action_letter_is_never_pending_and_is_listed_once_as_unrea
     ];
     post_raw(&mailspace, &record.handle, "stop it", &extras);
     let fresh = mailspace
-        .pump_post_action(None, &need, &PumpActionRequest::replan(false))
+        .pump_post_action(None, &need, &PumpActionRequest::replan())
         .unwrap();
 
     let pending = mailspace.pump_pending_actions(&none()).unwrap();
@@ -405,4 +401,44 @@ fn an_action_letter_with_invalid_front_matter_is_listed_as_unreadable_and_not_pe
         "{unreadable:?}"
     );
     assert!(unreadable[0].error.contains("unit"), "{unreadable:?}");
+}
+
+#[test]
+fn an_old_action_letter_with_a_removed_key_is_listed_as_unreadable_and_not_pending() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let body = format!(
+        "+++\naction = \"requeue\"\nneed = \"{need}\"\nunit = \"u1\"\nfresh = true\n+++\n\nagain"
+    );
+    post_raw(&mailspace, &record.handle, &body, &[]);
+
+    assert!(mailspace.pump_pending_actions(&none()).unwrap().is_empty());
+    let unreadable = mailspace.pump_unreadable_actions(&none()).unwrap();
+    assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+    assert!(unreadable[0].error.contains("fresh"), "{unreadable:?}");
+}
+
+#[test]
+fn an_action_front_with_a_removed_key_is_refused_at_send() {
+    let (mailspace, _tmp) = roster();
+    let need = send_need(&mailspace, "fix auth");
+    let record = mailspace.pump_send(None, &need, None).unwrap();
+    let body = format!(
+        "+++\naction = \"requeue\"\nneed = \"{need}\"\nunit = \"u1\"\nfresh = true\n+++\n\nagain"
+    );
+
+    let sent = mailspace.send(SendRequest {
+        from: "operator".into(),
+        to: vec!["mind".into()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "pump: requeue action".into(),
+        body,
+        role: "inbox".into(),
+        kind: Some("mail".into()),
+        reply_to: Some(record.handle),
+    });
+
+    assert!(sent.is_err(), "{sent:?}");
 }
