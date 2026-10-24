@@ -182,8 +182,14 @@ fn quarantine_detail(id: &str, path: &Path) -> String {
 /// The receipt's `reason` string, when the file is readable JSON that has one.
 #[must_use]
 fn receipt_reason(path: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return None,
+    };
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
     let reason = value.get("reason")?.as_str()?.trim();
     if reason.is_empty() {
         None
