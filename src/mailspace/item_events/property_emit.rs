@@ -16,11 +16,40 @@ use super::{
     parse_property_event,
 };
 use crate::error::VivariumError;
+use crate::letter::plain::EmptyFront;
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterKind, parse_kind};
 use crate::mailspace::delivery::add_header;
 use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::reply::{add_reply_headers, reply_subject};
 use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{ItemEventWrite, Storage};
+
+/// The body of a property or assignment letter. The facts stay in the event
+/// protocol headers, so the front is empty and the prose is stored as
+/// written, with no fence. The body is parsed back as the event kind, so a
+/// writer bug is an error before anything is stored.
+fn gated_event_body(verb: &str, note: Option<&str>) -> Result<String, VivariumError> {
+    let prose = note.map_or_else(|| verb.to_string(), str::to_string);
+    let body = crate::letter::plain::render(&EmptyFront {}, &prose)
+        .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;
+    parse_kind(&LetterKind::Event(verb.to_string()), &body)
+        .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;
+    Ok(body)
+}
+
+/// The transport headers every property and assignment letter carries.
+fn stamp_event_headers(
+    data: String,
+    verb: &str,
+    item_id: &str,
+    at: &str,
+) -> Result<String, VivariumError> {
+    let data = add_header(&data, "X-Vivi-Kind", "mail")?;
+    let data = add_header(&data, FORMAT_HEADER, FORMAT_VERSION)?;
+    let data = add_header(&data, EVENT_HEADER, verb)?;
+    let data = add_header(&data, EVENT_OF_HEADER, &format!("<{item_id}>"))?;
+    add_header(&data, EVENT_AT_HEADER, at)
+}
 
 /// A composed property-event letter and the local roles that get a copy.
 struct PropertyLetterDraft {
@@ -46,7 +75,7 @@ impl Mailspace {
             .message_id()
             .ok_or_else(|| VivariumError::Message("the need has no Message-ID".into()))?;
         let from = self.address_for(identity);
-        let (mut to, mut cc) = self.event_addresses(&parsed, identity, &from);
+        let (mut to, cc) = self.event_addresses(&parsed, identity, &from);
         let route = self.header_address(route_to)?;
         if !to
             .iter()
@@ -60,27 +89,21 @@ impl Mailspace {
             to.push(from.clone());
         }
         let at = self.property_event_at(storage, item)?;
+        let verb = if delegate.is_some() {
+            "assigned"
+        } else {
+            "withdrawn"
+        };
         let mut data = build_compose_draft(&ComposeDraft {
             from,
             to,
             cc,
             bcc: Vec::new(),
             subject: reply_subject(parsed.subject().unwrap_or("(no subject)")),
-            body: delegate.map_or_else(|| "withdrawn".to_string(), |_| "assigned".to_string()),
+            body: gated_event_body(verb, None)?,
             html_body: None,
         })?;
-        data = add_header(&data, "X-Vivi-Kind", "mail")?;
-        data = add_header(
-            &data,
-            EVENT_HEADER,
-            if delegate.is_some() {
-                "assigned"
-            } else {
-                "withdrawn"
-            },
-        )?;
-        data = add_header(&data, EVENT_OF_HEADER, &format!("<{item_id}>"))?;
-        data = add_header(&data, EVENT_AT_HEADER, &at)?;
+        data = stamp_event_headers(data, verb, item_id, &at)?;
         if let Some(delegate) = delegate {
             data = add_header(&data, "X-Vivi-Delegate", delegate)?;
         }
@@ -176,20 +199,17 @@ impl Mailspace {
             // record, and a restored checkout of the mailspace reads it back.
             to.push(from.clone());
         }
-        let body = note.map_or_else(|| kind.header().to_string(), str::to_string);
+        let verb = kind.header();
         let mut data = build_compose_draft(&ComposeDraft {
             from,
             to,
             cc,
             bcc: Vec::new(),
             subject: reply_subject(parsed.subject().unwrap_or("(no subject)")),
-            body,
+            body: gated_event_body(verb, note)?,
             html_body: None,
         })?;
-        data = add_header(&data, "X-Vivi-Kind", "mail")?;
-        data = add_header(&data, EVENT_HEADER, kind.header())?;
-        data = add_header(&data, EVENT_OF_HEADER, &format!("<{item_id}>"))?;
-        data = add_header(&data, EVENT_AT_HEADER, at)?;
+        data = stamp_event_headers(data, verb, item_id, at)?;
         for (name, value) in extras {
             data = add_header(&data, name, value)?;
         }
@@ -237,3 +257,7 @@ impl Mailspace {
         Ok(ats)
     }
 }
+
+#[cfg(test)]
+#[path = "property_emit_test.rs"]
+mod tests;
