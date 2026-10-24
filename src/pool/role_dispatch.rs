@@ -488,13 +488,14 @@ pub fn digest_run_text(brief: &DigestBrief, project_root: &std::path::Path, role
          Cover everything the window holds: every need, task and want \
          created, replied to or closed in it (`vivi board`, the `vivi need`, \
          `vivi task` and `vivi want` lists, and the shows of the items those \
-         lists name), plus pump activity -- merges, gate results, \
-         quarantines, exceptions, and failed or timed-out units. Read \
-         `.vivi/pump/status.txt`, `.vivi/pump/exceptions.txt`, and the gate \
-         results under `.vivi/pump/`.\n\
+         lists name), plus pump activity -- flow runs and their steps \
+         (`vivi flow list`, `vivi flow show <kind> --need <need>`), the pump \
+         records (`vivi pump list`, `vivi pump show`), pump exceptions, and \
+         failed or timed-out jobs. Read `.vivi/pump/status.txt` and \
+         `.vivi/pump/exceptions.txt`.\n\
          \n\
          When you see a pattern (repeated failures, a cluster of related \
-         bugs, a flaky gate), read the underlying records and add that \
+         bugs, a step that keeps timing out), read the underlying records and add that \
          context to the digest.\n\
          \n\
          File exactly one memo, then stop:\n\

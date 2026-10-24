@@ -1,4 +1,4 @@
-//! Read-only pump summaries for `need show` and `boot`.
+//! Read-only pump summaries for `pump health` and the board.
 //!
 //! The pump owns `pump.db`; these commands only read it. A missing database
 //! means "pump state is not local", and an unreadable one is reported as
