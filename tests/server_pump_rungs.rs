@@ -114,6 +114,17 @@ impl Fx {
         std::fs::read_to_string(self.root.join(".vivi").join("mailspace.toml")).unwrap()
     }
 
+    /// A real pool and workspace rung pools. A rung command is rolled back
+    /// while the rung table has no effective pools.
+    fn seed_rung_pools(&self) {
+        let path = self.root.join(".vivi").join("mailspace.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(
+            "\n[pools.p]\nprovider = \"local\"\nslots = 1\n\n[pump.rungs]\npools = [\"p\"]\n",
+        );
+        std::fs::write(&path, text).unwrap();
+    }
+
     async fn refused(&self, token: &str, arguments: Value) -> String {
         let value = self
             .rpc(
@@ -148,10 +159,10 @@ fn spki_pem(seed: u8) -> String {
     )
 }
 
-fn rung_table(task: Value, need: Value, target: Value) -> Value {
+fn rung_table(task: Value, need: Value, target: Value, pools: Value) -> Value {
     json!({
         "target": target, "task": task, "need": need, "main": null,
-        "release": null, "timeout": 1800, "pools": []
+        "release": null, "timeout": 1800, "pools": pools
     })
 }
 
@@ -177,8 +188,12 @@ async fn show_on_a_fresh_project_is_unset_and_set_round_trips_per_rung() {
     // The answer is a parsed structure, not the `{text}` of RungsConfig::show.
     let shown = fx.rungs(&key, json!({"action": "show"})).await;
     assert!(shown.get("text").is_none(), "{shown}");
-    assert_eq!(shown, rung_table(Value::Null, Value::Null, Value::Null));
+    assert_eq!(
+        shown,
+        rung_table(Value::Null, Value::Null, Value::Null, json!([]))
+    );
 
+    fx.seed_rung_pools();
     let set = fx
         .rungs(
             &key,
@@ -187,7 +202,12 @@ async fn show_on_a_fresh_project_is_unset_and_set_round_trips_per_rung() {
         .await;
     assert_eq!(
         set,
-        rung_table(Value::Null, json!("cargo test --quiet"), Value::Null)
+        rung_table(
+            Value::Null,
+            json!("cargo test --quiet"),
+            Value::Null,
+            json!(["p"])
+        )
     );
     let shown = fx.rungs(&key, json!({"action": "show"})).await;
     assert_eq!(shown, set);
@@ -217,6 +237,7 @@ async fn show_on_a_fresh_project_is_unset_and_set_round_trips_per_rung() {
 async fn a_target_set_writes_the_target_table_and_falls_back_to_the_workspace() {
     let fx = fixture("target");
     let key = fx.key_by(&fx.member, None);
+    fx.seed_rung_pools();
     fx.rungs(
         &key,
         json!({"action": "set", "rung": "task", "command": "make unit"}),
@@ -230,7 +251,12 @@ async fn a_target_set_writes_the_target_table_and_falls_back_to_the_workspace() 
         .await;
     assert_eq!(
         set,
-        rung_table(json!("make unit"), json!("npm test"), json!("web"))
+        rung_table(
+            json!("make unit"),
+            json!("npm test"),
+            json!("web"),
+            json!(["p"])
+        )
     );
     assert!(fx.config_text().contains("[pump.targets.web.rungs]"));
 
@@ -242,7 +268,7 @@ async fn a_target_set_writes_the_target_table_and_falls_back_to_the_workspace() 
     let workspace = fx.rungs(&key, json!({"action": "show"})).await;
     assert_eq!(
         workspace,
-        rung_table(json!("make unit"), Value::Null, Value::Null)
+        rung_table(json!("make unit"), Value::Null, Value::Null, json!(["p"]))
     );
 }
 
@@ -269,6 +295,7 @@ async fn an_unknown_target_is_refused_and_changes_nothing() {
 async fn a_key_acting_as_the_operator_role_by_name_is_accepted() {
     let fx = fixture("named");
     let key = fx.key_by(&fx.member, Some("operator"));
+    fx.seed_rung_pools();
     let set = fx
         .rungs(
             &key,
@@ -282,6 +309,7 @@ async fn a_key_acting_as_the_operator_role_by_name_is_accepted() {
 async fn a_bad_rung_or_command_is_refused_and_changes_nothing() {
     let fx = fixture("blank");
     let key = fx.key_by(&fx.member, None);
+    fx.seed_rung_pools();
     fx.rungs(
         &key,
         json!({"action": "set", "rung": "need", "command": "keep me"}),
@@ -313,6 +341,26 @@ async fn a_bad_rung_or_command_is_refused_and_changes_nothing() {
     assert_eq!(fx.config_text(), before);
     let shown = fx.rungs(&key, json!({"action": "show"})).await;
     assert_eq!(shown["need"], "keep me");
+}
+
+#[tokio::test]
+async fn a_set_with_no_effective_rung_pools_is_refused_with_the_guard_error() {
+    let fx = fixture("nopools");
+    let key = fx.key_by(&fx.member, None);
+    let before = fx.config_text();
+    let message = fx
+        .refused(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "cargo test"}),
+        )
+        .await;
+    assert!(message.contains("rolled back"), "{message}");
+    assert!(message.contains("effective pools are empty"), "{message}");
+    assert!(
+        !message.contains("cargo test"),
+        "the command is not echoed as accepted"
+    );
+    assert_eq!(fx.config_text(), before);
 }
 
 #[tokio::test]
