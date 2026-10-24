@@ -814,6 +814,21 @@ async fn a_member_token_on_a_hosted_project_keeps_the_transport_tools() {
     assert_eq!(live["you"]["name"], "operator");
 }
 
+/// The flow tick's job shelf: jobs the run enqueues stay in memory; nothing
+/// dispatches them (that is the outer pump loop's work, not the flow's).
+#[derive(Default)]
+struct Jobs(std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob>);
+
+impl vivi::pump::jobs::JobStore for Jobs {
+    fn jobs(&self) -> &std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob> {
+        &self.0
+    }
+
+    fn jobs_mut(&mut self) -> &mut std::collections::BTreeMap<String, vivi::pump::jobs::PoolJob> {
+        &mut self.0
+    }
+}
+
 fn spki_pem(seed: u8) -> String {
     use base64::Engine;
     const PREFIX: &[u8] = &[
@@ -933,6 +948,65 @@ async fn a_server_owned_project_keeps_the_transport_tools_for_keys() {
     for tool in ["mark", "unmark", "depend", "board", "send", "overview"] {
         assert!(names.contains(&tool), "{tool} in {names:?}");
     }
+}
+
+/// The release cross-check (W3-C3): a need sent through hosted MCP `send`
+/// with the `done_when` sugar, dispatched as `vivi pump send --need` files
+/// it, and one v21 pump tick starts a run — intake accepts the letter and
+/// raises no `flow-letter-invalid`.
+#[tokio::test]
+async fn a_pumped_need_the_server_composed_starts_a_run() {
+    use vivi::pump::flow::index::run_state;
+    let fx = fixture("pump-run");
+    let key = fx.key(None);
+    let sent = fx
+        .call(
+            &key,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "pump me",
+                   "body": "the prose", "done_when": ["it is done"]}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    // File the pump record for the need, as `vivi pump send --need <handle>`
+    // does, then read the flow's view through the pump's own store.
+    let need = {
+        let ms = fx.ms();
+        let record = ms.pump_send(None, &handle, None).unwrap();
+        assert_eq!(record.status, vivi::mailspace::PumpState::Open);
+        record.need
+    };
+
+    // One pump tick (`vivi pump once`'s flow half) over the hosted root.
+    let home = scratch("pump-run-home");
+    let mut cfg = vivi::pump::config::PumpConfig::default();
+    cfg.home = Some(home.to_string_lossy().into_owned());
+    let mailspace = fx.ms();
+    let ctx = vivi::pump::host::Ctx::new(
+        cfg,
+        std::sync::Arc::new(vivi::pump::host::RealHost::new(&home)),
+        fx.root.clone(),
+        "vivi".into(),
+    )
+    .with_mailspace(mailspace.mailspace_id().to_owned());
+    drop(mailspace);
+    let mut jobs = Jobs::default();
+    vivi::pump::flow::tick::tick(&ctx, &mut jobs).unwrap();
+
+    // A run exists for the need ...
+    let store =
+        vivi::pump::store::PumpStore::open(&home.join(vivi::pump::store::DB_FILENAME)).unwrap();
+    let runs = store.runs_of(&need).unwrap();
+    assert!(!runs.is_empty(), "no run for need {need}");
+    let states: Vec<&str> = runs.iter().map(|run| run.state.as_str()).collect();
+    assert!(
+        states.iter().all(|state| matches!(*state, run_state::LIVE)),
+        "run states {states:?}"
+    );
+    // ... and the intake never refused the letter.
+    let exceptions = std::fs::read_to_string(home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!exceptions.contains("flow-letter-invalid"), "{exceptions}");
 }
 
 #[tokio::test]
