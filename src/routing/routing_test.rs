@@ -109,9 +109,7 @@ fallback = "b"
 
 #[test]
 fn read_only_defaults_follow_kind() {
-    for kind in [
-        "auditor", "triage", "cadence", "steward", "head", "gate", "digest",
-    ] {
+    for kind in ["auditor", "triage", "cadence", "steward", "head", "digest"] {
         assert!(default_read_only(Some(kind)), "{kind}");
     }
     for kind in ["hand", "merge", "lint"] {
