@@ -175,6 +175,16 @@ pub struct ShowOptions {
     pub filter: LogFilter,
 }
 
+/// Read a pump file, naming the path when it is missing.
+fn read_pump_file(path: &Path) -> Result<Vec<u8>, VivariumError> {
+    fs::read(path).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => {
+            VivariumError::Message(format!("no pump log at {}", path.display()))
+        }
+        _ => VivariumError::Io(error),
+    })
+}
+
 /// Print the tail of `path`, then (when following) new lines forever, polling
 /// every `interval` for at most `max_polls` polls (`None` = unbounded).
 /// Returns cleanly when `out` is a closed pipe. A missing file is an error.
@@ -185,12 +195,7 @@ pub fn show(
     interval: Duration,
     max_polls: Option<usize>,
 ) -> Result<(), VivariumError> {
-    let bytes = fs::read(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => {
-            VivariumError::Message(format!("no pump log at {}", path.display()))
-        }
-        _ => VivariumError::Io(error),
-    })?;
+    let bytes = read_pump_file(path)?;
     let text = String::from_utf8_lossy(&bytes);
     let tail = tail_lines(&text, &options.filter, options.count);
     if !emit(out, &LogFilter::default(), tail)? || !options.follow {
@@ -214,4 +219,26 @@ pub fn run(project: &Path, file: LogFile, options: &ShowOptions) -> Result<(), V
     let path = project_home(project)?.join(file.name());
     let stdout = io::stdout();
     show(&path, options, &mut stdout.lock(), POLL_INTERVAL, None)
+}
+
+/// The tail of `project`'s pump `file`: the last `lines` lines that pass
+/// `filter`, with the count applied after filtering. Returns the lines; never
+/// prints. The streaming `--follow` reader stays in [`show`].
+///
+/// # Errors
+/// Returns [`VivariumError`] when the pump home cannot be resolved or the
+/// file is missing or unreadable.
+pub fn view(
+    project: &Path,
+    file: LogFile,
+    lines: usize,
+    filter: &LogFilter,
+) -> Result<Vec<String>, VivariumError> {
+    let path = project_home(project)?.join(file.name());
+    let bytes = read_pump_file(&path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(tail_lines(&text, filter, lines)
+        .into_iter()
+        .map(str::to_owned)
+        .collect())
 }

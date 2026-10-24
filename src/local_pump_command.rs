@@ -139,12 +139,20 @@ fn pump_log(cmd: &PumpLogCommand) -> Result<(), VivariumError> {
     } else {
         LogFile::Log
     };
-    let options = ShowOptions {
-        count: cmd.lines,
-        follow: cmd.follow,
-        filter: LogFilter::new(cmd.unit.as_deref(), cmd.grep.as_deref()),
-    };
-    logview::run(&project_root(&cmd.project), file, &options)
+    let filter = LogFilter::new(cmd.unit.as_deref(), cmd.grep.as_deref());
+    let project = project_root(&cmd.project);
+    if cmd.follow {
+        let options = ShowOptions {
+            count: cmd.lines,
+            follow: true,
+            filter,
+        };
+        return logview::run(&project, file, &options);
+    }
+    for line in logview::view(&project, file, cmd.lines, &filter)? {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// The project root: the subcommand's `--project`, else the current
