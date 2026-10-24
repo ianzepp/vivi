@@ -254,7 +254,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | --- | --- |
 | `board` | Actionable tasks, needs and wants per role. `--for`, `--since`, `--process`, `--graph`, `--json` |
 | `doctor` | Read-only health verdict and ranked findings for the install and selected project. `--project`, `--json`, `--fix-hints` |
-| `boot` | The whole project frame in one read-only read: seats, loops, unabsorbed mail, handles with verdicts, goals, and the backlog sliced for dispatch. `--role`, `--json` |
+| `boot` | The whole project frame in one read-only read: seats, loops, unabsorbed mail, handles with verdicts, goals, and the backlog sliced for dispatch. `--json` |
 | `mailspace` | `init`, `status`, `description`, `archive` and `archive export`, `watch`, `import`, `identity add\|list\|rename` |
 | `role` | `list`, `show`, `add`, `set`, `rename`, `pool`, `status`, `charter show\|set` |
 | `mail` | `send`, `reply`, `deliver` (an `.eml` file), `list`, `show`, `thread`, `watch`, `absorb`, `dump` |
@@ -377,8 +377,8 @@ A pool table is complete on its own: nothing is inherited. Keys: `provider`
 `runpod`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
 makes each slot a Git worktree of a repository already on the machine, with no
 network. With a single-target pump, the pump reads a local worktree pool's
-unit branches straight from that repository (collect checks it there, merge
-fetches from it), so no `shell_prefix` push hook is needed. Credentials are
+unit branches straight from that repository, so no `shell_prefix` push hook is
+needed. Credentials are
 not kept in the config: the Fly token comes from
 `FLY_API_TOKEN` or `FLY_ACCESS_TOKEN` (or `fly auth token`), and a harness
 receives only the environment variables its `env` list names.
