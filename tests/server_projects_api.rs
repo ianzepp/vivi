@@ -87,7 +87,11 @@ fn address(name: &str) -> String {
 
 /// A letter with LF line ends whose bytes are unique per `(id, body)`.
 fn eml(id: &str, body: &str) -> Vec<u8> {
-    format!("From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\n{body}").into_bytes()
+    format!(
+        "From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n{body}"
+    )
+    .into_bytes()
 }
 
 /// Raw letter bytes: `headers` (no trailing blank line) then `body`.
@@ -505,8 +509,11 @@ async fn project_directory_lists_authenticated_members_sorted_by_name() {
 #[tokio::test]
 async fn letter_round_trip_is_byte_exact_and_hashes_match() {
     let fx = fixture("round-trip", 31).await;
-    // Non-UTF-8 bytes, CRLF line ends, NUL, and no trailing newline.
-    let mut raw = b"From: a@p.local\r\nSubject: bytes\r\n\r\nbody \xff\xfe\x00\x80 end".to_vec();
+    // Non-UTF-8 bytes, CRLF line ends, NUL, and no trailing newline. The
+    // letter is format 1 (mail prose); the body bytes stay as written.
+    let mut raw =
+        b"From: a@p.local\r\nSubject: bytes\r\nX-Vivi-Kind: mail\r\nX-Vivi-Format: 1\r\n\r\nbody \xff\xfe\x00\x80 end"
+            .to_vec();
     raw.extend_from_slice(b"\r\nlast line without newline");
     let expected = sha256_hex(&raw);
 
@@ -654,17 +661,28 @@ async fn a_format_one_letter_that_parses_is_accepted() {
     let (status, created) = fx.append(&id, &raw, None, Some("need")).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let items = read(&fx.app, &fx.project, &fx.token, 0).await;
-    assert_eq!(ids(&items), vec![id]);
+    assert_eq!(ids(&items), vec![id.clone()]);
     let served = STANDARD
         .decode(items["records"][0]["raw_eml"].as_str().unwrap())
         .unwrap();
     assert_eq!(served, raw);
+
+    // Different bytes under the same id conflict, even when those bytes
+    // would themselves be a format refusal. Replay runs first.
+    let broken = raw_letter(
+        FORMAT_ONE_NEED,
+        "+++\ndone_when = [\"it works\"]\nbogus = 1\n+++\n\nnope\n",
+    );
+    let (status, conflict) = fx.append(&id, &broken, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(conflict["error"]["code"], "conflict");
 }
 
-/// A letter with no `X-Vivi-Format` header is legacy and is still filed.
-/// W3-B4 tightens this; that change has to move this test on purpose.
+/// A letter with no `X-Vivi-Format` header is legacy and is refused: the
+/// server accepts only format-1 letters (W3-B4 tightened the W3-C3 rule
+/// that filed legacy letters).
 #[tokio::test]
-async fn a_legacy_letter_without_a_format_header_is_still_accepted() {
+async fn a_legacy_letter_without_a_format_header_is_refused() {
     let fx = fixture("letter-legacy", 63).await;
     let id = traveling(1);
     let raw = raw_letter("X-Vivi-Kind: need", "plain body, no front matter\n");
@@ -677,40 +695,38 @@ async fn a_legacy_letter_without_a_format_header_is_still_accepted() {
         vivi::letter::LetterError::Legacy { .. }
     ));
 
-    let (status, created) = fx.append(&id, &raw, None, Some("need")).await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
-    assert_eq!(ids(&items), vec![id.clone()]);
-    let served = STANDARD
-        .decode(items["records"][0]["raw_eml"].as_str().unwrap())
-        .unwrap();
-    assert_eq!(served, raw);
-
-    // Replay of an already-accepted letter keeps the duplicate outcome.
-    let (status, again) = fx.append(&id, &raw, None, Some("need")).await;
-    assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(again["duplicate"], true);
-    assert_eq!(again["message_id"], id);
+    let (status, refused) = fx.append(&id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "letter_format", "{refused}");
     assert_eq!(
-        ids(&read(&fx.app, &fx.project, &fx.token, 0).await),
-        vec![id.clone()]
+        refused["error"]["message"],
+        "the server accepts only format-1 letters: this one has no X-Vivi-Format header",
+        "{refused}"
     );
+    // Nothing was stored: the log stays empty and the same bytes again are
+    // still a refusal, not a duplicate.
+    assert!(ids(&read(&fx.app, &fx.project, &fx.token, 0).await).is_empty());
+    let (status, again) = fx.append(&id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{again}");
+    assert_eq!(again["error"]["code"], "letter_format");
+    assert!(ids(&read(&fx.app, &fx.project, &fx.token, 0).await).is_empty());
 
-    // Different bytes under the same id conflict, even when those bytes
-    // would themselves be a format refusal. Replay runs first.
-    let broken = raw_letter(
-        FORMAT_ONE_NEED,
-        "+++\ndone_when = [\"it works\"]\nbogus = 1\n+++\n\nnope\n",
-    );
-    let (status, conflict) = fx.append(&id, &broken, None, Some("need")).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
-    assert_eq!(conflict["error"]["code"], "conflict");
-    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
-    assert_eq!(ids(&items), vec![id]);
-    let served = STANDARD
-        .decode(items["records"][0]["raw_eml"].as_str().unwrap())
-        .unwrap();
-    assert_eq!(served, raw);
+    // A legacy letter with no kind header at all is refused the same way.
+    let (status, refused) = fx
+        .append(
+            &id,
+            &eml_no_format(&traveling(2), "no headers at all"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "letter_format", "{refused}");
+}
+
+/// A letter with none of vivi's headers, as `eml` built it before B4.
+fn eml_no_format(id: &str, body: &str) -> Vec<u8> {
+    format!("From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\n{body}").into_bytes()
 }
 
 #[tokio::test]
@@ -882,12 +898,14 @@ async fn vouch_wire_admits_refuses_malformed_and_conflicts_without_storing() {
     let fx = fixture("vouch", 81).await;
 
     // Malformed: not JSON, missing key, no blank line, non-UTF-8 body.
-    let mut non_utf8 = b"Subject: v\n\n".to_vec();
+    // Each is a format-1 mail letter first (the append gate), so the vouch
+    // parser is what refuses them.
+    let mut non_utf8 = b"Subject: v\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n".to_vec();
     non_utf8.extend_from_slice(&[0xff, 0xfe]);
     let malformed: Vec<Vec<u8>> = vec![
         eml(&traveling(1), "not a vouch"),
         eml(&traveling(1), r#"{"vouch":{"name":"builder"}}"#),
-        b"Subject: v\n{\"vouch\":{}}".to_vec(),
+        b"Subject: v\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n{\"vouch\":{}}".to_vec(),
         non_utf8,
     ];
     for raw in malformed {
@@ -900,7 +918,8 @@ async fn vouch_wire_admits_refuses_malformed_and_conflicts_without_storing() {
     // A valid vouch (CRLF letter) still lands at sequence 1: nothing above
     // was stored.
     let body = json!({"vouch": {"name": "builder", "public_key_pem": spki_pem(&key(82))}});
-    let crlf = format!("Subject: vouch\r\n\r\n{body}\r\n").into_bytes();
+    let crlf = format!("Subject: vouch\r\nX-Vivi-Kind: mail\r\nX-Vivi-Format: 1\r\n\r\n{body}\r\n")
+        .into_bytes();
     let (status, vouched) = fx
         .append(&traveling(2), &crlf, Some("postmaster"), Some("mail"))
         .await;
@@ -1234,7 +1253,9 @@ async fn raw_body_round_trips_byte_identically_through_put_then_get() {
     let fx = fixture("raw-body", 151).await;
     // Non-UTF-8, NUL, CRLF, a lone CR, and no trailing newline; also a
     // body that looks like JSON and a base64-ish run, which must stay raw.
-    let mut raw = b"From: a@p.local\r\nSubject: raw\r\n\r\n".to_vec();
+    let mut raw =
+        b"From: a@p.local\r\nSubject: raw\r\nX-Vivi-Kind: mail\r\nX-Vivi-Format: 1\r\n\r\n"
+            .to_vec();
     raw.extend_from_slice(&[0xff, 0xfe, 0x00, 0x80, b'\r', b'{', b'"', b'=', b'=']);
     raw.extend_from_slice(b"\r\nlast line without newline");
     let id = traveling(1);
@@ -1393,7 +1414,9 @@ fn header<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str>
 async fn single_letter_get_returns_raw_bytes_with_envelope_headers() {
     let fx = fixture("get-one", 161).await;
     // Non-UTF-8, NUL, CRLF, no trailing newline.
-    let mut raw = b"From: a@p.local\r\nSubject: raw\r\n\r\n".to_vec();
+    let mut raw =
+        b"From: a@p.local\r\nSubject: raw\r\nX-Vivi-Kind: mail\r\nX-Vivi-Format: 1\r\n\r\n"
+            .to_vec();
     raw.extend_from_slice(&[0xff, 0xfe, 0x00, 0x80, b'\r', b'\n']);
     raw.extend_from_slice(b"no trailing newline");
 
@@ -1994,7 +2017,8 @@ async fn letters_are_stamped_with_the_authenticated_senders_prefix() {
     // the authenticated sender's regardless.
     let id = traveling(1);
     let forged = format!(
-        "From: mind@{}.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\nforged",
+        "From: mind@{}.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nforged",
         prefix_for("bob")
     )
     .into_bytes();

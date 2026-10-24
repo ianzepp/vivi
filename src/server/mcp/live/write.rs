@@ -1,10 +1,15 @@
 //! Hosted-project writes: the same library calls the CLI makes, as the
 //! acting identity.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
+use vivi::letter::plain::CloseFront;
 use vivi::mailspace::{DeliveryResult, SendRequest, folded_marks};
 
-use crate::mcp::tools::{ToolError, opt_str, parse_to, rate_limit, req_str, sugared_body};
+use crate::mcp::tools::{
+    ToolError, close_arguments, opt_str, parse_to, rate_limit, req_str, sugared_body,
+};
 use crate::safety::RateLimiter;
 
 use super::read::{memo_items, string_list};
@@ -136,6 +141,16 @@ pub(super) fn settle(
     } else {
         (open_role(&kind), "reopen")
     };
+    // Close metadata rides the event letter's front matter, as the CLI's
+    // --verdict/--repo/--tip/--branch/--commit flags do; a reopen carries
+    // none (the facts belong to its done event).
+    let close = close_arguments(arguments)?;
+    if !done && close.is_some() {
+        return Err(ToolError::new(
+            "reopen takes no close metadata: the facts belong to the done event",
+        ));
+    }
+    let metadata = close.map(close_metadata);
     let outcome =
         h.ms.move_item_outcome(
             &h.actor,
@@ -143,7 +158,7 @@ pub(super) fn settle(
             role,
             note,
             &format!("{kind} {verb}"),
-            None,
+            metadata.as_ref(),
         )
         .map_err(lib_error)?;
     let mode = match (&outcome.event, outcome.reported, done) {
@@ -169,6 +184,25 @@ fn open_role(kind: &str) -> &'static str {
     }
 }
 
+/// Close metadata in the library's `move_item_outcome` shape: `verdict`,
+/// `branch`, `commit`, and one `repo:<name>` key per repo tip.
+fn close_metadata(close: CloseFront) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    if let Some(verdict) = close.verdict {
+        metadata.insert("verdict".to_owned(), verdict);
+    }
+    if let Some(branch) = close.branch {
+        metadata.insert("branch".to_owned(), branch);
+    }
+    if let Some(commit) = close.commit {
+        metadata.insert("commit".to_owned(), commit);
+    }
+    for (repo, tip) in close.repos {
+        metadata.insert(format!("repo:{repo}"), tip);
+    }
+    metadata
+}
+
 pub(super) fn memo(
     h: &Hosted,
     limiter: &RateLimiter,
@@ -191,8 +225,9 @@ pub(super) fn memo(
             rate_limit(limiter, project_id, &h.actor)?;
             let subject = req_str(arguments, "subject")?;
             let body = req_str(arguments, "body")?;
+            let tags = string_list(arguments, "tags")?;
             let handle =
-                h.ms.save_memo(&h.actor, subject, body, &[])
+                h.ms.save_memo(&h.actor, subject, body, &tags)
                     .map_err(lib_error)?;
             let message_id =
                 h.ms.storage()

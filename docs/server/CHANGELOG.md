@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Every server letter is format 1 (wave 3 B4).** The `done`/`reopen`
+  event letters the MCP tools compose carry `X-Vivi-Format: 1` with their
+  close metadata as front matter: `done` takes `verdict`, `branch`+
+  `commit`, and a `repos` map of repo name to tip (hosted and durable;
+  the durable letter is parsed back at write time). A saved memo takes
+  `tags`, stored as `MemoFront` front matter. None of the content
+  headers W3-B4 moved (`X-Vivi-Verdict`, `-Repo`, `-Branch`, `-Commit`,
+  `-Tag`) is written. A member push of a letter with no `X-Vivi-Format`
+  header is refused `422` `letter_format` with `the server accepts only
+  format-1 letters: this one has no X-Vivi-Format header` (W3-C3 still
+  filed legacy letters); a legacy letter already stored stays filed.
+
 ## 2.0.0
 
 Built on vivi 21 and its rung commands; the pump gate is gone.

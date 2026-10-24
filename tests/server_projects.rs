@@ -45,9 +45,15 @@ fn spki_pem(seed: u8) -> String {
     )
 }
 
-/// A letter whose bytes are unique per `(id, body)`.
+/// A letter whose bytes are unique per `(id, body)`. A format-1 mail letter:
+/// the envelope kind (need/task/want/mail) decides filing, the letter's own
+/// kind header only has to name a kind the parser accepts.
 fn eml(id: &str, body: &str) -> Vec<u8> {
-    format!("From: hand@p.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\n{body}").into_bytes()
+    format!(
+        "From: hand@p.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n{body}"
+    )
+    .into_bytes()
 }
 
 fn vouch_eml(id: &str, name: &str, seed: u8) -> Vec<u8> {
@@ -183,7 +189,7 @@ fn a_scan_visits_every_visible_letter_across_chunk_boundaries() {
         let raw = format!(
             "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{id}@p.local>\n\
              In-Reply-To: <{item}@p.local>\nX-Vivi-Event: done\n\
-             X-Vivi-Event-Of: <{item}@p.local>\n\nclosed\n"
+             X-Vivi-Event-Of: <{item}@p.local>\nX-Vivi-Format: 1\n\nclosed\n"
         )
         .into_bytes();
         letter(&id, "hand", Some("a@p.local"), kind, raw)
@@ -267,7 +273,7 @@ fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
     let raw = format!(
         "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{event_id}@p.local>\n\
          In-Reply-To: <{item_id}@p.local>\nX-Vivi-Event: done\n\
-         X-Vivi-Event-Of: <{item_id}@p.local>\n\nclosed\n"
+         X-Vivi-Event-Of: <{item_id}@p.local>\nX-Vivi-Format: 1\n\nclosed\n"
     )
     .into_bytes();
     let event = AppendItem::new(&event_id, "hand", Some("a@p.local"), Some("need"), raw).unwrap();
@@ -277,7 +283,7 @@ fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
     let raw = format!(
         "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{mail_id}@p.local>\n\
          In-Reply-To: <{item_id}@p.local>\nX-Vivi-Event: reopened\n\
-         X-Vivi-Event-Of: <{item_id}@p.local>\n\nreopened\n"
+         X-Vivi-Event-Of: <{item_id}@p.local>\nX-Vivi-Format: 1\n\nreopened\n"
     )
     .into_bytes();
     let mail = AppendItem::new(&mail_id, "hand", Some("a@p.local"), Some("mail"), raw).unwrap();
@@ -285,8 +291,8 @@ fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
     // A letter that merely names the header in its body is still work.
     let decoy_id = traveling(3);
     let decoy = format!(
-        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{decoy_id}@p.local>\n\n\
-         X-Vivi-Event: done\n"
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{decoy_id}@p.local>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nX-Vivi-Event: done\n"
     )
     .into_bytes();
     let decoy = AppendItem::new(&decoy_id, "hand", Some("a@p.local"), Some("need"), decoy).unwrap();
@@ -770,7 +776,7 @@ fn event_mail(id: &str, from: &str, to: &str, of: &str, header: &str) -> AppendI
     let raw = format!(
         "From: {from}@aaaaaaaa.local\nTo: {to}\nMessage-ID: <{id}@aaaaaaaa.local>\n\
          In-Reply-To: <{of}@aaaaaaaa.local>\n{header}\
-         X-Vivi-Event-Of: <{of}@aaaaaaaa.local>\n\nnote\n"
+         X-Vivi-Event-Of: <{of}@aaaaaaaa.local>\nX-Vivi-Format: 1\n\nnote\n"
     )
     .into_bytes();
     letter(id, from, Some(to), None, raw)
@@ -831,7 +837,8 @@ fn an_event_letter_sent_as_mail_is_visible_to_every_member() {
                 None,
                 format!(
                     "From: alice@aaaaaaaa.local\nTo: bob@bbbbbbbb.local\n\
-                     Message-ID: <{decoy}@aaaaaaaa.local>\n\nX-Vivi-Event: done\n"
+                     Message-ID: <{decoy}@aaaaaaaa.local>\n\
+                     X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nX-Vivi-Event: done\n"
                 )
                 .into_bytes(),
             ),
@@ -850,7 +857,7 @@ fn an_event_letter_sent_as_mail_is_visible_to_every_member() {
                 format!(
                     "From: alice@aaaaaaaa.local\nTo: bob@bbbbbbbb.local\n\
                      Message-ID: <{near}@aaaaaaaa.local>\nX-Vivi-Event-Of: <{item}@aaaaaaaa.local>\n\
-                     \nsecret\n"
+                     X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nsecret\n"
                 )
                 .into_bytes(),
             ),

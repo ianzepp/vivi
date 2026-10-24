@@ -325,10 +325,16 @@ Prose follows the front matter.
 
 Every letter the server composes carries `X-Vivi-Format: 1`: the need,
 want, task, mail and chat letters of MCP `send` and `reply` (hosted and
-durable; prose mail included), and the pump record a hosted project's
-`vivi pump send` files. Memos and event letters carry no format header
-yet. A member-appended letter may omit the header; a legacy letter (no
-`X-Vivi-Format`) contributes no dependencies to `graph`.
+durable; prose mail included), the pump record a hosted project's
+`vivi pump send` files, the `done`/`reopen` event letters, and memos.
+Content facts ride front matter, never headers: the close metadata of a
+`done` event (`verdict`, `branch` and `commit` together, a `repos` map
+of repo name to tip) is the event letter's front matter, and memo
+`tags` are the memo's front matter (a memo with no tags stores its
+prose bare, with no `+++` fence). No server letter carries the headers
+W3-B4 moved (`X-Vivi-Verdict`, `-Repo`, `-Branch`, `-Commit`, `-Tag`,
+`-Rule-Scope`, `-Supersedes`); a format-1 letter that carries one is
+refused, composed or appended.
 
 On a work send (`kind` need, task or want) the `send` tool takes vivi's
 sugar arguments and renders them into the front matter: `done_when`,
@@ -341,8 +347,11 @@ A letter that carries `X-Vivi-Format: 1` must parse as a v1 letter. A
 letter that claims format 1 and fails to parse, or names an unknown
 format, is refused `422` `letter_format`. The body is
 `{"error": {"code": "letter_format", "message": "<the parser's message>"}}`
-and nothing is stored. A letter with no `X-Vivi-Format` header is legacy
-and is accepted for now. A replay of an already-stored letter keeps its
+and nothing is stored. A letter with no `X-Vivi-Format` header is
+legacy and is refused the same way, with the message `the server
+accepts only format-1 letters: this one has no X-Vivi-Format header`;
+a legacy letter already stored stays filed and contributes no
+dependencies to `graph`. A replay of an already-stored letter keeps its
 duplicate or conflict outcome and is not judged again.
 
 ## Server MCP (wave 3)
@@ -411,9 +420,9 @@ The project tools are the 1.2.0 list plus the hosted additions
 | `thread` | `handle`, `limit?` | Reply thread |
 | `send` | `kind`, `to`, `subject`, `body`, vivi sugar arguments | Server composes and mints the id; `From` is the caller (see [Letter format](#letter-format-v1)) |
 | `reply` | `handle`, `body` | Reply as the caller |
-| `done` | `handle`, `note?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report |
+| `done` | `handle`, `note?`, close metadata `verdict?`, `branch?`+`commit?`, `repos?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report. Close metadata rides the event letter's front matter |
 | `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
-| `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
+| `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?`, `tags?` | Server-local memos (do not sync); `tags` ride the memo's front matter |
 | `graph` | `view?` ready\|status | Ready / blocked / done from `depends_on` in the letter's front matter and from events. A legacy letter (no `X-Vivi-Format`) contributes no dependencies |
 | `projects` | — | List what this key may reach |
 

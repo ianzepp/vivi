@@ -37,6 +37,9 @@ use pool_bands::pool_bands;
 use pump::{pump_control, pump_rungs};
 use pump_record::{pump_list, pump_send, pump_show};
 
+/// The one live helper the durable tools share: a string-or-list argument.
+pub(in crate::mcp) use read::string_list;
+
 /// An operator-only tool: it takes the key's minting member and the identity
 /// the key acts as (`None` for a member token) and authorizes them itself.
 pub(super) type OperatorTool = fn(

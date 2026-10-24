@@ -142,7 +142,8 @@ pem = open(sys.argv[1]).read()
 body = json.dumps({"vouch": {"name": sys.argv[2], "public_key_pem": pem}})
 print("From: alice@smoke.local\nTo: postmaster@smoke.local\nSubject: vouch " + sys.argv[2] + "\n"
       "Message-ID: <vouch-" + sys.argv[2] + "@smoke.local>\nDate: Sun, 11 Oct 2026 12:00:00 +0000\n"
-      "MIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\n" + body)
+      "MIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n"
+      "X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n" + body)
 PY
   append "$TOKEN_A" "msg_$(openssl rand -hex 12)" "$W/vouch-$1.eml" postmaster mail
 }
@@ -282,7 +283,7 @@ esac
 "$VIVI" sync --project "$A2" >"$W/sync-a2y.log" 2>&1 && ok "a second sync there is clean" || { bad "second place re-sync"; cat "$W/sync-a2y.log"; }
 
 # --- an envelope that disagrees with the letter is refused at the edge -----
-printf 'From: mind@%s.local\nTo: nobody@elsewhere.local\nSubject: lying envelope\nMessage-ID: <lie@smoke.local>\n\nthe envelope says hand@%s.local\n' "$PA" "$PB" > "$W/lie.eml"
+printf 'From: mind@%s.local\nTo: nobody@elsewhere.local\nSubject: lying envelope\nMessage-ID: <lie@smoke.local>\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nthe envelope says hand@%s.local\n' "$PA" "$PB" > "$W/lie.eml"
 CODE=$(append "$TOKEN_A" "msg_$(openssl rand -hex 12)" "$W/lie.eml" "hand@$PB.local" mail)
 [ "$CODE" = 201 ] || bad "lying-envelope append returned $CODE"
 "$VIVI" sync --project "$B" >"$W/sync-b4.log" 2>&1 && bad "B accepted a letter whose envelope disagrees with its To" \
@@ -292,7 +293,7 @@ CODE=$(append "$TOKEN_A" "msg_$(openssl rand -hex 12)" "$W/lie.eml" "hand@$PB.lo
 # bob appends a letter whose From header names A's mailspace. The server stamps
 # bob's own prefix beside it, so A refuses it instead of filing it as mind's.
 TOKEN_BF=$(bearer bob b)
-printf 'From: mind@%s.local\nTo: mind@%s.local\nSubject: forged sender\nMessage-ID: <forged@smoke.local>\nDate: Sun, 11 Oct 2026 12:00:00 +0000\n\nI am not mind.\n' "$PA" "$PA" > "$W/forged.eml"
+printf 'From: mind@%s.local\nTo: mind@%s.local\nSubject: forged sender\nMessage-ID: <forged@smoke.local>\nDate: Sun, 11 Oct 2026 12:00:00 +0000\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nI am not mind.\n' "$PA" "$PA" > "$W/forged.eml"
 CODE=$(append "$TOKEN_BF" "msg_$(openssl rand -hex 12)" "$W/forged.eml" "mind@$PA.local" mail)
 [ "$CODE" = 201 ] && ok "the server accepts a letter it cannot judge (it never reads headers)" || bad "forged-From append returned $CODE"
 read_items "$TOKEN_A" | python3 -c '
@@ -308,14 +309,14 @@ sys.exit(0 if any(r["from_prefix"] == sys.argv[1] for r in recs) else 1)' "$PB" 
 # --- server idempotency and visibility, raw ---------------------------------
 TOKEN_B=$(bearer bob b)
 TOKEN_C=$(bearer carol c)
-printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: raw one\nMessage-ID: <raw1@smoke.local>\n\nraw body\r\nwith CRLF and no trailing newline' "$PB" "$PA" > "$W/raw1.eml"
+printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: raw one\nMessage-ID: <raw1@smoke.local>\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nraw body\r\nwith CRLF and no trailing newline' "$PB" "$PA" > "$W/raw1.eml"
 ID1="msg_$(openssl rand -hex 12)"; ID2="msg_$(openssl rand -hex 12)"
 C1=$(append "$TOKEN_B" "$ID1" "$W/raw1.eml" "mind@$PA.local" mail)
 SEQ1=$(jget '["sequence"]' < "$W/append.out")
 C2=$(append "$TOKEN_B" "$ID1" "$W/raw1.eml" "mind@$PA.local" mail)
 C3=$(append "$TOKEN_B" "$ID2" "$W/raw1.eml" "mind@$PA.local" mail)
 DUPID=$(jget '["message_id"]' < "$W/append.out")
-printf 'From: raw@smoke.local\nSubject: different\n\nother' > "$W/raw2.eml"
+printf 'From: raw@smoke.local\nSubject: different\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nother' > "$W/raw2.eml"
 C4=$(append "$TOKEN_B" "$ID1" "$W/raw2.eml" "mind@$PA.local" mail)
 [ "$C1" = 201 ] && [ "$C2" = 200 ] && [ "$C3" = 200 ] && [ "$DUPID" = "$ID1" ] && [ "$C4" = 409 ] \
   && ok "idempotency: replay 200, same bytes new id 200 (original id), same id new bytes 409" \
@@ -347,7 +348,8 @@ sys.exit(0 if "need" in kinds else 1)' \
 : > "$W/empty.eml"
 CODE=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/empty.eml" "" mail)
 [ "$CODE" = 400 ] && ok "an empty letter is refused (400)" || bad "empty letter returned $CODE"
-python3 -c 'import sys; sys.stdout.buffer.write(b"X" * 65536)' > "$W/at-cap.eml"
+# a format-1 letter padded with prose to exactly the 64 KiB cap
+python3 -c 'import sys; sys.stdout.buffer.write(("From: x@smoke.local\nSubject: cap\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n" + "X" * 65536).encode()[:65536])' > "$W/at-cap.eml"
 python3 -c 'import sys; sys.stdout.buffer.write(b"X" * 65537)' > "$W/over-cap.eml"
 C_AT=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/at-cap.eml" "" mail)
 C_OVER=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/over-cap.eml" "" mail)
@@ -483,8 +485,8 @@ place_of "$A3" "$ID_A" "$A"
 write_sync_config "$A3" alice
 
 sleep 2   # the markers land in a later second than every letter above
-printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: window marker one\nMessage-ID: <wm1@smoke.local>\nDate: Mon, 01 Jan 2024 00:00:00 +0000\n\nthe first marker\n' "$PB" "$PA" > "$W/m1.eml"
-printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: window marker two\nMessage-ID: <wm2@smoke.local>\nDate: Mon, 01 Jan 2024 00:00:01 +0000\n\nthe second marker, for context see %s\n' "$PB" "$PA" "$NEED" > "$W/m2.eml"
+printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: window marker one\nMessage-ID: <wm1@smoke.local>\nDate: Mon, 01 Jan 2024 00:00:00 +0000\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nthe first marker\n' "$PB" "$PA" > "$W/m1.eml"
+printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: window marker two\nMessage-ID: <wm2@smoke.local>\nDate: Mon, 01 Jan 2024 00:00:01 +0000\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nthe second marker, for context see %s\n' "$PB" "$PA" "$NEED" > "$W/m2.eml"
 M1ID="msg_$(openssl rand -hex 12)"; M2ID="msg_$(openssl rand -hex 12)"
 TOKEN_BM=$(bearer bob b)
 C_M1=$(append "$TOKEN_BM" "$M1ID" "$W/m1.eml" "mind@$PA.local" mail)

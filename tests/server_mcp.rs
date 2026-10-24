@@ -75,7 +75,11 @@ fn traveling(n: u64) -> String {
 }
 
 fn eml(id: &str, body: &str) -> Vec<u8> {
-    format!("From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\n{body}").into_bytes()
+    format!(
+        "From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n{body}"
+    )
+    .into_bytes()
 }
 
 fn vouch_letter(id: &str, name: &str, signing_key: &SigningKey) -> Vec<u8> {
@@ -619,12 +623,13 @@ async fn a_durable_reply_carries_the_format_header_when_its_body_is_prose() {
 }
 
 #[tokio::test]
-async fn a_memo_letter_keeps_its_shape_with_no_format_header() {
+async fn a_memo_save_is_a_format_one_letter_with_tags_in_front_matter() {
     let fx = fixture("memo-shape").await;
     fx.call(
         &fx.token,
         "memo",
-        json!({"action": "save", "subject": "note", "body": "remember the prefix"}),
+        json!({"action": "save", "subject": "note", "body": "remember the prefix",
+               "tags": ["wave3", "b4"]}),
     )
     .await;
     let dir = ProjectStore::new(&fx.dir)
@@ -638,8 +643,107 @@ async fn a_memo_letter_keeps_its_shape_with_no_format_header() {
     let raw =
         String::from_utf8_lossy(&storage.read_blob(&rows[0].content_id).unwrap()).into_owned();
     assert!(raw.contains("X-Vivi-Kind: memo"), "{raw}");
-    assert!(!raw.contains("X-Vivi-Format"), "{raw}");
-    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(raw.contains("tags = [\"wave3\", \"b4\"]"), "{raw}");
+    assert!(raw.contains("remember the prefix"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Tag"), "{raw}");
+    // The stored bytes parse as the memo they claim to be.
+    let letter = vivi::letter::of_message(raw.as_bytes(), "").expect("memo letter parses");
+    assert_eq!(letter.kind, vivi::letter::LetterKind::Memo);
+    assert_eq!(
+        letter.front,
+        vivi::letter::Front::Memo(vivi::letter::plain::MemoFront {
+            tags: vec!["wave3".to_owned(), "b4".to_owned()],
+        })
+    );
+}
+
+#[tokio::test]
+async fn done_composes_a_format_one_event_letter_with_close_front_matter() {
+    let fx = fixture("close-front").await;
+    let (handle, _) = fx
+        .send_item(&fx.token, "need", &address("creator"), "to close")
+        .await;
+    // A branch without its commit is refused with vivi's own front-matter
+    // rule, before anything is written.
+    let err = fx
+        .call_err(
+            &fx.token,
+            "done",
+            json!({"handle": handle, "branch": "main"}),
+        )
+        .await;
+    assert!(
+        err.contains("`branch` and `commit` are set together or not at all"),
+        "{err}"
+    );
+
+    let closed = fx
+        .call(
+            &fx.token,
+            "done",
+            json!({"handle": handle, "note": "landed", "verdict": "clean_pass",
+                   "branch": "main", "commit": "9c8b7a6d",
+                   "repos": {"vivi": "e5f4d3c2b1"}}),
+        )
+        .await;
+    assert_eq!(closed["mode"], "closed", "{closed}");
+    let raw = fx
+        .raw_letter(&fx.token, closed["message_id"].as_str().unwrap())
+        .await;
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(raw.contains("verdict = \"clean_pass\""), "{raw}");
+    for moved in [
+        "X-Vivi-Verdict",
+        "X-Vivi-Repo",
+        "X-Vivi-Branch",
+        "X-Vivi-Commit",
+        "X-Vivi-Tag",
+        "X-Vivi-Rule-Scope",
+        "X-Vivi-Supersedes",
+    ] {
+        assert!(!raw.contains(moved), "{moved} in {raw}");
+    }
+    // The stored bytes parse as the event they claim to be, with the close
+    // facts in the front matter and the note as prose.
+    let letter = vivi::letter::of_message(raw.as_bytes(), "").expect("event letter parses");
+    assert_eq!(
+        letter.kind,
+        vivi::letter::LetterKind::Event("done".to_owned())
+    );
+    let vivi::letter::Front::Event(front) = &letter.front else {
+        panic!("done front matter: {:?}", letter.front);
+    };
+    assert_eq!(front.verdict.as_deref(), Some("clean_pass"));
+    assert_eq!(front.branch.as_deref(), Some("main"));
+    assert_eq!(front.commit.as_deref(), Some("9c8b7a6d"));
+    assert_eq!(
+        front.repos.get("vivi").map(String::as_str),
+        Some("e5f4d3c2b1")
+    );
+    assert_eq!(letter.prose, "landed");
+
+    // A reopen is format 1 too, with an empty front: the note (defaulting
+    // to the event verb) is stored bare, with no `+++` fence.
+    let reopened = fx
+        .call(&fx.token, "reopen", json!({"handle": handle}))
+        .await;
+    assert_eq!(reopened["mode"], "reopened", "{reopened}");
+    let raw = fx
+        .raw_letter(&fx.token, reopened["message_id"].as_str().unwrap())
+        .await;
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(!raw.contains("+++"), "{raw}");
+    let letter = vivi::letter::of_message(raw.as_bytes(), "").expect("reopened letter parses");
+    assert_eq!(
+        letter.kind,
+        vivi::letter::LetterKind::Event("reopened".to_owned())
+    );
+    assert_eq!(
+        letter.front,
+        vivi::letter::Front::Event(vivi::letter::plain::CloseFront::default())
+    );
+    assert_eq!(letter.prose, "reopened");
 }
 
 #[tokio::test]
@@ -787,18 +891,21 @@ async fn graph_blocks_on_an_open_dependency() {
         .await;
     let child = task["handle"].as_str().unwrap().to_owned();
     // A dependency named at send rides in the letter's front matter. The
-    // graph reads that list. A legacy letter (no format header) that still
-    // carries an X-Vivi-Depends-On header contributes no dependency.
-    let raw = fx
+    // graph reads that list.
+    let child_raw = fx
         .raw_letter(&fx.token, task["message_id"].as_str().unwrap())
         .await;
-    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(child_raw.contains("X-Vivi-Format: 1"), "{child_raw}");
     assert!(
-        raw.contains(&format!("depends_on = [\"{parent}\"]")),
-        "{raw}"
+        child_raw.contains(&format!("depends_on = [\"{parent}\"]")),
+        "{child_raw}"
     );
-    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+    assert!(!child_raw.contains("X-Vivi-Depends-On"), "{child_raw}");
 
+    // A legacy letter (no format header) that still carries an
+    // `X-Vivi-Depends-On` header used to be filed and contribute no
+    // dependency. W3-B4 refuses it at the door: the server accepts only
+    // format-1 letters, so it never reaches the graph.
     let legacy = format!(
         "From: {}\nTo: {}\nSubject: legacy child\nMessage-ID: <{}>\n\
          X-Vivi-Kind: task\nX-Vivi-Depends-On: {parent}\n\nafter parent\n",
@@ -806,15 +913,21 @@ async fn graph_blocks_on_an_open_dependency() {
         address("creator"),
         rfc_id(&traveling(60), "creator"),
     );
-    fx.put_letter(
-        &fx.token,
-        60,
+    let (status, refused, _) = raw(
+        &fx.app,
+        "PUT",
+        &format!("/v1/projects/{}/items/{}", fx.project, traveling(60)),
         legacy.into_bytes(),
-        "task",
-        &address("creator"),
+        Some(&fx.token),
+        &[
+            ("content-type", "message/rfc822"),
+            ("x-vivi-kind", "task"),
+            ("x-vivi-to", &address("creator")),
+        ],
     )
     .await;
-    let legacy_handle = traveling(60)[4..12].to_owned();
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "letter_format", "{refused}");
 
     let graph = fx.call(&fx.token, "graph", json!({"view": "status"})).await;
     let blocked: Vec<_> = graph["blocked"]
@@ -840,15 +953,6 @@ async fn graph_blocks_on_an_open_dependency() {
     assert!(ready.contains(&parent), "{graph}");
     assert!(!ready.contains(&child), "{graph}");
     assert!(blocked.contains(&child), "{graph}");
-    assert!(ready.contains(&legacy_handle), "{graph}");
-    assert!(!blocked.contains(&legacy_handle), "{graph}");
-    let legacy_item = graph["ready"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["handle"] == legacy_handle)
-        .unwrap_or_else(|| panic!("legacy letter should be ready: {graph}"));
-    assert_eq!(legacy_item["depends_on"], json!([]));
 
     // Closing the parent drops the open edge. The front-matter dependency
     // stays on the child; it is no longer blocked.
@@ -987,7 +1091,8 @@ fn rfc_id(id: &str, name: &str) -> String {
 }
 
 /// An item event letter as a client writes it: a reply to `of` carrying
-/// `X-Vivi-Event: <kind>`, addressed to the item's author.
+/// `X-Vivi-Event: <kind>`, addressed to the item's author. Format 1: a
+/// legacy event letter is refused at append since W3-B4.
 fn event_letter(
     from: &str,
     id: &str,
@@ -998,7 +1103,7 @@ fn event_letter(
 ) -> Vec<u8> {
     let mut text = format!(
         "From: {}\nTo: {to}\nSubject: Re: item\nMessage-ID: <{}>\nIn-Reply-To: <{of}>\n\
-         X-Vivi-Kind: mail\nX-Vivi-Event: {kind}\nX-Vivi-Event-Of: <{of}>\n",
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\nX-Vivi-Event: {kind}\nX-Vivi-Event-Of: <{of}>\n",
         address(from),
         rfc_id(id, from),
     );
@@ -1649,7 +1754,8 @@ async fn a_mail_kind_event_reaches_a_member_that_is_neither_sender_nor_addressee
             &hand,
             371,
             format!(
-                "From: {}\nTo: {}\nSubject: private\nMessage-ID: <{}>\n\nonly creator\n",
+                "From: {}\nTo: {}\nSubject: private\nMessage-ID: <{}>\n\
+                 X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nonly creator\n",
                 address("hand"),
                 address("creator"),
                 rfc_id(&traveling(371), "hand")
@@ -1791,11 +1897,14 @@ struct Long {
 
 impl Fixture {
     /// Append a task from `creator` of at least `bytes` bytes straight to the
-    /// project store; returns its message id.
+    /// project store; returns its message id. A format-1 task letter: its
+    /// front matter is the whole body's opening fence (an empty front is
+    /// fine for a task).
     fn append_task(&self, store: &ProjectStore, n: u64, bytes: usize) -> String {
         let id = traveling(n);
         let mut text = format!(
-            "From: {}\nTo: {}\nSubject: filler {n}\nMessage-ID: <{}>\n\nletter {n}\n",
+            "From: {}\nTo: {}\nSubject: filler {n}\nMessage-ID: <{}>\n\
+             X-Vivi-Kind: task\nX-Vivi-Format: 1\n\n+++\n+++\n\nletter {n}\n",
             address("creator"),
             address("hand"),
             rfc_id(&id, "creator"),

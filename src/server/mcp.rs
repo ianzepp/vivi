@@ -450,12 +450,20 @@ fn tools_list() -> Value {
                 "required": ["handle", "body"],
                 "additionalProperties": false
             })),
-            tool("done", "Close a need, task, or want. Travels as a stamped event letter when you authored it (same mailspace prefix); otherwise files a report reply. The newest event against an item controls its state, whichever member wrote it.", json!({
+            tool("done", "Close a need, task, or want. Travels as a stamped event letter when you authored it (same mailspace prefix); otherwise files a report reply. The newest event against an item controls its state, whichever member wrote it. Close metadata (verdict, branch, commit, repos) rides the event letter's front matter, never a header.", json!({
                 "type": "object",
                 "properties": {
                     "for": { "type": "string", "description": "Hosted projects: the role the command runs as, which must hold the item (the CLI's --for). Defaults to the acting identity." },
                     "handle": { "type": "string" },
-                    "note": { "type": "string" }
+                    "note": { "type": "string" },
+                    "verdict": { "type": "string", "description": "Optional close verdict (e.g. clean_pass, residual, block_ship)" },
+                    "branch": { "type": "string", "description": "Integration branch holding the completed work; set together with commit" },
+                    "commit": { "type": "string", "description": "Commit on the integration branch; set together with branch" },
+                    "repos": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Repo name to the tip commit it landed at"
+                    }
                 },
                 "required": ["handle"],
                 "additionalProperties": false
@@ -470,13 +478,20 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("memo", "List, show, or save a durable memo on the server mailspace (memos do not sync to checkouts).", json!({
+            tool("memo", "List, show, or save a durable memo on the server mailspace (memos do not sync to checkouts). A saved memo is a format-1 letter whose tags ride its front matter.", json!({
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["list", "show", "save"], "default": "list" },
                     "handle": { "type": "string" },
                     "subject": { "type": "string" },
-                    "body": { "type": "string" }
+                    "body": { "type": "string" },
+                    "tags": {
+                        "description": "save: tags stored in the memo's front matter, each a single token (no whitespace)",
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" } }
+                        ]
+                    }
                 },
                 "additionalProperties": false
             })),

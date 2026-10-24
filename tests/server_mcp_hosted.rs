@@ -601,12 +601,43 @@ async fn done_and_reopen_move_the_item_as_the_cli_does() {
     let handle = sent["handle"].as_str().unwrap().to_owned();
 
     let closed = fx
-        .call(&mind, "done", json!({"handle": handle, "note": "finished"}))
+        .call(
+            &mind,
+            "done",
+            json!({"handle": handle, "note": "finished", "verdict": "clean_pass",
+                   "branch": "main", "commit": "1a2b3c4d", "repos": {"vivi": "5e6f7a8b"}}),
+        )
         .await;
     assert!(
         matches!(closed["mode"].as_str(), Some("closed" | "reported")),
         "{closed}"
     );
+    // The close metadata rides the event letter's front matter; the moved
+    // headers are gone.
+    if let Some(event) = closed["event"].as_str() {
+        let ms = fx.ms();
+        let storage = ms.storage().unwrap();
+        let id = storage.resolve_message_token(event).unwrap();
+        let raw = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+        assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+        assert!(raw.contains("verdict = \"clean_pass\""), "{raw}");
+        assert!(raw.contains("branch = \"main\""), "{raw}");
+        assert!(raw.contains("commit = \"1a2b3c4d\""), "{raw}");
+        assert!(!raw.contains("X-Vivi-Verdict"), "{raw}");
+        assert!(!raw.contains("X-Vivi-Branch"), "{raw}");
+        assert!(!raw.contains("X-Vivi-Commit"), "{raw}");
+        let letter =
+            vivi::letter::of_message(raw.as_bytes(), "").expect("hosted event letter parses");
+        let vivi::letter::Front::Event(front) = &letter.front else {
+            panic!("hosted done front matter: {:?}", letter.front);
+        };
+        assert_eq!(
+            front.repos.get("vivi").map(String::as_str),
+            Some("5e6f7a8b")
+        );
+    } else {
+        panic!("done produced no event letter: {closed}");
+    }
     let ms = fx.ms();
     assert!(
         handles(&ms.list_kind(Some("mind"), "done", "need").unwrap()).contains(&handle),
@@ -768,6 +799,30 @@ async fn reads_reflect_what_the_library_wrote() {
         .await;
     assert_eq!(memo["subject"], "remember");
 
+    // A memo saved through the tool with tags is a format-1 letter whose
+    // tags ride its front matter.
+    let tagged = fx
+        .call(
+            &key,
+            "memo",
+            json!({"action": "save", "subject": "tagged", "body": "the tags ride the front",
+                   "tags": ["hosted", "b4"]}),
+        )
+        .await;
+    let tagged_ms = fx.ms();
+    let storage = tagged_ms.storage().unwrap();
+    let tagged_id = storage
+        .resolve_message_token(tagged["handle"].as_str().unwrap())
+        .unwrap();
+    let tagged_raw =
+        String::from_utf8_lossy(&storage.read_message(&tagged_id).unwrap()).into_owned();
+    assert!(tagged_raw.contains("X-Vivi-Format: 1"), "{tagged_raw}");
+    assert!(
+        tagged_raw.contains("tags = [\"hosted\", \"b4\"]"),
+        "{tagged_raw}"
+    );
+    assert!(!tagged_raw.contains("X-Vivi-Tag"), "{tagged_raw}");
+
     // thread by handle, with state.
     let thread = fx.call(&key, "thread", json!({"handle": first})).await;
     assert_eq!(thread["state"], "open");
@@ -781,11 +836,12 @@ async fn reads_reflect_what_the_library_wrote() {
     );
     assert!(messages.iter().any(|m| m["body"] == "marked"));
 
-    // overview: counts and ready handles.
+    // overview: counts and ready handles. The library memo and the tagged
+    // tool memo are both there.
     let overview = fx.call(&key, "overview", json!({})).await;
     assert_eq!(overview["totals"]["needs_open"], 1);
     assert_eq!(overview["totals"]["tasks_open"], 1);
-    assert_eq!(overview["totals"]["memos"], 1);
+    assert_eq!(overview["totals"]["memos"], 2);
     assert!(
         overview["ready"]
             .as_array()
