@@ -145,11 +145,11 @@ fn library_need(ms: &Mailspace, from: &str, to: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "do it\n\ndone_when: it is done".into(),
+            // A format-1 need letter: front matter with done_when, then prose.
+            body: "+++\ndone_when = [\"it is done\"]\n+++\n\ndo it".into(),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap();
     result.delivered[0].handle.clone()
@@ -169,7 +169,7 @@ async fn a_key_without_identity_sends_as_the_default_operator() {
             "send",
             json!({
                 "kind": "need", "to": "mind", "subject": "ship it",
-                "body": "ship\n\ndone_when: shipped",
+                "body": "+++\ndone_when = [\"shipped\"]\n+++\n\nship",
             }),
         )
         .await;
@@ -196,19 +196,47 @@ async fn a_key_without_identity_sends_as_the_default_operator() {
 }
 
 #[tokio::test]
-async fn a_body_without_done_when_is_noted_like_the_cli() {
-    let fx = fixture("note");
+async fn a_hosted_send_stores_a_format_one_letter_with_done_when() {
+    let fx = fixture("letter-bytes");
     let key = fx.key(None);
     let sent = fx
         .call(
             &key,
             "send",
+            json!({"kind": "need", "to": "mind", "subject": "v1",
+                   "body": "+++\ndone_when = [\"it is a letter\"]\n+++\n\nthe prose"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap();
+    // The stored raw bytes are a format-1 letter: the header says so, and
+    // the body opens with front matter carrying done_when.
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    let raw = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(raw.contains("done_when = [\"it is a letter\"]"), "{raw}");
+    assert!(raw.contains("the prose"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_need_body_without_done_when_is_refused() {
+    let fx = fixture("note");
+    let key = fx.key(None);
+    let message = fx
+        .call_err(
+            &key,
+            "send",
             json!({"kind": "need", "to": "mind", "subject": "s", "body": "just do it"}),
         )
         .await;
+    assert!(message.contains("done_when"), "{message}");
+    // Nothing was sent: the refusal left no letter behind.
     assert!(
-        sent["note"].as_str().unwrap().contains("done_when"),
-        "{sent}"
+        fx.ms()
+            .list_kind(Some("mind"), "needs", "need")
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -288,7 +316,7 @@ async fn a_reply_threads_with_its_parent() {
         .call(
             &operator,
             "send",
-            json!({"kind": "need", "to": "mind", "subject": "question", "body": "why?\n\ndone_when: answered"}),
+            json!({"kind": "need", "to": "mind", "subject": "question", "body": "+++\ndone_when = [\"answered\"]\n+++\n\nwhy?"}),
         )
         .await;
     let handle = sent["handle"].as_str().unwrap().to_owned();
@@ -324,7 +352,7 @@ async fn done_and_reopen_move_the_item_as_the_cli_does() {
         .call(
             &operator,
             "send",
-            json!({"kind": "need", "to": "mind", "subject": "close me", "body": "x\n\ndone_when: y"}),
+            json!({"kind": "need", "to": "mind", "subject": "close me", "body": "+++\ndone_when = [\"y\"]\n+++\n\nx"}),
         )
         .await;
     let handle = sent["handle"].as_str().unwrap().to_owned();
@@ -379,7 +407,7 @@ async fn mark_and_unmark_change_the_marks_the_cli_sees() {
         .call(
             &operator,
             "send",
-            json!({"kind": "need", "to": "mind", "subject": "mark me", "body": "x\n\ndone_when: y"}),
+            json!({"kind": "need", "to": "mind", "subject": "mark me", "body": "+++\ndone_when = [\"y\"]\n+++\n\nx"}),
         )
         .await;
     let handle = sent["handle"].as_str().unwrap().to_owned();
@@ -453,11 +481,11 @@ async fn reads_reflect_what_the_library_wrote() {
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: "a task".into(),
-        body: "t".into(),
+        // A format-1 task letter; its prerequisite lives in the front matter.
+        body: format!("+++\ndepends_on = [\"{first}\"]\n+++\n\nt"),
         role: "tasks".into(),
         kind: Some("task".into()),
         reply_to: None,
-        depends_on: vec![first.clone()],
     })
     .unwrap();
     ms.set_marks("mind", &first, "need", true, &["urgent".to_owned()])
@@ -705,7 +733,7 @@ async fn the_operator_closes_a_need_it_sent_and_lists_every_role() {
         .call(
             &operator,
             "send",
-            json!({"kind": "need", "to": "mind", "subject": "s", "body": "x\n\ndone_when: y"}),
+            json!({"kind": "need", "to": "mind", "subject": "s", "body": "+++\ndone_when = [\"y\"]\n+++\n\nx"}),
         )
         .await;
     let handle = sent["handle"].as_str().unwrap().to_owned();
@@ -808,7 +836,7 @@ async fn for_names_the_holder_a_command_runs_as() {
         .call(
             &operator,
             "send",
-            json!({"kind": "need", "to": "mind", "subject": "approve", "body": "x\n\ndone_when: y"}),
+            json!({"kind": "need", "to": "mind", "subject": "approve", "body": "+++\ndone_when = [\"y\"]\n+++\n\nx"}),
         )
         .await;
     let handle = sent["handle"].as_str().unwrap().to_owned();
@@ -887,11 +915,11 @@ async fn a_want_has_no_reopen_and_a_read_writes_nothing_to_the_host() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "maybe".into(),
-            body: "w".into(),
+            // A format-1 want letter: front matter with question, then prose.
+            body: "+++\nquestion = \"w?\"\n+++\n\nw".into(),
             role: "wants".into(),
             kind: Some("want".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered[0]
@@ -1063,21 +1091,27 @@ async fn depend_adds_and_removes_prerequisites_as_the_cli_would() {
     let operator = fx.key(None);
     let mind = fx.key(Some("mind"));
     let hand = fx.key(Some("hand"));
-    let send = |subject: &'static str, to: &'static str, deps: Value| json!({"kind": "need", "to": to, "subject": subject, "body": "x\n\ndone_when: y", "depends_on": deps});
-    let work = fx
-        .call(&operator, "send", send("work", "mind", json!([])))
-        .await["handle"]
+    let send = |subject: &'static str, to: &'static str, deps: &[&str]| {
+        // A format-1 need letter; its prerequisites live in the front matter
+        // (quoted: a hex handle of only digits is not a bare TOML number).
+        let list = deps
+            .iter()
+            .map(|dep| format!("{dep:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        json!({"kind": "need", "to": to, "subject": subject,
+               "body": format!("+++\ndone_when = [\"y\"]\ndepends_on = [{list}]\n+++\n\nx")})
+    };
+    let work = fx.call(&operator, "send", send("work", "mind", &[])).await["handle"]
         .as_str()
         .unwrap()
         .to_owned();
-    let other = fx
-        .call(&operator, "send", send("other", "mind", json!([])))
-        .await["handle"]
+    let other = fx.call(&operator, "send", send("other", "mind", &[])).await["handle"]
         .as_str()
         .unwrap()
         .to_owned();
     let release = fx
-        .call(&operator, "send", send("release", "mind", json!([work])))
+        .call(&operator, "send", send("release", "mind", &[&work]))
         .await["handle"]
         .as_str()
         .unwrap()

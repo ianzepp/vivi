@@ -509,7 +509,6 @@ pub(super) fn board(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
             since: None,
             with_process: false,
             with_graph: flag("graph"),
-            with_pump: flag("pump"),
         })
         .map_err(lib_error)?;
     let mut value = serde_json::to_value(&board).map_err(|e| ToolError::new(e.to_string()))?;

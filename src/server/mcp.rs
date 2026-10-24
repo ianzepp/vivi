@@ -545,7 +545,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, totals, and registered goals. Optional graph and pump views. `full` lifts every bound.", json!({
+            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
                 "type": "object",
                 "properties": {
                     "for": { "type": "string", "description": "Only this role's board" },
@@ -555,8 +555,7 @@ fn tools_list() -> Value {
                     "graph_cap": { "type": "integer", "minimum": 1, "default": 25, "description": "With graph: nodes listed in each of ready, blocked and active; the full counts are ready_total, blocked_total and active_total" },
                     "notes": { "type": "boolean", "default": false, "description": "Keep each last event's whole note instead of a short preview" },
                     "full": { "type": "boolean", "default": false, "description": "No caps, whole notes and the graph's node table; an explicit cap still applies" },
-                    "graph": { "type": "boolean", "default": false },
-                    "pump": { "type": "boolean", "default": false }
+                    "graph": { "type": "boolean", "default": false }
                 },
                 "additionalProperties": false
             })),
