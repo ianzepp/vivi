@@ -478,6 +478,7 @@ async fn initialize_and_tools_list() {
             "server_version",
             "project_list",
             "create_project",
+            "lane_create",
             "key_mint",
             "key_list",
             "key_revoke",

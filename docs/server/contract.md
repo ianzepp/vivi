@@ -484,12 +484,13 @@ paused, with the library's message, and nothing moves on a refusal.
 
 #### Host tools
 
-Six tools need a **host principal** — the operator token or a key minted
+Seven tools need a **host principal** — the operator token or a key minted
 `host: true`:
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `create_project` | `name`, `branch?`, `pool?`, `rungs?` | Create a hosted project: bare repository, lanes, git URL and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key |
+| `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?` | Projects half only of `vivi project lane add`. Attaches the existing bare repository `<HOST_LANES_ROOT>/<target>.git` as `[pump.targets.<target>]` on `<HOST_PROJECTS_ROOT>/<name>`: clones `<project>/<target>` and adds the target through the guarded config write. Does not create anything under the lanes root. Success returns `{name, target: {target_id, checkout_path, git_url}, remaining: {half: "lanes", root, command}, readiness: {ready, missing}}`. `remaining.command` is the exact `vivi project lane add <project-root> <target> --lanes-root <lanes> [--git-url-prefix <prefix>] [--seed]` for the lanes owner (this call did not perform that half). `git_url_prefix` overrides `HOST_GIT_URL_PREFIX`; with neither set the clone uses the lane's local path. `seed` is not performed here; it is included in the command when true. A missing bare repository is refused (`isError`) with `{error, name, remaining, readiness}` and the same command. A second attach of the same target is the library's refusal |
 | `key_mint` | `principal`, `grants?`, `host?`, `label?` | Mint a server key for `principal` (created when absent; grants not already held are added). `host: true` mints a host principal, which carries no grants and whose `principal` defaults to `host`. The raw `key` is shown once, `vivi_` + random; at most 32 live keys per principal |
 | `key_list` | — | Principals with their keys (digests only) and grants |
 | `key_revoke` | `key_id` | Revoke one key, on any principal; already-revoked is success |

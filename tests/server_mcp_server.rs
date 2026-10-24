@@ -423,6 +423,7 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
         "server_version",
         "project_list",
         "create_project",
+        "lane_create",
         "key_mint",
         "key_list",
         "key_revoke",

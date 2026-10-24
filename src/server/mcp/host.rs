@@ -1,5 +1,6 @@
-//! Host tools for `POST /v1/mcp`. Today that is `create_project`: it acts on
-//! the host rather than on one project, and only a host principal may call it.
+//! Host tools for `POST /v1/mcp`. They act on the host rather than on one
+//! grant, and only a host principal may call them. `create_project` makes a
+//! project; `lane_create` attaches an existing lane to one.
 //!
 //! `create_project` calls [`vivi::project_create::create`] (bare repository,
 //! project directory with an initialised mailspace, host registry entry) with
@@ -17,6 +18,7 @@ use crate::grants::{GrantLevel, GrantRecord};
 use crate::hosted;
 use crate::projects::ProjectMeta;
 
+pub(crate) mod lane;
 mod rungs;
 
 use self::rungs::Rungs;
@@ -102,6 +104,26 @@ pub(super) fn tools_list() -> Value {
             "required": ["name"],
             "additionalProperties": false
         })),
+        tool(
+            "lane_create",
+            "Attach an existing bare lane repository as a pump target on a project under the host \
+             projects root. Projects half only: clone `<project>/<target>` and add \
+             [pump.targets.<target>] through the guarded config write. Does not create the bare \
+             repository under the lanes root. When that repository is missing, refuses with the \
+             exact `vivi project lane add` command for the lanes owner and the project's pump \
+             readiness. A second attach of the same target is refused. Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Existing project directory name under HOST_PROJECTS_ROOT" },
+                    "target": { "type": "string", "description": "Target id: [pump.targets.<target>]; the lane is <HOST_LANES_ROOT>/<target>.git" },
+                    "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX; absent and unset, the lane is cloned from its local path" },
+                    "seed": { "type": "boolean", "default": false, "description": "Not performed here (lanes half). Included in the lanes-owner command when true" }
+                },
+                "required": ["name", "target"],
+                "additionalProperties": false
+            }),
+        ),
     ] })
 }
 
