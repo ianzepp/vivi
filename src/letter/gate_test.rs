@@ -2,6 +2,7 @@
 
 use super::gate;
 use crate::letter::fixture::{need_body, task_body_with};
+use crate::letter::plain::{MemoFront, RuleFront};
 use crate::letter::records::{MailFront, RecordFront};
 use crate::letter::work::{NeedFront, TaskFront};
 use crate::letter::{Front, LetterKind, render};
@@ -146,9 +147,47 @@ fn a_pump_record_with_a_prose_body_is_refused() {
 
 #[test]
 fn an_unknown_kind_passes_unchanged_and_unformatted() {
-    let gated = gate("memo", "plain note").unwrap();
-    assert_eq!(gated.kind, "memo");
+    let gated = gate("zap", "plain note").unwrap();
+    assert_eq!(gated.kind, "zap");
     assert!(!gated.formatted);
     assert!(gated.depends_on.is_empty());
     assert!(gated.letter.is_none());
+}
+
+#[test]
+fn a_prose_memo_or_rule_passes_as_written_and_formatted() {
+    let gated = gate("memo", "hello there").unwrap();
+    assert_eq!(gated.kind, "memo");
+    assert!(gated.formatted);
+    assert!(gated.depends_on.is_empty());
+    let letter = gated.letter.expect("prose memo parses");
+    assert_eq!(letter.kind, LetterKind::Memo);
+    assert_eq!(letter.front, Front::Memo(MemoFront::default()));
+    assert_eq!(letter.prose, "hello there");
+
+    let gated = gate("rule", "hello there").unwrap();
+    assert_eq!(gated.kind, "rule");
+    assert!(gated.formatted);
+    let letter = gated.letter.expect("prose rule parses");
+    assert_eq!(letter.kind, LetterKind::Rule);
+    assert_eq!(letter.front, Front::Rule(RuleFront::default()));
+}
+
+#[test]
+fn a_fenced_memo_with_front_facts_passes_formatted() {
+    let gated = gate("memo", "+++\ntags = [\"ops\"]\n+++\n\nthe note\n").unwrap();
+    assert!(gated.formatted);
+    let letter = gated.letter.expect("memo parses");
+    assert_eq!(letter.kind, LetterKind::Memo);
+    assert!(matches!(&letter.front, Front::Memo(front) if front.tags == ["ops"]));
+}
+
+#[test]
+fn a_fenced_memo_or_rule_with_an_unknown_front_key_is_refused() {
+    for kind in ["memo", "rule"] {
+        let err = gate(kind, "+++\ncolour = \"red\"\n+++\n\nx\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("colour"), "{kind}: {err}");
+    }
 }

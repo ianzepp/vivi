@@ -3,13 +3,14 @@
 //! The kinds with little structure: a memo carries tags, a rule carries its
 //! scope and what it supersedes, the close events carry a verdict and the
 //! branch and commit they landed, and every other letter has no front matter
-//! keys at all.
+//! keys at all. [`render`] writes these letters; a letter whose front matter
+//! is empty stores its prose as written, with no `+++` fence.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::letter::{Validate, check_list, check_text};
+use crate::letter::{LetterError, Validate, check_list, check_text};
 
 /// The event verbs (`X-Vivi-Event` values) whose letters take [`CloseFront`].
 pub const CLOSE_EVENTS: [&str; 2] = ["done", "reopened"];
@@ -102,6 +103,29 @@ impl Validate for EmptyFront {
     fn validate(&self) -> Result<(), String> {
         Ok(())
     }
+}
+
+/// Render a memo, rule or event letter. An empty front matter stores the
+/// prose as written, with no fence (ruling V1: nothing shows an empty `+++`
+/// fence); any other front matter is rendered between the fences, as every
+/// letter is. The front matter's own rules are checked first, so a writer
+/// bug is an error at write time.
+///
+/// # Errors
+///
+/// Returns `LetterError::Invalid` when the front matter fails its own rules
+/// or does not serialize.
+pub fn render<T>(front: &T, prose: &str) -> Result<String, LetterError>
+where
+    T: Serialize + Validate,
+{
+    front.validate().map_err(LetterError::Invalid)?;
+    let toml = toml::to_string(front)
+        .map_err(|err| LetterError::Invalid(format!("front matter does not render: {err}")))?;
+    if toml.trim().is_empty() {
+        return Ok(prose.to_string());
+    }
+    crate::letter::render(front, prose)
 }
 
 #[cfg(test)]

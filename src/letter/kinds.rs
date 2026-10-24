@@ -108,8 +108,8 @@ pub fn parse_kind(kind: &LetterKind, text: &str) -> Result<Letter, LetterError> 
         LetterKind::Need => stored(kind, text, Front::Need),
         LetterKind::Want => stored(kind, text, Front::Want),
         LetterKind::Task => stored(kind, text, Front::Task),
-        LetterKind::Memo => stored(kind, text, Front::Memo),
-        LetterKind::Rule => stored(kind, text, Front::Rule),
+        LetterKind::Memo => stored_or_plain(kind, text, Front::Memo),
+        LetterKind::Rule => stored_or_plain(kind, text, Front::Rule),
         LetterKind::Record => stored(kind, text, Front::Record),
         LetterKind::Action => stored(kind, text, Front::Action),
         LetterKind::Event(verb) => parse_event(kind, verb, text),
@@ -150,15 +150,40 @@ where
     })
 }
 
+/// A memo, rule or close-event letter: a body with no front matter is an
+/// empty front and the whole body as prose, exactly as plain mail and chat
+/// read one; a body that opens with the fence is parsed strictly.
+fn stored_or_plain<T>(
+    kind: &LetterKind,
+    text: &str,
+    wrap: fn(T) -> Front,
+) -> Result<Letter, LetterError>
+where
+    T: DeserializeOwned + Default + Validate,
+{
+    if !opens_with_fence(text) {
+        return Ok(Letter {
+            kind: kind.clone(),
+            front: wrap(T::default()),
+            prose: text.trim().to_string(),
+        });
+    }
+    stored(kind, text, wrap)
+}
+
 fn parse_event(kind: &LetterKind, verb: &str, text: &str) -> Result<Letter, LetterError> {
     if CLOSE_EVENTS.contains(&verb) {
-        return stored(kind, text, Front::Event);
+        return stored_or_plain(kind, text, Front::Event);
     }
-    let letter = parse_letter::<EmptyFront>(text)?;
+    let prose = if opens_with_fence(text) {
+        parse_letter::<EmptyFront>(text)?.body
+    } else {
+        text.trim().to_string()
+    };
     Ok(Letter {
         kind: kind.clone(),
         front: Front::Event(CloseFront::default()),
-        prose: letter.body,
+        prose,
     })
 }
 

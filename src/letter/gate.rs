@@ -22,10 +22,10 @@ pub struct Gated {
 }
 
 /// Check `body` for its kind: need, want and task must open with valid front
-/// matter; a pump record must parse as one; prose mail and chat are stored as
-/// written, while a body that opens with front matter must parse (note,
-/// action and role reply envelope rules included); any other kind passes
-/// unchanged and unformatted.
+/// matter; a pump record must parse as one; prose mail, chat, memo and rule
+/// are stored as written, while a body that opens with front matter must
+/// parse (note, action and role reply envelope rules included); any other
+/// kind passes unchanged and unformatted.
 ///
 /// # Errors
 /// Returns the `LetterError` naming the fault when the front matter is
@@ -37,6 +37,8 @@ pub fn gate(kind: &str, body: &str) -> Result<Gated, LetterError> {
         "pump" => checked(kind, parse_kind(&LetterKind::Record, body)?),
         "mail" => prose(kind, body, &LetterKind::Mail),
         "chat" => prose(kind, body, &LetterKind::Chat),
+        "memo" => prose(kind, body, &LetterKind::Memo),
+        "rule" => prose(kind, body, &LetterKind::Rule),
         _ => Ok(Gated {
             kind: kind.to_string(),
             formatted: false,
