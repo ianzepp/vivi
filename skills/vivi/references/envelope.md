@@ -17,9 +17,9 @@ hand, or when a reply was refused.
 
 ## Stored letters
 
-Need, want, task, pump record, mail and chat letters are front matter plus
-prose, and the send path stamps the header `X-Vivi-Format: 1` on every one of
-them. Memo and rule letters are not written in this format. The keys of the
+Need, want, task, pump record, mail, chat, note, memo, rule and event
+letters are front matter plus prose, and the send path stamps the header
+`X-Vivi-Format: 1` on every one of them. The keys of the
 pump letters (record, action, note, `[job]`, `[step]`) are in
 [Pump letters](#pump-letters); a chat letter has no keys.
 
