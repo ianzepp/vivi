@@ -37,10 +37,6 @@ pub struct BoardCommand {
     #[arg(long)]
     pub graph: bool,
 
-    /// Include the local pump's execution summary when pump.db exists
-    #[arg(long)]
-    pub pump: bool,
-
     /// Project root that owns .vivi/ (also accepted globally: vivi --project <ROOT> board)
     #[arg(long)]
     pub project: Option<PathBuf>,

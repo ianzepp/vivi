@@ -32,17 +32,9 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Doctor(command) => crate::local_doctor_command::run(command, None),
         Command::Sync(command) => crate::local_sync_command::handle_sync_command(command),
         Command::Mcp(command) => crate::local_mcp_command::handle_mcp_command(command),
-        Command::Boot {
-            project,
-            role,
-            pump,
-            json,
-        } => crate::local_boot_command::handle_boot_command(
-            project.as_deref(),
-            role.as_deref(),
-            *pump,
-            *json,
-        ),
+        Command::Boot { project, json } => {
+            crate::local_boot_command::handle_boot_command(project.as_deref(), *json)
+        }
         Command::Mail { command } => handle_mail_command(command),
         Command::Task { command } => handle_task_command(command),
         Command::Need { command } => crate::local_work_command::handle_need_command(command),
@@ -668,7 +660,6 @@ fn list_tasks(
             to,
             &[],
             json,
-            false,
         );
     }
     crate::local_work_list::print_work_lists(
@@ -680,7 +671,6 @@ fn list_tasks(
         to,
         &[],
         json,
-        false,
     )
 }
 

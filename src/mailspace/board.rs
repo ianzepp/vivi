@@ -28,8 +28,6 @@ pub struct BoardOptions {
     pub with_process: bool,
     /// Include the work-graph frontier.
     pub with_graph: bool,
-    /// Include pump counts when this host has pump state.
-    pub with_pump: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,19 +41,6 @@ pub struct Board {
     /// Present when `board --graph` is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graphs: Option<Vec<BoardGraph>>,
-    /// Present when `board --pump` is set and this host has pump.db.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pump: Option<BoardPump>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BoardPump {
-    pub units: std::collections::BTreeMap<String, usize>,
-    pub complete: usize,
-    pub complete_but_open: usize,
-    pub amendments: usize,
-    pub stuck: usize,
-    pub exceptions: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,7 +149,6 @@ fn build_board(mailspace: &Mailspace, options: &BoardOptions) -> Result<Board, V
         since,
         with_process,
         with_graph,
-        with_pump,
     } = options.clone();
     let for_identity = for_identity.as_deref();
     let identities = board_identities(mailspace, for_identity)?;
@@ -186,13 +170,6 @@ fn build_board(mailspace: &Mailspace, options: &BoardOptions) -> Result<Board, V
     } else {
         None
     };
-    let pump = if with_pump {
-        pump_snapshot
-            .as_ref()
-            .and_then(|snapshot| board_pump(snapshot, &boards))
-    } else {
-        None
-    };
     Ok(Board {
         name: mailspace.config.name.clone(),
         root: mailspace.root.clone(),
@@ -200,7 +177,6 @@ fn build_board(mailspace: &Mailspace, options: &BoardOptions) -> Result<Board, V
         identities: boards,
         goals: mailspace.goal_list()?,
         graphs,
-        pump,
     })
 }
 
@@ -255,25 +231,6 @@ fn read_pump_snapshot(mailspace: &Mailspace) -> Option<crate::pump::report::Snap
         Ok(crate::pump::report::PumpRead::Ready(snapshot)) => Some(snapshot),
         _ => None,
     }
-}
-
-fn board_pump(
-    snapshot: &crate::pump::report::Snapshot,
-    boards: &[IdentityBoard],
-) -> Option<BoardPump> {
-    let open: std::collections::BTreeSet<String> = boards
-        .iter()
-        .flat_map(|board| board.needs.iter().map(|need| need.handle.clone()))
-        .collect();
-    let summary = snapshot.summary();
-    Some(BoardPump {
-        complete_but_open: snapshot.complete_needs().intersection(&open).count(),
-        units: summary.units,
-        complete: summary.complete,
-        amendments: summary.amendments,
-        stuck: summary.stuck,
-        exceptions: summary.exceptions,
-    })
 }
 
 fn board_graphs(mailspace: &Mailspace) -> Result<Vec<BoardGraph>, VivariumError> {

@@ -4,8 +4,6 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::boot::PumpView;
-
 mod board_command;
 mod config_command;
 mod doctor_command;
@@ -53,12 +51,11 @@ pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
 };
 pub use pump_command::{
-    PumpAdoptCommand, PumpCloseoutCommand, PumpControlCommand, PumpDoneCommand, PumpExportCommand,
-    PumpHealthCommand, PumpHistoryCommand, PumpListCommand, PumpListStatus, PumpLogCommand,
-    PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand,
-    PumpReopenCommand, PumpReplanCommand, PumpRequeueCommand, PumpRunCommand, PumpRungsCommand,
-    PumpRungsSetCommand, PumpRungsShowCommand, PumpSendCommand, PumpServiceAddCommand,
-    PumpServiceCommand, PumpServiceProjectCommand, PumpShowCommand, PumpStatusCommand,
+    PumpControlCommand, PumpDoneCommand, PumpHealthCommand, PumpHistoryCommand, PumpListCommand,
+    PumpListStatus, PumpLogCommand, PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand,
+    PumpPrioritySetCommand, PumpReopenCommand, PumpReplanCommand, PumpRequeueCommand,
+    PumpRunCommand, PumpRungsCommand, PumpRungsSetCommand, PumpRungsShowCommand, PumpSendCommand,
+    PumpServiceAddCommand, PumpServiceCommand, PumpServiceProjectCommand, PumpShowCommand,
     PumpSubcommand, PumpTargetAddCommand, PumpTargetCommand, PumpTargetListCommand,
     PumpTargetRemoveCommand, PumpWithdrawCommand,
 };
@@ -104,12 +101,6 @@ pub enum Command {
         /// Project root that owns .vivi/ (also accepted globally: vivi --project <ROOT> boot)
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Role to gate the pump snapshot for (otherwise inferred from a local slot)
-        #[arg(long)]
-        role: Option<String>,
-        /// Pump snapshot depth: full, own (this role's units), or none (counts only)
-        #[arg(long, value_enum)]
-        pump: Option<PumpView>,
         /// Print the boot digest as JSON
         #[arg(long)]
         json: bool,
@@ -187,7 +178,7 @@ pub enum Command {
         command: ProjectCommand,
     },
 
-    /// Run the pump: dispatch, merge and gate the planned units of a backlog
+    /// Run the pump: the flows that plan, slice, build, verify and merge each need with an open pump record
     Pump {
         #[command(subcommand)]
         command: PumpSubcommand,

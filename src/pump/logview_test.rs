@@ -16,8 +16,8 @@ const SAMPLE: &str = "\
 13:40:06 lane default/2 retry u1
 ";
 
-fn filter(lane: Option<&str>, unit: Option<&str>, grep: Option<&str>) -> LogFilter {
-    LogFilter::new(lane, unit, grep)
+fn filter(unit: Option<&str>, grep: Option<&str>) -> LogFilter {
+    LogFilter::new(unit, grep)
 }
 
 #[test]
@@ -31,52 +31,33 @@ fn tail_takes_last_n_unfiltered() {
 }
 
 #[test]
-fn lane_shorthand_means_default_target() {
-    let lines = tail_lines(SAMPLE, &filter(Some("2"), None, None), 50);
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    assert!(lines[0].contains("check 1/4"));
-    assert!(lines[1].contains("lane default/2 retry"));
-    // `2` must not match `default/10` nor `fast/2`.
-    let full = tail_lines(SAMPLE, &filter(Some("fast/2"), None, None), 50);
-    assert_eq!(full.len(), 1);
-    assert!(full[0].contains("merge u1 landed"));
-}
-
-#[test]
-fn lane_filter_ignores_lines_without_the_prefix() {
-    let text = "13:00:00 something about lane default/2: inside\n13:00:01 lane default/2: ok\n";
-    let lines = tail_lines(text, &filter(Some("2"), None, None), 5);
-    assert_eq!(lines, vec!["13:00:01 lane default/2: ok"]);
-}
-
-#[test]
 fn unit_matches_a_whole_token_only() {
-    let lines = tail_lines(SAMPLE, &filter(None, Some("u1"), None), 50);
+    let lines = tail_lines(SAMPLE, &filter(Some("u1"), None), 50);
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert!(lines.iter().all(|l| !l.contains("u12")));
     let text = "00:00:00 pumpfix-u1 x\n00:00:01 unit u1: y\n00:00:02 got u1.\n";
-    let lines = tail_lines(text, &filter(None, Some("u1"), None), 9);
+    let lines = tail_lines(text, &filter(Some("u1"), None), 9);
     assert_eq!(lines.len(), 2, "{lines:?}");
 }
 
 #[test]
 fn grep_is_case_sensitive_substring() {
-    assert_eq!(
-        tail_lines(SAMPLE, &filter(None, None, Some("pool")), 9).len(),
-        2
-    );
-    assert!(tail_lines(SAMPLE, &filter(None, None, Some("POOL")), 9).is_empty());
+    assert_eq!(tail_lines(SAMPLE, &filter(None, Some("pool")), 9).len(), 2);
+    assert!(tail_lines(SAMPLE, &filter(None, Some("POOL")), 9).is_empty());
 }
 
 #[test]
 fn filters_combine_with_and_and_count_applies_after() {
-    let combined = filter(Some("2"), Some("u1"), Some("retry"));
+    let combined = filter(Some("u1"), Some("retry"));
     let lines = tail_lines(SAMPLE, &combined, 50);
     assert_eq!(lines, vec!["13:40:06 lane default/2 retry u1"]);
-    // -n 1 over the two lane-2 lines keeps the last, not the last overall line.
-    let lane = filter(Some("2"), None, None);
-    assert_eq!(tail_lines(SAMPLE, &lane, 1).len(), 1);
-    let one = filter(None, None, Some("lane default/10"));
+    // -n 1 over the two u1 lines keeps the last, not the last overall line.
+    let handle = filter(Some("u1"), None);
+    assert_eq!(
+        tail_lines(SAMPLE, &handle, 1),
+        vec!["13:40:06 lane default/2 retry u1"]
+    );
+    let one = filter(None, Some("lane default/10"));
     assert_eq!(tail_lines(SAMPLE, &one, 1).len(), 1);
 }
 
@@ -125,7 +106,7 @@ fn show_prints_filtered_tail_then_appended_lines() {
     let options = ShowOptions {
         count: 1,
         follow: true,
-        filter: filter(Some("2"), None, None),
+        filter: filter(None, Some("lane default/2")),
     };
     let appender = {
         let path = path.clone();

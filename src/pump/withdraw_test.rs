@@ -1,135 +1,16 @@
-//! Tests for operator withdraws: the state change the pump applies, and the
-//! CLI half that posts the action on the need's open pump record.
+//! Tests for the `vivi pump withdraw` CLI half: it closes the need and posts
+//! the action on the need's open pump record.
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::sync::Arc;
-
-use tempfile::{TempDir, tempdir};
 
 use crate::cli::PumpWithdrawCommand;
 use crate::letter::fixture::{need_body_with, want_body};
 use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, WantState, held_item, is_done};
-use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
-use crate::pump::withdraw::{apply_one, run};
-
-const T0: u64 = 1_000_000;
-
-fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
-    let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
-    host.set_now(T0);
-    (dir, ctx, host)
-}
-
-fn add_need(st: &mut State, handle: &str, units: &[(&str, Status)]) {
-    st.needs.insert(
-        handle.to_owned(),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: units.iter().map(|(uid, _)| (*uid).to_owned()).collect(),
-            revision: 1,
-            ..NeedRecord::default()
-        },
-    );
-    for (uid, status) in units {
-        st.units.insert(
-            (*uid).to_owned(),
-            Unit {
-                need: handle.to_owned(),
-                target: String::from("default"),
-                revision: 1,
-                status: *status,
-                ..Unit::default()
-            },
-        );
-    }
-}
-
-fn status(st: &State, uid: &str) -> Status {
-    st.units[uid].status
-}
-
-fn exceptions(ctx: &Ctx) -> String {
-    fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
-}
-
-fn log(host: &FakeHost) -> String {
-    host.logs().join("\n")
-}
-
-#[test]
-fn applying_a_request_withdraws_unfinished_units_and_closes_the_need() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    add_need(
-        &mut st,
-        "pumpfix-g1",
-        &[
-            ("pending", Status::Pending),
-            ("stuck", Status::Stuck),
-            ("delivered", Status::Delivered),
-            ("merged", Status::Merged),
-            ("nodefect", Status::NoDefect),
-            ("replaced", Status::Replaced),
-        ],
-    );
-    add_need(&mut st, "other", &[("o1", Status::Pending)]);
-
-    let text = apply_one(&ctx, &mut st, "pumpfix-g1", "15-era repair need");
-
-    assert_eq!(
-        text,
-        "withdrew need pumpfix-g1: 3 unit(s) (15-era repair need)"
-    );
-
-    assert_eq!(status(&st, "pending"), Status::Withdrawn);
-    assert_eq!(status(&st, "stuck"), Status::Withdrawn);
-    assert_eq!(status(&st, "delivered"), Status::Withdrawn);
-    assert_eq!(status(&st, "merged"), Status::Merged);
-    assert_eq!(status(&st, "nodefect"), Status::NoDefect);
-    assert_eq!(status(&st, "replaced"), Status::Replaced);
-    assert_eq!(status(&st, "o1"), Status::Pending);
-    assert_eq!(st.closed_needs, vec![String::from("pumpfix-g1")]);
-    assert!(log(&host).contains("withdrew need pumpfix-g1: 3 unit(s) (15-era repair need)"));
-    assert!(!log(&host).contains("mail need is not closed"));
-    assert!(exceptions(&ctx).contains("need-withdrawn pumpfix-g1"));
-}
-
-#[test]
-fn a_need_the_pump_holds_nothing_for_changes_no_state_but_still_ends_its_dispatch() {
-    let (_dir, ctx, host) = setup();
-    let mut st = State::default();
-    add_need(&mut st, "n1", &[("u1", Status::Pending)]);
-
-    let text = apply_one(&ctx, &mut st, "nope", "typo");
-
-    assert_eq!(status(&st, "u1"), Status::Pending);
-    assert!(st.closed_needs.is_empty());
-    assert!(
-        text.contains("the pump held no plan for it (typo)"),
-        "{text}"
-    );
-    assert!(log(&host).contains("withdraw nope: unknown need; closing its record"));
-    assert!(!exceptions(&ctx).contains("need-withdrawn"));
-}
-
-#[test]
-fn applying_the_same_need_twice_closes_it_once() {
-    let (_dir, ctx, _) = setup();
-    let mut st = State::default();
-    add_need(&mut st, "n1", &[("u1", Status::Stuck)]);
-
-    apply_one(&ctx, &mut st, "n1", "first");
-    apply_one(&ctx, &mut st, "n1", "second");
-
-    assert_eq!(st.closed_needs, vec![String::from("n1")]);
-}
+use crate::pump::withdraw::run;
 
 fn command(needs: &[&str], reason: &str) -> PumpWithdrawCommand {
     PumpWithdrawCommand {

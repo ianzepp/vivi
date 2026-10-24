@@ -126,14 +126,12 @@ fn service_probe_uses_injected_runner() {
 }
 
 #[test]
-fn exceptions_and_quarantines_warn_without_echoing_exception_text() {
+fn exceptions_warn_without_echoing_exception_text() {
     let facts = PumpStateFacts {
         exceptions: vec!["merge-error (u-123)".into()],
-        quarantines: Some(2),
     };
     let report = state_findings_from(&facts);
     let exceptions = finding(&report, "exceptions");
     assert_eq!(exceptions.status, Status::Warn);
     assert!(exceptions.detail.contains("merge-error (u-123)"));
-    assert_eq!(finding(&report, "quarantines").status, Status::Warn);
 }

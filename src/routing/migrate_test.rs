@@ -543,8 +543,9 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
         .map(|row| (row.table.as_str(), row.key.as_str()))
         .collect();
     for expected in [
-        ("pump.planner", "run"),
-        ("pump.planner", "charter"),
+        ("pump", "planner"),
+        ("pump.dispatch", "kinds"),
+        ("pump.dispatch", "default_kind"),
         ("pump", "gate"),
         ("pump", "branch"),
         ("pump.merge", "batch"),
@@ -574,9 +575,15 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
     ] {
         assert!(!after.contains(gone), "{gone} still in:\n{after}");
     }
-    for kept in ["# keep-me", "split_hard_cap = 1500  # keep-inline"] {
-        assert!(after.contains(kept), "{kept} missing from:\n{after}");
+    for gone in [
+        "[pump.planner]",
+        "split_hard_cap",
+        "keep-inline",
+        "default_kind",
+    ] {
+        assert!(!after.contains(gone), "{gone} still in:\n{after}");
     }
+    assert!(after.contains("# keep-me"), "{after}");
     let text = render_plan(&plan);
     assert!(
         text.contains("!! BEHAVIOUR CHANGE: remove [pump] gate = (table: command, every_merges"),
@@ -588,7 +595,7 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
     );
     assert!(text.contains("remove [pump.merge] lanes = 3"), "{text}");
     assert!(
-        text.contains("remove [pump.planner] run = \"pi -p\""),
+        text.contains("remove [pump] planner = (table: run, charter, split_hard_cap)"),
         "{text}"
     );
 }
@@ -726,8 +733,8 @@ fn the_retired_board_intake_keys_are_removed_naming_the_pump_record() {
 fn migrated_text_still_parses_as_a_pump_config() {
     let (_, after) = migrate(V15);
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
-    let pump = migrated.pump.expect("pump");
-    assert_eq!(pump.planner.split_hard_cap, 1500);
+    assert!(migrated.pump.is_some(), "{after}");
+    assert!(!after.contains("[pump.planner]"), "{after}");
     let errors: Vec<_> = validate(&toml::from_str::<MailspaceConfig>(&after).unwrap())
         .into_iter()
         .filter(|issue| issue.severity == Severity::Error)

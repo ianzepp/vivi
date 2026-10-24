@@ -1,5 +1,5 @@
-//! Tests for [`crate::pump::boardpass`]: the merge-back rules on hand-built
-//! snapshots, the interval and pending-sync handling, and one full pass
+//! Tests for [`crate::pump::boardpass`]: the merge-back rule, the interval and
+//! pending-sync handling, and one full pass
 //! through the real worker thread driven by [`FakeHost`] replies.
 
 use std::sync::Arc;
@@ -10,8 +10,7 @@ use tempfile::{TempDir, tempdir};
 use crate::pump::boardpass::{BoardPass, merge_back};
 use crate::pump::config::{BoardConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
-use crate::pump::state::{NeedRecord, State};
+use crate::pump::state::State;
 
 /// A context with an operator sender.
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
@@ -28,122 +27,22 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 }
 
 #[test]
-fn merge_back_keeps_new_outbox_jobs_and_preserves_live_dispatch_progress() {
-    let pending = |id: &str| {
-        PoolJob::from(JobSpec::new(
-            id,
-            "planner:board",
-            "planner",
-            format!("plan {id}"),
-            "plan this need",
-        ))
-    };
-    let mut snap = State::default();
-    snap.jobs
-        .insert(String::from("planner-live"), pending("planner-live"));
-    snap.jobs
-        .insert(String::from("planner-updated"), pending("planner-updated"));
-
-    let mut live = snap.clone();
-    let dispatched = live.jobs.get_mut("planner-live").unwrap();
-    dispatched.status = JobStatus::Dispatched;
-    dispatched.pool = Some(String::from("test-planner-pool"));
-    dispatched.task = Some(String::from("task-1"));
-    dispatched.dispatched_at = Some(101);
-
-    let mut done = snap.clone();
-    let worker_update = done.jobs.get_mut("planner-updated").unwrap();
-    worker_update.status = JobStatus::Finished;
-    worker_update.outcome = Some(JobOutcome {
-        state: String::from("finished"),
-        detail: String::from("agent exit 0"),
-        receipt: String::new(),
-        at: 102,
-    });
-    let new_job = pending("planner-new");
-    done.jobs.insert(new_job.id.clone(), new_job.clone());
-    // A stale worker snapshot must not replace newer dispatch state.
-    done.jobs.get_mut("planner-live").unwrap().status = JobStatus::Lost;
-
-    merge_back(&mut live, &snap, &done);
-
-    assert_eq!(live.jobs.get("planner-new"), Some(&new_job));
-    assert_eq!(live.jobs["planner-updated"].status, JobStatus::Finished);
-    assert_eq!(live.jobs["planner-live"].status, JobStatus::Dispatched);
-    assert_eq!(live.jobs["planner-live"].task.as_deref(), Some("task-1"));
-    assert_eq!(
-        live.jobs["planner-live"].pool.as_deref(),
-        Some("test-planner-pool")
-    );
-}
-
-/// One JSON row for a `need list` reply.
-fn row(handle: &str, date: &str, subject: &str, marks: &[&str]) -> String {
-    let marks = marks
-        .iter()
-        .map(|mark| format!("\"{mark}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{{\"handle\": \"{handle}\", \"date\": \"{date}\", \"subject\": \"{subject}\", \"marks\": [{marks}]}}"
-    )
-}
-
-/// A JSON array reply wrapping `rows`.
-fn list(rows: &[String]) -> String {
-    format!("[{}]", rows.join(", "))
-}
-
-/// An operator thread header line and body, as `need show` prints them.
-fn thread(stamp: &str, hex: &str, from: &str, body: &str) -> String {
-    format!("## {stamp} - {hex} [open]\nFrom: {from}\n\n{body}\n")
-}
-
-/// A need record with a verdict, a reason and no units.
-fn record(verdict: &str) -> NeedRecord {
-    NeedRecord {
-        verdict: String::from(verdict),
-        reason: String::from("one unit"),
-        ..NeedRecord::default()
-    }
-}
-
-#[test]
-fn merge_back_applies_worker_removals_additions_and_replies() {
-    let mut st = State::default();
-    st.needs.insert(String::from("a"), record("split"));
-    st.needs.insert(String::from("b"), record("single"));
-    // Added by the tick thread during the pass: the worker never saw it.
-    st.needs.insert(String::from("added"), record("parker"));
-    st.plans_seen = vec![String::from("a.json"), String::from("c.json")];
-    st.board.at = 100;
-    st.board.replied.push(String::from("n1:planned"));
-
-    let mut snap = State::default();
-    snap.needs.insert(String::from("a"), record("split"));
-    snap.needs.insert(String::from("b"), record("single"));
-    snap.plans_seen = vec![String::from("a.json")];
-    snap.board.at = 100;
-    snap.board.replied.push(String::from("n1:planned"));
+fn merge_back_copies_only_the_interval_stamp() {
+    let mut live = State::default();
+    live.board.at = 100;
+    live.board.sync_pending = true;
+    live.board.replied.push(String::from("live:planned"));
 
     let mut done = State::default();
-    done.needs.insert(String::from("b"), record("single"));
-    done.plans_seen = Vec::new();
     done.board.at = 500;
-    done.board.replied.push(String::from("n1:planned"));
-    done.board.replied.push(String::from("n2:planned"));
+    done.board.replied.push(String::from("worker:planned"));
 
-    merge_back(&mut st, &snap, &done);
+    merge_back(&mut live, &done);
 
-    assert!(!st.needs.contains_key("a"), "worker dropped `a`");
-    assert!(st.needs.contains_key("b"));
-    assert!(st.needs.contains_key("added"), "main's need must survive");
-    assert_eq!(st.plans_seen, vec![String::from("c.json")]);
-    assert_eq!(
-        st.board.replied,
-        vec![String::from("n1:planned"), String::from("n2:planned")]
-    );
-    assert_eq!(st.board.at, 500);
+    assert_eq!(live.board.at, 500);
+    assert!(live.board.sync_pending, "the live push flag stays");
+    assert_eq!(live.board.replied, vec![String::from("live:planned")]);
+    assert!(live.jobs.is_empty());
 }
 
 #[test]
@@ -181,27 +80,6 @@ fn request_respects_the_interval_and_consumes_sync_pending() {
 fn a_full_pass_round_trips_through_the_worker_thread() {
     let (_dir, ctx, host) = setup();
     host.reply("sync pull", 0, "pulled 1 message");
-    host.reply(
-        "pump list --status open --json",
-        0,
-        "[{\"handle\": \"p1\", \"need\": \"n1\", \"status\": \"open\"}]",
-    );
-    host.reply("--held", 0, "[]");
-    host.reply(
-        "--json --to mind",
-        0,
-        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &[])]),
-    );
-    host.reply(
-        "need show n1",
-        0,
-        &thread(
-            "2026-10-15T00:00:00Z",
-            "f00d01",
-            "operator@bd371d96.local",
-            "the need",
-        ),
-    );
 
     let mut pass = BoardPass::start(&ctx);
     let mut st = State::default();
@@ -215,12 +93,9 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
     }
 
     assert_eq!(st.board.at, ctx.now());
-    assert!(st.jobs.is_empty(), "the board queues no planner job");
-    assert!(
-        !host.commands().iter().any(|cmd| cmd.contains("need show")),
-        "the board reads no thread to plan; commands: {:?}",
-        host.commands()
-    );
+    assert_eq!(host.commands().len(), 1, "{:?}", host.commands());
+    assert!(host.commands()[0].contains("sync pull"));
+    assert!(st.jobs.is_empty(), "the board queues no job");
     assert!(host.spawned().is_empty());
 }
 
@@ -229,30 +104,8 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
     let (_dir, mut ctx, host) = setup();
     let mut pass = BoardPass::start(&ctx);
     let mut cfg = (*ctx.cfg).clone();
-    cfg.reply_from = String::from("reloaded");
+    cfg.board.pull = false;
     ctx.cfg = Arc::new(cfg);
-    host.reply("sync pull", 0, "pulled 1 message");
-    host.reply(
-        "pump list --status open --json",
-        0,
-        "[{\"handle\": \"p1\", \"need\": \"n1\", \"status\": \"open\"}]",
-    );
-    host.reply("--held", 0, "[]");
-    host.reply(
-        "--json --to reloaded",
-        0,
-        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &[])]),
-    );
-    host.reply(
-        "need show n1",
-        0,
-        &thread(
-            "2026-10-15T00:00:00Z",
-            "f00d01",
-            "operator@bd371d96.local",
-            "the need",
-        ),
-    );
     let mut st = State::default();
     st.board.at = 0;
     pass.request(&ctx, &mut st);
@@ -263,19 +116,10 @@ fn a_board_pass_uses_the_config_sent_on_the_request() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
+    assert_eq!(st.board.at, ctx.now(), "the pass ran");
     assert!(
-        host.commands()
-            .iter()
-            .any(|cmd| cmd.contains("need list --status open --json --to reloaded")),
-        "reloaded reply_from unused; commands: {:?}",
-        host.commands()
-    );
-    assert!(
-        !host
-            .commands()
-            .iter()
-            .any(|cmd| cmd.contains("--json --to mind")),
-        "startup reply_from leaked; commands: {:?}",
+        host.commands().is_empty(),
+        "the startup config pulled; commands: {:?}",
         host.commands()
     );
 }

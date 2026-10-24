@@ -7,9 +7,7 @@ use std::io::ErrorKind;
 use chrono::{DateTime, Utc};
 use vivi::VivariumError;
 use vivi::cli::BoardCommand;
-use vivi::mailspace::board::{
-    Board, BoardGraph, BoardItem, BoardOptions, BoardPump, IdentityBoard,
-};
+use vivi::mailspace::board::{Board, BoardGraph, BoardItem, BoardOptions, IdentityBoard};
 use vivi::mailspace::{GoalView, Mailspace};
 use vivi::role_schedule::{ScheduleReport, ScheduleState, state_label as schedule_state_label};
 
@@ -21,7 +19,6 @@ pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), Vivariu
         since: resolve_since(command)?,
         with_process: command.process,
         with_graph: command.graph,
-        with_pump: command.pump,
     })?;
     if command.json {
         print_json(&board)?;
@@ -81,9 +78,6 @@ fn print_board(mailspace: &Mailspace, board: &Board) {
         board.totals.needs_open,
         board.totals.wants_open
     );
-    if let Some(pump) = &board.pump {
-        print_board_pump(pump);
-    }
     print_board_goals(&board.goals);
     for identity in &board.identities {
         print_identity(mailspace, identity);
@@ -91,25 +85,6 @@ fn print_board(mailspace: &Mailspace, board: &Board) {
     if let Some(graphs) = &board.graphs {
         print_board_graphs(graphs);
     }
-}
-
-fn print_board_pump(pump: &BoardPump) {
-    println!();
-    println!("pump (local):");
-    let units = if pump.units.is_empty() {
-        String::from("none")
-    } else {
-        pump.units
-            .iter()
-            .map(|(status, count)| format!("{status}={count}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    println!("  units    {units}");
-    println!(
-        "  complete {}  complete-but-open {}  amendments {}  stuck {}  exceptions {}",
-        pump.complete, pump.complete_but_open, pump.amendments, pump.stuck, pump.exceptions
-    );
 }
 
 fn print_board_goals(goals: &[GoalView]) {

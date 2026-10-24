@@ -28,7 +28,6 @@ pub fn to_text(report: &BootReport) -> String {
     loops(&mut out, report);
     unabsorbed(&mut out, report);
     held_unknown(&mut out, report);
-    super::pump::text::render(&mut out, report);
     handles(&mut out, report);
     goals(&mut out, report);
     rules(&mut out, report);
@@ -313,12 +312,5 @@ fn truncations(out: &mut String, report: &BootReport) {
             out,
             format!("  {}: showing {} of {}", row.section, row.shown, row.total),
         );
-    }
-    if report
-        .truncations
-        .iter()
-        .any(|row| row.section.starts_with("pump "))
-    {
-        line(out, "  see `vivi pump status` / `vivi pool status`");
     }
 }

@@ -27,16 +27,16 @@ expansion. A dedicated seat keeps this work off product-Hand capacity.
   completion, before you report. Never background it and exit "to report later".
 - **Commit only inside the task's write scope.**
 
-## Report and close
+## Report
 
 Report on the handle: the docs audited, claims verified versus repaired, product
 findings escalated, files changed, and residuals. A clean run is a short "clean"
 reply.
 
-Before you stop, **close your own handle**. Reporting is not closing.
+Before you stop, report done on your handle. `task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked.
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for docs --note '<what you audited and changed>'
 ```
 
-Your run is complete when you have reported and closed. Stop then.
+Your run is complete when you have reported. Stop then; the Mind accepts the report.

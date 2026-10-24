@@ -1,9 +1,8 @@
 //! Dispatch reconcile parsing and the split re-ask.
 //!
 //! `collect` reconciles the pool once per tick: it applies every finished
-//! pool job's outcome, applies planner completions, and expires unanswered
-//! split planners. `resplit_bad_plan` re-asks a split planner once after a
-//! bad plan.
+//! pool job's outcome. `resplit_bad_plan` re-asks a split planner once after
+//! a bad plan.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -18,7 +17,6 @@ pub(crate) mod burst;
 mod split_expiry;
 
 pub(crate) use burst::rate_limit_burst;
-use split_expiry::expire_splits;
 
 /// Split-planner exits without a plan before the unit is parked stuck.
 pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
@@ -139,7 +137,14 @@ pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &st
     true
 }
 
-/// Reconcile the pool against dispatched jobs and planner completions.
+/// The split-planner expiry pass, no longer part of `collect`; the retired
+/// split flow's tests drive it directly.
+#[cfg(test)]
+pub(super) fn expire_splits(ctx: &Ctx, st: &mut State) {
+    split_expiry::expire_splits(ctx, st);
+}
+
+/// Reconcile the pool against dispatched jobs.
 pub fn collect(ctx: &Ctx, st: &mut State) {
     let (out, reconcile_ok) = if crate::pump::jobs::has_dispatched(st) {
         let output = ctx.vivi("pool reconcile --porcelain", 300);
@@ -154,8 +159,6 @@ pub fn collect(ctx: &Ctx, st: &mut State) {
         ctx.log(&format!("pool reconcile failed: {}", tail(&out, 300)));
     }
     crate::pump::jobs::apply_reconcile(ctx, st, &seen);
-    crate::pump::planner_jobs::apply_completions(ctx, st);
-    expire_splits(ctx, st);
 }
 
 /// `SPLIT_PROMPT` with the stored resplit record and unit handle substituted.

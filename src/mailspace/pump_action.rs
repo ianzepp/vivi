@@ -9,10 +9,6 @@
 //! | `action` | `requeue`, `withdraw`, `replan`, `answer` or `unlock` (`recover` is retired: it cannot be posted) |
 //! | `need` | the need the record covers |
 //! | `unit` | requeue: the unit to requeue |
-//! | `attempts` | requeue: set the attempt counter to N |
-//! | `fresh` | requeue: `true` resets the attempt counter |
-//! | `refund` | requeue: `true` refunds transient failures |
-//! | `force` | replan: `true` replans past live work |
 //! | `step` | answer: the flow step task being answered |
 //! | `word` | answer: the answer word; unlock: the entry to restart at |
 //!
@@ -51,15 +47,15 @@ const EVENT_TYPE: &str = "posted";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PumpActionKind {
-    /// Put one stuck, quarantined, splitting or withdrawn unit back in line.
+    /// Put one step task of a flow run back in line.
     Requeue,
-    /// Withdraw the need's unfinished units and close the dispatch.
+    /// Withdraw the need and close its pump record.
     Withdraw,
     /// Throw the plan away and plan the need again on a fresh record.
     Replan,
-    /// Answer a flow step by hand; applied by the flow engine, not the old pump.
+    /// Answer a flow step by hand; applied by the flow engine.
     Answer,
-    /// Release a locked flow run; applied by the flow engine, not the old pump.
+    /// Release a locked flow run; applied by the flow engine.
     Unlock,
 }
 
@@ -104,14 +100,6 @@ pub struct PumpActionRequest {
     pub kind: PumpActionKind,
     /// Requeue: the unit.
     pub unit: Option<String>,
-    /// Requeue: set the attempt counter to this value.
-    pub attempts: Option<u32>,
-    /// Requeue: reset the attempt counter to zero.
-    pub fresh: bool,
-    /// Requeue: refund the attempts that failed for a transient reason.
-    pub refund: bool,
-    /// Replan: replan even while units are live or a planner runs.
-    pub force: bool,
     /// Answer: the flow step task.
     pub step: Option<String>,
     /// Answer: the answer word. Unlock: the entry to restart at.
@@ -125,32 +113,17 @@ impl PumpActionRequest {
         Self {
             kind,
             unit: None,
-            attempts: None,
-            fresh: false,
-            refund: false,
-            force: false,
             step: None,
             word: None,
             reason: reason.trim().to_string(),
         }
     }
 
-    /// Requeue `unit`; `attempts`, `fresh` and `refund` move its attempt
-    /// counter (at most one is meaningful; the pump applies them in that
-    /// order).
+    /// Requeue `unit`.
     #[must_use]
-    pub fn requeue(
-        unit: &str,
-        attempts: Option<u32>,
-        fresh: bool,
-        refund: bool,
-        reason: &str,
-    ) -> Self {
+    pub fn requeue(unit: &str, reason: &str) -> Self {
         Self {
             unit: Some(unit.to_string()),
-            attempts,
-            fresh,
-            refund,
             ..Self::new(PumpActionKind::Requeue, reason)
         }
     }
@@ -163,11 +136,8 @@ impl PumpActionRequest {
 
     /// Replan the need.
     #[must_use]
-    pub fn replan(force: bool) -> Self {
-        Self {
-            force,
-            ..Self::new(PumpActionKind::Replan, "operator replan")
-        }
+    pub fn replan() -> Self {
+        Self::new(PumpActionKind::Replan, "operator replan")
     }
 
     /// Answer the flow step task `step` with `word`; `note` is the body.
@@ -197,10 +167,6 @@ impl PumpActionRequest {
             action: self.kind.word(),
             need: need.to_string(),
             unit: text(&self.unit),
-            attempts: self.attempts,
-            fresh: self.fresh,
-            refund: self.refund,
-            force: self.force,
             step: text(&self.step),
             word: text(&self.word),
         }
@@ -211,10 +177,6 @@ impl PumpActionRequest {
         Self {
             kind: PumpActionKind::of_word(front.action),
             unit: front.unit,
-            attempts: front.attempts,
-            fresh: front.fresh,
-            refund: front.refund,
-            force: front.force,
             step: front.step,
             word: front.word,
             reason: prose.trim().to_string(),

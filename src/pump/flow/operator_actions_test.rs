@@ -1,11 +1,12 @@
 //! Tests for the operator-actions phase: replan, withdraw and requeue on a
-//! need with an active run go to the flow, once each; recover is refused; a
-//! need without a run, and answer and unlock letters, are left alone.
+//! need with an active run go to the flow, once each; on a need with no active
+//! run a withdraw closes the record and a requeue or replan is refused, also
+//! once each; answer and unlock letters are left alone.
 
 use std::collections::BTreeMap;
 use std::fs;
 
-use super::{ACTION_REFUSED, has_active_run, register};
+use super::{ACTION_REFUSED, active_run, register};
 use crate::error::VivariumError;
 use crate::letter::fixture::step_body;
 use crate::mailspace::PumpActionRequest;
@@ -137,17 +138,17 @@ impl Rig {
 #[test]
 fn a_run_in_an_active_state_counts_and_a_missing_one_does_not() -> R {
     let rig = rig()?;
-    assert!(has_active_run(&rig.store, &rig.need)?);
-    assert!(!has_active_run(&rig.store, "other-need")?);
+    assert!(active_run(&rig.store, &rig.need)?.is_some());
+    assert!(active_run(&rig.store, "other-need")?.is_none());
     rig.store.set_run_state(&rig.need, 1, "done")?;
-    assert!(!has_active_run(&rig.store, &rig.need)?);
+    assert!(active_run(&rig.store, &rig.need)?.is_none());
     Ok(())
 }
 
 #[test]
 fn a_replan_restarts_the_live_run_at_plan_once() -> R {
     let mut rig = rig()?;
-    let id = rig.post(&PumpActionRequest::replan(false))?;
+    let id = rig.post(&PumpActionRequest::replan())?;
     rig.phase()?;
 
     let runs = rig.store.runs_of(&rig.need)?;
@@ -183,9 +184,7 @@ fn a_withdraw_closes_the_record_once() -> R {
 fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     let mut rig = rig()?;
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(
-        &step, None, false, false, "again",
-    ))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "again"))?;
     rig.phase()?;
     rig.phase()?;
 
@@ -206,9 +205,7 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     if let Some(job) = rig.jobs.jobs.get_mut("hand-a2-q1") {
         job.status = JobStatus::Finished;
     }
-    let again = rig.post(&PumpActionRequest::requeue(
-        &step, None, false, false, "twice",
-    ))?;
+    let again = rig.post(&PumpActionRequest::requeue(&step, "twice"))?;
     rig.phase()?;
     assert!(rig.jobs.jobs().contains_key("hand-a2-q2"));
     assert!(rig.applied(&again)?);
@@ -218,13 +215,7 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
 #[test]
 fn a_requeue_of_a_task_outside_the_run_is_refused_and_spent() -> R {
     let mut rig = rig()?;
-    let id = rig.post(&PumpActionRequest::requeue(
-        "no-such-task",
-        None,
-        false,
-        false,
-        "x",
-    ))?;
+    let id = rig.post(&PumpActionRequest::requeue("no-such-task", "x"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -233,15 +224,78 @@ fn a_requeue_of_a_task_outside_the_run_is_refused_and_spent() -> R {
     Ok(())
 }
 
+fn withdraw_closes(rig: &Rig) -> usize {
+    rig.mail
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::CloseRecord { outcome, .. } if outcome == "withdrawn"))
+        .count()
+}
+
 #[test]
-fn an_action_on_a_need_without_a_run_is_left_for_the_old_pump() -> R {
+fn a_withdraw_on_a_need_without_a_run_closes_its_record_once() -> R {
     let mut rig = rig()?;
     rig.store.set_run_state(&rig.need, 1, "done")?;
-    let id = rig.post(&PumpActionRequest::replan(false))?;
+    let id = rig.post(&PumpActionRequest::withdraw("stop"))?;
+    rig.phase()?;
     rig.phase()?;
 
-    assert!(!rig.applied(&id)?);
+    assert_eq!(withdraw_closes(&rig), 1);
+    assert!(rig.applied(&id)?);
+    assert!(!rig.exceptions().contains(ACTION_REFUSED));
+    Ok(())
+}
+
+#[test]
+fn a_withdraw_on_a_need_that_never_had_a_run_closes_its_record() -> R {
+    let mut rig = rig()?;
+    rig.need = rig.project.need("other work");
+    rig.project.mailspace.pump_send(None, &rig.need, None)?;
+    MailWriter::open_record(&mut rig.mail, &rig.need, "record")?;
+    let id = rig.post(&PumpActionRequest::withdraw("stop"))?;
+    rig.phase()?;
+
+    assert_eq!(withdraw_closes(&rig), 1);
+    assert!(rig.applied(&id)?);
+    Ok(())
+}
+
+#[test]
+fn a_replan_on_a_need_without_a_run_is_refused_once() -> R {
+    let mut rig = rig()?;
+    rig.store.set_run_state(&rig.need, 1, "done")?;
+    let id = rig.post(&PumpActionRequest::replan())?;
+    rig.phase()?;
+    let alarms = rig.exceptions();
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(alarms.contains(ACTION_REFUSED));
+    assert!(alarms.contains(&rig.need));
+    assert!(alarms.contains("no active flow run"));
+    assert_eq!(
+        rig.exceptions(),
+        alarms,
+        "a spent letter raises nothing again"
+    );
     assert_eq!(rig.store.runs_of(&rig.need)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_requeue_on_a_need_without_a_run_is_refused_once() -> R {
+    let mut rig = rig()?;
+    rig.store.set_run_state(&rig.need, 1, "withdrawn")?;
+    let id = rig.post(&PumpActionRequest::requeue(&rig.step, "x"))?;
+    rig.phase()?;
+    let alarms = rig.exceptions();
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(alarms.contains(ACTION_REFUSED));
+    assert!(alarms.contains("vivi pump unlock"));
+    assert_eq!(rig.exceptions(), alarms);
+    assert_eq!(rig.jobs.jobs().len(), 1);
     Ok(())
 }
 
@@ -252,7 +306,7 @@ fn a_requeue_of_a_dispatched_job_is_refused_and_queues_nothing() -> R {
         job.status = JobStatus::Dispatched;
     }
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "x"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "x"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -303,7 +357,7 @@ fn a_requeue_releases_a_held_pending_job_and_dispatch_offers_it_again() -> R {
     assert!(dispatch_pending(&ctx, &mut rig.jobs)?.is_empty());
 
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -346,7 +400,7 @@ fn a_requeue_releases_a_held_correction_job_in_place() -> R {
         },
     )?;
 
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -368,7 +422,7 @@ fn a_requeue_releases_a_held_slice_merge_job_and_reruns_no_hand_job() -> R {
     enqueue(&mut rig.jobs, spec)?;
     hold(&mut rig.jobs, "merge-s1", &need, &step);
 
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "go"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);
@@ -388,7 +442,7 @@ fn a_requeue_on_a_done_step_is_refused_and_queues_nothing() -> R {
     rig.store
         .set_step_state(&rig.step, StepState::Done, Some("built"))?;
     let step = rig.step.clone();
-    let id = rig.post(&PumpActionRequest::requeue(&step, None, false, false, "x"))?;
+    let id = rig.post(&PumpActionRequest::requeue(&step, "x"))?;
     rig.phase()?;
 
     assert!(rig.applied(&id)?);

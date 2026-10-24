@@ -13,7 +13,7 @@ const BANDS: &str = r#"
 P2 = [{ model = "m/ok", reasoning = "high" }]
 "#;
 
-/// A pump config whose planner, merge, auditor and gate roles all use pool
+/// A pump config whose planner, merge and auditor roles all use pool
 /// `p`, with `model` on the roles and `extra` pool tables appended.
 fn config(model: &str, extra: &str) -> MailspaceConfig {
     let mut text = String::from("name = \"t\"\n");
@@ -22,7 +22,6 @@ fn config(model: &str, extra: &str) -> MailspaceConfig {
         ("pump-planner", "planner"),
         ("merge", "merge"),
         ("auditor", "auditor"),
-        ("gate", "gate"),
     ] {
         text.push_str(&format!(
             "[[identities]]\nname = \"{name}\"\nkind = \"{kind}\"\nstatus = \"active\"\n\
@@ -62,12 +61,7 @@ fn a_band_with_no_bands_table_names_each_stalled_role_and_the_fix() {
     let names: Vec<&str> = found.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        [
-            "pump-planner model",
-            "merge model",
-            "auditor model",
-            "gate model"
-        ]
+        ["pump-planner model", "merge model", "auditor model"]
     );
     let (_, message) = &found[0];
     assert!(
@@ -80,14 +74,14 @@ fn a_band_with_no_bands_table_names_each_stalled_role_and_the_fix() {
 #[test]
 fn a_role_with_no_band_and_no_model_is_reported() {
     let found = model_failures(&config("", &format!("{HARNESS}{BANDS}")));
-    assert_eq!(found.len(), 4, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
     assert!(found[0].1.contains("no model"), "{found:?}");
 }
 
 #[test]
 fn a_pool_with_no_harness_cannot_run_its_roles() {
     let found = model_failures(&config("model = \"P2-S0\"", BANDS));
-    assert_eq!(found.len(), 4, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
     assert!(found[1].1.contains("[pools.p.harness]"), "{}", found[1].1);
 }
 
@@ -112,14 +106,7 @@ fn validate_reports_the_findings_as_errors() {
         .filter(|issue| issue.severity == Severity::Error)
         .filter(|issue| issue.message.contains("pump jobs would stay pending"))
         .count();
-    assert_eq!(found, 4, "{issues:?}");
-}
-
-#[test]
-fn a_role_without_a_gate_is_not_checked_for_one() {
-    let mut text = config("model = \"P2-S0\"", &format!("{HARNESS}{BANDS}"));
-    text.identities.retain(|role| role.name != "gate");
-    assert!(model_failures(&text).is_empty());
+    assert_eq!(found, 3, "{issues:?}");
 }
 
 #[test]

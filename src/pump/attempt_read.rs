@@ -6,8 +6,7 @@
 //! `key: value` block that opens an attempt record, and the pool's result
 //! reply (`pool result <job>: <word>` / `pool <p>  slot <s>  model <m>` /
 //! `agent exit <n> in <m>s ... started from <epoch>`). Both parse to the same
-//! [`AttemptFields`]. A separate status event can enrich it with later
-//! lifecycle timestamps after the attempt has been posted.
+//! [`AttemptFields`].
 //!
 //! Pure string parsing: no mailspace, no store, no clock. Callers pass the
 //! epoch they mean by "now".
@@ -16,8 +15,6 @@ use chrono::DateTime;
 
 /// The first line of an attempt record.
 const HEADER: &str = "pump: attempt record";
-/// The first line of an attempt status event.
-const STATUS_HEADER: &str = "pump: attempt status event";
 /// The opening of a pool result reply.
 const POOL_RESULT: &str = "pool result ";
 /// The pool summary fragment carrying the agent's exit code.
@@ -45,8 +42,6 @@ const KEYS: [&str; 16] = [
     "merged-at",
     "outcome",
 ];
-/// Keys accepted in an attempt status event.
-const STATUS_KEYS: [&str; 4] = ["attempt", "need", "status", "at"];
 /// The units [`human_secs`] writes, largest first.
 const UNITS: [(&str, u64); 4] = [("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)];
 
@@ -95,33 +90,12 @@ pub struct AttemptFields {
     /// Unix epoch seconds when the unit was delivered to the merge queue.
     #[serde(default)]
     pub delivered_at: Option<u64>,
-    /// Unix epoch seconds when the attempt merged, joined from a status event.
+    /// Unix epoch seconds when the attempt merged, as the record wrote it.
     #[serde(default)]
     pub merged_at: Option<u64>,
     /// How the attempt ended (`delivered`, `proof-failed`, ...).
     #[serde(default)]
     pub outcome: String,
-}
-
-impl AttemptFields {
-    /// Enrich this record from a matching synced lifecycle event.
-    pub fn apply_status_event(&mut self, event: &AttemptStatusEvent) -> bool {
-        let need_mismatch = self
-            .need
-            .as_ref()
-            .zip(event.need.as_ref())
-            .is_some_and(|(record, status)| record != status);
-        if self.attempt != event.attempt || need_mismatch {
-            return false;
-        }
-        match event.status.as_str() {
-            "delivered" if event.at.is_some() => self.delivered_at = event.at,
-            "merged" if event.at.is_some() => self.merged_at = event.at,
-            "delivered" | "merged" => {}
-            _ => return false,
-        }
-        true
-    }
 }
 
 impl AttemptFields {
@@ -179,54 +153,6 @@ pub fn parse_record(body: &str) -> Option<AttemptFields> {
         return None;
     }
     Some(fields)
-}
-
-/// A synced lifecycle event that enriches one attempt record.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AttemptStatusEvent {
-    /// The attempt handle (`<unit>-a<n>`).
-    #[serde(default)]
-    pub attempt: String,
-    /// The need thread carrying the event.
-    #[serde(default)]
-    pub need: Option<String>,
-    /// The lifecycle status (`merged`, ...).
-    #[serde(default)]
-    pub status: String,
-    /// Unix epoch seconds when this status was recorded.
-    #[serde(default)]
-    pub at: Option<u64>,
-}
-
-/// Parse a synced attempt status event. Missing timestamps remain unavailable.
-#[must_use]
-pub fn parse_status_event(body: &str) -> Option<AttemptStatusEvent> {
-    let mut lines = crate::letter::prose_of(body).lines();
-    if lines.next()?.trim_end() != STATUS_HEADER {
-        return None;
-    }
-    let mut event = AttemptStatusEvent::default();
-    for line in lines {
-        let Some((key, value)) = line.split_once(':') else {
-            break;
-        };
-        let key = key.trim();
-        if !STATUS_KEYS.contains(&key) {
-            break;
-        }
-        let value = value.trim();
-        match key {
-            "attempt" => event.attempt = required(value),
-            "need" => event.need = optional(value),
-            "status" => event.status = required(value),
-            "at" => event.at = secs(value),
-            _ => {}
-        }
-    }
-    if event.attempt.is_empty() || event.status.is_empty() {
-        return None;
-    }
-    Some(event)
 }
 
 /// Parse a pool result reply on a need thread. The result line names the job

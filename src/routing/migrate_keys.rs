@@ -12,8 +12,23 @@ use super::migrate::{KeyRemoval, MigratePlan, RootSet};
 /// The root 15.0.0 used for every local pool without one.
 const V15_LOCAL_ROOT: &str = "~/vivi-pool";
 
-const PLANNER_REASON: &str =
-    "retired: planning runs as durable planner jobs on the pump-planner role's pool";
+const PLANNER_REASON: &str = "not read by vivi 21: planning runs as durable planner jobs on the \
+     pump-planner role's pool; the whole table is ignored";
+const PROOF_REASON: &str = "not read by vivi 21: proof commands are the pump rungs \
+     (`[pump.rungs]`); the whole table is ignored";
+const PLAN_REASON: &str =
+    "not read by vivi 21: plans are not checked against proof rules; the whole table is ignored";
+const ROUTING_REASON: &str = "not read by vivi 21: jobs go to the hand role's pool, and \
+     `vivi config migrate` carries lane caps and kind pools over to that pool";
+const ATTEMPT_REASON: &str =
+    "not read by vivi 21: there is no attempt, retry or overdue policy; remove it";
+const REPAIR_REASON: &str = "not read by vivi 21: there are no quarantine repair units; remove it";
+const ALARM_REASON: &str =
+    "not read by vivi 21: there are no stall alarms; the whole table is ignored";
+const PLANNER_CAP_REASON: &str =
+    "not read by vivi 21: planner jobs take no cap or timeout from here; remove it";
+const UNIT_FILE_REASON: &str =
+    "not read by vivi 21: the pump no longer reserves paths or names fix units; remove it";
 const INTAKE_REASON: &str = "retired: the pump plans exactly the needs with an open pump record \
      (`vivi pump send --need <handle>`), so no mark or date cutoff applies";
 const GATE_REASON: &str = "retired: the pump no longer runs a gate; the whole table is ignored";
@@ -24,14 +39,39 @@ const MERGE_BATCH_REASON: &str = "retired: the merge flow no longer batches or f
 const MERGE_TIMER_REASON: &str = "retired: the merge flow has its own step timeouts";
 const MERGE_LANES_REASON: &str =
     "ignored: merge concurrency follows the slots of the merge role's pool";
+const WORKSPACE_REASON: &str = "not read by vivi 21: merge lanes run on the merge role's pool, \
+     not a lane RAM disk; the whole table is ignored";
 const NEED_REASON: &str = "retired: no repair-round counter; the whole table is ignored";
 
 /// Keys that are always ignored: `(table, key, reason, behaviour_change)`.
 /// A key that holds a table retires the whole table. A `*` in the table path
 /// stands for each `[pump.targets.<id>]`.
-const RETIRED: [(&str, &str, &str, bool); 25] = [
-    ("pump.planner", "run", PLANNER_REASON, false),
-    ("pump.planner", "charter", PLANNER_REASON, false),
+const RETIRED: [(&str, &str, &str, bool); 43] = [
+    ("pump", "planner", PLANNER_REASON, false),
+    ("pump", "proof", PROOF_REASON, false),
+    ("pump", "plan", PLAN_REASON, false),
+    ("pump", "alarm", ALARM_REASON, false),
+    ("pump", "workspace", WORKSPACE_REASON, false),
+    ("pump", "reserved_file", UNIT_FILE_REASON, false),
+    ("pump", "fix_prefix", UNIT_FILE_REASON, false),
+    ("pump.board", "planners_max", PLANNER_CAP_REASON, false),
+    ("pump.board", "plan_timeout", PLANNER_CAP_REASON, false),
+    ("pump.dispatch", "kinds", ROUTING_REASON, false),
+    ("pump.dispatch", "default_kind", ROUTING_REASON, false),
+    ("pump.dispatch", "lanes", ROUTING_REASON, false),
+    ("pump.dispatch", "max_attempts", ATTEMPT_REASON, false),
+    ("pump.dispatch", "per_tick", ATTEMPT_REASON, false),
+    ("pump.dispatch", "transient_max", ATTEMPT_REASON, false),
+    ("pump.dispatch", "transient_backoff", ATTEMPT_REASON, false),
+    ("pump.dispatch", "overdue_grace", ATTEMPT_REASON, false),
+    ("pump.dispatch", "last_resort", ATTEMPT_REASON, false),
+    ("pump.merge", "repair_budget", REPAIR_REASON, false),
+    (
+        "pump.targets.*.merge",
+        "repair_budget",
+        REPAIR_REASON,
+        false,
+    ),
     ("pump.board", "mark", INTAKE_REASON, true),
     ("pump.board", "since", INTAKE_REASON, true),
     ("pump", "gate", GATE_REASON, true),
@@ -180,6 +220,9 @@ fn push_removal(
 
 /// A key's value as written, or the key names of a whole table.
 fn describe(item: &Item) -> String {
+    if let Some(tables) = item.as_array_of_tables() {
+        return format!("(array of {} table(s))", tables.len());
+    }
     match item.as_table_like() {
         Some(table) => {
             let keys: Vec<&str> = table.iter().map(|(key, _)| key).collect();

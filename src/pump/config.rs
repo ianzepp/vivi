@@ -1,6 +1,5 @@
 //! Pump configuration (the `[pump]` table of `mailspace.toml`).
 
-use crate::pump::alarm::AlarmConfig;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -87,8 +86,6 @@ pub struct PumpConfig {
     pub merge: MergeConfig,
     /// Lane RAM disk settings (the `[pump.workspace]` table).
     pub workspace: PumpWorkspace,
-    /// Stall alarm thresholds (the `[pump.alarm]` table).
-    pub alarm: AlarmConfig,
     /// Rung settings (the `[pump.rungs]` table).
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
@@ -127,7 +124,6 @@ impl Default for PumpConfig {
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             workspace: PumpWorkspace::default(),
-            alarm: AlarmConfig::default(),
             rungs: RungsConfig::default(),
             flow: FlowConfig::default(),
             slice: SliceConfig::default(),
@@ -572,9 +568,6 @@ impl Default for DispatchConfig {
 pub struct MergeConfig {
     /// Format command run after merging.
     pub format: String,
-    /// Optional wall-clock budget for quarantine repair units.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repair_budget: Option<u64>,
     /// Seconds a claimed merge may take.
     pub remote_limit: u64,
     /// Files the merge lane regenerates instead of resolving by hand.
@@ -585,7 +578,6 @@ impl Default for MergeConfig {
     fn default() -> Self {
         Self {
             format: String::new(),
-            repair_budget: None,
             remote_limit: 1800,
             generated: Vec::new(),
         }

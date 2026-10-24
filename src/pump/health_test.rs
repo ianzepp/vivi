@@ -9,7 +9,7 @@ use tempfile::tempdir;
 
 use super::writer::{LockRow, ProcRoot, holder_in, parse_locks, split_dev};
 use super::{HealthOptions, Signals, Verdict, decide, default_stale_after, health};
-use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
+use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 fn running() -> Signals {
@@ -80,20 +80,6 @@ fn a_paused_pump_is_degraded_never_stalled() {
     });
     assert_eq!(verdict, Verdict::Degraded);
     assert_eq!(reasons, vec![String::from("control paused")]);
-}
-
-#[test]
-fn parked_work_and_stalls_each_give_a_reason() {
-    let (verdict, reasons) = decide(&Signals {
-        stuck: 2,
-        quarantined: 1,
-        needs_replan: 1,
-        stall_exceptions: 1,
-        ..running()
-    });
-    assert_eq!(verdict, Verdict::Degraded);
-    assert_eq!(reasons.len(), 4, "{reasons:?}");
-    assert!(reasons.contains(&String::from("2 units stuck")));
 }
 
 #[test]
@@ -230,55 +216,10 @@ fn a_pump_without_a_database_is_unknown_and_creates_nothing() {
     assert!(!dir.path().join(".vivi/pump").exists());
 }
 
-fn unit(need: &str, status: Status, since: u64) -> Unit {
-    Unit {
-        need: need.to_owned(),
-        title: format!("{need} unit"),
-        status,
-        since,
-        ..Unit::default()
-    }
-}
-
-fn saved_state(now: u64) -> State {
-    let mut st = State {
-        merges: 1,
-        ..State::default()
-    };
-    let mut merged = unit("n1", Status::Merged, now - 50);
-    merged.commit = Some(String::from("abc1234"));
-    merged.merged_at = Some(now - 50);
-    st.units.insert(String::from("u1"), merged);
-    let mut stuck = unit("n1", Status::Stuck, now - 7200);
-    stuck.history.push(Attempt {
-        why: String::from("finished/agent exit 1"),
-        detail: String::from("proof failed"),
-        ..Attempt::default()
-    });
-    st.units.insert(String::from("u2"), stuck);
-    st.needs.insert(
-        String::from("n1"),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: vec![String::from("u1"), String::from("u2")],
-            ..NeedRecord::default()
-        },
-    );
-    st.needs.insert(
-        String::from("n2"),
-        NeedRecord {
-            verdict: String::from("operator"),
-            reason: String::from("needs a ruling"),
-            ..NeedRecord::default()
-        },
-    );
-    st
-}
-
 fn write_pump_home(home: &Path, now: u64) {
     fs::create_dir_all(home).unwrap();
     let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
-    store.save(&saved_state(now)).unwrap();
+    store.save(&State::default()).unwrap();
     store.set_control_mode("running").unwrap();
     drop(store);
     let tick = format!(
@@ -291,7 +232,7 @@ fn write_pump_home(home: &Path, now: u64) {
 }
 
 #[test]
-fn a_saved_store_reads_into_counts_merges_blocked_and_changes() {
+fn a_saved_store_reads_into_control_tick_and_exceptions() {
     let dir = project(TOML);
     let now = epoch_now();
     let home = dir.path().join(".vivi/pump");
@@ -302,33 +243,10 @@ fn a_saved_store_reads_into_counts_merges_blocked_and_changes() {
         ..HealthOptions::default()
     };
     let h = health(dir.path(), &opts).unwrap();
-    assert_eq!(h.verdict, Verdict::Degraded, "{:?}", h.reasons);
-    assert!(
-        h.reasons.contains(&String::from("1 units stuck")),
-        "{:?}",
-        h.reasons
-    );
     assert_eq!(h.control.as_deref(), Some("running"));
-    assert_eq!(h.units["merged"], 1);
-    assert_eq!(h.units["stuck"], 1);
-    assert_eq!(h.merges.total, 1);
-    assert_eq!(h.merges.recent[0].commit.as_deref(), Some("abc1234"));
     assert_eq!(h.last_tick.as_ref().unwrap().age_secs, 2);
-    assert_eq!(h.blocked.len(), 2);
-    assert_eq!(
-        (h.blocked[0].kind, h.blocked[0].id.as_str()),
-        ("unit", "u2")
-    );
-    assert_eq!(h.blocked[0].reason, "finished/agent exit 1: proof failed");
-    assert_eq!(h.blocked[0].age_secs, 7200);
-    assert_eq!(
-        (h.blocked[1].kind, h.blocked[1].state.as_str()),
-        ("need", "operator")
-    );
-    let changed = h.changed_since.unwrap();
-    assert_eq!(changed.merges, 1);
-    assert_eq!(changed.units.len(), 1);
-    assert_eq!(changed.units[0].unit, "u1");
+    assert!(h.exceptions.is_empty());
+    assert_eq!(h.changed_since.unwrap().exceptions, 0);
 }
 
 #[test]
@@ -340,6 +258,9 @@ fn the_json_shape_names_the_verdict_in_lowercase() {
     let value = serde_json::to_value(&h).unwrap();
     assert_eq!(value["verdict"], "degraded");
     assert!(value.get("changed_since").is_none());
+    for key in ["units", "merges", "blocked", "complete_open_needs"] {
+        assert!(value.get(key).is_none(), "{key}");
+    }
     assert!(value["writer"]["source"].is_string());
     assert!(super::render(&h).starts_with("verdict  degraded\n"));
 }

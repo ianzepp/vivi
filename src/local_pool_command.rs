@@ -391,22 +391,17 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// Reclaim free-slot build output and recycle work lanes whose units are
-/// merged into the merge lane (not main).
+/// Reclaim free-slot build output; with `--base`, reset free remote slots.
 fn clean(command: &PoolCleanCommand) -> Result<(), VivariumError> {
-    let report = if let Some(request) = command.after_merged_request.as_deref() {
-        clean::after_merged_request(request, command.project.as_deref())?
-    } else {
-        let space = Mailspace::discover(command.project.as_deref())?;
-        clean::clean_mailspace(
-            &space,
-            &clean::CleanOptions {
-                dry_run: command.dry_run,
-                pool: command.pool.clone(),
-                base: command.base.clone(),
-            },
-        )?
-    };
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let report = clean::clean_mailspace(
+        &space,
+        &clean::CleanOptions {
+            dry_run: command.dry_run,
+            pool: command.pool.clone(),
+            base: command.base.clone(),
+        },
+    )?;
     print_clean(command.porcelain, command.dry_run, &report);
     match &report.refused {
         Some(msg) => Err(VivariumError::Message(msg.clone())),
@@ -422,12 +417,7 @@ fn reset(command: &PoolResetCommand) -> Result<(), VivariumError> {
     }
     let space = Mailspace::discover(command.project.as_deref())?;
     let handle = pools::open_one(&space, command.pool.as_deref())?;
-    let chosen = vivi::pool::reset::choose_base(
-        &space,
-        command.base.as_deref(),
-        None,
-        vivi::pool::reset::ResetKind::Recycle,
-    );
+    let chosen = vivi::pool::reset::choose_base(&space, command.base.as_deref());
     let machines = handle.provider.list()?;
     let slots = vivi::pool::slot::pool_slots(&handle.id, &machines);
     let targets: Vec<vivi::pool::slot::SlotStatus> = match &command.slot {

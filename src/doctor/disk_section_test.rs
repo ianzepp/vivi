@@ -35,43 +35,6 @@ fn size_findings_report_missing_small_and_large_paths() {
 }
 
 #[test]
-fn branch_count_counts_only_unit_refs() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    git(temp.path(), &["init", "--quiet"]);
-    git(
-        temp.path(),
-        &[
-            "-c",
-            "user.name=Doctor",
-            "-c",
-            "user.email=doctor@example.invalid",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "init",
-            "--quiet",
-        ],
-    );
-    git(temp.path(), &["branch", "vivi/unit/one"]);
-    git(temp.path(), &["branch", "feature/other"]);
-    assert_eq!(branch_count(temp.path()), Some(1));
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .expect("git available");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
 fn size_finding_stops_counting_once_over_the_threshold() {
     let temp = tempfile::tempdir().expect("tempdir");
     for index in 0..50 {

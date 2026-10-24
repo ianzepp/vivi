@@ -17,6 +17,12 @@ use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 /// The fake clock's start; units are created "now".
 const T0: u64 = 1_000_000;
 
+/// One reconcile plus the split-planner expiry pass the tick no longer runs.
+fn collect_and_expire(ctx: &Ctx, st: &mut State) {
+    collect(ctx, st);
+    expire_splits(ctx, st);
+}
+
 /// A context with default config, home at `dir/home`.
 fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     setup_with(PumpConfig::default())
@@ -86,7 +92,7 @@ fn a_due_split_retry_defers_when_the_planner_cap_is_full() {
     u2.split_retry_at = Some(T0);
     put(&mut st, "u-2", u2);
 
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     assert!(host.spawned().is_empty());
     let u = st.units.get("u-2").unwrap();
@@ -107,7 +113,7 @@ fn a_receipt_less_splitting_unit_is_stuck_at_the_hard_cap() {
     let mut st = State::default();
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
     host.advance(5401);
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(host.commands().is_empty());
     assert!(
@@ -156,7 +162,7 @@ fn a_dead_split_planner_is_reported_and_retried() {
     fs::create_dir_all(ctx.home.join("resplit")).unwrap();
     fs::write(ctx.home.join("resplit/u-1.out.rc"), "127\n").unwrap();
 
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
@@ -173,7 +179,7 @@ fn a_dead_split_planner_is_reported_and_retried() {
     assert!(host.spawned().is_empty());
 
     host.advance(61);
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
@@ -206,7 +212,7 @@ fn a_rate_limited_split_planner_keeps_its_retry_budget() {
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
     rate_limited_receipt(&ctx, "u-1");
 
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
@@ -229,7 +235,7 @@ fn a_rate_limited_split_planner_keeps_its_retry_budget() {
     );
 
     host.advance(135);
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     let retry_id = crate::pump::planner_jobs::job_id("split", "u-1", ctx.now());
     assert_eq!(
@@ -248,7 +254,7 @@ fn repeated_rate_limits_back_off_without_parking() {
     let mut last: Option<u64> = None;
     for round in 0..3 {
         rate_limited_receipt(&ctx, "u-1");
-        collect(&ctx, &mut st);
+        collect_and_expire(&ctx, &mut st);
         let u = st.units.get("u-1").unwrap();
         assert_eq!(u.status, Status::Splitting, "round {round}");
         assert_eq!(u.split_fails, 0, "round {round}");
@@ -276,7 +282,7 @@ fn a_split_rate_limit_burst_raises_one_exception_per_window() {
         rate_limited_receipt(&ctx, uid);
     }
 
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
     assert_eq!(
         exceptions(&ctx)
             .lines()
@@ -288,7 +294,7 @@ fn a_split_rate_limit_burst_raises_one_exception_per_window() {
         rate_limited_receipt(&ctx, uid);
     }
     host.advance(100);
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
     assert_eq!(
         exceptions(&ctx)
             .lines()
@@ -300,7 +306,7 @@ fn a_split_rate_limit_burst_raises_one_exception_per_window() {
         rate_limited_receipt(&ctx, uid);
     }
     host.advance(RATE_LIMIT_EXCEPTION_WINDOW - 100 + 1);
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
     assert_eq!(
         exceptions(&ctx)
             .lines()
@@ -320,7 +326,7 @@ fn the_third_split_planner_failure_makes_the_unit_stuck() {
     fs::create_dir_all(ctx.home.join("resplit")).unwrap();
     fs::write(ctx.home.join("resplit/u-1.out.rc"), "1\n").unwrap();
 
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(
@@ -426,7 +432,7 @@ fn a_split_planner_that_died_host_class_returns_the_unit_pending() {
     write_planner_out(&ctx, "u-1", "bash: line 1: pi: command not found\n");
     host.advance(60);
 
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
 
     let stuck = st.units.get("u-1").unwrap();
     assert_eq!(stuck.status, Status::Pending);
@@ -459,7 +465,7 @@ fn a_silent_split_planner_still_goes_stuck() {
     write_planner_out(&ctx, "u-1", "thinking...\n");
 
     host.advance(1501);
-    collect(&ctx, &mut st);
+    collect_and_expire(&ctx, &mut st);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(
         exceptions(&ctx).contains(

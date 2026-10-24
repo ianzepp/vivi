@@ -20,14 +20,13 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 
-use super::closeout::{self, CloseoutRow};
 use super::cycle::{self, TickRecord};
 use super::report::{self, PumpRead, Snapshot};
 use super::store::SCHEMA_VERSION;
 
 pub use render::render;
 pub use verdict::{Signals, Verdict, decide};
-pub use views::{BlockedView, ChangedSince, ExceptionView, MergeView, Merges, UnitChange};
+pub use views::{ChangedSince, ExceptionView};
 
 /// The default lookback for exceptions when no `since` is given.
 pub const DEFAULT_WINDOW_SECS: u64 = 3600;
@@ -79,10 +78,6 @@ pub struct PumpHealth {
     pub status_age_secs: Option<u64>,
     /// The pump.db schema this binary reads.
     pub schema: i64,
-    pub units: std::collections::BTreeMap<String, usize>,
-    pub merges: Merges,
-    pub blocked: Vec<BlockedView>,
-    pub complete_open_needs: Vec<CloseoutRow>,
     pub exceptions: Vec<ExceptionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_since: Option<ChangedSince>,
@@ -120,7 +115,7 @@ pub fn health(project: &Path, opts: &HealthOptions) -> Result<PumpHealth, Vivari
             .reasons
             .push(String::from("no pump.db at the pump home")),
         PumpRead::Unreadable(why) => out.reasons.push(format!("pump.db unreadable: {why}")),
-        PumpRead::Ready(snapshot) => fill(&mut out, &home, &mailspace, &snapshot, opts)?,
+        PumpRead::Ready(snapshot) => fill(&mut out, &home, &snapshot, opts),
     }
     if let Some(summary) = not_ready_reason(&mailspace) {
         add_not_ready(&mut out, summary);
@@ -172,48 +167,31 @@ fn blank(now: u64, tick_secs: u64, opts: &HealthOptions) -> PumpHealth {
         last_tick: None,
         status_age_secs: None,
         schema: SCHEMA_VERSION,
-        units: std::collections::BTreeMap::new(),
-        merges: Merges::default(),
-        blocked: Vec::new(),
-        complete_open_needs: Vec::new(),
         exceptions: Vec::new(),
         changed_since: None,
     }
 }
 
 /// Everything read from a ready snapshot, then the verdict.
-fn fill(
-    out: &mut PumpHealth,
-    home: &Path,
-    mailspace: &Mailspace,
-    snapshot: &Snapshot,
-    opts: &HealthOptions,
-) -> Result<(), VivariumError> {
-    let state = snapshot.state();
+fn fill(out: &mut PumpHealth, home: &Path, snapshot: &Snapshot, opts: &HealthOptions) {
     let now = out.as_of;
     if let Ok(control) = super::control::read(home) {
         out.control = Some(control.mode.to_string());
         out.shutdown_requested = control.shutdown_requested;
     }
-    out.units = state.counts();
-    out.merges = views::merges(state);
-    out.blocked = views::blocked(state, now);
-    out.complete_open_needs = closeout::complete_open(mailspace, snapshot)?;
     let window = opts
         .since
         .unwrap_or_else(|| now.saturating_sub(DEFAULT_WINDOW_SECS));
     out.exceptions = views::exceptions(snapshot.exception_rows(), window);
     out.changed_since = opts
         .since
-        .map(|since| views::changed_since(state, snapshot.exception_rows(), since));
+        .map(|since| views::changed_since(snapshot.exception_rows(), since));
     let (verdict, reasons) = decide(&signals(out));
     out.verdict = verdict;
     out.reasons = reasons;
-    Ok(())
 }
 
 fn signals(out: &PumpHealth) -> Signals {
-    let count = |name: &str| out.units.get(name).copied().unwrap_or(0);
     Signals {
         control: out.control.clone(),
         writer_running: match out.writer.state {
@@ -224,14 +202,6 @@ fn signals(out: &PumpHealth) -> Signals {
         tick_age: out.last_tick.as_ref().map(|tick| tick.age_secs),
         status_age: out.status_age_secs,
         stale_after: out.stale_after_secs,
-        stuck: count("stuck"),
-        quarantined: count("quarantined"),
-        needs_replan: count("needs-replan"),
-        stall_exceptions: out
-            .exceptions
-            .iter()
-            .filter(|row| row.kind.starts_with("stall-"))
-            .count(),
     }
 }
 

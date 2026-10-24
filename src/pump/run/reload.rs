@@ -11,7 +11,7 @@ use crate::pump::config::PumpConfig;
 use crate::pump::host::Ctx;
 
 /// Refresh the live mailspace config between ticks. Valid pool, routing,
-/// dispatch, merge, gate, budget, check, and new-target changes apply to the
+/// dispatch, merge, budget, check, and new-target changes apply to the
 /// next tick. The pump home and the integration checkout of a running target
 /// stay fixed for the life of the lock: a change to them keeps the running
 /// value, the rest of the reload still applies, and one

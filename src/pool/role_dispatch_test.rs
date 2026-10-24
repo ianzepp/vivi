@@ -156,9 +156,7 @@ fn a_repairer_publishes_only_one_repair_segment() {
 
 #[test]
 fn triage_and_cadence_kinds_are_read_only_too() {
-    for kind in [
-        "triage", "cadence", "AUDITOR", "Triage", "steward", "head", "gate",
-    ] {
+    for kind in ["triage", "cadence", "AUDITOR", "Triage", "steward", "head"] {
         let worker = role("gatekeeper", Some(kind), Some("P1"));
         let resolved = resolve(
             &pool(),
@@ -589,6 +587,14 @@ fn digest_run_text_names_contract() {
     assert!(text.contains("--body-file"), "got: {text}");
     assert!(text.contains("/tmp/demo"), "got: {text}");
     assert!(text.contains("status.txt"), "got: {text}");
+    assert!(text.contains("exceptions.txt"), "got: {text}");
+    assert!(
+        text.contains("vivi flow show <kind> --need <need>"),
+        "got: {text}"
+    );
+    assert!(text.contains("vivi pump list"), "got: {text}");
+    assert!(!text.contains("gate"), "got: {text}");
+    assert!(!text.contains("quarantine"), "got: {text}");
     assert!(text.contains("only write"), "got: {text}");
 }
 

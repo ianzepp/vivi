@@ -14,7 +14,6 @@ use tempfile::{TempDir, tempdir};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
-use crate::pump::state::{NeedRecord, State, Status, Unit};
 
 /// The fake clock's start.
 pub(crate) const T0: u64 = 1_000_000;
@@ -93,31 +92,6 @@ pub(crate) fn send_need(mailspace: &Mailspace, subject: &str, to: &str) -> Strin
         .delivered
         .remove(0)
         .handle
-}
-
-/// State holding `need` planned into the given `(uid, status)` units.
-pub(crate) fn planned(need: &str, units: &[(&str, Status)]) -> State {
-    let mut st = State::default();
-    st.needs.insert(
-        need.to_owned(),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: units.iter().map(|(uid, _)| (*uid).to_owned()).collect(),
-            ..NeedRecord::default()
-        },
-    );
-    for (uid, status) in units {
-        st.units.insert(
-            (*uid).to_owned(),
-            Unit {
-                need: need.to_owned(),
-                target: String::from("default"),
-                status: *status,
-                ..Unit::default()
-            },
-        );
-    }
-    st
 }
 
 /// A [`FakeHost`] that watches `pool dispatch` calls: how many were in flight

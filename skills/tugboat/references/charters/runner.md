@@ -50,17 +50,17 @@ Where the script prints a count of what it ran, put that count in the report. A
 green run with no count is weaker evidence than a green run that says how many
 cases it executed.
 
-## Report and close
+## Report
 
 Report on the handle with the verdict, the exact command, the commit ids, and
 the script's own per-stage summary. A harness defect is the Mind's problem the
 moment you report it.
 
-Then close your own handle, stating the verdict:
+Then report done on your handle, stating the verdict. `task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked.
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for runner --verdict <verdict> \
   --note '<command, result, counts>'
 ```
 
-Your run is complete when you have reported and closed. Stop then.
+Your run is complete when you have reported. Stop then; the Mind accepts the report.

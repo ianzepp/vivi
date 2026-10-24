@@ -611,7 +611,7 @@ fn a_new_unit_overlapping_another_needs_live_unit_is_warned() {
 // --- config --------------------------------------------------------------
 
 #[test]
-fn proof_rules_parse_from_the_pump_table_and_validate() {
+fn proof_rules_parse_from_the_pump_table() {
     let cfg: PumpConfig = toml::from_str(
         r#"
         committer_name = "n"
@@ -629,44 +629,10 @@ fn proof_rules_parse_from_the_pump_table_and_validate() {
     .unwrap();
     assert_eq!(cfg.plan.proof_rules.len(), 2);
     assert_eq!(cfg.plan.proof_rules[0].reason, "why");
-    let found = cfg.findings_for(std::path::Path::new("."), &[], true);
-    assert_eq!(
-        found
-            .errors
-            .iter()
-            .filter(|e| e.contains("pump.plan.proof_rules"))
-            .count(),
-        1,
-        "{:?}",
-        found.errors
-    );
-    assert!(
-        found
-            .errors
-            .iter()
-            .any(|e| e.contains("entry 2: proof `(` is not a valid regex")),
-        "{:?}",
-        found.errors
-    );
 }
 
 #[test]
-fn an_empty_rule_scope_or_proof_is_an_error_and_an_empty_table_is_not_written() {
-    let mut cfg = PumpConfig::default();
-    cfg.plan.proof_rules.push(ProofRule::default());
-    let found = cfg.findings_for(std::path::Path::new("."), &[], true);
-    assert!(
-        found
-            .errors
-            .iter()
-            .any(|e| e.contains("scope must not be empty"))
-    );
-    assert!(
-        found
-            .errors
-            .iter()
-            .any(|e| e.contains("proof must not be empty"))
-    );
+fn an_empty_proof_rule_table_is_not_written() {
     let text = toml::to_string(&PumpConfig::default()).unwrap();
     assert!(!text.contains("proof_rules"), "{text}");
 }

@@ -23,7 +23,6 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             status,
             marks,
             json,
-            pump,
             project,
         } => {
             vivi::mailspace::validate_marks_filter(marks)?;
@@ -39,7 +38,6 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
                     to.as_deref(),
                     marks,
                     *json,
-                    *pump,
                 )?;
             } else {
                 crate::local_work_list::print_work_lists(
@@ -51,7 +49,6 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
                     to.as_deref(),
                     marks,
                     *json,
-                    *pump,
                 )?;
             }
         }
@@ -183,7 +180,6 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
                     to.as_deref(),
                     marks,
                     *json,
-                    false,
                 )?;
             } else {
                 list_wants(
@@ -618,10 +614,6 @@ fn show_need(
         vivi::mailspace::print_thread_newest(&mailspace, handle, count, json)?;
         return Ok(());
     }
-    let registry_open = match mailspace.thread(handle, false, 50, 50) {
-        Ok(messages) => messages.first().map(|message| message.role == "needs"),
-        Err(_) => None,
-    };
     if !json && !latest {
         vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
     }
@@ -651,7 +643,6 @@ fn show_need(
     if runs > 0 {
         println!("  runs: {runs}");
     }
-    print_pump_need(&mailspace, handle, registry_open);
     Ok(())
 }
 
@@ -719,33 +710,6 @@ fn print_attempts_json(
             .map_err(|error| VivariumError::Other(format!("failed to encode JSON: {error}")))?
     );
     Ok(())
-}
-
-/// The pump-owned block on `need show`. A missing or unreadable database is
-/// reported without failing the thread display.
-fn print_pump_need(mailspace: &Mailspace, handle: &str, registry_open: Option<bool>) {
-    let Some(home) = mailspace
-        .config
-        .pump
-        .as_ref()
-        .map(|config| config.home_dir(&mailspace.root))
-    else {
-        return;
-    };
-    match vivi::pump::report::read(&home) {
-        Ok(vivi::pump::report::PumpRead::Ready(snapshot)) => {
-            if let Some(summary) = snapshot.need(handle) {
-                print!(
-                    "{}",
-                    vivi::pump::report::render_need(&summary, registry_open)
-                );
-            }
-        }
-        Ok(vivi::pump::report::PumpRead::Unreadable(why)) => {
-            println!("  pump      unreadable ({why})");
-        }
-        Ok(vivi::pump::report::PumpRead::Missing) | Err(_) => {}
-    }
 }
 
 fn status_roles<'a>(status: &TaskStatus, open_role: &'a str) -> Vec<&'a str> {

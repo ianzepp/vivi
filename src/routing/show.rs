@@ -9,7 +9,7 @@ use crate::pump::config::PumpConfig;
 
 use super::model::{RoleRouting, RoutedRole, from_mailspace, merge_lane_count};
 
-/// The resolved role → pool table plus the merge/gate flow.
+/// The resolved role → pool table plus the merge flow.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigOverview {
     pub roles: Vec<RoleRow>,
@@ -31,14 +31,12 @@ pub struct RoleRow {
     pub source: String,
 }
 
-/// Merge and gate flow as the pump will run it.
+/// Merge flow as the pump will run it.
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowOverview {
     pub merge_role: String,
     pub merge_pool: String,
     pub merge_lanes: u32,
-    pub gate_role: String,
-    pub gate_pool: String,
     pub main: String,
 }
 
@@ -69,7 +67,7 @@ fn row(
     pump: Option<&PumpConfig>,
     free: Option<&BTreeMap<String, u32>>,
 ) -> RoleRow {
-    let (pool, source) = pool_and_source(routing, role, pump);
+    let (pool, source) = pool_and_source(role, pump);
     let total = pool
         .as_deref()
         .and_then(|name| routing.pools.get(name))
@@ -90,35 +88,14 @@ fn row(
     }
 }
 
-fn pool_and_source(
-    routing: &RoleRouting,
-    role: &RoutedRole,
-    pump: Option<&PumpConfig>,
-) -> (Option<String>, String) {
+fn pool_and_source(role: &RoutedRole, pump: Option<&PumpConfig>) -> (Option<String>, String) {
     if let Some(pool) = &role.pool {
         return (Some(pool.clone()), "role.pool".into());
     }
-    if let Some(pump) = pump {
-        return legacy_pool(routing, role, pump);
-    }
-    (None, "unset".into())
-}
-
-fn legacy_pool(
-    _routing: &RoleRouting,
-    role: &RoutedRole,
-    pump: &PumpConfig,
-) -> (Option<String>, String) {
-    if role.name.eq_ignore_ascii_case(&pump.to)
-        && let Some(kind) = pump.dispatch.kinds.get(&pump.dispatch.default_kind)
-        && let Some(pool) = kind.pools.first()
-    {
-        return (Some(pool.clone()), "pump.dispatch.kinds".into());
-    }
-    if role.name.eq_ignore_ascii_case("merge") || kind_is(role, "merge") {
+    if pump.is_some() && (role.name.eq_ignore_ascii_case("merge") || kind_is(role, "merge")) {
         return (Some("(host)".into()), "merge role".into());
     }
-    (None, "legacy".into())
+    (None, "unset".into())
 }
 
 fn kind_is(role: &RoutedRole, kind: &str) -> bool {
@@ -148,23 +125,16 @@ fn flow(routing: &RoleRouting, pump: Option<&PumpConfig>) -> FlowOverview {
             merge_role: "-".into(),
             merge_pool: "-".into(),
             merge_lanes: 0,
-            gate_role: "-".into(),
-            gate_pool: "-".into(),
             main: "-".into(),
         };
     };
     let merge = routing.merge();
-    let gate = routing.gate();
     FlowOverview {
         merge_role: merge.map_or_else(|| "merge".into(), |role| role.name.clone()),
         merge_pool: merge
             .and_then(|role| role.pool.clone())
             .unwrap_or_else(|| "(host)".into()),
         merge_lanes: merge_lane_count(routing),
-        gate_role: gate.map_or_else(|| "gate".into(), |role| role.name.clone()),
-        gate_pool: gate
-            .and_then(|role| role.pool.clone())
-            .unwrap_or_else(|| "-".into()),
         main: pump.main.clone(),
     }
 }
@@ -198,13 +168,8 @@ pub fn render_text(overview: &ConfigOverview) -> String {
 
 fn flow_text(flow: &FlowOverview) -> String {
     format!(
-        "flow: {} @ {} ({} lanes) → shared checks → {} @ {} → {}",
-        flow.merge_role,
-        flow.merge_pool,
-        flow.merge_lanes,
-        flow.gate_role,
-        flow.gate_pool,
-        flow.main
+        "flow: {} @ {} ({} lanes) → {}",
+        flow.merge_role, flow.merge_pool, flow.merge_lanes, flow.main
     )
 }
 

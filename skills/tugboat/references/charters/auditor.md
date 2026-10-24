@@ -51,7 +51,7 @@ You are **not** a second CTO, not a strategist, not a merger, not a GO stamp.
 5. Run risk-based validation; distinguish baseline failures.
 6. Challenge each candidate finding; after the first blocker, sweep for the same root-cause class beyond the immediate site; finish the coverage ledger.
 7. Derive the verdict from severity, coverage, validation, and blind spots.
-8. **Report first** To mind; then, outside pump mode, close the audit assignment with an evidence note. In pump mode never close it (see Pump verify mode).
+8. **Report first** To mind; then, outside pump mode, report done on the audit assignment with an evidence note. In pump mode never close it (see Pump verify mode).
 
 ### 1. Freeze
 
@@ -271,7 +271,7 @@ not_claimed: [<global correctness, production proof, etc.>]
 
 Empty findings still require coverage, validation, blind spots, and `not_claimed`.
 
-## Report and close (Vivi)
+## Report (Vivi)
 
 This section applies outside pump mode. In pump mode, never run `vivi task done`: the pump closes the step.
 
@@ -287,17 +287,17 @@ vivi mail send --project "$ROOT" \
   --subject 'auditor report: <verdict> <range/theme>' \
   --body-file <report>
 
-# Doorbell on the handle, then close it with the verdict
+# Doorbell on the handle, then report done with the verdict
 vivi mail reply <handle> --project "$ROOT" --from auditor \
   --body '<verdict>; range <base>..<head>; report <mail handle>'
 vivi task done <handle> --project "$ROOT" --for auditor --verdict <verdict> \
   --note 'audit reported to mind; range <base>..<head>'
 ```
 
-If report delivery fails, **do not** close the task. A `block_range` or
-`block_ship` still closes the **audit assignment** after successful delivery; the
-Mind owns product residuals. Report on the handle and close it with `vivi task
-done`: that is completion. Chat-only is not durable completion.
+If report delivery fails, **do not** run `task done`. A `block_range` or
+`block_ship` still ends with `task done` after successful delivery; the
+Mind owns product residuals. `vivi task done` is your report and the Mind
+accepts it. Chat-only is not durable completion.
 
 ## Pump verify mode
 

@@ -1,58 +1,7 @@
 use super::*;
 use crate::mailspace::Mailspace;
 use crate::pool::clean_rule::{write_baseline, write_mark};
-use crate::pump::state::{Status, Unit};
 use std::fs;
-
-#[test]
-fn after_merged_is_a_noop_without_a_mailspace() {
-    let tmp = tempfile::tempdir().unwrap();
-    let unit = Unit {
-        status: Status::Merged,
-        task: Some("abcd1234".into()),
-        pool: Some("lanes".into()),
-        ..Unit::default()
-    };
-    let report = after_merged(tmp.path(), &unit).unwrap();
-    assert!(report.actions.is_empty());
-    assert!(report.skips.is_empty());
-}
-
-#[test]
-fn dispatched_reclaim_uses_the_original_mailspace_snapshot_without_pump_db() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("shared-pool");
-    let toml = format!(
-        "name = \"alpha\"\n\n[pump]\nbranch = \"next\"\n\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pools.here.local]\nroot = \"{}\"\n",
-        root.display()
-    );
-    let (project, space) = routing_space(&toml);
-    let request = ReclaimRequest {
-        version: 1,
-        source_project: project.path().canonicalize().unwrap(),
-        mailspace_id: space.mailspace_id().to_owned(),
-        unit: ReclaimUnit {
-            need: String::from("need-1"),
-            target: String::from("default"),
-            status: Status::Merged,
-            task: None,
-            branch: None,
-            pool: Some(String::from("here")),
-        },
-        pools: vec![String::from("here")],
-        merging_targets: Vec::new(),
-    };
-    let request_path = tmp.path().join("reclaim-request.json");
-    fs::write(&request_path, serde_json::to_vec(&request).unwrap()).unwrap();
-
-    let report = after_merged_request(&request_path, Some(project.path())).unwrap();
-
-    assert!(report.actions.is_empty());
-    assert!(
-        !project.path().join(".vivi/pump/pump.db").exists(),
-        "the worker request path must not depend on the pump state database"
-    );
-}
 
 fn routing_space(toml: &str) -> (tempfile::TempDir, Mailspace) {
     let dir = tempfile::tempdir().unwrap();
@@ -60,49 +9,6 @@ fn routing_space(toml: &str) -> (tempfile::TempDir, Mailspace) {
     fs::write(dir.path().join(".vivi/mailspace.toml"), toml).unwrap();
     let space = Mailspace::discover(Some(dir.path())).unwrap();
     (dir, space)
-}
-
-#[test]
-fn recycle_selectors_include_the_merge_role_pool() {
-    let (_dir, space) = routing_space(
-        r#"
-name = "t"
-[[identities]]
-name = "hand"
-kind = "hand"
-pool = "glm"
-[[identities]]
-name = "merge"
-kind = "merge"
-pool = "host"
-[pools.glm]
-provider = "local"
-slots = 2
-[pools.host]
-provider = "local"
-slots = 4
-"#,
-    );
-    let unit = Unit {
-        status: Status::Merged,
-        pool: Some("glm".into()),
-        ..Unit::default()
-    };
-    let names: Vec<String> = recycle_selectors(&space, &unit)
-        .into_iter()
-        .map(|name| name.expect("named pool"))
-        .collect();
-    assert_eq!(names, ["glm", "host"]);
-}
-
-#[test]
-fn recycle_selectors_open_every_pool_when_the_unit_has_none() {
-    let (_dir, space) = routing_space("name = \"t\"\n");
-    let unit = Unit {
-        status: Status::Merged,
-        ..Unit::default()
-    };
-    assert_eq!(recycle_selectors(&space, &unit), [None]);
 }
 
 #[test]
@@ -141,21 +47,6 @@ fn a_claimed_slot_is_skipped_after_free_hook() {
     let report = after_slot_freed(&dir, Some("target"), None).unwrap();
     assert!(report.actions.is_empty());
     assert!(dir.join("repo/target/blob").is_file());
-}
-
-#[test]
-fn slot_dirs_resolve_through_symlinked_roots() {
-    let tmp = tempfile::tempdir().unwrap();
-    let real = tmp.path().join("real");
-    let slot = real.join("proj/lanes/slot-9");
-    fs::create_dir_all(slot.join("repo")).unwrap();
-    let link = tmp.path().join("link");
-    std::os::unix::fs::symlink(&real, &link).unwrap();
-    let got = slot_dir_under(&link, &slot.join("repo"));
-    assert_eq!(
-        got,
-        Some(real.canonicalize().unwrap().join("proj/lanes/slot-9"))
-    );
 }
 
 /// Two mailspaces share one local root: cleaning our mailspace's pool must

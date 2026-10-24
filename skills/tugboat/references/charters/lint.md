@@ -29,13 +29,13 @@ over from the actual test cases and is dispatched only after you have cleared it
   before you report. Never background it and exit "to report later".
 - **Commit only inside the task's write scope.**
 
-## Report and close
+## Report
 
 Report on the handle: the gates run, the files changed, per-item pass or fail,
 any judgment items escalated, and any residuals. A clean run is a short "early
 gate clean" reply.
 
-Before you stop, **close your own handle**. Reporting is not closing.
+Before you stop, report done on your handle. `task done` is your report: it moves your own copy to done and nothing else. The Mind accepts it, and until then dependents stay blocked.
 
 ```sh
 vivi task done <handle> --project "$ROOT" --for lint --note '<gates run, result>'

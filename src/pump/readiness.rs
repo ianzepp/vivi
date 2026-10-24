@@ -81,18 +81,9 @@ pub fn render_missing(issues: &[Issue]) -> String {
     lines.join("\n")
 }
 
-/// Whether the `[pump]` hand role (`to`) resolves to a role with a pool.
-pub(crate) fn hand_role_pool(mailspace: &Mailspace, cfg: &PumpConfig) -> bool {
-    let routing = routing::from_mailspace(&mailspace.config);
-    routing
-        .hand(&cfg.to)
-        .and_then(|role| routing.pool_of(role))
-        .is_some()
-}
-
 fn config_issues(mailspace: &Mailspace, cfg: &PumpConfig, issues: &mut Vec<Issue>) {
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let found = cfg.findings_for(&mailspace.root, &pools, hand_role_pool(mailspace, cfg));
+    let found = cfg.findings_for(&mailspace.root, &pools);
     issues.extend(found.errors.into_iter().map(Issue::error));
     issues.extend(
         found
