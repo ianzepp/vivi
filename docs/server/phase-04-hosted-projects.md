@@ -149,8 +149,10 @@ mailspace).
   on `set`, an unknown rung, a blank command (the library refuses these), and
   an unknown target (``unknown pump target `<id>` ``). `set` is rate limited
   as a write. The tool edits rung commands only: `timeout` and `pools` are
-  shown but not settable here, and a set rung with no rung `pools` leaves the
-  config invalid until the host sets `pools` (rung jobs cannot dispatch). This
+  shown but not settable here, and a set is refused while the rung table has
+  no effective rung pools (vivi 21's `RungsConfig::set` is a guarded write
+  that rolls back; the host sets `pools` first — with none, rung jobs cannot
+  dispatch). This
   and `pool_bands` are the only config the server edits: pools, roles, remotes
   and free-form config stay with the host, because a member who could repoint a
   pool's `remote_url` could send code elsewhere.

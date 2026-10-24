@@ -468,7 +468,7 @@ Every member is served the event by its header. Any other caller files a
 plain report reply and writes no event. `reopen` of an absorbed item is an error; so is
 `done` of an item absorbed open.
 
-## Pump health (1.6.0; body follows vivi 20)
+## Pump health (1.6.0; body follows vivi 21)
 
 ### `GET /v1/projects/{id}/pump/health` — hosted pump verdict (bearer)
 
@@ -488,15 +488,11 @@ end has no pump: `404 not_hosted`.
 | `control`, `shutdown_requested` | The pump's stored control mode |
 | `writer` | `{state: running\|not_running\|unknown, source: proc_locks\|tick_freshness\|none, pid}` |
 | `tick_secs`, `stale_after_secs` | Configured tick and the threshold used (default `max(30 × tick, 600)`) |
-| `last_tick` | Newest tick receipt with `age_secs`, or `null` |
+| `last_tick` | Newest tick receipt (`id`, `started_at`, `ended_at`, `duration_secs`, `outcome`, `age_secs`), or `null` |
 | `status_age_secs` | Age of `status.txt`, or `null` |
 | `schema` | The `pump.db` schema this server reads |
-| `units` | Count per unit status |
-| `merges` | `{total, recent: [{unit, need, title, commit, at}]}`, newest first, ten at most |
-| `blocked` | Stuck, quarantined, needs-replan and held units, then needs parked on a verdict: `{kind, id, need, state, age_secs, reason}` |
-| `complete_open_needs` | As `vivi pump closeout --json` |
-| `exceptions` | `{at, kind, unit, text}` after `since`, else in the last hour; fifty at most |
-| `changed_since` | Only with `since`: `{since, units: [{unit, need, status, at}], merges, exceptions}` |
+| `exceptions` | `{at, kind, unit, text}` at or after `since`, else in the last hour; fifty at most, newest kept |
+| `changed_since` | Only with `since`: `{since, exceptions}`, the count of exception rows strictly after `since` |
 
 Verdict rules, first match wins:
 
@@ -506,11 +502,10 @@ Verdict rules, first match wins:
    `stale_after`, or there is no writer and `status.txt` is older than
    `stale_after`.
 3. `degraded`: control paused, stopped or unreadable; writer state unknown;
-   no writer but a fresh status; any stuck, quarantined or needs-replan unit;
-   or `stall-*` exceptions in the window.
+   or no writer but a fresh `status.txt` while control says running.
 4. `ok`.
 
-Not-ready fold, applied after the rules above (vivi 20, `add_not_ready`): a
+Not-ready fold, applied after the rules above (vivi 21, `add_not_ready`): a
 project missing config the pump needs adds a `not ready: ...` reason. If it
 never ticked, the verdict is `unknown` and that reason replaces the others. If
 it did tick, the verdict stays as judged, the reason comes first, and `ok` is
