@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0
 
 - **MCP reads (wave 3 D4).** Hosted, operator-only, read-only tools on
   `POST /v1/mcp`: `pump_log`, `flow_show`, `config_show` /
