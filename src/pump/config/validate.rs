@@ -281,7 +281,10 @@ fn validate_rung_pools(scope: &str, effective: &RungsConfig, found: &mut Finding
     }
 }
 
-fn valid_target_id(id: &str) -> bool {
+/// Whether `id` is a usable `[pump.targets.<id>]` key: lowercase letters,
+/// digits and hyphens.
+#[must_use]
+pub fn valid_target_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()

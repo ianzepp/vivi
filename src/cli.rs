@@ -46,7 +46,9 @@ pub use pool_command::{
     PoolReconcileCommand, PoolRemoveCommand, PoolResetCommand, PoolScaleCommand, PoolShowCommand,
     PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
 };
-pub use project_command::{ProjectCommand, ProjectCreateCommand};
+pub use project_command::{
+    ProjectCommand, ProjectCreateCommand, ProjectLaneAddCommand, ProjectLaneCommand,
+};
 pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
 };
