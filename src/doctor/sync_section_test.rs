@@ -8,7 +8,9 @@ use crate::doctor::Project;
 use crate::doctor::Status;
 use crate::doctor::sync_section::findings;
 use crate::mailspace::Mailspace;
+use crate::storage::sha256_hex;
 use crate::sync::identity;
+use crate::sync::quarantine::{self, HeldLetter};
 use crate::sync::state::SyncState;
 use crate::sync::sync_dir;
 
@@ -151,4 +153,87 @@ fn unprobed_server_skips() {
     let finding = by_name(&findings(&space, Utc::now(), None), "server").clone();
     assert_eq!(finding.status, Status::Skipped);
     assert_eq!(finding.detail, "server reachability not probed");
+}
+
+/// Hold one letter under `.vivi/quarantine/` and return its content id.
+fn hold_a_letter(space: &Project, bytes: &[u8], reason: &str) -> String {
+    let held = HeldLetter {
+        id: String::new(),
+        message_id: "msg_0000000000000000000000aa".to_string(),
+        from: "bob".to_string(),
+        kind: Some("need".to_string()),
+        sequence: 3,
+        reason: reason.to_string(),
+        at: "2026-10-24T12:00:00+00:00".to_string(),
+    };
+    quarantine::hold(&space.dir, bytes, &held).expect("hold");
+    sha256_hex(bytes)
+}
+
+#[test]
+fn a_clean_quarantine_oks() {
+    let (_tmp, space) = configured(Some("proj"), Some("this-box"));
+    let finding = by_name(&findings(&space, Utc::now(), None), "quarantine").clone();
+    assert_eq!(finding.status, Status::Ok, "{finding:?}");
+    assert_eq!(finding.detail, "no letters held unread");
+}
+
+#[test]
+fn held_letters_warn_with_their_ids_and_reasons() {
+    let (_tmp, space) = configured(Some("proj"), Some("this-box"));
+    let first = hold_a_letter(&space, b"first held letter", "unknown field `flavor`");
+    let second = hold_a_letter(&space, b"second held letter", "broken fence");
+
+    let finding = by_name(&findings(&space, Utc::now(), None), "quarantine").clone();
+
+    assert_eq!(finding.status, Status::Warn, "{finding:?}");
+    assert!(
+        finding.detail.contains("2 letter(s) held unread"),
+        "{finding:?}"
+    );
+    assert!(finding.detail.contains(&first), "{finding:?}");
+    assert!(
+        finding.detail.contains("(unknown field `flavor`)"),
+        "{finding:?}"
+    );
+    assert!(finding.detail.contains(&second), "{finding:?}");
+    assert!(
+        finding
+            .fix
+            .as_deref()
+            .unwrap_or_default()
+            .contains("quarantine list"),
+        "{finding:?}"
+    );
+}
+
+#[test]
+fn held_letters_surface_even_without_sync_config() {
+    let (_tmp, space) = plain();
+    let id = hold_a_letter(&space, b"held with no [sync]", "unknown field `flavor`");
+
+    let report = findings(&space, Utc::now(), None);
+
+    assert_eq!(report.len(), 2, "{report:?}");
+    assert_eq!(report[0].status, Status::Skipped);
+    assert_eq!(report[0].detail, "sync not configured");
+    assert_eq!(report[1].name, "quarantine");
+    assert_eq!(report[1].status, Status::Warn);
+    assert!(report[1].detail.contains(&id), "{:?}", report[1]);
+}
+
+#[test]
+fn a_corrupt_receipt_fails_the_quarantine_check() {
+    let (_tmp, space) = configured(Some("proj"), Some("this-box"));
+    let root = space.dir.join("quarantine");
+    fs::create_dir_all(&root).expect("quarantine dir");
+    fs::write(root.join("not-json.json"), "{").expect("corrupt receipt");
+
+    let finding = by_name(&findings(&space, Utc::now(), None), "quarantine").clone();
+
+    assert_eq!(finding.status, Status::Fail, "{finding:?}");
+    assert!(
+        finding.detail.contains("quarantine unreadable"),
+        "{finding:?}"
+    );
 }

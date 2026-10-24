@@ -2968,6 +2968,9 @@ vivi sync resync         # reset cursor and floor to zero, replay everything
 vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
 vivi sync keep-local <handle>...  # stop pushing a stuck letter; it stays here; --undo tries it again
+vivi sync quarantine list    # letters held unread under .vivi/quarantine/: id, when held, sender, message id, reason
+vivi sync quarantine retry <ID>  # re-run the filer on one held letter (after an upgrade whose parser accepts it); prints filed, or why it stays held
+vivi sync quarantine drop <ID>   # give up on one held letter; it and its receipt move under .vivi/quarantine/dropped/
 vivi sync key            # print this mailspace's public-key PEM (mints the key file)
 vivi sync create [--name <creator>]  # new project on the server; prints its id, writes nothing
 vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <pem>)
@@ -2997,6 +3000,20 @@ network failure, or another server error, and a drain that three passes in a
 row got nothing through gives up and ends non-zero. It holds the sync lock
 across all passes. It composes with `push --since`, and bare
 `vivi sync --drain` drains its push pass.
+
+**Quarantine.** A pull that meets a letter this vivi cannot read — a newer
+member's front-matter key, a broken fence, an unknown format — files the
+exact bytes under `.vivi/quarantine/` as `<sha256>.eml` plus a `.json`
+receipt, and names it once: that pull exits non-zero listing the id and the
+reason, and later pulls of the same content stay silent. Nothing is dropped
+and nothing is filed while the letter is held. Clear each one by hand:
+`vivi sync quarantine list` shows them oldest first; `vivi sync quarantine
+retry <ID>` re-runs the filer on the held bytes (the retry after an upgrade
+whose parser accepts what the old one refused) and prints
+`filed <id>` — the pair moves to `dropped/` — or
+`still held <id>: <reason>`; `vivi sync quarantine drop <ID>` moves the pair
+under `dropped/` for good. `vivi doctor`'s sync section reports held letters
+while any file is present.
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
 `mailspace.toml`. Its first 8 characters are the domain of every address it

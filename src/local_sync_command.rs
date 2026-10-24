@@ -3,7 +3,7 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use vivi::VivariumError;
-use vivi::cli::{ApiKeyCommand, SyncCommand, SyncSubcommand};
+use vivi::cli::{ApiKeyCommand, QuarantineCommand, SyncCommand, SyncSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::sync::fetch::fetch_handles;
 use vivi::sync::http::{self, HttpTransport};
@@ -13,6 +13,7 @@ use vivi::sync::keys;
 use vivi::sync::lock::SyncLock;
 use vivi::sync::prune as sync_prune;
 use vivi::sync::pull::PullPlan;
+use vivi::sync::quarantine::{self, RefileOutcome};
 use vivi::sync::state::SyncState;
 use vivi::sync::vouch::{compose_vouch, send_vouch};
 use vivi::sync::window::{parse_age, parse_since};
@@ -112,6 +113,7 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
             undo,
             project,
         }) => keep_local(project.as_deref().or(top), handles, *undo),
+        Some(SyncSubcommand::Quarantine { command }) => quarantine(top, command),
         Some(SyncSubcommand::Join { project }) => join(project.as_deref().or(top)),
         Some(SyncSubcommand::Status { project }) => status(project.as_deref().or(top)),
         Some(SyncSubcommand::Directory { project }) => directory(project.as_deref().or(top)),
@@ -305,6 +307,46 @@ fn keep_local(project: Option<&Path>, handles: &[String], undo: bool) -> Result<
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     for line in sync_kept::keep_local(&mailspace, &settings, handles, undo)? {
         println!("{line}");
+    }
+    Ok(())
+}
+
+/// Local only: no server, no key. The clearing surface for letters a pull
+/// held unread under `.vivi/quarantine/`. An unknown or malformed id is an
+/// error, so every verb either prints or exits non-zero.
+fn quarantine(top: Option<&Path>, command: &QuarantineCommand) -> Result<(), VivariumError> {
+    let project = match command {
+        QuarantineCommand::List { project }
+        | QuarantineCommand::Retry { project, .. }
+        | QuarantineCommand::Drop { project, .. } => project.as_deref().or(top),
+    };
+    let mailspace = Mailspace::discover(project)?;
+    let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
+    match command {
+        QuarantineCommand::List { .. } => {
+            let held = quarantine::list(&mailspace.dir)?;
+            if held.is_empty() {
+                println!("no quarantined letters");
+                return Ok(());
+            }
+            for letter in &held {
+                println!(
+                    "{}  held {}  from {}  {}  {}",
+                    letter.id, letter.at, letter.from, letter.message_id, letter.reason
+                );
+            }
+        }
+        QuarantineCommand::Retry { id, .. } => {
+            let settings = SyncSettings::resolve(&mailspace)?;
+            match quarantine::refile(&mailspace, &settings, id)? {
+                RefileOutcome::Filed => println!("filed {id}; the pair moved to dropped/"),
+                RefileOutcome::StillHeld(reason) => println!("still held {id}: {reason}"),
+            }
+        }
+        QuarantineCommand::Drop { id, .. } => {
+            quarantine::discard(&mailspace.dir, id)?;
+            println!("dropped {id}; the pair moved to dropped/");
+        }
     }
     Ok(())
 }
