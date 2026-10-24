@@ -410,7 +410,8 @@ or expired chat project reads as ungranted.
 The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
 `config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
-`target_add`, `target_remove`, `pump_send`, `pump_list`, `pump_show`);
+`target_add`, `target_remove`, `pump_send`, `pump_list`, `pump_show`,
+`pump_action`, `pump_reset`);
 each also takes the required `project` argument on top of the arguments
 shown.
 
@@ -453,6 +454,20 @@ one audit line. A dry run is not.
 | `target_remove` | `id` | `pump::config::targets::remove`. Returns `{id, removed: true}` |
 
 `pump_rungs` `set` is the same guard (`RungsConfig::set`).
+
+#### Pump actions and reset
+
+Hosted projects only, operator only, same rule as `pump_control`. Each
+call is one audit line. `pump_action` posts for the pump's next tick
+through the library function the CLI calls, and is not refused while the
+pump runs (those functions do not check the lock). `pump_reset` is
+`pump::reset::archive`: refused while the pump lock is held, running or
+paused, with the library's message, and nothing moves on a refusal.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
+| `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
 
 #### Host tools
 

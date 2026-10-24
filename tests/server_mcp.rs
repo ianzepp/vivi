@@ -459,6 +459,8 @@ async fn initialize_and_tools_list() {
             "pump_list",
             "pump_show",
             "pump_log",
+            "pump_action",
+            "pump_reset",
             "flow_show",
             "config_show",
             "config_validate",
