@@ -1,7 +1,7 @@
 //! `vivi pump reset`: archive the pump home beside itself and start fresh.
 
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -24,6 +24,9 @@ const ARCHIVE_ENTRIES: [&str; 10] = [
     "exceptions.txt",
     "status.txt",
 ];
+
+/// Cap on `-N` archive suffixes within one stamp before reset refuses.
+const ARCHIVE_SUFFIX_LIMIT: u32 = 1000;
 
 /// What one reset did; the whole input of the CLI printer.
 #[derive(Debug, Clone)]
@@ -56,7 +59,9 @@ pub fn archive(project: &Path) -> Result<ResetReport, VivariumError> {
         )));
     }
     let archive_dir = archive_dir(&home)?;
-    fs::create_dir_all(&archive_dir)?;
+    // Fails when the name was taken between the pick and now; an existing
+    // archive is never reused or replaced.
+    fs::create_dir(&archive_dir)?;
     fs::create_dir_all(&home)?;
     let moved = move_entries(&home, &archive_dir)?;
     append_log_line(&home, &archive_dir)?;
@@ -73,7 +78,9 @@ pub fn archive(project: &Path) -> Result<ResetReport, VivariumError> {
 }
 
 /// `<home>/../pump-archive-<UTC stamp>`: beside the pump home, so a rename
-/// never crosses a filesystem.
+/// never crosses a filesystem. When the stamped name is already on disk (a
+/// second reset in the same UTC second) the next free `-N` suffix is taken
+/// instead of reusing the earlier archive.
 fn archive_dir(home: &Path) -> Result<PathBuf, VivariumError> {
     let parent = home.parent().ok_or_else(|| {
         VivariumError::Message(format!(
@@ -82,18 +89,43 @@ fn archive_dir(home: &Path) -> Result<PathBuf, VivariumError> {
         ))
     })?;
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
-    Ok(parent.join(format!("pump-archive-{stamp}")))
+    let base = parent.join(format!("pump-archive-{stamp}"));
+    if fs::symlink_metadata(&base).is_err() {
+        return Ok(base);
+    }
+    for suffix in 2..=ARCHIVE_SUFFIX_LIMIT {
+        let candidate = parent.join(format!("pump-archive-{stamp}-{suffix}"));
+        if fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
+        }
+    }
+    Err(VivariumError::Message(format!(
+        "no free pump-archive-{stamp} name in {} after {} suffixes",
+        parent.display(),
+        ARCHIVE_SUFFIX_LIMIT
+    )))
 }
 
 /// Rename every present home entry into the archive; name the moved ones.
-fn move_entries(home: &Path, archive_dir: &Path) -> Result<Vec<String>, VivariumError> {
+/// A missing entry is skipped; any other stat failure is an error, and an
+/// entry the archive already holds is never replaced.
+pub(crate) fn move_entries(home: &Path, archive_dir: &Path) -> Result<Vec<String>, VivariumError> {
     let mut moved = Vec::new();
     for entry in ARCHIVE_ENTRIES {
         let from = home.join(entry);
-        if fs::symlink_metadata(&from).is_err() {
-            continue;
+        match fs::symlink_metadata(&from) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
         }
-        fs::rename(&from, archive_dir.join(entry))?;
+        let to = archive_dir.join(entry);
+        if fs::symlink_metadata(&to).is_ok() {
+            return Err(VivariumError::Message(format!(
+                "{} already exists in the archive; refusing to replace it",
+                to.display()
+            )));
+        }
+        fs::rename(&from, &to)?;
         moved.push(String::from(entry));
     }
     Ok(moved)
