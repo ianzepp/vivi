@@ -37,12 +37,19 @@ use safety::RateLimiter;
 
 /// Shared router state: project store (durable and chat), identities,
 /// challenges, rate limiter, the at-rest cipher (legacy rooms / VC-5),
-/// and the moderation token for `/v1/_health`.
+/// the moderation token for `/v1/_health`, the one server key store and
+/// audit log for `/v1/mcp`, and the moderation token.
 #[derive(Clone)]
 pub struct AppState {
     pub projects: ProjectStore,
     pub identities: IdentityRegistry,
     pub keys: ApiKeyRegistry,
+    /// The one server key store (`DATA_DIR/keys.json`) behind `/v1/mcp`
+    /// and the self-service key mint.
+    pub server_keys: grants::ServerKeyStore,
+    /// The append-only audit log (`DATA_DIR/audit.jsonl`) for write tool
+    /// calls and key/grant changes on `/v1/mcp`.
+    pub audit: audit::AuditLog,
     pub challenges: ChallengeBook,
     pub limiter: RateLimiter,
     pub store_cipher: Option<Arc<StoreCipher>>,
@@ -80,7 +87,8 @@ pub fn api_router(
 /// the routes serve; `api_router` never reads the host registry.
 ///
 /// # Panics
-/// Panics on an undecodable `store_key`, as [`api_router`] does.
+/// Panics on an undecodable `store_key` or an undecodable server key
+/// store (`DATA_DIR/keys.json`), as [`api_router`] does.
 pub fn app_state(
     data_dir: PathBuf,
     store_key: Option<String>,
@@ -92,10 +100,25 @@ pub fn app_state(
         .transpose()
         .expect("valid STORE_ENCRYPTION_KEY")
         .map(Arc::new);
+    let server_keys = grants::ServerKeyStore::new(&data_dir)
+        .unwrap_or_else(|err| panic!("vivi-server: cannot load the server key store: {err:?}"));
+    // The retired per-project key registries are never read again. The
+    // rename only moves files: the per-project routes still work for
+    // identity tokens, a fresh self-service mint re-creates `api_keys.json`
+    // with just the mirrored key, and keys minted before the upgrade are
+    // dead on those routes (they are re-issued as server keys).
+    for (project, dead) in grants::retire_legacy_project_keys(&data_dir) {
+        tracing::info!(
+            "retired {dead} legacy api key(s) of project {project} \
+             (api_keys.json renamed to api_keys.json.retired)"
+        );
+    }
     AppState {
         projects: ProjectStore::new(&data_dir),
         identities: IdentityRegistry::new(&data_dir),
         keys: ApiKeyRegistry::new(&data_dir),
+        server_keys,
+        audit: audit::AuditLog::new(&data_dir),
         challenges: ChallengeBook::default(),
         limiter: RateLimiter::default(),
         store_cipher,
@@ -142,6 +165,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/projects/{id}/mcp", post(mcp::mcp_handler))
         .route("/v1/rooms/{id}/mcp", post(mcp::mcp_handler))
+        // The server-level MCP endpoint: a server key (or the host
+        // operator token) reaches every granted project through one URL.
+        .route("/v1/mcp", post(mcp::server::server_mcp_handler))
         // Host operator endpoint; answers 404 when HOST_OPERATOR_TOKEN is unset.
         .route("/v1/host/mcp", post(mcp::host::host_mcp_handler))
         // List and lookup responses are large JSON; gzip them when the

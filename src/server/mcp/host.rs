@@ -148,7 +148,12 @@ pub(super) async fn call_tool(state: &AppState, name: &str, arguments: Value) ->
 /// update is running".
 static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-async fn create_project(state: &AppState, arguments: &Value) -> Result<Value, ToolError> {
+/// Create one project. Shared by `/v1/host/mcp` and the server-level
+/// `/v1/mcp` host tool.
+pub(super) async fn create_project(
+    state: &AppState,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
     let (request, rungs) = build_request(&state.host, arguments)?;
     let state = state.clone();
     blocking(move || {

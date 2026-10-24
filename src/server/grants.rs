@@ -357,6 +357,61 @@ impl ServerKeyStore {
         Ok(())
     }
 
+    /// Add one grant to an existing principal (idempotent: a grant already
+    /// held changes nothing). A host principal accepts no grants. An
+    /// unknown principal is `NotFound`.
+    pub fn add_grant(&self, principal: &str, grant: GrantRecord) -> Result<(), GrantsError> {
+        let principal = validate_principal(principal)?;
+        let mut grant = grant;
+        validate_grant(&mut grant)?;
+        let mut state = self.state();
+        let Some(record) = state
+            .file
+            .principals
+            .iter_mut()
+            .find(|p| p.principal == principal)
+        else {
+            return Err(GrantsError::NotFound);
+        };
+        if record.host {
+            return Err(GrantsError::HostWithGrants);
+        }
+        if record.grants.contains(&grant) {
+            return Ok(());
+        }
+        record.grants.push(grant);
+        Self::save(&self.path, &state.file).map_err(GrantsError::Storage)?;
+        state.index = build_index(&state.file);
+        Ok(())
+    }
+
+    /// Remove the grant on `project_id` from `principal`. An unknown
+    /// principal, or one that holds no grant there, is `NotFound`.
+    pub fn remove_grant(&self, principal: &str, project_id: &str) -> Result<(), GrantsError> {
+        let principal = validate_principal(principal)?;
+        let project_id = project_id.trim();
+        if project_id.is_empty() || project_id.len() > MAX_PROJECT {
+            return Err(GrantsError::NotFound);
+        }
+        let mut state = self.state();
+        let Some(record) = state
+            .file
+            .principals
+            .iter_mut()
+            .find(|p| p.principal == principal)
+        else {
+            return Err(GrantsError::NotFound);
+        };
+        let before = record.grants.len();
+        record.grants.retain(|grant| grant.project_id != project_id);
+        if record.grants.len() == before {
+            return Err(GrantsError::NotFound);
+        }
+        Self::save(&self.path, &state.file).map_err(GrantsError::Storage)?;
+        state.index = build_index(&state.file);
+        Ok(())
+    }
+
     /// Revoke every key of `principal` (the principal and its grants
     /// stay on disk, unusable). Returns how many live keys died; an
     /// unknown principal is `NotFound`.

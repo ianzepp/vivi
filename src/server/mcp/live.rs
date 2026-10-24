@@ -87,6 +87,21 @@ pub(super) fn hosted_root(store: &ProjectStore, project_id: &str) -> Option<std:
     store.load_meta(project_id).ok()?.mailspace_root
 }
 
+/// Whether today's operator rule (the host's own member, acting as a role
+/// of kind operator) holds for `caller` acting as `requested` on the
+/// hosted mailspace at `root`. The self-service key mint uses it to set a
+/// grant's level; the tools re-check the same rule per call.
+pub(super) fn operator_rule_holds(
+    root: &Path,
+    caller: &crate::identities::IdentityRecord,
+    requested: &str,
+) -> bool {
+    match Hosted::open(root, requested) {
+        Ok(hosted) => pump::require_operator("self-service key mint", &hosted, caller).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// An opened hosted mailspace and the identity a call acts as.
 pub(super) struct Hosted {
     pub(super) ms: Mailspace,

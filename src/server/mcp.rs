@@ -8,6 +8,7 @@
 pub mod host;
 pub mod letters;
 mod live;
+pub mod server;
 mod tools;
 
 use axum::Json;
@@ -23,6 +24,7 @@ use crate::AppState;
 use crate::keys::Caller;
 use crate::projects_api::{authenticate_caller, project_error, require_existing_project};
 use crate::rooms::error_response;
+use crate::safety::RateLimiter;
 
 const PROTOCOL_LATEST: &str = "2025-03-26";
 const SUPPORTED: &[&str] = &["2024-11-05", "2025-03-26", "2025-11-25"];
@@ -66,7 +68,8 @@ pub async fn mcp_handler(
 }
 
 /// Which endpoint a JSON-RPC body is for: one project's tools (the caller
-/// already authenticated) or the host's.
+/// already authenticated), the host's, or the server-level endpoint
+/// (`/v1/mcp`, authenticated by a server key or the host operator token).
 enum Surface<'a> {
     Project {
         state: &'a AppState,
@@ -75,6 +78,10 @@ enum Surface<'a> {
     },
     Host {
         state: &'a AppState,
+    },
+    Server {
+        state: &'a AppState,
+        auth: &'a server::ServerPrincipal,
     },
 }
 
@@ -154,6 +161,7 @@ async fn handle_one(surface: &Surface<'_>, value: &Value) -> Result<Option<Value
         "tools/list" => match surface {
             Surface::Project { .. } => tools_list(),
             Surface::Host { .. } => host::tools_list(),
+            Surface::Server { .. } => server::tools_list(),
         },
         "tools/call" => {
             let name = req.params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -165,6 +173,9 @@ async fn handle_one(surface: &Surface<'_>, value: &Value) -> Result<Option<Value
                     caller,
                 } => call_tool(state, project_id, caller, name, arguments).await?,
                 Surface::Host { state } => host::call_tool(state, name, arguments).await,
+                Surface::Server { state, auth } => {
+                    server::call_tool(state, auth, name, arguments).await?
+                }
             }
         }
         _ => return Ok(Some(jsonrpc_error(id, -32601, "method not found"))),
@@ -183,8 +194,36 @@ async fn call_tool(
     name: &str,
     arguments: Value,
 ) -> Result<Value, Response> {
+    match dispatch_tool(
+        state,
+        state.limiter.clone(),
+        project_id,
+        caller,
+        name,
+        arguments,
+    )
+    .await
+    {
+        Ok(Ok(value)) => Ok(tool_result(value, false)),
+        Ok(Err(err)) => Ok(tool_result(json!({ "error": err.message }), true)),
+        Err(response) => Err(response),
+    }
+}
+
+/// Dispatch one project tool call, unwrapped: the inner result is the
+/// tool's own answer or tool error; the outer `Err` is an infrastructure
+/// failure (an HTTP 500 response). `limiter` is the write limiter the
+/// tools see: the shared one for the per-project routes, an unlimited one
+/// for `/v1/mcp`, which counts writes itself keyed by key.
+async fn dispatch_tool(
+    state: &AppState,
+    limiter: RateLimiter,
+    project_id: &str,
+    caller: &Caller,
+    name: &str,
+    arguments: Value,
+) -> Result<Result<Value, tools::ToolError>, Response> {
     let store = state.projects.clone();
-    let limiter = state.limiter.clone();
     let project_id = project_id.to_owned();
     let identity = caller.identity.clone();
     let acting_as = caller.acting_as.clone();
@@ -241,8 +280,7 @@ async fn call_tool(
     })
     .await
     {
-        Ok(Ok(value)) => Ok(tool_result(value, false)),
-        Ok(Err(err)) => Ok(tool_result(json!({ "error": err.message }), true)),
+        Ok(outcome) => Ok(outcome),
         Err(err) => Err(project_error(crate::projects::ProjectError::Storage(
             format!("mcp tool task failed: {err}"),
         ))),
@@ -302,6 +340,7 @@ fn initialize(params: &Value, surface: &Surface<'_>) -> Value {
     let instructions = match surface {
         Surface::Project { .. } => PROJECT_INSTRUCTIONS,
         Surface::Host { .. } => host::INSTRUCTIONS,
+        Surface::Server { .. } => server::INSTRUCTIONS,
     };
     json!({
         "protocolVersion": protocol,
