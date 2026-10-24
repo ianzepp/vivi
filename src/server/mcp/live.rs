@@ -16,10 +16,14 @@
 //! Each call opens the mailspace afresh (a tool call is short-lived and the
 //! pump is another process on the same files).
 
+mod config_write;
 mod pool_bands;
 mod pump;
+mod pump_action;
 mod pump_record;
 mod read;
+mod role_write;
+mod views;
 mod write;
 
 use std::path::Path;
@@ -33,9 +37,14 @@ use crate::safety::RateLimiter;
 
 use super::tools::ToolError;
 
+use config_write::{
+    config_migrate, config_set, config_unset, pool_allow_set, target_add, target_remove,
+};
 use pool_bands::pool_bands;
 use pump::{pump_control, pump_rungs};
+use pump_action::{pump_action, pump_reset};
 use pump_record::{pump_list, pump_send, pump_show};
+use role_write::{charter_set, role_add, role_set};
 
 /// The one live helper the durable tools share: a string-or-list argument.
 pub(in crate::mcp) use read::string_list;
@@ -57,9 +66,30 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_control" => Some(pump_control),
         "pump_rungs" => Some(pump_rungs),
         "pool_bands" => Some(pool_bands),
+        "config_migrate" => Some(config_migrate),
+        "config_set" => Some(config_set),
+        "config_unset" => Some(config_unset),
+        "pool_allow_set" => Some(pool_allow_set),
+        "target_add" => Some(target_add),
+        "target_remove" => Some(target_remove),
         "pump_send" => Some(pump_send),
         "pump_list" => Some(pump_list),
         "pump_show" => Some(pump_show),
+        "pump_log" => Some(views::pump_log),
+        "pump_action" => Some(pump_action),
+        "pump_reset" => Some(pump_reset),
+        "flow_show" => Some(views::flow_show),
+        "config_show" => Some(views::config_show),
+        "config_validate" => Some(views::config_validate),
+        "pool_list" => Some(views::pool_list),
+        "pool_show" => Some(views::pool_show),
+        "role_list" => Some(views::role_list),
+        "role_show" => Some(views::role_show),
+        "role_add" => Some(role_add),
+        "role_set" => Some(role_set),
+        "charter_show" => Some(views::charter_show),
+        "charter_set" => Some(charter_set),
+        "target_list" => Some(views::target_list),
         _ => None,
     }
 }

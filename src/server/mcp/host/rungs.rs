@@ -174,7 +174,7 @@ fn parse_pools(value: Option<&Value>) -> Result<Option<Vec<String>>, ToolError> 
 
 /// Pump readiness of the project at `root` as it stands now; the same
 /// mapping as the library's own summary.
-fn assess(root: &Path) -> Result<Readiness, String> {
+pub(super) fn assess(root: &Path) -> Result<Readiness, String> {
     let mailspace = Mailspace::open_root(root.to_path_buf()).map_err(|e| e.to_string())?;
     let issues = readiness::assess(&mailspace);
     Ok(Readiness {

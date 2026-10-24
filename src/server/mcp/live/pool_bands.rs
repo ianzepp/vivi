@@ -4,8 +4,11 @@
 //!
 //! A band (`P0` to `P5`) names the model and reasoning effort that serves it.
 //! `set` and `unset` go through the library's `config_edit::set_band` and
-//! `unset_band`, which edit only `pools.<pool>.bands.<band>`
-//! (format-preserving, under the mailspace config lock).
+//! `unset_band` under `config_edit::guarded`, which edit only
+//! `pools.<pool>.bands.<band>` (format-preserving, backup first, refused
+//! while the pump runs, rolled back when the write makes the config worse).
+//! The allow-list check is the library's too:
+//! `vivi::pool::config_allow::validate_allow`.
 //!
 //! This is the one pool setting the server edits, and the reason it is safe
 //! to expose: bands select among models the host already allowed. A model
@@ -24,6 +27,8 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 use vivi::mailspace::{Mailspace, config_edit};
 use vivi::pool::PoolConfig;
+use vivi::pool::config_allow::harness_models;
+use vivi::pool::config_allow::validate_allow;
 use vivi::pool::config_bands::{BAND_KEYS, BandChoice};
 
 use crate::identities::IdentityRecord;
@@ -64,16 +69,14 @@ pub(in crate::mcp) fn pool_bands(
             let reasoning = opt_str(arguments, "reasoning")?.unwrap_or(DEFAULT_REASONING);
             check_set(config, pool, band, model, reasoning)?;
             rate_limit(limiter, project_id, &hosted.actor)?;
-            config_edit::apply(&hosted.ms.config_path(), |doc| {
+            config_edit::guarded(root, |doc| {
                 config_edit::set_band(doc, pool, band, model, reasoning)
             })
             .map_err(lib_error)?;
         } else {
             rate_limit(limiter, project_id, &hosted.actor)?;
-            config_edit::apply(&hosted.ms.config_path(), |doc| {
-                config_edit::unset_band(doc, pool, band)
-            })
-            .map_err(lib_error)?;
+            config_edit::guarded(root, |doc| config_edit::unset_band(doc, pool, band))
+                .map_err(lib_error)?;
         }
     }
     // A write changed the file: answer from a fresh read of it.
@@ -111,8 +114,9 @@ fn band_key(text: &str) -> Result<&'static str, ToolError> {
 }
 
 /// Refuse a `set` the library would store but the host never allowed: a model
-/// outside the pool's `harness.models`, or a malformed reasoning (checked by
-/// the library's own band validation on the resulting pool).
+/// outside the pool's `harness.models` (`config_allow::validate_allow`, the
+/// library's own check), or a malformed reasoning (checked by the library's
+/// own band validation on the resulting pool).
 fn check_set(
     config: &PoolConfig,
     pool: &str,
@@ -120,17 +124,7 @@ fn check_set(
     model: &str,
     reasoning: &str,
 ) -> Result<(), ToolError> {
-    let allowed = harness_models(config);
-    if !allowed.iter().any(|offered| offered == model) {
-        return Err(ToolError::new(format!(
-            "model '{model}' is not in pool '{pool}' harness.models; allowed: {}",
-            if allowed.is_empty() {
-                "(none: the pool has no harness models)".to_owned()
-            } else {
-                allowed.join(", ")
-            }
-        )));
-    }
+    validate_allow(pool, config, model).map_err(lib_error)?;
     let mut next = config.clone();
     next.bands.entries.insert(
         band.to_owned(),
@@ -141,14 +135,6 @@ fn check_set(
         }],
     );
     next.check_bands(pool).map_err(lib_error)
-}
-
-fn harness_models(config: &PoolConfig) -> Vec<String> {
-    config
-        .harness
-        .as_ref()
-        .map(|harness| harness.models.clone())
-        .unwrap_or_default()
 }
 
 /// `{pool, bands: {band: [{model, reasoning}]}, harness_models}`.

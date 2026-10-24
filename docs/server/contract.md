@@ -424,8 +424,13 @@ or expired chat project reads as ungranted.
 
 The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
-`pump_send`, `pump_list`, `pump_show`); each also takes the required
-`project` argument on top of the arguments shown.
+`config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
+`target_add`, `target_remove`, `role_add`, `role_set`, `charter_set`,
+`pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`, and
+the reads `pump_log`, `flow_show`, `config_show`, `config_validate`,
+`pool_list`, `pool_show`, `role_list`, `role_show`, `charter_show`,
+`target_list`); each also takes the required `project` argument on top
+of the arguments shown.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -446,19 +451,94 @@ level}` per live grant (`mode` is `hosted`, `chat` or `durable`; `name`
 is the hosted project's name; `identity` the vivi identity the key acts
 as, when one was named). A host principal answers `{host: true}`.
 
+#### Config, pool and target writes
+
+Hosted projects only, and only for a key that passes the operator rule
+(the host's own member, acting as a role of kind `operator`). Each write
+calls the same library function as the CLI and goes through the config
+write guard: refused while that project's pump runs (lock held and mode
+running; a paused pump is writable), a backup first, and a write that
+adds a new config error is rolled back. A refused or accepted write is
+one audit line. A dry run is not.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `config_migrate` | `write?` (default false) | `pump::config::migrate`. `write: true` is wrapped in `guard_file` and is a write; otherwise a dry run and a read. Returns `{plan, diff, dry_run, wrote, charters}` |
+| `config_set` | `key`, `value` (TOML text) | `config_edit::set_key`. Returns `{key, value, kind}` |
+| `config_unset` | `key` | `config_edit::unset_key`. Returns `{key, unset: true}` |
+| `pool_allow_set` | `pool`, `models` (array of strings) | Writes `pools.<pool>.harness.models` (the allow list `pool_bands` checks) through `config_edit::set_pool_key`. A non-array or a non-string element is refused before a write |
+| `target_add` | `id`, `path`, `remote_url?`, `remote?`, `main?`, `github_repo?`, `rungs?` (`NAME=CMD`), `merge?` (`KEY=VALUE`) | `pump::config::targets::add`. Returns `{id, path, main, rungs}` |
+| `target_remove` | `id` | `pump::config::targets::remove`. Returns `{id, removed: true}` |
+
+`pump_rungs` `set` is the same guard (`RungsConfig::set`).
+
+#### Role and charter writes
+
+The same operator rule and the same guard as the config writes above.
+`role_add`, `role_set` and `charter_set` call `Mailspace::add_role`,
+`set_role` and `set_charter` with the arguments the CLI's
+`vivi role add`, `vivi role set` and `vivi role charter set` take.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `role_add` | `role`, `kind?`, `harness?`, `provider?`, `model?`, `thinking?`, `status?`, `labels?`, `cadence?`, `pool?`, `read_only?`, `models?` | `Mailspace::add_role` under `guard_file`, then the CLI's adoption of letters held under the new name (with the CLI's default: the pump's hand role, `[pump] to`, gets kind `hand` when `kind` is absent). A duplicate name is refused. Returns `{added, adopted, role}` |
+| `role_set` | `role`, plus each of `kind`, `harness`, `provider`, `model`, `thinking`, `cadence`, `pool`, `read_only`, `models` with a `clear_<field>` form, and `status`, `labels`, `clear_labels` | `Mailspace::set_role` under `guard_file`. At least one field must be named (the CLI's rule). The CLI's `--pid`/`--host` (a live seat's runtime binding, the one unguarded `role set` write) is not exposed. Returns the `role_show` view |
+| `charter_set` | `role`, `charter` (the body text; the CLI's `@path` and `--body-file` forms are not accepted) | `Mailspace::set_charter` guarding the charter file the CLI guards. Returns the `charter_show` envelope plus `bytes` |
+
+#### Pump actions and reset
+
+Hosted projects only, operator only, same rule as `pump_control`. Each
+call is one audit line. `pump_action` posts for the pump's next tick
+through the library function the CLI calls, and is not refused while the
+pump runs (those functions do not check the lock). `pump_reset` is
+`pump::reset::archive`: refused while the pump lock is held, running or
+paused, with the library's message, and nothing moves on a refusal.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
+| `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
+
+#### Reads
+
+Hosted projects only, operator only — the same rule as the writes above
+— and read-only throughout: no config edit, no record, no letter, so
+none is audited or rate limited. Each calls the same vivi library
+function its CLI command calls and answers the CLI's `--json` body.
+The live free-slot probe is refused on both tools that take `resolved`:
+it runs the vivi binary's `pool status`, which the server is not, so
+`free` is never answered here.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `pump_log` | `file` log\|exceptions, `lines?` (1–500, default 50), `filter?` | Read-only tail of the pump's `log.txt` or `exceptions.txt`, as `vivi pump log` does: the last `lines` lines that contain `filter` when given, counted after filtering. Returns `{file, lines}` |
+| `flow_show` | `kind` build\|research\|release\|repair, `need?` | `vivi flow show --json`: the shipped flow's Mermaid source and version, plus that need's runs and their steps when `need` is given (`runs` is null when the project has no `pump.db`) |
+| `config_show` | `resolved?` (default false) | `vivi config show --json`: the merged config overview (roles, flow, pools), plus `origins` when a merged value was inherited. `resolved: true` is refused (above) |
+| `config_validate` | — | `vivi config validate --json`: the issue array (severity `error`, `warning` or `not_ready`) exactly as the CLI prints it; readiness is read off the severities, not asserted |
+| `pool_list` | — | `vivi pool list --json`: one row per configured pool — name, provider, slots, the bands table (model and reasoning per band) and harness models; `free` stays null (the live probe is the vivi binary's) |
+| `pool_show` | `name`, `resolved?` (default false) | `vivi pool show <name> --json`: the pool's row — provider, slots, bands and harness models. `resolved: true` is refused like `config_show`'s, `free` is always null, and an unknown pool is refused |
+| `role_list` | — | `vivi role list --json`: one view per role — address, aliases, kind, status, harness, provider, model, cadence, pool, models, and whether a charter is set |
+| `role_show` | `role` (name or alias) | `vivi role show <role> --json`: one role's full view; an unknown role is refused |
+| `charter_show` | `role` (name or alias) | `vivi role charter show <role> --json`: the charter body (an empty string when it has none), with its name, address and `has_charter` |
+| `target_list` | — | `vivi pump target list`: the configured pump targets, each `{id, path, main, rungs}` |
+
+>>>>>>> need/w3-d4
 #### Host tools
 
-Six tools need a **host principal** — the operator token or a key minted
-`host: true`:
+Nine tools need a **host principal** — the operator token or a key
+minted `host: true`:
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `create_project` | `name`, `branch?`, `pool?`, `rungs?` | Create a hosted project: bare repository, lanes, git URL and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key |
+| `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?` | Projects half only of `vivi project lane add`. Attaches the existing bare repository `<HOST_LANES_ROOT>/<target>.git` as `[pump.targets.<target>]` on `<HOST_PROJECTS_ROOT>/<name>`: clones `<project>/<target>` and adds the target through the guarded config write. Does not create anything under the lanes root. Success returns `{name, target: {target_id, checkout_path, git_url}, remaining: {half: "lanes", root, command}, readiness: {ready, missing}}`. `remaining.command` is the exact `vivi project lane add <project-root> <target> --lanes-root <lanes> [--git-url-prefix <prefix>] [--seed]` for the lanes owner (this call did not perform that half). `git_url_prefix` overrides `HOST_GIT_URL_PREFIX`; with neither set the clone uses the lane's local path. `seed` is not performed here; it is included in the command when true. A missing bare repository is refused (`isError`) with `{error, name, remaining, readiness}` and the same command. A second attach of the same target is the library's refusal |
 | `key_mint` | `principal`, `grants?`, `host?`, `label?` | Mint a server key for `principal` (created when absent; grants not already held are added). `host: true` mints a host principal, which carries no grants and whose `principal` defaults to `host`. The raw `key` is shown once, `vivi_` + random; at most 32 live keys per principal |
 | `key_list` | — | Principals with their keys (digests only) and grants |
 | `key_revoke` | `key_id` | Revoke one key, on any principal; already-revoked is success |
 | `grant_add` | `principal`, `grant` | Add one grant to an existing principal (idempotent) |
 | `grant_remove` | `principal`, `project_id` | Remove the principal's grant on one project |
+| `server_version` | — | This server's own name and version — the same pair `initialize` answers. Read-only |
+| `project_list` | — | The hosted projects this server serves from the host registry: one `{project_id, name?, mode}` each (`name` is the project root's directory name, else the mailspace config `name`; `mode` is `hosted`). A project that cannot be read is skipped. Read-only |
 
 A non-host key that calls one is refused
 `<tool> is a host tool; this key is not a host principal`. A key/grant

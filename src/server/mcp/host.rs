@@ -1,5 +1,6 @@
-//! Host tools for `POST /v1/mcp`. Today that is `create_project`: it acts on
-//! the host rather than on one project, and only a host principal may call it.
+//! Host tools for `POST /v1/mcp`. They act on the host rather than on one
+//! grant, and only a host principal may call them. `create_project` makes a
+//! project; `lane_create` attaches an existing lane to one.
 //!
 //! `create_project` calls [`vivi::project_create::create`] (bare repository,
 //! project directory with an initialised mailspace, host registry entry) with
@@ -15,7 +16,9 @@ use vivi::project_create::{ProjectCreate, ProjectCreated};
 use crate::AppState;
 use crate::grants::{GrantLevel, GrantRecord};
 use crate::hosted;
+use crate::projects::ProjectMeta;
 
+pub(crate) mod lane;
 mod rungs;
 
 use self::rungs::Rungs;
@@ -53,8 +56,22 @@ impl HostConfig {
 }
 
 pub(super) fn tools_list() -> Value {
-    json!({ "tools": [tool(
-        "create_project",
+    json!({ "tools": [
+        tool("server_version", "This server's own name and version (the crate version compiled in). Read-only; host principal only.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        ),
+        tool("project_list", "The hosted projects this server serves from the host registry: one {project_id, name?, mode} each. The name is the project root's directory name, else the mailspace config name; mode is hosted. Read-only; host principal only.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        ),
+        tool("create_project",
         "Create a project on this host: a bare git repository, a project directory with an \
          initialised mailspace and starter pump config, and a host registry entry; seed the \
          given rung commands into [pump.rungs]; then serve it and mint an operator API key. \
@@ -86,8 +103,66 @@ pub(super) fn tools_list() -> Value {
             },
             "required": ["name"],
             "additionalProperties": false
-        }),
-    )] })
+        })),
+        tool(
+            "lane_create",
+            "Attach an existing bare lane repository as a pump target on a project under the host \
+             projects root. Projects half only: clone `<project>/<target>` and add \
+             [pump.targets.<target>] through the guarded config write. Does not create the bare \
+             repository under the lanes root. When that repository is missing, refuses with the \
+             exact `vivi project lane add` command for the lanes owner and the project's pump \
+             readiness. A second attach of the same target is refused. Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Existing project directory name under HOST_PROJECTS_ROOT" },
+                    "target": { "type": "string", "description": "Target id: [pump.targets.<target>]; the lane is <HOST_LANES_ROOT>/<target>.git" },
+                    "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX; absent and unset, the lane is cloned from its local path" },
+                    "seed": { "type": "boolean", "default": false, "description": "Not performed here (lanes half). Included in the lanes-owner command when true" }
+                },
+                "required": ["name", "target"],
+                "additionalProperties": false
+            }),
+        ),
+    ] })
+}
+
+/// The `server_version` host tool: this server's own name and version, the
+/// same pair `initialize` answers.
+pub(super) fn server_version() -> Value {
+    json!({ "name": "vivi-server", "version": env!("CARGO_PKG_VERSION") })
+}
+
+/// The `project_list` host tool: every hosted project this server serves,
+/// read from its own project store (one `project.json` per project id).
+/// A project that cannot be read is skipped, not failed: the list is what
+/// the server can serve right now.
+pub(super) fn project_list(state: &AppState) -> Value {
+    let Ok(entries) = std::fs::read_dir(state.projects.projects_root()) else {
+        return json!([]);
+    };
+    let mut items = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(bytes) = std::fs::read(entry.path().join("project.json")) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_slice::<ProjectMeta>(&bytes) else {
+            continue;
+        };
+        if !meta.is_hosted() {
+            continue;
+        }
+        let mut item = json!({
+            "project_id": meta.project_id,
+            "mode": "hosted",
+        });
+        if let Some(name) = super::server::hosted_name(&meta) {
+            item["name"] = json!(name);
+        }
+        items.push(item);
+    }
+    items.sort_by(|a, b| a["project_id"].as_str().cmp(&b["project_id"].as_str()));
+    Value::Array(items)
 }
 
 /// One creation at a time: the host registry takes a non-waiting lock, so
