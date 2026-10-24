@@ -66,18 +66,14 @@ fn a_write_that_adds_an_error_is_restored_byte_for_byte() {
 #[test]
 fn errors_already_present_are_reported_not_blamed() {
     let (tmp, config) = project();
-    append(&config, "tick = 0\n\n[pump.dispatch]\nmax_attempts = 0\n");
+    append(&config, "tick = 0\n\n[pump.dispatch]\nparallel = 0\n");
     let outcome = guarded(tmp.path(), |doc| {
         doc["pump"]["tick"] = value(5);
         Ok(())
     })
     .unwrap();
     assert_eq!(outcome.still.len(), 1, "{:?}", outcome.still);
-    assert!(
-        outcome.still[0].contains("max_attempts"),
-        "{:?}",
-        outcome.still
-    );
+    assert!(outcome.still[0].contains("parallel"), "{:?}", outcome.still);
     assert!(fs::read_to_string(&config).unwrap().contains("tick = 5"));
     let notes = outcome.notes();
     assert!(notes[0].starts_with("backup "), "{notes:?}");
@@ -188,10 +184,7 @@ fn an_existing_bad_charter_is_restored_to_the_shipped_bytes() {
 /// A config that does not load (a string where a number belongs) with an
 /// error that only shows once it loads.
 fn unloadable(config: &Path) {
-    append(
-        config,
-        "tick = \"x\"\n\n[pump.dispatch]\nmax_attempts = 0\n",
-    );
+    append(config, "tick = \"x\"\n\n[pump.dispatch]\nparallel = 0\n");
     assert!(Mailspace::open_root(config.parent().unwrap().parent().unwrap().into()).is_err());
 }
 
@@ -206,16 +199,12 @@ fn a_write_that_repairs_a_load_error_is_kept_and_reports_the_errors_it_exposed()
     .unwrap();
     assert!(fs::read_to_string(&config).unwrap().contains("tick = 5"));
     assert_eq!(outcome.still.len(), 1, "{:?}", outcome.still);
-    assert!(
-        outcome.still[0].contains("max_attempts"),
-        "{:?}",
-        outcome.still
-    );
+    assert!(outcome.still[0].contains("parallel"), "{:?}", outcome.still);
     assert!(
         outcome
             .notes()
             .iter()
-            .any(|n| n.starts_with("still invalid: ") && n.contains("max_attempts")),
+            .any(|n| n.starts_with("still invalid: ") && n.contains("parallel")),
         "{:?}",
         outcome.notes()
     );
