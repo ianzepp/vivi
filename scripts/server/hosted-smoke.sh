@@ -167,7 +167,7 @@ mcp "$KEY_MIND" list '{"kind":"need","marks":["pump"]}' | grep -q "$HANDLE" \
   && ok "MCP list --marks pump agrees" || bad "MCP list by mark"
 
 # --- CLI-created need -> MCP list/show/board ---------------------------------
-CLI_OUT=$("$VIVI" need send --from operator --to mind --subject "cli smoke need" --body "from the cli" --project "$HOST" 2>&1)
+CLI_OUT=$("$VIVI" need send --from operator --to mind --subject "cli smoke need" --body "from the cli" --done-when "from the cli" --project "$HOST" 2>&1)
 CLI_HANDLE=$(echo "$CLI_OUT" | awk '/^created/ {c=$3} /^sent/ {s=$2} END {print (c != "" ? c : s)}')
 echo "$CLI_HANDLE" | grep -qE '^[0-9a-f]{8}$' && ok "CLI need send ($CLI_HANDLE)" || die "CLI need send: $CLI_OUT"
 mcp "$KEY_MIND" list '{"kind":"need"}' | grep -q "$CLI_HANDLE" \

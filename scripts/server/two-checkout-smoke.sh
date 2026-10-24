@@ -246,11 +246,11 @@ content_of() { "$VIVI" need show "$1" --project "$2" 2>&1 | awk -v h="$1" '$0 ~ 
 # role of the sender's own prints `created <role> <handle>` (the traveling
 # letter) and then the sent copy
 handle_of() { awk '/^created/ {c=$3} /^sent/ {s=$2} END {print (c != "" ? c : s)}'; }
-PRIOR=$("$VIVI" need send --from mind --to mind --subject "prior local need" --body "an earlier local item" --project "$A" 2>/dev/null | handle_of)
+PRIOR=$("$VIVI" need send --from mind --to mind --subject "prior local need" --body "an earlier local item" --done-when "an earlier local item" --project "$A" 2>/dev/null | handle_of)
 [ -n "$PRIOR" ] && ok "A filed a prior local need ($PRIOR)" || bad "A prior local need"
 # `chat send --ref` is `need send --depends-on`: the cited handle travels in
 # the letter's X-Vivi-Depends-On header.
-NEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "cross-checkout need" --body "supersedes $PRIOR; please do the thing" --depends-on "$PRIOR" --project "$A" 2>/tmp/vc8-need-send.err | handle_of)
+NEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "cross-checkout need" --body "supersedes $PRIOR; please do the thing" --done-when "please do the thing" --depends-on "$PRIOR" --project "$A" 2>/tmp/vc8-need-send.err | handle_of)
 echo "$NEED" | grep -qE '^[0-9a-f]{8}$' && ok "A sends a need citing $PRIOR (handle $NEED)" || { bad "A need send"; cat /tmp/vc8-need-send.err; }
 "$VIVI" sync --project "$A" >/tmp/vc8-pull-a1.log 2>&1
 "$VIVI" sync --project "$B" >/tmp/vc8-pull-b1.log 2>&1
@@ -286,7 +286,7 @@ print(any(r["message_id"].startswith("msg_" + sys.argv[1]) for r in json.load(sy
 
 # Item events (1.4.0, unreleased): the author's done event is applied on the
 # holder after a pull, is never work, and is served to every member.
-EVNEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "event need" --body "A will close this one" --project "$A" 2>/dev/null | handle_of)
+EVNEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "event need" --body "A will close this one" --done-when "A will close this one" --project "$A" 2>/dev/null | handle_of)
 "$VIVI" sync --project "$A" >/dev/null 2>&1
 "$VIVI" sync --project "$B" >/dev/null 2>&1
 open_has need "$B" "$EVNEED" && ok "B holds A's second need open ($EVNEED)" || bad "second need did not reach B ($EVNEED)"
@@ -336,7 +336,7 @@ sys.exit(0 if ok else 1)' \
 # not push stay unsent in its mailspace, and the next push sends each once.
 if [ "$LOCAL" = 1 ]; then
   kill "$(cat /tmp/vc8-server.pid)" 2>/dev/null; clear_port
-  OFFNEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "offline need" --body "written while the server was down" --project "$A" 2>/dev/null | handle_of)
+  OFFNEED=$("$VIVI" need send --from mind --to "mind@$PB.local" --subject "offline need" --body "written while the server was down" --done-when "written while the server was down" --project "$A" 2>/dev/null | handle_of)
   "$VIVI" sync push --project "$A" >/tmp/vc8-send2.log 2>&1
   "$VIVI" sync status --project "$A" 2>/dev/null | grep -q 'unsent: 1 letter' && ! open_has need "$B" "$OFFNEED" \
     && ok "offline push leaves the letter unsent" || { bad "offline push left the letter unsent"; cat /tmp/vc8-send2.log; }
