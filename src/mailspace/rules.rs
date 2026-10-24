@@ -1,10 +1,10 @@
 //! Project rules.
 //!
 //! A rule is a message in the `rules` folder. The bytes are written once.
-//! Retiring one is an event. Replacing one writes a new rule whose
-//! `X-Vivi-Supersedes` header names the old id, and records the same fact as
-//! an event. The active set is every rule that is not retired, superseded,
-//! or absorbed. Rules are not work: nothing here mints a backlog node.
+//! Retiring one is an event. Replacing one writes a new rule whose front
+//! matter names the old id, and records the same fact as an event. The
+//! active set is every rule that is not retired, superseded, or absorbed.
+//! Rules are not work: nothing here mints a backlog node.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +15,8 @@ use super::Mailspace;
 use super::delivery::add_header;
 use crate::error::VivariumError;
 use crate::extract::extract_text;
+use crate::letter::plain::{RuleFront, RuleScope};
+use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Front, LetterKind, of_message, parse_kind};
 use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{
     MailspaceEvent, MailspaceEventInput, MessageIngestRequest, Storage, StoredMessage,
@@ -71,11 +73,6 @@ pub struct RuleSupersession {
     pub handle: String,
 }
 
-struct RuleHeaders {
-    scope: String,
-    supersedes: Option<String>,
-}
-
 struct Disposition {
     name: &'static str,
     successor: Option<String>,
@@ -84,8 +81,8 @@ struct Disposition {
 impl Mailspace {
     /// Save a project rule.
     ///
-    /// `local` writes `X-Vivi-Rule-Scope: local`. Nothing syncs rules yet;
-    /// the header is the mark a later sync will read.
+    /// `local` marks the scope in the rule's front matter. Nothing syncs
+    /// rules yet; the scope is the mark a later sync will read.
     ///
     /// # Errors
     /// Returns an error when the identity is unknown or the store rejects
@@ -271,21 +268,32 @@ impl Mailspace {
         supersedes: Option<&str>,
     ) -> Result<StoredMessage, VivariumError> {
         let address = self.address_for(identity);
+        let front = RuleFront {
+            scope: Some(if local {
+                RuleScope::Local
+            } else {
+                RuleScope::Project
+            }),
+            supersedes: supersedes.map(str::to_string),
+        };
+        // Scope and supersedes travel as front matter; the composed body is
+        // parsed back as the rule kind, so a writer bug is an error at
+        // write time.
+        let prose = crate::letter::plain::render(&front, body)
+            .map_err(|error| VivariumError::Message(format!("the rule letter: {error}")))?;
+        parse_kind(&LetterKind::Rule, &prose)
+            .map_err(|error| VivariumError::Message(format!("the rule letter: {error}")))?;
         let mut eml = build_compose_draft(&ComposeDraft {
             from: address.clone(),
             to: vec![address],
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.to_string(),
-            body: body.to_string(),
+            body: prose,
             html_body: None,
         })?;
         eml = add_header(&eml, "X-Vivi-Kind", "rule")?;
-        let scope = if local { "local" } else { "project" };
-        eml = add_header(&eml, "X-Vivi-Rule-Scope", scope)?;
-        if let Some(previous) = supersedes {
-            eml = add_header(&eml, "X-Vivi-Supersedes", previous)?;
-        }
+        eml = add_header(&eml, FORMAT_HEADER, FORMAT_VERSION)?;
         let seed = Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let prior = supersedes.unwrap_or("");
         self.storage()?.ingest_message(
@@ -354,7 +362,7 @@ impl Mailspace {
         let storage = self.storage()?;
         for rule in self.list_kind(None, "rules", "rule")? {
             let data = storage.read_message(&rule.message_id)?;
-            if rule_headers(&data).supersedes.as_deref() == Some(message_id) {
+            if rule_front(&data).supersedes.as_deref() == Some(message_id) {
                 return Ok(Some(rule.message_id));
             }
         }
@@ -451,7 +459,7 @@ fn record_for(
         date: rule.date.clone(),
         subject: rule.subject.clone(),
         author: rule.account.clone(),
-        scope: rule_headers(&data).scope,
+        scope: rule_scope(&data).to_string(),
         state: state.to_string(),
         successor,
     })
@@ -464,7 +472,7 @@ fn successor_index(
     let mut index = HashMap::new();
     for rule in rules {
         let data = storage.read_message(&rule.message_id)?;
-        if let Some(target) = rule_headers(&data).supersedes {
+        if let Some(target) = rule_front(&data).supersedes {
             index.insert(target, rule.message_id.clone());
         }
     }
@@ -512,30 +520,26 @@ fn successor_note(events: &[MailspaceEvent]) -> Option<&str> {
         .and_then(|event| event.note.as_deref())
 }
 
-fn rule_headers(data: &[u8]) -> RuleHeaders {
-    let mut headers = RuleHeaders {
-        scope: "project".to_string(),
-        supersedes: None,
-    };
-    let Ok(raw) = std::str::from_utf8(data) else {
-        return headers;
-    };
-    for line in raw.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        if name.eq_ignore_ascii_case("X-Vivi-Rule-Scope") && value == "local" {
-            headers.scope = "local".to_string();
-        } else if name.eq_ignore_ascii_case("X-Vivi-Supersedes") && !value.is_empty() {
-            headers.supersedes = Some(value.to_string());
-        }
+/// A rule letter's front matter: its `scope` and `supersedes`. A legacy
+/// letter carries those facts in headers this reader no longer opens
+/// (W3-B4: headers carry transport only); it reads as the default front.
+fn rule_front(data: &[u8]) -> RuleFront {
+    match of_message(data, "") {
+        Ok(letter) => match letter.front {
+            Front::Rule(front) => front,
+            _ => RuleFront::default(),
+        },
+        Err(_) => RuleFront::default(),
     }
-    headers
+}
+
+/// The display scope of a rule letter: what its front matter marks, else
+/// the whole-project default.
+fn rule_scope(data: &[u8]) -> &'static str {
+    match rule_front(data).scope {
+        Some(RuleScope::Local) => "local",
+        Some(RuleScope::Project) | None => "project",
+    }
 }
 
 fn refuse_inactive(name: &str, successor: Option<&str>, token: &str) -> VivariumError {
