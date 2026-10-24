@@ -63,8 +63,11 @@ pub struct PullReport {
     pub unlinked: usize,
     pub refused: Vec<RefusedRecord>,
     /// Letters held under `.vivi/quarantine/` this run because their
-    /// format-1 front matter would not parse. The same content arriving
-    /// again finds the held file and is silent.
+    /// format-1 front matter would not parse, named whether the hold is
+    /// new or a receipt is already live. A plain re-pull is silent (the
+    /// cursor is already past the record); the same content arriving again
+    /// through a fresh push or window is named again from its live
+    /// receipt.
     pub quarantined: Vec<QuarantinedRecord>,
     /// Problems that did not stop the pull (a binding that could not be
     /// written).
