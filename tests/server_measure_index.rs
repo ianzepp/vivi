@@ -29,7 +29,12 @@ fn send(ms: &Mailspace, to: &str, kind: Option<&str>, n: usize) {
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: format!("letter {n}"),
-        body: format!("letter {n} body\ndone_when: done\n"),
+        body: if kind == Some("need") {
+            // A format-1 need letter: front matter with done_when, then prose.
+            format!("+++\ndone_when = [\"letter {n} is done\"]\n+++\n\nletter {n} body\n")
+        } else {
+            format!("letter {n} body\n")
+        },
         role: if kind == Some("need") {
             "needs"
         } else {
@@ -38,7 +43,6 @@ fn send(ms: &Mailspace, to: &str, kind: Option<&str>, n: usize) {
         .into(),
         kind: kind.map(str::to_owned),
         reply_to: None,
-        depends_on: Vec::new(),
     })
     .unwrap();
 }
