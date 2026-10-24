@@ -1,14 +1,13 @@
-//! The compose gate: every send and reply is checked at compose. A need, want
-//! or task body must open with valid front matter; a pump record must parse as
-//! one; prose mail and chat are stored as written, with no front matter; a mail
-//! body with front matter must be a note, an action or a role reply envelope. An invalid
-//! letter is refused and nothing is stored.
+//! The compose gate: every send and reply is checked at compose. The format
+//! rules are the public `letter::gate`; the storage step here canonicalizes a
+//! need's `serves`/`explores` against the mailspace and re-renders the body
+//! when that changed. An invalid letter is refused and nothing is stored.
 
 use super::super::Mailspace;
 use super::super::serves::canonical_wants;
 use crate::error::VivariumError;
-use crate::letter::sugar::opens_with_fence;
-use crate::letter::{Front, Letter, LetterError, LetterKind, of_message, parse_kind, render};
+use crate::letter::gate as letter_gate;
+use crate::letter::{Front, Letter, LetterError, of_message, render};
 
 /// A checked letter body and what it declares.
 pub(super) struct Gated {
@@ -26,8 +25,10 @@ pub(super) struct Gated {
 }
 
 /// Check `body` for its kind: the request `kind`, else the kind of the
-/// `role`, else mail. Memo, rule and any other kind pass unchanged and
-/// unformatted.
+/// `role`, else mail. The format step is the storage-free `letter::gate`; the
+/// storage step canonicalizes a need's `serves`/`explores` against the
+/// mailspace and re-renders the body when that changed. Memo, rule and any
+/// other kind pass unchanged and unformatted.
 ///
 /// # Errors
 /// Returns the `LetterError` text when the front matter is invalid, or the
@@ -39,19 +40,24 @@ pub(super) fn gate(
     body: &str,
 ) -> Result<Gated, VivariumError> {
     let word = kind.unwrap_or_else(|| role_kind(role));
-    match word {
-        "need" | "want" | "task" => work(mailspace, word, body),
-        "pump" => checked(word, body, parse(&LetterKind::Record, body)?),
-        "mail" => checked_prose(word, body, &LetterKind::Mail),
-        "chat" => checked_prose(word, body, &LetterKind::Chat),
-        _ => Ok(Gated {
-            body: body.to_string(),
-            kind: Some(word.to_string()),
-            formatted: false,
-            depends_on: Vec::new(),
-            letter: None,
-        }),
+    let mut gated =
+        letter_gate::gate(word, body).map_err(|error| VivariumError::Message(error.to_string()))?;
+    let mut body = body.to_string();
+    if let Some(letter) = gated.letter.as_mut()
+        && let Front::Need(front) = &mut letter.front
+        && (front.serves.is_some() || front.explores.is_some())
+    {
+        let storage = mailspace.storage()?;
+        canonical_wants(&storage, front)?;
+        body = rerender(letter)?;
     }
+    Ok(Gated {
+        body,
+        kind: Some(gated.kind),
+        formatted: gated.formatted,
+        depends_on: gated.depends_on,
+        letter: gated.letter,
+    })
 }
 
 /// The kind a role's letters carry when the request names none.
@@ -63,55 +69,6 @@ fn role_kind(role: &str) -> &'static str {
         "pumps" => "pump",
         _ => "mail",
     }
-}
-
-fn checked(kind: &str, body: &str, letter: Letter) -> Result<Gated, VivariumError> {
-    Ok(Gated {
-        body: body.to_string(),
-        kind: Some(kind.to_string()),
-        formatted: true,
-        depends_on: Vec::new(),
-        letter: Some(letter),
-    })
-}
-
-/// A body that opens with front matter must parse as `letter_kind`; any other
-/// body is prose and is stored as written (it reads as an empty front plus the
-/// whole body).
-fn checked_prose(kind: &str, body: &str, letter_kind: &LetterKind) -> Result<Gated, VivariumError> {
-    checked(kind, body, parse(letter_kind, body)?)
-}
-
-fn work(mailspace: &Mailspace, kind: &str, body: &str) -> Result<Gated, VivariumError> {
-    let letter_kind = match kind {
-        "need" => LetterKind::Need,
-        "want" => LetterKind::Want,
-        _ => LetterKind::Task,
-    };
-    if !opens_with_fence(body) {
-        return Err(VivariumError::Message(no_front(&letter_kind).into()));
-    }
-    let mut letter = parse(&letter_kind, body)?;
-    let mut body = body.to_string();
-    let depends_on = deps(&letter.front)?;
-    let mut merged = false;
-    if let Front::Need(front) = &mut letter.front
-        && (front.serves.is_some() || front.explores.is_some())
-    {
-        let storage = mailspace.storage()?;
-        canonical_wants(&storage, front)?;
-        merged = true;
-    }
-    if merged {
-        body = rerender(&letter)?;
-    }
-    Ok(Gated {
-        body,
-        kind: Some(kind.to_string()),
-        formatted: true,
-        depends_on,
-        letter: Some(letter),
-    })
 }
 
 /// Check a raw imported letter. A letter with no `X-Vivi-Format` header is
@@ -127,41 +84,11 @@ pub(super) fn raw_letter(data: &[u8]) -> Result<(), VivariumError> {
     }
 }
 
-fn no_front(kind: &LetterKind) -> &'static str {
-    match kind {
-        LetterKind::Need => {
-            "need has no done_when: pass --done-when or add done_when = [...] to the front matter"
-        }
-        LetterKind::Want => {
-            "want has no question: pass --question or add question = \"...\" to the front matter"
-        }
-        _ => {
-            "task letter has no front matter: open the body with +++ ... +++ (an empty front matter is fine)"
-        }
-    }
-}
-
-fn parse(kind: &LetterKind, body: &str) -> Result<Letter, VivariumError> {
-    parse_kind(kind, body).map_err(|err| VivariumError::Message(err.to_string()))
-}
-
-fn deps(front: &Front) -> Result<Vec<String>, VivariumError> {
-    match front {
-        Front::Need(front) => Ok(front.depends_on.clone()),
-        Front::Want(front) => Ok(front.depends_on.clone()),
-        Front::Task(front) => Ok(front.depends_on.clone()),
-        _ => Err(VivariumError::Message("not a work letter".into())),
-    }
-}
-
 fn rerender(letter: &Letter) -> Result<String, VivariumError> {
-    let rendered = match &letter.front {
-        Front::Need(front) => render(front, &letter.prose),
-        Front::Want(front) => render(front, &letter.prose),
-        Front::Task(front) => render(front, &letter.prose),
-        _ => return Err(VivariumError::Message("not a work letter".into())),
+    let Front::Need(front) = &letter.front else {
+        return Err(VivariumError::Message("not a work letter".into()));
     };
-    rendered.map_err(|err| VivariumError::Message(err.to_string()))
+    render(front, &letter.prose).map_err(|err| VivariumError::Message(err.to_string()))
 }
 
 #[cfg(test)]
