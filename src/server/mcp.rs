@@ -621,6 +621,77 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
+            tool("pump_log", "Hosted projects only, operator only. Read-only tail of the pump's log.txt or exceptions.txt, as `vivi pump log` does: the last `lines` lines (default 50, at most 500) that contain `filter` when given, counted after filtering. Same authorization as pump_control. Returns {file, lines}.", json!({
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "enum": ["log", "exceptions"] },
+                    "lines": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
+                    "filter": { "type": "string", "description": "Only lines containing this text (case-sensitive)" }
+                },
+                "required": ["file"],
+                "additionalProperties": false
+            })),
+            tool("flow_show", "Hosted projects only, operator only. Read-only `vivi flow show --json`: the shipped flow's Mermaid source and version, plus that need's runs and their steps when `need` is given (`runs` is null when the project has no pump.db). Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["build", "research", "release", "repair"] },
+                    "need": { "type": "string", "description": "Need handle; omit for the Mermaid source alone" }
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+            })),
+            tool("config_show", "Hosted projects only, operator only. Read-only `vivi config show --json`: the merged config overview (roles, flow, pools), plus `origins` when a merged value was inherited. `resolved` is refused: the live free-slot probe runs the vivi binary's `pool status`, which the server is not, so `free` is never answered here. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "resolved": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            })),
+            tool("config_validate", "Hosted projects only, operator only. Read-only `vivi config validate --json`: the issue array (severity error, warning, or not_ready) exactly as the CLI prints it; readiness is read off the severities, not asserted. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("pool_list", "Hosted projects only, operator only. Read-only `vivi pool list --json`: one row per configured pool — name, provider, slots, the bands table (model and reasoning per band) and harness models; `free` stays null (the live probe is the vivi binary's). Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("pool_show", "Hosted projects only, operator only. Read-only `vivi pool show <name> --json`: the pool's row — provider, slots, bands and harness models. `resolved` is refused (the live free-slot probe runs the vivi binary, which the server is not), so `free` is always null; an unknown pool is refused. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Pool name" },
+                    "resolved": { "type": "boolean", "default": false }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            })),
+            tool("role_list", "Hosted projects only, operator only. Read-only `vivi role list --json`: one view per role — address, aliases, kind, status, harness, provider, model, cadence, pool, models, and whether a charter is set. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("role_show", "Hosted projects only, operator only. Read-only `vivi role show <role> --json`: one role's full view, by name or alias. An unknown role is refused. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name or alias" }
+                },
+                "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("charter_show", "Hosted projects only, operator only. Read-only `vivi role charter show <role> --json`: the role's charter body (an empty string when it has none), by name or alias, with its name, address and has_charter. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name or alias" }
+                },
+                "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("target_list", "Hosted projects only, operator only. Read-only `vivi pump target list`: the configured pump targets, each {id, path, main, rungs}. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
             tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, each want's `serving` needs with their state, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
                 "type": "object",
                 "properties": {
