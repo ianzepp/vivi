@@ -48,10 +48,10 @@ fn create_prints_the_result_and_registers_the_project() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "",
-        "the library prints nothing"
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lane ACL copy skipped"),
+        "the ACL copy warns instead of failing the create, got {stderr}"
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["git_url"], "git@hub.example.ts.net:app.git");

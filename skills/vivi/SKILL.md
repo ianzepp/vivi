@@ -201,6 +201,11 @@ two different users. `vivi project create` probes both roots, performs every
 half the caller can write, and prints the exact command for the user who
 owns the rest; the same command, run by that user, finishes the job.
 
+On Linux the lanes half copies the new bare repo's owning group and ACL from
+the lexicographically first sibling `*.git` directory whose ACL `getfacl` can
+read; off Linux, or when that copy cannot be done, it is skipped with a
+one-line warning and the lane is still created.
+
 ### Adding a lane
 
 `vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
@@ -209,7 +214,8 @@ It performs every half the caller can write and prints the exact command for
 the other half's owner, exactly like `project create`:
 
 - **lanes half**: the group-shared bare repo `L/<id>.git`, with one empty
-  seed commit when `--seed` is given.
+  seed commit when `--seed` is given. On Linux its group and ACL are copied
+  from a sibling repo; elsewhere that copy is skipped with a warning.
 - **projects half**: inside the project, a clone of the lane at
   `<project-root>/<id>` and the `[pump.targets.<id>]` entry (`path` is the
   checkout, `remote_url` is `<U><id>.git`), written through the guarded
