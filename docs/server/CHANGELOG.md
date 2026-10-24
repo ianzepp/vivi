@@ -22,6 +22,14 @@
   (refused while the project's pump runs; a paused pump stays writable),
   and each write call appends one audit line. `pump_rungs` `set` was
   already `RungsConfig::set`, which is the same guard.
+- **MCP pump actions and reset (wave 3 D4).** Hosted, operator-only
+  `pump_action` and `pump_reset` on `POST /v1/mcp`. `pump_action` calls
+  the same library functions as `vivi pump withdraw|requeue|replan|answer|unlock`
+  (withdraw closes the need; requeue takes steps or one job, and `dry_run`
+  previews). Those posts are for the next tick and are not refused while
+  the pump runs. `pump_reset` is `pump::reset::archive` and is refused
+  while the pump lock is held, running or paused. Every call appends one
+  audit line, including a requeue dry run and a refused reset.
 - **Every server letter is format 1 (wave 3 B4).** The `done`/`reopen`
   event letters the MCP tools compose carry `X-Vivi-Format: 1` with their
   close metadata as front matter: `done` takes `verdict`, `branch`+

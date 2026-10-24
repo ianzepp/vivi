@@ -453,6 +453,9 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
     for name in bare {
         assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
     }
+    for name in ["pump_action", "pump_reset"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
     let (_, init) = rpc(
         &fx.app,
         &key,

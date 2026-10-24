@@ -411,7 +411,7 @@ The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
 `config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
 `target_add`, `target_remove`, `role_add`, `role_set`, `charter_set`,
-`pump_send`, `pump_list`, `pump_show`);
+`pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`);
 each also takes the required `project` argument on top of the arguments
 shown.
 
@@ -467,6 +467,20 @@ The same operator rule and the same guard as the config writes above.
 | `role_add` | `role`, `kind?`, `harness?`, `provider?`, `model?`, `thinking?`, `status?`, `labels?`, `cadence?`, `pool?`, `read_only?`, `models?` | `Mailspace::add_role` under `guard_file`, then the CLI's adoption of letters held under the new name (with the CLI's default: the pump's hand role, `[pump] to`, gets kind `hand` when `kind` is absent). A duplicate name is refused. Returns `{added, adopted, role}` |
 | `role_set` | `role`, plus each of `kind`, `harness`, `provider`, `model`, `thinking`, `cadence`, `pool`, `read_only`, `models` with a `clear_<field>` form, and `status`, `labels`, `clear_labels` | `Mailspace::set_role` under `guard_file`. At least one field must be named (the CLI's rule). The CLI's `--pid`/`--host` (a live seat's runtime binding, the one unguarded `role set` write) is not exposed. Returns the `role_show` view |
 | `charter_set` | `role`, `charter` (the body text; the CLI's `@path` and `--body-file` forms are not accepted) | `Mailspace::set_charter` guarding the charter file the CLI guards. Returns the `charter_show` envelope plus `bytes` |
+
+#### Pump actions and reset
+
+Hosted projects only, operator only, same rule as `pump_control`. Each
+call is one audit line. `pump_action` posts for the pump's next tick
+through the library function the CLI calls, and is not refused while the
+pump runs (those functions do not check the lock). `pump_reset` is
+`pump::reset::archive`: refused while the pump lock is held, running or
+paused, with the library's message, and nothing moves on a refusal.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
+| `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
 
 #### Host tools
 

@@ -823,7 +823,7 @@ fn is_write(name: &str, arguments: &Value) -> bool {
     let action = arguments.get("action").and_then(Value::as_str);
     match name {
         "send" | "reply" | "done" | "reopen" | "mark" | "unmark" | "depend" | "pump_control"
-        | "pump_send" => true,
+        | "pump_send" | "pump_action" | "pump_reset" => true,
         "memo" => action == Some("save"),
         "pump_rungs" => action == Some("set"),
         "pool_bands" => matches!(action, Some("set" | "unset")),
