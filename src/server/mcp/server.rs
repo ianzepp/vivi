@@ -1,6 +1,6 @@
 //! The server-level MCP endpoint, `POST /v1/mcp` (wave 3 D3): one endpoint
-//! for the whole server, beside the per-project routes (which move here in
-//! a later task). The Bearer is a server key from the one key store
+//! for the whole server. Project and host MCP live here; chat rooms stay
+//! on `POST /v1/rooms/{id}/mcp`. The Bearer is a server key from the one key store
 //! ([`crate::grants::ServerKeyStore`]) or, when set, the host operator
 //! token; a project identity token is refused with a message naming the
 //! need for a server key.

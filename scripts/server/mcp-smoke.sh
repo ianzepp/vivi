@@ -56,7 +56,7 @@ APIKEY=$(echo "$KEYS" | jget '["key"]')
 [ -n "$APIKEY" ] && ok "mint api key" || { bad "mint api key: $KEYS"; echo "RESULT pass=$PASS fail=$FAIL"; exit 1; }
 
 rpc() {
-  curl -sS -X POST "$BASE/v1/projects/$PID/mcp" \
+  curl -sS -X POST "$BASE/v1/mcp" \
     -H "content-type: application/json" \
     -H "authorization: Bearer $APIKEY" \
     -d "$1"
@@ -72,11 +72,11 @@ rpc_text() {
   echo "$1" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r.get("result",{}).get("content",[{}])[0].get("text",""))'
 }
 
-OVER=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"overview","arguments":{}}}')
+OVER=$(rpc "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"overview","arguments":{"project":sys.argv[1]}}}))' "$PID")")
 echo "$(rpc_text "$OVER")" | grep -q '"creator"' && ok "overview via api key" || bad "overview: $OVER"
 
 PREFIX=$(python3 -c 'import hashlib; print(hashlib.sha256(b"creator").hexdigest()[:8])')
-SEND=$(rpc "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send","arguments":{"kind":"need","to":"creator@%s.local"%sys.argv[1],"subject":"mcp-smoke","body":"from the smoke"}}}))' "$PREFIX")")
+SEND=$(rpc "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send","arguments":{"project":sys.argv[2],"kind":"need","to":"creator@%s.local"%sys.argv[1],"subject":"mcp-smoke","body":"from the smoke","done_when":"from the smoke"}}}))' "$PREFIX" "$PID")")
 echo "$(rpc_text "$SEND")" | grep -q '"handle"' && ok "send need" || bad "send: $SEND"
 
 echo "RESULT pass=$PASS fail=$FAIL project=$PID"

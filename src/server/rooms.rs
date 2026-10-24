@@ -89,7 +89,7 @@ fn room_json(meta: &ProjectMeta, members: usize) -> serde_json::Value {
         "closed": meta.closed,
         "expired": meta.is_over() && !meta.closed,
         "members": members,
-        "mcp": format!("/v1/projects/{}/mcp", meta.project_id),
+        "mcp": format!("/v1/rooms/{}/mcp", meta.project_id),
     })
 }
 

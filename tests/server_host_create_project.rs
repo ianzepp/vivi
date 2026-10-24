@@ -1,6 +1,6 @@
-//! The host MCP endpoint (`POST /v1/host/mcp`) and its `create_project`
-//! tool: operator-token auth, a created project that is served at once, and
-//! the failure modes.
+//! `create_project` on `POST /v1/mcp`: the host operator token, a created
+//! project that is served at once, and the failure modes. `POST /v1/host/mcp`
+//! is gone.
 
 use std::path::PathBuf;
 use std::sync::Once;
@@ -87,7 +87,7 @@ impl Fx {
 
     async fn host(&self, bearer: Option<&str>, method: &str, params: Value) -> (StatusCode, Value) {
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-        self.post("/v1/host/mcp", bearer, body).await
+        self.post("/v1/mcp", bearer, body).await
     }
 
     /// Call `create_project`; the tool's own JSON and whether it errored.
@@ -109,18 +109,26 @@ impl Fx {
 }
 
 #[tokio::test]
-async fn the_endpoint_is_disabled_without_a_host_operator_token() {
+async fn the_host_route_is_gone_and_mcp_has_no_built_in_host_without_the_token() {
     let fx = fixture("disabled", None, true);
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
     for bearer in [None, Some(TOKEN), Some("")] {
-        let (status, value) = fx.host(bearer, "tools/list", json!({})).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{value}");
+        let (status, value) = fx.post("/v1/host/mcp", bearer, body.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{bearer:?} {value}");
+        assert!(value.is_null(), "{value}");
+    }
+    let (status, value) = fx.host(None, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    assert_eq!(value["error"]["message"], "bearer token required");
+    for bearer in [TOKEN, ""] {
+        let (status, value) = fx.host(Some(bearer), "tools/list", json!({})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{bearer:?} {value}");
+        let message = value["error"]["message"].as_str().unwrap();
         assert!(
-            value["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("HOST_OPERATOR_TOKEN"),
-            "{value}"
+            message.contains("identity tokens are not accepted on /v1/mcp"),
+            "{message}"
         );
+        assert!(message.contains("server key"), "{message}");
     }
     assert!(std::fs::read_dir(&fx.projects).unwrap().next().is_none());
 }
@@ -128,15 +136,32 @@ async fn the_endpoint_is_disabled_without_a_host_operator_token() {
 #[tokio::test]
 async fn a_missing_or_wrong_token_is_refused() {
     let fx = fixture("wrong", Some(TOKEN), true);
-    let (status, _) = fx.host(None, "tools/list", json!({})).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, gone) = fx
+        .post(
+            "/v1/host/mcp",
+            Some(TOKEN),
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{gone}");
+    assert!(gone.is_null(), "{gone}");
+
+    let (status, value) = fx.host(None, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    assert_eq!(value["error"]["message"], "bearer token required");
     for wrong in ["nope", "host-operator-secre", "host-operator-secrets", ""] {
         let (status, value) = fx.host(Some(wrong), "tools/list", json!({})).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{wrong}: {value}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{wrong}: {value}");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("identity tokens are not accepted on /v1/mcp"),
+            "{wrong}: {message}"
+        );
+        assert!(message.contains("server key"), "{wrong}: {message}");
     }
     let call = json!({"name": "create_project", "arguments": {"name": "refused"}});
     let (status, _) = fx.host(Some("nope"), "tools/call", call).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(!fx.projects.join("refused").exists());
 }
 
@@ -148,12 +173,15 @@ async fn the_operator_token_lists_and_initializes() {
     assert_eq!(init["result"]["serverInfo"]["name"], "vivi-server");
     let (_, listed) = fx.host(Some(TOKEN), "tools/list", json!({})).await;
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1, "{listed}");
-    assert_eq!(tools[0]["name"], "create_project");
-    assert_eq!(tools[0]["inputSchema"]["required"], json!(["name"]));
-    let properties = &tools[0]["inputSchema"]["properties"];
+    let create = tools
+        .iter()
+        .find(|tool| tool["name"] == "create_project")
+        .expect("create_project is in the catalog");
+    assert_eq!(create["inputSchema"]["required"], json!(["name"]));
+    let properties = &create["inputSchema"]["properties"];
     assert!(properties.get("rungs").is_some(), "{listed}");
     assert!(properties.get("gate").is_none(), "{listed}");
+    assert!(properties.get("project").is_none(), "{listed}");
 }
 
 #[tokio::test]
@@ -177,23 +205,17 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
     assert!(flags.serve && flags.pump);
 
     assert_eq!(made["served"], true, "{made}");
-    let id = made["project_id"].as_str().unwrap();
-    assert_eq!(made["mcp_path"], format!("/v1/projects/{id}/mcp"));
-    let key = made["operator_key"]["key"].as_str().unwrap();
+    let id = made["project_id"].as_str().unwrap().to_owned();
+    assert_eq!(made["mcp_path"], "/v1/mcp");
+    let key = made["operator_key"]["key"].as_str().unwrap().to_owned();
     assert!(key.starts_with("vivi_"));
     assert_eq!(made["operator_key"]["identity"], "operator");
 
-    // Served without a restart or a watcher: the project endpoint answers,
+    // Served without a restart or a watcher: /v1/mcp answers with `project`,
     // and the minted key is the operator's (pump_list needs one).
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "pump_list", "arguments": {}}});
-    let (status, value) = fx
-        .post(
-            &made["mcp_path"].as_str().unwrap().to_owned(),
-            Some(key),
-            body,
-        )
-        .await;
+        "params": {"name": "pump_list", "arguments": {"project": id}}});
+    let (status, value) = fx.post("/v1/mcp", Some(&key), body).await;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_ne!(value["result"]["isError"], true, "{value}");
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
@@ -205,11 +227,37 @@ async fn a_project_token_or_key_is_not_the_host_operator() {
     let fx = fixture("member", Some(TOKEN), true);
     let (errored, made) = fx.create(json!({"name": "memberproj"})).await;
     assert!(!errored, "{made}");
-    let key = made["operator_key"]["key"].as_str().unwrap();
-    let (status, _) = fx.host(Some(key), "tools/list", json!({})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a project API key");
+    let key = made["operator_key"]["key"].as_str().unwrap().to_owned();
+    let (status, listed) = fx.host(Some(&key), "tools/list", json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an operator server key lists tools: {listed}"
+    );
+    let (status, value) = fx
+        .host(
+            Some(&key),
+            "tools/call",
+            json!({"name": "create_project", "arguments": {"name": "not-host"}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["result"]["isError"], true, "{value}");
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("not a host principal"), "{text}");
+    assert!(!fx.projects.join("not-host").exists());
 
     let id = made["project_id"].as_str().unwrap();
+    let legacy = fx
+        .state
+        .keys
+        .mint(id, "bob", "legacy", Some("operator"))
+        .unwrap()
+        .key;
+    let (status, value) = fx.host(Some(&legacy), "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    assert_eq!(value["error"]["message"], "invalid bearer token");
+
     let token = fx
         .state
         .identities
@@ -221,8 +269,14 @@ async fn a_project_token_or_key_is_not_the_host_operator() {
         )
         .unwrap()
         .token;
-    let (status, _) = fx.host(Some(&token), "tools/list", json!({})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a project member token");
+    let (status, value) = fx.host(Some(&token), "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("identity tokens are not accepted on /v1/mcp"),
+        "{message}"
+    );
+    assert!(message.contains("server key"), "{message}");
 }
 
 fn spki_pem(seed: u8) -> String {
