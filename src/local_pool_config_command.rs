@@ -1,7 +1,6 @@
 //! `vivi pool list | show | add | set | unset | remove | bands`.
 #![allow(clippy::missing_errors_doc)]
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
@@ -13,17 +12,11 @@ use vivi::cli::{
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::config_edit::{self, GuardedWrite, PoolAdd};
 use vivi::pool::PoolConfig;
-use vivi::pool::config::check_pool_name;
+use vivi::pool::config::{PoolRow, check_pool_name, list_view, show_view};
 use vivi::pool::work::open_dispatches;
 
 pub(crate) fn list(command: &PoolListCommand) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(command.project.as_deref())?;
-    let rows: Vec<PoolRow> = mailspace
-        .config
-        .pools
-        .iter()
-        .map(|(name, pool)| row(name, pool, None))
-        .collect();
+    let rows = list_view(command.project.as_deref())?;
     if command.json {
         return print_json(&rows);
     }
@@ -41,16 +34,10 @@ pub(crate) fn list(command: &PoolListCommand) -> Result<(), VivariumError> {
 }
 
 pub(crate) fn show(command: &PoolShowCommand) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(command.project.as_deref())?;
-    let pool = mailspace
-        .config
-        .pools
-        .get(&command.name)
-        .ok_or_else(|| VivariumError::Message(format!("unknown pool '{}'", command.name)))?;
-    let free = command.resolved.then(|| live_free(&command.name));
-    let entry = row(&command.name, pool, free);
+    let view = show_view(command.project.as_deref(), &command.name, command.resolved)?;
+    let entry = &view.row;
     if command.json {
-        return print_json(&entry);
+        return print_json(entry);
     }
     if command.porcelain {
         println!(
@@ -62,7 +49,7 @@ pub(crate) fn show(command: &PoolShowCommand) -> Result<(), VivariumError> {
         );
         return Ok(());
     }
-    print_show(&entry, pool);
+    print_show(entry, &view.pool);
     Ok(())
 }
 
@@ -230,66 +217,6 @@ fn bands_unset(project: Option<&Path>, pool: &str, band: &str) -> Result<(), Viv
     println!("unset pools.{pool}.bands.{band}");
     print_notes(&write);
     Ok(())
-}
-
-#[derive(Serialize)]
-struct PoolRow {
-    name: String,
-    provider: String,
-    slots: u32,
-    free: Option<u32>,
-    bands: BTreeMap<String, Vec<BandRow>>,
-    harness_models: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct BandRow {
-    model: String,
-    reasoning: String,
-}
-
-fn row(name: &str, pool: &PoolConfig, free: Option<u32>) -> PoolRow {
-    PoolRow {
-        name: name.to_string(),
-        provider: pool.provider.clone(),
-        slots: pool.slots,
-        free,
-        bands: pool
-            .bands
-            .entries
-            .iter()
-            .map(|(key, choices)| {
-                let rows = choices
-                    .iter()
-                    .map(|c| BandRow {
-                        model: c.model.clone(),
-                        reasoning: c.reasoning.clone(),
-                    })
-                    .collect();
-                (key.clone(), rows)
-            })
-            .collect(),
-        harness_models: pool
-            .harness
-            .as_ref()
-            .map_or_else(Vec::new, |h| h.models.clone()),
-    }
-}
-
-fn live_free(name: &str) -> u32 {
-    let out = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "vivi".into()))
-        .args(["pool", "status", "--pool", name, "--porcelain"])
-        .output();
-    let Ok(out) = out else {
-        return 0;
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|line| {
-            let tokens: Vec<&str> = line.split_whitespace().collect();
-            tokens.len() >= 5 && tokens[0] == "slot" && tokens[4] == "free"
-        })
-        .count() as u32
 }
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), VivariumError> {
