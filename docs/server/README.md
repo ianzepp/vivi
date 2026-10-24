@@ -46,7 +46,7 @@ curl http://localhost:8080/healthz   # -> ok
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
-| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project` and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
+| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
 | `HOST_PROJECTS_ROOT` | `create_project`: existing directory that holds project roots (`<root>/<name>`) |
 | `HOST_LANES_ROOT` | `create_project`: existing directory that holds bare repositories (`<root>/<name>.git`) |
 | `HOST_GIT_URL_PREFIX` | `create_project`: the git URL is `<prefix><name>.git` (for example `git@hub:`) |

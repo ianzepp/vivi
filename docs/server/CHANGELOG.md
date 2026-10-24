@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **MCP reads (wave 3 D4).** Hosted, operator-only, read-only tools on
+  `POST /v1/mcp`: `pump_log`, `flow_show`, `config_show` /
+  `config_validate`, `pool_list` / `pool_show`, `role_list` /
+  `role_show`, `charter_show`, and `target_list`. Each calls the same
+  vivi library function as its CLI command and answers the CLI's
+  `--json` body; `config_show` and `pool_show` refuse `resolved: true`
+  (the live free-slot probe runs the vivi binary, which the server is
+  not) and answer `free` as null. Reads are neither audited nor rate
+  limited. Two host reads join the host tools: `server_version` (this
+  server's own name and version) and `project_list` (the hosted
+  projects it serves).
 - **MCP role and charter writes (wave 3 D4).** Hosted, operator-only
   tools on `POST /v1/mcp`: `role_add` and `role_set`
   (`Mailspace::add_role` / `set_role`, with the CLI's `vivi role
@@ -30,6 +41,20 @@
   the pump runs. `pump_reset` is `pump::reset::archive` and is refused
   while the pump lock is held, running or paused. Every call appends one
   audit line, including a requeue dry run and a refused reset.
+- **Pool allow-list writes through the library (wave 3 D4).**
+  `pool_allow_set` writes `pools.<pool>.harness.models` through
+  `vivi::pool::config_allow::set_allow` (slug, duplicate and unknown-pool
+  refusals before any write), and `pool_bands` `set`/`unset` moved from
+  raw `config_edit::apply` to the guarded write (refused while the pump
+  runs, a backup first, rolled back on a worse config).
+  `config_edit::apply` has no caller left in vivi-server.
+- **`lane_create` host tool (wave 3 D4).** The projects half of `vivi
+  project lane add`: attaches an existing bare repository
+  `<HOST_LANES_ROOT>/<target>.git` to a hosted project as
+  `[pump.targets.<target>]` — clones `<project>/<target>` and adds the
+  target through the guarded config write. It creates nothing under the
+  lanes root; the answer carries the exact lanes-owner command for the
+  other half, and a missing bare repository is refused with it.
 - **Every server letter is format 1 (wave 3 B4).** The `done`/`reopen`
   event letters the MCP tools compose carry `X-Vivi-Format: 1` with their
   close metadata as front matter: `done` takes `verdict`, `branch`+

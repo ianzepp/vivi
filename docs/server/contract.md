@@ -411,9 +411,11 @@ The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
 `config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
 `target_add`, `target_remove`, `role_add`, `role_set`, `charter_set`,
-`pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`);
-each also takes the required `project` argument on top of the arguments
-shown.
+`pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`, and
+the reads `pump_log`, `flow_show`, `config_show`, `config_validate`,
+`pool_list`, `pool_show`, `role_list`, `role_show`, `charter_show`,
+`target_list`); each also takes the required `project` argument on top
+of the arguments shown.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -482,10 +484,33 @@ paused, with the library's message, and nothing moves on a refusal.
 | `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
 | `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
 
+#### Reads
+
+Hosted projects only, operator only — the same rule as the writes above
+— and read-only throughout: no config edit, no record, no letter, so
+none is audited or rate limited. Each calls the same vivi library
+function its CLI command calls and answers the CLI's `--json` body.
+The live free-slot probe is refused on both tools that take `resolved`:
+it runs the vivi binary's `pool status`, which the server is not, so
+`free` is never answered here.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `pump_log` | `file` log\|exceptions, `lines?` (1–500, default 50), `filter?` | Read-only tail of the pump's `log.txt` or `exceptions.txt`, as `vivi pump log` does: the last `lines` lines that contain `filter` when given, counted after filtering. Returns `{file, lines}` |
+| `flow_show` | `kind` build\|research\|release\|repair, `need?` | `vivi flow show --json`: the shipped flow's Mermaid source and version, plus that need's runs and their steps when `need` is given (`runs` is null when the project has no `pump.db`) |
+| `config_show` | `resolved?` (default false) | `vivi config show --json`: the merged config overview (roles, flow, pools), plus `origins` when a merged value was inherited. `resolved: true` is refused (above) |
+| `config_validate` | — | `vivi config validate --json`: the issue array (severity `error`, `warning` or `not_ready`) exactly as the CLI prints it; readiness is read off the severities, not asserted |
+| `pool_list` | — | `vivi pool list --json`: one row per configured pool — name, provider, slots, the bands table (model and reasoning per band) and harness models; `free` stays null (the live probe is the vivi binary's) |
+| `pool_show` | `name`, `resolved?` (default false) | `vivi pool show <name> --json`: the pool's row — provider, slots, bands and harness models. `resolved: true` is refused like `config_show`'s, `free` is always null, and an unknown pool is refused |
+| `role_list` | — | `vivi role list --json`: one view per role — address, aliases, kind, status, harness, provider, model, cadence, pool, models, and whether a charter is set |
+| `role_show` | `role` (name or alias) | `vivi role show <role> --json`: one role's full view; an unknown role is refused |
+| `charter_show` | `role` (name or alias) | `vivi role charter show <role> --json`: the charter body (an empty string when it has none), with its name, address and `has_charter` |
+| `target_list` | — | `vivi pump target list`: the configured pump targets, each `{id, path, main, rungs}` |
+
 #### Host tools
 
-Seven tools need a **host principal** — the operator token or a key minted
-`host: true`:
+Nine tools need a **host principal** — the operator token or a key
+minted `host: true`:
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -496,6 +521,8 @@ Seven tools need a **host principal** — the operator token or a key minted
 | `key_revoke` | `key_id` | Revoke one key, on any principal; already-revoked is success |
 | `grant_add` | `principal`, `grant` | Add one grant to an existing principal (idempotent) |
 | `grant_remove` | `principal`, `project_id` | Remove the principal's grant on one project |
+| `server_version` | — | This server's own name and version — the same pair `initialize` answers. Read-only |
+| `project_list` | — | The hosted projects this server serves from the host registry: one `{project_id, name?, mode}` each (`name` is the project root's directory name, else the mailspace config `name`; `mode` is `hosted`). A project that cannot be read is skipped. Read-only |
 
 A non-host key that calls one is refused
 `<tool> is a host tool; this key is not a host principal`. A key/grant
