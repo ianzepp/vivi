@@ -202,50 +202,12 @@ for pair in "$B:beta" "$C:gamma"; do
 done
 
 "$VIVI" sync join --project "$A" >/tmp/vc8-join-a.log 2>&1 && ok "A (creator) joined the project" || { bad "A joined the project"; cat /tmp/vc8-join-a.log; }
-
-# `vivi sync vouch` still composes a legacy letter (no X-Vivi-Format) and the
-# server refuses it (422 letter_format, W3-B4S-1). Until vivi's vouch composer
-# writes format-1, this smoke composes the vouch itself over the raw wire, as
-# project-sync-smoke.sh always has; `sync key` and `sync join` stay the real
-# verbs. A speaks as alpha with a challenge token signed by its checkout key
-# (the mailspace seed under .vivi/chat).
-{ printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20'; cat "$A/.vivi/chat/identity.ed25519"; } > "$K/a.der"
-openssl pkey -inform DER -in "$K/a.der" -out "$K/a.priv.pem" 2>/dev/null
-"$VIVI" sync key --project "$A" > "$K/a.pub.pem" 2>/dev/null
-bearer_as() { # name privpem pubpem -> token on stdout
-  local pem ch cid sig
-  pem=$(python3 -c 'import json,sys; print(json.dumps({"public_key_pem": open(sys.argv[1]).read()}))' "$3")
-  ch=$(curl -s -m 15 -X POST "$BASE/v1/projects/$PID/identities/challenge" -H 'content-type: application/json' -d "$pem")
-  cid=$(echo "$ch" | jget '["challenge_id"]')
-  echo "$ch" | jget '["challenge"]' | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))' > "$K/chal.bin"
-  openssl pkeyutl -sign -inkey "$2" -rawin -in "$K/chal.bin" -out "$K/sig.bin" 2>/dev/null
-  sig=$(base64 < "$K/sig.bin" | tr -d '\n')
-  curl -s -m 15 -X POST "$BASE/v1/projects/$PID/auth/token" -H 'content-type: application/json' \
-    -d "{\"name\":\"$1\",\"challenge_id\":\"$cid\",\"signature_base64\":\"$sig\"}" | jget '["token"]'
-}
-vouch_member() { # name pubpem -> http code (body in /tmp/vc8-append.out)
-  python3 - "$2" "$1" > "$K/vouch-$1.eml" <<'PY'
-import json, sys
-pem = open(sys.argv[1]).read()
-body = json.dumps({"vouch": {"name": sys.argv[2], "public_key_pem": pem}})
-print("From: alpha@smoke.local\nTo: postmaster@smoke.local\nSubject: vouch " + sys.argv[2] + "\n"
-      "Message-ID: <vouch-" + sys.argv[2] + "@smoke.local>\nDate: Sun, 11 Oct 2026 12:00:00 +0000\n"
-      "MIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n"
-      "X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n" + body)
-PY
-  curl -s -m 15 -o /tmp/vc8-append.out -w '%{http_code}' \
-    -X PUT "$BASE/v1/projects/$PID/items/msg_$(openssl rand -hex 12)" \
-    -H "authorization: Bearer $TOKEN_A" -H 'content-type: message/rfc822' \
-    -H 'x-vivi-to: postmaster' -H 'x-vivi-kind: mail' --data-binary @"$K/vouch-$1.eml"
-}
-TOKEN_A=$(bearer_as alpha "$K/a.priv.pem" "$K/a.pub.pem")
 for pair in "$B:beta" "$C:gamma"; do
   D=${pair%%:*}; N=${pair#*:}
   "$VIVI" sync key --project "$D" > "$K/$N.pub.pem" 2>/dev/null
-  CODE=$(vouch_member "$N" "$K/$N.pub.pem")
-  [ "$CODE" = 201 ] && "$VIVI" sync join --project "$D" >/tmp/vc8-join-$N.log 2>&1 \
-    && ok "$N was vouched for by A and joined the project" \
-    || { bad "$N joined the project (vouch returned $CODE)"; cat /tmp/vc8-append.out /tmp/vc8-join-$N.log 2>/dev/null; }
+  "$VIVI" sync vouch "$N" --key-file "$K/$N.pub.pem" --project "$A" >/tmp/vc8-vouch-$N.log 2>&1 \
+    && "$VIVI" sync join --project "$D" >/tmp/vc8-join-$N.log 2>&1 \
+    && ok "$N was vouched for by A and joined the project" || { bad "$N joined the project"; cat /tmp/vc8-vouch-$N.log /tmp/vc8-join-$N.log; }
 done
 
 # A project API key is a bearer for the letter wire and for MCP: it is how the
