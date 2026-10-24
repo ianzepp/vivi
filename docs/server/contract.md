@@ -305,6 +305,34 @@ files through the host and is not covered here. The rest of the wire is
 in [`phase-03-project-mailspace-hub.md`](phase-03-project-mailspace-hub.md)
 under Append.
 
+### Letter format (v1)
+
+A v1 letter is TOML front matter between two `+++` fences, then the
+Markdown prose:
+
+```
++++
+done_when = ["the smoke passes"]
+target = "repo"
++++
+
+Prose follows the front matter.
+```
+
+Every letter the server composes carries `X-Vivi-Format: 1`: the need,
+want, task, mail and chat letters of MCP `send` and `reply` (hosted and
+durable; prose mail included), and the pump record a hosted project's
+`vivi pump send` files. Memos and event letters carry no format header
+yet. A member-appended letter may omit the header; a legacy letter (no
+`X-Vivi-Format`) contributes no dependencies to `graph`.
+
+On a work send (`kind` need, task or want) the `send` tool takes vivi's
+sugar arguments and renders them into the front matter: `done_when`,
+`target`, `write_scope`, `serves`, `explores`, `question`, `depends_on`
+(strings or lists of strings). A body that opens with `+++` is the whole
+letter: the sugar arguments are refused beside it — name those keys in
+the front matter instead. `mail` and `chat` take no sugar arguments.
+
 A letter that carries `X-Vivi-Format: 1` must parse as a v1 letter. A
 letter that claims format 1 and fails to parse, or names an unknown
 format, is refused `422` `letter_format`. The body is
