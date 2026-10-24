@@ -336,11 +336,10 @@ fn send(
         return Err(ToolError::new("subject and body must be non-empty"));
     }
     // The sugar arguments build the work letter's front matter, and the
-    // dependencies ride in it; the composer is handed none, so nothing
-    // travels in an X-Vivi-Depends-On header from this path.
+    // dependencies ride in it; the composer gates the body and writes the
+    // format header.
     let body = sugared_body(kind, body, arguments)?;
-    let composed =
-        compose_send(identity, &to, subject, &body, kind, &[]).map_err(ToolError::new)?;
+    let composed = compose_send(identity, &to, subject, &body, kind).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -761,15 +760,8 @@ fn save_memo(
     body: &str,
 ) -> Result<Value, ToolError> {
     let from = caller_address(identity).map_err(ToolError::new)?;
-    let composed = compose_send(
-        identity,
-        std::slice::from_ref(&from),
-        subject,
-        body,
-        "memo",
-        &[],
-    )
-    .map_err(ToolError::new)?;
+    let composed = compose_send(identity, std::slice::from_ref(&from), subject, body, "memo")
+        .map_err(ToolError::new)?;
     let traveling_id = composed.traveling_id.clone();
     let storage = open_mailspace(store, project_id)?;
     storage

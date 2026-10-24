@@ -437,7 +437,7 @@ pub async fn send_handler(
             compose_reply(&identity, &parent, &body)
         } else {
             let to = format!("chat@{prefix}.local");
-            compose_send(&identity, &[to], &subject, &body, "chat", &[])
+            compose_send(&identity, &[to], &subject, &body, "chat")
         };
         let composed = composed?;
         append_composed(&projects, &id, &identity, composed).map_err(|e| format!("{e:?}"))
