@@ -85,7 +85,11 @@ fn spki_pem(seed: u8) -> String {
 }
 
 fn eml(id: &str) -> Vec<u8> {
-    format!("From: a@p.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\nbody").into_bytes()
+    format!(
+        "From: a@p.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nbody"
+    )
+    .into_bytes()
 }
 
 fn project_dir(env: &Env, id: &str) -> PathBuf {

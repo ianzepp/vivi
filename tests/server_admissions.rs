@@ -53,10 +53,13 @@ fn traveling(n: u64) -> String {
     format!("msg_{n:08x}{:016x}", 0)
 }
 
-/// A governance letter: headers, a blank line, then `body`.
+/// A governance letter: headers, a blank line, then `body`. The letter is a
+/// format-1 mail letter; the vouch JSON rides as its prose body.
 fn item(id: &str, from: &str, to: Option<&str>, body: &str) -> AppendItem {
-    let raw =
-        format!("From: {from}@p.local\nTo: postmaster@p.local\nSubject: governance\n\n{body}");
+    let raw = format!(
+        "From: {from}@p.local\nTo: postmaster@p.local\nSubject: governance\n\
+         X-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n{body}"
+    );
     AppendItem::new(id, from, to, None, raw.into_bytes()).unwrap()
 }
 
@@ -304,11 +307,11 @@ fn vouch_body_is_read_after_the_first_blank_line_in_either_line_ending() {
         .create_project_with_creator(&spki_pem(1), "alice")
         .unwrap();
     let crlf = format!(
-        "From: alice@p.local\r\nSubject: vouch\r\n\r\n{}\r\n",
+        "From: alice@p.local\r\nSubject: vouch\r\nX-Vivi-Kind: mail\r\nX-Vivi-Format: 1\r\n\r\n{}\r\n",
         vouch_body("bob", 2)
     );
     let lf = format!(
-        "From: alice@p.local\nSubject: vouch\n\n{}",
+        "From: alice@p.local\nSubject: vouch\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n{}",
         vouch_body("carol", 3)
     );
     for (n, raw) in [(1, crlf), (2, lf)] {
@@ -335,15 +338,16 @@ fn vouch_letters_without_a_usable_body_are_refused_with_nothing_appended() {
         .create_project_with_creator(&spki_pem(1), "alice")
         .unwrap();
     let json = vouch_body("bob", 2);
-    let mut non_utf8 = b"Subject: vouch\n\n".to_vec();
+    let mut non_utf8 = b"Subject: vouch\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\n".to_vec();
     non_utf8.extend_from_slice(&[0xff, 0xfe]);
     non_utf8.extend_from_slice(json.as_bytes());
     let cases: Vec<Vec<u8>> = vec![
         // No blank line at all: headers only, JSON as the last header line.
-        format!("Subject: vouch\n{json}").into_bytes(),
+        format!("Subject: vouch\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n{json}").into_bytes(),
         non_utf8,
         // The first blank line is the LF-LF; the body is not the JSON.
-        format!("Subject: vouch\n\nnote\r\n\r\n{json}").into_bytes(),
+        format!("Subject: vouch\nX-Vivi-Kind: mail\nX-Vivi-Format: 1\n\nnote\r\n\r\n{json}")
+            .into_bytes(),
     ];
     for (n, raw) in cases.into_iter().enumerate() {
         let err = store
