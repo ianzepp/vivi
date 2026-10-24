@@ -23,7 +23,7 @@ pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
 pub use show::{ShowReport, show};
-pub use validate::{Findings, Missing};
+pub use validate::{Findings, Missing, valid_target_id};
 
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
