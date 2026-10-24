@@ -10,7 +10,7 @@ fn pump(text: &str) -> PumpConfig {
 
 /// Rung findings only: the rest of a bare config is unfinished on purpose.
 fn rung_errors(cfg: &PumpConfig, pools: &[String]) -> Vec<String> {
-    cfg.findings_for(Path::new("."), pools, true)
+    cfg.findings_for(Path::new("."), pools)
         .errors
         .into_iter()
         .filter(|message| message.contains("rungs"))

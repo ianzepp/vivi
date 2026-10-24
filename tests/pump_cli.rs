@@ -297,6 +297,30 @@ fn a_config_that_still_sets_the_retired_board_mark_does_not_start_the_pump() {
     assert!(all.contains("vivi pump send --need <handle>"), "{all}");
 }
 
+/// A key vivi 21 never reads must not stop the pump, even with a value that
+/// no longer makes sense: `config validate` refuses it, `pump once` ignores it.
+#[test]
+fn malformed_values_under_refused_keys_do_not_stop_the_pump() {
+    let project = temp_mailspace();
+    let config = project.path().join(".vivi").join("mailspace.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    let edited = text.replace(
+        "lanes = [{ model = \"test/model\", cap = 1 }]",
+        "lanes = []\nmax_attempts = 0\nper_tick = 0\ndefault_kind = \"missing\"\n\
+         [pump.dispatch.kinds.bad]\npools = []\nmax = 0",
+    );
+    assert_ne!(edited, text, "the fixture lanes line moved");
+    fs::write(
+        &config,
+        format!(
+            "{edited}\n[[pump.plan.proof_rules]]\nreason = \"no scope\"\n\n\
+             [pump.workspace]\nlane_gib = 0\n"
+        ),
+    )
+    .unwrap();
+    assert_success(&vivi(["pump", "once", "--project", root(&project)]));
+}
+
 #[test]
 fn a_pause_flag_still_writes_status_and_exits_zero() {
     let project = temp_mailspace();

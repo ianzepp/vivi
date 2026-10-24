@@ -89,16 +89,3 @@ fn ramdisk_validate_accepts_lane_gib_at_both_bounds() {
         assert_valid(&cfg, &format!("lane_gib = {gib} must validate"));
     }
 }
-
-#[test]
-fn ramdisk_validate_rejects_lane_gib_zero_and_over_1024() {
-    for gib in [0, 2000] {
-        let cfg = valid_with(&format!("lane_gib = {gib}\n"));
-        let said = cfg
-            .validate(Path::new("."), &[])
-            .expect_err("an out-of-range lane_gib must fail validation")
-            .to_string();
-        assert!(said.contains("[pump.workspace] lane_gib"), "{said}");
-        assert!(said.contains(&gib.to_string()), "{said}");
-    }
-}

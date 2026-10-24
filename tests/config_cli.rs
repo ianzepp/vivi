@@ -405,6 +405,31 @@ fn config_validate_says_not_ready_and_exits_3_on_a_fresh_project() {
 }
 
 #[test]
+fn a_hand_role_without_a_pool_names_the_role_pool_command_not_the_lanes_key() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&[
+        "role",
+        "add",
+        "hand",
+        "--kind",
+        "hand",
+        "--project",
+        root,
+    ]));
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "- hand pool: role hand has no pool; set one with `vivi role pool hand <pool>`"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("lanes"), "{text}");
+}
+
+#[test]
 fn config_validate_json_marks_missing_items_not_ready() {
     let dir = init_project();
     let root = dir.path().to_str().unwrap();
@@ -738,15 +763,11 @@ fn config_set_reports_errors_that_were_already_there() {
     let path = config_file(&dir);
     let text = fs::read_to_string(&path).unwrap();
     let broken = text.replace("[pump]\n", "[pump]\ntick = 0\n");
-    fs::write(
-        &path,
-        format!("{broken}\n[pump.dispatch]\nmax_attempts = 0\n"),
-    )
-    .unwrap();
+    fs::write(&path, format!("{broken}\n[pump.dispatch]\nparallel = 0\n")).unwrap();
     let out = vivi(&["config", "set", "pump.tick", "5", "--project", root]);
     assert_success(&out);
     assert!(
-        stderr(&out).contains("still invalid: [pump.dispatch] max_attempts must be >= 1"),
+        stderr(&out).contains("still invalid: [pump.dispatch] parallel must be >= 1"),
         "{}",
         stderr(&out)
     );
@@ -759,15 +780,11 @@ fn config_set_repairs_a_config_that_does_not_load() {
     let path = config_file(&dir);
     let text = fs::read_to_string(&path).unwrap();
     let broken = text.replace("[pump]\n", "[pump]\ntick = \"x\"\n");
-    fs::write(
-        &path,
-        format!("{broken}\n[pump.dispatch]\nmax_attempts = 0\n"),
-    )
-    .unwrap();
+    fs::write(&path, format!("{broken}\n[pump.dispatch]\nparallel = 0\n")).unwrap();
     let out = vivi(&["config", "set", "pump.tick", "5", "--project", root]);
     assert_success(&out);
     assert!(
-        stderr(&out).contains("still invalid: [pump.dispatch] max_attempts must be >= 1"),
+        stderr(&out).contains("still invalid: [pump.dispatch] parallel must be >= 1"),
         "{}",
         stderr(&out)
     );

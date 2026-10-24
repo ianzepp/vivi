@@ -1,7 +1,7 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
+use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -277,72 +277,6 @@ fn an_unknown_key_is_ignored() {
 }
 
 #[test]
-fn validate_rejects_empty_lanes_and_zero_caps() {
-    let err = PumpConfig::default()
-        .validate(Path::new("."), &[])
-        .expect_err("no lanes must fail");
-    assert!(err.to_string().contains("[pump.dispatch] lanes"), "{err}");
-    let zero_cap = PumpConfig {
-        dispatch: DispatchConfig {
-            lanes: vec![Lane {
-                model: "m".into(),
-                cap: 0,
-            }],
-            ..DispatchConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let err = zero_cap
-        .validate(Path::new("."), &pools(&["p"]))
-        .expect_err("cap 0 must fail");
-    assert!(err.to_string().contains("cap >= 1"), "{err}");
-    let empty_model = PumpConfig {
-        dispatch: DispatchConfig {
-            lanes: vec![Lane {
-                model: String::new(),
-                cap: 1,
-            }],
-            ..DispatchConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let err = empty_model
-        .validate(Path::new("."), &pools(&["p"]))
-        .expect_err("empty model must fail");
-    assert!(err.to_string().contains("model"), "{err}");
-}
-
-#[test]
-fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
-    let mut cfg = PumpConfig {
-        committer_name: "Vivi".into(),
-        committer_email: "vivi@example.invalid".into(),
-        ..PumpConfig::default()
-    };
-    cfg.dispatch.kinds.insert(
-        String::from("special"),
-        Kind {
-            max: Some(2),
-            skip_proof: true,
-            ..Kind::default()
-        },
-    );
-    assert!(
-        cfg.dispatch.lanes.is_empty(),
-        "this fixture must omit [pump.dispatch] lanes"
-    );
-    let err = cfg
-        .validate(Path::new("."), &pools(&["glm"]))
-        .expect_err("legacy configs still need lanes");
-    assert!(err.to_string().contains("[pump.dispatch] lanes"), "{err}");
-    let ok = cfg.validate_for(Path::new("."), &pools(&["glm"]), true);
-    assert!(
-        ok.is_ok(),
-        "role-pool dispatch does not need kind pools or a default kind: {ok:?}"
-    );
-}
-
-#[test]
 fn parallel_parses_and_must_be_at_least_one() {
     let cfg: PumpConfig = toml::from_str("[dispatch]\nparallel = 2\n").unwrap();
     assert_eq!(cfg.dispatch.parallel, 2);
@@ -356,74 +290,6 @@ fn parallel_parses_and_must_be_at_least_one() {
             .contains("[pump.dispatch] parallel must be >= 1"),
         "{err}"
     );
-}
-
-#[test]
-fn validate_checks_default_kind_and_kind_pools() {
-    let mut cfg = PumpConfig {
-        committer_name: "Test".into(),
-        committer_email: "test@example.com".into(),
-        dispatch: DispatchConfig {
-            lanes: vec![Lane {
-                model: "m".into(),
-                cap: 1,
-            }],
-            kinds: BTreeMap::from([("a".to_string(), kind("p"))]),
-            ..DispatchConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let all = pools(&["p"]);
-    let err = cfg.validate(Path::new("."), &all).expect_err("no default");
-    assert!(
-        err.to_string().contains("default_kind must be set"),
-        "{err}"
-    );
-    cfg.dispatch.default_kind = "missing".into();
-    let err = cfg.validate(Path::new("."), &all).expect_err("undefined");
-    assert!(
-        err.to_string()
-            .contains("default_kind names undefined kind"),
-        "{err}"
-    );
-    cfg.dispatch.default_kind = "a".into();
-    assert!(cfg.validate(Path::new("."), &all).is_ok());
-    cfg.dispatch.kinds.get_mut("a").unwrap().max = Some(0);
-    let err = cfg.validate(Path::new("."), &all).expect_err("max 0");
-    assert!(err.to_string().contains("max must be >= 1"), "{err}");
-    cfg.dispatch.kinds.get_mut("a").unwrap().max = None;
-    cfg.dispatch.kinds.insert("b".into(), kind(""));
-    let err = cfg.validate(Path::new("."), &all).expect_err("empty pool");
-    assert!(
-        err.to_string().contains("kinds.b] pools must not be empty"),
-        "{err}"
-    );
-}
-
-#[test]
-fn validate_rejects_an_unknown_pool_in_a_multi_pool_kind() {
-    let cfg = PumpConfig {
-        dispatch: DispatchConfig {
-            lanes: vec![Lane {
-                model: "m".into(),
-                cap: 1,
-            }],
-            kinds: BTreeMap::from([(
-                "a".to_string(),
-                Kind {
-                    pools: vec!["p".into(), "nope".into()],
-                    ..Kind::default()
-                },
-            )]),
-            default_kind: "a".into(),
-            ..DispatchConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let err = cfg
-        .validate(Path::new("."), &pools(&["p"]))
-        .expect_err("unknown pool must fail");
-    assert!(err.to_string().contains("unknown pool `nope`"), "{err}");
 }
 
 #[test]
@@ -448,38 +314,6 @@ fn kind_of_resolves_tools_or_the_default_kind() {
     assert_eq!(cfg.kind_of("").unwrap().pools, ["p"]);
     assert_eq!(cfg.kind_of("b").unwrap().pools, ["q"]);
     assert!(cfg.kind_of("nope").is_none());
-}
-
-#[test]
-fn validate_rejects_an_unknown_pool_name() {
-    let mut cfg = PumpConfig {
-        dispatch: DispatchConfig {
-            lanes: vec![Lane {
-                model: "m".into(),
-                cap: 1,
-            }],
-            kinds: BTreeMap::from([("a".to_string(), kind("fly"))]),
-            default_kind: "a".into(),
-            ..DispatchConfig::default()
-        },
-        ..PumpConfig::default()
-    };
-    let err = cfg
-        .validate(Path::new("."), &pools(&["other"]))
-        .expect_err("unknown pool must fail");
-    assert!(
-        err.to_string()
-            .contains("[pump.dispatch.kinds.a] pools names unknown pool `fly`"),
-        "{err}"
-    );
-    cfg.dispatch.kinds.clear();
-    cfg.dispatch.default_kind = String::new();
-    cfg.committer_name = "Test".into();
-    cfg.committer_email = "test@example.com".into();
-    assert!(
-        cfg.validate(Path::new("."), &pools(&["flygate", "flyfull"]))
-            .is_ok()
-    );
 }
 
 /// A config that passes `validate` once the pool names are supplied.
@@ -768,14 +602,14 @@ fn pool_sources_map_local_worktree_pools() {
 
 #[test]
 fn findings_report_absent_items_apart_from_wrong_values() {
-    let found = PumpConfig::default().findings_for(Path::new("."), &[], false);
+    let found = PumpConfig::default().findings_for(Path::new("."), &[]);
     assert!(found.errors.is_empty(), "{:?}", found.errors);
     let names: Vec<&str> = found
         .missing
         .iter()
         .map(|item| item.name.as_str())
         .collect();
-    for expected in ["pump.committer_name", "pump.committer_email", "hand pool"] {
+    for expected in ["pump.committer_name", "pump.committer_email"] {
         assert!(names.contains(&expected), "{expected} not in {names:?}");
     }
 }
@@ -784,32 +618,18 @@ fn findings_report_absent_items_apart_from_wrong_values() {
 fn findings_keep_wrong_values_as_errors_and_report_nothing_missing() {
     let mut cfg = valid();
     cfg.tick = 0;
-    cfg.dispatch
-        .kinds
-        .get_mut("plain")
-        .expect("the sample defines the plain kind")
-        .pools = vec![String::from("nowhere")];
-    let found = cfg.findings_for(Path::new("."), &pool_names(), false);
+    cfg.dispatch.parallel = 0;
+    let found = cfg.findings_for(Path::new("."), &pool_names());
     assert!(found.missing.is_empty(), "{:?}", found.missing);
     assert_eq!(found.errors.len(), 2, "{:?}", found.errors);
     assert!(found.errors.iter().any(|e| e.contains("tick")));
-    assert!(found.errors.iter().any(|e| e.contains("unknown pool")));
+    assert!(found.errors.iter().any(|e| e.contains("parallel")));
 }
 
 #[test]
 fn findings_for_a_complete_config_are_clean() {
-    let found = valid().findings_for(Path::new("."), &pool_names(), false);
+    let found = valid().findings_for(Path::new("."), &pool_names());
     assert!(found.is_clean(), "{found:?}");
-}
-
-#[test]
-fn a_hand_role_pool_makes_the_dispatch_lanes_optional() {
-    let mut cfg = valid();
-    cfg.dispatch.lanes.clear();
-    let without = cfg.findings_for(Path::new("."), &pool_names(), false);
-    assert!(without.missing.iter().any(|item| item.name == "hand pool"));
-    let with = cfg.findings_for(Path::new("."), &pool_names(), true);
-    assert!(with.is_clean(), "{with:?}");
 }
 
 #[test]
@@ -822,7 +642,7 @@ fn a_target_with_only_a_path_reports_no_gap() {
             ..PumpTarget::default()
         },
     );
-    let found = cfg.findings_for(Path::new("."), &pool_names(), false);
+    let found = cfg.findings_for(Path::new("."), &pool_names());
     assert!(found.errors.is_empty(), "{:?}", found.errors);
     let names: Vec<&str> = found
         .missing
