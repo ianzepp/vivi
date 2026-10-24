@@ -196,6 +196,34 @@ project's own values, and a host-registry entry (pump and serve on unless
 
 The library entry point is `vivi::project_create::create`; it prints nothing.
 
+**Split owners.** A host can own the lanes root and the projects root with
+two different users. `vivi project create` probes both roots, performs every
+half the caller can write, and prints the exact command for the user who
+owns the rest; the same command, run by that user, finishes the job.
+
+### Adding a lane
+
+`vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
+[--seed]` attaches one repository target to a project that already exists.
+It performs every half the caller can write and prints the exact command for
+the other half's owner, exactly like `project create`:
+
+- **lanes half**: the group-shared bare repo `L/<id>.git`, with one empty
+  seed commit when `--seed` is given.
+- **projects half**: inside the project, a clone of the lane at
+  `<project-root>/<id>` and the `[pump.targets.<id>]` entry (`path` is the
+  checkout, `remote_url` is `<U><id>.git`), written through the guarded
+  config edit: a running pump refuses (`vivi pump pause` first). Without
+  `--git-url-prefix` the lane is cloned from its local path and the target
+  writes no `remote_url`; the checkout's `origin` names the lane.
+
+The target id must be lowercase letters, digits and hyphens (the
+`[pump.targets.<id>]` key rule). A second `lane add` for the same id is
+refused: the lane repository, the checkout or the target entry already
+exists, and the refusal names it. A failing step undoes only what that run
+created. The library entry point is
+`vivi::project_create::lane_add::add_split`; it prints nothing.
+
 ## Boot
 
 `vivi boot` prints the whole project frame in one read: seat bindings against
