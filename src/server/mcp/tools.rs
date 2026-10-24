@@ -918,6 +918,7 @@ pub(super) fn rate_limit(
 pub(super) fn map_project(err: ProjectError) -> ToolError {
     match err {
         ProjectError::BadRequest(message) => ToolError::new(message),
+        ProjectError::LetterFormat(message) => ToolError::new(message),
         ProjectError::TooLarge => ToolError::new("letter over 64 KiB"),
         ProjectError::Conflict(message) => ToolError::new(message),
         ProjectError::ProjectNotFound => ToolError::new("unknown project"),
