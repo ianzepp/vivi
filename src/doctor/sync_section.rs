@@ -11,8 +11,9 @@ use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::doctor::{Finding, Project};
+use crate::doctor::{Finding, Project, Status};
 use crate::sync::identity;
+use crate::sync::quarantine;
 use crate::sync::state::SyncState;
 use crate::sync::{SyncConfig, sync_dir};
 
@@ -31,17 +32,60 @@ const STATE_FILE: &str = "state.json";
 #[must_use]
 pub fn findings(project: &Project, now: DateTime<Utc>, reachable: Option<bool>) -> Vec<Finding> {
     let Some(config) = project.config.sync.as_ref() else {
-        return vec![not_configured()];
+        return not_configured_findings(&project.dir);
     };
     if unset(config) {
-        return vec![not_configured()];
+        return not_configured_findings(&project.dir);
     }
     vec![
         config_finding(config),
         key_finding(&project.dir),
         age_finding(&project.dir, project_of(config), now),
         reachability_finding(reachable),
+        quarantine_finding(&project.dir),
     ]
+}
+
+/// The skipped section, plus held letters when there are any: they stay
+/// actionable even with no `[sync]` table.
+fn not_configured_findings(vivi_dir: &Path) -> Vec<Finding> {
+    let held = quarantine_finding(vivi_dir);
+    if held.status == Status::Ok {
+        vec![not_configured()]
+    } else {
+        vec![not_configured(), held]
+    }
+}
+
+/// One finding for `.vivi/quarantine/`: ok when nothing is held, warn with
+/// id and reason per letter while files are present, fail when a receipt
+/// cannot be read (a corrupt receipt is surfaced, never skipped).
+fn quarantine_finding(vivi_dir: &Path) -> Finding {
+    match quarantine::list(vivi_dir) {
+        Ok(held) if held.is_empty() => Finding::ok(SECTION, "quarantine", "no letters held unread"),
+        Ok(held) => {
+            let each = held
+                .iter()
+                .map(|letter| format!("{} ({})", letter.id, letter.reason))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Finding::warn(
+                SECTION,
+                "quarantine",
+                &format!("{} letter(s) held unread: {each}", held.len()),
+                "vivi sync quarantine list, then retry <id> or drop <id>",
+            )
+        }
+        Err(error) => Finding::fail(
+            SECTION,
+            "quarantine",
+            &format!(
+                "quarantine unreadable: {}",
+                error.to_string().lines().next().unwrap_or_default()
+            ),
+            "inspect .vivi/quarantine/",
+        ),
+    }
 }
 
 /// Probe the configured server root without credentials or a write request.

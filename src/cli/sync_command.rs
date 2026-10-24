@@ -102,6 +102,13 @@ pub enum SyncSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Inspect and clear letters this vivi held unread under
+    /// .vivi/quarantine/ (a newer member's format, a broken front fence);
+    /// a pull exits non-zero while anything is held
+    Quarantine {
+        #[command(subcommand)]
+        command: QuarantineCommand,
+    },
     /// Register [sync] name with the project server (the key must be vouched for)
     Join {
         /// Project root that owns .vivi/
@@ -164,6 +171,38 @@ pub enum SyncSubcommand {
         /// The member's public key PEM, given inline
         #[arg(long, value_name = "PEM", required_unless_present = "key_file")]
         key: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum QuarantineCommand {
+    /// List the held letters, oldest first: id, when held, sender, message
+    /// id, and the reason the parser refused the bytes
+    List {
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Re-run the filer on one held letter: the retry after an upgrade
+    /// whose parser accepts what the old one refused. Prints `filed` and
+    /// moves the pair to dropped/, or says why the letter stays held
+    Retry {
+        /// The id of the held letter (its content sha256; list prints it)
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Give up on one held letter: move it and its receipt under
+    /// .vivi/quarantine/dropped/
+    Drop {
+        /// The id of the held letter (its content sha256; list prints it)
+        #[arg(value_name = "ID")]
+        id: String,
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,
