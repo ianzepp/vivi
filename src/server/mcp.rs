@@ -479,7 +479,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, unit counts, recent merges, blocked units, complete-but-open needs, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({
+            tool("pump", "Hosted projects only. Read-only pump health: verdict ok/degraded/stalled/unknown with reasons, control and writer state, last tick, recent exceptions. Pass a previous `as_of` as `since` for `changed_since`.", json!({
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "minimum": 0, "description": "Epoch seconds, a previous answer's as_of" },
@@ -495,7 +495,7 @@ fn tools_list() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             })),
-            tool("pump_rungs", "Hosted projects only, operator only. Show or set the pump's rung commands (`[pump.rungs]` in the project's mailspace config, or `[pump.targets.<id>.rungs]` with `target`), as `vivi pump rungs show|set` do. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator; show is held to it too. `set` needs a `rung` (task, need, main or release) and a non-blank `command`, is refused for an unknown rung or target, and is rate limited as a write. Show ignores `rung` and `command`; with `target` it answers that target's effective table (its own rung command, else the workspace one). Pools, timeout, roles and other config are not exposed for change, and a set rung with no rung pools leaves the config invalid until the host sets `pools` (vivi config validate: rung jobs cannot dispatch). Returns {target, task, need, main, release, timeout, pools} as the table stands afterwards, null for an unset command.", json!({
+            tool("pump_rungs", "Hosted projects only, operator only. Show or set the pump's rung commands (`[pump.rungs]` in the project's mailspace config, or `[pump.targets.<id>.rungs]` with `target`), as `vivi pump rungs show|set` do. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator; show is held to it too. `set` needs a `rung` (task, need, main or release) and a non-blank `command`, is refused for an unknown rung or target, and is rate limited as a write. Show ignores `rung` and `command`; with `target` it answers that target's effective table (its own rung command, else the workspace one). Pools, timeout, roles and other config are not exposed for change, and a set is refused while the rung table has no effective rung pools (set `pools` first). Returns {target, task, need, main, release, timeout, pools} as the table stands afterwards, null for an unset command.", json!({
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["show", "set"] },
@@ -545,7 +545,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, totals, and registered goals. Optional graph and pump views. `full` lifts every bound.", json!({
+            tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, each want's `serving` needs with their state, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
                 "type": "object",
                 "properties": {
                     "for": { "type": "string", "description": "Only this role's board" },
@@ -555,8 +555,7 @@ fn tools_list() -> Value {
                     "graph_cap": { "type": "integer", "minimum": 1, "default": 25, "description": "With graph: nodes listed in each of ready, blocked and active; the full counts are ready_total, blocked_total and active_total" },
                     "notes": { "type": "boolean", "default": false, "description": "Keep each last event's whole note instead of a short preview" },
                     "full": { "type": "boolean", "default": false, "description": "No caps, whole notes and the graph's node table; an explicit cap still applies" },
-                    "graph": { "type": "boolean", "default": false },
-                    "pump": { "type": "boolean", "default": false }
+                    "graph": { "type": "boolean", "default": false }
                 },
                 "additionalProperties": false
             })),

@@ -84,11 +84,11 @@ impl Fx {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: "done_when: it works".into(),
+            // A format-1 need letter: front matter with done_when, then prose.
+            body: "+++\ndone_when = [\"it works\"]\n+++\n\nmake it work".into(),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
-            depends_on: Vec::new(),
         })
         .unwrap()
         .delivered

@@ -71,24 +71,23 @@ impl Rungs {
     }
 
     /// Write the rungs into the created project and, when any was written,
-    /// recompute `created.readiness`. Every rung is attempted. There is no
-    /// rollback: the error says the project exists.
+    /// recompute `created.readiness`. Pools and timeout go first: a rung
+    /// command is refused while the table has no effective pools. Every rung
+    /// is still attempted. There is no rollback of the project: the error
+    /// says it exists.
     pub(super) fn seed(&self, created: &mut ProjectCreated) -> Result<(), String> {
         if self.is_empty() {
             return Ok(());
         }
-        let mut errors: Vec<String> = self
-            .commands
-            .iter()
-            .filter_map(|(name, command)| {
-                RungsConfig::set(&created.project_root, name, command, None)
-                    .err()
-                    .map(|e| format!("{name}: {e}"))
-            })
-            .collect();
+        let mut errors = Vec::new();
         if let Err(e) = self.write_settings(&created.project_root) {
             errors.push(format!("timeout/pools: {e}"));
         }
+        errors.extend(self.commands.iter().filter_map(|(name, command)| {
+            RungsConfig::set(&created.project_root, name, command, None)
+                .err()
+                .map(|e| format!("{name}: {e}"))
+        }));
         let readiness = assess(&created.project_root);
         let mut problems = errors;
         match readiness {
@@ -109,13 +108,12 @@ impl Rungs {
 
 impl Rungs {
     /// Write `timeout` and `pools` into `[pump.rungs]` of the project's
-    /// config, format-preserving and under the library's config lock.
+    /// config, format-preserving and under the library's guarded write.
     fn write_settings(&self, root: &Path) -> Result<(), String> {
         if self.timeout.is_none() && self.pools.is_none() {
             return Ok(());
         }
-        let path = root.join(".vivi").join("mailspace.toml");
-        config_edit::apply(&path, |doc| {
+        config_edit::guarded(root, |doc| {
             let pump = implicit_table(doc.as_table_mut(), "pump")?;
             let rungs = implicit_table(pump, "rungs")?;
             if let Some(timeout) = self.timeout {
@@ -127,6 +125,7 @@ impl Rungs {
             }
             Ok(())
         })
+        .map(|_| ())
         .map_err(|e| e.to_string())
     }
 }

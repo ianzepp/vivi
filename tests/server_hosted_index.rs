@@ -139,14 +139,19 @@ fn send(ms: &Mailspace, from: &str, to: &str, kind: Option<&str>, subject: &str)
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: subject.into(),
-        body: format!("{subject} body\ndone_when: it is done\n"),
+        // A format-1 need letter: front matter with done_when, then prose.
+        // Mail stays prose: a mail body may not open with front matter.
+        body: if kind == Some("need") {
+            format!("+++\ndone_when = [\"it is done\"]\n+++\n\n{subject} body\n")
+        } else {
+            format!("{subject} body\n")
+        },
         role: match kind {
             Some("need") => "needs".into(),
             _ => "inbox".into(),
         },
         kind: kind.map(str::to_owned),
         reply_to: None,
-        depends_on: Vec::new(),
     })
     .unwrap();
 }
