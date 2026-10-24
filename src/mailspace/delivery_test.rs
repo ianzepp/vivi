@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use chrono::Utc;
 
 use crate::letter::fixture::{body_for, body_with_deps, need_body, task_body};
-use crate::mailspace::memos::MemoConfig;
+use crate::letter::plain::MemoFront;
+use crate::letter::{FENCE, Front, LetterKind, of_message};
+use crate::mailspace::memos::{MemoConfig, MemoFilter};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{MessageIngestRequest, StoredMessageView};
 use crate::sync::SyncConfig;
@@ -572,7 +574,8 @@ fn retention_prunes_expired_memos_when_a_tagged_memo_is_saved() {
     let old_date = (Utc::now() - chrono::Duration::days(100)).to_rfc2822();
     let raw = format!(
         "From: {address}\r\nTo: {address}\r\nDate: {old_date}\r\n\
-         Subject: old digest\r\nX-Vivi-Kind: memo\r\nX-Vivi-Tag: digest\r\n\r\nold body\r\n"
+         Subject: old digest\r\nX-Vivi-Kind: memo\r\nX-Vivi-Format: 1\r\n\r\n\
+         +++\ntags = [\"digest\"]\n+++\n\nold body\r\n"
     );
     mailspace
         .storage()
@@ -608,7 +611,7 @@ fn retention_prunes_expired_memos_when_a_tagged_memo_is_saved() {
 }
 
 #[test]
-fn memo_save_stores_tag_headers() {
+fn memo_save_stores_tags_as_letter_front_matter() {
     let tmp = tempfile::tempdir().unwrap();
     let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
     mailspace.add_identity("hand").unwrap();
@@ -628,13 +631,68 @@ fn memo_save_stores_tag_headers() {
         .unwrap();
     let storage = mailspace.storage().unwrap();
     let id = storage.resolve_message_token(&handle).unwrap();
-    let memo = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    let raw = storage.read_message(&id).unwrap();
+    let memo = String::from_utf8_lossy(&raw).into_owned();
     assert!(
-        memo.contains("X-Vivi-Tag: digest"),
-        "no digest tag header: {memo}"
+        memo.contains("X-Vivi-Format: 1"),
+        "no format header: {memo}"
     );
+    assert!(!memo.contains("X-Vivi-Tag"), "stale tag header: {memo}");
+    let letter = of_message(&raw, &handle).unwrap();
+    assert_eq!(letter.kind, LetterKind::Memo);
+    assert_eq!(
+        letter.front,
+        Front::Memo(MemoFront {
+            tags: vec!["digest".into(), "ops".into()],
+        }),
+        "{memo}"
+    );
+}
+
+#[test]
+fn memo_save_without_tags_stores_bare_prose() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("hand").unwrap();
+
+    let handle = mailspace
+        .save_memo("hand", "bare", "prose as written", &[])
+        .unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let raw = storage.read_message(&id).unwrap();
+    let memo = String::from_utf8_lossy(&raw).into_owned();
     assert!(
-        memo.contains("X-Vivi-Tag: ops"),
-        "no ops tag header: {memo}"
+        memo.contains("X-Vivi-Format: 1"),
+        "no format header: {memo}"
     );
+    assert!(!memo.contains(FENCE), "no fence on an empty front: {memo}");
+    let letter = of_message(&raw, &handle).unwrap();
+    assert_eq!(letter.front, Front::Memo(MemoFront::default()));
+    assert_eq!(letter.prose, "prose as written");
+}
+
+#[test]
+fn memo_tag_search_finds_a_tagged_memo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("hand").unwrap();
+
+    mailspace
+        .save_memo("hand", "runbook", "restart steps", &["ops".to_string()])
+        .unwrap();
+    mailspace
+        .save_memo("hand", "groceries", "milk and eggs", &[])
+        .unwrap();
+
+    let filter = MemoFilter {
+        tags: vec!["ops".to_string()],
+        ..MemoFilter::default()
+    };
+    let found = mailspace
+        .search_memos_filtered("hand", "restart", false, &filter)
+        .unwrap();
+    assert_eq!(found.len(), 1, "only the tagged memo matches");
+    assert_eq!(found[0].0.subject, "runbook");
+    assert_eq!(found[0].1, vec!["ops".to_string()]);
 }

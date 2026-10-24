@@ -30,24 +30,34 @@ fn hidden(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(|tag| (*tag).to_string()).collect()
 }
 
+/// A format-1 memo letter with `body` as its letter body.
+fn memo_letter(body: &str) -> Vec<u8> {
+    format!(
+        "From: mind@local\r\nTo: memo@local\r\nSubject: t\r\n\
+         X-Vivi-Kind: memo\r\nX-Vivi-Format: 1\r\n\r\n{body}\r\n"
+    )
+    .into_bytes()
+}
+
 #[test]
-fn parse_tags_round_trips_repeated_headers() {
-    let raw = eml(&[
-        ("X-Vivi-Tag", "alpha"),
-        ("X-Vivi-Tag", "beta"),
-        ("X-Vivi-Tag", "alpha"),
-        ("X-VIVI-TAG", "  spaced  "),
-        ("X-Vivi-Tag", ""),
-        ("X-Other", "gamma"),
-    ]);
+fn parse_tags_reads_format1_front_matter() {
+    let raw = memo_letter("+++\ntags = [\"alpha\", \"beta\"]\n+++\n\nnote\n");
     assert_eq!(
         parse_tags(&raw),
-        vec![
-            "alpha".to_string(),
-            "beta".to_string(),
-            "spaced".to_string()
-        ]
+        vec!["alpha".to_string(), "beta".to_string()]
     );
+}
+
+#[test]
+fn parse_tags_ignores_a_legacy_memo_header_tag() {
+    let raw = eml(&[("X-Vivi-Kind", "memo"), ("X-Vivi-Tag", "alpha")]);
+    assert!(parse_tags(&raw).is_empty());
+}
+
+#[test]
+fn parse_tags_reads_an_untagged_format1_memo_as_empty() {
+    let raw = memo_letter("bare prose, no fence\n");
+    assert!(parse_tags(&raw).is_empty());
 }
 
 #[test]
