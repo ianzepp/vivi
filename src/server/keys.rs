@@ -200,6 +200,45 @@ impl ApiKeyRegistry {
             .collect()
     }
 
+    /// Record an already-minted server key (same key id, digest and
+    /// metadata) so the per-project routes accept the same secret. The
+    /// transitional mirror for `/v1/mcp` self-service keys; the registry is
+    /// removed with those routes.
+    pub fn adopt(
+        &self,
+        project_id: &str,
+        key_id: &str,
+        label: &str,
+        digest: &str,
+        created_by: &str,
+        created_at: &str,
+        identity: Option<&str>,
+    ) -> Result<(), KeyError> {
+        let _guard = self.lock();
+        let mut file = self.load(project_id);
+        if file.keys.iter().any(|key| key.key_id == key_id) {
+            return Ok(());
+        }
+        let live = file
+            .keys
+            .iter()
+            .filter(|key| key.revoked_at.is_none())
+            .count();
+        if live >= MAX_KEYS {
+            return Err(KeyError::LimitReached);
+        }
+        file.keys.push(KeyRecord {
+            key_id: key_id.to_owned(),
+            label: label.to_owned(),
+            digest: digest.to_owned(),
+            created_by: created_by.to_owned(),
+            created_at: created_at.to_owned(),
+            identity: identity.map(str::to_owned),
+            revoked_at: None,
+        });
+        self.save(project_id, &file).map_err(KeyError::Storage)
+    }
+
     /// Revoke `key_id` when it was minted by `actor`. Already-revoked is
     /// success. Unknown or someone else's key is `NotFound`.
     pub fn revoke(&self, project_id: &str, key_id: &str, actor: &str) -> Result<(), KeyError> {
@@ -377,7 +416,11 @@ fn identity_token_only(
     identities.verify_bearer(project_id, token)
 }
 
-/// `POST /v1/projects/:id/keys` — mint a project-scoped API key (identity token).
+/// `POST /v1/projects/:id/keys` — mint a server key (identity token). The
+/// key's principal is `<member>@<project_id>` with one grant on this
+/// project (operator when today's operator rule holds for this mint), and
+/// the same secret is mirrored into the per-project registry so the
+/// per-project routes keep accepting it until they are removed.
 pub async fn mint_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -413,9 +456,50 @@ pub async fn mint_handler(
             "keyless chat members cannot mint API keys",
         );
     }
-    let keys = state.keys.clone();
+    let mcp_state = state.clone();
+    let old_keys = state.keys.clone();
+    let project_id = id.clone();
+    let identity = identity.clone();
+    let label = req.label;
+    let acting = req.identity.clone();
+    let answer_identity = req.identity;
     match tokio::task::spawn_blocking(move || {
-        keys.mint(&id, &identity.name, &req.label, req.identity.as_deref())
+        let level = crate::mcp::server::self_service_level(
+            &mcp_state,
+            &project_id,
+            &identity,
+            acting.as_deref(),
+        );
+        let principal = format!("{}@{project_id}", identity.name);
+        let grant = crate::grants::GrantRecord {
+            project_id: project_id.clone(),
+            member: identity.name.clone(),
+            identity: acting.clone(),
+            level,
+        };
+        let minted =
+            mcp_state
+                .server_keys
+                .mint(&principal, false, vec![grant], &label, &identity.name)?;
+        // The mirror: the per-project registry holds the same secret so
+        // `/v1/projects/{id}/mcp` keeps working until it is removed. A
+        // failure keeps the server key (it works on /v1/mcp) and is logged.
+        let digest = sha256_hex(minted.key.as_bytes());
+        if let Err(err) = old_keys.adopt(
+            &project_id,
+            &minted.key_id,
+            &minted.label,
+            &digest,
+            &minted.created_by,
+            &minted.created_at,
+            acting.as_deref(),
+        ) {
+            tracing::warn!(
+                "could not mirror the server key {} into the per-project registry: {err:?}",
+                minted.key_id
+            );
+        }
+        Ok::<_, crate::grants::GrantsError>(minted)
     })
     .await
     {
@@ -426,14 +510,58 @@ pub async fn mint_handler(
                 "label": minted.label,
                 "created_by": minted.created_by,
                 "created_at": minted.created_at,
+                "grants": minted.grants,
             });
-            if let Some(identity) = minted.identity {
+            if let Some(identity) = answer_identity {
                 body["identity"] = json!(identity);
             }
             (StatusCode::CREATED, Json(body)).into_response()
         }
-        Ok(Err(err)) => key_error(err),
-        Err(err) => key_error(KeyError::Storage(format!("key task failed: {err}"))),
+        Ok(Err(err)) => grants_error(err),
+        Err(err) => grants_error(crate::grants::GrantsError::Storage(format!(
+            "key task failed: {err}"
+        ))),
+    }
+}
+
+/// The HTTP answers for a refused server-key mint. The identity text is
+/// the old one: the identity is the only free-text field a caller names.
+fn grants_error(err: crate::grants::GrantsError) -> Response {
+    use crate::grants::GrantsError;
+    match err {
+        GrantsError::InvalidLabel => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "label must be 1-64 characters with no control characters",
+        ),
+        GrantsError::InvalidGrant => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "identity must be 1-64 characters of letters, digits, '.', '-' or '_'",
+        ),
+        GrantsError::LimitReached => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "this member already has 32 live API keys on this project",
+        ),
+        GrantsError::InvalidPrincipal | GrantsError::HostWithGrants | GrantsError::HostMismatch => {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid principal for a self-service key",
+            )
+        }
+        GrantsError::NotFound => {
+            error_response(StatusCode::NOT_FOUND, "key_not_found", "unknown key")
+        }
+        GrantsError::Storage(message) => {
+            tracing::error!("server key storage failure: {message}");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "storage failure",
+            )
+        }
     }
 }
 
@@ -485,9 +613,31 @@ pub async fn revoke_handler(
         Err(_) => return crate::projects_api::identity_lookup_failed(),
     };
     let keys = state.keys.clone();
-    match tokio::task::spawn_blocking(move || keys.revoke(&id, &key_id, &identity.name)).await {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(err)) => key_error(err),
+    let server_key_id = key_id.clone();
+    let project_id = id;
+    match tokio::task::spawn_blocking(move || keys.revoke(&project_id, &key_id, &identity.name))
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => return key_error(err),
+        Err(err) => return key_error(KeyError::Storage(format!("key task failed: {err}"))),
+    }
+    // The server-store twin of a self-service key dies with it. An
+    // old-registry-only key has no twin (`NotFound`).
+    let server_keys = state.server_keys.clone();
+    match tokio::task::spawn_blocking(move || server_keys.revoke_key(&server_key_id)).await {
+        Ok(Ok(())) | Ok(Err(crate::grants::GrantsError::NotFound)) => {
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(crate::grants::GrantsError::Storage(message))) => {
+            tracing::error!("server key storage failure: {message}");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "storage failure",
+            )
+        }
+        Ok(Err(_)) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => key_error(KeyError::Storage(format!("key task failed: {err}"))),
     }
 }

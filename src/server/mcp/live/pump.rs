@@ -149,7 +149,11 @@ pub(super) fn authorize(
     Ok(hosted)
 }
 
-fn require_operator(tool: &str, hosted: &Hosted, caller: &IdentityRecord) -> Result<(), ToolError> {
+pub(super) fn require_operator(
+    tool: &str,
+    hosted: &Hosted,
+    caller: &IdentityRecord,
+) -> Result<(), ToolError> {
     let is_host = caller.mailspace_id.as_deref() == Some(hosted.ms.mailspace_id());
     if !is_host {
         return Err(ToolError::new(format!(
