@@ -358,10 +358,12 @@ A hosted project's member push takes the same format gate with a
 different answer and a different fate for the bytes: a format-1 letter
 that will not parse (an unknown front-matter key from a newer member, a
 broken fence, an unknown format) is refused at push — the append
-refusal carries the parser's reason — and is never stored or held
-server-side; the filer's quarantine pair under the host's
-`.vivi/quarantine/` is discarded, because a server copy must not hold a
-letter it cannot read. Nothing is filed and nothing is left held; the
+refusal carries the parser's reason — and is never stored; the filer's
+quarantine pair under the host's `.vivi/quarantine/` is discarded,
+because a server copy must not hold a letter it cannot read. Nothing is
+filed and nothing is recorded. When the discard itself fails the pair
+stays live and the refusal still answers with the reason; the next push
+of those bytes meets the same refusal and the discard is retried. The
 pushing member learns at once and resends. A legacy letter (no
 `X-Vivi-Format` header) is not refused on this path: the filer files it
 as history, exactly as a client pull does — the durable-only
