@@ -11,6 +11,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
+use vivi::storage::Storage;
 use vivi_server::api_router;
 use vivi_server::projects::{AppendItem, ProjectStore};
 
@@ -467,14 +468,100 @@ async fn a_sugared_send_builds_front_matter_in_a_durable_project() {
             }),
         )
         .await;
-    // The stored bytes carry the front matter the sugar arguments built
-    // (the composer's X-Vivi-Format header is the next W3-C3 task).
+    // The stored bytes are a format-1 letter whose front matter the sugar
+    // arguments built: the composer's gate says formatted, so the letter
+    // carries the format header and no dependency header.
     let raw = fx
         .raw_letter(&fx.token, sent["message_id"].as_str().unwrap())
         .await;
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
     assert!(raw.contains("done_when = [\"it is done\"]"), "{raw}");
     assert!(raw.contains("target = \"repo\""), "{raw}");
     assert!(raw.contains("the prose"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_durable_chat_send_carries_the_format_header() {
+    let fx = fixture("chat-format").await;
+    let sent = fx
+        .call(
+            &fx.token,
+            "send",
+            json!({"kind": "chat", "to": address("creator"), "subject": "talk",
+                   "body": "hello from the composer"}),
+        )
+        .await;
+    let raw = fx
+        .raw_letter(&fx.token, sent["message_id"].as_str().unwrap())
+        .await;
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_durable_reply_carries_the_format_header_when_its_body_is_prose() {
+    let fx = fixture("reply-format").await;
+    let (handle, _) = fx
+        .send_item(&fx.token, "need", &address("creator"), "to reply to")
+        .await;
+    let replied = fx
+        .call(
+            &fx.token,
+            "reply",
+            json!({"handle": handle, "body": "working on it"}),
+        )
+        .await;
+    let raw = fx
+        .raw_letter(&fx.token, replied["message_id"].as_str().unwrap())
+        .await;
+    assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_memo_letter_keeps_its_shape_with_no_format_header() {
+    let fx = fixture("memo-shape").await;
+    fx.call(
+        &fx.token,
+        "memo",
+        json!({"action": "save", "subject": "note", "body": "remember the prefix"}),
+    )
+    .await;
+    let dir = ProjectStore::new(&fx.dir)
+        .mailspace_dir(&fx.project)
+        .unwrap();
+    let storage = Storage::open_mailspace(&dir).unwrap();
+    let rows = storage
+        .list_messages_by_account_role("creator", "memos")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let raw =
+        String::from_utf8_lossy(&storage.read_blob(&rows[0].content_id).unwrap()).into_owned();
+    assert!(raw.contains("X-Vivi-Kind: memo"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Format"), "{raw}");
+    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_need_with_a_broken_front_is_refused_by_the_gate_and_stores_nothing() {
+    let fx = fixture("broken-front").await;
+    // The sugar layer passes the whole letter through (done_when is a
+    // non-empty list), so the composer's gate is what refuses it: the front
+    // matter does not parse as a need.
+    let err = fx
+        .call_err(
+            &fx.token,
+            "send",
+            json!({"kind": "need", "to": address("creator"), "subject": "s",
+                   "body": "+++\ndone_when = [1]\n+++\n\nthe prose"}),
+        )
+        .await;
+    assert!(err.contains("front matter line"), "{err}");
+    let listed = fx
+        .call(&fx.token, "list", json!({"kind": "need", "status": "all"}))
+        .await;
+    assert!(listed["items"].as_array().unwrap().is_empty(), "{listed}");
 }
 
 #[tokio::test]
