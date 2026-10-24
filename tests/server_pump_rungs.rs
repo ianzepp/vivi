@@ -27,6 +27,8 @@ fn scratch(name: &str) -> PathBuf {
 struct Fx {
     app: Router,
     state: AppState,
+    /// Server data dir (`audit.jsonl` lives here).
+    data: PathBuf,
     root: PathBuf,
     project: String,
     /// The host's own member, which the operator's key authenticates as.
@@ -52,7 +54,8 @@ fn fixture(name: &str) -> Fx {
     let mut text = std::fs::read_to_string(&toml).unwrap();
     text.push_str("\n[pump]\ntick = 20\n\n[pump.targets.web]\npath = \"web\"\n");
     std::fs::write(&toml, text).unwrap();
-    let state = app_state(base.join("data"), None, None);
+    let data = base.join("data");
+    let state = app_state(data.clone(), None, None);
     let report = hosted::reconcile(
         &state.projects,
         &state.identities,
@@ -61,6 +64,7 @@ fn fixture(name: &str) -> Fx {
     assert!(report.refused.is_empty(), "{report:?}");
     Fx {
         app: router(state.clone()),
+        data,
         root,
         project: report.served[0].project_id.clone(),
         member: report.served[0].member.clone(),
@@ -508,10 +512,75 @@ async fn a_project_that_is_not_hosted_is_refused() {
     let fx = Fx {
         app: router(state.clone()),
         state,
+        data: base.join("data"),
         root: base,
         project,
         member: "alice".into(),
     };
     let message = fx.refused(&key, json!({"action": "show"})).await;
     assert!(message.contains("hosted project"), "{message}");
+}
+
+/// `RungsConfig::set` is already a guarded write. A running pump (lock held
+/// and mode running) refuses `set`; a paused pump that still holds the lock
+/// is writable. Each `set` writes exactly one audit line.
+#[tokio::test]
+async fn a_set_is_refused_while_the_pump_runs_and_a_paused_pump_is_writable() {
+    let fx = fixture("guard");
+    let key = fx.key_by(&fx.member, None);
+    fx.seed_rung_pools();
+    let before = fx.config_text();
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Running)
+        .unwrap();
+    let lock = hold_pump_lock(&fx.root);
+    let message = fx
+        .refused(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "cargo test"}),
+        )
+        .await;
+    assert!(message.contains("the pump is running"), "{message}");
+    assert_eq!(fx.config_text(), before);
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["tool"], "pump_rungs");
+    assert_eq!(lines[0]["outcome"], "refused");
+    drop(lock);
+
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Paused).unwrap();
+    let _lock = hold_pump_lock(&fx.root);
+    let set = fx
+        .rungs(
+            &key,
+            json!({"action": "set", "rung": "need", "command": "cargo test"}),
+        )
+        .await;
+    assert_eq!(set["need"], "cargo test");
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1]["tool"], "pump_rungs");
+    assert_eq!(lines[1]["outcome"], "ok");
+}
+
+fn hold_pump_lock(root: &std::path::Path) -> std::fs::File {
+    let home = root.join(".vivi/pump");
+    std::fs::create_dir_all(&home).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.join("lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    lock
+}
+
+fn audit_lines(dir: &PathBuf) -> Vec<Value> {
+    std::fs::read_to_string(dir.join("audit.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }

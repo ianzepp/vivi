@@ -7,13 +7,12 @@
 //! `unset_band`, which edit only `pools.<pool>.bands.<band>`
 //! (format-preserving, under the mailspace config lock).
 //!
-//! This is the one pool setting the server edits, and the reason it is safe
-//! to expose: bands select among models the host already allowed. A model
-//! must be listed in that pool's `harness.models`, so a band can never name
-//! anything the host did not offer, and the tool reaches no other key: not a
-//! pool's `remote_url` or `harness.run` (which would send code or commands
-//! elsewhere), not another pool, not a role, not free-form config. Pools
-//! themselves stay with the host.
+//! This tool edits only one pool's bands table. Bands select among models the
+//! host already listed in `harness.models` (`pool_allow_set` writes that
+//! list). A model must be in that list, so a band can never name anything the
+//! host did not offer, and the tool reaches no other key: not a pool's
+//! `remote_url` or `harness.run` (which would send code or commands
+//! elsewhere), not another pool, not a role, not free-form config.
 //!
 //! Authorization is [`super::pump`]'s, shared with the pump tools: the
 //! operator's API key, minted by the host's own member, acting as a role of

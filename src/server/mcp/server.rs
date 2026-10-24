@@ -827,6 +827,12 @@ fn is_write(name: &str, arguments: &Value) -> bool {
         "memo" => action == Some("save"),
         "pump_rungs" => action == Some("set"),
         "pool_bands" => matches!(action, Some("set" | "unset")),
+        "config_set" | "config_unset" | "pool_allow_set" | "target_add" | "target_remove" => true,
+        "config_migrate" => match arguments.get("write") {
+            Some(Value::Bool(flag)) => *flag,
+            None | Some(Value::Null) => false,
+            Some(_) => true,
+        },
         _ => false,
     }
 }

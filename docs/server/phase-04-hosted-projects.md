@@ -152,10 +152,10 @@ mailspace).
   shown but not settable here, and a set is refused while the rung table has
   no effective rung pools (vivi 21's `RungsConfig::set` is a guarded write
   that rolls back; the host sets `pools` first — with none, rung jobs cannot
-  dispatch). This
-  and `pool_bands` are the only config the server edits: pools, roles, remotes
-  and free-form config stay with the host, because a member who could repoint a
-  pool's `remote_url` could send code elsewhere.
+  dispatch). `timeout` and `pools` are shown but not settable here. Other
+  config writes are the operator tools `config_migrate`, `config_set`,
+  `config_unset`, `pool_allow_set`, `target_add` and `target_remove`, each
+  through the library's guarded write (see the contract).
 - **`pool_bands`.** Operator-only, with `pump_control`'s authorization (one
   shared check, `show` included): `action` is `show`, `set` or `unset`, with
   `pool`, and `band` (`P0` to `P5`) for set and unset, `model` and optional
@@ -167,9 +167,9 @@ mailspace).
   unknown pool (the error names the pools) or a malformed band or reasoning.
   Every action answers `{pool, bands, harness_models}`. `set` and `unset` are
   rate limited as writes. Only that one pool's bands table is reachable:
-  bands select among models the host already allowed and cannot repoint a
-  remote or a harness, so the rule that pools, roles and other config stay
-  with the host (see `pump_rungs`) holds.
+  bands select among models the host already listed in `harness.models`
+  (`pool_allow_set` writes that list) and cannot repoint a remote or a
+  harness command.
 - **`pump_send`, `pump_list`, `pump_show`.** Operator-only, with
   `pump_control`'s authorization (one shared check): the pump record verbs
   `vivi pump send|list|show`, through `Mailspace::pump_send`, `pump_list` and

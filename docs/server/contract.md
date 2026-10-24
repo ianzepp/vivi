@@ -409,8 +409,10 @@ or expired chat project reads as ungranted.
 
 The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
-`pump_send`, `pump_list`, `pump_show`); each also takes the required
-`project` argument on top of the arguments shown.
+`config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
+`target_add`, `target_remove`, `pump_send`, `pump_list`, `pump_show`);
+each also takes the required `project` argument on top of the arguments
+shown.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -430,6 +432,27 @@ The project tools are the 1.2.0 list plus the hosted additions
 level}` per live grant (`mode` is `hosted`, `chat` or `durable`; `name`
 is the hosted project's name; `identity` the vivi identity the key acts
 as, when one was named). A host principal answers `{host: true}`.
+
+#### Config, pool and target writes
+
+Hosted projects only, and only for a key that passes the operator rule
+(the host's own member, acting as a role of kind `operator`). Each write
+calls the same library function as the CLI and goes through the config
+write guard: refused while that project's pump runs (lock held and mode
+running; a paused pump is writable), a backup first, and a write that
+adds a new config error is rolled back. A refused or accepted write is
+one audit line. A dry run is not.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `config_migrate` | `write?` (default false) | `pump::config::migrate`. `write: true` is wrapped in `guard_file` and is a write; otherwise a dry run and a read. Returns `{plan, diff, dry_run, wrote, charters}` |
+| `config_set` | `key`, `value` (TOML text) | `config_edit::set_key`. Returns `{key, value, kind}` |
+| `config_unset` | `key` | `config_edit::unset_key`. Returns `{key, unset: true}` |
+| `pool_allow_set` | `pool`, `models` (array of strings) | Writes `pools.<pool>.harness.models` (the allow list `pool_bands` checks) through `config_edit::set_pool_key`. A non-array or a non-string element is refused before a write |
+| `target_add` | `id`, `path`, `remote_url?`, `remote?`, `main?`, `github_repo?`, `rungs?` (`NAME=CMD`), `merge?` (`KEY=VALUE`) | `pump::config::targets::add`. Returns `{id, path, main, rungs}` |
+| `target_remove` | `id` | `pump::config::targets::remove`. Returns `{id, removed: true}` |
+
+`pump_rungs` `set` is the same guard (`RungsConfig::set`).
 
 #### Host tools
 
