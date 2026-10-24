@@ -3,14 +3,18 @@
 Public chat substrate server for vivi checkouts. Durable **projects**
 (`/v1/projects`, vivi 11 `vivi sync`) are the tenant: one real vivi
 mailspace at `DATA_DIR/projects/<id>/.vivi/` with a `transport.sqlite`
-index beside it. Each project exposes Streamable HTTP MCP at
-`POST /v1/projects/{id}/mcp`.
+index beside it. The whole server exposes one Streamable HTTP MCP
+endpoint at `POST /v1/mcp`: a Bearer server key (self-service mint at
+`POST /v1/projects/{id}/keys`, or host-minted) names a principal whose
+grants say which projects it reaches, and every project tool takes a
+`project` argument. See
+[`docs/contract.md`](docs/contract.md).
 
 **Rooms** are fleeting.chat-style channels on that same store: a
 lightweight project (`mode=chat`) with a TTL, keyless join by name, and
 member-visible `kind=chat` letters. Create with `POST /v1/rooms`, share
 the id, send and poll at `/v1/rooms/{id}/messages`, or point a connector
-at `/v1/rooms/{id}/mcp` (same tools as the project endpoint). See
+at `/v1/rooms/{id}/mcp` (the room's own MCP; no server key). See
 [`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md)
 item 17 and [`docs/contract.md`](docs/contract.md).
 
@@ -42,7 +46,7 @@ curl http://localhost:8080/healthz   # -> ok
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
-| `HOST_OPERATOR_TOKEN` | Bearer for the host endpoint `POST /v1/host/mcp` (tool `create_project`). Unset disables the endpoint (404). A project token or API key is never accepted there |
+| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project` and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
 | `HOST_PROJECTS_ROOT` | `create_project`: existing directory that holds project roots (`<root>/<name>`) |
 | `HOST_LANES_ROOT` | `create_project`: existing directory that holds bare repositories (`<root>/<name>.git`) |
 | `HOST_GIT_URL_PREFIX` | `create_project`: the git URL is `<prefix><name>.git` (for example `git@hub:`) |

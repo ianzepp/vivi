@@ -79,5 +79,28 @@ PREFIX=$(python3 -c 'import hashlib; print(hashlib.sha256(b"creator").hexdigest(
 SEND=$(rpc "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send","arguments":{"project":sys.argv[2],"kind":"need","to":"creator@%s.local"%sys.argv[1],"subject":"mcp-smoke","body":"from the smoke","done_when":"from the smoke"}}}))' "$PREFIX" "$PID")")
 echo "$(rpc_text "$SEND")" | grep -q '"handle"' && ok "send need" || bad "send: $SEND"
 
+# E2E: the real vivi client against this server. The client posts
+# {server}/v1/mcp, takes the key from VIVI_MCP_API_KEY, and sends
+# --project-id as the tools' `project` argument.
+VIVI=${VIVI:-}
+if [ -z "$VIVI" ]; then
+  echo "SKIP: VIVI is not set; the vivi-client leg did not run"
+elif [ ! -x "$VIVI" ]; then
+  echo "SKIP: VIVI=$VIVI is not executable; the vivi-client leg did not run"
+else
+  if VIVI_MCP_SERVER="$BASE" VIVI_MCP_API_KEY="$APIKEY" "$VIVI" mcp --project-id "$PID" tools >"$W/vivi-tools.txt" 2>&1 \
+    && grep -q 'overview' "$W/vivi-tools.txt"; then
+    ok "vivi mcp tools"
+  else
+    bad "vivi mcp tools: $(cat "$W/vivi-tools.txt")"
+  fi
+  if VIVI_MCP_SERVER="$BASE" VIVI_MCP_API_KEY="$APIKEY" "$VIVI" mcp --project-id "$PID" call overview >"$W/vivi-overview.txt" 2>&1 \
+    && grep -q "$PID" "$W/vivi-overview.txt"; then
+    ok "vivi mcp call overview names the project"
+  else
+    bad "vivi mcp call overview: $(cat "$W/vivi-overview.txt")"
+  fi
+fi
+
 echo "RESULT pass=$PASS fail=$FAIL project=$PID"
 [ "$FAIL" = 0 ] || exit 1

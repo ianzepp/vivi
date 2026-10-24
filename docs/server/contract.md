@@ -2,7 +2,8 @@
 
 Wire truth for vivi-server. Phase 01 rooms (U1, seat/challenge) are
 **superseded in 1.3.0** by [Lightweight chat rooms](#lightweight-chat-rooms-130).
-The project letter wire and [Project MCP](#project-mcp-120) stay. Revisions
+The project letter wire stays; [Project MCP](#project-mcp-120) is
+**superseded in wave 3** by [Server MCP](#server-mcp-wave-3). Revisions
 after a freeze are recorded here.
 
 All bodies are JSON (`application/json`) unless a route says otherwise.
@@ -44,7 +45,7 @@ Request: `{"name", "ttl_seconds"?}`. Response `201`:
 `{"room_id", "project_id", "mode":"chat", "ttl_seconds", "expires_at",
 "closed", "expired", "members", "mcp", "name", "token",
 "token_expires_at"}`. `project_id` equals `room_id`. `mcp` is
-`/v1/projects/{id}/mcp`.
+`/v1/rooms/{id}/mcp`.
 
 #### `POST /v1/rooms/{id}/join`
 
@@ -74,8 +75,11 @@ Bearer. Response `200` metadata with `closed: true`.
 
 #### `POST /v1/rooms/{id}/mcp`
 
-Same Streamable HTTP MCP as `POST /v1/projects/{id}/mcp`. `send` /
-`list` accept `kind=chat`; `to` is optional on chat send.
+The room's own Streamable HTTP MCP, unchanged by the server endpoint:
+the URL names the room, the tools take no `project` argument, and the
+Bearer is an identity token or a per-project key (the mirror a
+self-service server key leaves behind). `send` / `list` accept
+`kind=chat`; `to` is optional on chat send.
 
 ### Errors (additive)
 
@@ -341,28 +345,63 @@ and nothing is stored. A letter with no `X-Vivi-Format` header is legacy
 and is accepted for now. A replay of an already-stored letter keeps its
 duplicate or conflict outcome and is not judged again.
 
-## Project MCP (1.2.0)
+## Server MCP (wave 3)
 
-Additive alongside the rooms contract and the project letter wire in
+One Streamable HTTP MCP endpoint for the whole server, `POST /v1/mcp`.
+It supersedes the per-project endpoint of 1.2.0: `POST
+/v1/projects/{id}/mcp` and `POST /v1/host/mcp` are gone — both answer
+`404`. Chat rooms keep their own `POST /v1/rooms/{id}/mcp`
+([above](#post-v1roomsidmcp)). Additive alongside the rooms contract and
+the project letter wire in
 [`phase-03-project-mailspace-hub.md`](phase-03-project-mailspace-hub.md).
-One Streamable HTTP MCP endpoint **per project**: the URL is the tenant,
-the Bearer is the caller.
 
-### `POST /v1/projects/{id}/mcp` — Streamable HTTP MCP (bearer)
+### `POST /v1/mcp` — Streamable HTTP MCP (server key)
 
 JSON-RPC 2.0. `Content-Type: application/json`. Response is
 `application/json` unless `Accept` is only `text/event-stream`, in which
 case the same JSON-RPC object is wrapped as one `event: message` SSE
 frame. Notifications (`notifications/*`) return `202` with an empty body.
 Supported protocol versions: `2024-11-05`, `2025-03-26`, `2025-11-25`.
+Method errors are JSON-RPC (`-32601`, …), not HTTP 4xx.
 
-Auth: `Authorization: Bearer` — a live identity token **or** a live
-project API key. Both resolve to the minting / registered identity. A
-missing or bad bearer is `401 unauthorized`. An unknown project is
-`404 project_not_found`. Method errors are JSON-RPC (`-32601`, …), not
-HTTP 4xx.
+Auth: `Authorization: Bearer`, one of:
 
-Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
+- **A server key** (`vivi_` + random) from the one key store at
+  `DATA_DIR/keys.json`. It resolves to its principal and that
+  principal's grants. Keys are SHA-256 digests at rest, 0600; the raw
+  secret exists once, at mint.
+- **The host operator token** (`HOST_OPERATOR_TOKEN`): the built-in
+  host principal `host` (constant-time compare), which reaches only the
+  host tools. With the variable unset the principal does not exist and
+  only server keys authenticate.
+- Anything else is `401 unauthorized`. An identity token is told
+  `identity tokens are not accepted on /v1/mcp; this endpoint needs a
+  server key`; an unknown `vivi_` secret gets the generic invalid
+  bearer. A missing bearer is `401` before that.
+
+Methods: `initialize`, `ping`, `tools/list`, `tools/call`.
+
+### The `project` argument
+
+Every project tool takes a required `project` argument: a project id,
+or the name of a hosted project the key is granted on (the root
+directory name, else the mailspace config `name`; durable and chat
+projects resolve by id only). Resolution is strict among the key's own
+grants — an exact project id first, else a name match — and the tool
+always dispatches on the resolved grant's project id, never on the raw
+argument. A missing or non-string `project` is refused `project is
+required`. An unknown project and a project the key holds no grant on
+are the same refusal, so a key cannot probe which projects exist; a
+name that two of the key's grants resolve to is refused. The grant's
+member must still be a registered identity on the project, and a closed
+or expired chat project reads as ungranted.
+
+### Tools
+
+The project tools are the 1.2.0 list plus the hosted additions
+(`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
+`pump_send`, `pump_list`, `pump_show`); each also takes the required
+`project` argument on top of the arguments shown.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -370,35 +409,109 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `list` | `kind?` need\|task\|want\|mail\|memo, `status?` open\|done\|all, `limit?` | Summaries. Default: open work |
 | `show` | `handle` | One letter or memo |
 | `thread` | `handle`, `limit?` | Reply thread |
-| `send` | `kind`, `to`, `subject`, `body`, `depends_on?` | Server composes and mints the id; `From` is the caller |
+| `send` | `kind`, `to`, `subject`, `body`, vivi sugar arguments | Server composes and mints the id; `From` is the caller (see [Letter format](#letter-format-v1)) |
 | `reply` | `handle`, `body` | Reply as the caller |
 | `done` | `handle`, `note?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report |
 | `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
 | `graph` | `view?` ready\|status | Ready / blocked / done from `depends_on` in the letter's front matter and from events. A legacy letter (no `X-Vivi-Format`) contributes no dependencies |
+| `projects` | — | List what this key may reach |
 
-Writes share the per-identity send budget (30/min by default; a deployment may configure it, `0` = none), and a refusal reads `over N writes/min/identity`. Tool failures are
-`isError: true` with a text body, HTTP 200. `kind=chat` is accepted on
-`send` and `list` (1.3.0); `to` may be omitted on a chat send. A closed
-or expired chat project is `410` before JSON-RPC.
+`projects` answers one `{project_id, name?, mode, member, identity,
+level}` per live grant (`mode` is `hosted`, `chat` or `durable`; `name`
+is the hosted project's name; `identity` the vivi identity the key acts
+as, when one was named). A host principal answers `{host: true}`.
 
-### API keys
+#### Host tools
+
+Six tools need a **host principal** — the operator token or a key minted
+`host: true`:
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `create_project` | `name`, `branch?`, `pool?`, `rungs?` | Create a hosted project: bare repository, lanes, git URL and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key |
+| `key_mint` | `principal`, `grants?`, `host?`, `label?` | Mint a server key for `principal` (created when absent; grants not already held are added). `host: true` mints a host principal, which carries no grants and whose `principal` defaults to `host`. The raw `key` is shown once, `vivi_` + random; at most 32 live keys per principal |
+| `key_list` | — | Principals with their keys (digests only) and grants |
+| `key_revoke` | `key_id` | Revoke one key, on any principal; already-revoked is success |
+| `grant_add` | `principal`, `grant` | Add one grant to an existing principal (idempotent) |
+| `grant_remove` | `principal`, `project_id` | Remove the principal's grant on one project |
+
+A non-host key that calls one is refused
+`<tool> is a host tool; this key is not a host principal`. A key/grant
+mint refuses, among others: `principal is required (or host: true for a
+host key)`, `a grant must name a project id and a member (1-64
+characters), an optional identity, and a level of member or operator`,
+`a host principal carries no project grants`, `that principal exists
+with a different host flag`, `that principal already has 32 live keys`,
+`no such principal or key`, and `<principal> holds no grant on
+<project_id>`.
+
+### Grants and levels
+
+A grant is `{project_id, member, identity?, level}`: `level` is
+`member` or `operator`, and `identity` names the vivi identity the key
+acts as on that project (absent: the member identity itself). The level
+is stored metadata; the operator RULES are re-checked per call — an
+operator-gated tool (the pump controls, `pool_bands`, `pump_*`,
+operator-only actions) still requires today's operator rule to hold for
+this key on this project, exactly as the per-project keys did, and a
+`member` grant is refused those tools. The grant wall on `/v1/mcp` is
+checked before every dispatch; no tool call ever sees a project the key
+is not granted on.
+
+### Writes: audit and rate limit
+
+One audit line is appended per **write** tool call, whatever came of it
+(`ok`, `refused`, `error`), and per key/grant change; reads are not
+logged. The log is `DATA_DIR/audit.jsonl`: one JSON object per line,
+0600, append-only, no fsync, no read API yet. A line is, in wire order:
+`at` (RFC 3339), `key_id`, `principal`, `project_id` (null for host
+tools), `tool`, `outcome` (`ok`|`refused`|`error`), and `summary` (a
+short description, capped at 200 chars).
+
+Writes are rate limited **per (project, key)** — `host` is the bucket
+for host tools — through the same limiter the other routes use
+(`SEND_RATE_PER_MINUTE`, default 30, `0` = none). A refusal reads
+`over N writes/min for this key`.
+
+Tool failures are `isError: true` with a text body, HTTP 200.
+
+### Self-service keys
 
 Minting and revocation require an **identity token** (proof of
-possession), not another API key.
+possession), not another key.
 
-- `POST /v1/projects/{id}/keys` `{label}` (1–64 chars) → `201`
-  `{key_id, key, label, created_by, created_at}`. The raw `key` is
-  returned once (`vivi_` + random). At most 32 live keys per project.
-- `GET /v1/projects/{id}/keys` (bearer) → `{keys: [{key_id, label,
-  created_by, created_at, revoked_at?}]}`. No secrets.
+- `POST /v1/projects/{id}/keys` `{label}` (1–64 chars), optional
+  `identity`, on an identity token → `201`. This now mints a **server
+  key**: principal `<member>@<project_id>`, or
+  `<member>.<role>@<project_id>` when an acting identity is named (so a
+  second key with a different identity does not resolve the first
+  grant), carrying one grant on this project — level `operator` when
+  today's operator rule holds at mint time, else `member`. The answer
+  is `{key_id, key, label, created_by, created_at, grants}` (plus
+  `identity` when one was named); the raw `key` is returned once
+  (`vivi_` + random). At most 32 live keys per principal.
+- `GET /v1/projects/{id}/keys` (identity token or key) → `{keys:
+  [{key_id, label, created_by, created_at, identity?, revoked_at?}]}`
+  from the per-project mirror. No secrets.
 - `DELETE /v1/projects/{id}/keys/{key_id}` (identity token of the
-  minting member) → `204`. Unknown or someone else's key is
-  `404 key_not_found`.
+  minting member) → `204`; the server-store twin dies with it. Unknown
+  or someone else's key is `404 key_not_found`.
 
-Keys are stored as SHA-256 digests, 0600, next to the project. A revoked
-or unknown key is the same `401` as a bad identity token. A live key is
-accepted on every project bearer route, including the letter wire.
+The same secret is mirrored into the per-project registry
+(`DATA_DIR/projects/<id>/api_keys.json`) at mint, so rooms auth and the
+letter wire keep accepting it; the mirror is the only writer of new
+per-project keys. A revoked or unknown key is the same `401` as a bad
+identity token on those routes. A live key is accepted on every project
+bearer route, including the letter wire.
+
+#### One-time legacy retirement
+
+The first boot after the upgrade renames every
+`DATA_DIR/projects/<id>/api_keys.json` to `api_keys.json.retired` —
+pre-upgrade keys stay dead — and records `DATA_DIR/api_keys.retirement`.
+Later boots leave live files alone: a self-service mint re-creates
+`api_keys.json` for the mirror, and a restart must not retire it.
 
 ## Item events (1.4.0)
 
