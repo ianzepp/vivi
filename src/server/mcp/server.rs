@@ -49,7 +49,7 @@ pub(crate) const HOST_PRINCIPAL: &str = "host";
 pub(super) const INSTRUCTIONS: &str = "This is one vivi server's MCP endpoint. Every project \
 tool takes a required `project`: the project id, or the name of a hosted project this key is \
 granted on. Call `projects` first to list what this key may reach. Host tools (create_project, \
-key and grant admin) need a host principal.";
+project_list, server_version, key and grant admin) need a host principal.";
 
 /// What the Bearer resolved to on `/v1/mcp`.
 #[derive(Debug, Clone)]
@@ -122,13 +122,15 @@ fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Respo
 
 // ------------------------------------------------------------------ tools
 
-const HOST_TOOLS: [&str; 6] = [
+const HOST_TOOLS: [&str; 8] = [
     "create_project",
     "key_mint",
     "key_list",
     "key_revoke",
     "grant_add",
     "grant_remove",
+    "server_version",
+    "project_list",
 ];
 
 /// The `/v1/mcp` tool list: every project tool with `project` required,
@@ -469,7 +471,7 @@ fn dead_chat(meta: &ProjectMeta) -> bool {
 
 /// A hosted project's name: its root directory name, else its mailspace
 /// config `name`. Durable and chat projects resolve by id only.
-fn hosted_name(meta: &ProjectMeta) -> Option<String> {
+pub(super) fn hosted_name(meta: &ProjectMeta) -> Option<String> {
     if dead_chat(meta) {
         return None;
     }
@@ -543,13 +545,27 @@ async fn host_tool(
     name: &str,
     arguments: Value,
 ) -> Result<Value, Response> {
-    let write = name != "key_list";
+    // The read host tools: `key_list` names keys, the two D4 reads answer
+    // server facts; none is audited or rate limited.
+    let write = !matches!(name, "key_list" | "server_version" | "project_list");
     if !auth.host {
         let message = format!("{name} is a host tool; this key is not a host principal");
         if write {
             audit(state, auth, None, name, AuditOutcome::Refused, &message).await;
         }
         return Ok(tool_result(json!({ "error": message }), true));
+    }
+    if name == "server_version" {
+        return Ok(tool_result(super::host::server_version(), false));
+    }
+    if name == "project_list" {
+        let list_state = state.clone();
+        return match tokio::task::spawn_blocking(move || super::host::project_list(&list_state))
+            .await
+        {
+            Ok(value) => Ok(tool_result(value, false)),
+            Err(err) => Err(internal(state, auth, None, name, write, err).await),
+        };
     }
     if name == "create_project" {
         if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
@@ -811,6 +827,13 @@ fn is_write(name: &str, arguments: &Value) -> bool {
         "memo" => action == Some("save"),
         "pump_rungs" => action == Some("set"),
         "pool_bands" => matches!(action, Some("set" | "unset")),
+        "config_set" | "config_unset" | "pool_allow_set" | "target_add" | "target_remove"
+        | "role_add" | "role_set" | "charter_set" => true,
+        "config_migrate" => match arguments.get("write") {
+            Some(Value::Bool(flag)) => *flag,
+            None | Some(Value::Null) => false,
+            Some(_) => true,
+        },
         _ => false,
     }
 }

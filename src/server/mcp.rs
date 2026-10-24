@@ -594,6 +594,74 @@ fn tools_list() -> Value {
                 "required": ["action", "pool"],
                 "additionalProperties": false
             })),
+            tool("config_migrate", "Hosted projects only, operator only. Plan a config migration, as `vivi config migrate` does, through `pump::config::migrate`. Same authorization as pump_control. Without `write` (or with `write: false`) this is a dry run and a read: nothing is written. `write: true` applies the plan under the config write guard (refused while the pump runs, a backup first, rolled back when the write adds a new config error) and is rate limited as a write. Returns {plan, diff, dry_run, wrote, charters: [{role, origin, bytes}]}.", json!({
+                "type": "object",
+                "properties": {
+                    "write": { "type": "boolean", "default": false, "description": "Apply the plan. False (the default) is a dry run." }
+                },
+                "additionalProperties": false
+            })),
+            tool("config_set", "Hosted projects only, operator only. Set one dotted config key to a TOML value, as `vivi config set` does (`config_edit::set_key`). Same authorization as pump_control. `value` is TOML text: a bare word that is not valid TOML is a string. Refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns {key, value, kind} where value is the TOML that was stored and kind is its TOML type.", json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Dotted key path, quoted segments allowed" },
+                    "value": { "type": "string", "description": "TOML text of the value, as the CLI argument" }
+                },
+                "required": ["key", "value"],
+                "additionalProperties": false
+            })),
+            tool("config_unset", "Hosted projects only, operator only. Remove one dotted config key, as `vivi config unset` does (`config_edit::unset_key`). Same authorization as pump_control. A missing key is refused. Refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns {key, unset: true}.", json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Dotted key path to remove" }
+                },
+                "required": ["key"],
+                "additionalProperties": false
+            })),
+            tool("pool_allow_set", "Hosted projects only, operator only. Replace one pool's allow list (`pools.<pool>.harness.models`, the list `pool_bands` checks) with `models`, as `vivi pool set <pool> harness.models` does (`config_edit::set_pool_key` under the guard). Same authorization as pump_control. `models` must be an array of strings; anything else is refused before a write. An unknown pool is refused. Refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns {pool, key, models}.", json!({
+                "type": "object",
+                "properties": {
+                    "pool": { "type": "string", "description": "Pool name" },
+                    "models": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Model slugs allowed for this pool"
+                    }
+                },
+                "required": ["pool", "models"],
+                "additionalProperties": false
+            })),
+            tool("target_add", "Hosted projects only, operator only. Add `[pump.targets.<id>]`, as `vivi pump target add` does (`pump::config::targets::add`, a guarded write). Same authorization as pump_control. `path` is the repository path. Optional `remote_url`, `remote`, `main`, `github_repo`. `rungs` is NAME=CMD strings (task, need, main, or release). `merge` is KEY=VALUE strings (format or remote_limit; the value is TOML). Refused while the pump runs, for an id that already exists, or when the write adds a new config error (rolled back). Rate limited as a write. Returns {id, path, main, rungs}.", json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Target id, the [pump.targets.<id>] key" },
+                    "path": { "type": "string", "description": "Repository path, relative to the project root or absolute" },
+                    "remote_url": { "type": "string" },
+                    "remote": { "type": "string" },
+                    "main": { "type": "string", "description": "Main branch name" },
+                    "github_repo": { "type": "string", "description": "GitHub repository, as owner/name" },
+                    "rungs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Rung commands as NAME=CMD"
+                    },
+                    "merge": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Merge settings as KEY=VALUE (format or remote_limit)"
+                    }
+                },
+                "required": ["id", "path"],
+                "additionalProperties": false
+            })),
+            tool("target_remove", "Hosted projects only, operator only. Remove `[pump.targets.<id>]`, as `vivi pump target remove` does (`pump::config::targets::remove`, a guarded write). Same authorization as pump_control. An unknown id is refused. Refused while the pump runs. Rate limited as a write. Returns {id, removed: true}.", json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Target id to remove" }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            })),
             tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need not addressed to the pump identity, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
                 "type": "object",
                 "properties": {
@@ -621,6 +689,106 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
+            tool("pump_log", "Hosted projects only, operator only. Read-only tail of the pump's log.txt or exceptions.txt, as `vivi pump log` does: the last `lines` lines (default 50, at most 500) that contain `filter` when given, counted after filtering. Same authorization as pump_control. Returns {file, lines}.", json!({
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "enum": ["log", "exceptions"] },
+                    "lines": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
+                    "filter": { "type": "string", "description": "Only lines containing this text (case-sensitive)" }
+                },
+                "required": ["file"],
+                "additionalProperties": false
+            })),
+            tool("flow_show", "Hosted projects only, operator only. Read-only `vivi flow show --json`: the shipped flow's Mermaid source and version, plus that need's runs and their steps when `need` is given (`runs` is null when the project has no pump.db). Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["build", "research", "release", "repair"] },
+                    "need": { "type": "string", "description": "Need handle; omit for the Mermaid source alone" }
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+            })),
+            tool("config_show", "Hosted projects only, operator only. Read-only `vivi config show --json`: the merged config overview (roles, flow, pools), plus `origins` when a merged value was inherited. `resolved` is refused: the live free-slot probe runs the vivi binary's `pool status`, which the server is not, so `free` is never answered here. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "resolved": { "type": "boolean", "default": false }
+                },
+                "additionalProperties": false
+            })),
+            tool("config_validate", "Hosted projects only, operator only. Read-only `vivi config validate --json`: the issue array (severity error, warning, or not_ready) exactly as the CLI prints it; readiness is read off the severities, not asserted. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("pool_list", "Hosted projects only, operator only. Read-only `vivi pool list --json`: one row per configured pool — name, provider, slots, the bands table (model and reasoning per band) and harness models; `free` stays null (the live probe is the vivi binary's). Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("pool_show", "Hosted projects only, operator only. Read-only `vivi pool show <name> --json`: the pool's row — provider, slots, bands and harness models. `resolved` is refused (the live free-slot probe runs the vivi binary, which the server is not), so `free` is always null; an unknown pool is refused. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Pool name" },
+                    "resolved": { "type": "boolean", "default": false }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            })),
+            tool("role_list", "Hosted projects only, operator only. Read-only `vivi role list --json`: one view per role — address, aliases, kind, status, harness, provider, model, cadence, pool, models, and whether a charter is set. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("role_show", "Hosted projects only, operator only. Read-only `vivi role show <role> --json`: one role's full view, by name or alias. An unknown role is refused. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name or alias" }
+                },
+                "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("role_add", "Hosted projects only, operator only. `vivi role add` (through `Mailspace::add_role`, a guarded write): the same arguments the CLI takes — kind (the pump's hand role, `[pump] to`, defaults to kind hand when absent), harness, provider, model, thinking, status, labels, cadence, pool, read_only, models. Same authorization as pump_control. A duplicate name is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Letters held under the new name are adopted, as the CLI does. Returns {added, adopted, role} with the same view `role_show` answers.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name (local-part), e.g. hand-1 or head-ceo" },
+                    "kind": { "type": "string", "description": "Process class (hand, head, mind, operator, steward, or freeform)" },
+                    "harness": { "type": "string", "description": "Execution home (subagent, tmux, vivi_pty, …)" },
+                    "provider": { "type": "string", "description": "Inference provider / account lane" },
+                    "model": { "type": "string", "description": "Model id" },
+                    "thinking": { "type": "string", "description": "Thinking / reasoning effort" },
+                    "status": { "type": "string", "description": "Lifecycle status (active, parked, retired, or freeform)" },
+                    "labels": { "type": "array", "items": { "type": "string" }, "description": "Freeform label slugs" },
+                    "cadence": { "type": "string", "description": "Desired maximum silence between outbound signals (e.g. 15m, 1h)" },
+                    "pool": { "type": "string", "description": "Pool this role dispatches to" },
+                    "read_only": { "type": "boolean", "description": "Override the kind's read-only default" },
+                    "models": { "type": "array", "items": { "type": "string" }, "description": "Preferred model slugs or bands" }
+                },
+                "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("role_set", "Hosted projects only, operator only. `vivi role set` (through `Mailspace::set_role`, a guarded write): the CLI's configuration fields, each as a set and a clear_<field> form — kind, harness, provider, model, thinking, cadence, pool, read_only, models — plus status, labels and clear_labels. At least one field must be named. The CLI's --pid/--host (a live seat's runtime binding, an unguarded write) is not exposed. Same authorization as pump_control. An unknown role is refused; refused while the pump runs; a write that adds a new config error is rolled back. Rate limited as a write. Returns the same view `role_show` answers.", role_set_schema()),
+            tool("charter_show", "Hosted projects only, operator only. Read-only `vivi role charter show <role> --json`: the role's charter body (an empty string when it has none), by name or alias, with its name, address and has_charter. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name or alias" }
+                },
+                "required": ["role"],
+                "additionalProperties": false
+            })),
+            tool("charter_set", "Hosted projects only, operator only. `vivi role charter set` (through `Mailspace::set_charter`, guarding the charter file the CLI guards): replace one role's charter body with `charter` (the CLI's @path and --body-file forms are not accepted; the text is taken as given). Same authorization as pump_control. An unknown role is refused; refused while the pump runs. Rate limited as a write. Returns the same envelope `charter_show` answers plus `bytes`.", json!({
+                "type": "object",
+                "properties": {
+                    "role": { "type": "string", "description": "Role name or alias" },
+                    "charter": { "type": "string", "description": "Charter body, literal text" }
+                },
+                "required": ["role", "charter"],
+                "additionalProperties": false
+            })),
+            tool("target_list", "Hosted projects only, operator only. Read-only `vivi pump target list`: the configured pump targets, each {id, path, main, rungs}. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
             tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, each want's `serving` needs with their state, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
                 "type": "object",
                 "properties": {
@@ -637,6 +805,50 @@ fn tools_list() -> Value {
             })),
         ]
     })
+}
+
+/// The `role_set` schema: the set fields as a literal, then one generated
+/// `clear_<field>` boolean per clearable field — one 22-property `json!`
+/// literal exceeds the macro's default recursion limit.
+fn role_set_schema() -> Value {
+    let mut schema = json!({
+        "type": "object",
+        "properties": {
+            "role": { "type": "string", "description": "Role name or alias" },
+            "kind": { "type": "string", "description": "Process class" },
+            "harness": { "type": "string", "description": "Execution home" },
+            "provider": { "type": "string", "description": "Inference provider" },
+            "model": { "type": "string", "description": "Model id" },
+            "thinking": { "type": "string", "description": "Thinking / reasoning effort" },
+            "cadence": { "type": "string", "description": "Desired maximum silence between outbound signals (e.g. 15m, 1h)" },
+            "status": { "type": "string", "description": "Lifecycle status" },
+            "labels": { "type": "array", "items": { "type": "string" }, "description": "Freeform label slugs to add" },
+            "clear_labels": { "type": "array", "items": { "type": "string" }, "description": "Label slugs to remove" },
+            "pool": { "type": "string", "description": "Pool this role dispatches to" },
+            "read_only": { "type": "boolean", "description": "Override the kind's read-only default" },
+            "models": { "type": "array", "items": { "type": "string" }, "description": "Preferred model slugs or bands (replaces the list)" }
+        },
+        "required": ["role"],
+        "additionalProperties": false
+    });
+    let properties = schema["properties"].as_object_mut().unwrap();
+    for (field, describe) in [
+        ("kind", "Clear kind"),
+        ("harness", "Clear harness"),
+        ("provider", "Clear provider"),
+        ("model", "Clear model"),
+        ("thinking", "Clear thinking"),
+        ("cadence", "Clear cadence (the role is not on a schedule)"),
+        ("pool", "Clear the assigned pool"),
+        ("read_only", "Clear the explicit read-only flag"),
+        ("models", "Clear the models list"),
+    ] {
+        properties.insert(
+            format!("clear_{field}"),
+            json!({ "type": "boolean", "description": describe }),
+        );
+    }
+    schema
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
