@@ -459,9 +459,38 @@ slots = 2
 branch = "next"
 promote = true
 to = "hand"
+reserved_file = "reserved.txt"
+fix_prefix = "fx"
+[pump.board]
+planners_max = 2
+plan_timeout = 60
+[pump.planner]
+run = "x"
+split_hard_cap = 100
+[pump.proof]
+allow = ["cargo"]
+[[pump.plan.proof_rules]]
+scope = "src"
+proof = "cargo test"
+[pump.alarm]
+merge_idle_minutes = 5
+[pump.dispatch]
+default_kind = "plain"
+max_attempts = 2
+per_tick = 3
+transient_max = 1
+transient_backoff = 10
+overdue_grace = 30
+last_resort = "m/ok"
+[[pump.dispatch.lanes]]
+model = "m/ok"
+cap = 1
+[pump.dispatch.kinds.plain]
+pools = ["glm"]
 [pump.merge]
 batch = 4
 shared_checks = ["true"]
+repair_budget = 5
 [pump.need]
 repair_rounds = 2
 [pump.gate]
@@ -473,7 +502,43 @@ gate = { command = "true" }
 [pump.targets.other.merge]
 shared_checks = ["true"]
 batch = 2
+repair_budget = 4
 "#;
+
+/// Every `[table] key:` line `config validate` must print for `RETIRED_KEYS`.
+const RETIRED_KEY_LINES: [&str; 31] = [
+    "[pump] branch:",
+    "[pump] promote:",
+    "[pump] gate:",
+    "[pump] need:",
+    "[pump] planner:",
+    "[pump] proof:",
+    "[pump] plan:",
+    "[pump] alarm:",
+    "[pump] reserved_file:",
+    "[pump] fix_prefix:",
+    "[pump.board] planners_max:",
+    "[pump.board] plan_timeout:",
+    "[pump.dispatch] kinds:",
+    "[pump.dispatch] default_kind:",
+    "[pump.dispatch] lanes:",
+    "[pump.dispatch] max_attempts:",
+    "[pump.dispatch] per_tick:",
+    "[pump.dispatch] transient_max:",
+    "[pump.dispatch] transient_backoff:",
+    "[pump.dispatch] overdue_grace:",
+    "[pump.dispatch] last_resort:",
+    "[pump.merge] batch:",
+    "[pump.merge] shared_checks:",
+    "[pump.merge] repair_budget:",
+    "[pump.targets.other] branch:",
+    "[pump.targets.other] gate:",
+    "[pump.targets.other.merge] shared_checks:",
+    "[pump.targets.other.merge] batch:",
+    "[pump.targets.other.merge] repair_budget:",
+    "retired: ",
+    "not read by vivi 21: ",
+];
 
 #[test]
 fn config_validate_names_each_retired_key_and_still_reports_readiness() {
@@ -481,22 +546,20 @@ fn config_validate_names_each_retired_key_and_still_reports_readiness() {
     let root = dir.path().to_str().unwrap();
     let out = vivi(&["config", "validate", "--project", root]);
     let text = stdout(&out);
-    for expected in [
-        "[pump] branch:",
-        "[pump] promote:",
-        "[pump] gate:",
-        "[pump] need:",
-        "[pump.merge] batch:",
-        "[pump.merge] shared_checks:",
-        "[pump.targets.other] branch:",
-        "[pump.targets.other] gate:",
-        "[pump.targets.other.merge] shared_checks:",
-        "[pump.targets.other.merge] batch:",
-    ] {
+    for expected in RETIRED_KEY_LINES {
         assert!(text.contains(expected), "{expected} missing from:\n{text}");
     }
+    for line in text.lines().filter(|line| line.contains("] ")) {
+        if line.starts_with("error: [") {
+            assert!(
+                line.contains("vivi config migrate --write") && line.contains("delete the key"),
+                "no fix named: {line}"
+            );
+        }
+    }
     assert!(text.contains("retired: "), "{text}");
-    assert_eq!(out.status.code(), Some(3), "{text}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{text}{}", stderr(&out));
+    assert!(text.contains("error: [pump] gate:"), "{text}");
     assert!(text.contains("not ready: "), "{text}");
 }
 
@@ -524,10 +587,77 @@ fn config_migrate_removes_each_retired_key_with_its_reason() {
         "[pump.gate]",
         "[pump.need]",
         "gate =",
+        "reserved_file",
+        "fix_prefix",
+        "planners_max",
+        "plan_timeout",
+        "[pump.planner]",
+        "[pump.proof]",
+        "proof_rules",
+        "[pump.alarm]",
+        "default_kind",
+        "max_attempts",
+        "per_tick",
+        "transient_",
+        "overdue_grace",
+        "last_resort",
+        "lanes",
+        "repair_budget",
     ] {
         assert!(!after.contains(gone), "{gone} still in:\n{after}");
     }
     assert!(after.contains("repo = \"/tmp/other\""), "{after}");
+    let again = vivi(&["config", "validate", "--project", root]);
+    assert!(
+        !stdout(&again).contains("vivi config migrate --write"),
+        "validate still refuses a key after migrate:\n{}",
+        stdout(&again)
+    );
+}
+
+#[test]
+fn config_validate_refuses_the_faber_fixture_keys_and_migrate_clears_them() {
+    let dir = faber_project();
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    let text = stdout(&out);
+    for expected in [
+        "error: [pump] reserved_file:",
+        "error: [pump] fix_prefix:",
+        "error: [pump] priority_file:",
+        "error: [pump.board] planners_max:",
+        "error: [pump.board] plan_timeout:",
+        "error: [pump] planner:",
+        "error: [pump.dispatch] last_resort:",
+        "error: [pump.dispatch] max_attempts:",
+        "error: [pump.dispatch] overdue_grace:",
+        "error: [pump.dispatch] per_tick:",
+        "error: [pump.dispatch] default_kind:",
+        "error: [pump.dispatch] lanes:",
+        "error: [pump.dispatch] kinds:",
+    ] {
+        assert!(text.contains(expected), "{expected} missing from:\n{text}");
+    }
+    for kept in [
+        "[pump.dispatch] budget",
+        "[pump.board] every",
+        "[pump.merge] format",
+    ] {
+        assert!(!text.contains(kept), "{kept} is read, not refused:\n{text}");
+    }
+    assert_success(&vivi(&["config", "migrate", "--write", "--project", root]));
+    let after = vivi(&["config", "validate", "--project", root]);
+    // The fixture's hand_rules file does not exist here, so other errors may
+    // remain; none may be a refused key.
+    assert!(
+        !stdout(&after).contains("vivi config migrate --write"),
+        "validate still refuses a key after migrate:\n{}",
+        stdout(&after)
+    );
+    let written = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    assert!(written.contains("hand_rules"), "{written}");
+    assert!(written.contains("remote_limit = 1800"), "{written}");
 }
 
 #[test]

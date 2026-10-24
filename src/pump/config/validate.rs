@@ -316,9 +316,6 @@ impl PumpConfig {
 
 /// The legacy `[pump.merge]` settings that are wrong when present.
 fn validate_merge(merge: &MergeConfig, found: &mut Findings) {
-    if merge.repair_budget == Some(0) {
-        found.invalid("[pump.merge] repair_budget must be >= 1");
-    }
     for entry in &merge.generated {
         if entry.paths.is_empty() {
             found.invalid("[[pump.merge.generated]] paths must not be empty");
@@ -355,10 +352,6 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {
-    let prefix = format!("[pump.targets.{id}]");
-    if merge.is_some_and(|merge| merge.repair_budget == Some(0)) {
-        found.invalid(format!("{prefix}.merge repair_budget must be >= 1"));
-    }
     for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
         if entry.paths.is_empty() {
             found.invalid(format!(

@@ -108,27 +108,6 @@ fn a_kind_parses_with_optional_max_and_skip_proof() {
 }
 
 #[test]
-fn validation_rejects_a_zero_repair_budget() {
-    let mut config = PumpConfig::default();
-    config.committer_name = String::from("Pump Tester");
-    config.committer_email = String::from("pump@example.com");
-    config.dispatch.lanes = vec![Lane {
-        model: String::from("standin"),
-        cap: 1,
-    }];
-    config.merge.repair_budget = Some(0);
-
-    let error = config
-        .validate(Path::new("."), &[])
-        .expect_err("a zero repair budget must fail");
-    assert!(
-        error
-            .to_string()
-            .contains("[pump.merge] repair_budget must be >= 1")
-    );
-}
-
-#[test]
 fn a_minimal_pump_table_takes_every_default() {
     let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
     assert_eq!(cfg.remote, "origin");
@@ -172,7 +151,6 @@ fn a_minimal_pump_table_takes_every_default() {
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");
     assert_eq!(cfg.merge.format, "");
-    assert_eq!(cfg.merge.repair_budget, None);
     assert_eq!(cfg.merge.remote_limit, 1800);
     assert_eq!(cfg.dispatch_from(), "main");
     assert_eq!(cfg.reply_to(), "");
@@ -954,4 +932,27 @@ fn the_retired_board_keys_are_never_written_back() {
             "{key} was written back: {text}"
         );
     }
+}
+
+/// `config validate` refuses these keys, but the pump must keep starting on a
+/// file that still carries them: the file parses and the pump's own validation
+/// passes.
+#[test]
+fn a_pump_table_carrying_keys_validate_refuses_still_parses_and_validates() {
+    let cfg = pump(
+        "name = \"t\"\n[pump]\ncommitter_name = \"P\"\ncommitter_email = \"p@example.com\"\n\
+         reserved_file = \"r.txt\"\nfix_prefix = \"fx\"\n\
+         [pump.planner]\nrun = \"x\"\ncharter = \"c.md\"\n\
+         [pump.proof]\nallow = [\"cargo\"]\n\
+         [pump.alarm]\nmerge_idle_minutes = 5\n\
+         [pump.board]\nplanners_max = 2\nplan_timeout = 60\n\
+         [pump.dispatch]\nmax_attempts = 2\nper_tick = 3\ntransient_max = 1\n\
+         transient_backoff = 10\noverdue_grace = 30\nlast_resort = \"m\"\n\
+         [[pump.dispatch.lanes]]\nmodel = \"standin\"\ncap = 1\n\
+         [pump.merge]\nrepair_budget = 7\nformat = \"cargo fmt\"\n\
+         [pump.targets.other]\npath = \"other\"\n[pump.targets.other.merge]\nrepair_budget = 3\n",
+    );
+    assert_eq!(cfg.merge.format, "cargo fmt");
+    cfg.validate(Path::new("."), &[])
+        .expect("the pump's own validation does not read the refused keys");
 }

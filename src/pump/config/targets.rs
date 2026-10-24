@@ -14,7 +14,7 @@ use crate::mailspace::Mailspace;
 use crate::mailspace::config_edit::{self, GuardedWrite};
 
 /// Merge settings that `add` can write.
-const MERGE_KEYS: [&str; 3] = ["format", "repair_budget", "remote_limit"];
+const MERGE_KEYS: [&str; 2] = ["format", "remote_limit"];
 
 /// What the caller wants written for a new target.
 #[derive(Debug, Clone, Default)]
