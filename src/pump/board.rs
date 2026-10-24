@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::{State, Status, Unit};
+use crate::pump::state::State;
 
 mod replan;
 pub use replan::replan_unblocked;
@@ -60,18 +60,6 @@ fn row_from(value: &Value) -> NeedRow {
         subject: text("subject"),
         marks,
     }
-}
-
-pub(crate) fn unfinished_closed_need_unit(unit: &Unit) -> bool {
-    matches!(
-        unit.status,
-        Status::Pending
-            | Status::Held
-            | Status::NeedsReplan
-            | Status::Inflight
-            | Status::Delivered
-            | Status::Merging
-    )
 }
 
 /// `<home>/plans/<handle>.json`.
