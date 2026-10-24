@@ -86,8 +86,9 @@ pub enum ProjectError {
     TooLarge,
     /// A presented id already names different bytes in this project.
     Conflict(String),
-    /// A letter that claims `X-Vivi-Format` and does not parse. The string
-    /// is the parser's message.
+    /// A letter that is not a format-1 letter the parser accepts (a legacy
+    /// letter with no `X-Vivi-Format` included). The string is the
+    /// refusal's message.
     LetterFormat(String),
     /// Storage or IO failure.
     Storage(String),
@@ -1028,11 +1029,16 @@ fn parse_vouch(raw: &[u8]) -> Result<Vouch, ProjectError> {
         .map_err(|_| bad_vouch())
 }
 
-/// A claimed format must parse. No `X-Vivi-Format` header is legacy and is
-/// accepted: vivi 21 still writes some letters without one.
+/// A letter the server files must be format 1 and must parse. One with no
+/// `X-Vivi-Format` header is legacy and is refused too: the server accepts
+/// only format-1 letters (W3-B4; vivi 21 writes no legacy letter anymore).
 fn check_letter_format(raw: &[u8]) -> Result<(), ProjectError> {
     match of_message(raw, "") {
-        Ok(_) | Err(LetterError::Legacy { .. }) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(LetterError::Legacy { .. }) => Err(ProjectError::LetterFormat(
+            "the server accepts only format-1 letters: this one has no X-Vivi-Format header"
+                .to_owned(),
+        )),
         Err(error) => Err(ProjectError::LetterFormat(error.to_string())),
     }
 }
@@ -1335,9 +1341,9 @@ impl ProjectStore {
     /// serialized by the append lock. The decision matrix is in
     /// [`Project::find_replay`]; a fresh letter is filed verbatim in the
     /// project mailspace first, then recorded as the next transport row.
-    /// A fresh letter that claims `X-Vivi-Format` and does not parse is
-    /// refused before that write. Hosted projects return earlier and are
-    /// not checked here.
+    /// A fresh letter that is not a format-1 letter the parser accepts
+    /// (a legacy letter included) is refused before that write. Hosted
+    /// projects return earlier and are not checked here.
     pub fn append(&self, raw_id: &str, item: &AppendItem) -> Result<AppendOutcome, ProjectError> {
         let _guard = append_lock();
         let meta = self.refuse_if_chat_over(raw_id)?;

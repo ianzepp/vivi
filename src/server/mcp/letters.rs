@@ -11,7 +11,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use vivi::letter::{FORMAT_HEADER, FORMAT_VERSION, Gated, gate};
+use vivi::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, render as render_front};
+use vivi::letter::{FORMAT_HEADER, FORMAT_VERSION, Gated, gate, of_message};
 use vivi::message::{ComposeDraft, build_compose_draft, normalize_message_id};
 
 use crate::auth::AuthError;
@@ -177,8 +178,7 @@ fn gate_body(kind: &str, body: &str) -> Result<Gated, String> {
 }
 
 /// The format header the gate called for: a formatted body carries
-/// `X-Vivi-Format: 1`; a pass-through kind (memo) stores none and keeps
-/// today's shape.
+/// `X-Vivi-Format: 1`; a kind the gate passes through unchanged stores none.
 fn set_format_header(eml: String, gated: &Gated) -> Result<String, String> {
     if gated.formatted {
         set_header(&eml, FORMAT_HEADER, FORMAT_VERSION)
@@ -309,6 +309,12 @@ pub fn compose_reply(
 /// `X-Vivi-Event` header, not its kind); and stamped with
 /// `X-Vivi-Event-At` (`at`, RFC 3339) and one `X-Vivi-Event-Prev` per head
 /// the item's chain has (`prevs`).
+///
+/// The letter is format 1: the close metadata (`verdict`, `branch`,
+/// `commit`, `repos`) of a `done` or `reopened` event rides the body's
+/// front matter as a `CloseFront` (an empty front stores the note as
+/// written, with no fence), and the composed bytes are parsed back with
+/// `of_message`, so a writer bug is an error at write time.
 pub fn compose_event(
     identity: &IdentityRecord,
     parent: &ProjectRecord,
@@ -316,10 +322,19 @@ pub fn compose_event(
     event: &str,
     at: &str,
     prevs: &[String],
+    close: CloseFront,
 ) -> Result<ComposedLetter, String> {
     if !matches!(parent.kind.as_deref(), Some("need" | "task" | "want")) {
         return Err("an event letter names a need, task, or want".to_owned());
     }
+    // Close metadata travels as front matter; an empty front stores the
+    // note as written, with no fence (vivi's own event composer's rule).
+    let body = if CLOSE_EVENTS.contains(&event) {
+        render_front(&close, note)
+    } else {
+        render_front(&EmptyFront {}, note)
+    }
+    .map_err(|error| format!("the {event} letter: {error}"))?;
     let from = operator_address(identity)?;
     let parsed = parse_letter(&parent.raw_eml);
     let mut seen: Vec<String> = Vec::new();
@@ -359,7 +374,7 @@ pub fn compose_event(
         cc,
         bcc: Vec::new(),
         subject: reply_subject(&parsed.subject),
-        body: note.to_owned(),
+        body,
         html_body: None,
     })
     .map_err(|e| e.to_string())?;
@@ -369,6 +384,7 @@ pub fn compose_event(
         &format!("<{traveling_id}@{prefix}.local>"),
     )?;
     eml = set_header(&eml, "X-Vivi-Kind", "mail")?;
+    eml = set_header(&eml, FORMAT_HEADER, FORMAT_VERSION)?;
     let of = parsed
         .rfc_id
         .clone()
@@ -390,6 +406,10 @@ pub fn compose_event(
     for prev in prevs {
         eml = add_header(&eml, "X-Vivi-Event-Prev", &format!("<{prev}>"))?;
     }
+    // A writer bug is an error at write time, never a bad letter on disk:
+    // the composed bytes must parse, and `of_message` refuses a format-1
+    // letter that carries a header W3-B4 moved into front matter.
+    of_message(eml.as_bytes(), "").map_err(|error| format!("the {event} letter: {error}"))?;
     Ok(ComposedLetter {
         traveling_id,
         raw_eml: eml.into_bytes(),
