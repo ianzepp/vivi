@@ -196,7 +196,7 @@ blob_of() { # dir handle -> path of the .eml blob
 open_has() { "$VIVI" "$1" list --for "$4" --status open --project "$2" 2>&1 | grep -q "$3"; }
 rows_of() { sqlite3 "$1/.vivi/mail.sqlite" "select count(*) from messages" 2>/dev/null; }
 
-NEED=$("$VIVI" need send --from mind --to "hand@$PB.local" --subject "ship the sync" --body "letters travel byte for byte" --project "$A" 2>"$W/need-send.err" | awk '/^created/ {c=$3} /^sent/ {s=$2} END {print (c != "" ? c : s)}')
+NEED=$("$VIVI" need send --from mind --to "hand@$PB.local" --subject "ship the sync" --body "letters travel byte for byte" --done-when "letters travel byte for byte" --project "$A" 2>"$W/need-send.err" | awk '/^created/ {c=$3} /^sent/ {s=$2} END {print (c != "" ? c : s)}')
 echo "$NEED" | grep -qE '^[0-9a-f]{8}$' && ok "A composes a need to hand@$PB.local ($NEED)" || { bad "A need send"; cat "$W/need-send.err"; exit 1; }
 
 "$VIVI" sync --project "$A" >"$W/sync-a1.log" 2>&1 && ok "A syncs (push then pull)" || { bad "A sync"; cat "$W/sync-a1.log"; }
