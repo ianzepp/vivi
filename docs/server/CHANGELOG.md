@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
 
 Built on vivi 21 and its rung commands; the pump gate is gone.
 
-- **vivi 21.** The server builds and tests against the vivi 21 tree: MCP
+- **vivi 21.** The server builds and tests against vivi 21.0.0: MCP
   `send` no longer passes `note` or `depends_on` to the library (a need
   needs its `done_when`, and dependencies ride the letter front matter),
   `board` loses the pump view, the pump health answer carries vivi 21's
