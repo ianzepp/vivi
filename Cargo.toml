@@ -1,6 +1,6 @@
 [package]
 name = "vivi"
-version = "20.0.0"
+version = "21.0.0"
 edition = "2024"
 description = "Local-first project mailspace for LLM agents"
 license = "MIT"
