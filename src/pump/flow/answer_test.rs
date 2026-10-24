@@ -1,12 +1,13 @@
 //! Tests for [`super::apply_pending`]: an operator answer routes once, and a
 //! wrong word, a closed step or an unknown task is refused with an alarm.
 
+use std::collections::BTreeSet;
 use std::fs;
 
 use super::{ANSWER_REFUSED, apply_pending};
 use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
-use crate::mailspace::SendRequest;
+use crate::mailspace::{PumpActionKind, SendRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::def::{FlowKind, FlowNode};
@@ -267,4 +268,71 @@ fn the_run_sentinel_and_an_unindexed_task_are_refused() {
     let log = rig.exceptions();
     assert!(log[before.len()..].contains("run sentinel"), "{log}");
     assert!(rig.mail.calls.is_empty());
+}
+
+#[test]
+fn answer_returns_the_posted_word_need_and_record() {
+    let project = project();
+    let need = project.need("fix auth");
+    let record = project.mailspace.pump_send(None, &need, None).unwrap();
+    let step = project
+        .mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "plan".into(),
+            body: step_body(&need, 1, "plan", ""),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+
+    let posted = super::answer(project.root(), &step, " planned ", Some("operator ruled")).unwrap();
+
+    assert_eq!(posted.step, step);
+    assert_eq!(posted.word, "planned");
+    assert_eq!(posted.need, need);
+    assert_eq!(posted.record, record.handle);
+    assert_eq!(
+        posted.to_string(),
+        format!(
+            "answer planned posted on {step} for need {need}; the pump applies it at its next tick"
+        )
+    );
+    let pending = project
+        .mailspace
+        .pump_pending_actions(&BTreeSet::new())
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, posted.id);
+    assert_eq!(pending[0].request.kind, PumpActionKind::Answer);
+    assert_eq!(pending[0].request.word.as_deref(), Some("planned"));
+    assert_eq!(pending[0].request.reason, "operator ruled");
+
+    let missing = project.need("no record");
+    let stray = project
+        .mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "plan".into(),
+            body: step_body(&missing, 1, "plan", ""),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let error = super::answer(project.root(), &stray, "planned", None).unwrap_err();
+    assert!(error.to_string().contains("no open pump record"), "{error}");
 }

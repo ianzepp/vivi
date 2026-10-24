@@ -1,13 +1,12 @@
 //! `vivi pump` dispatch: `run`, `once`, control, reset, records and operator actions.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use vivi::VivariumError;
 use vivi::cli::{
     PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpResetCommand, PumpRungsCommand,
     PumpServiceCommand, PumpSubcommand, PumpTargetCommand,
 };
-use vivi::mailspace::{Mailspace, PumpActionRequest};
 use vivi::pump::config::RungsConfig;
 use vivi::pump::config::targets::{self, TargetSpec};
 use vivi::pump::control::PumpMode;
@@ -16,23 +15,6 @@ use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
 use vivi::pump::priority;
 use vivi::pump::reset::ResetReport;
 use vivi::pump::run as pump_run;
-
-/// Post an unlock action on the need's open pump record (`pump unlock`).
-fn post_unlock(
-    project: &Path,
-    need: &str,
-    entry: Option<&str>,
-    note: Option<&str>,
-) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(Some(project))?;
-    let request = PumpActionRequest::unlock(entry, note.unwrap_or_default());
-    let posted = mailspace.pump_post_action(None, need, &request)?;
-    println!(
-        "unlock posted on {} for need {}; the pump applies it at its next tick",
-        posted.record, need
-    );
-    Ok(())
-}
 
 pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), VivariumError> {
     match command {
@@ -80,12 +62,16 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             entry,
             note,
             project,
-        } => post_unlock(
-            &project_root(project),
-            need,
-            entry.as_deref(),
-            note.as_deref(),
-        ),
+        } => {
+            let posted = vivi::pump::unlock::unlock(
+                &project_root(project),
+                need,
+                entry.as_deref(),
+                note.as_deref(),
+            )?;
+            println!("{posted}");
+            Ok(())
+        }
         PumpSubcommand::Send(cmd) => crate::local_pump_record_command::send(cmd),
         PumpSubcommand::List(cmd) => crate::local_pump_record_command::list(cmd),
         PumpSubcommand::Show(cmd) => crate::local_pump_record_command::show(cmd),
@@ -153,12 +139,20 @@ fn pump_log(cmd: &PumpLogCommand) -> Result<(), VivariumError> {
     } else {
         LogFile::Log
     };
-    let options = ShowOptions {
-        count: cmd.lines,
-        follow: cmd.follow,
-        filter: LogFilter::new(cmd.unit.as_deref(), cmd.grep.as_deref()),
-    };
-    logview::run(&project_root(&cmd.project), file, &options)
+    let filter = LogFilter::new(cmd.unit.as_deref(), cmd.grep.as_deref());
+    let project = project_root(&cmd.project);
+    if cmd.follow {
+        let options = ShowOptions {
+            count: cmd.lines,
+            follow: true,
+            filter,
+        };
+        return logview::run(&project, file, &options);
+    }
+    for line in logview::view(&project, file, cmd.lines, &filter)? {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// The project root: the subcommand's `--project`, else the current

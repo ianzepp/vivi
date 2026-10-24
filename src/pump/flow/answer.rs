@@ -19,6 +19,7 @@
 //! settles it (`close_slice`, `mark_exhausted`); a slice answer is not routed.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -59,25 +60,67 @@ pub(crate) enum Applied {
 /// Loads the flow a run follows.
 pub(crate) type DefFor<'a> = &'a dyn Fn(&RunRow) -> Result<FlowDef, VivariumError>;
 
-/// Post the answer and print the posted action (the `vivi pump answer` verb).
+/// What [`answer`] posted. Display is the line the CLI prints.
+///
+/// `step` is the task the caller named. `word` is trimmed. `need` is the need
+/// that step belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerResult {
+    pub step: String,
+    pub word: String,
+    pub need: String,
+    /// The open pump record the action was posted on.
+    pub record: String,
+    /// The action letter's content id.
+    pub id: String,
+}
+
+impl fmt::Display for AnswerResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "answer {} posted on {} for need {}; the pump applies it at its next tick",
+            self.word, self.step, self.need
+        )
+    }
+}
+
+/// Post an answer on the open pump record of the need `step` belongs to.
+///
+/// `note` is the letter body (`None` posts an empty body). Nothing is printed.
 ///
 /// # Errors
 /// Returns a [`VivariumError`] when the task is not a pump step task, its need
-/// has no open pump record, or the post fails.
+/// has no open pump record, the word is blank, or the post fails.
+pub fn answer(
+    project: &Path,
+    step: &str,
+    word: &str,
+    note: Option<&str>,
+) -> Result<AnswerResult, VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let posted = mailspace.pump_post_answer(None, step, word, note.unwrap_or_default())?;
+    Ok(AnswerResult {
+        step: step.to_owned(),
+        word: word.trim().to_owned(),
+        need: posted.need,
+        record: posted.record,
+        id: posted.id,
+    })
+}
+
+/// `vivi pump answer`: [`answer`], then print the result.
+///
+/// # Errors
+/// Returns whatever [`answer`] returns.
 pub fn run(
     project: &Path,
     step: &str,
     word: &str,
     note: Option<&str>,
 ) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(Some(project))?;
-    let posted = mailspace.pump_post_answer(None, step, word, note.unwrap_or_default())?;
-    println!(
-        "answer {} posted on {} for need {}; the pump applies it at its next tick",
-        word.trim(),
-        step,
-        posted.need
-    );
+    let posted = answer(project, step, word, note)?;
+    println!("{posted}");
     Ok(())
 }
 

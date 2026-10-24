@@ -43,6 +43,7 @@ pub mod state;
 pub mod store;
 pub mod tick_steps;
 pub mod transient;
+pub mod unlock;
 pub mod withdraw;
 
 #[cfg(test)]

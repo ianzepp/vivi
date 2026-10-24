@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::time::Duration;
 
-use super::logview::{Follower, LogFilter, ShowOptions, show, tail_lines};
+use super::logview::{Follower, LogFile, LogFilter, ShowOptions, show, tail_lines, view};
 
 const SAMPLE: &str = "\
 13:40:00 board: planning new need n1
@@ -176,4 +176,75 @@ fn show_missing_file_names_the_path() {
     };
     let error = show(&path, &options, &mut Vec::new(), Duration::ZERO, Some(0)).unwrap_err();
     assert!(error.to_string().contains("no pump log at"), "{error}");
+}
+
+/// A mailspace whose `[pump]` home is `home`, so `view` resolves against it.
+fn pump_mailspace(home: &std::path::Path) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let mailspace = dir.path().join(".vivi");
+    fs::create_dir_all(&mailspace).unwrap();
+    fs::write(
+        mailspace.join("mailspace.toml"),
+        format!(
+            "name = \"logview-test\"\n\n[pump]\nhome = \"{}\"\n",
+            home.display()
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn view_returns_the_filtered_bounded_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("pump-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("log.txt"), SAMPLE).unwrap();
+    let mailspace = pump_mailspace(&home);
+    let project = mailspace.path();
+    let tail = view(project, LogFile::Log, 2, &LogFilter::default()).unwrap();
+    assert_eq!(
+        tail,
+        vec![
+            "13:40:05 dispatch u1 to pool b",
+            "13:40:06 lane default/2 retry u1",
+        ]
+    );
+    let filtered = view(project, LogFile::Log, 1, &filter(Some("u1"), None)).unwrap();
+    assert_eq!(filtered, vec!["13:40:06 lane default/2 retry u1"]);
+    assert!(
+        view(project, LogFile::Log, 0, &LogFilter::default())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn view_reads_the_exceptions_file_when_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("pump-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("log.txt"), SAMPLE).unwrap();
+    fs::write(home.join("exceptions.txt"), "13:41:00 stuck u1\n").unwrap();
+    let mailspace = pump_mailspace(&home);
+    let lines = view(
+        mailspace.path(),
+        LogFile::Exceptions,
+        9,
+        &LogFilter::default(),
+    )
+    .unwrap();
+    assert_eq!(lines, vec!["13:41:00 stuck u1"]);
+}
+
+#[test]
+fn view_missing_file_names_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("pump-home");
+    fs::create_dir_all(&home).unwrap();
+    let mailspace = pump_mailspace(&home);
+    let error = view(mailspace.path(), LogFile::Log, 5, &LogFilter::default()).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("no pump log at"), "{text}");
+    assert!(text.contains("log.txt"), "{text}");
 }
