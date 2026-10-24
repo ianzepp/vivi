@@ -20,6 +20,7 @@ mod pool_bands;
 mod pump;
 mod pump_record;
 mod read;
+mod views;
 mod write;
 
 use std::path::Path;
@@ -60,6 +61,16 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_send" => Some(pump_send),
         "pump_list" => Some(pump_list),
         "pump_show" => Some(pump_show),
+        "pump_log" => Some(views::pump_log),
+        "flow_show" => Some(views::flow_show),
+        "config_show" => Some(views::config_show),
+        "config_validate" => Some(views::config_validate),
+        "pool_list" => Some(views::pool_list),
+        "pool_show" => Some(views::pool_show),
+        "role_list" => Some(views::role_list),
+        "role_show" => Some(views::role_show),
+        "charter_show" => Some(views::charter_show),
+        "target_list" => Some(views::target_list),
         _ => None,
     }
 }
