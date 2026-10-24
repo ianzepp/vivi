@@ -1,5 +1,5 @@
 use super::*;
-use crate::letter::{LetterError, parse, render};
+use crate::letter::{LetterError, parse, render as fenced};
 
 type Res = Result<(), LetterError>;
 
@@ -7,7 +7,7 @@ fn round_trip<T>(front: &T) -> Result<T, LetterError>
 where
     T: Serialize + serde::de::DeserializeOwned + Validate,
 {
-    let text = render(front, "prose body")?;
+    let text = fenced(front, "prose body")?;
     let envelope = parse::<T>(&text)?;
     assert_eq!(envelope.body, "prose body");
     Ok(envelope.front)
@@ -131,7 +131,7 @@ fn close_unknown_key_refused() {
 
 #[test]
 fn empty_renders_and_parses() -> Res {
-    assert_eq!(render(&EmptyFront {}, "x")?, "+++\n+++\n\nx");
+    assert_eq!(fenced(&EmptyFront {}, "x")?, "+++\n+++\n\nx");
     let envelope = parse::<EmptyFront>("+++\n+++\n\nx")?;
     assert_eq!(envelope.front, EmptyFront {});
     assert_eq!(envelope.body, "x");
@@ -152,4 +152,57 @@ fn unknown_keys_refused_for_memo_and_rule() {
 #[test]
 fn close_events_are_the_two_verbs() {
     assert_eq!(CLOSE_EVENTS, ["done", "reopened"]);
+}
+
+#[test]
+fn an_empty_front_renders_as_prose_with_no_fence() -> Res {
+    assert_eq!(render(&MemoFront::default(), "note text")?, "note text");
+    assert_eq!(render(&RuleFront::default(), "rule text")?, "rule text");
+    assert_eq!(render(&CloseFront::default(), "close text")?, "close text");
+    assert_eq!(render(&EmptyFront {}, "event text")?, "event text");
+    Ok(())
+}
+
+#[test]
+fn a_plain_front_with_facts_renders_between_the_fences() -> Res {
+    let memo = MemoFront {
+        tags: vec!["ops".to_string()],
+    };
+    let text = render(&memo, "the note")?;
+    assert_eq!(parse::<MemoFront>(&text)?.front, memo);
+    assert_eq!(parse::<MemoFront>(&text)?.body, "the note");
+
+    let rule = RuleFront {
+        scope: Some(RuleScope::Local),
+        supersedes: Some("abc123".to_string()),
+    };
+    let text = render(&rule, "the rule")?;
+    assert_eq!(parse::<RuleFront>(&text)?.front, rule);
+
+    let mut repos = BTreeMap::new();
+    repos.insert("vivi".to_string(), "abc1234".to_string());
+    let close = CloseFront {
+        verdict: Some("clean".to_string()),
+        branch: Some("w3/x".to_string()),
+        commit: Some("0123abc".to_string()),
+        repos,
+    };
+    let text = render(&close, "closed it")?;
+    assert_eq!(parse::<CloseFront>(&text)?.front, close);
+    Ok(())
+}
+
+#[test]
+fn plain_render_refuses_a_front_that_fails_its_own_rules() {
+    let blank = MemoFront {
+        tags: vec![" ".to_string()],
+    };
+    assert!(matches!(render(&blank, "x"), Err(LetterError::Invalid(_))));
+    let half = CloseFront {
+        verdict: None,
+        branch: Some("w3/x".to_string()),
+        commit: None,
+        repos: BTreeMap::new(),
+    };
+    assert!(matches!(render(&half, "x"), Err(LetterError::Invalid(_))));
 }

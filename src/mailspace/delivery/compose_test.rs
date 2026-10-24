@@ -397,13 +397,13 @@ fn chat_is_stored_as_written() {
 }
 
 #[test]
-fn a_memo_kind_send_is_unchanged_and_unformatted() {
+fn a_memo_kind_send_is_formatted_with_no_fence() {
     let (_tmp, mailspace) = space();
     let result = mailspace
         .send(mail(Some("memo"), "inbox", "plain note"))
         .unwrap();
     let eml = flat(&mailspace, &result.delivered[0].handle);
-    assert!(!eml.contains("X-Vivi-Format"), "{eml}");
+    assert!(eml.contains("X-Vivi-Format: 1"), "{eml}");
     assert!(eml.contains("X-Vivi-Kind: memo"), "{eml}");
     assert!(!eml.contains("+++"), "{eml}");
 }

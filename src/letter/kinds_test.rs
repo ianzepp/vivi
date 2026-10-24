@@ -330,3 +330,59 @@ fn a_wrapped_mail_and_chat_body_still_parses() {
 fn an_invalid_chat_front_is_still_refused() {
     assert!(parse_kind(&LetterKind::Chat, "+++\ncolour = \"red\"\n+++\n\nhi").is_err());
 }
+
+#[test]
+fn a_fenceless_memo_or_rule_body_is_an_empty_front() {
+    let memo = parse_kind(&LetterKind::Memo, "\njust a note\n").unwrap();
+    assert_eq!(memo.kind, LetterKind::Memo);
+    assert_eq!(memo.front, Front::Memo(MemoFront::default()));
+    assert_eq!(memo.prose, "just a note");
+    let rule = parse_kind(&LetterKind::Rule, "rule prose").unwrap();
+    assert_eq!(rule.kind, LetterKind::Rule);
+    assert_eq!(rule.front, Front::Rule(RuleFront::default()));
+    assert_eq!(rule.prose, "rule prose");
+}
+
+#[test]
+fn a_fenceless_event_body_is_an_empty_front_for_every_verb() {
+    for verb in ["done", "reopened", "marked", "bound"] {
+        let parsed = parse_kind(&LetterKind::Event(verb.to_string()), "\nthe note\n").unwrap();
+        assert_eq!(parsed.kind, LetterKind::Event(verb.to_string()), "{verb}");
+        assert_eq!(parsed.front, Front::Event(CloseFront::default()), "{verb}");
+        assert_eq!(parsed.prose, "the note", "{verb}");
+    }
+}
+
+#[test]
+fn a_fenced_memo_rule_or_close_event_keeps_its_strict_rules() {
+    for (kind, front) in [
+        (LetterKind::Memo, "colour = \"red\"\n"),
+        (LetterKind::Rule, "colour = \"red\"\n"),
+        (LetterKind::Event("done".to_string()), "colour = \"red\"\n"),
+    ] {
+        assert!(
+            matches!(
+                parse_kind(&kind, &letter(front, "x")),
+                Err(LetterError::Toml { .. })
+            ),
+            "{kind:?} accepted an unknown key"
+        );
+    }
+}
+
+#[test]
+fn work_record_and_action_kinds_still_refuse_a_fenceless_body() {
+    for kind in [
+        LetterKind::Need,
+        LetterKind::Want,
+        LetterKind::Task,
+        LetterKind::Record,
+        LetterKind::Action,
+    ] {
+        assert_eq!(
+            parse_kind(&kind, "plain prose"),
+            Err(LetterError::NoOpening),
+            "{kind:?} must still require the fence"
+        );
+    }
+}
