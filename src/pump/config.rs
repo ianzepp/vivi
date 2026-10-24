@@ -5,17 +5,24 @@ use std::path::{Path, PathBuf};
 
 use self::config_workspace::PumpWorkspace;
 
+mod check;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
 mod flow;
+mod migrate;
+mod origins;
 mod planner;
 mod rungs;
+mod show;
 pub mod targets;
 mod validate;
 
+pub use check::{ValidateReport, issues_json, validate};
 pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
+pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
+pub use show::{ShowReport, show};
 pub use validate::{Findings, Missing};
 
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
