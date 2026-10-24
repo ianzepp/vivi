@@ -101,3 +101,7 @@ and the E3 ACL-copy-from-sibling path is needed (no inherited defaults).
 - Closeout evidence commit: vivi 1165838e (docs/factory/w3-phase2: ledger + 7 audit files). vivi 14 commits ahead of origin; vivi-server 20 ahead.
 - 2026-10-24 §6 VERIFICATION (fresh grok-4.7 checker, did not implement): VERIFIED. All §6.2 probes rerun on the final mains; suites, smokes, greps, evidence spot-checks green; pin verified. New sideband sighting: pool::local_git::tests::the_lock_holds_across_processes failed in the full parallel suite (child exit 3), passed isolated 0.09s, file unchanged since v21.0.0 — same lock-contention class as the control_test flake; recorded here as known sideband. Superseded-doc items classified (the goal's "nothing pushed" line predates the authorized releases). Report ~/tmp/w3-phase2/w3-verification.md.
 - 2026-10-24: two-checkout-smoke vouch workaround reverted (75780e0); smoke 46/0 with the real vivi sync vouch against vivi main. Server tip now 75780e0.
+
+## RELEASE 2026-10-24 (second of the day)
+- §6 VERIFIED -> vivi 21.1.0 (notes f6f27991, bump 904250bd incl. install.sh; full-suite gate rc 0 clean, no flakes; tag v21.1.0; CI rc 0, all archives) and vivi-server 2.1.0 (c8b5995; dep retag v21.1.0, pin dropped, committed lock restored then updated; suite rc 0 + hosted 23/0, psync 84/0, 2co 46/0 via real vivi sync vouch, mcp 10/0 against vivi 21.1.0; tag v2.1.0; CI rc 0). Versions ruled minor (one major per breakage arc; library-internal breaks only, wire additive).
+- Hub NOT upgraded this round (operator decision, like the 21.0.0 round).
