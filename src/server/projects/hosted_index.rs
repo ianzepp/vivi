@@ -26,9 +26,10 @@
 //! record, then writes the transport row. It never takes the sync lock.
 //! Filing binds the rows under the same project id, so the indexer never
 //! picks the letter up again. A letter the filer quarantines (a format-1
-//! letter that will not parse) is refused with the parser's reason and its
-//! held pair discarded: a server copy must not hold a letter it cannot
-//! read.
+//! letter that will not parse) is refused with the receipt's reason and
+//! its held pair is discarded. A discard that fails does not change that
+//! refusal and does not record a transport row: a server copy must not
+//! index a letter it cannot read.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -40,7 +41,7 @@ use vivi::VivariumError;
 use vivi::b64;
 use vivi::mailspace::Mailspace;
 use vivi::storage::ChangeWatermark;
-use vivi::sync::pull::file_records;
+use vivi::sync::pull::{QuarantinedRecord, file_records};
 use vivi::sync::quarantine;
 use vivi::sync::state::SyncState;
 use vivi::sync::transport::{
@@ -257,8 +258,10 @@ impl ProjectStore {
     /// The decision matrix is the same as a server-owned project's: replays
     /// answer from the index; a fresh letter takes the next sequence, is
     /// filed in the host mailspace as a client pull files a record, and is
-    /// then recorded in the transport index. Both writes are idempotent, so
-    /// a crash between them converges on replay.
+    /// then recorded in the transport index. A letter the filer quarantines
+    /// is refused before that record, including when discarding its held
+    /// pair fails. Both writes of a letter that was filed are idempotent,
+    /// so a crash between them converges on replay.
     pub(super) fn append_hosted(
         &self,
         raw_id: &str,
@@ -293,6 +296,8 @@ impl ProjectStore {
         } else {
             let record = wire_record(item, &content_sha256, sequence, &appended_at);
             let filed = file_in_host(&dir, root, &project_id, &entry.sender, &record)?;
+            // Quarantine and filer refusals both set `refused`. Return before
+            // `record`: a letter that was not filed gets no transport row.
             if let Some(reason) = filed.refused {
                 return Err(refusal(item, &reason));
             }
@@ -364,29 +369,37 @@ fn file_in_host(
             .save(&state_dir)
             .map_err(storage_err("failed to save the hosted sync state"))?;
     }
-    // A letter the filer quarantined is refused, never held: the server
-    // discards its copy (a server copy must not hold a letter it cannot
-    // read) and the member learns at once from the push answer, which
-    // carries the quarantine reason in the refused-item shape.
-    let refused = match report.quarantined.as_slice() {
-        [] => report.refused.first().map(|r| r.reason.clone()),
-        held => {
-            for letter in held {
-                quarantine::discard(&mailspace.dir, &letter.id)
-                    .map_err(storage_err("failed to discard a quarantined letter"))?;
-            }
-            Some(
-                held.iter()
-                    .map(|letter| letter.reason.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        }
+    // A non-empty quarantine is a refusal whether or not discard succeeds.
+    // The member hears the receipt reason, never a storage error a retry
+    // would treat as "try again". The caller returns that refusal before
+    // `record`, so no transport row is written for bytes that were not filed.
+    let refused = if report.quarantined.is_empty() {
+        report.refused.first().map(|refused| refused.reason.clone())
+    } else {
+        Some(refuse_held(&mailspace.dir, project_id, &report.quarantined))
     };
     Ok(Filed {
         refused,
         governance: report.governance > 0,
     })
+}
+
+/// Discard each held pair and return the receipt reasons joined for the
+/// refusal. A discard error is logged and does not change those reasons:
+/// the caller refuses either way, and does not record a row.
+fn refuse_held(vivi_dir: &Path, project_id: &str, held: &[QuarantinedRecord]) -> String {
+    for letter in held {
+        if let Err(error) = quarantine::discard(vivi_dir, &letter.id) {
+            tracing::warn!(
+                "hosted project {project_id}: failed to discard quarantined letter {}: {error}",
+                letter.id
+            );
+        }
+    }
+    held.iter()
+        .map(|letter| letter.reason.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// A record the filer refused, as the append error a client sees.
