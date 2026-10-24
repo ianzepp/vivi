@@ -67,7 +67,7 @@ pub use report_command::{
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
-pub use sync_command::{ApiKeyCommand, SyncCommand, SyncSubcommand};
+pub use sync_command::{ApiKeyCommand, QuarantineCommand, SyncCommand, SyncSubcommand};
 pub use update_command::{UninstallCommand, UpdateCommand, VersionsCommand};
 
 #[derive(Debug, Parser)]

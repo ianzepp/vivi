@@ -1,6 +1,8 @@
 //! Tests for [`crate::pump::board`]: the board pass pulls when due and pushes
 //! what is pending, driven through [`FakeHost`] replies.
 
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
@@ -142,6 +144,129 @@ fn a_slow_board_pass_waits_the_interval_from_completion() {
     assert!(ctx.now().saturating_sub(st.board.at) < ctx.cfg.board.every);
     board(&ctx, &mut st);
     assert_eq!(host.commands().len(), command_count);
+}
+
+#[test]
+fn board_raises_sync_letter_quarantined_once_per_content_id() {
+    let (dir, ctx, host) = setup();
+    let project = dir.path().join("project");
+    let first = "ab".repeat(32);
+    let second = "cd".repeat(32);
+    let dropped = "ee".repeat(32);
+    let decoy = "ff".repeat(32);
+    hold_receipt(
+        &project,
+        &first,
+        r#"{"message_id":"m-1","from":"a@b","kind":"task","sequence":3,"reason":"unknown front key flavor","at":"2026-10-24T00:00:00Z"}"#,
+    );
+    let root = project.join(".vivi").join("quarantine");
+    fs::write(root.join(format!("{first}.eml")), b"raw bytes").unwrap();
+    fs::create_dir_all(root.join("dropped")).unwrap();
+    fs::write(
+        root.join("dropped").join(format!("{dropped}.json")),
+        r#"{"reason":"already dropped"}"#,
+    )
+    .unwrap();
+    host.reply(
+        "sync pull",
+        1,
+        &format!("1 quarantined: {decoy} (from the child)"),
+    );
+    let mut st = State::default();
+
+    board(&ctx, &mut st);
+
+    let text = exceptions_text(&ctx);
+    let first_lines = alarms_for(&text, &first);
+    assert_eq!(first_lines.len(), 1, "{text}");
+    assert!(
+        first_lines[0].contains("unknown front key flavor"),
+        "{text}"
+    );
+    assert_eq!(exception_logs(&host, &first), 1, "{:?}", host.logs());
+    assert!(
+        !text.contains(&decoy),
+        "the child's text is not the alarm: {text}"
+    );
+    assert!(!text.contains(&dropped), "dropped/ is not scanned: {text}");
+    assert_eq!(
+        alarms_for(&text, SYNC_LETTER_QUARANTINED).len(),
+        1,
+        "{text}"
+    );
+
+    host.advance(301);
+    board(&ctx, &mut st);
+    assert_eq!(alarms_for(&exceptions_text(&ctx), &first).len(), 1);
+    assert_eq!(exception_logs(&host, &first), 1, "{:?}", host.logs());
+
+    hold_receipt(&project, &second, "{not json");
+    host.advance(301);
+    board(&ctx, &mut st);
+
+    let text = exceptions_text(&ctx);
+    assert_eq!(alarms_for(&text, &first).len(), 1, "{text}");
+    let second_lines = alarms_for(&text, &second);
+    assert_eq!(second_lines.len(), 1, "{text}");
+    assert!(
+        !second_lines[0].contains("quarantined:"),
+        "a corrupt receipt still alarms, without a reason: {text}"
+    );
+    assert_eq!(exception_logs(&host, &second), 1, "{:?}", host.logs());
+}
+
+#[test]
+fn board_does_not_scan_quarantine_when_the_pull_succeeds() {
+    let (dir, ctx, host) = setup();
+    let id = "ab".repeat(32);
+    hold_receipt(
+        &dir.path().join("project"),
+        &id,
+        r#"{"reason":"unknown front key flavor"}"#,
+    );
+    host.reply("sync pull", 0, "pulled 0 messages");
+    let mut st = State::default();
+
+    board(&ctx, &mut st);
+
+    let text = exceptions_text(&ctx);
+    assert!(
+        !text.contains(SYNC_LETTER_QUARANTINED),
+        "a zero exit does not scan: {text}"
+    );
+    assert!(
+        !host
+            .logs()
+            .iter()
+            .any(|line| line.contains(SYNC_LETTER_QUARANTINED)),
+        "{:?}",
+        host.logs()
+    );
+}
+
+/// One `<project>/.vivi/quarantine/<id>.json` receipt.
+fn hold_receipt(project: &Path, id: &str, body: &str) {
+    let root = project.join(".vivi").join("quarantine");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join(format!("{id}.json")), body).unwrap();
+}
+
+/// The pump's `exceptions.txt`; empty when nothing was raised.
+fn exceptions_text(ctx: &Ctx) -> String {
+    fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+/// Lines that name both the quarantine alarm and `id`.
+fn alarms_for<'a>(text: &'a str, id: &str) -> Vec<&'a str> {
+    text.lines()
+        .filter(|line| line.contains(SYNC_LETTER_QUARANTINED) && line.contains(id))
+        .collect()
+}
+
+/// Log lines `EXCEPTION sync-letter-quarantined <id>`.
+fn exception_logs(host: &FakeHost, id: &str) -> usize {
+    let line = format!("EXCEPTION {SYNC_LETTER_QUARANTINED} {id}");
+    host.logs().iter().filter(|logged| *logged == &line).count()
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub mod lock;
 pub mod prune;
 pub mod pull;
 pub mod push;
+pub mod quarantine;
 pub mod refs;
 pub mod select;
 pub mod state;

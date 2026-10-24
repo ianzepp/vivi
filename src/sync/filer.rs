@@ -10,13 +10,15 @@ use std::collections::BTreeSet;
 
 use crate::b64;
 use crate::error::VivariumError;
+use crate::letter::{LetterError, of_message};
 use crate::mailspace::{Mailspace, prefix_of_domain};
 use crate::storage::{
     IngestEvent, IngestOutcome, MessageIngestRequest, RemoteBindingInput, Storage,
     StoredMessageView, is_traveling_id, sha256_hex,
 };
 use crate::sync::link::{self, LetterHeaders};
-use crate::sync::pull::{PullReport, RefusedRecord};
+use crate::sync::pull::{PullReport, QuarantinedRecord, RefusedRecord};
+use crate::sync::quarantine;
 use crate::sync::transport::Record;
 use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY};
 
@@ -125,6 +127,15 @@ impl<'a> Filer<'a> {
         }
         let held = storage.live_messages_for_content(&content_id)?;
         if held.is_empty() {
+            // The letter gate: a format-1 letter this vivi cannot parse is
+            // held, not refused silently and not dropped. A legacy letter
+            // (no `X-Vivi-Format`) is history and files as before.
+            if let Err(error) = of_message(&bytes, &record.message_id)
+                && !matches!(error, LetterError::Legacy { .. })
+            {
+                self.hold_letter(record, &bytes, &content_id, error.to_string(), report)?;
+                return Ok(());
+            }
             if !self.file_new(storage, record, &bytes, &headers, report)? {
                 return Ok(());
             }
@@ -140,6 +151,28 @@ impl<'a> Filer<'a> {
         }
         if let Some(parent) = headers.parent {
             pending.push((content_id, parent));
+        }
+        Ok(())
+    }
+
+    /// Hold a letter whose front matter will not parse: exact bytes plus a
+    /// receipt under `.vivi/quarantine/`. The cursor has already advanced
+    /// past the record, so the letter is held, not dropped; the same
+    /// content arriving again finds the receipt and does not alarm again.
+    fn hold_letter(
+        &self,
+        record: &Record,
+        bytes: &[u8],
+        content_id: &str,
+        reason: String,
+        report: &mut PullReport,
+    ) -> Result<(), VivariumError> {
+        let held = quarantine::HeldLetter::new(record, reason);
+        if quarantine::hold(&self.mailspace.dir, bytes, &held)? {
+            report.quarantined.push(QuarantinedRecord {
+                id: content_id.to_string(),
+                reason: held.reason.clone(),
+            });
         }
         Ok(())
     }
