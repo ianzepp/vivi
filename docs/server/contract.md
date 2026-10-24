@@ -354,6 +354,19 @@ a legacy letter already stored stays filed and contributes no
 dependencies to `graph`. A replay of an already-stored letter keeps its
 duplicate or conflict outcome and is not judged again.
 
+A hosted project's member push takes the same format gate with a
+different answer and a different fate for the bytes: a format-1 letter
+that will not parse (an unknown front-matter key from a newer member, a
+broken fence, an unknown format) is refused at push — the append
+refusal carries the parser's reason — and is never stored or held
+server-side; the filer's quarantine pair under the host's
+`.vivi/quarantine/` is discarded, because a server copy must not hold a
+letter it cannot read. Nothing is filed and nothing is left held; the
+pushing member learns at once and resends. A legacy letter (no
+`X-Vivi-Format` header) is not refused on this path: the filer files it
+as history, exactly as a client pull does — the durable-only
+`letter_format` refusal above does not reach the hosted wire.
+
 ## Server MCP (wave 3)
 
 One Streamable HTTP MCP endpoint for the whole server, `POST /v1/mcp`.

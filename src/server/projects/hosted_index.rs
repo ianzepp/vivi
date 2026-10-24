@@ -25,7 +25,10 @@
 //! `vivi::sync::pull::file_records` exactly as a client pull files a wire
 //! record, then writes the transport row. It never takes the sync lock.
 //! Filing binds the rows under the same project id, so the indexer never
-//! picks the letter up again.
+//! picks the letter up again. A letter the filer quarantines (a format-1
+//! letter that will not parse) is refused with the parser's reason and its
+//! held pair discarded: a server copy must not hold a letter it cannot
+//! read.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +41,7 @@ use vivi::b64;
 use vivi::mailspace::Mailspace;
 use vivi::storage::ChangeWatermark;
 use vivi::sync::pull::file_records;
+use vivi::sync::quarantine;
 use vivi::sync::state::SyncState;
 use vivi::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Page, Record, Transport,
@@ -360,8 +364,27 @@ fn file_in_host(
             .save(&state_dir)
             .map_err(storage_err("failed to save the hosted sync state"))?;
     }
+    // A letter the filer quarantined is refused, never held: the server
+    // discards its copy (a server copy must not hold a letter it cannot
+    // read) and the member learns at once from the push answer, which
+    // carries the quarantine reason in the refused-item shape.
+    let refused = match report.quarantined.as_slice() {
+        [] => report.refused.first().map(|r| r.reason.clone()),
+        held => {
+            for letter in held {
+                quarantine::discard(&mailspace.dir, &letter.id)
+                    .map_err(storage_err("failed to discard a quarantined letter"))?;
+            }
+            Some(
+                held.iter()
+                    .map(|letter| letter.reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        }
+    };
     Ok(Filed {
-        refused: report.refused.first().map(|r| r.reason.clone()),
+        refused,
         governance: report.governance > 0,
     })
 }

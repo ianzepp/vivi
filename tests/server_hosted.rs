@@ -357,6 +357,118 @@ fn a_hosted_project_accepts_an_append_and_files_it_in_the_host() {
     assert_eq!(storage.list_messages().unwrap().len(), 1);
 }
 
+/// A need letter with `front` as its front matter; `format_header` adds
+/// `X-Vivi-Format: 1`, without it the letter is legacy.
+fn need_eml(id: &str, format_header: bool, front: &str) -> Vec<u8> {
+    let format = if format_header {
+        "X-Vivi-Format: 1\n"
+    } else {
+        ""
+    };
+    format!(
+        "From: a@p.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\
+         X-Vivi-Kind: need\n{format}\n+++\n{front}\n+++\n\nbody"
+    )
+    .into_bytes()
+}
+
+/// Nothing held under the host mailspace's quarantine: no letter and no
+/// receipt at the top of `.vivi/quarantine/` (the discard trail under
+/// `dropped/` does not count).
+fn assert_nothing_quarantined(vivi_dir: &Path) {
+    assert!(vivi::sync::quarantine::list(vivi_dir).unwrap().is_empty());
+    let held = std::fs::read_dir(vivi_dir.join("quarantine"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_file())
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(held, 0, "a held letter remains under .vivi/quarantine/");
+}
+
+#[test]
+fn a_bad_format1_letter_is_refused_at_push_and_nothing_is_filed_or_held() {
+    let env = env("quarantine-refused");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    // An unknown front-matter key: format 1 is claimed, the parse refuses.
+    let mid = format!("msg_{:08x}{:016x}", 2, 0);
+    let item = AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, true, "frob = \"nope\""),
+    )
+    .unwrap();
+
+    let err = env.projects.append(&id, &item).unwrap_err();
+    let ProjectError::BadRequest(message) = err else {
+        panic!("a quarantined letter is refused as an append error, got {err:?}");
+    };
+    assert!(message.starts_with("letter refused: "), "{message}");
+    assert!(message.contains("unknown field"), "{message}");
+    assert!(message.contains("frob"), "{message}");
+
+    // Nothing filed, and nothing held: the server discards its copy of a
+    // letter it cannot read instead of quarantining it.
+    let vivi_dir = root.join(".vivi");
+    let storage = vivi::storage::Storage::open_mailspace(&vivi_dir).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 0);
+    assert_nothing_quarantined(&vivi_dir);
+    let dropped = std::fs::read_dir(vivi_dir.join("quarantine").join("dropped"))
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(dropped, 2, "the held pair was discarded, not kept");
+}
+
+#[test]
+fn a_good_format1_need_still_files_on_a_hosted_push() {
+    let env = env("quarantine-good");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let mid = format!("msg_{:08x}{:016x}", 3, 0);
+    let item = AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, true, "done_when = [\"the smoke passes\"]"),
+    )
+    .unwrap();
+
+    let outcome = env.projects.append(&id, &item).unwrap();
+    assert!(!outcome.duplicate);
+    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 1);
+}
+
+#[test]
+fn a_legacy_letter_files_as_history_on_a_hosted_push() {
+    // The hosted wire follows the filer's rule, not the durable push's:
+    // a letter with no `X-Vivi-Format` header is history and is filed,
+    // never refused.
+    let env = env("quarantine-legacy");
+    let (root, _) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let mid = format!("msg_{:08x}{:016x}", 4, 0);
+    let item = AppendItem::new(
+        &mid,
+        "x",
+        None,
+        Some("need"),
+        need_eml(&mid, false, "done_when = [\"the smoke passes\"]"),
+    )
+    .unwrap();
+
+    let outcome = env.projects.append(&id, &item).unwrap();
+    assert!(!outcome.duplicate);
+    let storage = vivi::storage::Storage::open_mailspace(&root.join(".vivi")).unwrap();
+    assert_eq!(storage.list_messages().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn the_watcher_follows_the_registry_file() {
     let env = env("watch");
