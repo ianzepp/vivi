@@ -9,7 +9,7 @@
 #   - the server serves the registered project, and a project API key minted
 #     by the host's own `vivi sync api-key mint` (no identity) and one minted
 #     over HTTP with the creator's identity token (with `identity: mind`) both
-#     authenticate on /v1/projects/<id>/mcp;
+#     authenticate on /v1/mcp;
 #   - a need sent over MCP (default identity: operator) is in the host
 #     mailspace at once, as `vivi need list --for mind` shows it;
 #   - a mark set over MCP as mind is the mark the CLI shows;
@@ -123,11 +123,14 @@ KEY_MIND=$(echo "$MINT" | jget '["key"]' 2>/dev/null)
 # mcp <key> <tool> <json args>: prints the tool's JSON result; status in $MCP_ERR.
 MCP_ERR=0
 mcp() {
-  python3 - "$BASE/v1/projects/$PID/mcp" "$1" "$2" "$3" <<'PY'
+  python3 - "$BASE/v1/mcp" "$PID" "$1" "$2" "$3" <<'PY'
 import json, sys, urllib.request
-url, key, name, args = sys.argv[1:5]
+url, project, key, name, args = sys.argv[1:6]
+arguments = json.loads(args)
+if isinstance(arguments, dict) and "project" not in arguments:
+    arguments["project"] = project
 body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                   "params": {"name": name, "arguments": json.loads(args)}}).encode()
+                   "params": {"name": name, "arguments": arguments}}).encode()
 req = urllib.request.Request(url, body, {"authorization": "Bearer " + key, "content-type": "application/json"})
 try:
     value = json.load(urllib.request.urlopen(req, timeout=20))
@@ -141,12 +144,12 @@ sys.exit(1 if value["result"].get("isError") else 0)
 PY
 }
 status_of() { # http status of an MCP call with $1 as the key (project overview)
-  curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/projects/$PID/mcp" \
-    -H "authorization: Bearer $1" -H 'content-type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"overview","arguments":{}}}'
+  python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"overview","arguments":{"project":sys.argv[1]}}}))' "$PID" \
+    | curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/mcp" \
+      -H "authorization: Bearer $1" -H 'content-type: application/json' -d @-
 }
 [ "$(status_of "$KEY_OP")" = 200 ] && [ "$(status_of "$KEY_MIND")" = 200 ] \
-  && ok "both keys authenticate on /v1/projects/<id>/mcp" || bad "key status: $(status_of "$KEY_OP") $(status_of "$KEY_MIND")"
+  && ok "both keys authenticate on /v1/mcp" || bad "key status: $(status_of "$KEY_OP") $(status_of "$KEY_MIND")"
 
 # --- send over MCP -> the CLI sees it at once --------------------------------
 SENT=$(mcp "$KEY_OP" send '{"kind":"need","to":"mind","subject":"hosted smoke need","body":"+++\ndone_when = [\"shipped\"]\n+++\n\nship it"}')
@@ -198,12 +201,13 @@ fi
 
 # --- leaving the registry stops the serving ----------------------------------
 "$VIVI" pump service remove "$HOST" >/dev/null 2>&1 && ok "registry entry removed" || bad "registry remove"
+# /v1/mcp stays HTTP 200 when the project is gone; the overview tool errors.
 GONE=0
 for _ in $(seq 1 30); do
-  [ "$(status_of "$KEY_OP")" != 200 ] && { GONE=1; break; }
+  mcp "$KEY_OP" overview '{}' >/dev/null 2>&1 || { GONE=1; break; }
   sleep 1
 done
-[ "$GONE" = 1 ] && ok "the project is no longer served (MCP now $(status_of "$KEY_OP"))" || bad "project still served after removal"
+[ "$GONE" = 1 ] && ok "the project is no longer served" || bad "project still served after removal"
 [ -d "$HOST/.vivi" ] && "$VIVI" need list --for mind --project "$HOST" 2>&1 | grep -q "hosted smoke need" \
   && ok "the host mailspace is untouched by the removal" || bad "host mailspace damaged by removal"
 

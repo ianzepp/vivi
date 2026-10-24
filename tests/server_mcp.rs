@@ -1,6 +1,7 @@
 //! MCP streamable HTTP and project-scoped API keys.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -138,7 +139,12 @@ struct Fixture {
     /// straight through a [`ProjectStore`] on the same files.
     dir: PathBuf,
     project: String,
+    /// Identity token. Accepted on the letter wire, refused on `/v1/mcp`.
     token: String,
+    /// Server key for `token`'s member, minted on the first MCP call that
+    /// presents the identity token. Lazy so a test that lists keys before
+    /// any such call still sees only the keys it minted itself.
+    mcp_key: Mutex<Option<String>>,
 }
 
 async fn fixture(name: &str) -> Fixture {
@@ -194,6 +200,7 @@ async fn fixture(name: &str) -> Fixture {
         dir,
         project,
         token: identity["token"].as_str().unwrap().to_owned(),
+        mcp_key: Mutex::new(None),
     }
 }
 
@@ -246,18 +253,65 @@ impl Fixture {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{identity}");
-        identity["token"].as_str().unwrap().to_owned()
+        let token = identity["token"].as_str().unwrap();
+        // `/v1/mcp` refuses the identity token. The returned bearer is the
+        // server key self-service mint just created for this member.
+        let (status, minted) = send_json(
+            &self.app,
+            "POST",
+            &format!("/v1/projects/{}/keys", self.project),
+            Some(json!({ "label": name })),
+            Some(token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{minted}");
+        minted["key"].as_str().unwrap().to_owned()
     }
 
-    async fn rpc(&self, token: &str, method: &str, params: Value) -> (StatusCode, Value) {
+    /// The creator's server key, minted once through the self-service route.
+    async fn creator_key(&self) -> String {
+        if let Some(key) = self.mcp_key.lock().unwrap().clone() {
+            return key;
+        }
+        let (status, minted) = send_json(
+            &self.app,
+            "POST",
+            &format!("/v1/projects/{}/keys", self.project),
+            Some(json!({ "label": "mcp" })),
+            Some(&self.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{minted}");
+        let key = minted["key"].as_str().unwrap().to_owned();
+        *self.mcp_key.lock().unwrap() = Some(key.clone());
+        key
+    }
+
+    async fn rpc(&self, token: &str, method: &str, mut params: Value) -> (StatusCode, Value) {
+        let bearer = if token == self.token {
+            self.creator_key().await
+        } else {
+            token.to_owned()
+        };
+        if method == "tools/call" {
+            let args = params
+                .as_object_mut()
+                .unwrap()
+                .entry("arguments")
+                .or_insert_with(|| json!({}));
+            if let Some(args) = args.as_object_mut() {
+                args.entry("project")
+                    .or_insert_with(|| json!(self.project.clone()));
+            }
+        }
         let (status, value, _) = raw(
             &self.app,
             "POST",
-            &format!("/v1/projects/{}/mcp", self.project),
+            "/v1/mcp",
             json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
                 .to_string()
                 .into_bytes(),
-            Some(token),
+            Some(&bearer),
             &[("content-type", "application/json")],
         )
         .await;
@@ -304,19 +358,50 @@ impl Fixture {
 #[tokio::test]
 async fn mcp_requires_a_bearer() {
     let fx = fixture("auth").await;
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"ping"})
+        .to_string()
+        .into_bytes();
     let (status, value, _) = raw(
         &fx.app,
         "POST",
-        &format!("/v1/projects/{}/mcp", fx.project),
-        json!({"jsonrpc":"2.0","id":1,"method":"ping"})
-            .to_string()
-            .into_bytes(),
+        "/v1/mcp",
+        body.clone(),
         None,
         &[("content-type", "application/json")],
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
     assert_eq!(value["error"]["code"], "unauthorized");
+
+    // An identity token used to reach project MCP. On `/v1/mcp` it does not.
+    let (status, value, _) = raw(
+        &fx.app,
+        "POST",
+        "/v1/mcp",
+        body.clone(),
+        Some(&fx.token),
+        &[("content-type", "application/json")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("identity tokens are not accepted on /v1/mcp"),
+        "{message}"
+    );
+    assert!(message.contains("server key"), "{message}");
+
+    // The per-project route is gone.
+    let (status, _, _) = raw(
+        &fx.app,
+        "POST",
+        &format!("/v1/projects/{}/mcp", fx.project),
+        body,
+        Some(&fx.token),
+        &[("content-type", "application/json")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -363,9 +448,23 @@ async fn initialize_and_tools_list() {
             "pump_send",
             "pump_list",
             "pump_show",
-            "board"
+            "board",
+            "projects",
+            "create_project",
+            "key_mint",
+            "key_list",
+            "key_revoke",
+            "grant_add",
+            "grant_remove",
         ]
     );
+    let overview = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "overview")
+        .unwrap();
+    assert_eq!(overview["inputSchema"]["required"], json!(["project"]));
 }
 
 #[tokio::test]

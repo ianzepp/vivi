@@ -14,6 +14,7 @@ use vivi::mailspace::Mailspace;
 use vivi::pump::health::HealthOptions;
 use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION, append_exception};
+use vivi_server::grants::{GrantLevel, GrantRecord};
 use vivi_server::{AppState, app_state, hosted, pump_health, router};
 
 fn scratch(name: &str) -> PathBuf {
@@ -122,7 +123,18 @@ impl Fx {
         )
     }
 
-    async fn rpc(&self, token: &str, method: &str, params: Value) -> Value {
+    async fn rpc(&self, token: &str, method: &str, mut params: Value) -> Value {
+        if method == "tools/call" {
+            let args = params
+                .as_object_mut()
+                .unwrap()
+                .entry("arguments")
+                .or_insert_with(|| json!({}));
+            if let Some(args) = args.as_object_mut() {
+                args.entry("project")
+                    .or_insert_with(|| json!(self.project.clone()));
+            }
+        }
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         let response = self
             .app
@@ -130,7 +142,7 @@ impl Fx {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/projects/{}/mcp", self.project))
+                    .uri("/v1/mcp")
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
@@ -142,6 +154,32 @@ impl Fx {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
+}
+
+fn server_key(state: &AppState, project: &str, member: &str, identity: Option<&str>) -> String {
+    let level = match identity {
+        None | Some("operator") => GrantLevel::Operator,
+        Some(_) => GrantLevel::Member,
+    };
+    // Grants live on the principal, and the first grant for a project wins.
+    // A separate principal per acting identity keeps each key's grant alone.
+    let tag = identity.unwrap_or("default");
+    state
+        .server_keys
+        .mint(
+            &format!("{member}.{tag}@{project}"),
+            false,
+            vec![GrantRecord {
+                project_id: project.to_owned(),
+                member: member.to_owned(),
+                identity: identity.map(str::to_owned),
+                level,
+            }],
+            "test",
+            member,
+        )
+        .unwrap()
+        .key
 }
 
 #[tokio::test]
@@ -303,7 +341,8 @@ async fn a_bad_query_is_a_400() {
 async fn the_pump_mcp_tool_answers_the_same_verdict() {
     let fx = fixture("mcp", true);
     write_pump(&fx.root, now());
-    let key = fx.key();
+    // HTTP health keeps the per-project key (`fx.key`). MCP needs a server key.
+    let key = server_key(&fx.state, &fx.project, &fx.member, None);
     let listed = fx.rpc(&key, "tools/list", json!({})).await;
     let names: Vec<&str> = listed["result"]["tools"]
         .as_array()

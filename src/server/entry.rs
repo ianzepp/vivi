@@ -25,7 +25,7 @@ struct ServerConfig {
     /// `HOSTED_DEFAULT_IDENTITY`: the vivi identity an API key without its
     /// own identity acts as on a hosted project.
     hosted_default_identity: Option<String>,
-    /// `HOST_OPERATOR_TOKEN`: the Bearer for `POST /v1/host/mcp`.
+    /// `HOST_OPERATOR_TOKEN`: a built-in host principal on `POST /v1/mcp`.
     host_operator_token: Option<String>,
     /// `SEND_RATE_PER_MINUTE`: writes per minute per identity (default 30;
     /// `0` is unlimited, held as `None`).
@@ -121,7 +121,7 @@ async fn main() {
     }
 
     if config.host_operator_token.is_none() {
-        tracing::warn!("HOST_OPERATOR_TOKEN not set; /v1/host/mcp disabled");
+        tracing::warn!("HOST_OPERATOR_TOKEN not set; /v1/mcp has no built-in host principal");
     }
 
     let mut state = vivi_server::app_state(

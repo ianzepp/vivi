@@ -2,8 +2,41 @@
 
 ## Unreleased
 
-Built on vivi 20.0.0 and its rung commands; the pump gate is gone.
+Built on vivi 21 and its rung commands; the pump gate is gone.
 
+- **vivi 21.** The server builds and tests against the vivi 21 tree: MCP
+  `send` no longer passes `note` or `depends_on` to the library (a need
+  needs its `done_when`, and dependencies ride the letter front matter),
+  `board` loses the pump view, the pump health answer carries vivi 21's
+  field set (`units`, `merges`, `blocked`, `complete_open_needs` are
+  gone), and `create_project` and the rung writes go through the
+  library's guarded config editor, seeding pools and timeout before the
+  rung commands.
+- **Server-composed letters are v1 letters.** MCP `send` takes vivi's
+  sugar arguments (`done_when`, `target`, `write_scope`, `serves`,
+  `explores`, `question`, `depends_on`) and renders them into the TOML
+  front matter (a body that already opens with `+++` refuses them);
+  every letter the server composes carries `X-Vivi-Format: 1`; `graph`
+  reads `depends_on` from the front matter; a letter that claims a
+  format it does not parse as is refused `422 letter_format` and
+  nothing is stored.
+- **One server MCP endpoint, `POST /v1/mcp`.** Project and host MCP move
+  off `POST /v1/projects/{id}/mcp` and `POST /v1/host/mcp` (both now
+  404; rooms keep `/v1/rooms/{id}/mcp`). The Bearer is a server key
+  from the one store at `DATA_DIR/keys.json` — a principal holds grants
+  (`{project_id, member, identity?, level}`) — or `HOST_OPERATOR_TOKEN`
+  as the built-in host principal for the host tools (`create_project`,
+  `key_mint`, `key_list`, `key_revoke`, `grant_add`, `grant_remove`).
+  Every project tool takes a required `project` argument resolved
+  strictly among the key's grants; the `projects` tool lists what a key
+  may reach. One audit line per write lands in `DATA_DIR/audit.jsonl`;
+  writes are rate limited per (project, key). `POST
+  /v1/projects/{id}/keys` mints server keys self-service (principal
+  `<member>@<project>`, or `<member>.<role>@<project>` with an acting
+  identity; the answer carries `grants`) and mirrors the secret into
+  the per-project registry that rooms and the letter wire read; the
+  first boot after the upgrade retires the legacy per-project key files
+  once (`DATA_DIR/api_keys.retirement`).
 - **vivi 20.0.0.** The `vivi` dependency is v20.0.0.
 - **MCP `pump_gate` removed (breaking).** The tool and its `[pump.gate]`
   config are gone with vivi 20.

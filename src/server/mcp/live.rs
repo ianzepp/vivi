@@ -2,10 +2,11 @@
 //! tool acts on it through the `vivi` library exactly as the `vivi` CLI
 //! would, as a vivi identity, and not through the server's transport index.
 //!
-//! The acting identity is the API key's `identity`, else the server's
-//! `HOSTED_DEFAULT_IDENTITY` (default `operator`). It must be a role of the
-//! hosted mailspace. A member-token caller (not an API key) never reaches
-//! this module; it keeps the transport tools.
+//! The acting identity is the API key's `identity`; a key without one
+//! acts as the server's `HOSTED_DEFAULT_IDENTITY` (default `operator`)
+//! when its member is the host's own, and as the member itself otherwise.
+//! It must be a role of the hosted mailspace. A member-token caller (not
+//! an API key) never reaches this module; it keeps the transport tools.
 //!
 //! Reads (`overview`, `list`, `show`, `thread`, `graph`, `board`) are live
 //! queries of the mailspace store: the folder, status and marks the CLI
@@ -85,6 +86,48 @@ pub(super) fn handles(name: &str) -> bool {
 /// server owns end to end.
 pub(super) fn hosted_root(store: &ProjectStore, project_id: &str) -> Option<std::path::PathBuf> {
     store.load_meta(project_id).ok()?.mailspace_root
+}
+
+/// Whether today's operator rule (the host's own member, acting as a role
+/// of kind operator) holds for `caller` acting as `requested` on the
+/// hosted mailspace at `root`. The self-service key mint uses it to set a
+/// grant's level; the tools re-check the same rule per call.
+pub(super) fn operator_rule_holds(
+    root: &Path,
+    caller: &crate::identities::IdentityRecord,
+    requested: &str,
+) -> bool {
+    match Hosted::open(root, requested) {
+        Ok(hosted) => pump::require_operator("self-service key mint", &hosted, caller).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// The identity a key with no named one acts as on the hosted mailspace
+/// at `root`: the server default when `caller` is the mailspace's own
+/// member — the member the default exists for — else the member's own
+/// name. A key minted by any other member never silently acts as the
+/// operator default (the tools then resolve the member as their role or
+/// refuse it as not one).
+pub(super) fn fallback_actor(
+    root: &Path,
+    default: &str,
+    caller: &crate::identities::IdentityRecord,
+) -> String {
+    let own_member = Mailspace::open_root(root.to_path_buf())
+        .map(|ms| is_own_member(&ms, caller))
+        .unwrap_or(false);
+    if own_member {
+        default.to_owned()
+    } else {
+        caller.name.clone()
+    }
+}
+
+/// Whether `caller` is the hosted mailspace's own member: its id is the
+/// mailspace's id.
+pub(super) fn is_own_member(ms: &Mailspace, caller: &crate::identities::IdentityRecord) -> bool {
+    caller.mailspace_id.as_deref() == Some(ms.mailspace_id())
 }
 
 /// An opened hosted mailspace and the identity a call acts as.
