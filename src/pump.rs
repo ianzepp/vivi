@@ -35,6 +35,7 @@ pub mod record;
 pub mod replan;
 pub mod report;
 pub mod requeue;
+pub mod reset;
 pub(crate) mod revision_input;
 pub mod run;
 pub mod service;
@@ -139,6 +140,10 @@ mod quarantine_test;
 #[cfg(test)]
 #[path = "pump/requeue_test.rs"]
 mod requeue_test;
+
+#[cfg(test)]
+#[path = "pump/reset_test.rs"]
+mod reset_test;
 
 #[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]

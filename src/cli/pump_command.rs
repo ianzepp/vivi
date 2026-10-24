@@ -22,6 +22,8 @@ pub enum PumpSubcommand {
     Stop(PumpControlCommand),
     /// Enable a stopped pump; the service starts it when registered
     Start(PumpControlCommand),
+    /// Archive the pump home and start fresh; refused while the pump runs
+    Reset(PumpResetCommand),
     /// Set, clear, or list per-need dispatch priority
     Priority {
         #[command(subcommand)]
@@ -91,6 +93,16 @@ pub enum PumpSubcommand {
 
 #[derive(Debug, Args)]
 pub struct PumpControlCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpResetCommand {
+    /// Output the full answer as JSON
+    #[arg(long)]
+    pub json: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
