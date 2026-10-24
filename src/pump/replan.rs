@@ -35,7 +35,7 @@ pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError>
             cmd.need, cmd.need
         )));
     }
-    mailspace.pump_post_action(None, &cmd.need, &PumpActionRequest::replan(false))?;
+    mailspace.pump_post_action(None, &cmd.need, &PumpActionRequest::replan())?;
     println!(
         "replan {} requested; the pump applies it at its next tick",
         cmd.need

@@ -63,7 +63,6 @@ fn replan_posts_an_action_on_the_open_record() {
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].need, handle);
     assert_eq!(actions[0].request.kind, PumpActionKind::Replan);
-    assert!(!actions[0].request.force);
 
     let forced = vivi([
         "pump",
