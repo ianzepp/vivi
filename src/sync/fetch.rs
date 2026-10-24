@@ -48,6 +48,9 @@ impl FetchReport {
         if !self.pull.refused.is_empty() {
             line = format!("{line}, {} refused", self.pull.refused.len());
         }
+        if !self.pull.quarantined.is_empty() {
+            line = format!("{line}, {} quarantined", self.pull.quarantined.len());
+        }
         if let Some(held) = self.pull.held_note() {
             line = format!("{line}, {held}");
         }
