@@ -141,8 +141,10 @@ fn an_unknown_front_key_letter_is_held_named_and_not_filed() {
     assert!(again.quarantined.is_empty(), "{}", again.summary());
     assert!(again.failure().is_none());
 
-    // The same content arriving again (a resync replays the log) finds the
-    // held file and does not alarm again, and still files nothing.
+    // The same content arriving again through a fresh window (a resync
+    // replays the log) is named again — already held is not filed-clean —
+    // with the live receipt's reason, still files nothing, and still
+    // holds exactly one pair.
     let replayed = pull::pull_with(
         &b.mailspace,
         &b.settings,
@@ -154,13 +156,23 @@ fn an_unknown_front_key_letter_is_held_named_and_not_filed() {
         &mut |_| {},
     )
     .unwrap();
-    assert!(replayed.quarantined.is_empty(), "{}", replayed.summary());
-    assert!(replayed.failure().is_none());
+    assert_eq!(replayed.quarantined.len(), 1, "{}", replayed.summary());
+    assert_eq!(replayed.quarantined[0].id, sha);
+    assert!(
+        replayed.quarantined[0].reason.contains("flavor"),
+        "{}",
+        replayed.quarantined[0].reason
+    );
+    assert!(
+        replayed.failure().is_some(),
+        "a replayed hold still fails the pull"
+    );
     assert_eq!(
         live_count(&b, &sha),
         0,
         "a replay of a held letter files nothing"
     );
+    assert_eq!(list(&b.mailspace.dir).unwrap().len(), 1);
 }
 
 #[test]
@@ -178,6 +190,75 @@ fn a_synced_legacy_letter_still_files_as_history() {
     assert!(
         !quarantine_root(&b).exists(),
         "a legacy letter never reaches quarantine"
+    );
+}
+
+/// The letter is already held with a receipt from an earlier hold — a
+/// discard that failed, or a crash between hold and discard — and the same
+/// bytes arrive again through a fresh push: the pull must say so, with the
+/// live receipt's reason, not treat the letter as filed-clean.
+#[test]
+fn already_held_content_arriving_again_is_named_from_its_live_receipt() {
+    let (server, a, b) = pair();
+    let bytes = newer_member_need(&a.address("mind"), &b.address("mind"), "again need");
+    let sha = sha256_hex(&bytes);
+    let reason = "front matter line 3: unknown field `flavor` (held by an older run)";
+    let held = receipt("msg_0000000000000000000000ee", 1, reason);
+    assert!(hold(&b.mailspace.dir, &bytes, &held).unwrap());
+    let json = quarantine_root(&b).join(format!("{sha}.json"));
+
+    put(&a, "mind", "inbox", &bytes);
+    a.push(&a.client(&server));
+    let report = b.pull(&b.client(&server));
+
+    assert_eq!(report.quarantined.len(), 1, "{}", report.summary());
+    assert_eq!(report.quarantined[0].id, sha);
+    assert_eq!(
+        report.quarantined[0].reason, reason,
+        "the reason is the live receipt's, not a fresh parse"
+    );
+    assert!(
+        report.failure().is_some(),
+        "already held is not filed-clean"
+    );
+    assert_eq!(live_count(&b, &sha), 0, "still not filed");
+    assert_eq!(
+        list(&b.mailspace.dir).unwrap().len(),
+        1,
+        "one pair, not two"
+    );
+    let raw = std::fs::read_to_string(&json).unwrap();
+    assert!(raw.contains("held by an older run"), "{raw}");
+}
+
+#[test]
+fn a_corrupt_receipt_degrades_to_a_generic_reason_without_panicking() {
+    let (server, a, b) = pair();
+    let bytes = newer_member_need(&a.address("mind"), &b.address("mind"), "broken receipt");
+    let sha = sha256_hex(&bytes);
+    let held = receipt("msg_0000000000000000000000ab", 1, "unknown field `flavor`");
+    hold(&b.mailspace.dir, &bytes, &held).unwrap();
+    std::fs::write(
+        quarantine_root(&b).join(format!("{sha}.json")),
+        b"{ not json",
+    )
+    .unwrap();
+
+    put(&a, "mind", "inbox", &bytes);
+    a.push(&a.client(&server));
+    let report = b.pull(&b.client(&server));
+
+    assert_eq!(report.quarantined.len(), 1, "{}", report.summary());
+    assert_eq!(report.quarantined[0].id, sha);
+    assert_eq!(report.quarantined[0].reason, "held (receipt unreadable)");
+    assert_eq!(live_count(&b, &sha), 0, "still not filed");
+    let entries = std::fs::read_dir(quarantine_root(&b)).unwrap().count();
+    assert_eq!(entries, 2, "exactly the one held pair");
+
+    // The fallback covers a missing receipt too (the id is held no more).
+    assert_eq!(
+        reason_of(&b.mailspace.dir, &"0".repeat(64)),
+        "held (receipt unreadable)"
     );
 }
 
