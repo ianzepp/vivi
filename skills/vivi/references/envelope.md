@@ -173,10 +173,6 @@ refused):
 | `action` | `requeue`, `withdraw`, `replan`, `answer` or `unlock` | yes | all | what to do |
 | `need` | string | yes | all | handle of the need the record covers |
 | `unit` | string | `requeue` | `requeue` | handle of the step task whose newest job runs again |
-| `attempts` | integer | no | `requeue` | accepted; a flow requeue does not read it |
-| `fresh` | bool | no | `requeue` | accepted; a flow requeue does not read it |
-| `refund` | bool | no | `requeue` | accepted; a flow requeue does not read it |
-| `force` | bool | no | `replan` | accepted; a flow replan does not read it |
 | `step` | string | `answer` | `answer` | handle of the step task being answered |
 | `word` | string | `answer` | `answer`, `unlock` | `answer`: the answer word; `unlock`: the flow entry to restart at (absent means the flow's first entry) |
 
