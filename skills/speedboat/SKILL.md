@@ -95,7 +95,7 @@ process; an open handle alone is not running work.
 
 1. **Orient once.** If the project is synced, run `vivi sync pull` first so
    the letters other checkouts pushed are applied. Read `vivi boot` (the
-   digest now includes role-gated pump/pool state when a pump is local),
+   digest includes role-gated pump/pool state when a pump is local),
    `vivi step --json`, live harness state, and repository status. When
    `step` is empty but open work remains, `vivi graph blocked` names the
    wait. For a long need thread, `vivi need show <handle> --newest N`.
@@ -128,9 +128,9 @@ unaffected units moving. Do not request a review merely to increase confidence.
 | --- | --- | --- |
 | `awaiting_remote` | Work you handed to a role in another mailspace; tracked, never dispatched here, and its dependents stay blocked | Let the receiver dispatch it; close your copy once accepted |
 | `awaiting_acceptance` | A Hand or Auditor reported the unit done; the row names the reporter and the accept command. The node stays open and its dependents blocked; `step --apply` completes nothing | Integrate the work, then accept it with that command; a failed gate reopens it (see "Mind acceptance gates") |
-| `want_requires_promotion` | A parked want | Promote it, or leave it parked |
+| `want_parked` | A want; wants never dispatch | Send a need that serves it (`need send --serves <want>`), or leave it |
 | `no_done_when` | The task's front matter has no `done_when`, so it cannot dispatch | Send a new task with `--done-when` (or `done_when = [...]` in a whole-letter body) |
-| `letter_invalid` | An old-format letter (no front matter) or a letter with invalid front matter; it is history and cannot be executed | Re-send the unit as a new letter |
+| `letter_invalid` | A letter with no front matter or with invalid front matter; it cannot be executed | Re-send the unit as a new letter |
 
 Work held for another mailspace's role mints no node, so `step`, `graph ready`
 and `boot` leave it out. A letter for a role this mailspace lacks is held
@@ -235,11 +235,8 @@ matter here:
   persistent build directory is the place for integration and acceptance.
   Which work goes to which pool is the role's assigned pool; the Mind
   chooses the role. A full pool waits (no spillover).
-- After a unit is `merged` (on the integration / merge lane, not main),
-  the pump recycles free work lanes on the unit's pool and the merge
-  role's pool. `vivi pool clean [--dry-run]` reports or applies the same
-  reclaim; `vivi pool reset` puts a free slot back on a freshly fetched
-  origin base.
+- `vivi pool clean [--dry-run]` reports or reclaims finished work lanes;
+  `vivi pool reset` puts a free slot back on a freshly fetched origin base.
 - A review seat that needs a full shell but must change nothing runs with
   `--read-only`; its token cannot push.
 - Push the base commit to the remote before dispatch (a local worktree pool

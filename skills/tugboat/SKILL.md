@@ -271,8 +271,8 @@ schedulers should still be up — that is [Warm boot](#warm-boot-mind-only-post-
    requirements are present; it decides no architecture, scope, priority, or
    merit. **Spawn async and integrate on a later Mind turn** — triage verdicts
    are reports, not state changes. They land **before** a frontier definition
-   gate (a need-definition review) is asked to spend tokens, and before any want
-   is promoted into a need. A project without that seat skips this step and
+   gate (a need-definition review) is asked to spend tokens, and before any need
+   is sent to serve a want. A project without that seat skips this step and
    carries the backlog re-check as ordinary work.
 4. **Inventory execution state (Rule 2).** The seat section of `vivi boot` is
    the stored-binding half of this inventory; without a probe it cannot see
@@ -606,7 +606,7 @@ about one design blocks only work that depends on that decision.
 | Missing or stale delivery authority | File a correction/lowering task to a Planner and spawn it. |
 | Waiting worker or external resource | Record the dependency and recheck trigger, then dispatch another eligible unit. |
 | Human-only decision or permission | Mail `operator@` with a default, alternatives, and exact blocked boundary; continue everything that does not depend on it. |
-| Deferred idea | File a **want** with its precondition; do not let it displace campaign work. |
+| Deferred idea | File a **want** (the discussion); do not let it displace campaign work. When the idea is formed, send needs that serve it. |
 
 A recoverable blocker must have a **live owner**, not only a need or task on the
 board: dispatch it in the same turn (Rule 2). If the correct repair path is
@@ -885,7 +885,7 @@ Each role is a Vivi identity with a mailbox and role record.
 | **Mind** | Sees work, assigns roles, integrates results, reconciles completion paper, closes the handles it reconciled (only the Mind or the item's author closes, and the close is the acceptance; a worker's `done` is a report that unlocks nothing), and advances goal/campaign status as units land (Rules 1/6), performs operational capacity analysis, talks to the operator, manages the loop, and keeps every seat as full as possible (Rule 5). | Edit product files, run tests, builds, linters, formatters, or factory suites, re-execute Hand closeout, perform deep product/specialist analysis in its own context (that is Head/Planner/Auditor work), rewrite goal/campaign content, or commit for roles. |
 | **Hand** | Implements **one logical change**, optional sanity check, commits, reports done (`task done --note`: a report, not the close; the work is not accepted until the Mind closes it), turns the seat over. | Wait for GO stamps, erase other work, lower goals, rediscover architecture, run project-wide gates, sit on a multi-family bag, or run tools after `task done`. |
 | **Auditor** | Reviews settled delivery specs or frozen phase ranges; replies with `admitted`/`revise` or `clean_pass`/`residual`/`block_range`/`block_ship` via **evidence honesty** (Rule 6). Standing procedure lives on the Vivi **role charter** (same packaging as Heads). | Implement code, commit product work, issue a GO stamp, or re-run the Hand's full validation ladder / real-device suite by default. |
-| **Triage** | Reconciles the registered backlog (wants, needs, goals) against the live repository: is the claim still true, and are the requirements present? Returns one disposition per item. Standing procedure lives on the Vivi **role charter**. Cold boot is its standing trigger. | Implement, fix, lower, promote, close, audit a diff, or judge architecture, scope, purity, priority, or merit. |
+| **Triage** | Reconciles the registered backlog (wants, needs, goals) against the live repository: is the claim still true, and are the requirements present? Returns one disposition per item. Standing procedure lives on the Vivi **role charter**. Cold boot is its standing trigger. | Implement, fix, lower, send serving needs, close, audit a diff, or judge architecture, scope, purity, priority, or merit. |
 | **Planner** | Goal-forge, goal-check, and delivery lowering into unit graphs. Standing procedure lives on the Vivi **role charter**. | Implement product code, merge, review, or file Hand tasks. |
 | **Hater** | Runs one fresh hostile first-impression pass on one bounded surface for one skeptical audience and reports raw perception evidence. Standing procedure is the Vivi role charter, plus a hater skill if the workspace has one. | Judge merit, inspect hidden rationale, implement, audit, create tasks, or block acceptance or launch. |
 | **Head** (`head-ceo`, `head-cmo`, `head-cpo`, `head-cso`, `head-cto`, `head-cxo`) | Advises on a strategic question; the Mind may select a smaller council of Heads for the periodic phase-close strategic architecture review (see [Feature lifecycle](#feature-lifecycle-and-phase-review)). Standing persona lives on the Vivi **role charter**. | Lower goals, implement, prepare tasks, merge, block production, or re-run product/device verification. |
@@ -929,7 +929,9 @@ The Mind uses the full role system through Vivi:
   the [dispatch-contract](#dispatch-contract) pointer. Put scope and
   instructions in the task body or a linked file — never in the spawn
   prompt. File **needs** and **wants** to the Mind (or the backlog owner)
-  when discovering work; the Mind lowers them into tasks before spawn.
+  when discovering work; the Mind lowers needs into tasks before spawn. A want
+  carries no work itself: when its idea is formed, the Mind sends needs that
+  serve it (`vivi need send --serves <want> --done-when '...'`).
 - Hands execute and report back. `task done --note` is their report; the Mind accepts it by closing the handle after it reconciles (dependents unlock then), or reopens it.
 - Review is optional in the simple loop but required when the planning or wave protocol calls for it.
 - Planners lower goals. A raw goal goes to a Planner, not a Hand.
@@ -1048,8 +1050,8 @@ pull arrive as `delivered` events), and `vivi task show` on the one handle
 selected for work. See [Context economy](#context-economy).
 
 1. Reconciles execution state under Rule 2: **running** (live process), **dispatching** (handle + spawn this turn), **idle** (no process), or **spawn debt** (executable open handle without a live owner). Use the project's occupancy signal when it has one.
-2. Inventories the Mind board by kind ([Board kinds](#board-kinds)): open **needs** (priority backlog), open **wants** (deferred backlog), open **tasks** (active assignment / spawn debt), and **mail** (communication to integrate). Drain needs before wants. Work this mailspace sent to another mailspace's role lists as role `sent`: tracked here, dispatched there.
-3. Consumes the step manifest: `dispatches` are the ready independent implementation units (readiness is computed from the graph, including later-stage and cross-goal items whose named dependencies are met — the `pull_forward` fact); `exceptions` route by reason — `want_requires_promotion` (promotion stays a requested action), `lowered_awaiting_units` (dispatch the units, not the parent), `no_done_when` (a task whose front matter has no `done_when`: back to the Planner), `letter_invalid` (an old-format letter with no front matter: re-send it in the new format; the pump will not run it), `item_missing` and `untracked_item` (hygiene: `vivi graph audit --repair`), `not_settled` (a `step --apply` on a copy that is not done), `awaiting_acceptance` (a Hand or Auditor reported it done; the detail names who reported and the `done --for mind` that accepts it; its dependents stay blocked), `awaiting_remote` (work handed to another mailspace: never dispatch or re-file it; the receiving mailspace runs it, the report returns as mail after `vivi sync`, and its dependents stay blocked until the Mind closes it). Work held for another mailspace's role mints no node, so it never appears here. Unlowered goals, completed frozen ranges eligible for audit, and spawn debt complete the inventory.
+2. Inventories the Mind board by kind ([Board kinds](#board-kinds)): open **needs** (priority backlog), open **wants** (deferred ideas and their discussions; each want's state follows the needs that serve it), open **tasks** (active assignment / spawn debt), and **mail** (communication to integrate). Drain needs before wants. Work this mailspace sent to another mailspace's role lists as role `sent`: tracked here, dispatched there.
+3. Consumes the step manifest: `dispatches` are the ready independent implementation units (readiness is computed from the graph, including later-stage and cross-goal items whose named dependencies are met — the `pull_forward` fact); `exceptions` route by reason — `want_parked` (wants never dispatch: when the idea is formed, send a need that serves it with `vivi need send --serves <want> --done-when '...'`), `lowered_awaiting_units` (dispatch the units, not the parent), `no_done_when` (a task whose front matter has no `done_when`: back to the Planner), `letter_invalid` (no or invalid front matter: re-send the letter; the pump will not run it), `item_missing` and `untracked_item` (hygiene: `vivi graph audit --repair`), `not_settled` (a `step --apply` on a copy that is not done), `awaiting_acceptance` (a Hand or Auditor reported it done; the detail names who reported and the `done --for mind` that accepts it; its dependents stay blocked), `awaiting_remote` (work handed to another mailspace: never dispatch or re-file it; the receiving mailspace runs it, the report returns as mail after `vivi sync`, and its dependents stay blocked until the Mind closes it). Work held for another mailspace's role mints no node, so it never appears here. Unlowered goals, completed frozen ranges eligible for audit, and spawn debt complete the inventory.
 4. Checks operator/role **mail**, dirty files; classifies dirt A/B/C. Integrate mail into needs/wants/tasks when it discovers work; do not leave must-do items as chat-only. For every claimed blocker, name the exact affected dependency boundary and separately inventory unaffected work. A blocker with no live repair/diagnostic/decision owner is the highest-priority spawn debt (Rule 4).
 5. Chooses the first material branch below and performs only that coherent batch:
    - **Returned reports:** integrate one completed batch and route only its immediate repairs or successors. Integration means Rule 6 reconcile of paper (handle, commits, scope, validation claim), then **closing each reconciled handle** with `vivi task done --for mind <handle>`, the acceptance that unlocks dependents and joins a bound need (or reopening it) — plus advancing the goal/campaign status records for the landed units (Mind-owned lifecycle, Rule 1) — not re-running product tests. A report is a reply in the Mind's inbox on the handle it answers: close that handle (the one `step` listed as `awaiting_acceptance` and `graph ready` listed under `reported`; either copy's handle resolves). Dispatch a recoverable blocker to the correct Hand, Planner, Head, or project integration seat; unaffected seats remain eligible. Deferred follow-ups become **wants**.
@@ -1057,7 +1059,7 @@ selected for work. See [Context economy](#context-economy).
    - **Ready implementation:** dispatch the current independent READY batch across idle Hands.
    - **Thin implementation frontier:** dispatch one coherent goal/child batch across idle Planners.
    - **Reviewable planning:** dispatch the current settled delivery-spec batch to idle Auditors. Implementation audits still wait for the named stage/phase boundary, a cadence recommendation, or a declared risk gate.
-   - **Eligible wants:** when needs are clear and a want's preconditions are met, admit and dispatch one coherent want batch.
+   - **Formed wants:** when needs are clear and a want's idea is formed, send the needs that serve it (`vivi need send --serves <want> --done-when '...'`, one need per piece of work, each with its own `done_when`), then lower those needs as usual. A want itself never dispatches.
 6. Emits the saturation receipt and **ends the turn**. Open needs without a disposition are not "quiet board." Unresolved spawn debt is either dispatched or named with a recheck. Unchosen eligible branches are next-turn work, not permission to keep this turn open.
 
 Haters are demand-driven advisory probes, not throughput lanes. Do not invent Hater work to keep a seat busy or list an idle Hater as starvation.
@@ -1195,7 +1197,7 @@ The Mind creates one of these items:
 - A **need** when discovering or accepting must-do-soon work that is not yet an
   active assignment (priority backlog; often filed *to* the Mind by operator or
   Heads, then lowered into tasks by the Mind).
-- A **want** for deferred backlog work until a precondition or spare capacity.
+- A **want** for a deferred idea and the discussion around it. When the idea is formed, send needs that serve it (`vivi need send --serves <want> --done-when '...'`).
 - **Mail** for a question, report, or other communication.
 
 The Mind sends the item to the correct class role, such as `hand`, `planner`, `auditor`, `head-ceo`, `hater`, or `operator`. The Mind must not widen, replace, or add requirements through chat or through the spawn prompt. If the assignment is incomplete, fix the Vivi record and spawn again. Do not “clarify” in the opening message.
@@ -1241,8 +1243,7 @@ A Hand's task body is labeled fields, not a narrative and not a spawn brief:
 - optional `check-first`: if already true, close with evidence.
 
 Three more fields are **front matter keys**, not prose lines. Vivi reads
-them from the `+++` block at the top of the letter and ignores a `done_when:`
-line in the prose:
+them from the `+++` block at the top of the letter:
 
 - `write_scope`: files this logical change may touch (send flag `--write-scope`, repeatable);
 - `done_when`: acceptance for **this** change, one list entry per clause (send flag `--done-when`, repeatable); a task without it parks as `no_done_when`;
@@ -1512,9 +1513,9 @@ Closeout reconciles wave-owned temporary state, records foreign dirt, and files 
 
 Cadence is the executive officer. Mind is the commander.
 
-One Vivi role (`cadence`). One host loop (`cadence_tick`). The old
-`mind_wake` / `auditor_range` / `cto_range` / `polish_analyzer` reminder
-loops are retired. Their processes live in the catalog below.
+One Vivi role (`cadence`). One host loop (`cadence_tick`). The auditor, CTO
+and polish reminders (`auditor_range`, `cto_range`, `polish_analyzer`) are
+cadence recommendations, not loops. They live in the catalog below.
 
 The loop is **off by default**. The Mind does not arm or re-arm it. A missing
 loop is the expected state. Only explicit operator enablement creates
@@ -1698,7 +1699,7 @@ by reading.
 | `neglected_need` | Open need with no live owner and no disposition | Cite the need; Mind must lower + spawn |
 | `unhandled_block` | An audit verdict of `block_range` or `block_ship` on an audit handle — absorbed or not, since absorption does not retire a handle — whose blocked paths have no owner: no open repair task, no debt handle, no recorded waiver | Cite the audit handle, the verdict, the blocked paths, and the missing owner. Mind files the repair, the debt, or the waiver. Do not dispatch. |
 | `stale_block` | A `block_range` whose repair landed but whose blocked paths were never re-audited, and whose recheck trigger has elapsed | Cite the block handle, the paths, and the repair commit. Mind re-audits those paths or records the waiver. |
-| `unlocked_want` | Want whose precondition is now true, needs are clear | Cite the want; consider promote/dispatch |
+| `unlocked_want` | Want whose precondition is now true, needs are clear | Cite the want; consider sending a serving need |
 | `auditor_range` | Last **aggregate audit** tip older than ~1h **and** new commits on managed mains | File + spawn auditor (see below). Delivery audits, re-reviews, and verification reports do not advance this tip; only an aggregate implementation audit does. |
 | `cto_range` | Last CTO tip older than ~1h **and** (new main merges **or** `head-cto` schedule overdue) | File + spawn `head-cto` |
 | `security_review` | Last security pass older than the CSO cadence **and** (new surface or overdue `head-cso`) | File + spawn `head-cso` (or the project's security seat) |
@@ -1778,7 +1779,7 @@ for "I need help" or "I want something from someone."
 |---|---|---|
 | **task** | Work that is **currently assigned** (or about to be) and is being worked — a concrete unit with a done-when condition, write scope, and an owner role | Active work. Dispatch = file task + spawn the seat. |
 | **need** | Something that **must get taken care of as soon as possible** — priority backlog. "This needs to happen." | Priority intake. Mind drains **needs before wants**. |
-| **want** | Something **queued** to work when appropriate or when a precondition is met — general backlog, not a fire drill | Deferred intake. Work only after open needs are cleared or honestly deferred with a recheck. |
+| **want** | A **deferred idea** and the discussion around it — not a fire drill. It carries no work itself; work happens through needs that serve it. | Deferred intake. Send serving needs only after open needs are cleared or honestly deferred with a recheck. |
 | **mail** | **Communication** — questions, findings, reports, handoffs that are not themselves the work queue | Signals and conversation. Not a substitute for need/want/task. |
 
 Work items are **graph citizens at send**: every task/need/want mints a node
@@ -1787,8 +1788,9 @@ creates the prerequisite edge, and readiness is computed across kinds. Work
 held for another mailspace's role mints no node (it is that mailspace's
 backlog); the sender's copy of work sent there is a tracking node that is never
 dispatched (`awaiting_remote`) and completes only when its owner closes it. An
-unlocked want surfaces as a ready want node — promotion remains a requested
-action (`want promote`) and never fires because a dependency completed.
+want whose dependencies are done is still parked (`want_parked`): the Mind
+sends serving needs when the idea is formed, and nothing sends them because a
+dependency completed.
 Lowering is a graph fact: `vivi need bind` attaches unit tasks, and the
 need auto-completes when the Mind has accepted every unit.
 
@@ -1818,17 +1820,18 @@ mail        →  read, integrate, absorb; do not confuse with the work queue
   while needs sit idle without disposition.
 - A **want** may name a precondition ("after phase P-3", "when a hand seat is free",
   "after API lands"). Leave it open until the precondition is true; do not
-  promote it early to steal capacity from needs.
-- Promote a want into a need only when urgency changes (operator or Mind marks
-  it must-do-soon). Promote need/want into **task**(s) when the Mind is ready
-  to assign and run the work.
+  send serving needs early to steal capacity from other needs.
+- Send a need that serves a want only when the idea is formed and urgency
+  changes (operator or Mind marks it must-do-soon); one need per piece of work,
+  each with its own `done_when`. The want's state is computed: it is open while
+  any serving need is open and done once all of them are closed. Lower
+  need(s) into **task**(s) when the Mind is ready to assign and run the work.
 - **Mail** can *discover* a need or want ("we found X") but the durable backlog
   item should be filed as need or want so it stays on the board after absorb.
 
 ### What a need is *not*
 
-A need is **not** "a decision the Mind cannot make alone." That was wrong
-language. Human decisions and questions go as **mail** (often `To: operator@`
+A need is **not** "a decision the Mind cannot make alone." Human decisions and questions go as **mail** (often `To: operator@`
 or the deciding role), with a default and options when useful. If the outcome
 of that decision is work that must happen soon, file or keep a **need** for
 the work itself.
@@ -1870,7 +1873,7 @@ and current `vivi --help`.
 
 Set `ROOT` to the project root and use `--project "$ROOT"`. Prefer class
 identity tokens such as `mind`, `operator`, `hand`, `planner`, `auditor`,
-`cadence`, and `head-ceo`. Numbered names are legacy addresses.
+`cadence`, and `head-ceo`.
 
 ```bash
 # The project frame in one read (Mind boot, reorientation, and Cadence's tick)
@@ -1942,7 +1945,7 @@ vivi task done --project "$ROOT" --for mind <handle> --note 'reconciled'   # the
 vivi task reopen --project "$ROOT" --for mind <handle> --note 'defect: …'  # same handle, dependents re-lock
 vivi need done --project "$ROOT" --for mind <handle>
 vivi need reopen --project "$ROOT" --for mind <handle>
-vivi want done --project "$ROOT" --for mind <handle>
+vivi want done --project "$ROOT" --for mind <handle>   # only for a want no need serves; with serving needs its state follows them
 vivi want drop --project "$ROOT" --for mind <handle>
 vivi need send --project "$ROOT" --from mind --to mind --serves <handle> --subject '...' --done-when '...'   # a need that serves the want
 
@@ -2170,7 +2173,7 @@ standing rulings in the Mind memo so they survive.
 - **Warm boot without Auditor + CTO:** Reorienting board/loops after compaction but skipping the required reacquaintance pair. Compaction is the reliable trigger for tactical (Auditor) and strategic (CTO) re-grounding; cadence mail does not substitute. File + spawn both (or prove equivalent passes already in flight).
 - **Warm-boot reacquaintance as a seat freeze:** Parking Hands/Planners until Auditor/CTO return, or re-running full suites as “reacquaintance.” Spawn async, keep seats full, evidence honesty / strategic lens only (Rule 6).
 - **Cold boot without Mind paper hygiene:** Restarting seats while leaving unabsorbed Mind inbox, dead `host_task_id` memos, and stale Mind-owned tasks/needs as if they were current. Cold boot step 2 (absorb + cleanup) is required; only worker spawn-debt handles stay open for resume.
-- **Cold boot without registry triage:** Restarting after dormancy without re-confirming the registered backlog against the tree that moved while nothing was running. Wants and needs written in a previous world then keep their old claim, get promoted on it, and reach a frontier gate carrying a premise that died weeks ago. Step 3 covers want/need/goal claims; paper hygiene (step 2) is Mind-owned state and never substitutes for it.
+- **Cold boot without registry triage:** Restarting after dormancy without re-confirming the registered backlog against the tree that moved while nothing was running. Wants and needs written in a previous world then keep their old claim, get serving needs sent on it, and reach a frontier gate carrying a premise that died weeks ago. Step 3 covers want/need/goal claims; paper hygiene (step 2) is Mind-owned state and never substitutes for it.
 - **Frontier seat on triage work:** Sending backlog reconciliation to a Head, a CTO, or an Auditor — or hand-walking it in the Mind's own context — because the verdict sounds like a judgment. Deciding *whether an item is still true and startable* is shallow, wide, high-volume work on the cheap band; deciding *whether the approach is right* is the frontier question, and it happens later, on the items triage kept.
 - **Cold-boot cleanup closes worker debt:** Deleting or `task done`-ing open Hand/Planner/Auditor/Head work because “the session died.” That work is spawn debt; re-spawn it. Cleanup targets Mind paper and proven-stale Mind-owned items only.
 - **Worker runs Mind boot:** A Hand/Auditor/Planner/Head/Cadence that compacted starts Warm/Cold boot, board management, or loop re-arm instead of [Unit resume](#unit-resume-worker-seats-only). Workers stay on their handle (Cadence: finish the tick).

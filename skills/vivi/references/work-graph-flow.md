@@ -6,15 +6,7 @@ task-dependency graph and `vivi step`. It is a workflow guide. The command
 reference is the parent `SKILL.md`; flags change, so run `vivi <command>
 --help` before relying on an exact spelling.
 
-The letter rules below (front matter for `done_when`, `write_scope` and
-`depends_on`, the `step` reasons, the audit's edge reading) match Vivi 21
-(`src/letter/`, `src/mailspace/step.rs`, `dependencies.rs`, `backlog_audit.rs`).
-The rest of the graph and lifecycle material (the non-pool parts of sections 1
-to 7) was checked against Vivi 10.0.0 source (`src/mailspace/backlog.rs`,
-`graph.rs`, `graph_mutate.rs`) and the installed binary's help text. The lane
-and pool material (2b, the pool forks in 4, the two-pool example in 6, and the pool
-gaps in 7) was checked against the parent skill's pool section and `src/pool`
-as of Vivi 10.2.0.
+Commands here match this binary; run `vivi <command> --help` for exact flags.
 
 Throughout, `$ROOT` is the project root and every command carries
 `--project $ROOT`.
@@ -163,8 +155,8 @@ who reads the letter; vivi does not parse them. The rules:
   ("need has no done_when: pass --done-when or add done_when = [...] to the
   front matter"). A task may send without one; `step` then reports
   `no_done_when`.
-- A letter with no front matter is history. `show` and `list` read it, `step`
-  reports it as `letter_invalid`, and it cannot be executed: send a new letter.
+- A letter with no front matter cannot be executed. `show` and `list` read it,
+  `step` reports it as `letter_invalid`: send a new letter.
 - A task's `from`, `branch`, `with` and `band` have no flags; put them in a
   whole-letter body.
 
@@ -174,8 +166,8 @@ active ones, except reported work, below), checked in this order:
 | Outcome | Condition |
 |---|---|
 | exception `item_missing` | no message resolves for the node's id |
-| exception `want_requires_promotion` | the item sits in the wants folder (decided by folder, not by the node's kind); wants never dispatch before `want promote` |
-| exception `letter_invalid` | the letter is in the old format (no front matter) or its front matter is invalid; the detail carries the reader's error |
+| exception `want_parked` | the item sits in the wants folder (decided by folder, not by the node's kind); wants never dispatch: send a need that serves it (`need send --serves <want>`) |
+| exception `letter_invalid` | the letter has no front matter or its front matter is invalid; the detail carries the reader's error |
 | exception `pump_owned` | a task with a `[step]` front matter table: the pump runs and closes it, so `step` never dispatches it |
 | exception `lowered_awaiting_units` | units are bound to this node with `need bind`; its completion comes from them |
 | exception `no_done_when` | the front matter `done_when` list is empty (in practice a task; a need cannot be stored without one) |
@@ -216,9 +208,7 @@ For each unit, in this order:
    so the need closes when the work has landed and not merely when Hands
    reported. Bind everything at lowering time: binding needs the need to be
    open, and it can be repeated to add more, but a need whose bound items are
-   all accepted has already completed. A need must have kind `need` as a node;
-   a promoted want keeps its `want` node kind and `need bind` refuses it until
-   `graph audit --repair` corrects the kind (section 5). For a need assigned
+   all accepted has already completed. A need must have kind `need` as a node. For a need assigned
    from another mailspace, assignment sync makes the foreign need a local
    backlog node in the receiving mailspace; run the same bind there to lower
    it onto that member's local tasks. The bound letter and join close sync
@@ -307,7 +297,7 @@ backlog graph was created against the graph. It reports:
 - `missing_node`: the item exists and has no node (sent by a binary that did
   not mint, or the mint failed).
 - `node_kind`: the node's kind differs from the folder's kind (open items
-  only), commonly a promoted want whose node is still `want`.
+  only).
 - `node_state`: the node and the folder disagree on done versus not done. A
   report awaiting acceptance (done folder, open or active node, no accepting
   `done`) is not a disagreement and is never reported or repaired.
@@ -327,8 +317,7 @@ backlog graph was created against the graph. It reports:
 graph rows and, in two narrow cases, mailbox copies (a need's, and an
 `event_state` item's); it never edits a message's content or headers, never
 deletes a node, never moves a task or want between folders except to apply an
-event letter it already holds (`event_state`), and never touches wants'
-promotion state.
+event letter it already holds (`event_state`).
 
 - `missing_node`: creates the node (label = subject, kind taken from the
   folder/letter) and one solid edge per front matter `depends_on` entry that
@@ -338,9 +327,8 @@ promotion state.
   node is then completed with `via=repair`, which can unlock its successors.
   It also completes the node's siblings and join parent the same way a normal
   close does.
-- `node_kind`: rewrites that node's kind to the folder's kind. Effects: a
-  promoted want becomes eligible for `need bind` and for `graph ready --kind
-  need`. `step` already reads the folder, so its output does not change.
+- `node_kind`: rewrites that node's kind to the folder's kind.
+  `step` already reads the folder, so its output does not change.
 - `node_state`: the folder wins. Done folder with an open or active node (and
   no report awaiting acceptance): completes the node (`via=repair`). Open
   folder with a done node: sets the node back to open, without cascading to a
@@ -461,7 +449,7 @@ vivi step --project $R --apply $IB1             # the merge task turns ready
 # 2. The remote is the bus between pools: fetch before integrating locally.
 git -C <repo> fetch origin u/ib-1
 vivi pool dispatch --project $R --pool local $M1 --model <slug> \
-  --from main --branch merge/ib-1               # brief: merge u/ib-1, run the gate
+  --from main --branch merge/ib-1               # brief: merge u/ib-1, run the checks
 vivi graph activate --project $R $M1 --task $M1
 vivi pool wait --project $R --pool local $M1    # prints `committed merge/ib-1 <sha>`
 
@@ -512,9 +500,7 @@ Three things this arrangement must respect:
   is another reason not to stack.
 - **`graph connect` has no cycle check**, and a cancelled or superseded
   prerequisite blocks its dependents forever. Both are manual repairs.
-- **Promotion does not update node kind.** After `want promote`, the node is
-  still a `want` until `graph audit --repair`; `need bind` refuses it meanwhile.
-- **Items without nodes.** Sends made by an older binary (or when the mint
+- **Items without nodes.** Sends made by a binary that does not mint nodes (or when the mint
   failed) have no node. `graph activate`, `need bind`, `graph connect`, and
   `step --apply` then fail or report `untracked_item`, and each error names
   `graph audit --repair`. A stale `vivi` earlier on `PATH` is the usual cause;
