@@ -31,7 +31,6 @@ pub struct MigratePlan {
     pub new_roles: Vec<NewRole>,
     pub new_pools: Vec<NewPool>,
     pub caps: Vec<CapWrite>,
-    pub renames: Vec<KeyRename>,
     /// Roles whose `kind` changes.
     pub kind_changes: Vec<KindChange>,
     /// Keys the plan deletes because the current release ignores them.
@@ -102,19 +101,6 @@ pub struct RootSet {
     pub pool: String,
     pub root: String,
     pub reason: String,
-}
-
-/// One renamed config key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyRename {
-    /// The dotted or bracketed table that holds the key.
-    pub table: String,
-    /// The deprecated key name.
-    pub from: String,
-    /// The key name that replaces it.
-    pub to: String,
-    /// Why the rename happens.
-    pub note: String,
 }
 
 /// `role.pool = name`.
@@ -214,14 +200,6 @@ fn plan_pump(
     plan_hand_kind(config, pump, plan);
     assign_slug_roles(config, plan);
     fold_caps(config, pump, dispatch.as_deref(), plan);
-    if pump.planner.split_timeout_present {
-        plan.renames.push(KeyRename {
-            table: "pump.planner".into(),
-            from: "split_timeout".into(),
-            to: "split_hard_cap".into(),
-            note: "split_timeout is deprecated; split_hard_cap wins when both are set".into(),
-        });
-    }
     plan_removals(doc, config, &merge_pool, plan);
     plan_flow_roles(config, pump, inputs, plan);
     inherit_hand_band(config, pump, plan);
@@ -254,7 +232,6 @@ fn plan_is_empty(plan: &MigratePlan) -> bool {
         && plan.new_roles.is_empty()
         && plan.new_pools.is_empty()
         && plan.caps.is_empty()
-        && plan.renames.is_empty()
         && plan.kind_changes.is_empty()
         && plan.removals.is_empty()
         && plan.roots.is_empty()
@@ -783,12 +760,6 @@ fn render_changes(plan: &MigratePlan, lines: &mut Vec<String>) {
             cap.pool, cap.model, cap.cap
         ));
     }
-    for rename in &plan.renames {
-        lines.push(format!(
-            "rename [{}] {} -> {}  ({})",
-            rename.table, rename.from, rename.to, rename.note
-        ));
-    }
 }
 
 fn render_removals(plan: &MigratePlan, lines: &mut Vec<String>) {
@@ -816,7 +787,6 @@ pub fn apply_plan_to_document(
     set_kinds(doc, plan)?;
     apply_roots(doc, plan);
     write_caps(doc, plan);
-    rename_keys(doc, plan);
     apply_removals(doc, plan);
     Ok(())
 }
@@ -833,25 +803,6 @@ fn set_kinds(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), VivariumEr
         )?;
     }
     Ok(())
-}
-
-fn rename_keys(doc: &mut DocumentMut, plan: &MigratePlan) {
-    for rename in &plan.renames {
-        let Some(table) = doc
-            .get_mut("pump")
-            .and_then(Item::as_table_mut)
-            .and_then(|pump| pump.get_mut("planner"))
-            .and_then(Item::as_table_mut)
-        else {
-            continue;
-        };
-        let Some(item) = table.remove(&rename.from) else {
-            continue;
-        };
-        if table.get(&rename.to).is_none() {
-            table.insert(&rename.to, item);
-        }
-    }
 }
 
 fn add_pools(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), VivariumError> {

@@ -368,12 +368,12 @@ fn clean_lines_name_kind_bytes_and_dry_run() {
     let skip = crate::pool::clean::CleanSkip {
         pool: "lanes".into(),
         slot: "slot-1".into(),
-        kind: crate::pool::clean::ActionKind::Worktree,
+        kind: crate::pool::clean::ActionKind::Build,
         reason: "uncommitted changes".into(),
     };
     assert_eq!(
         clean_skip(&skip),
-        r#"skipped lanes slot-1 worktree "uncommitted changes""#
+        r#"skipped lanes slot-1 build "uncommitted changes""#
     );
     assert_eq!(clean_summary(2, 1, 100), "summary 2 1 100");
 }

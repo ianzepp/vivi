@@ -4,12 +4,12 @@
 //! means "pump state is not local", and an unreadable one is reported as
 //! such. Neither ever fails the calling command.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::VivariumError;
 
-use super::state::{State, Status, Unit};
+use super::state::State;
 use super::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// What a reader found at the pump home.
@@ -26,17 +26,6 @@ pub enum PumpRead {
 pub struct Snapshot {
     state: State,
     exceptions: Vec<(u64, String, String, String)>,
-}
-
-/// The whole pump's state, in counts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateSummary {
-    pub units: BTreeMap<String, usize>,
-    pub complete: usize,
-    pub amendments: usize,
-    pub stuck: usize,
-    pub exceptions: usize,
-    pub inflight: usize,
 }
 
 /// One role's latest cadence run, for read-only board and status views.
@@ -73,12 +62,6 @@ pub fn read(home: &Path) -> Result<PumpRead, VivariumError> {
 }
 
 impl Snapshot {
-    /// The loaded state, for the closeout and amendment passes.
-    #[must_use]
-    pub(crate) fn state(&self) -> &State {
-        &self.state
-    }
-
     /// Latest cadence-run receipts keyed by role name.
     #[must_use]
     pub fn cadence_runs(&self) -> BTreeMap<String, CadenceRunSummary> {
@@ -102,84 +85,5 @@ impl Snapshot {
     #[must_use]
     pub fn exception_rows(&self) -> &[(u64, String, String, String)] {
         &self.exceptions
-    }
-
-    /// Counts for the boot digest.
-    #[must_use]
-    pub fn summary(&self) -> StateSummary {
-        let units = self.state.counts();
-        let complete = self
-            .state
-            .needs
-            .keys()
-            .filter(|handle| need_complete(&self.state, handle))
-            .count();
-        StateSummary {
-            stuck: units.get("stuck").copied().unwrap_or(0),
-            inflight: units
-                .get("inflight")
-                .copied()
-                .unwrap_or(0)
-                .saturating_add(units.get("merging").copied().unwrap_or(0)),
-            amendments: self
-                .state
-                .needs
-                .values()
-                .filter(|record| record.amendment_pending)
-                .count(),
-            units,
-            complete,
-            exceptions: self.exceptions.len(),
-        }
-    }
-
-    /// Need handles whose every unit is satisfied.
-    #[must_use]
-    pub fn complete_needs(&self) -> BTreeSet<String> {
-        self.state
-            .needs
-            .keys()
-            .filter(|handle| need_complete(&self.state, handle))
-            .cloned()
-            .collect()
-    }
-}
-
-/// A need is complete when its verdict says delivered, or when it has units
-/// and every one is satisfied. A parked verdict is not complete.
-pub(crate) fn need_complete(state: &State, handle: &str) -> bool {
-    let Some(record) = state.needs.get(handle) else {
-        return false;
-    };
-    if record.amendment_pending {
-        return false;
-    }
-    if record.verdict == "delivered" {
-        return true;
-    }
-    !record.units.is_empty()
-        && record.units.iter().all(|unit| {
-            state
-                .units
-                .get(unit)
-                .is_some_and(|unit| satisfied(state, unit, 0))
-        })
-}
-
-/// `merged` and `no-defect` are satisfied; `replaced` delegates to its
-/// successors, with the same depth cap the pump uses.
-fn satisfied(state: &State, unit: &Unit, depth: usize) -> bool {
-    match unit.status {
-        Status::Merged | Status::NoDefect => true,
-        Status::Replaced if depth < 6 => {
-            !unit.replaced_by.is_empty()
-                && unit.replaced_by.iter().all(|id| {
-                    state
-                        .units
-                        .get(id)
-                        .is_some_and(|next| satisfied(state, next, depth + 1))
-                })
-        }
-        _ => false,
     }
 }

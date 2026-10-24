@@ -1,7 +1,6 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::alarm::AlarmConfig;
 use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -134,7 +133,6 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.planner.charter, "");
     assert_eq!(cfg.planner.split_hard_cap, 5400);
     assert_eq!(cfg.planner.planners_max, 3);
-    assert!(!cfg.planner.split_timeout_present);
     assert!(cfg.dispatch.lanes.is_empty());
     assert_eq!(cfg.dispatch.last_resort, "");
     assert_eq!(cfg.dispatch.max_attempts, 3);
@@ -157,17 +155,6 @@ fn a_minimal_pump_table_takes_every_default() {
 }
 
 #[test]
-fn legacy_split_timeout_loads_as_split_hard_cap() {
-    let cfg =
-        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n");
-    assert_eq!(cfg.planner.split_hard_cap, 1800);
-    assert!(
-        cfg.planner.split_timeout_present,
-        "the legacy key's presence must survive parsing"
-    );
-}
-
-#[test]
 fn planner_planners_max_reads_toml_and_defaults_to_3() {
     let set = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nplanners_max = 5\n");
     assert_eq!(set.planner.planners_max, 5);
@@ -183,22 +170,6 @@ fn pump_proof_allow_key_parses_and_defaults_empty() {
     assert_eq!(configured.proof.allow, ["faber", "python3.11"]);
     let defaulted = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
     assert!(defaulted.proof.allow.is_empty());
-}
-
-#[test]
-fn split_hard_cap_wins_when_both_planner_keys_are_set() {
-    let cap_first = pump(
-        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_hard_cap = 2700\n\
-         split_timeout = 1800\n",
-    );
-    assert_eq!(cap_first.planner.split_hard_cap, 2700);
-    assert!(cap_first.planner.split_timeout_present);
-    let timeout_first = pump(
-        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n\
-         split_hard_cap = 2700\n",
-    );
-    assert_eq!(timeout_first.planner.split_hard_cap, 2700);
-    assert!(timeout_first.planner.split_timeout_present);
 }
 
 #[test]
@@ -617,21 +588,6 @@ fn the_retired_priority_file_key_still_parses_and_is_not_written_back() {
     .unwrap();
     assert_eq!(cfg.retired_priority_file.as_deref(), Some("priority.txt"));
     assert!(!toml::to_string(&cfg).unwrap().contains("priority_file"));
-}
-
-#[test]
-fn the_alarm_table_carries_the_blocking_thresholds() {
-    let cfg: AlarmConfig =
-        toml::from_str("blocking_hold_units = 3\nblocking_replan_minutes = 30\n").unwrap();
-    assert_eq!(cfg.blocking_hold_units, 3);
-    assert_eq!(cfg.blocking_replan_minutes, 30);
-}
-
-#[test]
-fn the_blocking_thresholds_default_to_ten_units_and_two_hours() {
-    let cfg = AlarmConfig::default();
-    assert_eq!(cfg.blocking_hold_units, 10);
-    assert_eq!(cfg.blocking_replan_minutes, 120);
 }
 
 #[test]

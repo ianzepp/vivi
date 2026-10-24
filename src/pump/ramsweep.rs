@@ -11,8 +11,7 @@
 //! The sweep therefore detaches each matching worktree through its owning
 //! repository (`git -C <owner> worktree remove --force <dir>`, never a
 //! repository-wide `git worktree prune`) and then tears the disk down. This
-//! is crash and reboot recovery, distinct from [`crate::pool::clean_work`],
-//! which sweeps worktrees whose unit is done while the pump is running.
+//! is crash and reboot recovery.
 
 use std::path::{Path, PathBuf};
 

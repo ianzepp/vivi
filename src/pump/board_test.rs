@@ -8,7 +8,6 @@ use tempfile::{TempDir, tempdir};
 use crate::pump::board::*;
 use crate::pump::config::{BoardConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::record::send_reply;
 use crate::pump::state::State;
 
 /// A context with an operator sender; three planners, 1800 s plan timeout.
@@ -74,71 +73,6 @@ fn parse_rows_returns_none_for_garbage() {
     assert_eq!(parse_rows(""), None);
     assert_eq!(parse_rows("lead [ oops"), None);
     assert_eq!(parse_rows("lead {\"not\": \"an array\"}"), None);
-}
-
-/// One JSON record as `vivi pump list --json` prints it.
-fn record(handle: &str, need: &str) -> String {
-    format!(
-        "{{\"handle\": \"{handle}\", \"kind\": \"pump\", \"need\": \"{need}\", \"status\": \"open\"}}"
-    )
-}
-
-/// Script the lookup of `need`'s open pump record to `record_handle`, so a
-/// progress reply is posted with `mail reply <record_handle>`.
-fn reply_record(host: &FakeHost, need: &str, record_handle: &str) {
-    host.reply(
-        &format!("pump list --status open --json --need {need}"),
-        0,
-        &list(&[record(record_handle, need)]),
-    );
-}
-
-/// The one `mail reply` command the fake host ran.
-fn mail_reply(host: &FakeHost) -> String {
-    host.commands()
-        .into_iter()
-        .find(|cmd| cmd.contains("mail reply"))
-        .expect("a mail reply ran")
-}
-
-#[test]
-fn send_reply_omits_an_empty_recipient_and_quotes_role_identities() {
-    let board = BoardConfig {
-        from: Vec::new(),
-        ..BoardConfig::default()
-    };
-    let cfg = PumpConfig {
-        board: board.clone(),
-        reply_from: String::from("mind role"),
-        ..PumpConfig::default()
-    };
-    let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), cfg);
-    reply_record(&host, "empty-to", "p-empty");
-    host.reply("mail reply p-empty", 0, "queued");
-    assert!(send_reply(&ctx, "empty-to", "planned", "body"));
-    let command = mail_reply(&host);
-    assert!(command.contains("--from 'mind role'"), "{command}");
-    assert!(!command.contains("--to "), "{command}");
-
-    let cfg = PumpConfig {
-        board: BoardConfig {
-            reply_to: Some(String::from("operator role")),
-            ..board
-        },
-        reply_from: String::from("mind role"),
-        ..PumpConfig::default()
-    };
-    let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), cfg);
-    reply_record(&host, "quoted-to", "p-quoted");
-    host.reply("mail reply p-quoted", 0, "queued");
-    assert!(send_reply(&ctx, "quoted-to", "planned", "body"));
-    let command = mail_reply(&host);
-    assert!(
-        command.contains("--from 'mind role' --to 'operator role'"),
-        "{command}"
-    );
 }
 
 #[test]

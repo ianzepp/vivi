@@ -733,7 +733,7 @@ fn the_retired_board_intake_keys_are_removed_naming_the_pump_record() {
 fn migrated_text_still_parses_as_a_pump_config() {
     let (_, after) = migrate(V15);
     let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
-    let pump = migrated.pump.expect("pump");
+    assert!(migrated.pump.is_some(), "{after}");
     assert!(!after.contains("[pump.planner]"), "{after}");
     let errors: Vec<_> = validate(&toml::from_str::<MailspaceConfig>(&after).unwrap())
         .into_iter()

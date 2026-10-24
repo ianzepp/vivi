@@ -1,6 +1,5 @@
 //! Pump configuration (the `[pump]` table of `mailspace.toml`).
 
-use crate::pump::alarm::AlarmConfig;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -87,8 +86,6 @@ pub struct PumpConfig {
     pub merge: MergeConfig,
     /// Lane RAM disk settings (the `[pump.workspace]` table).
     pub workspace: PumpWorkspace,
-    /// Stall alarm thresholds (the `[pump.alarm]` table).
-    pub alarm: AlarmConfig,
     /// Rung settings (the `[pump.rungs]` table).
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
@@ -127,7 +124,6 @@ impl Default for PumpConfig {
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             workspace: PumpWorkspace::default(),
-            alarm: AlarmConfig::default(),
             rungs: RungsConfig::default(),
             flow: FlowConfig::default(),
             slice: SliceConfig::default(),
