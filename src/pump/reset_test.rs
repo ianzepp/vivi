@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::pump::control::{self, PumpMode};
 use crate::pump::fixture::project;
-use crate::pump::reset::archive;
+use crate::pump::reset::{archive, move_entries};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// Every archived entry plus every keep-in-place one, with content in the
@@ -118,6 +118,55 @@ fn archive_moves_the_listed_entries_and_keeps_targets_and_log() {
             "old line\nreset: archived to {}\n",
             report.archive_dir.display()
         )
+    );
+}
+
+#[test]
+fn a_second_reset_gets_its_own_archive_and_keeps_both_pump_dbs() {
+    let project = project();
+    let home = project.home();
+    seed_home(&home);
+    fs::write(home.join("pump.db"), "first archive\n").unwrap();
+
+    let first = archive(project.root()).unwrap();
+
+    // The fresh database is what a same-second second reset would move;
+    // give it its own bytes before archiving again.
+    fs::write(home.join("pump.db"), "second archive\n").unwrap();
+
+    let second = archive(project.root()).unwrap();
+
+    assert_ne!(first.archive_dir, second.archive_dir);
+    assert_eq!(
+        fs::read_to_string(first.archive_dir.join("pump.db")).unwrap(),
+        "first archive\n"
+    );
+    assert_eq!(
+        fs::read_to_string(second.archive_dir.join("pump.db")).unwrap(),
+        "second archive\n"
+    );
+}
+
+#[test]
+fn an_archive_destination_that_exists_is_an_error_not_a_replace() {
+    let project = project();
+    let home = project.home();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("pump.db"), "home bytes\n").unwrap();
+    let hand_made = home.parent().unwrap().join("pump-archive-hand-made");
+    fs::create_dir_all(&hand_made).unwrap();
+    fs::write(hand_made.join("pump.db"), "archived bytes\n").unwrap();
+
+    let error = move_entries(&home, &hand_made).unwrap_err();
+
+    assert!(error.to_string().contains("refusing to replace"), "{error}");
+    assert_eq!(
+        fs::read_to_string(hand_made.join("pump.db")).unwrap(),
+        "archived bytes\n"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("pump.db")).unwrap(),
+        "home bytes\n"
     );
 }
 

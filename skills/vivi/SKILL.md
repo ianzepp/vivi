@@ -2499,8 +2499,8 @@ vivi flow show <kind> [--need <need>] [--json]
 ```
 
 **vivi pump reset** archives the pump home beside itself and starts fresh; it
-is refused while the pump runs, and the next tick re-ingests every open pump
-record.
+is refused while the pump runs (a paused pump still holds the lock and is
+refused too), and the next tick re-ingests every open pump record.
 
 A fresh **pump.db** starts stopped: run **vivi pump start** to enable the
 pump (the service starts it when registered). **pump target add|remove** and
