@@ -4,8 +4,10 @@
 
 pub mod admin;
 pub mod admissions;
+pub mod audit;
 pub mod auth;
 pub mod crypto;
+pub mod grants;
 pub mod hosted;
 pub mod identities;
 pub mod ids;
