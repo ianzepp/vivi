@@ -208,7 +208,6 @@ boot alike, and two runs are comparable.
 
 ```sh
 vivi boot --project <root>
-vivi boot --project <root> --role <name>
 vivi boot --project <root> --json
 ```
 
@@ -216,9 +215,7 @@ Run it first when orienting or re-orienting. Every section is capped, and the
 digest closes with a truncation manifest naming each cap and how much it
 omitted — so the digest is complete in coverage and bounded in length. Boot never
 absorbs, closes, dispatches, or writes. Act on it with the ordinary
-verbs. `--json` prints the same bounded digest as JSON. `--role` names the
-booting seat (otherwise inferred from a local slot / `VIVI_SLOT_ROOT`).
-For pump state read `vivi flow list`, `vivi flow show <kind> --need <need>`,
+verbs. `--json` prints the same bounded digest as JSON. For pump state read `vivi flow list`, `vivi flow show <kind> --need <need>`,
 `vivi pump list` and `vivi pool status`.
 
 Seats are listed for roles that hold open work or carry a bound process. The
@@ -1922,7 +1919,7 @@ a front matter `band`. From the role it takes:
   charter leaves the pool rules unchanged.
 - **Read-only mode from the role.** `--read-only` wins; else the role's
   `read_only` flag; else the kind default. Auditor, triage, cadence/steward,
-  head, gate, digest, researcher, admitter, and slicer default read-only;
+  head, digest, researcher, admitter, and slicer default read-only;
   hand, merge, and lint write.
 - **The model and reasoning from the band.** The role's `model` field holds a
   band string such as `P2-S0` (set it with `vivi role set <role> --model P2`)
@@ -2492,7 +2489,7 @@ vivi pump reopen <record>
 vivi pump history <need> [--json]
 vivi pump requeue <step-task>... [--reason TEXT] [--dry-run]
 vivi pump requeue --job <job-id>    # release a held pool job
-vivi pump replan <need> [--force]
+vivi pump replan <need>
 vivi pump withdraw <need>... --reason TEXT
 vivi pump answer <step-task> <word> [--note TEXT]
 vivi pump unlock <need> [--entry <entry>] [--note TEXT]

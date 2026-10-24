@@ -160,12 +160,10 @@ infrastructure is still live**, not from “a summary appeared.”
 project frame in a single read — seat bindings against observed process state,
 declared cadences and their silence, unabsorbed mail, open handles with
 verdicts, registered goals with register tallies, memos, charter heads, the
-undispatched backlog already sliced for dispatch, and (when present) local
-pump/pool state. Coordinating seats see the full pump snapshot; a Hand sees
-only its own unit. It is read-only, stateless,
+undispatched backlog already sliced for dispatch. It is read-only, stateless,
 and idempotent, so re-running it is free and two runs are comparable. **Do not
 re-derive its sections by hand.** The individual `vivi board` / `vivi mail
-list` / `vivi memo list` / `vivi role list` / `vivi pump status` reads it
+list` / `vivi memo list` / `vivi role list` / `vivi pump list` reads it
 replaces appear below only to say what the digest covers.
 
 Three parts of the frame are not Vivi's to know, and arrive through project

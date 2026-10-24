@@ -1,9 +1,8 @@
 //! The pump's `state.json` model, load and save.
 //!
-//! The shapes here are the `state.json` shape (skills/vivi/references/pump-contract.md,
-//! section "State file"): every field is `#[serde(default)]` so a state file
-//! written by an older pump still loads, and unknown keys — top level or
-//! inside a unit — land in `extra` and are written back untouched.
+//! Every field is `#[serde(default)]` so a state file written by an earlier
+//! build still loads, and unknown keys — top level or inside a unit — land in
+//! `extra` and are written back untouched.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

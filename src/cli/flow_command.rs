@@ -16,7 +16,7 @@ pub enum FlowCommand {
 
     /// Print a shipped flow's Mermaid source, and with `--need` that need's runs
     Show {
-        /// Flow kind: build, research or release
+        /// Flow kind: build, research, release or repair
         kind: String,
 
         /// Append the run index of this need handle (steps with task, state, verdict)
