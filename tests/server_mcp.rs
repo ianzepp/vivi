@@ -379,7 +379,8 @@ async fn send_list_show_thread_done_graph() {
                 "kind": "need",
                 "to": to,
                 "subject": "ship MCP",
-                "body": "done_when: the connector works"
+                "body": "the connector works",
+                "done_when": "the connector works"
             }),
         )
         .await;
@@ -397,7 +398,7 @@ async fn send_list_show_thread_done_graph() {
         shown["text"]
             .as_str()
             .unwrap()
-            .contains("done_when: the connector works"),
+            .contains("done_when = [\"the connector works\"]"),
         "{shown}"
     );
 
@@ -447,6 +448,64 @@ async fn send_list_show_thread_done_graph() {
         .call(&fx.token, "list", json!({"kind": "need", "status": "open"}))
         .await;
     assert_eq!(open_again["items"][0]["handle"], handle);
+}
+
+#[tokio::test]
+async fn a_sugared_send_builds_front_matter_in_a_durable_project() {
+    let fx = fixture("sugar").await;
+    let sent = fx
+        .call(
+            &fx.token,
+            "send",
+            json!({
+                "kind": "need",
+                "to": address("creator"),
+                "subject": "sugared",
+                "body": "the prose",
+                "done_when": ["it is done"],
+                "target": "repo"
+            }),
+        )
+        .await;
+    // The stored bytes carry the front matter the sugar arguments built
+    // (the composer's X-Vivi-Format header is the next W3-C3 task).
+    let raw = fx
+        .raw_letter(&fx.token, sent["message_id"].as_str().unwrap())
+        .await;
+    assert!(raw.contains("done_when = [\"it is done\"]"), "{raw}");
+    assert!(raw.contains("target = \"repo\""), "{raw}");
+    assert!(raw.contains("the prose"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_need_without_front_matter_or_done_when_is_refused_with_vivis_message() {
+    let fx = fixture("gate").await;
+    let err = fx
+        .call_err(
+            &fx.token,
+            "send",
+            json!({"kind": "need", "to": address("creator"), "subject": "s",
+                   "body": "just do it"}),
+        )
+        .await;
+    assert!(err.contains("need has no done_when"), "{err}");
+}
+
+#[tokio::test]
+async fn sugar_arguments_beside_a_whole_letter_body_are_refused() {
+    let fx = fixture("whole-letter").await;
+    let err = fx
+        .call_err(
+            &fx.token,
+            "send",
+            json!({"kind": "need", "to": address("creator"), "subject": "s",
+                   "body": "+++\ndone_when = [\"y\"]\n+++\n\nx",
+                   "done_when": "again"}),
+        )
+        .await;
+    // vivi's own refusal, naming the front-matter key.
+    assert!(err.contains("whole letter"), "{err}");
+    assert!(err.contains("put done_when in its front matter"), "{err}");
 }
 
 #[tokio::test]
@@ -520,7 +579,8 @@ async fn graph_blocks_on_an_open_dependency() {
                 "kind": "need",
                 "to": address("creator"),
                 "subject": "parent",
-                "body": "must land first"
+                "body": "must land first",
+                "done_when": "it landed"
             }),
         )
         .await;
@@ -539,6 +599,36 @@ async fn graph_blocks_on_an_open_dependency() {
         )
         .await;
     let child = task["handle"].as_str().unwrap().to_owned();
+    // A dependency named at send rides in the letter's front matter, never
+    // in an X-Vivi-Depends-On header. The graph reader moves to front
+    // matter in its own task; until then a legacy letter that carries the
+    // header is what still blocks.
+    let raw = fx
+        .raw_letter(&fx.token, task["message_id"].as_str().unwrap())
+        .await;
+    assert!(
+        raw.contains(&format!("depends_on = [\"{parent}\"]")),
+        "{raw}"
+    );
+    assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
+
+    let legacy = format!(
+        "From: {}\nTo: {}\nSubject: legacy child\nMessage-ID: <{}>\n\
+         X-Vivi-Kind: task\nX-Vivi-Depends-On: {parent}\n\nafter parent\n",
+        address("creator"),
+        address("creator"),
+        rfc_id(&traveling(60), "creator"),
+    );
+    fx.put_letter(
+        &fx.token,
+        60,
+        legacy.into_bytes(),
+        "task",
+        &address("creator"),
+    )
+    .await;
+    let legacy_handle = traveling(60)[4..12].to_owned();
+
     let graph = fx.call(&fx.token, "graph", json!({"view": "status"})).await;
     let blocked: Vec<_> = graph["blocked"]
         .as_array()
@@ -553,7 +643,8 @@ async fn graph_blocks_on_an_open_dependency() {
         .map(|i| i["handle"].as_str().unwrap().to_owned())
         .collect();
     assert!(ready.contains(&parent), "{graph}");
-    assert!(blocked.contains(&child), "{graph}");
+    assert!(ready.contains(&child), "{graph}");
+    assert!(blocked.contains(&legacy_handle), "{graph}");
 }
 
 #[tokio::test]
@@ -724,7 +815,7 @@ impl Fixture {
     }
 
     /// Send a need or task from `token`'s member to `to` and return
-    /// `(handle, message_id)`.
+    /// `(handle, message_id)`. The need passes the front-matter gate.
     async fn send_item(
         &self,
         token: &str,
@@ -736,7 +827,8 @@ impl Fixture {
             .call(
                 token,
                 "send",
-                json!({"kind": kind, "to": to, "subject": subject, "body": "do the thing"}),
+                json!({"kind": kind, "to": to, "subject": subject, "body": "do the thing",
+                       "done_when": "it is done"}),
             )
             .await;
         (

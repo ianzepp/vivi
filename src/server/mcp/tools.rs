@@ -335,9 +335,12 @@ fn send(
     if subject.trim().is_empty() || body.trim().is_empty() {
         return Err(ToolError::new("subject and body must be non-empty"));
     }
-    let depends_on = parse_depends(arguments)?;
+    // The sugar arguments build the work letter's front matter, and the
+    // dependencies ride in it; the composer is handed none, so nothing
+    // travels in an X-Vivi-Depends-On header from this path.
+    let body = sugared_body(kind, body, arguments)?;
     let composed =
-        compose_send(identity, &to, subject, body, kind, &depends_on).map_err(ToolError::new)?;
+        compose_send(identity, &to, subject, &body, kind, &[]).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -854,6 +857,94 @@ pub(super) fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError>
         _ => Err(ToolError::new(
             "depends_on must be a handle or a list of handles",
         )),
+    }
+}
+
+/// The sugar arguments of a `send`, as the CLI's flags: the front matter a
+/// need, task, or want is built from. Every field is empty when its
+/// argument is absent.
+pub(super) fn parse_sugar(arguments: &Value) -> Result<vivi::letter::sugar::Sugar, ToolError> {
+    Ok(vivi::letter::sugar::Sugar {
+        done_when: sugar_list(arguments, "done_when")?,
+        target: opt_str(arguments, "target")?.map(str::to_owned),
+        write_scope: sugar_list(arguments, "write_scope")?,
+        serves: opt_str(arguments, "serves")?.map(str::to_owned),
+        explores: opt_str(arguments, "explores")?.map(str::to_owned),
+        question: opt_str(arguments, "question")?.map(str::to_owned),
+        depends_on: parse_depends(arguments)?,
+    })
+}
+
+/// A string-or-list sugar argument as a list; blank entries are refused.
+fn sugar_list(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError> {
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::String(raw)) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![trimmed.to_owned()])
+            }
+        }
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let text = item
+                    .as_str()
+                    .map(str::trim)
+                    .ok_or_else(|| ToolError::new(format!("{name} entries must be strings")))?;
+                if text.is_empty() {
+                    return Err(ToolError::new(format!("{name} entries must not be blank")));
+                }
+                Ok(text.to_owned())
+            })
+            .collect(),
+        _ => Err(ToolError::new(format!(
+            "{name} must be a string or a list of strings"
+        ))),
+    }
+}
+
+/// The sugar arguments `sugar` carries, by name, in schema order: what a
+/// refusal of a sugarless kind names.
+fn sugar_given(sugar: &vivi::letter::sugar::Sugar) -> Vec<&'static str> {
+    [
+        (!sugar.done_when.is_empty(), "done_when"),
+        (sugar.target.is_some(), "target"),
+        (!sugar.write_scope.is_empty(), "write_scope"),
+        (sugar.serves.is_some(), "serves"),
+        (sugar.explores.is_some(), "explores"),
+        (sugar.question.is_some(), "question"),
+        (!sugar.depends_on.is_empty(), "depends_on"),
+    ]
+    .into_iter()
+    .filter(|(present, _)| *present)
+    .map(|(_, name)| name)
+    .collect()
+}
+
+/// The body a `send` sends. For a need, task, or want the sugar arguments
+/// build its front matter, exactly as the CLI's flags do; `apply` speaks
+/// for every refusal (a need without `done_when`, a want without
+/// `question`, or a sugar argument beside a body that already opens with
+/// `+++`, the whole letter). Any other kind takes no sugar argument, and
+/// its prose passes as written.
+pub(super) fn sugared_body(kind: &str, body: &str, arguments: &Value) -> Result<String, ToolError> {
+    let sugar = parse_sugar(arguments)?;
+    if matches!(kind, "need" | "task" | "want") {
+        let sugared = vivi::letter::sugar::apply(kind, body, &sugar)
+            .map_err(|error| ToolError::new(error.to_string()))?;
+        return Ok(sugared.body);
+    }
+    let given = sugar_given(&sugar);
+    if given.is_empty() {
+        Ok(body.to_owned())
+    } else {
+        Err(ToolError::new(format!(
+            "{kind} takes no sugar arguments: {}",
+            given.join(", ")
+        )))
     }
 }
 
