@@ -97,32 +97,14 @@ impl PumpConfig {
     /// both wrong and missing items fail.
     ///
     /// `pools` holds the names of the mailspace's `[pools.<name>]` tables.
-    ///
     /// `project` is the base a relative `hand_rules` path resolves against.
-    /// Empty `[pump.dispatch] lanes` is reported: pass [`Self::validate_for`]
-    /// when a role assigns a pool so capacity can come from that pool. The
-    /// pump itself uses [`Self::findings_for`], which keeps the two kinds
+    /// The pump itself uses [`Self::findings_for`], which keeps the two kinds
     /// apart.
     ///
     /// # Errors
     /// [`VivariumError::Config`] naming every violated key when a rule fails.
     pub fn validate(&self, project: &Path, pools: &[String]) -> Result<(), VivariumError> {
-        self.validate_for(project, pools, false)
-    }
-
-    /// Like [`Self::validate`], but empty `[pump.dispatch] lanes` is allowed
-    /// when the hand role has a pool; capacity comes from its pool's slots and
-    /// optional caps, while kind-pool routing and `default_kind` are optional.
-    ///
-    /// # Errors
-    /// [`VivariumError::Config`] naming every violated key when a rule fails.
-    pub fn validate_for(
-        &self,
-        project: &Path,
-        pools: &[String],
-        hand_role_pool: bool,
-    ) -> Result<(), VivariumError> {
-        let found = self.findings_for(project, pools, hand_role_pool);
+        let found = self.findings_for(project, pools);
         let mut all = found.errors;
         all.extend(found.missing.into_iter().map(|item| item.detail));
         if all.is_empty() {
@@ -133,10 +115,10 @@ impl PumpConfig {
     }
 
     /// Check the config and report wrong values apart from missing items.
-    /// `hand_role_pool` is whether the hand role has a pool, which lets
-    /// `[pump.dispatch] lanes` stay empty.
+    /// Only keys the pump reads are checked; the hand role's pool is checked
+    /// by the routing validation.
     #[must_use]
-    pub fn findings_for(&self, project: &Path, pools: &[String], hand_role_pool: bool) -> Findings {
+    pub fn findings_for(&self, project: &Path, pools: &[String]) -> Findings {
         let mut found = Findings::default();
         if self.committer_name.trim().is_empty() {
             found.absent(
@@ -162,9 +144,7 @@ impl PumpConfig {
             found.invalid("[pump] tick must be >= 1");
         }
         self.validate_board(&mut found);
-        self.validate_plan(&mut found);
-        self.validate_workspace(&mut found);
-        self.validate_dispatch(pools, hand_role_pool, &mut found);
+        self.validate_dispatch(&mut found);
         validate_rungs("[pump.rungs]", &self.rungs, pools, &mut found);
         if self.targets.is_empty() {
             validate_rung_pools("[pump.rungs]", &self.effective_rungs(None), &mut found);
@@ -191,29 +171,6 @@ impl PumpConfig {
         found
     }
 
-    /// Every `[[pump.plan.proof_rules]]` entry names a scope and a proof
-    /// pattern that compiles, so a typo fails here and not at the first plan.
-    fn validate_plan(&self, found: &mut Findings) {
-        for (index, rule) in self.plan.proof_rules.iter().enumerate() {
-            let at = index + 1;
-            if rule.scope.trim().is_empty() {
-                found.invalid(format!(
-                    "[[pump.plan.proof_rules]] entry {at}: scope must not be empty"
-                ));
-            }
-            if rule.proof.trim().is_empty() {
-                found.invalid(format!(
-                    "[[pump.plan.proof_rules]] entry {at}: proof must not be empty"
-                ));
-            } else if let Err(error) = rule.pattern() {
-                found.invalid(format!(
-                    "[[pump.plan.proof_rules]] entry {at}: proof `{}` is not a valid regex: {error}",
-                    rule.proof
-                ));
-            }
-        }
-    }
-
     /// The retired `[pump.board]` intake keys are errors, not silently
     /// ignored: a config that still sets them expects an intake that is gone.
     fn validate_board(&self, found: &mut Findings) {
@@ -232,84 +189,13 @@ impl PumpConfig {
         }
     }
 
-    fn validate_dispatch(&self, pools: &[String], hand_role_pool: bool, found: &mut Findings) {
-        if self.dispatch.lanes.is_empty() && !hand_role_pool {
-            found.absent(
-                "hand pool",
-                "[pump.dispatch] lanes must not be empty (or give the hand role a pool: \
-                 `vivi role pool hand <pool>`)",
-            );
-        }
-        for lane in &self.dispatch.lanes {
-            if lane.cap == 0 {
-                found.invalid(format!(
-                    "[pump.dispatch] lanes: lane `{}` needs cap >= 1",
-                    lane.model
-                ));
-            }
-            if lane.model.is_empty() {
-                found.invalid("[pump.dispatch] lanes: lane model must not be empty");
-            }
-        }
-        if self.dispatch.max_attempts == 0 {
-            found.invalid("[pump.dispatch] max_attempts must be >= 1");
-        }
+    /// `budget` and `parallel` are the only dispatch keys the pump reads.
+    fn validate_dispatch(&self, found: &mut Findings) {
         if self.dispatch.budget == 0 {
             found.invalid("[pump.dispatch] budget must be >= 1");
         }
-        if self.dispatch.per_tick == 0 {
-            found.invalid("[pump.dispatch] per_tick must be >= 1");
-        }
         if self.dispatch.parallel == 0 {
             found.invalid("[pump.dispatch] parallel must be >= 1");
-        }
-        self.validate_kinds(pools, hand_role_pool, found);
-    }
-
-    fn validate_kinds(&self, pools: &[String], hand_role_pool: bool, found: &mut Findings) {
-        for (name, kind) in &self.dispatch.kinds {
-            if !hand_role_pool {
-                if kind.pools.is_empty() {
-                    found.absent(
-                        format!("pump.dispatch.kinds.{name}.pools"),
-                        format!("[pump.dispatch.kinds.{name}] pools must not be empty"),
-                    );
-                }
-                for pool in &kind.pools {
-                    if !known(pools, pool) {
-                        found.invalid(format!(
-                            "[pump.dispatch.kinds.{name}] pools names unknown pool `{pool}`"
-                        ));
-                    }
-                }
-            }
-            if kind.max == Some(0) {
-                found.invalid(format!("[pump.dispatch.kinds.{name}] max must be >= 1"));
-            }
-        }
-        if !hand_role_pool && !self.dispatch.kinds.is_empty() {
-            let default = &self.dispatch.default_kind;
-            if default.is_empty() {
-                found.absent(
-                    "pump.dispatch.default_kind",
-                    "[pump.dispatch] default_kind must be set when kinds is non-empty",
-                );
-            } else if !self.dispatch.kinds.contains_key(default) {
-                found.invalid(format!(
-                    "[pump.dispatch] default_kind names undefined kind `{default}`"
-                ));
-            }
-        }
-    }
-
-    /// `[pump.workspace] lane_gib`, when set, must be a plausible lane disk.
-    fn validate_workspace(&self, found: &mut Findings) {
-        if let Some(gib) = self.workspace.lane_gib
-            && !(1..=1024).contains(&gib)
-        {
-            found.invalid(format!(
-                "[pump.workspace] lane_gib must be between 1 and 1024, got {gib}"
-            ));
         }
     }
 }

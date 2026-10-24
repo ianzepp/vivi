@@ -96,6 +96,9 @@ scope = "src"
 proof = "cargo test"
 [pump.alarm]
 merge_idle_minutes = 5
+[pump.workspace]
+lane_gib = 8
+margin_gib = 4
 [pump.dispatch]
 default_kind = "plain"
 max_attempts = 2
@@ -135,6 +138,7 @@ fn every_key_vivi_21_does_not_read_is_planned_for_removal_with_a_reason() {
         "pump.proof",
         "pump.plan",
         "pump.alarm",
+        "pump.workspace",
         "pump.dispatch.default_kind",
         "pump.dispatch.max_attempts",
         "pump.dispatch.per_tick",
@@ -197,6 +201,8 @@ fn applying_the_plan_leaves_none_of_the_refused_keys() {
         "[pump.proof]",
         "proof_rules",
         "[pump.alarm]",
+        "[pump.workspace]",
+        "lane_gib",
         "default_kind",
         "max_attempts",
         "per_tick",

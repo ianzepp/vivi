@@ -39,16 +39,19 @@ const MERGE_BATCH_REASON: &str = "retired: the merge flow no longer batches or f
 const MERGE_TIMER_REASON: &str = "retired: the merge flow has its own step timeouts";
 const MERGE_LANES_REASON: &str =
     "ignored: merge concurrency follows the slots of the merge role's pool";
+const WORKSPACE_REASON: &str = "not read by vivi 21: merge lanes run on the merge role's pool, \
+     not a lane RAM disk; the whole table is ignored";
 const NEED_REASON: &str = "retired: no repair-round counter; the whole table is ignored";
 
 /// Keys that are always ignored: `(table, key, reason, behaviour_change)`.
 /// A key that holds a table retires the whole table. A `*` in the table path
 /// stands for each `[pump.targets.<id>]`.
-const RETIRED: [(&str, &str, &str, bool); 42] = [
+const RETIRED: [(&str, &str, &str, bool); 43] = [
     ("pump", "planner", PLANNER_REASON, false),
     ("pump", "proof", PROOF_REASON, false),
     ("pump", "plan", PLAN_REASON, false),
     ("pump", "alarm", ALARM_REASON, false),
+    ("pump", "workspace", WORKSPACE_REASON, false),
     ("pump", "reserved_file", UNIT_FILE_REASON, false),
     ("pump", "fix_prefix", UNIT_FILE_REASON, false),
     ("pump.board", "planners_max", PLANNER_CAP_REASON, false),
