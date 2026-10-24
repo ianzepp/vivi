@@ -2473,6 +2473,7 @@ vivi pump pause
 vivi pump resume
 vivi pump stop
 vivi pump start
+vivi pump reset [--json]
 vivi pump priority set <need> <level>
 vivi pump priority clear <need>
 vivi pump priority list
@@ -2496,6 +2497,10 @@ vivi pump unlock <need> [--entry <entry>] [--note TEXT]
 vivi flow list [--json]
 vivi flow show <kind> [--need <need>] [--json]
 ```
+
+**vivi pump reset** archives the pump home beside itself and starts fresh; it
+is refused while the pump runs (a paused pump still holds the lock and is
+refused too), and the next tick re-ingests every open pump record.
 
 A fresh **pump.db** starts stopped: run **vivi pump start** to enable the
 pump (the service starts it when registered). **pump target add|remove** and
