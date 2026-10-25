@@ -2693,8 +2693,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivi"
-version = "21.3.1"
-source = "git+https://github.com/ianzepp/vivi?tag=v21.3.1#fce7e32d8913f7ec3895997c241a1606eea4086d"
+version = "21.3.2"
+source = "git+https://github.com/ianzepp/vivi?tag=v21.3.2#085588995ad967c4ef3283609e53ab8c497c1688"
 dependencies = [
  "axum",
  "bytes",
@@ -2732,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-server"
-version = "2.3.1"
+version = "2.3.2"
 dependencies = [
  "aes-gcm",
  "axum",

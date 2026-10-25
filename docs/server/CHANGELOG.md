@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.2
+
+Pairs with vivi 21.3.2. `create_project` works on a host whose base defines
+the flow roles with only a pool and model: their kind and read_only are
+completed for the new project.
+
 ## 2.3.1
 
 Pairs with vivi 21.3.1.
