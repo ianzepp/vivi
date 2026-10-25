@@ -218,7 +218,10 @@ pub async fn serve_forever() -> Result<(), VivariumError> {
         &format!("mind started; authority {}", config.authority.as_str()),
     );
     wake_loop(&config, &shared).await?;
-    std::fs::remove_file(&config.paths.socket)?;
+    match std::fs::remove_file(&config.paths.socket) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
     log_line(&config.paths.log, "mind stopped");
     Ok(())
 }
