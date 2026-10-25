@@ -228,6 +228,42 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
 }
 
 #[tokio::test]
+async fn create_project_starts_the_pump_running() {
+    let fx = fixture("pumpstart", Some(TOKEN), true);
+    let (errored, made) = fx.create(json!({"name": "auto"})).await;
+    assert!(!errored, "{made}");
+    assert_eq!(made["pump_mode"], "running", "{made}");
+    assert!(made.get("pump_error").is_none(), "{made}");
+
+    // The control state is stored, not just answered: it reads back running
+    // the same way the library reads it, and the project stays registered.
+    let root = fx.projects.join("auto").canonicalize().unwrap();
+    assert_eq!(pump_mode(&root), "running");
+    let flags = vivi::registry::load()
+        .unwrap()
+        .get(&root)
+        .expect("registered");
+    assert!(flags.pump);
+
+    // The read-only pump tool exposes the running control at once, with the
+    // minted operator key alone (no pump_control call beforehand). Control is
+    // the stored mode, independent of health and writer status.
+    let id = made["project_id"].as_str().unwrap().to_owned();
+    let key = made["operator_key"]["key"].as_str().unwrap().to_owned();
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "pump", "arguments": {"project": id}}});
+    let (status, value) = fx.post("/v1/mcp", Some(&key), body).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_ne!(value["result"]["isError"], true, "{value}");
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(text).unwrap()["control"],
+        "running",
+        "{text}"
+    );
+}
+
+#[tokio::test]
 async fn a_project_token_or_key_is_not_the_host_operator() {
     let fx = fixture("member", Some(TOKEN), true);
     let (errored, made) = fx.create(json!({"name": "memberproj"})).await;
@@ -310,6 +346,19 @@ async fn serve_false_registers_without_serving() {
     assert!(made.get("operator_key").is_none() && made.get("project_id").is_none());
     let root = fx.projects.join("quiet").canonicalize().unwrap();
     assert!(!vivi::registry::load().unwrap().get(&root).unwrap().serve);
+}
+
+#[tokio::test]
+async fn pump_false_registers_without_starting() {
+    let fx = fixture("nopump", Some(TOKEN), true);
+    let (errored, made) = fx.create(json!({"name": "sleepy", "pump": false})).await;
+    assert!(!errored, "{made}");
+    // With `pump: false` the mode is left alone: a fresh project with no
+    // control file reads stopped, and no mode is ever written.
+    assert_eq!(made["pump_mode"], "stopped", "{made}");
+    assert!(made.get("pump_error").is_none(), "{made}");
+    let root = fx.projects.join("sleepy").canonicalize().unwrap();
+    assert!(!vivi::registry::load().unwrap().get(&root).unwrap().pump);
 }
 
 #[tokio::test]
@@ -403,7 +452,7 @@ async fn create_project_seeds_the_given_rungs_and_answers_the_readiness_after() 
     assert!(made.get("rungs_error").is_none(), "{made}");
 
     let root = fx.projects.join("laddered").canonicalize().unwrap();
-    let space = vivi::mailspace::Mailspace::open_root(root).unwrap();
+    let space = vivi::mailspace::Mailspace::open_root(root.clone()).unwrap();
     let issues = vivi::pump::readiness::assess(&space);
     let rungs = space.config.pump.unwrap().rungs;
     assert_eq!(rungs.need.as_deref(), Some("make need"));
@@ -422,6 +471,11 @@ async fn create_project_seeds_the_given_rungs_and_answers_the_readiness_after() 
         .map(|m| m["item"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(answered, listed, "{made}");
+
+    // Seeded before start, and started: the registered default set the pump
+    // running.
+    assert_eq!(made["pump_mode"], "running", "{made}");
+    assert_eq!(pump_mode(&root), "running");
 }
 
 #[tokio::test]
@@ -612,6 +666,16 @@ fn dir_names(dir: &std::path::Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// The stored pump control mode of a project, read the way the library
+/// reads it (not the answer's copy of it).
+fn pump_mode(project: &std::path::Path) -> String {
+    let home = vivi::pump::control::project_home(project).unwrap();
+    vivi::pump::control::inspect(&home)
+        .unwrap()
+        .mode
+        .to_string()
 }
 
 fn config_backups(project: &std::path::Path) -> Vec<std::path::PathBuf> {
