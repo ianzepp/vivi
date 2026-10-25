@@ -18,6 +18,8 @@ pub mod letter;
 pub mod mailspace;
 pub mod mcp;
 pub mod message;
+#[cfg(unix)]
+pub mod mind;
 pub mod monitor;
 pub mod pool;
 pub mod project_create;
