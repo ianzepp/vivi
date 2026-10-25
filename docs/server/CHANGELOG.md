@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.1
+
+Pairs with vivi 21.3.1.
+
+- `create_project` and `role_set` work on a host whose base mailspace defines
+  the pump roles: a role write on a base-only role writes a project override
+  (vivi 21.3.1) instead of failing with "unknown local role".
+
 ## 2.3.0
 
 Pairs with vivi 21.3.0.
