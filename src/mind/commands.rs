@@ -28,26 +28,22 @@ pub const UNIT_EXAMPLE: &str = include_str!("vivi-mind.service.example");
 /// As the subcommand.
 pub async fn dispatch(command: &MindCommand) -> Result<(), VivariumError> {
     let sub = command.command.as_ref().unwrap_or(&MindSubcommand::Attach);
-    if let MindSubcommand::Service { command } = sub {
-        return service(command).await;
-    }
-    let config = config::load()?;
     match sub {
-        MindSubcommand::Attach => attach(&config.paths.socket).await,
-        MindSubcommand::Status { json } => status(&config, *json).await,
-        MindSubcommand::Probe { json } => probe(&config, *json),
-        MindSubcommand::Log { lines } => log(&config.paths.log, *lines),
-        MindSubcommand::Pause => set_paused(&config, true).await,
-        MindSubcommand::Resume => set_paused(&config, false).await,
-        MindSubcommand::Stop => one_shot(&config.paths.socket, &Request::Stop).await,
+        MindSubcommand::Service { command } => service(command).await,
+        MindSubcommand::Attach => attach(&config::load()?.paths.socket).await,
+        MindSubcommand::Status { json } => status(&config::load()?, *json).await,
+        MindSubcommand::Probe { json } => probe(&config::load()?, *json),
+        MindSubcommand::Log { lines } => log(&config::load()?.paths.log, *lines),
+        MindSubcommand::Pause => set_paused(&config::load()?, true).await,
+        MindSubcommand::Resume => set_paused(&config::load()?, false).await,
+        MindSubcommand::Stop => one_shot(&config::load()?.paths.socket, &Request::Stop).await,
         MindSubcommand::Start => Err(VivariumError::Other(
             "mind start is the service manager's job: it runs `vivi mind service run` (see `vivi mind service unit`)".into(),
         )),
-        MindSubcommand::Compact => one_shot(&config.paths.socket, &Request::Compact).await,
+        MindSubcommand::Compact => one_shot(&config::load()?.paths.socket, &Request::Compact).await,
         MindSubcommand::History { limit } => {
-            one_shot(&config.paths.socket, &Request::History { limit: *limit }).await
+            one_shot(&config::load()?.paths.socket, &Request::History { limit: *limit }).await
         }
-        MindSubcommand::Service { .. } => Ok(()),
     }
 }
 
@@ -152,14 +148,11 @@ async fn status(config: &MindConfig, json: bool) -> Result<(), VivariumError> {
 
 fn offline_view(config: &MindConfig) -> Result<super::socket::StatusView, VivariumError> {
     let state = store::load_at(&config.paths.state)?;
-    Ok(super::socket::StatusView {
-        authority: config.authority.as_str().to_string(),
-        paused: state.paused,
-        busy: false,
-        session_id: state.session_id,
-        last_wake: state.last_wake,
-        ignored: state.ignored.len(),
-    })
+    Ok(super::socket::StatusView::of(
+        config.authority.as_str(),
+        false,
+        &state,
+    ))
 }
 
 fn print_status(view: &super::socket::StatusView, running: bool) {

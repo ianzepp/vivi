@@ -71,6 +71,21 @@ pub struct StatusView {
     pub ignored: usize,
 }
 
+impl StatusView {
+    /// The view of `state` under `authority`, busy or not.
+    #[must_use]
+    pub fn of(authority: &str, busy: bool, state: &MindState) -> Self {
+        Self {
+            authority: authority.to_string(),
+            paused: state.paused,
+            busy,
+            session_id: state.session_id.clone(),
+            last_wake: state.last_wake.clone(),
+            ignored: state.ignored.len(),
+        }
+    }
+}
+
 /// What every connection handler shares with the service loop.
 pub struct Shared<P> {
     /// The turn lock around the one session.
@@ -306,14 +321,7 @@ fn status<P>(shared: &Shared<P>) -> Reply {
 /// The status view over a state snapshot.
 #[must_use]
 pub fn view<P>(shared: &Shared<P>, state: &MindState) -> StatusView {
-    StatusView {
-        authority: shared.authority.clone(),
-        paused: state.paused,
-        busy: shared.busy.load(Ordering::SeqCst),
-        session_id: state.session_id.clone(),
-        last_wake: state.last_wake.clone(),
-        ignored: state.ignored.len(),
-    }
+    StatusView::of(&shared.authority, shared.busy.load(Ordering::SeqCst), state)
 }
 
 fn set_paused<P>(shared: &Shared<P>, paused: bool) -> Reply {
