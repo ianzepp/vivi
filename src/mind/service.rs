@@ -202,6 +202,12 @@ pub async fn serve_forever() -> Result<(), VivariumError> {
     std::fs::create_dir_all(&config.paths.home)?;
     let _lock =
         crate::registry::lock_file(config.paths.lock.clone(), "another vivi mind is running")?;
+    if close_interrupted_wake(&config.paths.state, now())? {
+        log_line(
+            &config.paths.log,
+            "previous wake was interrupted; closed as failed",
+        );
+    }
     let shared = Arc::new(Shared::new(
         start_pi(&config).await?,
         config.authority.as_str(),
@@ -224,6 +230,26 @@ pub async fn serve_forever() -> Result<(), VivariumError> {
     }
     log_line(&config.paths.log, "mind stopped");
     Ok(())
+}
+
+/// A wake left open by a mind that died mid-turn would read as "in flight"
+/// forever. Under the mind lock no other wake can be live, so close it as
+/// failed (which also starts the backoff). Returns whether one was closed.
+///
+/// # Errors
+/// Fails when the state file cannot be read or written.
+pub fn close_interrupted_wake(state: &Path, now: u64) -> Result<bool, VivariumError> {
+    store::update_at(state, |state| {
+        let Some(record) = state
+            .last_wake
+            .as_mut()
+            .filter(|record| record.ended_at.is_none())
+        else {
+            return Ok(false);
+        };
+        wake::finish(record, false, now);
+        Ok(true)
+    })
 }
 
 async fn start_pi(config: &MindConfig) -> Result<ProcessPi, VivariumError> {

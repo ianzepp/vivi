@@ -168,3 +168,24 @@ fn the_example_unit_is_loopback_only_and_names_the_run_verb() {
     assert!(unit.contains("NoNewPrivileges=yes"));
     assert!(unit.contains("User=vivi"));
 }
+
+#[test]
+fn a_wake_left_open_by_a_dead_mind_is_closed_as_failed_on_start() {
+    let dir = tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    assert!(!close_interrupted_wake(&state, NOW).unwrap());
+    store::update_at(&state, |state| {
+        state.last_wake = Some(WakeRecord {
+            started_at: NOW - 60,
+            ..WakeRecord::default()
+        });
+        Ok(())
+    })
+    .unwrap();
+    assert!(close_interrupted_wake(&state, NOW).unwrap());
+    let closed = store::load_at(&state).unwrap().last_wake.unwrap();
+    assert_eq!(closed.ended_at, Some(NOW));
+    assert_eq!(closed.outcome.as_deref(), Some("failed"));
+    assert!(closed.retry_at.is_some_and(|at| at > NOW));
+    assert!(!close_interrupted_wake(&state, NOW).unwrap());
+}
