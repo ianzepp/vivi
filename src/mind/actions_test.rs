@@ -157,3 +157,20 @@ fn dry_run_records_and_runs_nothing() {
     assert!(line.starts_with("would run vivi pump requeue"), "{line}");
     assert_eq!(actuator.applied.len(), 1);
 }
+
+#[test]
+fn a_dry_run_letter_names_its_project_need_and_note() {
+    let request = ActionRequest {
+        kind: Action::Escalate,
+        project: Some("/w/app".into()),
+        need: Some("3f9a1c2e".into()),
+        step: None,
+        word: None,
+        note: Some("locked at the operator gate".into()),
+    };
+    let line = DryRun::default().apply(&request).unwrap();
+    assert_eq!(
+        line,
+        "would send Escalate (letter or stub) project=/w/app need=3f9a1c2e note=\"locked at the operator gate\""
+    );
+}

@@ -254,7 +254,18 @@ pub struct DryRun {
 impl Actuator for DryRun {
     fn apply(&mut self, request: &ActionRequest) -> Result<String, String> {
         let line = request.argv().map_or_else(
-            || format!("would send {:?} (letter or stub)", request.kind),
+            || {
+                format!(
+                    "would send {:?} (letter or stub) project={} need={} note={:?}",
+                    request.kind,
+                    request
+                        .project
+                        .as_deref()
+                        .map_or_else(|| String::from("-"), |path| path.display().to_string()),
+                    request.need.as_deref().unwrap_or("-"),
+                    request.note.as_deref().unwrap_or_default(),
+                )
+            },
             |argv| format!("would run vivi {}", argv.join(" ")),
         );
         self.applied.push(line.clone());
