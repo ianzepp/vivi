@@ -25,6 +25,7 @@ use crate::projects::ProjectMeta;
 
 pub(crate) mod lane;
 mod rungs;
+mod source;
 
 use self::rungs::Rungs;
 use super::tool;
@@ -85,7 +86,7 @@ pub(super) fn tools_list() -> Value {
          lanes_dir, target, git_url (<HOST_GIT_URL_PREFIX><name>/<target>.git), repo_path, \
          checkout_path, mailspace_id, initial_commit, readiness (what the pump still needs), \
          project_id, mcp_path and operator_key (shown once; store it). Refuses a name that \
-         already exists.",
+         already exists, and a non-GitHub source.",
         json!({
             "type": "object",
             "properties": {
@@ -94,7 +95,7 @@ pub(super) fn tools_list() -> Value {
                 "branch": { "type": "string", "default": "main", "description": "The first target's default branch, also its main" },
                 "pool": { "type": "string", "description": "Pool whose remote_url is set to the git URL; overrides the host default" },
                 "initial_commit": { "type": "boolean", "default": false, "description": "Create an empty first commit on the branch" },
-                "source": { "type": "string", "description": "Fill the first target from this Git address (every branch and tag), fetched by this host; branch must be one of its branches. Excludes initial_commit" },
+                "source": { "type": "string", "description": "Fill the first target from this Git address (every branch and tag), fetched by this host; branch must be one of its branches. Excludes initial_commit. Must match ^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?$; local paths, file://, ssh://, other hosts, user info, query and fragment are refused" },
                 "pump": { "type": "boolean", "default": true, "description": "Register the project for the pump supervisor" },
                 "serve": { "type": "boolean", "default": true, "description": "Register the project for this server to host" },
                 "rungs": {
@@ -129,7 +130,7 @@ pub(super) fn tools_list() -> Value {
                     "target": { "type": "string", "description": "Target id (lowercase letters, digits and hyphens): [pump.targets.<target>]" },
                     "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><name>/<target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX" },
                     "seed": { "type": "boolean", "default": false, "description": "Create one empty seed commit on the lane's main branch" },
-                    "source": { "type": "string", "description": "Fill the lane from this Git address (every branch and tag), fetched by this host; it needs a main branch. Excludes seed" }
+                    "source": { "type": "string", "description": "Fill the lane from this Git address (every branch and tag), fetched by this host; it needs a main branch. Excludes seed. Must match ^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?$; local paths, file://, ssh://, other hosts, user info, query and fragment are refused" }
                 },
                 "required": ["name", "target"],
                 "additionalProperties": false
