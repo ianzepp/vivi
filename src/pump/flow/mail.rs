@@ -74,10 +74,9 @@ pub trait MailWriter {
         &mut self,
         need: &str,
         note: &str,
-        branch: &str,
-        commit: &str,
+        _branch: &str,
+        _commit: &str,
     ) -> Result<(), VivariumError> {
-        let _ = (branch, commit);
         self.close_need(need, note)
     }
     /// Open the pump record on a need; returns its handle.

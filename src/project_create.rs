@@ -75,6 +75,10 @@ pub struct ProjectCreate {
     /// Create an empty initial commit on `branch`; otherwise the repo stays
     /// empty until the first push.
     pub initial_commit: bool,
+    /// Fill the first target's repository from this Git address (every branch
+    /// and tag), fetched by the host. Excludes `initial_commit`; `branch` must
+    /// be one of the source's branches.
+    pub source: Option<String>,
 }
 
 impl ProjectCreate {
@@ -98,6 +102,7 @@ impl ProjectCreate {
             pump: true,
             serve: true,
             initial_commit: false,
+            source: None,
         }
     }
 
@@ -127,6 +132,8 @@ pub struct ProjectCreated {
     pub mailspace_id: String,
     /// Commit created on the branch when `initial_commit` was set.
     pub initial_commit: Option<String>,
+    /// The branch tip imported from `source`, when one was given.
+    pub imported: Option<String>,
     /// Whether the pump can run the project yet.
     pub readiness: Readiness,
 }
@@ -217,6 +224,11 @@ impl Plan {
             )));
         }
         check_branch(&request.branch)?;
+        if request.initial_commit && request.source.is_some() {
+            return Err(config(
+                "a project made from a source has its history; drop the initial commit",
+            ));
+        }
         if let Some(pool) = &request.pool {
             check_pool_name(pool)?;
         }
@@ -312,6 +324,10 @@ fn run_steps(
         request.initial_commit,
         &plan.root,
     )?;
+    let imported = match &request.source {
+        Some(source) => Some(lane::import(&plan.repo, source, &request.branch)?),
+        None => None,
+    };
 
     inject(Step::Target)?;
     let attached = lane_add::attach_target(
@@ -340,6 +356,7 @@ fn run_steps(
         checkout_path: attached.checkout_path,
         mailspace_id: mailspace.config.id.clone().unwrap_or_default(),
         initial_commit,
+        imported,
         readiness: summarize(&issues),
     })
 }

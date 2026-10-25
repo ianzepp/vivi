@@ -55,6 +55,46 @@ fn resolve_committer(root: &Path) -> Result<(String, String), VivariumError> {
     })
 }
 
+/// Fill the bare repository `repo` from `source` (any address `git fetch`
+/// takes): every branch and tag, as the source has them. The fetch runs on
+/// the host, so content enters through the host and never by a push from
+/// outside. `branch` must be one of the source's branches; it becomes the
+/// repository's default.
+pub(super) fn import(repo: &Path, source: &str, branch: &str) -> Result<String, VivariumError> {
+    check_source(source)?;
+    git(
+        Some(repo),
+        &[
+            "fetch",
+            "--quiet",
+            "--no-write-fetch-head",
+            source,
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+        ],
+    )
+    .run()?;
+    git(Some(repo), &["rev-parse", "--verify", "--quiet"])
+        .arg(Path::new(&format!("refs/heads/{branch}^{{commit}}")))
+        .run()
+        .map_err(|_| {
+            VivariumError::Config(format!(
+                "source {source} has no branch {branch:?}; name one of its branches"
+            ))
+        })
+}
+
+/// A source must be one Git address: not empty, no whitespace, and not a
+/// word git would read as an option.
+fn check_source(source: &str) -> Result<(), VivariumError> {
+    if source.is_empty() || source.starts_with('-') || source.chars().any(char::is_whitespace) {
+        return Err(VivariumError::Config(format!(
+            "source {source:?} is not a Git address"
+        )));
+    }
+    Ok(())
+}
+
 /// An empty commit on `refs/heads/<branch>` of the bare repo, authored by
 /// the given identity. Returns the commit id.
 fn make_initial_commit(

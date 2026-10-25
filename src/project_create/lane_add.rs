@@ -41,6 +41,9 @@ pub struct LaneAdd {
     pub git_url_prefix: Option<String>,
     /// Create the seed commit on the lane's branch.
     pub seed: bool,
+    /// Fill the lane from this Git address (every branch and tag), fetched by
+    /// the host. Excludes `seed`; the source must have a `main` branch.
+    pub source: Option<String>,
 }
 
 impl LaneAdd {
@@ -58,6 +61,7 @@ impl LaneAdd {
             lanes_root: lanes_root.into(),
             git_url_prefix: None,
             seed: false,
+            source: None,
         }
     }
 }
@@ -76,6 +80,8 @@ pub struct LaneAdded {
     pub git_url: String,
     /// Commit created on the branch when `seed` was set.
     pub initial_commit: Option<String>,
+    /// The `main` tip imported from `source`, when one was given.
+    pub imported: Option<String>,
 }
 
 /// What [`attach_target`] made.
@@ -105,6 +111,11 @@ fn add_with(
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
 ) -> Result<LaneAdded, VivariumError> {
     check_id(&request.target_id)?;
+    if request.seed && request.source.is_some() {
+        return Err(config(
+            "a lane made from a source has its history; drop the seed commit",
+        ));
+    }
     let lanes_root = existing_dir(&request.lanes_root, "lanes root")?;
     let project_dir = existing_dir(&request.project_root, "project root")?;
     let project = project_name(&project_dir)?;
@@ -149,6 +160,10 @@ fn run_steps(
     made.push(repo.to_path_buf());
     let branch = super::DEFAULT_BRANCH;
     let initial_commit = lane::init_bare(repo, branch, request.seed, project_dir)?;
+    let imported = match &request.source {
+        Some(source) => Some(lane::import(repo, source, branch)?),
+        None => None,
+    };
     inject(Step::Target)?;
     made.push(project_dir.join(&request.target_id));
     let remote_url = request.git_url_prefix.as_ref().map(|_| url);
@@ -159,6 +174,7 @@ fn run_steps(
         checkout_path: attached.checkout_path,
         git_url: url.to_string(),
         initial_commit,
+        imported,
     })
 }
 

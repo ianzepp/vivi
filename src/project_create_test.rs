@@ -370,3 +370,70 @@ fn lane_urls_name_the_project_and_the_target() {
         "git@hub:vivi/vivi-server.git"
     );
 }
+
+/// A plain repository with two commits on `main` and a tag, to import from.
+fn source_repo(host: &Host) -> (PathBuf, String) {
+    let src = host.projects.parent().unwrap().join("source");
+    fs::create_dir(&src).unwrap();
+    git(&src, &["init", "--quiet", "-b", "main"]);
+    for (file, text) in [("a.txt", "one"), ("b.txt", "two")] {
+        fs::write(src.join(file), text).unwrap();
+        git(&src, &["add", file]);
+        git(
+            &src,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "-m",
+                file,
+            ],
+        );
+    }
+    git(&src, &["tag", "v1"]);
+    let tip = git(&src, &["rev-parse", "HEAD"]);
+    (src, tip)
+}
+
+#[test]
+fn a_source_fills_the_first_target_with_its_history() {
+    let host = Host::new();
+    let (src, tip) = source_repo(&host);
+    let mut request = host.request("app");
+    request.source = Some(src.display().to_string());
+    let created = create_at(&request, &host.registry).unwrap();
+    assert_eq!(created.imported.as_deref(), Some(tip.as_str()));
+    let repo = host.repo("app", "app");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), tip);
+    assert_eq!(git(&repo, &["rev-list", "--count", "main"]), "2");
+    assert_eq!(git(&repo, &["tag"]), "v1");
+    let checkout = host.project("app").join("app");
+    assert!(checkout.join("b.txt").is_file());
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), tip);
+}
+
+#[test]
+fn a_source_without_the_branch_is_refused_and_rolled_back() {
+    let host = Host::new();
+    let (src, _) = source_repo(&host);
+    let mut request = host.request("app");
+    request.source = Some(src.display().to_string());
+    request.branch = "trunk".into();
+    let error = create_at(&request, &host.registry).unwrap_err().to_string();
+    assert!(error.contains("has no branch \"trunk\""), "{error}");
+    assert!(host.nothing_left("app"));
+}
+
+#[test]
+fn a_source_and_an_initial_commit_are_refused_together() {
+    let host = Host::new();
+    let mut request = host.request("app");
+    request.source = Some("https://example.com/app.git".into());
+    request.initial_commit = true;
+    let error = create_at(&request, &host.registry).unwrap_err().to_string();
+    assert!(error.contains("drop the initial commit"), "{error}");
+    assert!(host.nothing_left("app"));
+}

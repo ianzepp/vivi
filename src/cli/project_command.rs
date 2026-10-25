@@ -67,8 +67,12 @@ pub struct ProjectCreateCommand {
     #[arg(long)]
     pub no_serve: bool,
     /// Create an empty initial commit on the branch
-    #[arg(long)]
+    #[arg(long, conflicts_with = "source")]
     pub initial_commit: bool,
+    /// Fill the first target from this Git address (every branch and tag),
+    /// fetched by this host; `--branch` must be one of its branches
+    #[arg(long)]
+    pub source: Option<String>,
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -91,8 +95,12 @@ pub struct ProjectLaneAddCommand {
     #[arg(long)]
     pub git_url_prefix: Option<String>,
     /// Create the seed commit on the lane's branch
-    #[arg(long)]
+    #[arg(long, conflicts_with = "source")]
     pub seed: bool,
+    /// Fill the lane from this Git address (every branch and tag), fetched by
+    /// this host; it must have a `main` branch
+    #[arg(long)]
+    pub source: Option<String>,
     /// Output as JSON
     #[arg(long)]
     pub json: bool,

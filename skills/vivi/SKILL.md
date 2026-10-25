@@ -209,6 +209,12 @@ own values, and a host-registry entry (pump and serve on unless `--no-pump` /
   `main`).
 - `--initial-commit` makes one empty commit on the branch; without it the repo
   stays empty until the first push.
+- `--source <git-address>` fills the first target from an existing repository
+  instead: this host fetches every branch and tag into the new bare repo, so
+  content enters through the host rather than by a push from outside.
+  `--branch` must be one of the source's branches; it excludes
+  `--initial-commit`. `lane add --source` does the same for a lane (the source
+  needs a `main` branch).
 - Any failing step undoes every earlier step this call made. The result
   reports readiness: a project still missing items is registered and holds
   until they are filled (`vivi config validate` names them).
@@ -235,6 +241,10 @@ refused: the lane repository, the checkout or the target entry already
 exists, and the refusal names it. A failing step undoes only what that run
 created. The library entry point is `vivi::project_create::lane_add::add`;
 it prints nothing.
+
+A need that lands records the branch and commit it landed on its done event
+(close metadata `branch` and `commit`, and the note `landed by the pump flow:
+<branch> at <commit>`), so a land can be checked without reading the lane.
 
 ### Deleting a project
 

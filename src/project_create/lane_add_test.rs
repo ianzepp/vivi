@@ -237,3 +237,38 @@ fn bad_ids_and_addresses_are_refused_before_anything_is_made() {
         assert_eq!(target_ids(&project), ["app"]);
     }
 }
+
+#[test]
+fn a_source_fills_the_new_lane_with_its_history() {
+    let site = Site::new();
+    let project = site.project("app");
+    let src = site.projects.parent().unwrap().join("source");
+    fs::create_dir(&src).unwrap();
+    git(&src, &["init", "--quiet", "-b", "main"]);
+    fs::write(src.join("x.txt"), "x").unwrap();
+    git(&src, &["add", "x.txt"]);
+    git(
+        &src,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "x",
+        ],
+    );
+    let tip = git(&src, &["rev-parse", "HEAD"]);
+
+    let mut request = site.request(&project, "server");
+    request.source = Some(src.display().to_string());
+    let added = add_with(&request, &|_| Ok(())).unwrap();
+    assert_eq!(added.imported.as_deref(), Some(tip.as_str()));
+    assert_eq!(
+        git(&site.repo("app", "server"), &["rev-parse", "main"]),
+        tip
+    );
+    assert!(project.join("server/x.txt").is_file());
+}
