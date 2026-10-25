@@ -170,8 +170,10 @@ vivi mind status                  # running, authority, session id, last wake
 vivi mind log -n 40               # wake turns and the gate's verdicts (dry-run actions)
 ```
 
-The first tick wakes at once (heartbeat `never`). Later wakes come on the
-heartbeat or on a new stuck signal.
+The first tick wakes at once (heartbeat `never`). Later wakes come on a new
+stuck signal, or when the heartbeat comes due: `role_schedule` calls a seat
+due at 1.1 times its cadence, so a `10m` heartbeat wakes about 11 minutes
+after the last wake. `vivi mind probe` shows `nothing due` until then.
 
 ## 7. Talk to it
 
