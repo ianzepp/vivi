@@ -21,7 +21,7 @@
 //! roots, and every refusal is reported back to the turn and the operator.
 //! The spike executes nothing; [`Actuator`] has only a dry-run impl.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
@@ -213,7 +213,7 @@ impl ActionRequest {
             _ => return None,
         };
         argv.push(String::from("--project"));
-        argv.push(project_arg(project));
+        argv.push(project.to_string_lossy().into_owned());
         Some(argv)
     }
 }
@@ -226,10 +226,6 @@ fn with(parts: &[&str], tail: &[&str]) -> Vec<String> {
     let mut out = words(parts);
     out.extend(tail.iter().map(|part| (*part).to_string()));
     out
-}
-
-fn project_arg(project: &Path) -> String {
-    project.to_string_lossy().into_owned()
 }
 
 /// Carries out permitted actions. The spike ships only [`DryRun`].
