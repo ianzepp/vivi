@@ -335,7 +335,10 @@ fn build_request(
     request.pump = opt_bool(arguments, "pump", request.pump)?;
     request.serve = opt_bool(arguments, "serve", request.serve)?;
     request.initial_commit = opt_bool(arguments, "initial_commit", request.initial_commit)?;
-    request.source = opt_str(arguments, "source")?.map(str::to_owned);
+    if let Some(source) = opt_str(arguments, "source")? {
+        source::check(source)?;
+        request.source = Some(source.to_owned());
+    }
     Ok((request, Rungs::parse(arguments)?))
 }
 
