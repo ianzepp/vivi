@@ -186,57 +186,66 @@ project sets only what is its own.
 
 ### Creating a project
 
-`vivi project create <name> --projects-root P --lanes-root L --git-url-prefix U`
-makes a whole pumped project in one step: a group-shared bare repo at
-`L/<name>.git`, a mailspace at `P/<name>` (with the starter `[pump]`), the
-project's own values, and a host-registry entry (pump and serve on unless
-`--no-pump` / `--no-serve`). Both roots must already exist.
+One user owns both roots. Project `<name>` lives at `P/<name>` and keeps its
+lanes under `L/<name>/`: one bare, group-shared repo `<target>.git` per pump
+target, reached at `<U><name>/<target>.git`; a target's checkout is
+`P/<name>/<target>`. Group and ACL come from the lanes directory itself (a
+setgid `L` with default ACLs hands both to everything made inside it).
 
-- `--pool <p>` writes `[pools.<p>] remote_url = <U><name>.git` in the
-  project's file; the pool itself must come from a base mailspace above `P`
-  (`base = true`).
-- `--branch` names the new repo's default branch (default `main`).
+`vivi project create <name> --projects-root P --lanes-root L --git-url-prefix U`
+makes a whole pumped project in one step: `L/<name>/` with the first
+target's bare repo, a mailspace at `P/<name>` (with the starter `[pump]`
+unless a base supplies one), the first target's checkout and
+`[pump.targets.<target>]` entry (`remote_url` and `main` set), the project's
+own values, and a host-registry entry (pump and serve on unless `--no-pump` /
+`--no-serve`). Both roots must already exist.
+
+- `--target <id>` names the first target (default: the project name, which
+  must then be a valid target id: lowercase letters, digits and hyphens).
+- `--pool <p>` writes `[pools.<p>] remote_url = <U><name>/<target>.git` in
+  the project's file; the pool itself must come from a base mailspace above
+  `P` (`base = true`).
+- `--branch` names the first target's default branch and `main` (default
+  `main`).
 - `--initial-commit` makes one empty commit on the branch; without it the repo
   stays empty until the first push.
 - Any failing step undoes every earlier step this call made. The result
   reports readiness: a project still missing items is registered and holds
   until they are filled (`vivi config validate` names them).
 
-The library entry point is `vivi::project_create::create`; it prints nothing.
-
-**Split owners.** A host can own the lanes root and the projects root with
-two different users. `vivi project create` probes both roots, performs every
-half the caller can write, and prints the exact command for the user who
-owns the rest; the same command, run by that user, finishes the job.
-
-On Linux the lanes half copies the new bare repo's owning group and ACL from
-the lexicographically first sibling `*.git` directory whose ACL `getfacl` can
-read; off Linux, or when that copy cannot be done, it is skipped with a
-one-line warning and the lane is still created.
+Checkouts are cloned from the lane's local path, then `origin` is pointed at
+the lane URL, so creating a project never needs the network. The library
+entry point is `vivi::project_create::create`; it prints nothing.
 
 ### Adding a lane
 
 `vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
-[--seed]` attaches one repository target to a project that already exists.
-It performs every half the caller can write and prints the exact command for
-the other half's owner, exactly like `project create`:
-
-- **lanes half**: the group-shared bare repo `L/<id>.git`, with one empty
-  seed commit when `--seed` is given. On Linux its group and ACL are copied
-  from a sibling repo; elsewhere that copy is skipped with a warning.
-- **projects half**: inside the project, a clone of the lane at
-  `<project-root>/<id>` and the `[pump.targets.<id>]` entry (`path` is the
-  checkout, `remote_url` is `<U><id>.git`), written through the guarded
-  config edit: a running pump refuses (`vivi pump pause` first). Without
-  `--git-url-prefix` the lane is cloned from its local path and the target
-  writes no `remote_url`; the checkout's `origin` names the lane.
+[--seed]` adds one repository target to a project that already exists: the
+group-shared bare repo `L/<project>/<id>.git` (`<project>` is the project
+root's directory name; `L/<project>/` is made when missing), with one empty
+seed commit when `--seed` is given; a clone at `<project-root>/<id>`; and the
+`[pump.targets.<id>]` entry (`path` is the checkout, `remote_url` is
+`<U><project>/<id>.git`), written through the guarded config edit: a running
+pump refuses (`vivi pump pause` first). Without `--git-url-prefix` the target
+writes no `remote_url` and the checkout's `origin` is the lane's local path.
 
 The target id must be lowercase letters, digits and hyphens (the
 `[pump.targets.<id>]` key rule). A second `lane add` for the same id is
 refused: the lane repository, the checkout or the target entry already
 exists, and the refusal names it. A failing step undoes only what that run
-created. The library entry point is
-`vivi::project_create::lane_add::add_split`; it prints nothing.
+created. The library entry point is `vivi::project_create::lane_add::add`;
+it prints nothing.
+
+### Deleting a project
+
+`vivi project delete <name> --projects-root P --lanes-root L --confirm <name>`
+removes the host registration, `P/<name>` and `L/<name>/` with every lane in
+it. The confirmation repeats the name. The registration goes first: the pump
+service stops a project's pump and a server stops serving it once it is
+unregistered. While a pump still holds the project's lock the call stops
+after unregistering and says so; run it again once that pump has exited. A
+repeated call finishes what an earlier one left. The library entry point is
+`vivi::project_create::delete::delete`.
 
 ## Boot
 

@@ -7,10 +7,15 @@ use clap::{Args, Subcommand};
 /// Project lifecycle on a host.
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
-    /// Create a project: a group-shared bare git repository, a mailspace with
-    /// the starter pump config, the project values, and a host registration.
-    /// Any failure undoes what this command created.
+    /// Create a project: its lanes directory with the first target's
+    /// group-shared bare repository, a mailspace with the starter pump config,
+    /// the first target's checkout and entry, the project values, and a host
+    /// registration. Any failure undoes what this command created.
     Create(ProjectCreateCommand),
+    /// Delete a project: its host registration, its project root and its
+    /// lanes directory with every lane in it. Waits for no pump: while one
+    /// still holds the project's lock it unregisters and asks to be run again.
+    Delete(ProjectDeleteCommand),
     /// Lane lifecycle on a host: attach repository lanes to a project.
     Lane {
         #[command(subcommand)]
@@ -21,11 +26,9 @@ pub enum ProjectCommand {
 /// Lane lifecycle on a host.
 #[derive(Debug, Subcommand)]
 pub enum ProjectLaneCommand {
-    /// Attach a lane to an existing project: the group-shared bare
-    /// repository under the lanes root, and inside the project a checkout
-    /// plus the `[pump.targets.<id>]` entry. Performs every half the caller
-    /// can write and prints the exact command for the user who owns the
-    /// rest.
+    /// Add a lane to an existing project: the group-shared bare repository
+    /// `<LANES_ROOT>/<PROJECT>/<TARGET_ID>.git`, and inside the project a
+    /// checkout plus the `[pump.targets.<id>]` entry.
     Add(ProjectLaneAddCommand),
 }
 
@@ -38,18 +41,23 @@ pub struct ProjectCreateCommand {
     /// Directory that holds project roots; the project is `<PROJECTS_ROOT>/<NAME>`
     #[arg(long)]
     pub projects_root: PathBuf,
-    /// Directory that holds bare repositories; the repo is `<LANES_ROOT>/<NAME>.git`
+    /// Directory that holds each project's lanes directory; the first
+    /// target's repo is `<LANES_ROOT>/<NAME>/<TARGET>.git`
     #[arg(long)]
     pub lanes_root: PathBuf,
-    /// Git URL prefix; the git URL is `<PREFIX><NAME>.git` (an SSH or file://
-    /// address, never http(s))
+    /// Git URL prefix; lane URLs are `<PREFIX><NAME>/<TARGET>.git` (an SSH or
+    /// file:// address, never http(s))
     #[arg(long)]
     pub git_url_prefix: String,
-    /// Pool whose `remote_url` is set to the new git URL (the pool must come
+    /// The first target's id (lowercase letters, digits and hyphens); defaults
+    /// to the project name
+    #[arg(long)]
+    pub target: Option<String>,
+    /// Pool whose `remote_url` is set to the first target's git URL (the pool must come
     /// from a base config above the projects root)
     #[arg(long)]
     pub pool: Option<String>,
-    /// The new repo's default branch
+    /// The first target's default branch, also its main
     #[arg(long, default_value = "main")]
     pub branch: String,
     /// Register the project without a pump
@@ -71,13 +79,13 @@ pub struct ProjectLaneAddCommand {
     /// Project root that owns .vivi/
     pub project_root: PathBuf,
     /// Target id: the `[pump.targets.<id>]` key; the lane is
-    /// `<LANES_ROOT>/<TARGET_ID>.git` and the checkout is
-    /// `<PROJECT_ROOT>/<TARGET_ID>`
+    /// `<LANES_ROOT>/<PROJECT>/<TARGET_ID>.git` (`<PROJECT>` is the project
+    /// root's directory name) and the checkout is `<PROJECT_ROOT>/<TARGET_ID>`
     pub target_id: String,
-    /// Directory that holds bare repositories; the lane is `<LANES_ROOT>/<TARGET_ID>.git`
+    /// Directory that holds each project's lanes directory
     #[arg(long)]
     pub lanes_root: PathBuf,
-    /// Git URL prefix; the lane URL is `<PREFIX><TARGET_ID>.git` (an SSH or
+    /// Git URL prefix; the lane URL is `<PREFIX><PROJECT>/<TARGET_ID>.git` (an SSH or
     /// file:// address, never http(s)). Without it the lane is cloned from
     /// its local path and the target writes no remote_url
     #[arg(long)]
@@ -85,6 +93,25 @@ pub struct ProjectLaneAddCommand {
     /// Create the seed commit on the lane's branch
     #[arg(long)]
     pub seed: bool,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectDeleteCommand {
+    /// Project name, as given to `vivi project create`
+    pub name: String,
+    /// Directory that holds project roots
+    #[arg(long)]
+    pub projects_root: PathBuf,
+    /// Directory that holds each project's lanes directory
+    #[arg(long)]
+    pub lanes_root: PathBuf,
+    /// The project name again: this removes its mailspace and every lane's
+    /// history on this host
+    #[arg(long)]
+    pub confirm: String,
     /// Output as JSON
     #[arg(long)]
     pub json: bool,

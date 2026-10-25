@@ -149,7 +149,15 @@ fn pump_table(doc: &mut DocumentMut) -> Result<&mut Table, VivariumError> {
         .ok_or_else(no_pump)
 }
 
+/// The project's own `pump.targets` table, made when missing. A project whose
+/// `[pump]` comes from a base has no `[pump]` of its own; the implicit one
+/// made here holds only the targets and merges key by key over the base.
 fn targets_table(doc: &mut DocumentMut) -> Result<&mut Table, VivariumError> {
+    if !doc.contains_key("pump") {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        doc.insert("pump", Item::Table(table));
+    }
     let pump = pump_table(doc)?;
     if !pump.contains_key("targets") {
         let mut table = Table::new();

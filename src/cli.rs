@@ -47,7 +47,8 @@ pub use pool_command::{
     PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
 };
 pub use project_command::{
-    ProjectCommand, ProjectCreateCommand, ProjectLaneAddCommand, ProjectLaneCommand,
+    ProjectCommand, ProjectCreateCommand, ProjectDeleteCommand, ProjectLaneAddCommand,
+    ProjectLaneCommand,
 };
 pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,

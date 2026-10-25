@@ -1,24 +1,14 @@
-//! Attach a lane to an existing project, in halves a host can split across
-//! users.
+//! Add a lane to an existing project.
 //!
-//! [`add_split`] adds one repository target to a project that already
-//! exists. The halves are the same two a host can split across users:
-//!
-//! - the **lanes half**: the group-shared bare repository
-//!   `<lanes_root>/<target-id>.git` with the optional seed commit, the same
-//!   [`create_lane`](super::create_lane) performs for a new project;
-//! - the **projects half**: inside the project, a clone of the repository at
-//!   the target's checkout path (`<project_root>/<target-id>`, which becomes
-//!   the `[pump.targets.<id>]` `path`) and the `[pump.targets.<id>]` entry
-//!   written through the guarded config edit, so a running pump refuses.
-//!
-//! [`add_split`] probes both roots, performs every half the caller can
-//! write, and reports the exact `vivi project lane add` command for the user
-//! who owns the rest. A second add for the same target id is refused: the
-//! lane repository, the checkout or the target entry already exists, and
-//! each is refused before anything new is made. Only paths this call created
-//! are undone when a later step fails; a repository another user's run made
-//! is never removed.
+//! [`add`] makes one more pump target: the bare, group-shared repository
+//! `<lanes_root>/<project>/<target>.git` (and the project's lanes directory
+//! when it is missing), a clone of it at `<project_root>/<target>`, and the
+//! `[pump.targets.<target>]` entry written through the guarded config edit,
+//! so a running pump refuses (`vivi pump pause` first). `<project>` is the
+//! project root's directory name. A second add for the same target id is
+//! refused: the repository, the checkout or the target entry already exists,
+//! and each is refused before anything new is made. Only paths this call
+//! created are undone when a later step fails.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -26,33 +16,30 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::{
-    Half, LaneCreate, LaneCreated, RemainingHalf, config, create_lane, existing_dir, git,
-    refuse_existing, shell_arg, writable_root,
-};
+use super::{config, existing_dir, git, lane, refuse_existing};
 use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::config::targets::{self, TargetSpec};
 use crate::pump::config::valid_target_id;
 
-/// Everything needed to attach one lane.
+/// Everything needed to add one lane.
 #[derive(Clone, Debug)]
 pub struct LaneAdd {
     /// Existing project root that owns `.vivi/`.
     pub project_root: PathBuf,
-    /// Target id: the `[pump.targets.<id>]` key; the lane is
-    /// `<lanes_root>/<target-id>.git` and the checkout is
-    /// `<project_root>/<target-id>` (lowercase letters, digits and hyphens).
+    /// Target id: the `[pump.targets.<id>]` key, the lane
+    /// `<lanes_root>/<project>/<id>.git` and the checkout
+    /// `<project_root>/<id>` (lowercase letters, digits and hyphens).
     pub target_id: String,
-    /// Existing directory that holds bare repositories.
+    /// Existing directory that holds each project's lanes directory.
     pub lanes_root: PathBuf,
-    /// The git URL is `<git_url_prefix><target-id>.git`; it must be an
+    /// The lane URL is `<git_url_prefix><project>/<id>.git`; it must be an
     /// address a plain-git pool accepts (no http or https), because the
     /// checkout's remote is also where pool jobs push. `None` clones from
     /// the repository's local path and writes no `remote_url`: the
     /// checkout's `origin` remote names the lane.
     pub git_url_prefix: Option<String>,
-    /// Create the seed commit on the lane's branch (lanes half only).
+    /// Create the seed commit on the lane's branch.
     pub seed: bool,
 }
 
@@ -75,219 +62,169 @@ impl LaneAdd {
     }
 }
 
-/// What the projects half of a lane add made.
+/// What [`add`] made.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct TargetAttached {
+pub struct LaneAdded {
     /// The id written under `[pump.targets]`.
     pub target_id: String,
+    /// The bare repository.
+    pub repo_path: PathBuf,
     /// The clone of the lane at the target's `path`.
     pub checkout_path: PathBuf,
     /// The git URL the clone came from (the lane's local path when no
     /// `git_url_prefix` was given).
     pub git_url: String,
+    /// Commit created on the branch when `seed` was set.
+    pub initial_commit: Option<String>,
 }
 
-/// What a lane add performed, and what remains for another user.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct LaneAdded {
-    /// The lanes half's result when this run performed it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lane: Option<LaneCreated>,
-    /// The projects half's result when this run performed it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<TargetAttached>,
-    /// The half this run could not write.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remaining: Option<RemainingHalf>,
+/// What [`attach_target`] made.
+pub(super) struct TargetAttached {
+    pub checkout_path: PathBuf,
 }
 
 /// The steps of a lane add, in order; the failure seam of the tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Step {
-    /// Before the lanes half starts.
     Lane,
-    /// Before the checkout is cloned.
-    Clone,
-    /// Before the target entry is written.
     Target,
 }
 
-/// Attach a lane by halves: probe both roots, perform every half the caller
-/// can write, and report the exact command for the user who owns the rest.
+/// Add one lane to an existing project.
 ///
 /// # Errors
-/// Fails on an invalid target id or git URL, a missing root, a half failing
-/// (everything this call created is then removed), or an error naming both
-/// roots when the caller can write neither.
-pub fn add_split(request: &LaneAdd) -> Result<LaneAdded, VivariumError> {
-    add_split_with(request, &|_| Ok(()))
+/// Fails on an invalid target id or git URL, a missing root, an existing
+/// repository, checkout or target, or any step failing; everything this
+/// call created is then removed.
+pub fn add(request: &LaneAdd) -> Result<LaneAdded, VivariumError> {
+    add_with(request, &|_| Ok(()))
 }
 
-fn add_split_with(
+fn add_with(
     request: &LaneAdd,
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
 ) -> Result<LaneAdded, VivariumError> {
     check_id(&request.target_id)?;
-    let lanes_dir = existing_dir(&request.lanes_root, "lanes root")?;
+    let lanes_root = existing_dir(&request.lanes_root, "lanes root")?;
     let project_dir = existing_dir(&request.project_root, "project root")?;
-    let url = lane_url(request, &lanes_dir);
-    check_url(&url)?;
+    let project = project_name(&project_dir)?;
+    let lanes_dir = lanes_root.join(&project);
     let repo = lanes_dir.join(format!("{}.git", request.target_id));
-    let checkout = project_dir.join(&request.target_id);
-    let lanes_writable = writable_root(&lanes_dir)?;
-    let projects_writable = writable_root(&project_dir)?;
-    match (lanes_writable, projects_writable) {
-        (true, true) => both(
-            request,
-            &lanes_dir,
-            &project_dir,
-            &repo,
-            &checkout,
-            &url,
-            inject,
-        ),
-        (true, false) => lanes_only(request, &lanes_dir, &project_dir, inject),
-        (false, true) => projects_only(
-            request,
-            &repo,
-            &checkout,
-            &project_dir,
-            &lanes_dir,
-            &url,
-            inject,
-        ),
-        (false, false) => Err(config(&format!(
-            "no half can be created: no write permission on the lanes root {} or the project \
-             root {}",
-            lanes_dir.display(),
-            project_dir.display()
-        ))),
-    }
-}
-
-/// Both halves in one call, with one rollback.
-fn both(
-    request: &LaneAdd,
-    lanes_dir: &Path,
-    project_dir: &Path,
-    repo: &Path,
-    checkout: &Path,
-    url: &str,
-    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
-) -> Result<LaneAdded, VivariumError> {
-    let mut made = Made::default();
-    let lane = match run_lane_half(request, lanes_dir, project_dir, inject) {
-        Ok(lane) => lane,
-        // create_lane undoes its own repository.
-        Err(error) => return Err(made.roll_back(error)),
+    let url = match &request.git_url_prefix {
+        Some(prefix) => super::lane_url(prefix, &project, &request.target_id),
+        None => repo.display().to_string(),
     };
-    made.push(repo.to_path_buf());
-    match run_target_steps(request, project_dir, repo, checkout, url, inject, &mut made) {
-        Ok(target) => Ok(LaneAdded {
-            lane: Some(lane),
-            target: Some(target),
-            remaining: None,
-        }),
+    check_url(&url)?;
+    refuse_existing(&repo, "lane repository")?;
+    refuse_existing_target(&project_dir, &request.target_id)?;
+    let mut made = Made::default();
+    match run_steps(
+        request,
+        &project_dir,
+        &lanes_dir,
+        &repo,
+        &url,
+        inject,
+        &mut made,
+    ) {
+        Ok(added) => Ok(added),
         Err(error) => Err(made.roll_back(error)),
     }
 }
 
-/// The lanes half alone, plus the command for the projects-half owner.
-fn lanes_only(
+fn run_steps(
     request: &LaneAdd,
-    lanes_dir: &Path,
     project_dir: &Path,
-    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
-) -> Result<LaneAdded, VivariumError> {
-    let lane = run_lane_half(request, lanes_dir, project_dir, inject)?;
-    Ok(LaneAdded {
-        lane: Some(lane),
-        target: None,
-        remaining: Some(RemainingHalf {
-            half: Half::Projects,
-            root: project_dir.to_path_buf(),
-            command: remainder_command(request),
-        }),
-    })
-}
-
-/// The projects half alone, plus the command for the lanes-half owner. The
-/// lane repository is never touched, so it may already exist (the lanes
-/// owner's run made it); it must exist, or there is nothing to clone.
-fn projects_only(
-    request: &LaneAdd,
+    lanes_dir: &Path,
     repo: &Path,
-    checkout: &Path,
-    project_dir: &Path,
-    lanes_dir: &Path,
-    url: &str,
-    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
-) -> Result<LaneAdded, VivariumError> {
-    let mut made = Made::default();
-    let target =
-        match run_target_steps(request, project_dir, repo, checkout, url, inject, &mut made) {
-            Ok(target) => target,
-            Err(error) => return Err(made.roll_back(error)),
-        };
-    Ok(LaneAdded {
-        lane: None,
-        target: Some(target),
-        remaining: Some(RemainingHalf {
-            half: Half::Lanes,
-            root: lanes_dir.to_path_buf(),
-            command: remainder_command(request),
-        }),
-    })
-}
-
-/// The lanes half: the bare repository and the optional seed commit.
-fn run_lane_half(
-    request: &LaneAdd,
-    lanes_dir: &Path,
-    project_dir: &Path,
-    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
-) -> Result<LaneCreated, VivariumError> {
-    inject(Step::Lane)?;
-    let mut lane = LaneCreate::new(&request.target_id, lanes_dir, project_dir);
-    lane.initial_commit = request.seed;
-    create_lane(&lane)
-}
-
-/// The projects half: the checkout at the target's `path` and the
-/// `[pump.targets.<id>]` entry, written through the guarded config edit.
-fn run_target_steps(
-    request: &LaneAdd,
-    project_dir: &Path,
-    repo: &Path,
-    checkout: &Path,
     url: &str,
     inject: &dyn Fn(Step) -> Result<(), VivariumError>,
     made: &mut Made,
-) -> Result<TargetAttached, VivariumError> {
-    let mailspace = Mailspace::open_root(project_dir.to_path_buf())?;
-    refuse_existing_target(&mailspace, &request.target_id)?;
-    refuse_existing(checkout, "target checkout")?;
-    if !repo.is_dir() {
-        return Err(config(&format!(
-            "lane repository {} does not exist; the lanes half must run first",
-            repo.display()
-        )));
+) -> Result<LaneAdded, VivariumError> {
+    inject(Step::Lane)?;
+    if lanes_dir.symlink_metadata().is_err() {
+        fs::create_dir(lanes_dir)?;
+        made.push(lanes_dir.to_path_buf());
     }
-    inject(Step::Clone)?;
-    made.push(checkout.to_path_buf());
-    git(None, &["clone", url]).arg(checkout).run()?;
+    made.push(repo.to_path_buf());
+    let branch = super::DEFAULT_BRANCH;
+    let initial_commit = lane::init_bare(repo, branch, request.seed, project_dir)?;
     inject(Step::Target)?;
-    targets::add(project_dir, &target_spec(request, url))?;
-    Ok(TargetAttached {
+    made.push(project_dir.join(&request.target_id));
+    let remote_url = request.git_url_prefix.as_ref().map(|_| url);
+    let attached = attach(project_dir, &request.target_id, repo, url, remote_url, None)?;
+    Ok(LaneAdded {
         target_id: request.target_id.clone(),
-        checkout_path: checkout.to_path_buf(),
+        repo_path: repo.to_path_buf(),
+        checkout_path: attached.checkout_path,
         git_url: url.to_string(),
+        initial_commit,
     })
+}
+
+/// Clone the lane `repo` to `<project_dir>/<target>` with `url` as its
+/// `origin`, and write the `[pump.targets.<target>]` entry with `url` as its
+/// `remote_url` and `main` as its main branch when given. The caller owns
+/// undo of the checkout.
+pub(super) fn attach_target(
+    project_dir: &Path,
+    target: &str,
+    repo: &Path,
+    url: &str,
+    main: Option<&str>,
+) -> Result<TargetAttached, VivariumError> {
+    attach(project_dir, target, repo, url, Some(url), main)
+}
+
+/// The clone reads the lane from its local path, so making a checkout never
+/// needs the network; `origin` is then pointed at `url`, which is where
+/// pool jobs and the pump push.
+fn attach(
+    project_dir: &Path,
+    target: &str,
+    repo: &Path,
+    url: &str,
+    remote_url: Option<&str>,
+    main: Option<&str>,
+) -> Result<TargetAttached, VivariumError> {
+    let checkout = project_dir.join(target);
+    refuse_existing(&checkout, "target checkout")?;
+    git(None, &["clone", "--quiet"])
+        .arg(repo)
+        .arg(&checkout)
+        .run()?;
+    git(Some(&checkout), &["remote", "set-url", "origin", url]).run()?;
+    let spec = TargetSpec {
+        id: target.to_string(),
+        path: target.to_string(),
+        remote_url: remote_url.map(str::to_string),
+        main: main.map(str::to_string),
+        ..TargetSpec::default()
+    };
+    targets::add(project_dir, &spec)?;
+    Ok(TargetAttached {
+        checkout_path: checkout,
+    })
+}
+
+/// The project's name: its root directory's name.
+fn project_name(project_dir: &Path) -> Result<String, VivariumError> {
+    project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            config(&format!(
+                "project root {} has no usable directory name",
+                project_dir.display()
+            ))
+        })
 }
 
 /// A target id that already exists is refused before anything is made, the
 /// same refusal `pump::config::targets::add` makes when it writes.
-fn refuse_existing_target(mailspace: &Mailspace, id: &str) -> Result<(), VivariumError> {
+fn refuse_existing_target(project_dir: &Path, id: &str) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::open_root(project_dir.to_path_buf())?;
     if mailspace
         .config
         .pump
@@ -296,28 +233,7 @@ fn refuse_existing_target(mailspace: &Mailspace, id: &str) -> Result<(), Vivariu
     {
         return Err(config(&format!("pump target `{id}` already exists")));
     }
-    Ok(())
-}
-
-fn target_spec(request: &LaneAdd, url: &str) -> TargetSpec {
-    TargetSpec {
-        id: request.target_id.clone(),
-        path: request.target_id.clone(),
-        remote_url: request.git_url_prefix.is_some().then(|| url.to_string()),
-        ..TargetSpec::default()
-    }
-}
-
-/// The lane's git URL: the prefix form when given, else the repository's
-/// local path.
-fn lane_url(request: &LaneAdd, lanes_dir: &Path) -> String {
-    match &request.git_url_prefix {
-        Some(prefix) => format!("{}{}.git", prefix, request.target_id),
-        None => lanes_dir
-            .join(format!("{}.git", request.target_id))
-            .display()
-            .to_string(),
-    }
+    refuse_existing(&project_dir.join(id), "target checkout")
 }
 
 /// A target id must be a valid `[pump.targets.<id>]` key, or the guarded
@@ -345,24 +261,6 @@ fn check_url(url: &str) -> Result<(), VivariumError> {
         )));
     }
     Ok(())
-}
-
-/// The exact `vivi project lane add` command that performs the remaining
-/// half when run by a user who can write its root, with the same inputs.
-fn remainder_command(request: &LaneAdd) -> String {
-    let mut command = format!(
-        "vivi project lane add {} {} --lanes-root {}",
-        shell_arg(&request.project_root.display().to_string()),
-        shell_arg(&request.target_id),
-        shell_arg(&request.lanes_root.display().to_string()),
-    );
-    if let Some(prefix) = &request.git_url_prefix {
-        command.push_str(&format!(" --git-url-prefix {}", shell_arg(prefix)));
-    }
-    if request.seed {
-        command.push_str(" --seed");
-    }
-    command
 }
 
 /// What this call has created so far, in creation order.

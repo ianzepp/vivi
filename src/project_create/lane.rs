@@ -1,169 +1,49 @@
-//! The lanes half of a creation: the bare group-shared repository.
+//! A lane: one bare, group-shared repository under a project's lanes
+//! directory.
 //!
-//! [`create_lane`] makes `<lanes_root>/<name>.git` with `--shared=group`
-//! and the optional seed commit. After `git init` and before that commit,
-//! Linux copies the new directory's owning group and ACL from the
-//! lexicographically first sibling `<name>.git` whose ACL `getfacl` can
-//! read. Off Linux, or when that copy cannot be done, it is skipped with
-//! one warning and the lane is still created. A host can own the lanes root
-//! with a different user than the projects root, so the half is public on
-//! its own; the seed commit's identity comes from the config chain at the
-//! identity root, which is what a new mailspace inherits.
+//! [`init_bare`] makes `<lanes_root>/<project>/<target>.git` with
+//! `--shared=group` and the optional seed commit. Group and ACL come from
+//! the lanes directory itself (a setgid directory with default ACLs hands
+//! both to everything made inside it), so nothing is copied here. The seed
+//! commit's identity comes from the config chain at the project root.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use serde::Serialize;
-
-use super::{Step, Undo, check_branch, check_name, existing_dir, git, refuse_existing};
+use super::git;
 use crate::VivariumError;
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, inherit};
-
-mod acl;
 
 /// Author and committer of the initial commit when the project's `[pump]`
 /// names no committer.
 const FALLBACK_IDENTITY: (&str, &str) = ("vivi", "vivi@localhost");
 
-/// The lanes half's input: the bare repository under the lanes root.
-#[derive(Clone, Debug)]
-pub struct LaneCreate {
-    /// Project name: the repository is `<lanes_root>/<name>.git`.
-    pub name: String,
-    /// Existing directory that holds bare repositories.
-    pub lanes_root: PathBuf,
-    /// Root whose config chain names the seed commit's identity (the
-    /// project's `[pump]` committer, else the vivi fallback).
-    pub identity_root: PathBuf,
-    /// The new repo's default branch.
-    pub branch: String,
-    /// Create the seed commit on `branch`.
-    pub initial_commit: bool,
-}
-
-impl LaneCreate {
-    /// A lanes-half request with the defaults: branch `main`, no seed commit.
-    #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        lanes_root: impl Into<PathBuf>,
-        identity_root: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            lanes_root: lanes_root.into(),
-            identity_root: identity_root.into(),
-            branch: super::DEFAULT_BRANCH.into(),
-            initial_commit: false,
-        }
+/// Make the bare repository `repo` on `branch` and, when `seed` is set, one
+/// empty commit on it. Returns the seed commit's id. The caller owns undo:
+/// `git init` creates `repo`, so a failure after it leaves `repo` for the
+/// caller to remove.
+pub(super) fn init_bare(
+    repo: &Path,
+    branch: &str,
+    seed: bool,
+    identity_root: &Path,
+) -> Result<Option<String>, VivariumError> {
+    git(None, &["init", "--bare", "--shared=group", "-b", branch])
+        .arg(repo)
+        .run()?;
+    if !seed {
+        return Ok(None);
     }
-}
-
-/// What the lanes half made.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct LaneCreated {
-    /// The bare repository (canonical parent).
-    pub repo_path: PathBuf,
-    /// Commit created on the branch when `initial_commit` was set.
-    pub initial_commit: Option<String>,
-}
-
-/// The lanes half of a project creation, alone: a group-shared bare
-/// repository with the optional seed commit, for a user who can write the
-/// lanes root while another owns the projects half.
-///
-/// # Errors
-/// Fails on an invalid name or branch, a missing lanes root, a repository
-/// that already exists, or git failing; the repository is then removed.
-/// Copying a sibling's group and ACL is best effort and never fails this call.
-pub fn create_lane(request: &LaneCreate) -> Result<LaneCreated, VivariumError> {
-    check_name(&request.name)?;
-    check_branch(&request.branch)?;
-    let lanes_dir = existing_dir(&request.lanes_root, "lanes root")?;
-    let repo = lanes_dir.join(format!("{}.git", request.name));
-    refuse_existing(&repo, "repository")?;
-    let plan = LanePlan {
-        repo: repo.clone(),
-        branch: request.branch.clone(),
-        initial_commit: request.initial_commit,
-        identity_root: request.identity_root.clone(),
-    };
-    let mut undo = Undo::default();
-    match run_lane_steps(&plan, &|_| Ok(()), &mut undo) {
-        Ok(lane) => Ok(lane),
-        Err(error) => Err(undo.roll_back(error, Some(&repo), None)),
-    }
-}
-
-/// Validated lanes-half inputs.
-pub(super) struct LanePlan {
-    pub repo: PathBuf,
-    pub branch: String,
-    pub initial_commit: bool,
-    pub identity_root: PathBuf,
-}
-
-/// The lanes half: the bare, group-shared repository and its optional seed
-/// commit. `undo.repo` is set once the directory exists. The sibling ACL
-/// copy never fails this call.
-pub(super) fn run_lane_steps(
-    plan: &LanePlan,
-    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
-    undo: &mut Undo,
-) -> Result<LaneCreated, VivariumError> {
-    run_lane_steps_with(plan, inject, undo, &acl::apply)
-}
-
-/// [`run_lane_steps`] with the ACL copy supplied by the caller. A skip or a
-/// failed copy does not fail the lane: the seed commit still runs.
-fn run_lane_steps_with(
-    plan: &LanePlan,
-    inject: &dyn Fn(Step) -> Result<(), VivariumError>,
-    undo: &mut Undo,
-    copy_acl: &dyn Fn(&Path) -> acl::AclCopy,
-) -> Result<LaneCreated, VivariumError> {
-    inject(Step::Repo)?;
-    fs::create_dir(&plan.repo)?;
-    undo.repo = true;
-    git(
-        None,
-        &["init", "--bare", "--shared=group", "-b", &plan.branch],
-    )
-    .arg(&plan.repo)
-    .run()?;
-    // Best effort. A wrong ACL is recoverable by the lanes owner; failing
-    // the lane here would throw away a repository that git init already made.
-    acl::report(&copy_acl(&plan.repo));
-    inject(Step::Commit)?;
-    let initial_commit = if plan.initial_commit {
-        let identity = resolve_committer(&plan.identity_root)?;
-        Some(make_initial_commit(&plan.repo, &plan.branch, &identity)?)
-    } else {
-        None
-    };
-    Ok(LaneCreated {
-        repo_path: plan.repo.clone(),
-        initial_commit,
-    })
+    let identity = resolve_committer(identity_root)?;
+    Ok(Some(make_initial_commit(repo, branch, &identity)?))
 }
 
 /// The seed commit's author and committer: the `[pump]` committer of the
-/// config chain at `root` — its own file when it exists, else the bases
-/// above it, which is what a new mailspace inherits — when both parts are
-/// set, else the vivi fallback. An unreadable chain falls back quietly, as
-/// config inheritance does.
+/// config chain at `root` when both parts are set, else the vivi fallback.
+/// An unreadable chain falls back quietly, as config inheritance does.
 fn resolve_committer(root: &Path) -> Result<(String, String), VivariumError> {
     let path = root.join(MAILSPACE_DIR).join(MAILSPACE_CONFIG);
-    let raw = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        // The project does not exist yet: stand in for the `name`-only file
-        // `Mailspace::init` will write, so the base chain merges as it will
-        // after creation.
-        Err(_) => format!(
-            "name = {:?}\n",
-            root.file_name().unwrap_or_default().to_string_lossy()
-        ),
-    };
+    let raw = fs::read_to_string(&path).unwrap_or_default();
     let config = inherit::load_config(&path, &raw)?;
     let pump = config
         .pump
@@ -197,7 +77,3 @@ fn make_initial_commit(
     .run()?;
     Ok(commit)
 }
-
-#[cfg(test)]
-#[path = "lane_test.rs"]
-mod tests;
