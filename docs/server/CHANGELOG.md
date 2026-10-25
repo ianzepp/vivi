@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.3.0
+
+Pairs with vivi 21.3.0.
 
 - **`target_log` and `target_show`.** Operator read tools on a hosted
   project: a target's newest main commits, and one commit's stat and patch
