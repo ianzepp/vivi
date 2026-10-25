@@ -85,11 +85,10 @@ pub fn wake_prompt(
             fence("pump-health", &reasons)
         );
     }
-    let kinds: Vec<String> = ACTIONS
+    let kinds: Vec<&str> = ACTIONS
         .iter()
         .filter(|action| action.required_stage() <= stage)
-        .filter_map(|action| serde_json::to_value(action).ok())
-        .filter_map(|kind| kind.as_str().map(str::to_string))
+        .map(|action| action.as_str())
         .collect();
     let _ignored = writeln!(
         out,

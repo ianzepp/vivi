@@ -179,3 +179,26 @@ fn stage_table_is_explicit() {
     assert!(Action::PausePump.mutates());
     assert!(!Action::PausePump.need_scoped());
 }
+
+#[test]
+fn as_str_is_the_envelope_kind() {
+    for action in [
+        Action::ReadStatus,
+        Action::LetterToOperator,
+        Action::Escalate,
+        Action::PausePump,
+        Action::ResumePump,
+        Action::Requeue,
+        Action::Replan,
+        Action::Answer,
+        Action::Unlock,
+        Action::FileFixNeed,
+        Action::Upgrade,
+        Action::SelfRelease,
+    ] {
+        assert_eq!(
+            serde_json::to_value(action).unwrap(),
+            serde_json::Value::from(action.as_str())
+        );
+    }
+}

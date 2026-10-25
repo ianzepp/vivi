@@ -46,6 +46,25 @@ pub enum Action {
 }
 
 impl Action {
+    /// The kebab-case kind, as a turn writes it in an envelope.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadStatus => "read-status",
+            Self::LetterToOperator => "letter-to-operator",
+            Self::Escalate => "escalate",
+            Self::PausePump => "pause-pump",
+            Self::ResumePump => "resume-pump",
+            Self::Requeue => "requeue",
+            Self::Replan => "replan",
+            Self::Answer => "answer",
+            Self::Unlock => "unlock",
+            Self::FileFixNeed => "file-fix-need",
+            Self::Upgrade => "upgrade",
+            Self::SelfRelease => "self-release",
+        }
+    }
+
     /// The lowest stage that opens this action.
     #[must_use]
     pub fn required_stage(self) -> AuthorityStage {
