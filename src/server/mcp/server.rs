@@ -14,7 +14,10 @@
 //! argument: dispatch always receives the resolved grant's own project id.
 //! The grant's member must still be a registered identity, and operator
 //! tools re-check today's operator rule per call (the shared project
-//! dispatch in [`crate::mcp`] applies it).
+//! dispatch in [`crate::mcp`] applies it). An archived project refuses
+//! every project call by name: its grants still resolve and list (mode
+//! archived) so a key sees what it holds, while a retired grant without
+//! an archive record still reads as ungranted.
 //!
 //! One audit line per write tool call ([`crate::audit`]); reads are not
 //! logged. Writes are rate limited per (project, key) — `host` for host
@@ -48,7 +51,8 @@ pub(crate) const HOST_PRINCIPAL: &str = "host";
 
 pub(super) const INSTRUCTIONS: &str = "This is one vivi server's MCP endpoint. Every project \
 tool takes a required `project`: the project id, or the name of a hosted project this key is \
-granted on. Call `projects` first to list what this key may reach. Host tools (create_project, \
+granted on. Call `projects` first to list what this key may reach; archived grants list with \
+mode archived and refuse calls until the project is restored. Host tools (create_project, \
 lane_create, delete_project, project_list, server_version, key and grant admin) need a host \
 principal.";
 
@@ -149,8 +153,9 @@ pub(super) fn tools_list() -> Value {
     tools.push(tool(
         "projects",
         "List the projects this key is granted on: {project_id, name?, mode, member, identity, \
-         level} per live grant (a hosted project's name is its root directory name). A host \
-         principal answers {host: true}.",
+         level} per grant (a hosted project's name is its root directory name). Retired grants \
+         without an archive record are skipped; archived grants list with mode archived and \
+         refuse calls until the project is restored. A host principal answers {host: true}.",
         json!({
             "type": "object",
             "properties": {},
@@ -407,9 +412,10 @@ async fn project_tool(
 }
 
 /// Resolve `named` to one grant of `grants`: an exact project id first,
-/// else a name among the hosted grants. No match and unknown project share
-/// one text. The returned project id always comes from the grant, never
-/// from `named`.
+/// else a name among the hosted grants. Names are read through retirement,
+/// so an archived grant still resolves (and is then refused as archived by
+/// [`live_grant`]). No match and unknown project share one text. The
+/// returned project id always comes from the grant, never from `named`.
 fn resolve_grant(
     state: &AppState,
     grants: &[GrantRecord],
@@ -420,7 +426,10 @@ fn resolve_grant(
     }
     let mut by_name: Vec<&GrantRecord> = Vec::new();
     for grant in grants {
-        let Ok(meta) = state.projects.load_meta(&grant.project_id) else {
+        let Ok(meta) = state
+            .projects
+            .load_meta_including_retired(&grant.project_id)
+        else {
             continue;
         };
         if hosted_name(&meta).as_deref() == Some(named) {
@@ -440,15 +449,21 @@ fn resolve_grant(
     }
 }
 
-/// A grant whose project still exists and whose member is still a
-/// registered identity. A project that is gone reads as ungranted (the
-/// exact-id error names the grant's own project id).
+/// A grant whose project still exists, is neither archived nor retired
+/// without an archive record, and whose member is still a registered
+/// identity. A project that is gone, retired unrestored, or a dead chat
+/// reads as ungranted (the exact-id error names the grant's own project
+/// id); an archived project is refused by name, before the identity
+/// lookup, so the key learns why its grant does not answer.
 fn live_grant(state: &AppState, grant: &GrantRecord) -> Result<Resolved, String> {
     let meta = state
         .projects
-        .load_meta(&grant.project_id)
+        .load_meta_including_retired(&grant.project_id)
         .map_err(|_| format!("this key has no grant on {}", grant.project_id))?;
-    if dead_chat(&meta) {
+    if meta.is_archived() {
+        return Err(format!("project {} is archived", grant.project_id));
+    }
+    if state.projects.is_retired(&grant.project_id) || dead_chat(&meta) {
         return Err(format!("this key has no grant on {}", grant.project_id));
     }
     let identity = state
@@ -492,8 +507,9 @@ pub(super) fn hosted_name(meta: &ProjectMeta) -> Option<String> {
         .filter(|name| !name.trim().is_empty())
 }
 
-/// The `projects` tool: one entry per live grant; a host principal answers
-/// `{host: true}`.
+/// The `projects` tool: one entry per grant — retired grants without an
+/// archive record are skipped, archived grants list with mode archived; a
+/// host principal answers `{host: true}`.
 async fn projects_answer(state: &AppState, auth: &ServerPrincipal) -> Result<Value, Response> {
     if auth.host {
         return Ok(json!({ "host": true }));
@@ -503,15 +519,25 @@ async fn projects_answer(state: &AppState, auth: &ServerPrincipal) -> Result<Val
     match tokio::task::spawn_blocking(move || {
         let mut items = Vec::new();
         for grant in grants {
-            let Ok(meta) = resolve_state.projects.load_meta(&grant.project_id) else {
+            // Read through retirement: an archived project stays listed,
+            // a retired project without an archive record does not.
+            let Ok(meta) = resolve_state
+                .projects
+                .load_meta_including_retired(&grant.project_id)
+            else {
                 continue; // a grant whose project no longer exists
             };
             if dead_chat(&meta) {
                 continue;
             }
+            if resolve_state.projects.is_retired(&grant.project_id) && !meta.is_archived() {
+                continue;
+            }
             let mut item = json!({
                 "project_id": grant.project_id,
-                "mode": if meta.is_hosted() {
+                "mode": if meta.is_archived() {
+                    "archived"
+                } else if meta.is_hosted() {
                     "hosted"
                 } else if meta.is_chat() {
                     "chat"

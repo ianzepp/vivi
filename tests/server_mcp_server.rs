@@ -605,6 +605,121 @@ async fn a_name_resolves_among_grants_only_and_two_names_error() {
     assert_eq!(overview["project_id"], two);
 }
 
+// ------------------------------------------------------------ archived
+
+/// Stamp an `archived` record straight into `project.json`: the crate
+///-private setter is out of reach for an integration test.
+fn seed_archived(dir: &PathBuf, project: &str) {
+    let path = dir.join("projects").join(project).join("project.json");
+    let mut meta: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    meta["archived"] = json!({
+        "at": "2026-10-25T12:00:00+00:00",
+        "by": "mind",
+        "root": "/srv/archive/mailspace",
+        "lanes_dir": "/srv/archive/lanes",
+    });
+    std::fs::write(path, serde_json::to_vec(&meta).unwrap()).unwrap();
+}
+
+/// Retire every hosted root of a fixture, as a host registry that dropped
+/// the root would: reconcile against an empty served set.
+fn retire_all(fx: &Hosted) {
+    let report = hosted::reconcile(&fx.state.projects, &fx.state.identities, &BTreeSet::new());
+    assert!(report.served.is_empty(), "{report:?}");
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert_eq!(report.retired.len(), fx.served.len(), "{report:?}");
+}
+
+#[tokio::test]
+async fn an_archived_grant_refuses_calls_by_id_and_name_but_stays_listed() {
+    let fx = hosted_with("archived-grant", |_| {}, &["app"]);
+    let (project, member) = fx.served[0].clone();
+    let key = server_key(
+        &fx.state,
+        &project,
+        &member,
+        Some("operator"),
+        GrantLevel::Operator,
+    );
+    // Alive before the archive: the grant reaches the hosted project.
+    let overview = call_ok(&fx.app, &key, "overview", json!({"project": &project})).await;
+    assert_eq!(overview["project_id"], project);
+
+    retire_all(&fx);
+    seed_archived(&fx.dir, &project);
+    let refused = format!("project {project} is archived");
+
+    // Reads and writes refuse by id and by hosted name, with one text.
+    for named in [project.as_str(), "app"] {
+        let err = call_err(&fx.app, &key, "overview", json!({"project": named})).await;
+        assert_eq!(err, refused, "{named}");
+        let err = call_err(
+            &fx.app,
+            &key,
+            "memo",
+            json!({"project": named, "action": "save", "subject": "s", "body": "b"}),
+        )
+        .await;
+        assert_eq!(err, refused, "{named}");
+    }
+
+    // The refusal comes before the identity lookup: a grant member that is
+    // not a registered identity still sees the archived refusal.
+    let ghost = server_key(&fx.state, &project, "ghost", None, GrantLevel::Member);
+    let err = call_err(&fx.app, &ghost, "overview", json!({"project": &project})).await;
+    assert_eq!(err, refused);
+
+    // The grant stays listed, with mode archived and its hosted name.
+    let answer = call_ok(&fx.app, &key, "projects", json!({})).await;
+    let items = answer.as_array().unwrap();
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["project_id"], project.as_str());
+    assert_eq!(items[0]["mode"], "archived");
+    assert_eq!(items[0]["name"], "app");
+    assert_eq!(items[0]["member"], member);
+    assert_eq!(items[0]["identity"], "operator");
+    assert_eq!(items[0]["level"], "operator");
+
+    // An ungranted caller learns nothing: the archived id and name read as
+    // no grant, and `projects` stays empty.
+    let lone = fx
+        .state
+        .server_keys
+        .mint("lone@nowhere", false, vec![], "test", "lone")
+        .unwrap()
+        .key;
+    let err = call_err(&fx.app, &lone, "overview", json!({"project": &project})).await;
+    assert_eq!(err, format!("this key has no grant on {project}"));
+    let err = call_err(&fx.app, &lone, "overview", json!({"project": "app"})).await;
+    assert_eq!(err, "this key has no grant on app");
+    let answer = call_ok(&fx.app, &lone, "projects", json!({})).await;
+    assert_eq!(answer.as_array().unwrap().len(), 0, "{answer}");
+}
+
+#[tokio::test]
+async fn a_retired_grant_without_an_archive_stays_hidden_and_ungranted() {
+    let fx = hosted_with("retired-grant", |_| {}, &["app"]);
+    let (project, member) = fx.served[0].clone();
+    let key = server_key(
+        &fx.state,
+        &project,
+        &member,
+        Some("operator"),
+        GrantLevel::Operator,
+    );
+    retire_all(&fx);
+
+    // By id and by name the grant reads as no grant at all.
+    let err = call_err(&fx.app, &key, "overview", json!({"project": &project})).await;
+    assert_eq!(err, format!("this key has no grant on {project}"));
+    let err = call_err(&fx.app, &key, "overview", json!({"project": "app"})).await;
+    assert_eq!(err, format!("this key has no grant on {project}"));
+
+    // `projects` hides the retired grant entirely.
+    let answer = call_ok(&fx.app, &key, "projects", json!({})).await;
+    assert_eq!(answer.as_array().unwrap().len(), 0, "{answer}");
+}
+
 // ---------------------------------------------------------------- audit
 
 #[tokio::test]
