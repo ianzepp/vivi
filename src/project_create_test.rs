@@ -444,7 +444,10 @@ const BASE_ROLES: &str = "base = true\n\
     [pools.studio]\nprovider = \"local\"\nslots = 2\n\n\
     [[identities]]\nname = \"merge\"\npool = \"studio\"\nmodel = \"P2\"\n\n\
     [[identities]]\nname = \"pump-planner\"\npool = \"studio\"\nmodel = \"P1\"\n\n\
-    [[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"studio\"\n";
+    [[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"studio\"\n\n\
+    [[identities]]\nname = \"admitter\"\npool = \"studio\"\nmodel = \"P1\"\n\n\
+    [[identities]]\nname = \"slicer\"\npool = \"studio\"\nmodel = \"P0\"\n\n\
+    [[identities]]\nname = \"repairer\"\npool = \"studio\"\n";
 
 #[test]
 fn a_project_under_a_base_with_roles_is_created_and_inherits_them() {
@@ -466,6 +469,22 @@ fn a_project_under_a_base_with_roles_is_created_and_inherits_them() {
     assert_eq!(merge.model.as_deref(), Some("P2"), "the base model applies");
     let hand = mailspace.role_view("hand").unwrap();
     assert_eq!(hand.pool.as_deref(), Some("studio"));
+    for (name, read_only) in [
+        ("admitter", Some(true)),
+        ("slicer", Some(true)),
+        ("repairer", None),
+    ] {
+        let role = mailspace.role_view(name).unwrap();
+        assert_eq!(role.kind.as_deref(), Some(name), "{name} gets its kind");
+        assert_eq!(
+            role.pool.as_deref(),
+            Some("studio"),
+            "{name} keeps the base pool"
+        );
+        if let Some(flag) = read_only {
+            assert_eq!(role.read_only, Some(flag), "{name} is read-only");
+        }
+    }
     // The project's own file overrides only what the starter set.
     let text = config_text(&host.project("app"));
     let merge_table = text

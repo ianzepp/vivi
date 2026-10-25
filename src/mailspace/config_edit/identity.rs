@@ -62,6 +62,15 @@ pub fn patch_identity(
     Ok(())
 }
 
+/// Whether this file itself defines the identity `name` (as opposed to
+/// inheriting it from a base).
+#[must_use]
+pub fn defines_identity(doc: &DocumentMut, name: &str) -> bool {
+    doc.get("identities")
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .is_some_and(|identities| super::identity_index(identities, name).is_some())
+}
+
 /// Patch the identity named `name` in this file, or, when this file does not
 /// define it (the role comes from a base), append an override table holding
 /// `name` and the patch's keys; the merge applies it key by key over the base

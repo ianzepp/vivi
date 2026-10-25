@@ -23,7 +23,8 @@ mod tests;
 
 pub use guard::{GuardedWrite, guard_file, guarded};
 pub use identity::{
-    IdentityPatch, insert_identity, patch_identity, rename_identity, upsert_identity,
+    IdentityPatch, defines_identity, insert_identity, patch_identity, rename_identity,
+    upsert_identity,
 };
 pub use keys::{SetKey, parse_key, parse_value, set_in, set_key, unset_in, unset_key, value_type};
 pub use pool::{

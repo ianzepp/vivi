@@ -51,6 +51,32 @@ impl Mailspace {
         self.ensure_role_with(name, update)
     }
 
+    /// Complete a role that comes only from a base config: give it the
+    /// `kind` and `read_only` its shipped definition needs when the base set
+    /// none (a host base often carries only pool and model). A set value is
+    /// never changed, and pool and model are left alone. A role the project's
+    /// own file defines is the project's and is left exactly as it is.
+    fn settle_role(&mut self, name: &str, wanted: &RoleUpdate) -> Result<(), VivariumError> {
+        let own: toml_edit::DocumentMut = super::config_file::read_raw(&self.config_path())?
+            .parse()
+            .map_err(|e| VivariumError::Config(format!("mailspace.toml: {e}")))?;
+        if super::config_edit::defines_identity(&own, name) {
+            return Ok(());
+        }
+        let Some(role) = self.config.role_named(name) else {
+            return Ok(());
+        };
+        let missing = RoleUpdate {
+            kind: wanted.kind.clone().filter(|_| role.kind.is_none()),
+            read_only: wanted.read_only.filter(|_| role.read_only.is_none()),
+            ..RoleUpdate::default()
+        };
+        if missing.kind.is_some() || missing.read_only.is_some() {
+            self.set_role(name, missing)?;
+        }
+        Ok(())
+    }
+
     fn ensure_role_with(&mut self, name: &str, update: RoleUpdate) -> Result<(), VivariumError> {
         let existing = self
             .config
@@ -62,7 +88,10 @@ impl Mailspace {
                     "cannot provision predefined role '{name}': that name is an alias for '{owner}'"
                 )));
             }
-            Some((owner, true)) => owner,
+            Some((owner, true)) => {
+                self.settle_role(&owner, &update)?;
+                owner
+            }
             None => {
                 self.add_role(name, update)?;
                 name.to_string()
