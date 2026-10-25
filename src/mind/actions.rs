@@ -113,8 +113,41 @@ pub fn parse_envelope(reply: &str) -> Result<Vec<ActionRequest>, String> {
     };
     let body = lines[open + 1..*close].join("\n");
     toml::from_str::<Envelope>(&body)
-        .map(|envelope| envelope.actions)
+        .map(|envelope| {
+            envelope
+                .actions
+                .into_iter()
+                .map(drop_blank_fields)
+                .collect()
+        })
         .map_err(|error| error.to_string())
+}
+
+/// A blank field is an absent one. The prompt lists every field, and a live
+/// model filled the ones that did not apply with `""`, which the handle
+/// check then refused.
+fn drop_blank_fields(mut request: ActionRequest) -> ActionRequest {
+    for field in [
+        &mut request.need,
+        &mut request.step,
+        &mut request.word,
+        &mut request.note,
+    ] {
+        if field
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            *field = None;
+        }
+    }
+    if request
+        .project
+        .as_deref()
+        .is_some_and(|project| project.as_os_str().is_empty())
+    {
+        request.project = None;
+    }
+    request
 }
 
 /// Check every request. Need-scoped actions spend the budget as they pass,

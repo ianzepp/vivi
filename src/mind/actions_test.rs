@@ -112,6 +112,21 @@ fn missing_fields_are_refused() {
 }
 
 #[test]
+fn empty_fields_are_absent_fields() {
+    // A live model filled every listed field, writing `need = ""` on a
+    // read-status; that was refused as "need is not a plain handle".
+    let reply = "+++\n[[action]]\nkind = \"read-status\"\nproject = \"/w/app\"\nneed = \"\"\nstep = \" \"\nword = \"\"\nnote = \"look\"\n+++";
+    let (planned, _) = run(AuthorityStage::Observe, reply);
+    assert_eq!(planned[0].verdict, Ok(()));
+    assert_eq!(planned[0].request.need, None);
+    assert_eq!(planned[0].request.step, None);
+    assert_eq!(planned[0].request.word, None);
+    let no_project = "+++\n[[action]]\nkind = \"unlock\"\nproject = \"\"\nneed = \"n1\"\n+++";
+    let (planned, _) = run(AuthorityStage::Unstick, no_project);
+    assert_eq!(planned[0].verdict, Err(Refusal::MissingField("project")));
+}
+
+#[test]
 fn long_notes_and_floods_are_refused() {
     let long = REQUEUE.replace("flaky gate", &"x".repeat(MAX_NOTE + 1));
     let (planned, _) = run(AuthorityStage::Unstick, &long);
