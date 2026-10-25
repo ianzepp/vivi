@@ -420,6 +420,15 @@ name that two of the key's grants resolve to is refused. The grant's
 member must still be a registered identity on the project, and a closed
 or expired chat project reads as ungranted.
 
+An archived project is the one granted state that refuses by name: the
+grant resolves — by id and by hosted name, served or retired — and the
+tool then answers `isError` with `project <project_id> is archived`
+(the resolved id, never the raw argument), checked before the
+member-identity lookup. The grant itself survives the refusal: it lists
+with `mode archived` until restore or purge, and answers again once the
+project is restored. A retired grant with no archive record has no
+refusal to give; it reads as ungranted, like any unknown project.
+
 ### Tools
 
 The project tools are the 1.2.0 list plus the hosted additions
@@ -447,9 +456,11 @@ of the arguments shown.
 | `projects` | — | List what this key may reach |
 
 `projects` answers one `{project_id, name?, mode, member, identity,
-level}` per live grant (`mode` is `hosted`, `chat` or `durable`; `name`
-is the hosted project's name; `identity` the vivi identity the key acts
-as, when one was named). A host principal answers `{host: true}`.
+level}` per grant (`mode` is `hosted`, `archived`, `chat` or `durable`;
+`name` is the hosted project's name; `identity` the vivi identity the
+key acts as, when one was named). An archived project's grants stay
+listed, `mode archived`, until restore or purge; a retired grant with
+no archive record is skipped. A host principal answers `{host: true}`.
 
 #### Config, pool and target writes
 
@@ -526,21 +537,26 @@ it runs the vivi binary's `pool status`, which the server is not, so
 
 #### Host tools
 
-Ten tools need a **host principal** — the operator token or a key
-minted `host: true`:
+Twelve tools need a **host principal** — the operator token or a key
+minted `host: true`. `archive_project`, `restore_project` and
+`purge_project` replaced `delete_project` outright, with no alias for
+one: retirement is archive first — a metadata-only state change, files
+kept — and purge only after the fixed delay.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `create_project` | `name`, `target?`, `branch?`, `pool?`, `initial_commit?`, `source?`, `pump?`, `serve?`, `rungs?` | Create a hosted project: `<HOST_LANES_ROOT>/<name>/` with the first target's (default: `name`) bare repository, the project with the first target's checkout and `[pump.targets.<target>]`, git URL `<HOST_GIT_URL_PREFIX><name>/<target>.git` and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key. A supplied `source` must match `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`: local paths, `file://`, `ssh://`, scp-style `git@host:owner/repo`, other hosts, user info, a query and a fragment are refused, before anything is created. When `source` is omitted, creation is unchanged — an empty repository with one initial commit. The new project's pump control mode is set to running once the project is created and its `rungs` seeded, when the project is registered for the pump supervisor (`pump`, default true; with `pump: false` the mode is left alone); the answer carries it as `pump_mode` (and `pump_error` when it could not be set or read). `pump_mode` is the stored control mode read back — a string, or null when it could not be read — not a guarantee that a pump process is running or healthy; `pump_error` is additive and does not roll the project back or hide the one-time operator key |
 | `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?`, `source?` | `vivi project lane add` on `<HOST_PROJECTS_ROOT>/<name>`: makes the bare repository `<HOST_LANES_ROOT>/<name>/<target>.git` (with one empty seed commit when `seed`), clones it to `<project>/<target>` with `origin` at `<prefix><name>/<target>.git`, and adds `[pump.targets.<target>]` through the guarded config write (a running pump refuses). A supplied `source` must match `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`: local paths, `file://`, `ssh://`, scp-style `git@host:owner/repo`, other hosts, user info, a query and a fragment are refused, before the lane, checkout or guarded config write. When `source` is omitted, lane creation is unchanged, including `seed`; the rule applies to the import `source`, not to `git_url_prefix`, which still overrides `HOST_GIT_URL_PREFIX`. Success returns `{name, target_id, repo_path, checkout_path, git_url, initial_commit, readiness: {ready, missing}}`. A second add of the same target is the library's refusal |
-| `delete_project` | `name`, `confirm` | `vivi project delete`: `confirm` must repeat `name`. Unregisters the project, removes `<HOST_PROJECTS_ROOT>/<name>` and `<HOST_LANES_ROOT>/<name>/`, and stops serving it at once (`project_list` no longer lists it). While a pump still holds the project's lock it unregisters, keeps the files and answers `isError`: call again once the pump service has stopped that pump. Once the files are gone every grant on the project is removed, and a principal left with none (the key `create_project` minted) has its keys revoked. Success returns `{name, unregistered, project_root, lanes_dir, project_id, ungranted, keys_revoked}` |
+| `archive_project` | `name`, `confirm` | The retirement default: `confirm` must repeat `name`. Metadata-only — the project is retired in place, no file is touched and no pump lock is waited for: `archived {at, by, root, lanes_dir, pump, serve}` is stamped on the project's metadata and the root is taken out of the host registry, so the server stops serving it at once, even while a pump holds the project's lock mid-tick. The mailspace root, its lanes directory and the server's own project data all stay exactly where they lie, and every grant stays in place; the archived name stays taken (`create_project` refuses it). The stamp records the registry's exact pump/serve flags — a root absent from a readable registry records explicit `false`/`false` — and an unreadable registry aborts with nothing changed. A retry preserves the first record field for field, `at` included, and only brings the registry in line. The scope is intentionally metadata-only: a registry-only root this server never served (no `project.json`) is refused `no project <name> is hosted by this server`; deleting such a root stays the host CLI's job. Archive needs only `HOST_LANES_ROOT` — the recorded `lanes_dir` is its canonicalized `<root>/<name>`. Returns `{name, project_id, root, lanes_dir, unregistered, archived}` |
+| `restore_project` | `name` | Undo an archive. Needs no `HOST_*` configuration — the record carries everything: the recorded root is re-registered with the pump/serve flags saved at archive time, the archive record is cleared (which resets the purge clock), and the registry is reconciled so the project is hosted again. No operator key is minted again; the archive kept every grant. Refusals: `no hosted project named <name>`, `<name> is not archived: nothing to restore`, and `<name> is archived at <root>, which no longer exists; the record is unchanged` — that last one registers nothing and keeps the record. A serving failure after a successful restore is reported, not refused: `served` says what actually happened and `serve_error` carries the reconciliation's reason when serving was asked for and did not follow. Returns `{name, project_id, root, lanes_dir, pump, serve, restored: true, served}` (+ `serve_error`) |
+| `purge_project` | `name`, `confirm` | The point of no return — the only destructive step. `confirm` must repeat `name`. Requires the archived state and the fixed 24-hour purge delay for every caller, the host not exempt: before `archived.at` + 24 h the refusal reports the instant purge becomes allowed; while a pump still holds the project's lock it refuses, naming the lock path, and keeps every file — stop the pump service and call again. Removal order makes a partially failed purge retryable: the recorded root leaves the host registry first, then the recorded root and lanes directory trees are removed (already-absent counts as removed), then every grant on the project is dropped — a principal left with none (the key `create_project` minted) has its keys revoked — and the server's own project data directory, which holds the archive record a retry needs, is removed last. Every path comes from the archive record, never the current `HOST_*` configuration. Returns `{name, project_id, project_root, lanes_dir, data_dir, ungranted, keys_revoked}` |
 | `key_mint` | `principal`, `grants?`, `host?`, `label?` | Mint a server key for `principal` (created when absent; grants not already held are added). `host: true` mints a host principal, which carries no grants and whose `principal` defaults to `host`. The raw `key` is shown once, `vivi_` + random; at most 32 live keys per principal |
 | `key_list` | — | Principals with their keys (digests only) and grants |
 | `key_revoke` | `key_id` | Revoke one key, on any principal; already-revoked is success |
 | `grant_add` | `principal`, `grant` | Add one grant to an existing principal (idempotent) |
 | `grant_remove` | `principal`, `project_id` | Remove the principal's grant on one project |
 | `server_version` | — | This server's own name and version — the same pair `initialize` answers. Read-only |
-| `project_list` | — | The hosted projects this server serves from the host registry: one `{project_id, name?, mode}` each (`name` is the project root's directory name, else the mailspace config `name`; `mode` is `hosted`). A project that cannot be read is skipped. Read-only |
+| `project_list` | — | The hosted projects this server serves from the host registry: one `{project_id, name?, mode}` each (`name` is the project root's directory name, else the mailspace config `name`; `mode` is `hosted`, or `archived` for a retired project whose metadata records an archive). Archived entries stay listed — their names remain taken — a retired project with no archive record is hidden, and a project whose metadata cannot be read is skipped. Read-only |
 
 A non-host key that calls one is refused
 `<tool> is a host tool; this key is not a host principal`. A key/grant
