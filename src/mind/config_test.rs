@@ -137,3 +137,16 @@ fn load_at_reads_a_temp_file_and_tolerates_a_missing_one() {
     assert_eq!(config.heartbeat_secs, 3600);
     assert_eq!(config.paths.config, file);
 }
+
+#[test]
+fn the_shipped_example_parses_to_the_defaults() {
+    let example = include_str!("mind.toml.example");
+    let config = parse(example, paths()).unwrap();
+    assert_eq!(config, parse("", paths()).unwrap());
+    let with_model = example.replace("# model = ", "model = ");
+    let config = parse(&with_model, paths()).unwrap();
+    assert_eq!(
+        config.model.as_deref(),
+        Some("proxy/~deepseek/deepseek-flash-latest")
+    );
+}
