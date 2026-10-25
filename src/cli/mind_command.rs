@@ -21,6 +21,13 @@ pub enum MindSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Probe every watched pump once and print the signals and the wake
+    /// decision; read-only, starts no turn and needs no running mind
+    Probe {
+        /// Print as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the last lines of the mind log
     Log {
         /// Lines to print

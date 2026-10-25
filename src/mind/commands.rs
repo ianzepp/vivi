@@ -13,9 +13,11 @@ use crate::VivariumError;
 use crate::cli::{MindCommand, MindServiceCommand, MindSubcommand};
 
 use super::config::{self, MindConfig};
+use super::probe::{HealthProbe, Probe, ProjectSignals};
 use super::projects;
 use super::socket::{Client, Reply, Request};
 use super::store;
+use super::wake::{self, WakeDecision, WakeInputs};
 
 /// The example systemd unit `vivi mind service unit` prints.
 pub const UNIT_EXAMPLE: &str = include_str!("vivi-mind.service.example");
@@ -33,6 +35,7 @@ pub async fn dispatch(command: &MindCommand) -> Result<(), VivariumError> {
     match sub {
         MindSubcommand::Attach => attach(&config.paths.socket).await,
         MindSubcommand::Status { json } => status(&config, *json).await,
+        MindSubcommand::Probe { json } => probe(&config, *json),
         MindSubcommand::Log { lines } => log(&config.paths.log, *lines),
         MindSubcommand::Pause => set_paused(&config, true).await,
         MindSubcommand::Resume => set_paused(&config, false).await,
@@ -176,6 +179,46 @@ fn print_status(view: &super::socket::StatusView, running: bool) {
         ),
         None => println!("last wake none"),
     }
+}
+
+/// One read-only pass of what a tick sees: watched roots, their signals,
+/// and the wake decision. Writes nothing and starts no turn.
+fn probe(config: &MindConfig, json: bool) -> Result<(), VivariumError> {
+    let state = store::load_at(&config.paths.state)?;
+    let roots = projects::watched_at(&crate::registry::path()?, &state.ignored)?;
+    let signals: Vec<ProjectSignals> = roots.iter().map(|root| HealthProbe.probe(root)).collect();
+    let decision = wake::decide(&WakeInputs {
+        now: super::service::now(),
+        heartbeat: &config.heartbeat,
+        last: state.last_wake.as_ref(),
+        recent: &state.recent_wakes,
+        max_wakes_per_hour: config.budgets.max_wakes_per_hour,
+        paused: state.paused,
+        signals: &signals,
+    });
+    let (wake, reasons) = match decision {
+        WakeDecision::Sleep(why) => (false, vec![serde_json::json!({ "sleep": why })]),
+        WakeDecision::Wake { reasons, .. } => (
+            true,
+            reasons
+                .iter()
+                .map(|reason| serde_json::to_value(reason).unwrap_or_default())
+                .collect(),
+        ),
+    };
+    let report = serde_json::json!({ "wake": wake, "reasons": reasons, "projects": signals });
+    if json {
+        println!("{report}");
+        return Ok(());
+    }
+    for signal in &signals {
+        println!("{}  alarming={}", signal.fingerprint(), signal.alarming());
+        for reason in &signal.reasons {
+            println!("  {reason}");
+        }
+    }
+    println!("wake {wake} {}", serde_json::Value::Array(reasons));
+    Ok(())
 }
 
 fn log(path: &Path, lines: usize) -> Result<(), VivariumError> {

@@ -81,3 +81,14 @@ fn a_later_authority_stage_is_refused_at_load() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("not implemented"));
 }
+
+#[test]
+fn probe_with_an_empty_registry_wakes_on_the_first_heartbeat_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = vivi(dir.path(), &["mind", "probe", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["wake"], true);
+    assert_eq!(value["projects"], serde_json::json!([]));
+    assert!(!dir.path().join("mind").exists());
+}
