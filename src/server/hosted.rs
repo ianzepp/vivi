@@ -153,6 +153,16 @@ fn serve_root(
              that project is untouched"
         ));
     }
+    // An archive that crashed after writing its record but before the root
+    // left the registry must not be served back: the record stays until a
+    // restore clears it, and reconcile retires the id so the project
+    // answers not-found.
+    if existing.as_ref().is_some_and(|meta| meta.is_archived()) {
+        return Err(format!(
+            "project id {project_id} is archived; it is not served again \
+             until its archive record is cleared"
+        ));
+    }
     let member = admit_creator(projects, identities, &mailspace, &project_id)?;
     let prefix = identities
         .by_name(&project_id, &member)

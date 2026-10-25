@@ -18,7 +18,7 @@ use vivi_server::hosted::{self, Report};
 use vivi_server::identities::IdentityRegistry;
 use vivi_server::ids::{mint_room_id, room_id_from_uuid};
 use vivi_server::projects::{
-    AppendItem, ListQuery, ProjectError, ProjectMeta, ProjectStore, Viewer,
+    AppendItem, Archived, ListQuery, ProjectError, ProjectMeta, ProjectStore, Viewer,
 };
 
 fn scratch(name: &str) -> PathBuf {
@@ -213,6 +213,105 @@ fn a_root_leaving_the_registry_stops_being_served_and_keeps_its_data() {
     assert!(back.retired.is_empty());
     assert_eq!(env.projects.epoch(&id).unwrap(), epoch);
     assert_eq!(env.identities.list(&id).len(), 1);
+}
+
+#[test]
+fn an_archived_hosted_project_is_refused_until_its_record_is_cleared() {
+    let env = env("archived");
+    let (root, mailspace) = host_root(&env, "app", None);
+    let id = serve(&env, &[&root]).served[0].project_id.clone();
+    let epoch = env.projects.epoch(&id).unwrap();
+    let dir = project_dir(&env, &id);
+
+    // The crash window: the archive record is on disk while the registry
+    // still serves the root.
+    let record = Archived {
+        at: "2026-10-25T00:00:00Z".to_owned(),
+        by: "keeper".to_owned(),
+        root: root.join("archive").join("mailspace"),
+        lanes_dir: PathBuf::from("/srv/lanes/app"),
+        pump: false,
+        serve: true,
+    };
+    let meta_before: ProjectMeta =
+        serde_json::from_slice(&std::fs::read(dir.join("project.json")).unwrap()).unwrap();
+    let archived_meta = ProjectMeta {
+        archived: Some(record.clone()),
+        ..meta_before.clone()
+    };
+    std::fs::write(
+        dir.join("project.json"),
+        serde_json::to_vec(&archived_meta).unwrap(),
+    )
+    .unwrap();
+
+    // Reconciled while still served: refused, retired, and the archive
+    // record exactly as the crash left it.
+    let report = serve(&env, &[&root]);
+    assert!(report.served.is_empty(), "{report:?}");
+    assert_eq!(report.refused.len(), 1);
+    assert!(report.refused[0].reason.contains("archived"), "{report:?}");
+    assert_eq!(report.retired, vec![id.clone()]);
+    assert_eq!(
+        env.projects.existing_project_dir(&id),
+        Err(ProjectError::ProjectNotFound)
+    );
+    let kept: ProjectMeta =
+        serde_json::from_slice(&std::fs::read(dir.join("project.json")).unwrap()).unwrap();
+    assert_eq!(kept.archived.as_ref(), Some(&record));
+    assert_eq!(kept.project_id, id);
+    assert!(kept.is_hosted());
+    assert_eq!(kept.epoch, Some(epoch));
+    assert!(root.join(".vivi").join("mailspace.toml").is_file());
+    for file in [
+        "project.json",
+        "transport.sqlite",
+        "identities.json",
+        "admissions.json",
+    ] {
+        assert!(dir.join(file).is_file(), "{file}");
+    }
+
+    // A restart over the same data refuses and retires the same way.
+    let restarted = ProjectStore::new(&env.data);
+    let again = hosted::reconcile(
+        &restarted,
+        &IdentityRegistry::new(&env.data),
+        &BTreeSet::from([root.clone()]),
+    );
+    assert!(again.served.is_empty(), "{again:?}");
+    assert_eq!(again.retired, vec![id.clone()]);
+    assert_eq!(
+        restarted.existing_project_dir(&id),
+        Err(ProjectError::ProjectNotFound)
+    );
+
+    // Restore: clearing the record serves the same project again, with the
+    // same epoch and the one member it always had.
+    let restored = ProjectMeta {
+        archived: None,
+        ..archived_meta
+    };
+    std::fs::write(
+        dir.join("project.json"),
+        serde_json::to_vec(&restored).unwrap(),
+    )
+    .unwrap();
+    let back = serve(&env, &[&root]);
+    assert!(back.refused.is_empty(), "{back:?}");
+    assert!(back.retired.is_empty());
+    assert_eq!(back.served.len(), 1);
+    assert_eq!(back.served[0].project_id, id);
+    assert_eq!(back.served[0].root, root);
+    assert_eq!(env.projects.epoch(&id).unwrap(), epoch);
+    assert_eq!(env.identities.list(&id).len(), 1);
+    assert_eq!(
+        env.identities.list(&id)[0].mailspace_id.as_deref(),
+        Some(mailspace.mailspace_id())
+    );
+    let meta = env.projects.load_meta(&id).unwrap();
+    assert!(!meta.is_archived());
+    assert_eq!(meta.mailspace_root.as_deref(), Some(root.as_path()));
 }
 
 #[tokio::test]
