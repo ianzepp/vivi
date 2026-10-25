@@ -17,6 +17,12 @@ Hosted projects (a mailspace already on the machine, served from its own
 `.vivi/` through the host registry) are built, recorded in
 [`docs/phase-04-hosted-projects.md`](docs/phase-04-hosted-projects.md).
 
+Phase 05 is designed, not built: projects created and owned by ed25519
+signing keys, GitHub-only `source`, and archive before purge with a 24-hour
+delay, in
+[`docs/phase-05-signed-projects.md`](docs/phase-05-signed-projects.md)
+(operator decisions 2026-10-25).
+
 ## Vivi Mailspace
 
 Development coordination runs through a project mailspace at `.vivi/`:
