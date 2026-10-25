@@ -481,7 +481,9 @@ async fn initialize_and_tools_list() {
             "project_list",
             "create_project",
             "lane_create",
-            "delete_project",
+            "archive_project",
+            "restore_project",
+            "purge_project",
             "key_mint",
             "key_list",
             "key_revoke",
@@ -496,6 +498,28 @@ async fn initialize_and_tools_list() {
         .find(|tool| tool["name"] == "overview")
         .unwrap();
     assert_eq!(overview["inputSchema"]["required"], json!(["project"]));
+
+    // The lifecycle trio replaced delete_project outright: no alias, exact
+    // required arguments, no `project` argument, closed schemas.
+    let tools: Vec<_> = listed["result"]["tools"].as_array().unwrap().clone();
+    assert!(
+        tools.iter().all(|tool| tool["name"] != "delete_project"),
+        "no delete alias: {names:?}"
+    );
+    for (name, required) in [
+        ("archive_project", vec!["name", "confirm"]),
+        ("restore_project", vec!["name"]),
+        ("purge_project", vec!["name", "confirm"]),
+    ] {
+        let schema = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"))["inputSchema"]
+            .clone();
+        assert_eq!(schema["required"], json!(required), "{name}");
+        assert!(schema["properties"].get("project").is_none(), "{name}");
+        assert_eq!(schema["additionalProperties"], false, "{name}");
+    }
 }
 
 #[tokio::test]
