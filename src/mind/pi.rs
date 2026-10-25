@@ -31,6 +31,11 @@ use super::config::MindConfig;
 /// Longest one turn may run before the adapter gives up on it.
 pub const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Longest a non-turn command (`get_state`, `get_messages`) may wait for
+/// its response. Every wait is bounded: a hung pi must not hold the turn
+/// lock forever.
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
 /// What a turn streams to an attached client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnEvent {
@@ -169,8 +174,7 @@ impl ProcessPi {
     /// # Errors
     /// Fails when pi does not answer.
     pub async fn session_id(&mut self) -> Result<Option<String>, VivariumError> {
-        let id = self.send("get_state", json!({})).await?;
-        let data = self.response(&id, None).await?;
+        let data = self.request("get_state", COMMAND_TIMEOUT).await?;
         Ok(data["sessionId"]
             .as_str()
             .or_else(|| data["sessionFile"].as_str())
@@ -190,6 +194,14 @@ impl ProcessPi {
             .await?;
         self.stdin.flush().await?;
         Ok(id)
+    }
+
+    /// Send a field-less command and wait at most `limit` for its response.
+    async fn request(&mut self, kind: &str, limit: Duration) -> Result<Value, VivariumError> {
+        let id = self.send(kind, json!({})).await?;
+        tokio::time::timeout(limit, self.response(&id, None))
+            .await
+            .map_err(|_| VivariumError::Other(format!("pi {kind} timed out")))?
     }
 
     async fn next_record(&mut self) -> Result<PiRecord, VivariumError> {
@@ -268,14 +280,13 @@ impl PiSession for ProcessPi {
     }
 
     async fn compact(&mut self) -> Result<String, VivariumError> {
-        let id = self.send("compact", json!({})).await?;
-        let data = self.response(&id, None).await?;
+        // Compaction summarises with a model call, so it gets a turn's bound.
+        let data = self.request("compact", TURN_TIMEOUT).await?;
         Ok(data["summary"].as_str().unwrap_or_default().to_string())
     }
 
     async fn history(&mut self, limit: usize) -> Result<Vec<String>, VivariumError> {
-        let id = self.send("get_messages", json!({})).await?;
-        let data = self.response(&id, None).await?;
+        let data = self.request("get_messages", COMMAND_TIMEOUT).await?;
         Ok(history_lines(&data, limit))
     }
 }
