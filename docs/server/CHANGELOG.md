@@ -20,6 +20,28 @@ pump running.
   `pump_error` names a mode that could not be set or read (the project is not
   rolled back, and the operator key is still shown once). Pairs with the phase
   05 decision that a project's operator may start its own pump.
+- **Project retirement: `archive_project`, `restore_project` and
+  `purge_project` replace `delete_project`, which is gone with no alias
+  (breaking).** Archive is the default retirement: a metadata-only step that
+  stamps an archive record (caller, stamp, root, lanes directory, saved
+  pump/serve flags), unregisters the root so the server stops serving at
+  once, and keeps all three trees — the project root, the lanes directory and
+  the server's own project data — exactly where they lie, even while a pump
+  holds the project's lock. `project_list` answers `mode: archived` for a
+  project so retired. `restore_project` undoes an archive needing no `HOST_*`
+  configuration: the recorded root is re-registered with the pump/serve flags
+  saved at archive time and the record is cleared, which resets the purge
+  clock; every grant was kept. `purge_project` alone destroys data, and only
+  at least 24 hours after the archive stamp for every caller including the
+  host: the delay is the compile-time `PURGE_DELAY_SECONDS` with no
+  environment override. Purge is the one lifecycle step that refuses while a
+  live pump still holds the project's lock; when it runs it removes the
+  recorded root and lanes trees, drops the project's grants (revoking the
+  keys of principals left with none) and removes the server's own project
+  directory last. A project this server never served (a registry-only root
+  with no server metadata) is refused: the lifecycle is metadata-only by
+  design. **Warning:** older binaries ignore archived metadata and must not
+  be used to downgrade across this change.
 
 ## 2.3.2
 
