@@ -27,6 +27,7 @@ use crate::grants::{GrantLevel, GrantRecord};
 use crate::hosted;
 use crate::projects::ProjectMeta;
 
+pub(super) mod archive;
 pub(crate) mod lane;
 mod rungs;
 mod source;
@@ -217,34 +218,6 @@ pub(super) fn hosted_entry(state: &AppState, name: &str) -> Option<ProjectMeta> 
         .find(|meta| super::server::hosted_name(meta).as_deref() == Some(name))
 }
 
-/// Take every grant on `project_id` off its principals, and revoke the keys
-/// of each principal left with no grant (such as the operator key
-/// `create_project` minted). Returns `(principals ungranted, keys revoked)`.
-fn drop_project_grants(state: &AppState, project_id: &str) -> (Vec<String>, usize) {
-    let mut ungranted = Vec::new();
-    let mut revoked = 0;
-    for principal in state.server_keys.list() {
-        if principal.host || !principal.grants.iter().any(|g| g.project_id == project_id) {
-            continue;
-        }
-        if state
-            .server_keys
-            .remove_grant(&principal.principal, project_id)
-            .is_err()
-        {
-            continue;
-        }
-        if principal.grants.len() == 1 {
-            revoked += state
-                .server_keys
-                .revoke_principal(&principal.principal)
-                .unwrap_or(0);
-        }
-        ungranted.push(principal.principal);
-    }
-    (ungranted, revoked)
-}
-
 /// The host-project mutation mutex: one mutation of the host's projects
 /// (create, delete, lane add) at a time. The host registry takes a
 /// non-waiting lock, so two creations in flight would fail the second with
@@ -392,7 +365,7 @@ pub(super) async fn delete_project(
         let mut out = serde_json::to_value(&deleted)
             .map_err(|e| ToolError::new(format!("failed to encode delete_project result: {e}")))?;
         if let (Some(id), Some(object)) = (project_id, out.as_object_mut()) {
-            let (ungranted, revoked) = drop_project_grants(&state, &id);
+            let (ungranted, revoked) = archive::drop_project_grants(&state, &id)?;
             object.insert("project_id".into(), json!(id));
             object.insert("ungranted".into(), json!(ungranted));
             object.insert("keys_revoked".into(), json!(revoked));
