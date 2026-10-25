@@ -262,7 +262,7 @@ fn print_reply(reply: &Reply) {
         }
         Reply::Ok { message } => println!("{message}"),
         Reply::Error { message } => eprintln!("error: {message}"),
-        Reply::Status { status } => println!("{status:?}"),
+        Reply::Status { status } => print_status(status, true),
         Reply::Done => {}
     }
 }
