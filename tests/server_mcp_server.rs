@@ -424,7 +424,9 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
         "project_list",
         "create_project",
         "lane_create",
-        "delete_project",
+        "archive_project",
+        "restore_project",
+        "purge_project",
         "key_mint",
         "key_list",
         "key_revoke",
@@ -457,6 +459,26 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
     }
     for name in ["pump_action", "pump_reset"] {
         assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    // The lifecycle trio replaced delete_project outright: no alias, exact
+    // required arguments, no `project` argument, closed schemas.
+    assert!(
+        tools.iter().all(|tool| tool["name"] != "delete_project"),
+        "no delete alias"
+    );
+    for (name, required) in [
+        ("archive_project", json!(["name", "confirm"])),
+        ("restore_project", json!(["name"])),
+        ("purge_project", json!(["name", "confirm"])),
+    ] {
+        let schema = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"))["inputSchema"]
+            .clone();
+        assert_eq!(schema["required"], required, "{name}");
+        assert!(schema["properties"].get("project").is_none(), "{name}");
+        assert_eq!(schema["additionalProperties"], false, "{name}");
     }
     let (_, init) = rpc(
         &fx.app,
@@ -829,10 +851,14 @@ async fn host_tools_refuse_member_keys_and_work_for_the_host_token() {
     }
     let err = call_err(&fx.app, &member_key, "create_project", json!({"name": "x"})).await;
     assert!(err.contains("is a host tool"), "{err}");
+    for tool in ["archive_project", "restore_project", "purge_project"] {
+        let err = call_err(&fx.app, &member_key, tool, json!({"name": "x"})).await;
+        assert!(err.contains("is a host tool"), "{tool}: {err}");
+    }
 
     // The refusal of a write host tool is audited; key_list (a read) is not.
     let lines = audit_lines(&fx.dir);
-    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert_eq!(lines.len(), 8, "{lines:?}");
     assert!(
         lines.iter().all(|line| line["outcome"] == "refused"),
         "{lines:?}"

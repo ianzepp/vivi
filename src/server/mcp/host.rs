@@ -1,7 +1,9 @@
 //! Host tools for `POST /v1/mcp`. They act on the host rather than on one
 //! grant, and only a host principal may call them. `create_project` makes a
-//! project, `lane_create` adds a lane to one and `delete_project` removes
-//! one.
+//! project, `lane_create` adds a lane to one, and the lifecycle trio
+//! `archive_project`, `restore_project` and `purge_project` retires one.
+//! There is no delete tool and no alias for one: retirement is a
+//! two-step, recoverable affair.
 //!
 //! `create_project` calls [`vivi::project_create::create`] (the project's
 //! lanes directory with its first target's bare repository, the project
@@ -12,14 +14,31 @@
 //! on it. After the rung seeding, a registered project's pump control mode is
 //! set to running through the same control state `pump_control start` writes
 //! (`pump:false` leaves the mode alone) and the answer reports the inspected
-//! `pump_mode`. The answer's `mcp_path` is `/v1/mcp`. `delete_project` calls
-//! [`vivi::project_create::delete::delete`] and reconciles the same way, so
-//! the server stops serving the project at once.
+//! `pump_mode`. The answer's `mcp_path` is `/v1/mcp`.
+//!
+//! `archive_project` is the way out: a default archive touches no file at
+//! all. It stamps an archive record (caller, stamp, root, lanes directory,
+//! the pump/serve flags) on the project's metadata and takes the root out
+//! of the host registry, so the server stops serving it at once while the
+//! mailspace tree and its lanes directory stay exactly where they lie —
+//! even a pump holding the project's lock mid-tick does not block it.
+//! `restore_project` undoes it: the recorded root is re-registered with the
+//! flags saved at archive time, the record is cleared (which resets the
+//! 24-hour purge clock) and the project is served again, with no `HOST_*`
+//! configuration needed because the record carries everything.
+//! `purge_project` is the point of no return, allowed only once
+//! [`PURGE_DELAY_SECONDS`](archive::PURGE_DELAY_SECONDS) — 24 hours, fixed
+//! policy, the host not exempt — have passed since the archive stamp: it
+//! removes the recorded trees, drops the project's grants (revoking the
+//! keys of principals left with none) and the server's own project
+//! directory. Purge is also the only step of the three that refuses while
+//! a pump still holds the project's lock (the delay is
+//! `archive::PURGE_DELAY_SECONDS`).
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use vivi::project_create::{ProjectCreate, ProjectCreated, ProjectDelete};
+use vivi::project_create::{ProjectCreate, ProjectCreated};
 use vivi::pump::control::{PumpMode, inspect, project_home, set_project_mode};
 
 use crate::AppState;
@@ -35,6 +54,11 @@ mod source;
 use self::rungs::Rungs;
 use super::tool;
 use super::tools::{ToolError, opt_str, req_str};
+
+/// The lifecycle handlers, dispatched by the sibling `server` module.
+pub(super) use self::archive::archive_project;
+pub(super) use self::archive::purge::purge_project;
+pub(super) use self::archive::restore::restore_project;
 
 /// Environment variable names for the host's project layout.
 pub const ENV_PROJECTS_ROOT: &str = "HOST_PROJECTS_ROOT";
@@ -145,14 +169,48 @@ pub(super) fn tools_list() -> Value {
             }),
         ),
         tool(
-            "delete_project",
-            "Delete a project from this host: its host registration, its project directory and \
-             its lanes directory <HOST_LANES_ROOT>/<name> with every lane in it, then stop serving \
-             it. `confirm` must repeat the name. While a pump still holds the project's lock the \
-             call unregisters, keeps the files and says so: call it again once the pump service \
-             has stopped that pump. Once the files are gone every grant on the project is removed \
-             and a principal left with none (the operator key create_project minted) has its keys \
-             revoked; the answer names them (ungranted, keys_revoked). Host principal only.",
+            "archive_project",
+            "Archive a hosted project: stamp an archive record (by, at, the mailspace root, its \
+             lanes directory, the pump/serve flags) on the project's metadata and take the root \
+             out of the host registry, so this server stops serving it at once. Nothing is \
+             deleted: the project tree and its lanes directory stay exactly where they lie, \
+             every grant stays in place, and a pump holding the project's lock mid-tick does not \
+             matter. `confirm` must repeat the name. Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Project name, as given to create_project" },
+                    "confirm": { "type": "string", "description": "The project name again" }
+                },
+                "required": ["name", "confirm"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
+            "restore_project",
+            "Restore an archived project: re-register the root recorded at archive time with the \
+             pump/serve flags saved then, clear the archive record (which resets the 24-hour \
+             purge clock), and reconcile the host registry so the project is served again. No \
+             HOST_* configuration is needed: the record carries everything. Returns name, \
+             project_id, root, lanes_dir, pump, serve, restored and served (plus serve_error \
+             when serving was asked for and refused). Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Project name, as given to create_project" }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
+            "purge_project",
+            "Purge an archived project for good, no sooner than 24 hours after its archive stamp \
+             (fixed policy; the host is not exempt): remove the recorded project tree and lanes \
+             directory, drop every grant on the project (revoking the keys of principals left \
+             with none) and remove the server's own project directory. `confirm` must repeat \
+             the name. While a pump still holds the project's lock the call refuses and keeps \
+             every file: stop the pump service, then call purge again. Host principal only.",
             json!({
                 "type": "object",
                 "properties": {
@@ -340,39 +398,6 @@ fn build_request(
         request.source = Some(source.to_owned());
     }
     Ok((request, Rungs::parse(arguments)?))
-}
-
-/// Delete one project. The `/v1/mcp` host tool.
-pub(super) async fn delete_project(
-    state: &AppState,
-    arguments: &Value,
-) -> Result<Value, ToolError> {
-    let (projects_root, lanes_root, _) = require(&state.host, "delete_project")?;
-    let request = ProjectDelete {
-        name: req_str(arguments, "name")?.to_owned(),
-        projects_root,
-        lanes_root,
-        confirm: req_str(arguments, "confirm")?.to_owned(),
-    };
-    let state = state.clone();
-    blocking(move || {
-        let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
-        let project_id = hosted_entry(&state, &request.name).map(|meta| meta.project_id);
-        let outcome = vivi::project_create::delete::delete(&request);
-        // Unregistered even when the files stay (a live pump): stop serving now.
-        hosted::reconcile_registry(&state.projects, &state.identities);
-        let deleted = outcome.map_err(|e| ToolError::new(e.to_string()))?;
-        let mut out = serde_json::to_value(&deleted)
-            .map_err(|e| ToolError::new(format!("failed to encode delete_project result: {e}")))?;
-        if let (Some(id), Some(object)) = (project_id, out.as_object_mut()) {
-            let (ungranted, revoked) = archive::drop_project_grants(&state, &id)?;
-            object.insert("project_id".into(), json!(id));
-            object.insert("ungranted".into(), json!(ungranted));
-            object.insert("keys_revoked".into(), json!(revoked));
-        }
-        Ok(out)
-    })
-    .await
 }
 
 pub(super) fn opt_bool(arguments: &Value, name: &str, default: bool) -> Result<bool, ToolError> {

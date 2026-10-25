@@ -53,8 +53,8 @@ pub(super) const INSTRUCTIONS: &str = "This is one vivi server's MCP endpoint. E
 tool takes a required `project`: the project id, or the name of a hosted project this key is \
 granted on. Call `projects` first to list what this key may reach; archived grants list with \
 mode archived and refuse calls until the project is restored. Host tools (create_project, \
-lane_create, delete_project, project_list, server_version, key and grant admin) need a host \
-principal.";
+lane_create, archive_project, restore_project, purge_project, project_list, server_version, \
+key and grant admin) need a host principal.";
 
 /// What the Bearer resolved to on `/v1/mcp`.
 #[derive(Debug, Clone)]
@@ -127,10 +127,12 @@ fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Respo
 
 // ------------------------------------------------------------------ tools
 
-const HOST_TOOLS: [&str; 10] = [
+const HOST_TOOLS: [&str; 12] = [
     "create_project",
     "lane_create",
-    "delete_project",
+    "archive_project",
+    "restore_project",
+    "purge_project",
     "key_mint",
     "key_list",
     "key_revoke",
@@ -596,14 +598,21 @@ async fn host_tool(
             Err(err) => Err(internal(state, auth, None, name, write, err).await),
         };
     }
-    if matches!(name, "create_project" | "lane_create" | "delete_project") {
+    if matches!(
+        name,
+        "create_project" | "lane_create" | "archive_project" | "restore_project" | "purge_project"
+    ) {
         if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
             return Ok(refused(state, auth, None, name, true, &message).await);
         }
         let outcome = match name {
             "create_project" => super::host::create_project(state, &arguments).await,
             "lane_create" => super::host::lane::lane_create(state, &arguments).await,
-            _ => super::host::delete_project(state, &arguments).await,
+            "archive_project" => {
+                super::host::archive_project(state, &auth.principal, &arguments).await
+            }
+            "restore_project" => super::host::restore_project(state, &arguments).await,
+            _ => super::host::purge_project(state, &arguments).await,
         };
         return match outcome {
             Ok(value) => {
@@ -1011,8 +1020,16 @@ fn summarize_ok(tool: &str, value: &Value) -> String {
                 .unwrap_or("?"),
             value.get("name").and_then(Value::as_str).unwrap_or("?")
         ),
-        "delete_project" => format!(
-            "deleted {}",
+        "archive_project" => format!(
+            "archived {}",
+            value.get("name").and_then(Value::as_str).unwrap_or("?")
+        ),
+        "restore_project" => format!(
+            "restored {}",
+            value.get("name").and_then(Value::as_str).unwrap_or("?")
+        ),
+        "purge_project" => format!(
+            "purged {}",
             value.get("name").and_then(Value::as_str).unwrap_or("?")
         ),
         _ => handle.map_or_else(|| "ok".to_owned(), |handle| format!("{tool} {handle}")),
