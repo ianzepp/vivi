@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, mpsc, watch};
 
@@ -193,19 +193,35 @@ async fn connection<P: PiSession + 'static>(
         };
         return send(&mut write, &refusal).await;
     }
-    let mut lines = BufReader::new(read).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(read);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // Read at most one byte past the cap, so an endless line costs
+        // MAX_REQUEST of memory, not all of it.
+        let limit = u64::try_from(MAX_REQUEST)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        if (&mut reader)
+            .take(limit)
+            .read_until(b'\n', &mut line)
+            .await?
+            == 0
+        {
+            return Ok(());
+        }
         if line.len() > MAX_REQUEST {
+            // The rest of the line is still unread, so the stream cannot be
+            // resynchronised: answer and hang up.
             send(&mut write, &error_reply("request too long")).await?;
-        } else {
-            match serde_json::from_str::<Request>(&line) {
-                Ok(request) => handle(request, &shared, &mut write).await?,
-                Err(error) => send(&mut write, &error_reply(&error.to_string())).await?,
-            }
+            return send(&mut write, &Reply::Done).await;
+        }
+        match serde_json::from_slice::<Request>(line.trim_ascii_end()) {
+            Ok(request) => handle(request, &shared, &mut write).await?,
+            Err(error) => send(&mut write, &error_reply(&error.to_string())).await?,
         }
         send(&mut write, &Reply::Done).await?;
     }
-    Ok(())
 }
 
 async fn handle<P: PiSession + 'static, W: AsyncWrite + Unpin>(

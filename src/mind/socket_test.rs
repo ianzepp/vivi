@@ -176,3 +176,21 @@ async fn stop_signals_shutdown() {
     stop.changed().await.unwrap();
     assert!(*stop.borrow());
 }
+
+#[tokio::test]
+async fn an_oversized_request_is_refused_without_buffering_it_and_hung_up() {
+    let mind = start(&[]);
+    let mut stream = UnixStream::connect(&mind.socket).await.unwrap();
+    stream
+        .write_all(&vec![b'x'; MAX_REQUEST + 16])
+        .await
+        .unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    let replies: Vec<Reply> = answer
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(matches!(&replies[0], Reply::Error { message } if message.contains("too long")));
+    assert_eq!(replies.last(), Some(&Reply::Done));
+}
