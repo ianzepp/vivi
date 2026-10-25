@@ -162,9 +162,12 @@ pub struct ProcessPi {
 }
 
 impl ProcessPi {
-    /// Start `pi --mode rpc` in the session dir, resuming `session` when
-    /// given and its file exists (else pi starts a fresh one). The environment is cleared to `PATH`, `HOME` and
-    /// `VIVI_PROXY_URL`: the mind passes no model keys.
+    /// Start `pi --mode rpc --no-tools` in the session dir, resuming
+    /// `session` when given and its file exists (else pi starts a fresh
+    /// one). `--no-tools` keeps pi's own bash and edit tools off, so the
+    /// reply envelope is the only way a turn acts. The environment is
+    /// cleared to `PATH`, `HOME` and `VIVI_PROXY_URL`: the mind passes no
+    /// model keys.
     ///
     /// # Errors
     /// Fails when pi cannot be started.
@@ -172,7 +175,7 @@ impl ProcessPi {
         std::fs::create_dir_all(&config.paths.session_dir)?;
         let mut command = Command::new(&config.pi_command);
         command
-            .args(["--mode", "rpc", "--session-dir"])
+            .args(["--mode", "rpc", "--no-tools", "--session-dir"])
             .arg(&config.paths.session_dir)
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())

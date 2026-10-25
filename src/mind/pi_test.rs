@@ -97,9 +97,12 @@ async fn fake_streams_scripted_replies_and_records_prompts() {
     assert_eq!(pi.compact().await.unwrap(), "compacted 2 prompts");
 }
 
-/// A stand-in `pi --mode rpc` in sh: answers `get_state` with its own
-/// `$HOME` (proving the cleared environment) and streams one prompt turn.
+/// A stand-in `pi --mode rpc` in sh: exits unless started with
+/// `--no-tools` (pi's own tools would bypass the envelope), answers
+/// `get_state` with its own `$HOME` (proving the cleared environment) and
+/// streams one prompt turn.
 const SCRIPTED_PI: &str = r#"#!/bin/sh
+case " $* " in *" --no-tools "*) ;; *) exit 3 ;; esac
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
   case "$line" in
