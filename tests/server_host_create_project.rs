@@ -1064,3 +1064,152 @@ async fn create_project_refuses_a_source_that_is_not_a_github_url() {
         assert_host_audit(line, "create_project", "refused");
     }
 }
+
+// ---------------------------------------------------------------- archive
+
+/// Write an `archived` record into a hosted project's `project.json` by
+/// hand: the store's own shape, the way the later archive tool will leave
+/// it. The record is read back from disk by every host tool, so no store
+/// call is needed.
+fn mark_archived(
+    data: &std::path::Path,
+    project_id: &str,
+    root: &std::path::Path,
+    lanes_dir: &std::path::Path,
+) {
+    let path = data.join("projects").join(project_id).join("project.json");
+    let mut meta: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    meta["archived"] = json!({
+        "at": "2026-10-25T00:00:00Z",
+        "by": "host-operator",
+        "root": root.display().to_string(),
+        "lanes_dir": lanes_dir.display().to_string(),
+        "pump": true,
+        "serve": true,
+    });
+    std::fs::write(&path, serde_json::to_vec(&meta).unwrap()).unwrap();
+}
+
+async fn project_list(fx: &Fx) -> Vec<Value> {
+    let (_, listed) = fx
+        .host(
+            Some(TOKEN),
+            "tools/call",
+            json!({"name": "project_list", "arguments": {}}),
+        )
+        .await;
+    let text = listed["result"]["content"][0]["text"].as_str().unwrap();
+    serde_json::from_str(text).unwrap()
+}
+
+/// Retire `root`: unregister it in the host registry and reconcile the
+/// served set locally (what the registry watcher does within seconds).
+fn retire(fx: &Fx, root: &std::path::Path) {
+    vivi::registry::update(|registry| Ok(registry.remove(root))).unwrap();
+    vivi_server::hosted::reconcile_registry(&fx.state.projects, &fx.state.identities);
+}
+
+#[tokio::test]
+async fn an_archived_project_stays_listed_and_its_name_is_refused() {
+    let fx = fixture("archived", Some(TOKEN), true);
+    let (_, tools) = fx.host(Some(TOKEN), "tools/list", json!({})).await;
+    let listed = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "project_list")
+        .expect("project_list is in the catalog")["description"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(listed.contains("archived"), "{listed}");
+
+    let (errored, made) = fx.create(json!({"name": "kept"})).await;
+    assert!(!errored, "{made}");
+    let id = made["project_id"].as_str().unwrap().to_owned();
+    let root = fx.projects.join("kept").canonicalize().unwrap();
+    let config = std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
+    // The pump-mode write on creation leaves one backup of its own.
+    let backups = config_backups(&root);
+
+    mark_archived(&fx.data, &id, &root, &fx.lanes.join("kept"));
+    retire(&fx, &root);
+
+    let items = project_list(&fx).await;
+    let entry = items
+        .iter()
+        .find(|item| item["project_id"] == id.as_str())
+        .unwrap_or_else(|| panic!("the archived project is listed: {items:?}"));
+    assert_eq!(entry["mode"], "archived", "{items:?}");
+    assert_eq!(entry["name"], "kept", "{items:?}");
+
+    // The name is refused before a second root, lane, checkout, config
+    // change or registration appears.
+    let (errored, value) = fx.create(json!({"name": "kept"})).await;
+    assert!(errored, "{value}");
+    assert!(
+        value["error"].as_str().unwrap().contains("archived"),
+        "{value}"
+    );
+    assert_eq!(dir_names(&fx.projects), vec!["kept".to_owned()]);
+    assert_eq!(dir_names(&fx.lanes), vec!["kept".to_owned()]);
+    assert_eq!(
+        std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap(),
+        config,
+        "a refusal leaves the config byte-for-byte unchanged"
+    );
+    assert!(
+        vivi::registry::load().unwrap().get(&root).is_none(),
+        "a refused create does not re-register the archive"
+    );
+    let lines = tool_lines(&fx.data, "create_project");
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_host_audit(&lines[0], "create_project", "ok");
+    assert_host_audit(&lines[1], "create_project", "refused");
+
+    // lane_create refuses the archived name too, before any lane repo,
+    // checkout or config change.
+    let (errored, value) = fx
+        .call_tool(
+            "lane_create",
+            json!({
+                "name": "kept",
+                "target": "sandbox",
+                "git_url_prefix": file_prefix(&fx.lanes),
+            }),
+        )
+        .await;
+    assert!(errored, "{value}");
+    assert!(
+        value["error"].as_str().unwrap().contains("archived"),
+        "{value}"
+    );
+    assert!(!root.join("sandbox").exists(), "no checkout was made");
+    assert!(!fx.lanes.join("kept/sandbox.git").exists(), "no lane repo");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap(),
+        config,
+        "a refusal leaves the config byte-for-byte unchanged"
+    );
+    assert_eq!(config_backups(&root), backups);
+    let lines = tool_lines(&fx.data, "lane_create");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_host_audit(&lines[0], "lane_create", "refused");
+}
+
+#[tokio::test]
+async fn a_retired_project_without_an_archive_record_is_not_listed() {
+    let fx = fixture("retired-quiet", Some(TOKEN), true);
+    let (errored, made) = fx.create(json!({"name": "gone"})).await;
+    assert!(!errored, "{made}");
+    let id = made["project_id"].as_str().unwrap().to_owned();
+    let root = fx.projects.join("gone").canonicalize().unwrap();
+
+    retire(&fx, &root);
+
+    let items = project_list(&fx).await;
+    assert!(
+        items.iter().all(|item| item["project_id"] != id.as_str()),
+        "a retired project with no archive record is not listed: {items:?}"
+    );
+}

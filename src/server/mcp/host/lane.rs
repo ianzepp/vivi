@@ -12,19 +12,31 @@ use vivi::project_create::readiness_of;
 use crate::AppState;
 
 use super::super::tools::{ToolError, opt_str, req_str};
-use super::{HostConfig, blocking, require};
+use super::{HostConfig, blocking, hosted_entry, require};
 
 /// Add one lane. The `/v1/mcp` host tool.
 pub(crate) async fn lane_create(state: &AppState, arguments: &Value) -> Result<Value, ToolError> {
-    let host = state.host.clone();
+    let state = state.clone();
     let arguments = arguments.clone();
-    blocking(move || add(&host, &arguments)).await
+    blocking(move || {
+        // One host-project mutation at a time, the same mutex `create_project`
+        // and `delete_project` hold, so the archived-name check and the write
+        // it guards cannot race another host tool.
+        let _one = super::CREATING.lock().unwrap_or_else(|e| e.into_inner());
+        add(&state, &arguments)
+    })
+    .await
 }
 
-fn add(host: &HostConfig, arguments: &Value) -> Result<Value, ToolError> {
+fn add(state: &AppState, arguments: &Value) -> Result<Value, ToolError> {
     let name = req_str(arguments, "name")?;
     vivi::project_create::check_name(name).map_err(|err| ToolError::new(err.to_string()))?;
-    let (projects_root, lanes_root, default_prefix) = require(host, "lane_create")?;
+    if hosted_entry(state, name).is_some_and(|meta| meta.is_archived()) {
+        return Err(ToolError::new(format!(
+            "{name} is archived: its name cannot take a new lane"
+        )));
+    }
+    let (projects_root, lanes_root, default_prefix) = require(&state.host, "lane_create")?;
     let project = projects_root.join(name);
     let mut request = LaneAdd::new(&project, req_str(arguments, "target")?, lanes_root);
     request.git_url_prefix =

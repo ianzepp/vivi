@@ -74,7 +74,7 @@ pub(super) fn tools_list() -> Value {
                 "additionalProperties": false
             }),
         ),
-        tool("project_list", "The hosted projects this server serves from the host registry: one {project_id, name?, mode} each. The name is the project root's directory name, else the mailspace config name; mode is hosted. Read-only; host principal only.",
+        tool("project_list", "The hosted projects this server serves from the host registry: one {project_id, name?, mode} each. The name is the project root's directory name, else the mailspace config name; mode is hosted, or archived for a retired project whose metadata records its archive. Read-only; host principal only.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -172,19 +172,20 @@ pub(super) fn server_version() -> Value {
 }
 
 /// The `project_list` host tool: every hosted project this server serves,
-/// read from its own project store (one `project.json` per project id).
-/// A project that cannot be read, or a retired one (deleted or no longer
-/// registered), is skipped, not failed: the list is what the server can
-/// serve right now.
+/// read from its own project store (one `project.json` per project id),
+/// plus every retired one whose metadata records an archive. A project
+/// that cannot be read, or a retired one with no archive record, is
+/// skipped, not failed: the list is what the server can serve right now,
+/// plus the archives it remembers (their names stay taken).
 pub(super) fn project_list(state: &AppState) -> Value {
     let mut items = Vec::new();
     for meta in hosted_metas(state) {
-        if state.projects.is_retired(&meta.project_id) {
+        if state.projects.is_retired(&meta.project_id) && !meta.is_archived() {
             continue;
         }
         let mut item = json!({
             "project_id": meta.project_id,
-            "mode": "hosted",
+            "mode": if meta.is_archived() { "archived" } else { "hosted" },
         });
         if let Some(name) = super::server::hosted_name(&meta) {
             item["name"] = json!(name);
@@ -208,12 +209,12 @@ fn hosted_metas(state: &AppState) -> Vec<ProjectMeta> {
         .collect()
 }
 
-/// The hosted project id named `name`, served or retired.
-fn hosted_id(state: &AppState, name: &str) -> Option<String> {
+/// The hosted project metadata named `name` (as [`super::server::hosted_name]
+/// spells it), served or retired, archived or not.
+pub(super) fn hosted_entry(state: &AppState, name: &str) -> Option<ProjectMeta> {
     hosted_metas(state)
         .into_iter()
         .find(|meta| super::server::hosted_name(meta).as_deref() == Some(name))
-        .map(|meta| meta.project_id)
 }
 
 /// Take every grant on `project_id` off its principals, and revoke the keys
@@ -244,9 +245,11 @@ fn drop_project_grants(state: &AppState, project_id: &str) -> (Vec<String>, usiz
     (ungranted, revoked)
 }
 
-/// One creation at a time: the host registry takes a non-waiting lock, so
-/// two creations in flight would fail the second with "another registry
-/// update is running".
+/// The host-project mutation mutex: one mutation of the host's projects
+/// (create, delete, lane add) at a time. The host registry takes a
+/// non-waiting lock, so two creations in flight would fail the second with
+/// "another registry update is running"; holding the mutex here also keeps
+/// an archived-name check and the write it guards from racing.
 static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Create one project. The `/v1/mcp` host tool.
@@ -258,6 +261,12 @@ pub(super) async fn create_project(
     let state = state.clone();
     blocking(move || {
         let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
+        if hosted_entry(&state, &request.name).is_some_and(|meta| meta.is_archived()) {
+            return Err(ToolError::new(format!(
+                "{} is archived: its name cannot be reused",
+                request.name
+            )));
+        }
         let mut created =
             vivi::project_create::create(&request).map_err(|e| ToolError::new(e.to_string()))?;
         let rungs_error = rungs.seed(&mut created).err();
@@ -314,6 +323,16 @@ pub(super) fn require(
     }
 }
 
+/// The lanes root alone, or one error naming `HOST_LANES_ROOT` when it is
+/// unset.
+pub(super) fn require_lanes(host: &HostConfig, tool: &str) -> Result<PathBuf, ToolError> {
+    host.lanes_root.clone().ok_or_else(|| {
+        ToolError::new(format!(
+            "{tool} is not configured on this host: {ENV_LANES_ROOT} not set"
+        ))
+    })
+}
+
 fn list_vars(vars: &[&str]) -> String {
     match vars {
         [one] => format!("{one} is"),
@@ -365,7 +384,7 @@ pub(super) async fn delete_project(
     let state = state.clone();
     blocking(move || {
         let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
-        let project_id = hosted_id(&state, &request.name);
+        let project_id = hosted_entry(&state, &request.name).map(|meta| meta.project_id);
         let outcome = vivi::project_create::delete::delete(&request);
         // Unregistered even when the files stay (a live pump): stop serving now.
         hosted::reconcile_registry(&state.projects, &state.identities);
@@ -547,4 +566,29 @@ fn answer(created: &ProjectCreated, serving: Serving, pump: PumpStarted) -> Valu
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_lanes_needs_only_the_lanes_root() {
+        let configured = HostConfig {
+            lanes_root: Some(PathBuf::from("/lanes")),
+            ..HostConfig::default()
+        };
+        let lanes = require_lanes(&configured, "archive_project")
+            .map_err(|error| error.message)
+            .unwrap();
+        assert_eq!(lanes, PathBuf::from("/lanes"));
+        let error = require_lanes(&HostConfig::default(), "archive_project")
+            .err()
+            .expect("an unset HOST_LANES_ROOT is an error")
+            .message;
+        assert_eq!(
+            error,
+            "archive_project is not configured on this host: HOST_LANES_ROOT not set"
+        );
+    }
 }
