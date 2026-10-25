@@ -9,7 +9,10 @@
 //! entry, the host registry entry) with the roots from [`HostConfig`], then
 //! reconciles the host registry now so the new project is served without
 //! waiting for the registry watcher, and mints an operator server key granted
-//! on it. The answer's `mcp_path` is `/v1/mcp`. `delete_project` calls
+//! on it. After the rung seeding, a registered project's pump control mode is
+//! set to running through the same control state `pump_control start` writes
+//! (`pump:false` leaves the mode alone) and the answer reports the inspected
+//! `pump_mode`. The answer's `mcp_path` is `/v1/mcp`. `delete_project` calls
 //! [`vivi::project_create::delete::delete`] and reconciles the same way, so
 //! the server stops serving the project at once.
 
@@ -17,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use vivi::project_create::{ProjectCreate, ProjectCreated, ProjectDelete};
+use vivi::pump::control::{PumpMode, inspect, project_home, set_project_mode};
 
 use crate::AppState;
 use crate::grants::{GrantLevel, GrantRecord};
@@ -82,11 +86,14 @@ pub(super) fn tools_list() -> Value {
          first target's bare git repository <target>.git, a project directory with an \
          initialised mailspace and starter pump config, the first target's checkout and \
          [pump.targets.<target>] entry, and a host registry entry; seed the given rung commands \
-         into [pump.rungs]; then serve it and mint an operator API key. Returns project_root, \
+         into [pump.rungs]; then set a registered project's pump control mode to running \
+         (the same control state pump_control start writes; with pump:false the mode is left \
+         alone), serve it and mint an operator API key. Returns project_root, \
          lanes_dir, target, git_url (<HOST_GIT_URL_PREFIX><name>/<target>.git), repo_path, \
          checkout_path, mailspace_id, initial_commit, readiness (what the pump still needs), \
-         project_id, mcp_path and operator_key (shown once; store it). Refuses a name that \
-         already exists, and a non-GitHub source.",
+         project_id, mcp_path, operator_key (shown once; store it), pump_mode (the inspected \
+         control state) and, when the mode could not be written or read, pump_error. \
+         Refuses a name that already exists, and a non-GitHub source.",
         json!({
             "type": "object",
             "properties": {
@@ -254,12 +261,13 @@ pub(super) async fn create_project(
         let mut created =
             vivi::project_create::create(&request).map_err(|e| ToolError::new(e.to_string()))?;
         let rungs_error = rungs.seed(&mut created).err();
+        let started = start_pump(&created.project_root, request.pump);
         let served = if request.serve {
             serve_now(&state, &created.project_root)
         } else {
             Serving::NotRequested
         };
-        let mut out = answer(&created, served);
+        let mut out = answer(&created, served, started);
         if let (Some(out), Some(error)) = (out.as_object_mut(), rungs_error) {
             out.insert("rungs_error".into(), Value::String(error));
         }
@@ -457,9 +465,48 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
+/// What came of starting the created project's pump: the inspected control
+/// mode, or `None` with an error when it could not be written or read.
+struct PumpStarted {
+    mode: Option<String>,
+    error: Option<String>,
+}
+
+/// Set a registered project's pump control mode to running (the same control
+/// state `pump_control start` writes) and report the mode as `inspect` reads
+/// it back; never a synthesized one. An unregistered (`pump:false`) project's
+/// mode is left alone and only read. Failures are reported in the answer, not
+/// raised: the project exists either way, and creation is not rolled back.
+fn start_pump(root: &Path, registered: bool) -> PumpStarted {
+    let mut error = if registered {
+        set_project_mode(root, PumpMode::Running)
+            .err()
+            .map(|e| format!("the pump control mode was not set: {e}"))
+    } else {
+        None
+    };
+    let read = (|| {
+        let home =
+            project_home(root).map_err(|e| format!("the pump home could not be found: {e}"))?;
+        let control =
+            inspect(&home).map_err(|e| format!("the pump control state could not be read: {e}"))?;
+        Ok(control.mode.to_string())
+    })();
+    match read {
+        Ok(mode) => PumpStarted {
+            mode: Some(mode),
+            error,
+        },
+        Err(read_error) => {
+            error.get_or_insert(read_error);
+            PumpStarted { mode: None, error }
+        }
+    }
+}
+
 /// The tool answer. The operator key is a secret: it is in the answer and
 /// nowhere else (never logged).
-fn answer(created: &ProjectCreated, serving: Serving) -> Value {
+fn answer(created: &ProjectCreated, serving: Serving, pump: PumpStarted) -> Value {
     let mut out = serde_json::to_value(created).unwrap_or_else(|_| json!({}));
     let fields = match serving {
         Serving::NotRequested => json!({ "served": false }),
@@ -487,8 +534,17 @@ fn answer(created: &ProjectCreated, serving: Serving) -> Value {
             fields
         }
     };
-    if let (Some(out), Some(fields)) = (out.as_object_mut(), fields.as_object()) {
-        out.extend(fields.clone());
+    if let Some(out) = out.as_object_mut() {
+        if let Some(fields) = fields.as_object() {
+            out.extend(fields.clone());
+        }
+        out.insert(
+            "pump_mode".into(),
+            pump.mode.map_or(Value::Null, Value::String),
+        );
+        if let Some(error) = pump.error {
+            out.insert("pump_error".into(), Value::String(error));
+        }
     }
     out
 }
