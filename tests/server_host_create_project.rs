@@ -630,6 +630,19 @@ fn config_backups(project: &std::path::Path) -> Vec<std::path::PathBuf> {
     paths
 }
 
+const REFUSED_SOURCES: &[&str] = &[
+    "/mnt/vivi/lanes/faberlang/radix.git",
+    "file:///mnt/vivi/lanes/faberlang/radix.git",
+    "ssh://git@github.com/owner/repo.git",
+    "git@github.com:owner/repo.git",
+    "https://gitlab.com/owner/repo.git",
+    "https://user@github.com/owner/repo.git",
+    "https://github.com/owner/repo?ref=main",
+    "https://github.com/owner/repo#main",
+    "https://github.com/owner/repo/",
+    "https://github.com/owner/repo/extra",
+];
+
 fn file_prefix(lanes: &std::path::Path) -> String {
     format!("file://{}/", lanes.display())
 }
@@ -779,6 +792,56 @@ async fn a_second_lane_create_for_the_same_target_is_refused() {
 }
 
 #[tokio::test]
+async fn lane_create_refuses_a_source_that_is_not_a_github_url() {
+    let fx = project_for_lane("lane-source-refused").await;
+    let root = fx.projects.join("laneapp").canonicalize().unwrap();
+    let backups = config_backups(&root);
+    let config = std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
+    for (index, source) in REFUSED_SOURCES.iter().enumerate() {
+        let target = format!("lane{index}");
+        let (errored, made) = fx
+            .call_tool(
+                "lane_create",
+                json!({"name": "laneapp", "target": target, "source": source}),
+            )
+            .await;
+        assert!(errored, "{source}: {made}");
+        let message = made["error"].as_str().unwrap();
+        assert!(message.contains("source"), "{source}: {message}");
+        assert!(
+            message.contains("https://github.com/"),
+            "{source}: {message}"
+        );
+        assert!(
+            !fx.lanes.join(format!("laneapp/{target}.git")).exists(),
+            "{source} made a lane"
+        );
+        assert!(!root.join(&target).exists(), "{source} made a checkout");
+    }
+    assert_eq!(
+        config_backups(&root),
+        backups,
+        "a refusal writes no config backup"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap(),
+        config,
+        "a refusal leaves the config byte-for-byte unchanged"
+    );
+    let ids: Vec<_> = vivi::pump::config::targets::list(&root)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(ids, ["laneapp"]);
+    let lines = tool_lines(&fx.data, "lane_create");
+    assert_eq!(lines.len(), REFUSED_SOURCES.len(), "{lines:?}");
+    for line in &lines {
+        assert_host_audit(line, "lane_create", "refused");
+    }
+}
+
+#[tokio::test]
 async fn delete_project_removes_the_project_and_stops_serving_it() {
     let fx = fixture("delete", Some(TOKEN), true);
     let (errored, made) = fx.create(json!({"name": "doomed"})).await;
@@ -908,44 +971,32 @@ async fn target_log_and_show_read_the_landed_lane() {
 }
 
 #[tokio::test]
-async fn create_project_imports_a_source_with_its_history() {
-    let fx = fixture("source", Some(TOKEN), true);
-    let src = fx.lanes.parent().unwrap().join("upstream");
-    std::fs::create_dir_all(&src).unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&src)
-            .args(args)
-            .output()
-            .unwrap();
+async fn create_project_refuses_a_source_that_is_not_a_github_url() {
+    let fx = fixture("source-refused", Some(TOKEN), true);
+    let projects = fx.projects.canonicalize().unwrap();
+    for (index, source) in REFUSED_SOURCES.iter().enumerate() {
+        let name = format!("refused{index}");
+        let (errored, made) = fx.create(json!({"name": name, "source": source})).await;
+        assert!(errored, "{source}: {made}");
+        let message = made["error"].as_str().unwrap();
+        assert!(message.contains("source"), "{source}: {message}");
         assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+            message.contains("https://github.com/"),
+            "{source}: {message}"
         );
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    };
-    git(&["init", "--quiet", "-b", "main"]);
-    std::fs::write(src.join("a.txt"), "a").unwrap();
-    git(&["add", "a.txt"]);
-    git(&[
-        "-c",
-        "user.name=t",
-        "-c",
-        "user.email=t@t",
-        "commit",
-        "--quiet",
-        "-m",
-        "a",
-    ]);
-    let tip = git(&["rev-parse", "HEAD"]);
-
-    let (errored, made) = fx
-        .create(json!({"name": "imported", "source": src.to_str().unwrap()}))
-        .await;
-    assert!(!errored, "{made}");
-    assert_eq!(made["imported"], tip);
-    let root = fx.projects.join("imported").canonicalize().unwrap();
-    assert!(root.join("imported/a.txt").is_file());
+        assert!(!projects.join(&name).exists(), "{source} made a project");
+        assert!(!fx.lanes.join(&name).exists(), "{source} made a lane");
+        assert!(
+            vivi::registry::load()
+                .unwrap()
+                .get(&projects.join(&name))
+                .is_none(),
+            "{source} registered a project"
+        );
+    }
+    let lines = tool_lines(&fx.data, "create_project");
+    assert_eq!(lines.len(), REFUSED_SOURCES.len());
+    for line in &lines {
+        assert_host_audit(line, "create_project", "refused");
+    }
 }
