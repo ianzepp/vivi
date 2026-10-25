@@ -46,13 +46,13 @@ curl http://localhost:8080/healthz   # -> ok
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
-| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `delete_project`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
+| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `archive_project`, `restore_project`, `purge_project`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
 | `HOST_PROJECTS_ROOT` | Project tools: existing directory that holds project roots (`<root>/<name>`) |
 | `HOST_LANES_ROOT` | Project tools: existing directory that holds each project's lanes (`<root>/<name>/<target>.git`) |
 | `HOST_GIT_URL_PREFIX` | Project tools: lane URLs are `<prefix><name>/<target>.git` (for example `git@hub:`) |
 | `HOST_DEFAULT_POOL` | `create_project`: optional pool whose `remote_url` is set to the first target's URL; the tool's `pool` overrides it |
 
-The server writes both roots itself, so they belong to the user it runs as. The three project tools refuse with one error naming every one of the first three that is unset.
+The server writes both roots itself, so they belong to the user it runs as. `create_project` and `lane_create` require the first three `HOST_*` settings and report all missing ones together in one error; `archive_project` needs only `HOST_LANES_ROOT`; `restore_project` and `purge_project` work from the paths recorded in the archive record and need no `HOST_*` setting at all. Archive is the default retirement — it unregisters the project and keeps every tree in place — while `purge_project` alone destroys data, and only after a fixed 24-hour delay since the archive stamp.
 | `SEND_RATE_PER_MINUTE` | Writes per minute per identity (rooms, the projects API, and MCP writes share it). Unset is 30, the public default; a positive integer sets the limit; `0` is unlimited (for a trusted tailnet host). Any other value refuses to boot |
 | `HOSTED_DEFAULT_IDENTITY` | The vivi identity an API key without its own `identity` acts as on a hosted project (default `operator`) |
 
