@@ -30,7 +30,10 @@ fn add(host: &HostConfig, arguments: &Value) -> Result<Value, ToolError> {
     request.git_url_prefix =
         Some(opt_str(arguments, "git_url_prefix")?.map_or(default_prefix, str::to_owned));
     request.seed = super::opt_bool(arguments, "seed", false)?;
-    request.source = opt_str(arguments, "source")?.map(str::to_owned);
+    if let Some(source) = opt_str(arguments, "source")? {
+        super::source::check(source)?;
+        request.source = Some(source.to_owned());
+    }
     let added = lane_add::add(&request).map_err(|err| ToolError::new(err.to_string()))?;
     let readiness = readiness_of(&project).map_err(|err| ToolError::new(err.to_string()))?;
     let mut out = serde_json::to_value(&added)

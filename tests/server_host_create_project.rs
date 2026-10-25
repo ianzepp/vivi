@@ -792,6 +792,56 @@ async fn a_second_lane_create_for_the_same_target_is_refused() {
 }
 
 #[tokio::test]
+async fn lane_create_refuses_a_source_that_is_not_a_github_url() {
+    let fx = project_for_lane("lane-source-refused").await;
+    let root = fx.projects.join("laneapp").canonicalize().unwrap();
+    let backups = config_backups(&root);
+    let config = std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
+    for (index, source) in REFUSED_SOURCES.iter().enumerate() {
+        let target = format!("lane{index}");
+        let (errored, made) = fx
+            .call_tool(
+                "lane_create",
+                json!({"name": "laneapp", "target": target, "source": source}),
+            )
+            .await;
+        assert!(errored, "{source}: {made}");
+        let message = made["error"].as_str().unwrap();
+        assert!(message.contains("source"), "{source}: {message}");
+        assert!(
+            message.contains("https://github.com/"),
+            "{source}: {message}"
+        );
+        assert!(
+            !fx.lanes.join(format!("laneapp/{target}.git")).exists(),
+            "{source} made a lane"
+        );
+        assert!(!root.join(&target).exists(), "{source} made a checkout");
+    }
+    assert_eq!(
+        config_backups(&root),
+        backups,
+        "a refusal writes no config backup"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap(),
+        config,
+        "a refusal leaves the config byte-for-byte unchanged"
+    );
+    let ids: Vec<_> = vivi::pump::config::targets::list(&root)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(ids, ["laneapp"]);
+    let lines = tool_lines(&fx.data, "lane_create");
+    assert_eq!(lines.len(), REFUSED_SOURCES.len(), "{lines:?}");
+    for line in &lines {
+        assert_host_audit(line, "lane_create", "refused");
+    }
+}
+
+#[tokio::test]
 async fn delete_project_removes_the_project_and_stops_serving_it() {
     let fx = fixture("delete", Some(TOKEN), true);
     let (errored, made) = fx.create(json!({"name": "doomed"})).await;
