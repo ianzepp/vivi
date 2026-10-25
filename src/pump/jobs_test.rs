@@ -4,7 +4,8 @@ use std::sync::atomic::Ordering;
 
 use super::{
     JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, candidate_pools, dispatch_order,
-    dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched, send_task,
+    dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
+    release_held_after_reload, send_task,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::ProbeHost;
@@ -968,4 +969,34 @@ fn a_release_request_clears_the_hold_and_the_job_is_offered_again() {
             .any(|line| line.contains("job release ignored: nope is not held"))
     );
     assert!(pump_db.take_job_releases().unwrap().is_empty());
+}
+
+#[test]
+fn a_config_reload_releases_held_jobs_and_resolves_their_alarm() {
+    let (_dir, ctx, host, mut store) =
+        refusal_rig_for(Some("t1"), None, 1, "refused t1 \"no usable bridge\"\n");
+    for _ in 0..3 {
+        dispatch_pending(&ctx, &mut store).unwrap();
+    }
+    assert!(store.jobs["m1"].held.is_some());
+
+    release_held_after_reload(&ctx, &mut store);
+    let job = &store.jobs["m1"];
+    assert!(job.held.is_none());
+    assert_eq!(job.dispatch_refusals, 0);
+    assert_eq!(job.status, JobStatus::Pending);
+
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched t1 bridge slot-1 model/default unit/task\n",
+    );
+    assert_eq!(dispatch_pending(&ctx, &mut store).unwrap(), ["m1"]);
+    let log = std::fs::read_to_string(ctx.home.join("log.txt")).unwrap_or_default();
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        log.contains("job m1 released: the config changed")
+            || exceptions.contains("released after a config reload"),
+        "the release is recorded: {log}\n{exceptions}"
+    );
 }

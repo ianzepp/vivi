@@ -10,7 +10,7 @@ use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::main_rung::{
-    ENV_FAILED, GREEN, LOST, PAYLOAD_KEY, STARTED, TASK, TESTED, key,
+    ENV_FAILED, GREEN, LOST, NO_FILES, PAYLOAD_KEY, STARTED, TASK, TESTED, key,
 };
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
@@ -292,5 +292,36 @@ fn a_missing_main_ref_raises_once() -> R {
         "main rung for target {TARGET}: expected main on origin; actual: absent"
     )));
     assert!(rig.jobs.jobs.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_tip_with_no_files_is_skipped_once_and_recorded() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    rig.host
+        .reply("rev-parse", 0, "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n");
+    assert_eq!(rig.schedule()?, None);
+    assert!(rig.jobs.jobs.is_empty());
+    assert_eq!(
+        rig.store.main_state(&key(NO_FILES, TARGET))?.as_deref(),
+        Some(TIP_A)
+    );
+    assert_eq!(rig.store.main_state(&key(STARTED, TARGET))?, None);
+
+    // The next commit has files: it runs at once (no interval was started).
+    rig.main_at(TIP_B);
+    rig.host
+        .reply("rev-parse", 0, "1111111111111111111111111111111111111111\n");
+    assert!(rig.schedule()?.is_some());
+    Ok(())
+}
+
+#[test]
+fn a_tip_the_checkout_lacks_runs_as_before() -> R {
+    let mut rig = rig(true)?;
+    rig.main_at(TIP_A);
+    rig.host.reply("rev-parse", 1, "");
+    assert!(rig.schedule()?.is_some());
     Ok(())
 }

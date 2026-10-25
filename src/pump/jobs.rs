@@ -26,6 +26,7 @@ pub use dispatcher::{REFUSAL_LIMIT, dispatch_pending};
 use dispatcher::{candidate_pools, dispatch_order, pool_command, send_task};
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
+pub(in crate::pump) use release::release_held_after_reload;
 pub(crate) use slots::{parse_created_handle, slots};
 
 /// A request to make one durable role-addressed pool task.

@@ -393,7 +393,9 @@ fn drive(
             save(ctx, st)?;
             return Ok(());
         }
-        refresh_config(ctx, &mut config_fingerprint, &mut config_error);
+        if refresh_config(ctx, &mut config_fingerprint, &mut config_error) {
+            crate::pump::jobs::release_held_after_reload(ctx, st);
+        }
         run_recorded_tick(ctx, st, boardpass, &mut cycle_sequence)?;
         if once {
             return land_board_pass(ctx, st, boardpass);
@@ -512,11 +514,15 @@ fn exit_requested(ctx: &Ctx) -> bool {
     }
 }
 
-/// The `[pump]` table of a mailspace, or the config error naming it.
+/// The `[pump]` table of a mailspace, or the config error naming it. A
+/// mailspace with no `[sync]` table has nothing to pull (a hosted project is
+/// the server's own mailspace), so `board.pull` is off for it.
 fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
-    mailspace.config.pump.clone().ok_or_else(|| {
+    let mut cfg = mailspace.config.pump.clone().ok_or_else(|| {
         VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))
-    })
+    })?;
+    cfg.board.pull &= mailspace.config.sync.is_some();
+    Ok(cfg)
 }
 
 /// Create `<home>/lock` and take the exclusive non-blocking flock.

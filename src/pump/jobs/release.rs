@@ -6,6 +6,23 @@ use crate::error::VivariumError;
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
+/// Release every held job after a config reload changed the config. A job is
+/// held after repeated pool refusals, whose message says to fix the cause and
+/// then requeue; a changed config is that fix, so the jobs go back to the
+/// dispatcher. A job the new config still cannot place is refused and held
+/// again.
+pub(in crate::pump) fn release_held_after_reload(ctx: &Ctx, st: &mut impl JobStore) {
+    for (id, job) in st.jobs_mut().iter_mut() {
+        if job.status != JobStatus::Pending || job.held.is_none() {
+            continue;
+        }
+        job.held = None;
+        job.dispatch_refusals = 0;
+        ctx.log(&format!("job {id} released: the config changed"));
+        ctx.resolve("job-dispatch-refused", id, "released after a config reload");
+    }
+}
+
 /// Release every held job an operator asked to release. A home with no
 /// `pump.db` has no requests.
 ///

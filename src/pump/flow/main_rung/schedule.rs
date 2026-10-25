@@ -5,7 +5,7 @@
 //! the target's long-lived main rung task. The job is not a flow step, so it
 //! has no `step_jobs` row.
 
-use super::{ENV_FAILED, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
+use super::{ENV_FAILED, NO_FILES, PAYLOAD_KEY, STARTED, TASK, TESTED, key};
 use crate::error::VivariumError;
 use crate::letter::render;
 use crate::letter::work::TaskFront;
@@ -26,12 +26,20 @@ pub(crate) const MAIN_REF_MISSING: &str = "flow-main-ref-missing";
 /// Length of the tip prefix used in the job id.
 const SHORT_TIP: usize = 12;
 
+/// Git's tree with no entries: the tree of an empty initial commit.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Seconds allowed for the local tree lookup.
+const TREE_SECS: u64 = 30;
+
 /// Enqueue a main rung job for `target` when it is due; returns the job id.
 ///
 /// Returns `Ok(None)` when no main rung is configured, a main rung job is
 /// still queued or running, the interval has not passed, main has no tip, or
-/// the tip was already tested or failed on the environment. A main ref
-/// absent on the remote raises [`MAIN_REF_MISSING`] once.
+/// the tip was already tested or failed on the environment, or the tip has
+/// no files (a new project's empty initial commit: recorded under
+/// [`NO_FILES`], logged once, never run). A main ref absent on the remote
+/// raises [`MAIN_REF_MISSING`] once.
 ///
 /// # Errors
 /// A store, mail or git-config failure, or an unknown target.
@@ -76,10 +84,18 @@ pub(crate) fn schedule<S: JobStore, M: FlowMail>(
         );
         return Ok(None);
     };
-    for name in [TESTED, ENV_FAILED] {
+    for name in [TESTED, ENV_FAILED, NO_FILES] {
         if store.main_state(&key(name, target))?.as_deref() == Some(tip.as_str()) {
             return Ok(None);
         }
+    }
+    if has_no_files(&tctx, &tip) {
+        store.set_main_state(&key(NO_FILES, target), &tip)?;
+        ctx.log(&format!(
+            "main rung skipped on {target} at {}: the tip has no files",
+            &tip[..tip.len().min(SHORT_TIP)]
+        ));
+        return Ok(None);
     }
     let task = task_for(ctx, store, mail, target)?;
     let short = &tip[..tip.len().min(SHORT_TIP)];
@@ -100,6 +116,17 @@ pub(crate) fn schedule<S: JobStore, M: FlowMail>(
     jobs::enqueue(st, spec)?;
     store.set_main_state(&key(STARTED, target), &ctx.now().to_string())?;
     Ok(Some(id))
+}
+
+/// Whether `tip` is a commit whose tree is empty, read from the target's own
+/// checkout. A tip the checkout does not have reads as not empty, so the
+/// rung runs as before.
+fn has_no_files(tctx: &Ctx, tip: &str) -> bool {
+    let out = tctx.git(
+        &format!("rev-parse --verify --quiet {tip}^{{tree}}"),
+        TREE_SECS,
+    );
+    out.code == 0 && out.text.trim() == EMPTY_TREE
 }
 
 /// Whether a main rung job for `target` is queued or running.

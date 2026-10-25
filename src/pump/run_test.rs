@@ -117,6 +117,40 @@ fn config_changes_are_applied_before_the_next_tick() {
     assert!(last_error.is_none());
 }
 
+/// A context loaded from `toml` the way `refresh_config` loads a live pump.
+fn reloaded_ctx(toml: &str) -> (tempfile::TempDir, Ctx) {
+    let dir = mailspace_project(toml);
+    let mailspace = Mailspace::discover(Some(dir.path())).unwrap();
+    let cfg = mailspace.config.pump.clone().unwrap();
+    let mut ctx = Ctx::new(
+        cfg,
+        FakeHost::new(),
+        dir.path().to_path_buf(),
+        String::from("vivi"),
+    )
+    .with_mailspace(mailspace.mailspace_id().to_string());
+    let (mut fingerprint, mut last_error) = (None, None);
+    refresh_config(&mut ctx, &mut fingerprint, &mut last_error);
+    assert!(last_error.is_none(), "{last_error:?}");
+    (dir, ctx)
+}
+
+#[test]
+fn a_mailspace_without_sync_never_pulls() {
+    let base = format!("{PUMP_TOML}{PUMP_TOML_IDENTITIES}");
+    let (_dir, ctx) = reloaded_ctx(&base);
+    assert!(!ctx.cfg.board.pull, "no [sync] table: nothing to pull");
+
+    let synced = format!(
+        "{base}\n[sync]\nserver = \"http://server.example\"\nproject = \"p\"\nname = \"n\"\n"
+    );
+    let (_dir, ctx) = reloaded_ctx(&synced);
+    assert!(
+        ctx.cfg.board.pull,
+        "a synced mailspace keeps the default pull"
+    );
+}
+
 /// The first index of a command line containing `fragment`.
 fn first_at(commands: &[String], fragment: &str) -> usize {
     commands

@@ -22,6 +22,9 @@ use crate::pump::store::PumpStore;
 pub(crate) const TESTED: &str = "main-tested";
 /// main_state key: the last tip whose main rung hit an environment failure.
 pub(crate) const ENV_FAILED: &str = "main-env-failed";
+/// Store key: the last main tip skipped because its tree is empty (a new
+/// project's initial commit): there is nothing for a main rung to run.
+pub(crate) const NO_FILES: &str = "main-no-files";
 /// main_state key: the last main tip whose main rung passed.
 pub(crate) const GREEN: &str = "main-green";
 /// main_state key: unix seconds when the last main rung job was started.
