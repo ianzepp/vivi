@@ -38,6 +38,9 @@ use crate::safety::body_over_cap;
 mod hosted_index;
 pub use hosted_index::{IndexOutcome, IndexSkip};
 
+#[cfg(test)]
+mod archive_tests;
+
 /// Reserved administrative addressee (phase-03 item 9); a vouch travels as
 /// mail addressed to it.
 const POSTMASTER: &str = "postmaster";
@@ -123,6 +126,29 @@ pub struct ProjectMeta {
     /// project the server owns end to end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mailspace_root: Option<PathBuf>,
+    /// Set when the project has been archived: who archived it, when, and
+    /// where its mailspace and lanes ended up. Absent on a live project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<Archived>,
+}
+
+/// The archive record a retirement stamps onto a project's metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Archived {
+    /// When the project was archived, RFC 3339 UTC.
+    pub at: String,
+    /// Who archived it.
+    pub by: String,
+    /// Where the mailspace root ended up.
+    pub root: PathBuf,
+    /// Where the lanes directory ended up.
+    pub lanes_dir: PathBuf,
+    /// Whether the pump was serving the project at archive time.
+    #[serde(default)]
+    pub pump: bool,
+    /// Whether the host registry was serving the project at archive time.
+    #[serde(default)]
+    pub serve: bool,
 }
 
 impl ProjectMeta {
@@ -135,6 +161,7 @@ impl ProjectMeta {
             closed: false,
             epoch: Some(epoch),
             mailspace_root: None,
+            archived: None,
         }
     }
 
@@ -149,6 +176,11 @@ impl ProjectMeta {
     /// True for a project served from a host mailspace.
     pub fn is_hosted(&self) -> bool {
         self.mailspace_root.is_some()
+    }
+
+    /// True when the project has been archived.
+    pub fn is_archived(&self) -> bool {
+        self.archived.is_some()
     }
 
     /// The mailspace directory: the host root's `.vivi` for a hosted
@@ -1080,6 +1112,11 @@ impl ProjectStore {
         }
     }
 
+    /// The store's installed clock: the same stamp source appends read.
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        (self.clock.0)()
+    }
+
     /// Per-project wake registry; fires on every fresh append.
     pub fn wake(&self) -> &ProjectWake {
         &self.wake
@@ -1214,6 +1251,18 @@ impl ProjectStore {
         serde_json::from_slice(&bytes).map_err(|e| ProjectError::Storage(e.to_string()))
     }
 
+    /// Load `project.json` even for a retired id: archive and restore read
+    /// metadata after retirement, when [`ProjectStore::load_meta`] refuses.
+    pub(crate) fn load_meta_including_retired(
+        &self,
+        raw_id: &str,
+    ) -> Result<ProjectMeta, ProjectError> {
+        let dir = self.project_dir(raw_id)?;
+        let bytes =
+            std::fs::read(dir.join("project.json")).map_err(|_| ProjectError::ProjectNotFound)?;
+        serde_json::from_slice(&bytes).map_err(|e| ProjectError::Storage(e.to_string()))
+    }
+
     /// The project's log epoch. A project without one (created before
     /// epochs) gets one minted and persisted here, once; every later call
     /// and every restart returns the same value.
@@ -1232,12 +1281,36 @@ impl ProjectStore {
         Ok(epoch)
     }
 
-    fn write_meta(&self, meta: &ProjectMeta) -> Result<(), ProjectError> {
-        let dir = self.existing_project_dir(&meta.project_id)?;
+    /// Write `project.json` into `dir`. No retirement or existence check:
+    /// callers gate themselves (`write_meta` via `existing_project_dir`,
+    /// `set_archived` through retirement on purpose).
+    fn write_meta_at(dir: &Path, meta: &ProjectMeta) -> Result<(), ProjectError> {
         let bytes = serde_json::to_vec(meta)
             .map_err(|e| ProjectError::Storage(format!("failed to encode project.json: {e}")))?;
         std::fs::write(dir.join("project.json"), &bytes)
             .map_err(|e| ProjectError::Storage(format!("failed to write project.json: {e}")))
+    }
+
+    fn write_meta(&self, meta: &ProjectMeta) -> Result<(), ProjectError> {
+        let dir = self.existing_project_dir(&meta.project_id)?;
+        Self::write_meta_at(&dir, meta)
+    }
+
+    /// Stamp or clear the archive record on a project's metadata, reading
+    /// and writing through retirement: a retired id's metadata is exactly
+    /// what archive and restore update. Ordinary load and write paths keep
+    /// refusing retired ids. Returns the metadata as written.
+    pub(crate) fn set_archived(
+        &self,
+        raw_id: &str,
+        archived: Option<Archived>,
+    ) -> Result<ProjectMeta, ProjectError> {
+        let _guard = meta_lock();
+        let mut meta = self.load_meta_including_retired(raw_id)?;
+        meta.archived = archived;
+        let dir = self.project_dir(raw_id)?;
+        Self::write_meta_at(&dir, &meta)?;
+        Ok(meta)
     }
 
     /// Mint a chat-mode project (item 17): same store as a durable project,
@@ -1253,6 +1326,7 @@ impl ProjectStore {
             closed: false,
             epoch: meta.epoch,
             mailspace_root: None,
+            archived: None,
         };
         self.write_meta(&meta)?;
         Ok(meta)
