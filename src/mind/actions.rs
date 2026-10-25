@@ -87,6 +87,14 @@ pub struct Planned {
     pub verdict: Result<(), Refusal>,
 }
 
+/// A `+++` fence line. A live model opened its envelope with `+++ TOML`
+/// (markdown habit), so a `toml` tag after the marker is accepted too.
+fn is_fence(line: &str) -> bool {
+    line.trim()
+        .strip_prefix("+++")
+        .is_some_and(|tag| tag.trim().is_empty() || tag.trim().eq_ignore_ascii_case("toml"))
+}
+
 /// Pull the last `+++` envelope out of a turn's reply. No envelope is an
 /// empty list; a malformed one is an error the turn is told about.
 ///
@@ -97,7 +105,7 @@ pub fn parse_envelope(reply: &str) -> Result<Vec<ActionRequest>, String> {
     let fences: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, line)| line.trim() == "+++")
+        .filter(|(_, line)| is_fence(line))
         .map(|(index, _)| index)
         .collect();
     let [.., open, close] = fences.as_slice() else {

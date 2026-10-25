@@ -37,6 +37,20 @@ fn no_envelope_is_no_action() {
 }
 
 #[test]
+fn a_toml_tagged_opening_fence_is_an_envelope() {
+    let reply =
+        "Escalating.\n+++ TOML\n[[action]]\nkind = \"escalate\"\nproject = \"/w/app\"\n+++\n";
+    let requests = parse_envelope(reply).unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].kind, Action::Escalate);
+    assert!(
+        parse_envelope("+++ yaml\nkind = 1\n+++")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn last_envelope_wins_and_bad_toml_is_reported() {
     let reply = "+++\n[[action]]\nkind = \"escalate\"\n+++\nlater\n+++\n[[action]]\nkind = \"read-status\"\n+++";
     let requests = parse_envelope(reply).unwrap();
