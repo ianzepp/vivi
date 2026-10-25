@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::VivariumError;
-use crate::cli::MindCommand;
 
 use super::actions::{self, Actuator, DryRun, Planned};
 use super::authority::Gate;
@@ -26,14 +25,6 @@ use super::wake::{self, WakeDecision, WakeInputs, WakeRecord};
 
 /// How often the loop re-evaluates wakes. Heartbeats are coarser than this.
 pub const TICK: Duration = Duration::from_secs(60);
-
-/// Dispatch `vivi mind ...`.
-///
-/// # Errors
-/// As the subcommand.
-pub async fn run(command: &MindCommand) -> Result<(), VivariumError> {
-    super::commands::dispatch(command).await
-}
 
 /// What one tick did.
 #[derive(Debug)]
