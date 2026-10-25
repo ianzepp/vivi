@@ -5,6 +5,9 @@ agent review. Nothing here is released. The branch carries a compiling,
 tested skeleton for discussing the shape; this document is the
 implementation spec for the non-spike follow-up.
 
+To stand it up on a box, follow
+[`vivi-mind-quickstart.md`](vivi-mind-quickstart.md).
+
 Release decision: **defer-release** for the spike (no version bump, tag, or
 release notes; the PR is a draft for review). Completing the follow-up units
 below implies **release-prep**: a minor version with a
@@ -50,11 +53,11 @@ branch does today.
 | `vivi mind pause` / `resume` | Stop or restart autonomous wakes and mutating actions. Attach keeps working. Goes through the socket, or through the state file when the mind is down. | Real |
 | `vivi mind stop` | Ask the running mind to exit. The service manager decides whether to restart it. | Real |
 | `vivi mind start` | Starting is the service manager's job. | Stub (explanatory error) |
-| `vivi mind compact` / `history [--limit N]` | Forwarded to the pi session. | Real over the socket. The pi side is assumed (see below). |
+| `vivi mind compact` / `history [--limit N]` | Forwarded to the pi session. | Real over the socket, checked live against pi 0.73.1. |
 | `vivi mind service add\|remove <root>` | Watch or ignore a project that is already registered. This edits the mind's own ignore list and never touches the host registry. | Real |
 | `vivi mind service list` | Registered projects and whether the mind watches each. | Real |
 | `vivi mind service status` | Whether a mind is listening, plus every path it uses. | Real |
-| `vivi mind service run` | The foreground service, for a service manager. | Real loop. It needs a live pi, so it was not run here. |
+| `vivi mind service run` | The foreground service, for a service manager. | Real loop, run live on the e2e sandbox against pi 0.73.1. |
 | `vivi mind service unit` | Print an example hardened systemd unit. Installs nothing. | Real (template) |
 | `vivi mind service install\|uninstall` | OS service install. | Stub (explanatory error) |
 
@@ -89,7 +92,8 @@ comes back ten minutes later, runs `vivi mind`, and is back in the same
 session. No tmux, and no choosing between sessions.
 
 - The mind records the session id in `state.json` the first time it starts
-  (assumed: from `get_state`) and passes `--session <id>` on every restart.
+  (pi's `get_state` reports `sessionId`) and passes `--session <id>` on every
+  restart once the session file exists (pi writes it at the first message).
 - If pi crashes, `respawn_if_exited` restarts it on the same session. The mind
   process itself stays up.
 - Attach is stateless. Each `vivi mind` is a new socket connection to the same
@@ -118,8 +122,12 @@ The mind reaches models only through the hub's vivi proxy on loopback
 
 - `mind.toml` refuses a `proxy_url` that is not loopback.
 - `ProcessPi` starts pi with a cleared environment: `PATH`, `HOME` (the mind
-  home) and `VIVI_PROXY_URL` only.
-- How pi is pointed at the proxy is an open question (see below).
+  home) and `VIVI_PROXY_URL` only, and with `--no-tools`, so pi's own bash
+  and edit tools are off and the envelope is the only action path.
+- pi reaches the proxy through a custom provider in
+  `<mind home>/.pi/agent/models.json` (pi's `HOME` is the mind home) whose
+  `baseUrl` is the proxy route and whose `apiKey` is a placeholder; `model`
+  in `mind.toml` names it as `<provider>/<id>`. The quickstart has the file.
 
 #### Runs as, and hardening
 
@@ -222,7 +230,7 @@ The rules every action follows:
 - **The model runs nothing itself.** A turn ends with a TOML envelope between
   `+++` lines (the shape cadence head roles already use), and the mind decides
   what happens to each `[[action]]`:
-  - `deny_unknown_fields`.
+  - `deny_unknown_fields`. A blank field is an absent one.
   - Handles and answer words must be short `[A-Za-z0-9_-]` tokens that do not
     start with `-`, so flag and shell injection is refused.
   - `project` must be a watched root.
@@ -231,22 +239,6 @@ The rules every action follows:
     envelope count twice.
   - The gate's verdicts are logged and replayed to the next wake as
     `Action results:`.
-- **Pause is the brake.** A paused mind takes no autonomous wakes and no
-  mutating actions. Reads and letters still pass.
-
-The rules every action follows:
-
-- **Only existing channels.** Every action goes out as a letter or as a pump
-  control the pump already accepts. The mind never edits `.vivi`, git, or
-  config directly. `ActionRequest::argv()` maps each action onto an existing
-  `vivi pump ...` command line, and unknown kinds do not parse.
-- **The model runs nothing itself.** A turn ends with a TOML envelope between
-  `+++` lines (the shape cadence head roles already use), and the mind decides
-  what happens to each `[[action]]`: `deny_unknown_fields`; handles and answer
-  words must be short `[A-Za-z0-9_-]` tokens not starting with `-`; `project`
-  must be a watched root; notes are capped at 500 characters and an envelope
-  at 8 actions; budget is spent as actions pass; the gate's verdicts are
-  logged and replayed to the next wake as `Action results:`.
 - **Pause is the brake.** A paused mind takes no autonomous wakes and no
   mutating actions. Reads and letters still pass.
 
@@ -321,8 +313,11 @@ codec and `ProcessPi` against a scripted `sh` child, the socket server and
 client, one full `tick()` with fakes, the store reads of the probe, and the
 CLI surface (temp `VIVI_CONFIG_DIR` and `VIVI_MIND_HOME`).
 
-Real but not exercised live: `ProcessPi` against a real pi (pi is not on the
-build box), `serve_forever`, `respawn_if_exited`.
+Exercised live on the e2e sandbox (pi 0.73.1, DeepSeek Flash through the
+proxy): `ProcessPi` (the RPC records were corrected in `2d47a516`),
+`serve_forever`, autonomous wakes, attach, and session resume across mind
+restarts. Not yet exercised live: `respawn_if_exited` (a pi crash under a
+running mind).
 
 Stubbed: the actuator (dry-run only; no `vivi pump` call, no letter), held
 steps in the probe, ageing a running step that has no job, `vivi mind start`, `service install|uninstall`,
@@ -353,6 +348,7 @@ write_scope: src/mind/pi.rs, src/mind/pi_test.rs
 edit: confirm the RPC against a real pi (session flags, get_state session id, get_messages shape, agent_settled on errors and aborts) and correct the codec
 done_when: ProcessPi round-trips prompt, compact, history and session_id against a real pi; the scripted test mirrors the observed records
 sanity: cargo test --lib mind::pi
+status: prompt, history and session_id done live (2d47a516); compact not yet run against a real pi
 ```
 
 ```text
@@ -362,6 +358,7 @@ write_scope: src/mind/pi.rs, src/mind/config.rs
 edit: point pi at VIVI_PROXY_URL with a dummy key, disable pi's own tools, refuse extension UI requests
 done_when: a turn reaches a model only through 127.0.0.1:18180 and pi cannot run bash or edit
 sanity: cargo test --lib mind::pi mind::config
+status: proxy via <mind home>/.pi/agent/models.json (documented, run live) and --no-tools done; extension UI refusal open
 ```
 
 ```text
@@ -466,6 +463,11 @@ Spike validation (2026-10-25, debug build, box):
   identical set, so environment-dependent and flaky).
 - `vivi mind probe` against the e2e sandbox: flags need2 while health says
   `ok` (see Wakes).
+- From scratch (2026-10-25): the sandbox was deleted and rebuilt from a fresh
+  clone using only the repository's docs, which produced
+  `vivi-mind-quickstart.md` and the example `mind.toml`. The rebuilt mind
+  watched both projects, flagged only the stuck one, woke on its own, logged
+  a dry-run escalation, and kept one session across attaches and a restart.
 
 The follow-up proves its outcome at G2 and G3, not with unit tests alone.
 
@@ -504,19 +506,20 @@ The follow-up proves its outcome at G2 and G3, not with unit tests alone.
 
    A related question: should an attached operator suppress autonomous wakes
    entirely until they detach?
-3. **Pi RPC protocol details to confirm.** These come from pi's docs and have
-   not been verified against a running pi:
-   - the exact session flags (`--session <id>` vs a file path; whether
-     `--session` creates a session when the id is missing);
-   - where `get_state` reports the session id;
-   - the `get_messages` data shape;
-   - whether `agent_settled` always follows a started prompt, including on
-     provider errors and aborts;
-   - how to point pi at the proxy (a custom provider in pi's models config
-     with base URL `VIVI_PROXY_URL`, and a dummy key the proxy ignores?);
-   - how to disable pi's own tools (bash, edit) so the envelope is the only
-     action path, for example `--no-tools` or an allow-list;
-   - extension UI requests, which the mind should refuse.
+3. **Pi RPC protocol details.** Verified live against pi 0.73.1
+   (`2d47a516`, and the from-scratch sandbox rebuild):
+   - `--session <id>` takes the id and exits ("No session found") when no
+     file `<stamp>_<id>.jsonl` exists, so the mind passes a recorded id only
+     when its file is there;
+   - `get_state` reports `sessionId` and `sessionFile`;
+   - message `content` is a string or an array of `{type,text}` blocks;
+   - a run ends with `agent_end`, also after a provider error; pi never
+     emits `agent_settled`;
+   - pi reaches the proxy through a custom provider in
+     `<mind home>/.pi/agent/models.json` with a placeholder key;
+   - `--no-tools` turns off pi's own tools in RPC mode, and the mind passes it.
+
+   Still open: extension UI requests, which the mind should refuse.
 4. **Cross-project read access.** One mind reads every project's pump state.
    Is that acceptable for every registered project, or should the registry
    carry a per-project `mind = false` opt-out instead of the mind-local ignore
