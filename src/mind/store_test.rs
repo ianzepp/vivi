@@ -50,3 +50,27 @@ fn corrupt_state_is_an_error() {
     std::fs::write(&path, "{not json").unwrap();
     assert!(load_at(&path).is_err());
 }
+
+#[test]
+fn concurrent_updates_do_not_lose_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let writers: Vec<_> = (0..8)
+        .map(|n| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                update_at(&path, |state| {
+                    state
+                        .ignored
+                        .insert(std::path::PathBuf::from(format!("/p/{n}")));
+                    Ok(())
+                })
+                .unwrap();
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    assert_eq!(load_at(&path).unwrap().ignored.len(), 8);
+}
