@@ -79,18 +79,38 @@ impl MailspacePort {
     /// Returns a [`VivariumError`] when the need is unknown, closed by anyone
     /// else, or the pump identity has no authority over it.
     pub fn close_need(&self, need: &str, note: &str) -> Result<(), VivariumError> {
+        self.close_need_with(need, note, None)
+    }
+
+    /// [`Self::close_need`], recording the `(branch, commit)` a landed need
+    /// landed as close metadata when given.
+    ///
+    /// # Errors
+    /// As [`Self::close_need`].
+    pub fn close_need_with(
+        &self,
+        need: &str,
+        note: &str,
+        landed: Option<(&str, &str)>,
+    ) -> Result<(), VivariumError> {
         let state = self.task_state(need)?;
         if state.status == TaskStatus::Done && state.closer.as_deref() == Some(&self.pump_identity)
         {
             return Ok(());
         }
+        let metadata = landed.map(|(branch, commit)| {
+            BTreeMap::from([
+                ("branch".to_string(), branch.to_string()),
+                ("commit".to_string(), commit.to_string()),
+            ])
+        });
         self.mailspace.move_item_outcome(
             &self.pump_identity,
             need,
             "done",
             Some(note),
             "need done",
-            None,
+            metadata.as_ref(),
         )?;
         Ok(())
     }

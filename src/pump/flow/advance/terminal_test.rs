@@ -376,3 +376,23 @@ fn resume_completes_a_finish_that_failed_at_the_record() -> R {
     assert_eq!(flaky.inner.calls.len(), calls);
     Ok(())
 }
+
+#[test]
+fn a_land_names_the_branch_and_commit_the_main_merge_landed() -> R {
+    let mut rig = rig()?;
+    let mut plan = rig.step("plan", "delivered")?;
+    plan.payload = json!({"branch": "main", "commit": "b05ff62"});
+    rig.mail.calls.clear();
+    assert_eq!(rig.advance(&plan)?.finished, vec![Finished::Landed]);
+    let note = rig
+        .mail
+        .calls
+        .iter()
+        .find_map(|c| match c {
+            Call::CloseNeed { note, .. } => Some(note.clone()),
+            _ => None,
+        })
+        .expect("need closed");
+    assert_eq!(note, "landed by the pump flow: main at b05ff62");
+    Ok(())
+}

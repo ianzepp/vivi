@@ -48,7 +48,8 @@ pub(crate) fn finish<M: MailWriter + MailReader>(
     match &terminal.class {
         NodeClass::Done => {
             let sentinel = sentinel_of(store, &outcome.need, outcome.run)?;
-            land(store, mail, &outcome.need, outcome.run, &sentinel)?;
+            let landed = landed_of(outcome);
+            land(store, mail, &outcome.need, outcome.run, &sentinel, landed)?;
             Ok(Finished::Landed)
         }
         NodeClass::Restart(name) => {
@@ -90,7 +91,15 @@ pub(crate) fn resume<M: MailWriter + MailReader>(
     run: &RunRow,
 ) -> Result<(), VivariumError> {
     let sentinel = sentinel_of(store, &run.need, run.run)?;
-    land(store, mail, &run.need, run.run, &sentinel)
+    land(store, mail, &run.need, run.run, &sentinel, None)
+}
+
+/// The `(branch, commit)` the step that reached `done` merged, when its
+/// outcome names both (the merge to main does).
+fn landed_of(outcome: &Outcome) -> Option<(&str, &str)> {
+    let branch = outcome.payload.get("branch")?.as_str()?;
+    let commit = outcome.payload.get("commit")?.as_str()?;
+    Some((branch, commit))
 }
 
 /// The `done` sequence, idempotent step by step: finishing state, the need
@@ -101,6 +110,7 @@ fn land<M: MailWriter + MailReader>(
     need: &str,
     run: u32,
     sentinel: &StepRow,
+    landed: Option<(&str, &str)>,
 ) -> Result<(), VivariumError> {
     // The run is no longer live, but it is not withdrawn either: a tick
     // that sees the need closed mid-finish must not read a withdrawal.
@@ -109,7 +119,15 @@ fn land<M: MailWriter + MailReader>(
     // sentinel closes after it, so the join finds the need already
     // done and the pump's letter is the close every member folds.
     if mail.need_state(need)? != NeedStatus::Done {
-        mail.close_need(need, LANDED_NOTE)?;
+        match landed {
+            Some((branch, commit)) => mail.close_need_landed(
+                need,
+                &format!("{LANDED_NOTE}: {branch} at {commit}"),
+                branch,
+                commit,
+            )?,
+            None => mail.close_need(need, LANDED_NOTE)?,
+        }
     }
     if mail.task_state(&sentinel.task)?.status == TaskStatus::Open {
         close_row(store, mail, sentinel, VERDICT_DELIVERED)?;

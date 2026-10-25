@@ -153,3 +153,18 @@ fn closing_the_sentinel_after_the_need_leaves_the_pumps_close_as_the_last_word()
     assert_eq!(state.status, TaskStatus::Done);
     assert_eq!(state.closer.as_deref(), Some("mind"));
 }
+
+#[test]
+fn a_landed_close_records_the_branch_and_commit_it_landed() {
+    let p = project();
+    let mut port = port(&p);
+    let need = foreign_need(&p);
+    MailWriter::open_record(&mut port, &need, &record_body(&need, "build")).unwrap();
+    let commit = "b05ff62aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    MailWriter::close_need_landed(&mut port, &need, "landed by the pump flow", "main", commit)
+        .unwrap();
+    assert_eq!(port.need_state(&need).unwrap(), NeedStatus::Done);
+    let metadata = p.mailspace.storage().unwrap().item_metadata(&need).unwrap();
+    assert_eq!(metadata.get("branch").map(String::as_str), Some("main"));
+    assert_eq!(metadata.get("commit").map(String::as_str), Some(commit));
+}

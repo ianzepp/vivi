@@ -67,6 +67,19 @@ pub trait MailWriter {
     fn reopen_task(&mut self, handle: &str) -> Result<(), VivariumError>;
     /// Close a need with a note.
     fn close_need(&mut self, need: &str, note: &str) -> Result<(), VivariumError>;
+    /// Close a landed need with a note and the `branch` and `commit` it
+    /// landed, so the done event names what landed. A writer without close
+    /// metadata keeps only the note.
+    fn close_need_landed(
+        &mut self,
+        need: &str,
+        note: &str,
+        branch: &str,
+        commit: &str,
+    ) -> Result<(), VivariumError> {
+        let _ = (branch, commit);
+        self.close_need(need, note)
+    }
     /// Open the pump record on a need; returns its handle.
     fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError>;
     /// Close the pump record with an outcome.
@@ -173,6 +186,16 @@ impl MailWriter for MailspacePort {
 
     fn close_need(&mut self, need: &str, note: &str) -> Result<(), VivariumError> {
         MailspacePort::close_need(self, need, note)
+    }
+
+    fn close_need_landed(
+        &mut self,
+        need: &str,
+        note: &str,
+        branch: &str,
+        commit: &str,
+    ) -> Result<(), VivariumError> {
+        MailspacePort::close_need_with(self, need, note, Some((branch, commit)))
     }
 
     fn open_record(&mut self, need: &str, body: &str) -> Result<String, VivariumError> {
