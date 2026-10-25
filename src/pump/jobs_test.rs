@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, candidate_pools, dispatch_order,
-    dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
+    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, candidate_pools, command_for,
+    dispatch_order, dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
     release_held_after_reload, send_task,
 };
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::fixture::ProbeHost;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -998,5 +998,54 @@ fn a_config_reload_releases_held_jobs_and_resolves_their_alarm() {
         log.contains("job m1 released: the config changed")
             || exceptions.contains("released after a config reload"),
         "the release is recorded: {log}\n{exceptions}"
+    );
+}
+
+/// The `--target` a job without one is dispatched with, for explicit targets
+/// `ids` (none: the legacy single-repository fields).
+fn untargeted_dispatch_target(ids: &[&str]) -> Option<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    for id in ids {
+        cfg.targets.insert(
+            (*id).to_owned(),
+            PumpTarget {
+                path: (*id).to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let command = command_for(&ctx, &PoolJob::from(spec("plan-1")), "studio", "t1");
+    command
+        .split(" --")
+        .find_map(|part| part.strip_prefix("target "))
+        .map(str::to_owned)
+}
+
+#[test]
+fn a_job_without_a_target_works_on_the_projects_primary_target() {
+    assert_eq!(untargeted_dispatch_target(&["app"]).as_deref(), Some("app"));
+    assert_eq!(
+        untargeted_dispatch_target(&["gradus", "default", "sandbox"]).as_deref(),
+        Some("default")
+    );
+    assert_eq!(untargeted_dispatch_target(&["one", "two"]), None);
+    assert_eq!(untargeted_dispatch_target(&[]), None);
+}
+
+#[test]
+fn a_job_with_a_target_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("app"), PumpTarget::default());
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let mut job = PoolJob::from(spec("rung-1"));
+    job.target = Some(String::from("other"));
+    let command = command_for(&ctx, &job, "studio", "t1");
+    assert!(
+        command.contains("--target other") && !command.contains("--target app"),
+        "{command}"
     );
 }

@@ -234,7 +234,7 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
             Err(error) => return Sent::Failed(error),
         },
     };
-    let output = ctx.vivi(&pool_command(snapshot, pool, &task), 240);
+    let output = ctx.vivi(&command_for(ctx, snapshot, pool, &task), 240);
     Sent::Dispatched {
         task,
         fresh,
@@ -430,6 +430,21 @@ fn fit_brief(ctx: &Ctx, job: &PoolJob, dir: &Path, body: String) -> Result<Strin
         ),
     );
     Ok(cut)
+}
+
+/// The `pool dispatch` command for `job`. A job with no target works on the
+/// project's primary target, so its repository is the project's own (the
+/// target's) and never the pool's: a pool is host capacity shared by
+/// projects, while the repository belongs to the project.
+pub(super) fn command_for(ctx: &Ctx, job: &PoolJob, pool: &str, task: &str) -> String {
+    match (&job.target, ctx.cfg.primary_target()) {
+        (None, Some(primary)) => {
+            let mut targeted = job.clone();
+            targeted.target = Some(primary);
+            pool_command(&targeted, pool, task)
+        }
+        _ => pool_command(job, pool, task),
+    }
 }
 
 pub(super) fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {

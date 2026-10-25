@@ -168,6 +168,21 @@ impl PumpConfig {
             .collect()
     }
 
+    /// The target a job without one works on: `default` when it is an
+    /// explicit target, else the only explicit target. None without explicit
+    /// targets (legacy fields keep the pool's own repository) or with several
+    /// and no `default`.
+    #[must_use]
+    pub fn primary_target(&self) -> Option<String> {
+        if self.targets.contains_key("default") {
+            return Some(String::from("default"));
+        }
+        match self.targets.keys().collect::<Vec<_>>().as_slice() {
+            [only] => Some((*only).clone()),
+            _ => None,
+        }
+    }
+
     /// Generated paths declared for a named target: the workspace-level
     /// `[pump.merge]` table when no targets are configured, else the named
     /// target's effective merge table. Unknown targets have none.
