@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Pairs with vivi 21.3.2.
+Pairs with vivi 21.3.2. A project made by `create_project` comes up with its
+pump running.
 
 - **`create_project` and `lane_create` accept only a GitHub source.** A
   `source` must match
@@ -11,6 +12,14 @@ Pairs with vivi 21.3.2.
   a query and a fragment are refused before anything is written. Without
   `source`, creation is unchanged. The local `vivi project create --source`
   still accepts any Git address.
+- **`create_project` starts the pump.** Once the project is created and its
+  `rungs` are seeded, the pump control mode is set to running, the same state
+  `pump_control` `start` sets (`vivi::pump::control::set_project_mode`), so a
+  new project needs no `pump_control start`. A project registered with
+  `pump: false` is left alone. The answer carries the mode as `pump_mode`, and
+  `pump_error` names a mode that could not be set or read (the project is not
+  rolled back, and the operator key is still shown once). Pairs with the phase
+  05 decision that a project's operator may start its own pump.
 
 ## 2.3.2
 
