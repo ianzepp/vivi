@@ -1,16 +1,19 @@
 //! The pi harness adapter: one persistent session behind a trait.
 //!
-//! ASSUMED PROTOCOL, NOT VERIFIED LIVE (pi is not installed where this spike
-//! was written). Taken from pi's published RPC docs: `pi --mode rpc` reads
+//! Checked live against pi 0.73.1 (`pi --mode rpc`, 2026-10-25): pi reads
 //! LF-delimited JSON commands on stdin and writes LF-delimited JSON records
 //! on stdout. Commands carry an optional `id`; each gets one `response`
 //! record repeating it (`{"type":"response","command":..,"success":..}`).
 //! Session events carry no id. A `prompt` response only means accepted;
 //! text streams as `message_update` events whose `assistantMessageEvent`
-//! is a `text_delta`, and `agent_settled` marks the point pi will not
-//! continue on its own. Sessions are JSONL files under `--session-dir`,
-//! resumed with `--session <id>`. `compact` and `get_messages` are commands.
-//! See `docs/design-vivi-mind.md` for the points still to confirm.
+//! is a `text_delta`, and `agent_end` closes the run, also after a provider
+//! error (its last message then has `stopReason` `error` and an
+//! `errorMessage`). pi 0.73.1 never emits `agent_settled`. Message `content`
+//! is a string or an array of `{type,text}` blocks. `get_state` reports
+//! `sessionId` and `sessionFile`. Sessions are JSONL files
+//! `<stamp>_<sessionId>.jsonl` under `--session-dir`, written lazily at the
+//! first message, and `--session <id>` exits ("No session found") when no
+//! such file exists, so a recorded id is only passed when its file is there.
 //!
 //! [`ProcessPi`] is the subprocess adapter; [`FakePi`] backs the tests.
 
@@ -79,7 +82,10 @@ pub enum PiRecord {
         data: Value,
     },
     TextDelta(String),
-    Settled,
+    /// The run ended; `error` carries a provider error or an abort.
+    Settled {
+        error: Option<String>,
+    },
     Other(String),
 }
 
@@ -116,8 +122,34 @@ pub fn parse_record(line: &str) -> Result<PiRecord, VivariumError> {
                 _ => PiRecord::Other(kind.to_string()),
             }
         }
-        "agent_settled" => PiRecord::Settled,
+        "agent_end" | "agent_settled" => PiRecord::Settled {
+            error: run_error(&value["messages"]),
+        },
         other => PiRecord::Other(other.to_string()),
+    })
+}
+
+/// The error of a run whose last message stopped on `error` or `aborted`.
+fn run_error(messages: &Value) -> Option<String> {
+    let last = messages.as_array()?.last()?;
+    match last["stopReason"].as_str()? {
+        reason @ ("error" | "aborted") => Some(
+            last["errorMessage"]
+                .as_str()
+                .map_or_else(|| reason.to_string(), str::to_string),
+        ),
+        _ => None,
+    }
+}
+
+/// Whether `dir` holds the session file for `id` (`<stamp>_<id>.jsonl`).
+#[must_use]
+pub fn session_exists(dir: &std::path::Path, id: &str) -> bool {
+    let suffix = format!("_{id}.jsonl");
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(&suffix))
     })
 }
 
@@ -131,7 +163,7 @@ pub struct ProcessPi {
 
 impl ProcessPi {
     /// Start `pi --mode rpc` in the session dir, resuming `session` when
-    /// given. The environment is cleared to `PATH`, `HOME` and
+    /// given and its file exists (else pi starts a fresh one). The environment is cleared to `PATH`, `HOME` and
     /// `VIVI_PROXY_URL`: the mind passes no model keys.
     ///
     /// # Errors
@@ -150,7 +182,7 @@ impl ProcessPi {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
-        if let Some(session) = session {
+        if let Some(session) = session.filter(|id| session_exists(&config.paths.session_dir, id)) {
             command.args(["--session", session]);
         }
         if let Some(model) = &config.model {
@@ -167,8 +199,8 @@ impl ProcessPi {
         })
     }
 
-    /// Ask pi which session it is in (assumed: `get_state` data carries
-    /// `sessionId`, else `sessionFile`). The service stores the answer and
+    /// Ask pi which session it is in (`get_state` data carries `sessionId`,
+    /// else `sessionFile`). The service stores the answer and
     /// passes it back as `--session` on the next start.
     ///
     /// # Errors
@@ -258,9 +290,14 @@ impl ProcessPi {
                     summary.text.push_str(&text);
                     forward(events.as_ref(), TurnEvent::Text(text));
                 }
-                PiRecord::Settled => {
+                PiRecord::Settled { error } => {
                     forward(events.as_ref(), TurnEvent::Settled);
-                    return Ok(summary);
+                    return match error {
+                        Some(error) => {
+                            Err(VivariumError::Other(format!("pi turn failed: {error}")))
+                        }
+                        None => Ok(summary),
+                    };
                 }
                 _ => {}
             }
@@ -291,8 +328,9 @@ impl PiSession for ProcessPi {
     }
 }
 
-/// Best-effort one-line rendering of `get_messages` data (assumed shape:
-/// `{"messages":[{"role":..,"content":..}]}`).
+/// One line per message of `get_messages` data
+/// (`{"messages":[{"role":..,"content":..}]}`): the text blocks joined,
+/// else the error message, else the raw content.
 #[must_use]
 pub fn history_lines(data: &Value, limit: usize) -> Vec<String> {
     let messages = data["messages"].as_array().cloned().unwrap_or_default();
@@ -304,7 +342,16 @@ pub fn history_lines(data: &Value, limit: usize) -> Vec<String> {
             let role = message["role"].as_str().unwrap_or("?");
             let text = match &message["content"] {
                 Value::String(text) => text.clone(),
-                other => other.to_string(),
+                Value::Array(blocks) if blocks.iter().any(|block| block["text"].is_string()) => {
+                    blocks
+                        .iter()
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }
+                other => message["errorMessage"]
+                    .as_str()
+                    .map_or_else(|| other.to_string(), |error| format!("[error] {error}")),
             };
             format!("{role}: {}", text.replace('\n', " "))
         })

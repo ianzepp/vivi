@@ -255,8 +255,10 @@ pub fn close_interrupted_wake(state: &Path, now: u64) -> Result<bool, VivariumEr
 async fn start_pi(config: &MindConfig) -> Result<ProcessPi, VivariumError> {
     let state = store::load_at(&config.paths.state)?;
     let mut pi = ProcessPi::spawn(config, state.session_id.as_deref())?;
-    if state.session_id.is_none()
-        && let Some(id) = pi.session_id().await?
+    // pi starts a fresh session when the recorded one has no file yet, so
+    // record whatever session it is actually in.
+    if let Some(id) = pi.session_id().await?
+        && state.session_id.as_deref() != Some(id.as_str())
     {
         store::update_at(&config.paths.state, |state| {
             state.session_id = Some(id);

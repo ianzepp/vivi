@@ -1,5 +1,6 @@
-//! Tests for [`crate::mind::pi`]: the record codec and the fake. The
-//! subprocess adapter is not exercised (pi is not installed here).
+//! Tests for [`crate::mind::pi`]: the record codec, the fake, and
+//! `ProcessPi` against a scripted child that mirrors the records a real
+//! pi 0.73.1 wrote in `--mode rpc` (2026-10-25).
 
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -41,8 +42,20 @@ fn records_parse() {
         PiRecord::TextDelta("he".into())
     );
     assert_eq!(
+        parse_record(r#"{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"pong"}],"stopReason":"stop"}]}"#)
+            .unwrap(),
+        PiRecord::Settled { error: None }
+    );
+    assert_eq!(
+        parse_record(r#"{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"400 bad model"}]}"#)
+            .unwrap(),
+        PiRecord::Settled {
+            error: Some("400 bad model".into())
+        }
+    );
+    assert_eq!(
         parse_record("{\"type\":\"agent_settled\"}\r").unwrap(),
-        PiRecord::Settled
+        PiRecord::Settled { error: None }
     );
     assert_eq!(
         parse_record(r#"{"type":"tool_execution_start"}"#).unwrap(),
@@ -56,12 +69,18 @@ fn history_lines_render_the_tail() {
     let data = json!({ "messages": [
         { "role": "user", "content": "one" },
         { "role": "assistant", "content": [{ "type": "text", "text": "two" }] },
-        { "role": "user", "content": "three\nlines" },
+        { "role": "user", "content": [{ "type": "text", "text": "three\nlines" }] },
+        { "role": "assistant", "content": [], "stopReason": "error", "errorMessage": "429" },
     ]});
-    let lines = history_lines(&data, 2);
-    assert_eq!(lines.len(), 2);
-    assert!(lines[0].starts_with("assistant: "));
-    assert_eq!(lines[1], "user: three lines");
+    let lines = history_lines(&data, 3);
+    assert_eq!(
+        lines,
+        [
+            "assistant: two",
+            "user: three lines",
+            "assistant: [error] 429"
+        ]
+    );
     assert!(history_lines(&json!({}), 5).is_empty());
 }
 
@@ -87,10 +106,13 @@ while IFS= read -r line; do
     *'"type":"get_state"'*)
       printf '{"type":"response","id":"%s","command":"get_state","success":true,"data":{"sessionId":"%s"}}\n' "$id" "$HOME" ;;
     *'"type":"prompt"'*)
-      printf '{"type":"response","id":"%s","command":"prompt","success":true,"data":{}}\n' "$id"
+      printf '{"type":"response","id":"%s","command":"prompt","success":true}\n' "$id"
+      printf '{"type":"agent_start"}\n'
+      printf '{"type":"message_update","assistantMessageEvent":{"type":"text_start"}}\n'
       printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"all "}}\n'
       printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"quiet"}}\n'
-      printf '{"type":"agent_settled"}\n' ;;
+      printf '{"type":"turn_end","message":{"role":"assistant","stopReason":"stop"}}\n'
+      printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"all quiet"}],"stopReason":"stop"}]}\n' ;;
     *'"type":"compact"'*)
       printf '{"type":"response","id":"%s","command":"compact","success":false,"error":"nothing to compact"}\n' "$id" ;;
   esac
@@ -123,4 +145,14 @@ async fn process_pi_speaks_jsonl_to_a_scripted_child() {
     let error = pi.compact().await.unwrap_err().to_string();
     assert!(error.contains("nothing to compact"), "{error}");
     assert!(!pi.exited());
+}
+
+#[test]
+fn session_exists_matches_the_session_file_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!session_exists(dir.path(), "01a1"));
+    std::fs::write(dir.path().join("2026-10-25T20-54-30-334Z_01a1.jsonl"), "").unwrap();
+    assert!(session_exists(dir.path(), "01a1"));
+    assert!(!session_exists(dir.path(), "1a1"));
+    assert!(!session_exists(&dir.path().join("missing"), "01a1"));
 }
