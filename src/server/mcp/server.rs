@@ -49,7 +49,8 @@ pub(crate) const HOST_PRINCIPAL: &str = "host";
 pub(super) const INSTRUCTIONS: &str = "This is one vivi server's MCP endpoint. Every project \
 tool takes a required `project`: the project id, or the name of a hosted project this key is \
 granted on. Call `projects` first to list what this key may reach. Host tools (create_project, \
-lane_create, project_list, server_version, key and grant admin) need a host principal.";
+lane_create, delete_project, project_list, server_version, key and grant admin) need a host \
+principal.";
 
 /// What the Bearer resolved to on `/v1/mcp`.
 #[derive(Debug, Clone)]
@@ -122,9 +123,10 @@ fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Respo
 
 // ------------------------------------------------------------------ tools
 
-const HOST_TOOLS: [&str; 9] = [
+const HOST_TOOLS: [&str; 10] = [
     "create_project",
     "lane_create",
+    "delete_project",
     "key_mint",
     "key_list",
     "key_revoke",
@@ -568,11 +570,16 @@ async fn host_tool(
             Err(err) => Err(internal(state, auth, None, name, write, err).await),
         };
     }
-    if name == "create_project" {
+    if matches!(name, "create_project" | "lane_create" | "delete_project") {
         if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
             return Ok(refused(state, auth, None, name, true, &message).await);
         }
-        return match super::host::create_project(state, &arguments).await {
+        let outcome = match name {
+            "create_project" => super::host::create_project(state, &arguments).await,
+            "lane_create" => super::host::lane::lane_create(state, &arguments).await,
+            _ => super::host::delete_project(state, &arguments).await,
+        };
+        return match outcome {
             Ok(value) => {
                 audit(
                     state,
@@ -588,29 +595,6 @@ async fn host_tool(
             Err(err) => {
                 audit(state, auth, None, name, AuditOutcome::Refused, &err.message).await;
                 Ok(tool_result(json!({ "error": err.message }), true))
-            }
-        };
-    }
-    if name == "lane_create" {
-        if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
-            return Ok(refused(state, auth, None, name, true, &message).await);
-        }
-        return match super::host::lane::lane_create(state, &arguments).await {
-            Ok(value) => {
-                audit(
-                    state,
-                    auth,
-                    None,
-                    name,
-                    AuditOutcome::Ok,
-                    &summarize_ok(name, &value),
-                )
-                .await;
-                Ok(tool_result(value, false))
-            }
-            Err(err) => {
-                audit(state, auth, None, name, AuditOutcome::Refused, &err.summary).await;
-                Ok(tool_result(err.body, true))
             }
         };
     }
@@ -994,11 +978,15 @@ fn summarize_ok(tool: &str, value: &Value) -> String {
             value.get("name").and_then(Value::as_str).unwrap_or("?")
         ),
         "lane_create" => format!(
-            "attached {} on {}",
+            "added {} on {}",
             value
-                .pointer("/target/target_id")
+                .get("target_id")
                 .and_then(Value::as_str)
                 .unwrap_or("?"),
+            value.get("name").and_then(Value::as_str).unwrap_or("?")
+        ),
+        "delete_project" => format!(
+            "deleted {}",
             value.get("name").and_then(Value::as_str).unwrap_or("?")
         ),
         _ => handle.map_or_else(|| "ok".to_owned(), |handle| format!("{tool} {handle}")),

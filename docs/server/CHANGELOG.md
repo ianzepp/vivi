@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Project layout per project.** `create_project` makes
+  `<HOST_LANES_ROOT>/<name>/<target>.git` (new `target` argument, default the
+  project name) with its checkout and `[pump.targets.<target>]`; lane URLs are
+  `<HOST_GIT_URL_PREFIX><name>/<target>.git`.
+- **`lane_create` makes the lane.** The server owns the lanes root, so the tool
+  now runs all of `vivi project lane add`; the projects-half-only mode, its
+  `remaining` command and the lanes-root write revocation are gone. The answer
+  is flat: `{name, target_id, repo_path, checkout_path, git_url,
+  initial_commit, readiness}`.
+- **`delete_project` host tool.** Unregisters, removes the project root and its
+  lanes, and stops serving it.
+- A host tool missing configuration names every unset `HOST_*` variable at
+  once.
+
 ## 2.1.0
 
 - **MCP reads (wave 3 D4).** Hosted, operator-only, read-only tools on

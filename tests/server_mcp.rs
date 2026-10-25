@@ -479,6 +479,7 @@ async fn initialize_and_tools_list() {
             "project_list",
             "create_project",
             "lane_create",
+            "delete_project",
             "key_mint",
             "key_list",
             "key_revoke",

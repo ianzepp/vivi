@@ -1,17 +1,22 @@
 //! Host tools for `POST /v1/mcp`. They act on the host rather than on one
 //! grant, and only a host principal may call them. `create_project` makes a
-//! project; `lane_create` attaches an existing lane to one.
+//! project, `lane_create` adds a lane to one and `delete_project` removes
+//! one.
 //!
-//! `create_project` calls [`vivi::project_create::create`] (bare repository,
-//! project directory with an initialised mailspace, host registry entry) with
-//! the roots from [`HostConfig`], then reconciles the host registry now so the
-//! new project is served without waiting for the registry watcher, and mints
-//! an operator server key granted on it. The answer's `mcp_path` is `/v1/mcp`.
+//! `create_project` calls [`vivi::project_create::create`] (the project's
+//! lanes directory with its first target's bare repository, the project
+//! directory with an initialised mailspace, the first target's checkout and
+//! entry, the host registry entry) with the roots from [`HostConfig`], then
+//! reconciles the host registry now so the new project is served without
+//! waiting for the registry watcher, and mints an operator server key granted
+//! on it. The answer's `mcp_path` is `/v1/mcp`. `delete_project` calls
+//! [`vivi::project_create::delete::delete`] and reconciles the same way, so
+//! the server stops serving the project at once.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use vivi::project_create::{ProjectCreate, ProjectCreated};
+use vivi::project_create::{ProjectCreate, ProjectCreated, ProjectDelete};
 
 use crate::AppState;
 use crate::grants::{GrantLevel, GrantRecord};
@@ -31,8 +36,8 @@ pub const ENV_LANES_ROOT: &str = "HOST_LANES_ROOT";
 pub const ENV_GIT_URL_PREFIX: &str = "HOST_GIT_URL_PREFIX";
 pub const ENV_DEFAULT_POOL: &str = "HOST_DEFAULT_POOL";
 
-/// Where `create_project` puts things. A field left unset makes the tool
-/// answer with a configuration error naming its variable.
+/// Where the host tools put things. A field left unset makes a tool answer
+/// with a configuration error naming every unset variable.
 #[derive(Clone, Debug, Default)]
 pub struct HostConfig {
     pub projects_root: Option<PathBuf>,
@@ -72,17 +77,21 @@ pub(super) fn tools_list() -> Value {
             }),
         ),
         tool("create_project",
-        "Create a project on this host: a bare git repository, a project directory with an \
-         initialised mailspace and starter pump config, and a host registry entry; seed the \
-         given rung commands into [pump.rungs]; then serve it and mint an operator API key. \
-         Returns project_root, git_url, repo_path, \
-         mailspace_id, initial_commit, readiness (what the pump still needs), project_id, \
-         mcp_path and operator_key (shown once; store it). Refuses a name that already exists.",
+        "Create a project on this host: its lanes directory <HOST_LANES_ROOT>/<name> with the \
+         first target's bare git repository <target>.git, a project directory with an \
+         initialised mailspace and starter pump config, the first target's checkout and \
+         [pump.targets.<target>] entry, and a host registry entry; seed the given rung commands \
+         into [pump.rungs]; then serve it and mint an operator API key. Returns project_root, \
+         lanes_dir, target, git_url (<HOST_GIT_URL_PREFIX><name>/<target>.git), repo_path, \
+         checkout_path, mailspace_id, initial_commit, readiness (what the pump still needs), \
+         project_id, mcp_path and operator_key (shown once; store it). Refuses a name that \
+         already exists.",
         json!({
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "Project name: one safe path segment" },
-                "branch": { "type": "string", "default": "main", "description": "The new repository's default branch" },
+                "target": { "type": "string", "description": "The first target's id (lowercase letters, digits and hyphens); defaults to the project name" },
+                "branch": { "type": "string", "default": "main", "description": "The first target's default branch, also its main" },
                 "pool": { "type": "string", "description": "Pool whose remote_url is set to the git URL; overrides the host default" },
                 "initial_commit": { "type": "boolean", "default": false, "description": "Create an empty first commit on the branch" },
                 "pump": { "type": "boolean", "default": true, "description": "Register the project for the pump supervisor" },
@@ -106,21 +115,39 @@ pub(super) fn tools_list() -> Value {
         })),
         tool(
             "lane_create",
-            "Attach an existing bare lane repository as a pump target on a project under the host \
-             projects root. Projects half only: clone `<project>/<target>` and add \
-             [pump.targets.<target>] through the guarded config write. Does not create the bare \
-             repository under the lanes root. When that repository is missing, refuses with the \
-             exact `vivi project lane add` command for the lanes owner and the project's pump \
-             readiness. A second attach of the same target is refused. Host principal only.",
+            "Add a lane to a project on this host: the bare repository \
+             <HOST_LANES_ROOT>/<name>/<target>.git, its checkout <project>/<target>, and \
+             [pump.targets.<target>] through the guarded config write (a running pump refuses; \
+             pause it first). Returns target_id, repo_path, checkout_path, git_url, \
+             initial_commit and the project's pump readiness. A second add of the same target is \
+             refused. Host principal only.",
             json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Existing project directory name under HOST_PROJECTS_ROOT" },
-                    "target": { "type": "string", "description": "Target id: [pump.targets.<target>]; the lane is <HOST_LANES_ROOT>/<target>.git" },
-                    "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX; absent and unset, the lane is cloned from its local path" },
-                    "seed": { "type": "boolean", "default": false, "description": "Not performed here (lanes half). Included in the lanes-owner command when true" }
+                    "target": { "type": "string", "description": "Target id (lowercase letters, digits and hyphens): [pump.targets.<target>]" },
+                    "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><name>/<target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX" },
+                    "seed": { "type": "boolean", "default": false, "description": "Create one empty seed commit on the lane's main branch" }
                 },
                 "required": ["name", "target"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
+            "delete_project",
+            "Delete a project from this host: its host registration, its project directory and \
+             its lanes directory <HOST_LANES_ROOT>/<name> with every lane in it, then stop serving \
+             it. `confirm` must repeat the name. While a pump still holds the project's lock the \
+             call unregisters, keeps the files and says so: call it again once the pump service \
+             has stopped that pump. Keys granted on the project are not revoked (key_revoke). \
+             Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Project name, as given to create_project" },
+                    "confirm": { "type": "string", "description": "The project name again" }
+                },
+                "required": ["name", "confirm"],
                 "additionalProperties": false
             }),
         ),
@@ -197,41 +224,63 @@ pub(super) async fn create_project(
 }
 
 /// Run blocking work on the blocking pool.
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
 ) -> Result<T, ToolError> {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|e| ToolError::new(format!("create_project task failed: {e}")))?
+        .map_err(|e| ToolError::new(format!("host task failed: {e}")))?
+}
+
+/// The projects root, lanes root and git URL prefix, or one error naming
+/// every `HOST_*` variable that is unset.
+pub(super) fn require(
+    host: &HostConfig,
+    tool: &str,
+) -> Result<(PathBuf, PathBuf, String), ToolError> {
+    match (
+        host.projects_root.clone(),
+        host.lanes_root.clone(),
+        host.git_url_prefix.clone(),
+    ) {
+        (Some(projects), Some(lanes), Some(prefix)) => Ok((projects, lanes, prefix)),
+        (projects, lanes, prefix) => {
+            let unset: Vec<&str> = [
+                (projects.is_none(), ENV_PROJECTS_ROOT),
+                (lanes.is_none(), ENV_LANES_ROOT),
+                (prefix.is_none(), ENV_GIT_URL_PREFIX),
+            ]
+            .into_iter()
+            .filter_map(|(missing, var)| missing.then_some(var))
+            .collect();
+            Err(ToolError::new(format!(
+                "{tool} is not configured on this host: {} not set",
+                list_vars(&unset)
+            )))
+        }
+    }
+}
+
+fn list_vars(vars: &[&str]) -> String {
+    match vars {
+        [one] => format!("{one} is"),
+        [init @ .., last] => format!("{} and {last} are", init.join(", ")),
+        [] => "nothing is".to_owned(),
+    }
 }
 
 fn build_request(
     host: &HostConfig,
     arguments: &Value,
 ) -> Result<(ProjectCreate, Rungs), ToolError> {
-    let missing = |var: &str| {
-        ToolError::new(format!(
-            "create_project is not configured on this host: {var} is not set"
-        ))
-    };
-    let projects_root = host
-        .projects_root
-        .clone()
-        .ok_or_else(|| missing(ENV_PROJECTS_ROOT))?;
-    let lanes_root = host
-        .lanes_root
-        .clone()
-        .ok_or_else(|| missing(ENV_LANES_ROOT))?;
-    let prefix = host
-        .git_url_prefix
-        .clone()
-        .ok_or_else(|| missing(ENV_GIT_URL_PREFIX))?;
+    let (projects_root, lanes_root, prefix) = require(host, "create_project")?;
     let mut request = ProjectCreate::new(
         req_str(arguments, "name")?,
         projects_root,
         lanes_root,
         prefix,
     );
+    request.target = opt_str(arguments, "target")?.map(str::to_owned);
     request.pool = opt_str(arguments, "pool")?
         .map(str::to_owned)
         .or_else(|| host.default_pool.clone());
@@ -244,7 +293,32 @@ fn build_request(
     Ok((request, Rungs::parse(arguments)?))
 }
 
-fn opt_bool(arguments: &Value, name: &str, default: bool) -> Result<bool, ToolError> {
+/// Delete one project. The `/v1/mcp` host tool.
+pub(super) async fn delete_project(
+    state: &AppState,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
+    let (projects_root, lanes_root, _) = require(&state.host, "delete_project")?;
+    let request = ProjectDelete {
+        name: req_str(arguments, "name")?.to_owned(),
+        projects_root,
+        lanes_root,
+        confirm: req_str(arguments, "confirm")?.to_owned(),
+    };
+    let state = state.clone();
+    blocking(move || {
+        let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
+        let outcome = vivi::project_create::delete::delete(&request);
+        // Unregistered even when the files stay (a live pump): stop serving now.
+        hosted::reconcile_registry(&state.projects, &state.identities);
+        let deleted = outcome.map_err(|e| ToolError::new(e.to_string()))?;
+        serde_json::to_value(&deleted)
+            .map_err(|e| ToolError::new(format!("failed to encode delete_project result: {e}")))
+    })
+    .await
+}
+
+pub(super) fn opt_bool(arguments: &Value, name: &str, default: bool) -> Result<bool, ToolError> {
     match arguments.get(name) {
         None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(flag)) => Ok(*flag),

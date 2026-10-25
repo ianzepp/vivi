@@ -46,11 +46,13 @@ curl http://localhost:8080/healthz   # -> ok
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
-| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
-| `HOST_PROJECTS_ROOT` | `create_project`: existing directory that holds project roots (`<root>/<name>`) |
-| `HOST_LANES_ROOT` | `create_project`: existing directory that holds bare repositories (`<root>/<name>.git`) |
-| `HOST_GIT_URL_PREFIX` | `create_project`: the git URL is `<prefix><name>.git` (for example `git@hub:`) |
-| `HOST_DEFAULT_POOL` | `create_project`: optional pool whose `remote_url` is set to the git URL; the tool's `pool` overrides it |
+| `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `delete_project`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
+| `HOST_PROJECTS_ROOT` | Project tools: existing directory that holds project roots (`<root>/<name>`) |
+| `HOST_LANES_ROOT` | Project tools: existing directory that holds each project's lanes (`<root>/<name>/<target>.git`) |
+| `HOST_GIT_URL_PREFIX` | Project tools: lane URLs are `<prefix><name>/<target>.git` (for example `git@hub:`) |
+| `HOST_DEFAULT_POOL` | `create_project`: optional pool whose `remote_url` is set to the first target's URL; the tool's `pool` overrides it |
+
+The server writes both roots itself, so they belong to the user it runs as. The three project tools refuse with one error naming every one of the first three that is unset.
 | `SEND_RATE_PER_MINUTE` | Writes per minute per identity (rooms, the projects API, and MCP writes share it). Unset is 30, the public default; a positive integer sets the limit; `0` is unlimited (for a trusted tailnet host). Any other value refuses to boot |
 | `HOSTED_DEFAULT_IDENTITY` | The vivi identity an API key without its own `identity` acts as on a hosted project (default `operator`) |
 

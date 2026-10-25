@@ -424,6 +424,7 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
         "project_list",
         "create_project",
         "lane_create",
+        "delete_project",
         "key_mint",
         "key_list",
         "key_revoke",

@@ -199,8 +199,11 @@ mod tests {
         let gone = std::env::temp_dir().join(format!("vivi-server-no-such-{}", std::process::id()));
         let mut created = ProjectCreated {
             project_root: gone,
+            lanes_dir: std::path::PathBuf::new(),
+            target: String::new(),
             git_url: String::new(),
             repo_path: std::path::PathBuf::new(),
+            checkout_path: std::path::PathBuf::new(),
             mailspace_id: String::new(),
             initial_commit: None,
             readiness: Readiness {

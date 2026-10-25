@@ -197,8 +197,10 @@ async fn create_project_makes_the_repo_mailspace_and_registration_and_serves_it(
 
     let root = fx.projects.join("fresh").canonicalize().unwrap();
     assert_eq!(made["project_root"], root.to_str().unwrap());
-    assert_eq!(made["git_url"], format!("{PREFIX}fresh.git"));
-    assert!(fx.lanes.join("fresh.git").join("HEAD").exists());
+    assert_eq!(made["git_url"], format!("{PREFIX}fresh/fresh.git"));
+    assert_eq!(made["target"], "fresh");
+    assert!(fx.lanes.join("fresh/fresh.git").join("HEAD").exists());
+    assert!(root.join("fresh").join(".git").is_dir());
     assert!(root.join(".vivi").join("mailspace.toml").exists());
     assert!(made["initial_commit"].is_string(), "{made}");
     assert!(made["mailspace_id"].is_string());
@@ -322,7 +324,7 @@ async fn a_duplicate_name_is_refused_and_touches_nothing() {
             || second["error"].as_str().unwrap().contains("already"),
         "{second}"
     );
-    assert!(fx.lanes.join("twice.git").exists());
+    assert!(fx.lanes.join("twice/twice.git").exists());
     assert!(fx.projects.join("twice").join(".vivi").exists());
 }
 
@@ -332,7 +334,10 @@ async fn missing_host_configuration_is_a_clear_error() {
     let (errored, value) = fx.create(json!({"name": "nowhere"})).await;
     assert!(errored, "{value}");
     let message = value["error"].as_str().unwrap();
-    assert!(message.contains("HOST_PROJECTS_ROOT"), "{message}");
+    assert!(
+        message.contains("HOST_PROJECTS_ROOT, HOST_LANES_ROOT and HOST_GIT_URL_PREFIX are not set"),
+        "every unset variable is named at once: {message}"
+    );
 
     let mut partial = fx.state.clone();
     partial.host.projects_root = Some(fx.projects.clone());
@@ -347,7 +352,8 @@ async fn missing_host_configuration_is_a_clear_error() {
         value["error"]
             .as_str()
             .unwrap()
-            .contains("HOST_GIT_URL_PREFIX")
+            .contains("HOST_GIT_URL_PREFIX is not set"),
+        "{value}"
     );
     assert!(!fx.projects.join("nowhere").exists());
 }
@@ -624,23 +630,8 @@ fn config_backups(project: &std::path::Path) -> Vec<std::path::PathBuf> {
     paths
 }
 
-/// The lanes-owner command for paths that need no shell quoting.
-fn lanes_owner_command(project: &std::path::Path, lanes: &std::path::Path, prefix: &str) -> String {
-    format!(
-        "vivi project lane add {} sandbox --lanes-root {} --git-url-prefix {prefix} --seed",
-        project.display(),
-        lanes.display()
-    )
-}
-
 fn file_prefix(lanes: &std::path::Path) -> String {
     format!("file://{}/", lanes.display())
-}
-
-fn seed_lane(project: &std::path::Path, lanes: &std::path::Path) {
-    let mut lane = vivi::project_create::LaneCreate::new("sandbox", lanes, project);
-    lane.initial_commit = true;
-    vivi::project_create::create_lane(&lane).unwrap();
 }
 
 fn lane_arguments(prefix: &str) -> Value {
@@ -659,22 +650,18 @@ async fn project_for_lane(label: &str) -> Fx {
     fx
 }
 
-fn assert_lane_audit(line: &Value, outcome: &str) {
-    assert_eq!(line["tool"], "lane_create");
+fn assert_host_audit(line: &Value, tool: &str, outcome: &str) {
+    assert_eq!(line["tool"], tool);
     assert_eq!(line["outcome"], outcome);
     assert!(line["project_id"].is_null(), "{line}");
     assert_eq!(line["principal"], "host");
 }
 
-#[cfg(unix)]
-fn assert_lanes_writable(lanes: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(lanes).unwrap().permissions().mode();
-    assert_ne!(
-        mode & 0o200,
-        0,
-        "lanes root write bit was not restored: {mode:o}"
-    );
+fn tool_lines(data: &std::path::Path, tool: &str) -> Vec<Value> {
+    audit_lines(data)
+        .into_iter()
+        .filter(|line| line["tool"] == tool)
+        .collect()
 }
 
 #[tokio::test]
@@ -703,185 +690,64 @@ async fn lane_create_is_listed_for_the_host_without_a_project_argument() {
     assert_eq!(value["result"]["isError"], true, "{value}");
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("not a host principal"), "{text}");
-    let lines = audit_lines(&fx.data);
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    let line = &lines[1];
-    assert_eq!(line["tool"], "lane_create");
-    assert_eq!(line["outcome"], "refused");
-    assert!(line["project_id"].is_null(), "{line}");
+    let lines = tool_lines(&fx.data, "lane_create");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["outcome"], "refused");
     // A project operator key is not the host principal. The audit names
     // that key: `{member}@{project_id}`, the same principal create_project minted.
     assert_eq!(
-        line["principal"],
+        lines[0]["principal"],
         format!(
             "{}@{}",
             made["member"].as_str().unwrap(),
             made["project_id"].as_str().unwrap()
         )
     );
-    assert_eq!(line["key_id"], made["operator_key"]["key_id"]);
-    assert!(!fx.lanes.join("sandbox.git").exists());
+    assert_eq!(lines[0]["key_id"], made["operator_key"]["key_id"]);
+    assert!(!fx.lanes.join("lanehost/sandbox.git").exists());
 }
 
 #[tokio::test]
-async fn lane_create_attaches_an_existing_bare_repo_through_the_guard() {
-    let fx = project_for_lane("lane-attach").await;
-    let project = fx.projects.join("laneapp");
+async fn lane_create_makes_the_lane_the_checkout_and_the_target() {
+    let fx = project_for_lane("lane-add").await;
+    let root = fx.projects.join("laneapp").canonicalize().unwrap();
     let prefix = file_prefix(&fx.lanes);
-    seed_lane(&project, &fx.lanes);
-    let before = dir_names(&fx.lanes);
     let (errored, made) = fx.call_tool("lane_create", lane_arguments(&prefix)).await;
     assert!(!errored, "{made}");
 
-    let root = project.canonicalize().unwrap();
+    let url = format!("{prefix}laneapp/sandbox.git");
     assert_eq!(made["name"], "laneapp");
-    assert_eq!(made["target"]["target_id"], "sandbox");
+    assert_eq!(made["target_id"], "sandbox");
+    assert_eq!(made["git_url"], url);
+    assert!(made["initial_commit"].is_string(), "{made}");
     assert_eq!(
-        made["target"]["checkout_path"],
+        made["checkout_path"],
         root.join("sandbox").to_str().unwrap()
     );
-    assert_eq!(made["target"]["git_url"], format!("{prefix}sandbox.git"));
-    assert!(
-        made.get("lane").is_none(),
-        "the lanes half was not run: {made}"
-    );
-    assert_eq!(made["remaining"]["half"], "lanes");
-    assert_eq!(
-        made["remaining"]["root"],
-        fx.lanes.canonicalize().unwrap().to_str().unwrap()
-    );
-    let command = lanes_owner_command(&project, &fx.lanes, &prefix);
-    assert_eq!(made["remaining"]["command"], command);
-    assert!(root.join("sandbox").join(".git").is_dir());
+    assert!(fx.lanes.join("laneapp/sandbox.git/HEAD").is_file());
     let origin = std::process::Command::new("git")
-        .args([
-            "-C",
-            root.join("sandbox").to_str().unwrap(),
-            "remote",
-            "get-url",
-            "origin",
-        ])
+        .args(["-C", root.join("sandbox").to_str().unwrap()])
+        .args(["remote", "get-url", "origin"])
         .output()
         .unwrap();
-    assert!(
-        origin.status.success(),
-        "{}",
-        String::from_utf8_lossy(&origin.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&origin.stdout).trim(),
-        format!("{prefix}sandbox.git")
-    );
+    assert_eq!(String::from_utf8_lossy(&origin.stdout).trim(), url);
 
     let live = std::fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
-    assert!(
-        live.contains("[pump.targets.sandbox]"),
-        "guarded target write: {live}"
-    );
-    assert!(
-        live.contains(&format!("remote_url = \"{prefix}sandbox.git\"")),
-        "{live}"
-    );
-    let ids = vivi::pump::config::targets::list(&root).unwrap();
-    assert_eq!(ids.len(), 1);
-    assert_eq!(ids[0].id, "sandbox");
-    assert_eq!(ids[0].path, "sandbox");
-    let backups = config_backups(&root);
-    assert_eq!(
-        backups.len(),
-        1,
-        "the guarded write keeps a backup: {backups:?}"
-    );
-    let bak = std::fs::read_to_string(&backups[0]).unwrap();
-    assert!(
-        !bak.contains("[pump.targets.sandbox]"),
-        "the backup is the file from before the write: {bak}"
-    );
-
-    let issues =
-        vivi::pump::readiness::assess(&vivi::mailspace::Mailspace::open_root(root).unwrap());
-    assert_eq!(
-        made["readiness"]["ready"],
-        vivi::pump::readiness::is_ready(&issues)
-    );
-    let listed: Vec<_> = vivi::routing::not_ready(&issues)
-        .map(|issue| issue.item.clone().unwrap_or_default())
-        .collect();
-    let answered: Vec<_> = made["readiness"]["missing"]
-        .as_array()
+    assert!(live.contains("[pump.targets.sandbox]"), "{live}");
+    assert!(live.contains(&format!("remote_url = \"{url}\"")), "{live}");
+    let ids: Vec<_> = vivi::pump::config::targets::list(&root)
         .unwrap()
-        .iter()
-        .map(|item| item["item"].as_str().unwrap().to_owned())
+        .into_iter()
+        .map(|row| row.id)
         .collect();
-    assert_eq!(answered, listed, "{made}");
-
-    assert_eq!(
-        dir_names(&fx.lanes),
-        before,
-        "nothing was created under the lanes root"
-    );
-    assert_lanes_writable(&fx.lanes);
-    let lines = audit_lines(&fx.data);
-    let lane_lines: Vec<_> = lines
-        .iter()
-        .filter(|line| line["tool"] == "lane_create")
-        .collect();
-    assert_eq!(lane_lines.len(), 1, "{lines:?}");
-    assert_lane_audit(lane_lines[0], "ok");
-    assert!(
-        lane_lines[0]["summary"]
-            .as_str()
-            .unwrap()
-            .contains("sandbox"),
-        "{lines:?}"
-    );
-}
-
-#[tokio::test]
-async fn lane_create_refuses_a_missing_bare_repo_with_the_lanes_command() {
-    let fx = project_for_lane("lane-missing").await;
-    let project = fx.projects.join("laneapp");
-    let prefix = file_prefix(&fx.lanes);
-    let before = dir_names(&fx.lanes);
-    let backups_before = config_backups(&project);
-    let (errored, made) = fx.call_tool("lane_create", lane_arguments(&prefix)).await;
-    assert!(errored, "{made}");
-    let message = made["error"].as_str().unwrap();
-    assert!(
-        message.contains("does not exist") && message.contains("the lanes half must run first"),
-        "{message}"
-    );
-    assert!(message.contains("sandbox.git"), "{message}");
-    let command = lanes_owner_command(&project, &fx.lanes, &prefix);
-    assert_eq!(made["remaining"]["command"], command);
-    assert_eq!(made["remaining"]["half"], "lanes");
-    assert_eq!(made["name"], "laneapp");
-    let root = project.canonicalize().unwrap();
-    let issues = vivi::pump::readiness::assess(
-        &vivi::mailspace::Mailspace::open_root(root.clone()).unwrap(),
-    );
-    assert_eq!(
-        made["readiness"]["ready"],
-        vivi::pump::readiness::is_ready(&issues)
-    );
+    assert_eq!(ids, ["laneapp", "sandbox"]);
     assert!(made["readiness"]["missing"].is_array(), "{made}");
-    assert!(!root.join("sandbox").exists());
-    assert!(vivi::pump::config::targets::list(&root).unwrap().is_empty());
-    assert_eq!(dir_names(&fx.lanes), before);
-    assert_eq!(config_backups(&project), backups_before);
-    assert_lanes_writable(&fx.lanes);
-    let lines = audit_lines(&fx.data);
-    let lane_lines: Vec<_> = lines
-        .iter()
-        .filter(|line| line["tool"] == "lane_create")
-        .collect();
-    assert_eq!(lane_lines.len(), 1, "{lines:?}");
-    assert_lane_audit(lane_lines[0], "refused");
+
+    let lines = tool_lines(&fx.data, "lane_create");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_host_audit(&lines[0], "lane_create", "ok");
     assert!(
-        lane_lines[0]["summary"]
-            .as_str()
-            .unwrap()
-            .contains("does not exist"),
+        lines[0]["summary"].as_str().unwrap().contains("sandbox"),
         "{lines:?}"
     );
 }
@@ -891,32 +757,72 @@ async fn a_second_lane_create_for_the_same_target_is_refused() {
     let fx = project_for_lane("lane-again").await;
     let project = fx.projects.join("laneapp");
     let prefix = file_prefix(&fx.lanes);
-    seed_lane(&project, &fx.lanes);
     let (errored, first) = fx.call_tool("lane_create", lane_arguments(&prefix)).await;
     assert!(!errored, "{first}");
     let backups = config_backups(&project);
-    let lanes = dir_names(&fx.lanes);
+    let lanes = dir_names(&fx.lanes.join("laneapp"));
     let (errored, again) = fx.call_tool("lane_create", lane_arguments(&prefix)).await;
     assert!(errored, "{again}");
     let message = again["error"].as_str().unwrap();
-    assert!(
-        message.contains("pump target `sandbox` already exists"),
-        "{message}"
-    );
+    assert!(message.contains("already exists"), "{message}");
     assert!(project.join("sandbox").join(".git").is_dir());
     assert_eq!(
         config_backups(&project),
         backups,
         "a refusal writes nothing"
     );
-    assert_eq!(dir_names(&fx.lanes), lanes);
-    assert_lanes_writable(&fx.lanes);
-    let lines = audit_lines(&fx.data);
-    let lane_lines: Vec<_> = lines
-        .iter()
-        .filter(|line| line["tool"] == "lane_create")
-        .collect();
-    assert_eq!(lane_lines.len(), 2, "{lines:?}");
-    assert_lane_audit(lane_lines[0], "ok");
-    assert_lane_audit(lane_lines[1], "refused");
+    assert_eq!(dir_names(&fx.lanes.join("laneapp")), lanes);
+    let lines = tool_lines(&fx.data, "lane_create");
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_host_audit(&lines[0], "lane_create", "ok");
+    assert_host_audit(&lines[1], "lane_create", "refused");
+}
+
+#[tokio::test]
+async fn delete_project_removes_the_project_and_stops_serving_it() {
+    let fx = fixture("delete", Some(TOKEN), true);
+    let (errored, made) = fx.create(json!({"name": "doomed"})).await;
+    assert!(!errored, "{made}");
+    let id = made["project_id"].as_str().unwrap().to_owned();
+    let key = made["operator_key"]["key"].as_str().unwrap().to_owned();
+    let root = fx.projects.join("doomed").canonicalize().unwrap();
+
+    let (errored, refused) = fx
+        .call_tool(
+            "delete_project",
+            json!({"name": "doomed", "confirm": "nope"}),
+        )
+        .await;
+    assert!(errored, "{refused}");
+    assert!(root.is_dir() && vivi::registry::load().unwrap().get(&root).is_some());
+
+    let (errored, deleted) = fx
+        .call_tool(
+            "delete_project",
+            json!({"name": "doomed", "confirm": "doomed"}),
+        )
+        .await;
+    assert!(!errored, "{deleted}");
+    assert_eq!(deleted["name"], "doomed");
+    assert_eq!(deleted["unregistered"], true);
+    assert!(!root.exists() && !fx.lanes.join("doomed").exists());
+    assert!(vivi::registry::load().unwrap().get(&root).is_none());
+
+    // No longer served: the project's own operator key reaches nothing.
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "pump_list", "arguments": {"project": id}}});
+    let (_, value) = fx.post("/v1/mcp", Some(&key), body).await;
+    assert!(
+        value["result"]["isError"] == true || value.get("error").is_some(),
+        "{value}"
+    );
+
+    let lines = tool_lines(&fx.data, "delete_project");
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_host_audit(&lines[0], "delete_project", "refused");
+    assert_host_audit(&lines[1], "delete_project", "ok");
+    assert!(
+        lines[1]["summary"].as_str().unwrap().contains("doomed"),
+        "{lines:?}"
+    );
 }
