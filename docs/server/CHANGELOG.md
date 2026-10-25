@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+Pairs with vivi 21.3.2.
+
+- **`create_project` and `lane_create` accept only a GitHub source.** A
+  `source` must match
+  `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`; local
+  paths, `file://`, `ssh://`, `git@host:owner/repo`, other hosts, user info,
+  a query and a fragment are refused before anything is written. Without
+  `source`, creation is unchanged. The local `vivi project create --source`
+  still accepts any Git address.
+
 ## 2.3.2
 
 Pairs with vivi 21.3.2. `create_project` works on a host whose base defines
