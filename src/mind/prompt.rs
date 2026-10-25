@@ -33,8 +33,8 @@ const ACTIONS: [Action; 10] = [
 /// operator gate as "normal queue state" without this.
 const LEGEND: &str = "Signals: locked = a need's run waits at an operator-only lock and will not \
      move on its own; held = a step waits for an operator answer; red_main or repair = main is \
-     red and unrepaired; envelope = a role's reply envelope failed recently; stale_pending, idle \
-     or deferring = work the pools are not dispatching. A project with any of these is stuck, \
+     red and unrepaired; envelope_at = unix time of a role's newest failed reply envelope in the \
+     last hour (none = no failure); stale_pending, idle or deferring = work the pools are not dispatching. A project with any of these is stuck, \
      even when its pump health verdict is ok.\n";
 
 /// Fence `text` as untrusted data from `source`.
@@ -95,7 +95,9 @@ pub fn wake_prompt(
         out,
         "Decide: leave it, act within your stage, or pause and escalate to the operator.\n\
          End with a +++ TOML envelope of [[action]] tables (kind, project, need, step, word, note),\n\
-         or no envelope to take no action. Kinds open at this stage: {}. project is the project's root path.",
+         or no envelope to take no action. Kinds open at this stage: {}. project is the project's \
+         root path; need and step are bare handles such as 6c02e949; leave out every field the \
+         kind does not use.",
         kinds.join(", ")
     );
     out

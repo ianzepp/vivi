@@ -70,3 +70,13 @@ fn wake_prompt_marks_locked_needs_stuck_under_an_ok_verdict() {
     assert!(text.contains("locked = a need's run waits at an operator-only lock"));
     assert!(text.contains("Kinds open at this stage: read-status, letter-to-operator, escalate."));
 }
+
+#[test]
+fn wake_prompt_explains_envelope_at_and_blank_fields() {
+    // A live model read `envelope_at=<unix time>` as "the last envelope
+    // event" and filled unused fields with "" or prose.
+    let text = wake_prompt(AuthorityStage::Observe, &[], &[]);
+    assert!(text.contains("envelope_at = unix time of a role's newest failed reply envelope"));
+    assert!(text.contains("need and step are bare handles such as 6c02e949"));
+    assert!(text.contains("leave out every field the kind does not use"));
+}
