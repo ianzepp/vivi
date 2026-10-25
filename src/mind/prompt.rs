@@ -5,6 +5,7 @@
 use std::fmt::Write as _;
 
 use super::actions::Planned;
+use super::authority::Action;
 use super::config::AuthorityStage;
 use super::probe::ProjectSignals;
 use super::wake::WakeReason;
@@ -14,6 +15,27 @@ const OPEN: &str = "<<<untrusted";
 const CLOSE: &str = "untrusted>>>";
 /// Longest untrusted text kept per field.
 const MAX_FIELD: usize = 2000;
+/// Every action a turn may name, in stage order; a wake lists the ones its
+/// stage opens.
+const ACTIONS: [Action; 10] = [
+    Action::ReadStatus,
+    Action::LetterToOperator,
+    Action::Escalate,
+    Action::PausePump,
+    Action::ResumePump,
+    Action::Requeue,
+    Action::Replan,
+    Action::Answer,
+    Action::Unlock,
+    Action::FileFixNeed,
+];
+/// What the probe's signals mean. A live model read a need locked at its
+/// operator gate as "normal queue state" without this.
+const LEGEND: &str = "Signals: locked = a need's run waits at an operator-only lock and will not \
+     move on its own; held = a step waits for an operator answer; red_main or repair = main is \
+     red and unrepaired; envelope = a role's reply envelope failed recently; stale_pending, idle \
+     or deferring = work the pools are not dispatching. A project with any of these is stuck, \
+     even when its pump health verdict is ok.\n";
 
 /// Fence `text` as untrusted data from `source`.
 #[must_use]
@@ -47,20 +69,34 @@ pub fn wake_prompt(
             }
         };
     }
+    out.push_str(LEGEND);
     for signal in signals {
         let reasons = signal.reasons.join("\n");
         let _ignored = writeln!(
             out,
-            "Project {} verdict {}:\n{}",
+            "Project {} verdict {} ({}):\n{}",
             signal.root.display(),
             signal.verdict,
+            if signal.alarming() {
+                "STUCK"
+            } else {
+                "healthy"
+            },
             fence("pump-health", &reasons)
         );
     }
-    out.push_str(
+    let kinds: Vec<String> = ACTIONS
+        .iter()
+        .filter(|action| action.required_stage() <= stage)
+        .filter_map(|action| serde_json::to_value(action).ok())
+        .filter_map(|kind| kind.as_str().map(str::to_string))
+        .collect();
+    let _ignored = writeln!(
+        out,
         "Decide: leave it, act within your stage, or pause and escalate to the operator.\n\
          End with a +++ TOML envelope of [[action]] tables (kind, project, need, step, word, note),\n\
-         or no envelope to take no action.",
+         or no envelope to take no action. Kinds open at this stage: {}. project is the project's root path.",
+        kinds.join(", ")
     );
     out
 }

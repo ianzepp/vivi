@@ -42,4 +42,31 @@ fn wake_prompt_fences_every_pump_string() {
     assert!(text.contains("Reason: heartbeat (due)."));
     assert_eq!(text.matches(OPEN).count(), 2);
     assert!(text.contains("<<<untrusted source=\"pump-health\">\nwriter running"));
+    assert!(text.contains("verdict stalled (STUCK)"));
+    assert!(text.contains(
+        "Kinds open at this stage: read-status, letter-to-operator, escalate, pause-pump"
+    ));
+    assert!(!text.contains("file-fix-need"));
+}
+
+#[test]
+fn wake_prompt_marks_locked_needs_stuck_under_an_ok_verdict() {
+    let signals = [
+        ProjectSignals {
+            root: PathBuf::from("/w/demo"),
+            verdict: "ok".into(),
+            locked_needs: 1,
+            ..ProjectSignals::default()
+        },
+        ProjectSignals {
+            root: PathBuf::from("/w/lib"),
+            verdict: "ok".into(),
+            ..ProjectSignals::default()
+        },
+    ];
+    let text = wake_prompt(AuthorityStage::Observe, &[], &signals);
+    assert!(text.contains("Project /w/demo verdict ok (STUCK)"));
+    assert!(text.contains("Project /w/lib verdict ok (healthy)"));
+    assert!(text.contains("locked = a need's run waits at an operator-only lock"));
+    assert!(text.contains("Kinds open at this stage: read-status, letter-to-operator, escalate."));
 }
