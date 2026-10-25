@@ -96,7 +96,7 @@ pub fn update_at<T>(
     // The service and the CLI (ignore lists, offline pause) both update the
     // file; the lock keeps one from overwriting the other's change.
     let _lock = crate::registry::lock_file_waiting(
-        path.with_extension("json.lock"),
+        &path.with_extension("json.lock"),
         "mind state is being updated by another process",
     )?;
     let mut state = load_at(path)?;
