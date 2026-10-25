@@ -103,7 +103,7 @@ files. Narrower scripts: `scripts/chat-room-smoke.sh` (rooms) and
 
 ## Dependency on `vivi`
 
-`Cargo.toml` pins `vivi` to a release tag (`tag = "v21.1.0"`) and `Cargo.lock`
+`Cargo.toml` pins `vivi` to a release tag (`tag = "v21.2.0"`) and `Cargo.lock`
 pins the exact commit. Move it by changing the tag, running
 `cargo update -p vivi`, and running the three smokes. Keep the lockfile on the
 `vivi` git source: the `.cargo` path

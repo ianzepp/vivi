@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.2.0
+
+Pairs with vivi 21.2.0.
 
 - **Project layout per project.** `create_project` makes
   `<HOST_LANES_ROOT>/<name>/<target>.git` (new `target` argument, default the
