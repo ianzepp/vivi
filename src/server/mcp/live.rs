@@ -23,6 +23,7 @@ mod pump_action;
 mod pump_record;
 mod read;
 mod role_write;
+mod target_git;
 mod views;
 mod write;
 
@@ -90,6 +91,8 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "charter_show" => Some(views::charter_show),
         "charter_set" => Some(charter_set),
         "target_list" => Some(views::target_list),
+        "target_log" => Some(target_git::target_log),
+        "target_show" => Some(target_git::target_show),
         _ => None,
     }
 }

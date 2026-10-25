@@ -206,6 +206,7 @@ mod tests {
             checkout_path: std::path::PathBuf::new(),
             mailspace_id: String::new(),
             initial_commit: None,
+            imported: None,
             readiness: Readiness {
                 ready: true,
                 missing: Vec::new(),

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **`target_log` and `target_show`.** Operator read tools on a hosted
+  project: a target's newest main commits, and one commit's stat and patch
+  (cut at 64 KiB), read from its lane on this host. With a landed need's done
+  event now naming its commit (vivi 21.3.0), a land is checked over MCP.
+- **`source` on `create_project` and `lane_create`.** The host fetches every
+  branch and tag of an existing repository into the new lane, so a real
+  repository is onboarded without a push from outside.
+- **`delete_project` cleans up access.** Every grant on the project is
+  removed and a principal left with none has its keys revoked; the answer
+  names them. `project_list` skips retired (deleted or unregistered) projects.
+
 ## 2.2.0
 
 Pairs with vivi 21.2.0.

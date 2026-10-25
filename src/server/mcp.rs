@@ -824,6 +824,23 @@ fn tools_list() -> Value {
                 "properties": {},
                 "additionalProperties": false
             })),
+            tool("target_log", "Hosted projects only, operator only. Read-only: the newest commits on a target's main branch, read from its lane on this host (the target's remote_url under HOST_LANES_ROOT, or a file:// URL). Each commit is {commit, parents, author, date, subject}. Default target: `default`, else the only target. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "Target id; defaults to the primary target" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 20 }
+                },
+                "additionalProperties": false
+            })),
+            tool("target_show", "Hosted projects only, operator only. Read-only: one commit of a target's lane on this host, {commit, parents, author, date, subject, stat, patch, patch_truncated}; the patch is cut at 64 KiB. Use it with the commit a landed need's done event names. Same authorization as pump_control.", json!({
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "Target id; defaults to the primary target" },
+                    "commit": { "type": "string", "description": "A commit id or a ref such as main" }
+                },
+                "required": ["commit"],
+                "additionalProperties": false
+            })),
             tool("board", "Hosted projects only (API key). The project board as `vivi board --json`, bounded: open tasks, needs and wants per role (newest first, capped, with `*_hidden` counts), each last event's note cut to `note_preview`, each want's `serving` needs with their state, totals, and registered goals. Optional graph view. `full` lifts every bound.", json!({
                 "type": "object",
                 "properties": {

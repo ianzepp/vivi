@@ -807,6 +807,21 @@ async fn delete_project_removes_the_project_and_stops_serving_it() {
     assert_eq!(deleted["unregistered"], true);
     assert!(!root.exists() && !fx.lanes.join("doomed").exists());
     assert!(vivi::registry::load().unwrap().get(&root).is_none());
+    assert_eq!(deleted["project_id"], id);
+    assert_eq!(deleted["keys_revoked"], 1, "{deleted}");
+    assert_eq!(deleted["ungranted"].as_array().map(Vec::len), Some(1));
+    let (_, listed) = fx
+        .host(
+            Some(TOKEN),
+            "tools/call",
+            json!({"name": "project_list", "arguments": {}}),
+        )
+        .await;
+    let text = listed["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains(&id),
+        "a deleted project is not listed: {text}"
+    );
 
     // No longer served: the project's own operator key reaches nothing.
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -825,4 +840,112 @@ async fn delete_project_removes_the_project_and_stops_serving_it() {
         lines[1]["summary"].as_str().unwrap().contains("doomed"),
         "{lines:?}"
     );
+}
+
+/// A fixture whose lane URLs are `file://` paths, so a target's lane is
+/// readable without the host's SSH prefix.
+fn file_fixture(name: &str) -> Fx {
+    let fx = fixture(name, Some(TOKEN), true);
+    let mut state = fx.state.clone();
+    state.host.git_url_prefix = Some(file_prefix(&fx.lanes.canonicalize().unwrap()));
+    Fx {
+        app: router(state.clone()),
+        state,
+        ..fx
+    }
+}
+
+async fn call_as(fx: &Fx, key: &str, name: &str, arguments: Value) -> (bool, Value) {
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": name, "arguments": arguments}});
+    let (status, value) = fx.post("/v1/mcp", Some(key), body).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    (
+        value["result"]["isError"] == true,
+        serde_json::from_str(text).unwrap_or(Value::String(text.to_owned())),
+    )
+}
+
+#[tokio::test]
+async fn target_log_and_show_read_the_landed_lane() {
+    let fx = file_fixture("tlog");
+    let (errored, made) = fx
+        .create(json!({"name": "logged", "initial_commit": true}))
+        .await;
+    assert!(!errored, "{made}");
+    let key = made["operator_key"]["key"].as_str().unwrap().to_owned();
+    let id = made["project_id"].as_str().unwrap().to_owned();
+
+    let (errored, log) = call_as(&fx, &key, "target_log", json!({"project": id})).await;
+    assert!(!errored, "{log}");
+    assert_eq!(log["target"], "logged");
+    assert_eq!(log["branch"], "main");
+    let commits = log["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 1, "{log}");
+    assert_eq!(commits[0]["commit"], made["initial_commit"]);
+    assert_eq!(commits[0]["subject"], "Initial commit");
+
+    let (errored, shown) = call_as(
+        &fx,
+        &key,
+        "target_show",
+        json!({"project": id, "commit": "main"}),
+    )
+    .await;
+    assert!(!errored, "{shown}");
+    assert_eq!(shown["commit"], made["initial_commit"]);
+    assert_eq!(shown["patch_truncated"], false);
+
+    let (errored, refused) = call_as(
+        &fx,
+        &key,
+        "target_show",
+        json!({"project": id, "commit": "--all"}),
+    )
+    .await;
+    assert!(errored, "an option is not a revision: {refused}");
+}
+
+#[tokio::test]
+async fn create_project_imports_a_source_with_its_history() {
+    let fx = fixture("source", Some(TOKEN), true);
+    let src = fx.lanes.parent().unwrap().join("upstream");
+    std::fs::create_dir_all(&src).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&src)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["init", "--quiet", "-b", "main"]);
+    std::fs::write(src.join("a.txt"), "a").unwrap();
+    git(&["add", "a.txt"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--quiet",
+        "-m",
+        "a",
+    ]);
+    let tip = git(&["rev-parse", "HEAD"]);
+
+    let (errored, made) = fx
+        .create(json!({"name": "imported", "source": src.to_str().unwrap()}))
+        .await;
+    assert!(!errored, "{made}");
+    assert_eq!(made["imported"], tip);
+    let root = fx.projects.join("imported").canonicalize().unwrap();
+    assert!(root.join("imported/a.txt").is_file());
 }

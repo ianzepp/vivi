@@ -94,6 +94,7 @@ pub(super) fn tools_list() -> Value {
                 "branch": { "type": "string", "default": "main", "description": "The first target's default branch, also its main" },
                 "pool": { "type": "string", "description": "Pool whose remote_url is set to the git URL; overrides the host default" },
                 "initial_commit": { "type": "boolean", "default": false, "description": "Create an empty first commit on the branch" },
+                "source": { "type": "string", "description": "Fill the first target from this Git address (every branch and tag), fetched by this host; branch must be one of its branches. Excludes initial_commit" },
                 "pump": { "type": "boolean", "default": true, "description": "Register the project for the pump supervisor" },
                 "serve": { "type": "boolean", "default": true, "description": "Register the project for this server to host" },
                 "rungs": {
@@ -127,7 +128,8 @@ pub(super) fn tools_list() -> Value {
                     "name": { "type": "string", "description": "Existing project directory name under HOST_PROJECTS_ROOT" },
                     "target": { "type": "string", "description": "Target id (lowercase letters, digits and hyphens): [pump.targets.<target>]" },
                     "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><name>/<target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX" },
-                    "seed": { "type": "boolean", "default": false, "description": "Create one empty seed commit on the lane's main branch" }
+                    "seed": { "type": "boolean", "default": false, "description": "Create one empty seed commit on the lane's main branch" },
+                    "source": { "type": "string", "description": "Fill the lane from this Git address (every branch and tag), fetched by this host; it needs a main branch. Excludes seed" }
                 },
                 "required": ["name", "target"],
                 "additionalProperties": false
@@ -139,8 +141,9 @@ pub(super) fn tools_list() -> Value {
              its lanes directory <HOST_LANES_ROOT>/<name> with every lane in it, then stop serving \
              it. `confirm` must repeat the name. While a pump still holds the project's lock the \
              call unregisters, keeps the files and says so: call it again once the pump service \
-             has stopped that pump. Keys granted on the project are not revoked (key_revoke). \
-             Host principal only.",
+             has stopped that pump. Once the files are gone every grant on the project is removed \
+             and a principal left with none (the operator key create_project minted) has its keys \
+             revoked; the answer names them (ungranted, keys_revoked). Host principal only.",
             json!({
                 "type": "object",
                 "properties": {
@@ -162,21 +165,13 @@ pub(super) fn server_version() -> Value {
 
 /// The `project_list` host tool: every hosted project this server serves,
 /// read from its own project store (one `project.json` per project id).
-/// A project that cannot be read is skipped, not failed: the list is what
-/// the server can serve right now.
+/// A project that cannot be read, or a retired one (deleted or no longer
+/// registered), is skipped, not failed: the list is what the server can
+/// serve right now.
 pub(super) fn project_list(state: &AppState) -> Value {
-    let Ok(entries) = std::fs::read_dir(state.projects.projects_root()) else {
-        return json!([]);
-    };
     let mut items = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(bytes) = std::fs::read(entry.path().join("project.json")) else {
-            continue;
-        };
-        let Ok(meta) = serde_json::from_slice::<ProjectMeta>(&bytes) else {
-            continue;
-        };
-        if !meta.is_hosted() {
+    for meta in hosted_metas(state) {
+        if state.projects.is_retired(&meta.project_id) {
             continue;
         }
         let mut item = json!({
@@ -190,6 +185,55 @@ pub(super) fn project_list(state: &AppState) -> Value {
     }
     items.sort_by(|a, b| a["project_id"].as_str().cmp(&b["project_id"].as_str()));
     Value::Array(items)
+}
+
+/// Every hosted project's metadata in the store, retired ones included.
+fn hosted_metas(state: &AppState) -> Vec<ProjectMeta> {
+    let Ok(entries) = std::fs::read_dir(state.projects.projects_root()) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("project.json")).ok())
+        .filter_map(|bytes| serde_json::from_slice::<ProjectMeta>(&bytes).ok())
+        .filter(ProjectMeta::is_hosted)
+        .collect()
+}
+
+/// The hosted project id named `name`, served or retired.
+fn hosted_id(state: &AppState, name: &str) -> Option<String> {
+    hosted_metas(state)
+        .into_iter()
+        .find(|meta| super::server::hosted_name(meta).as_deref() == Some(name))
+        .map(|meta| meta.project_id)
+}
+
+/// Take every grant on `project_id` off its principals, and revoke the keys
+/// of each principal left with no grant (such as the operator key
+/// `create_project` minted). Returns `(principals ungranted, keys revoked)`.
+fn drop_project_grants(state: &AppState, project_id: &str) -> (Vec<String>, usize) {
+    let mut ungranted = Vec::new();
+    let mut revoked = 0;
+    for principal in state.server_keys.list() {
+        if principal.host || !principal.grants.iter().any(|g| g.project_id == project_id) {
+            continue;
+        }
+        if state
+            .server_keys
+            .remove_grant(&principal.principal, project_id)
+            .is_err()
+        {
+            continue;
+        }
+        if principal.grants.len() == 1 {
+            revoked += state
+                .server_keys
+                .revoke_principal(&principal.principal)
+                .unwrap_or(0);
+        }
+        ungranted.push(principal.principal);
+    }
+    (ungranted, revoked)
 }
 
 /// One creation at a time: the host registry takes a non-waiting lock, so
@@ -290,6 +334,7 @@ fn build_request(
     request.pump = opt_bool(arguments, "pump", request.pump)?;
     request.serve = opt_bool(arguments, "serve", request.serve)?;
     request.initial_commit = opt_bool(arguments, "initial_commit", request.initial_commit)?;
+    request.source = opt_str(arguments, "source")?.map(str::to_owned);
     Ok((request, Rungs::parse(arguments)?))
 }
 
@@ -308,12 +353,20 @@ pub(super) async fn delete_project(
     let state = state.clone();
     blocking(move || {
         let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
+        let project_id = hosted_id(&state, &request.name);
         let outcome = vivi::project_create::delete::delete(&request);
         // Unregistered even when the files stay (a live pump): stop serving now.
         hosted::reconcile_registry(&state.projects, &state.identities);
         let deleted = outcome.map_err(|e| ToolError::new(e.to_string()))?;
-        serde_json::to_value(&deleted)
-            .map_err(|e| ToolError::new(format!("failed to encode delete_project result: {e}")))
+        let mut out = serde_json::to_value(&deleted)
+            .map_err(|e| ToolError::new(format!("failed to encode delete_project result: {e}")))?;
+        if let (Some(id), Some(object)) = (project_id, out.as_object_mut()) {
+            let (ungranted, revoked) = drop_project_grants(&state, &id);
+            object.insert("project_id".into(), json!(id));
+            object.insert("ungranted".into(), json!(ungranted));
+            object.insert("keys_revoked".into(), json!(revoked));
+        }
+        Ok(out)
     })
     .await
 }

@@ -1188,6 +1188,14 @@ impl ProjectStore {
         Project::open(dir, &root.join(MAILSPACE_DIR)).map(|_| ())
     }
 
+    /// Whether `id` is a retired hosted id: on disk, but no longer served.
+    pub(crate) fn is_retired(&self, id: &str) -> bool {
+        self.retired
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(id)
+    }
+
     /// Replace the set of retired hosted ids (see `hosted`).
     pub(crate) fn set_retired(&self, retired: HashSet<String>) {
         *self.retired.write().unwrap_or_else(|e| e.into_inner()) = retired;

@@ -429,7 +429,7 @@ The project tools are the 1.2.0 list plus the hosted additions
 `pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`, and
 the reads `pump_log`, `flow_show`, `config_show`, `config_validate`,
 `pool_list`, `pool_show`, `role_list`, `role_show`, `charter_show`,
-`target_list`); each also takes the required `project` argument on top
+`target_list`, `target_log`, `target_show`); each also takes the required `project` argument on top
 of the arguments shown.
 
 | Tool | Arguments | Effect |
@@ -521,6 +521,8 @@ it runs the vivi binary's `pool status`, which the server is not, so
 | `role_show` | `role` (name or alias) | `vivi role show <role> --json`: one role's full view; an unknown role is refused |
 | `charter_show` | `role` (name or alias) | `vivi role charter show <role> --json`: the charter body (an empty string when it has none), with its name, address and `has_charter` |
 | `target_list` | — | `vivi pump target list`: the configured pump targets, each `{id, path, main, rungs}` |
+| `target_log` | `target?`, `limit?` | The newest commits on a target's main branch (default target: `default`, else the only target), read from its lane on this host: `{target, branch, lane, commits: [{commit, parents, author, date, subject}]}` |
+| `target_show` | `target?`, `commit` | One commit of a target's lane: `{commit, parents, author, date, subject, stat, patch, patch_truncated}`; the patch is cut at 64 KiB |
 
 >>>>>>> need/w3-d4
 #### Host tools
@@ -530,9 +532,9 @@ minted `host: true`:
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
-| `create_project` | `name`, `target?`, `branch?`, `pool?`, `rungs?` | Create a hosted project: `<HOST_LANES_ROOT>/<name>/` with the first target's (default: `name`) bare repository, the project with the first target's checkout and `[pump.targets.<target>]`, git URL `<HOST_GIT_URL_PREFIX><name>/<target>.git` and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key |
-| `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?` | `vivi project lane add` on `<HOST_PROJECTS_ROOT>/<name>`: makes the bare repository `<HOST_LANES_ROOT>/<name>/<target>.git` (with one empty seed commit when `seed`), clones it to `<project>/<target>` with `origin` at `<prefix><name>/<target>.git`, and adds `[pump.targets.<target>]` through the guarded config write (a running pump refuses). `git_url_prefix` overrides `HOST_GIT_URL_PREFIX`. Success returns `{name, target_id, repo_path, checkout_path, git_url, initial_commit, readiness: {ready, missing}}`. A second add of the same target is the library's refusal |
-| `delete_project` | `name`, `confirm` | `vivi project delete`: `confirm` must repeat `name`. Unregisters the project, removes `<HOST_PROJECTS_ROOT>/<name>` and `<HOST_LANES_ROOT>/<name>/`, and stops serving it at once. While a pump still holds the project's lock it unregisters, keeps the files and answers `isError`: call again once the pump service has stopped that pump. Success returns `{name, unregistered, project_root, lanes_dir}`. Keys granted on the project are left for `key_revoke` |
+| `create_project` | `name`, `target?`, `branch?`, `pool?`, `source?`, `rungs?` | Create a hosted project: `<HOST_LANES_ROOT>/<name>/` with the first target's (default: `name`) bare repository, the project with the first target's checkout and `[pump.targets.<target>]`, git URL `<HOST_GIT_URL_PREFIX><name>/<target>.git` and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key |
+| `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?`, `source?` | `vivi project lane add` on `<HOST_PROJECTS_ROOT>/<name>`: makes the bare repository `<HOST_LANES_ROOT>/<name>/<target>.git` (with one empty seed commit when `seed`), clones it to `<project>/<target>` with `origin` at `<prefix><name>/<target>.git`, and adds `[pump.targets.<target>]` through the guarded config write (a running pump refuses). `git_url_prefix` overrides `HOST_GIT_URL_PREFIX`. Success returns `{name, target_id, repo_path, checkout_path, git_url, initial_commit, readiness: {ready, missing}}`. A second add of the same target is the library's refusal |
+| `delete_project` | `name`, `confirm` | `vivi project delete`: `confirm` must repeat `name`. Unregisters the project, removes `<HOST_PROJECTS_ROOT>/<name>` and `<HOST_LANES_ROOT>/<name>/`, and stops serving it at once (`project_list` no longer lists it). While a pump still holds the project's lock it unregisters, keeps the files and answers `isError`: call again once the pump service has stopped that pump. Once the files are gone every grant on the project is removed, and a principal left with none (the key `create_project` minted) has its keys revoked. Success returns `{name, unregistered, project_root, lanes_dir, project_id, ungranted, keys_revoked}` |
 | `key_mint` | `principal`, `grants?`, `host?`, `label?` | Mint a server key for `principal` (created when absent; grants not already held are added). `host: true` mints a host principal, which carries no grants and whose `principal` defaults to `host`. The raw `key` is shown once, `vivi_` + random; at most 32 live keys per principal |
 | `key_list` | — | Principals with their keys (digests only) and grants |
 | `key_revoke` | `key_id` | Revoke one key, on any principal; already-revoked is success |

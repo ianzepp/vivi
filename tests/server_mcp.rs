@@ -473,6 +473,8 @@ async fn initialize_and_tools_list() {
             "charter_show",
             "charter_set",
             "target_list",
+            "target_log",
+            "target_show",
             "board",
             "projects",
             "server_version",
