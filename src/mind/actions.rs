@@ -152,8 +152,7 @@ fn check(
             return Err(Refusal::UnwatchedProject);
         }
     }
-    let live = Gate { ledger, ..*gate };
-    authority::permit(&live, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
+    authority::permit(gate, ledger, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
 }
 
 fn validate_fields(request: &ActionRequest) -> Result<(), Refusal> {

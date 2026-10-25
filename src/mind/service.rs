@@ -151,12 +151,10 @@ fn apply_envelope(
             return Vec::new();
         }
     };
-    let ledger = state.ledger.clone();
     let gate = Gate {
         stage: config.authority,
         paused: state.paused,
         budgets: &config.budgets,
-        ledger: &ledger,
         now,
     };
     let planned = actions::plan(requests, &gate, watched, &mut state.ledger);

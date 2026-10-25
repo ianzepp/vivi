@@ -12,12 +12,11 @@ fn budgets() -> Budgets {
     }
 }
 
-fn gate<'a>(stage: AuthorityStage, budgets: &'a Budgets, ledger: &'a Ledger) -> Gate<'a> {
+fn gate(stage: AuthorityStage, budgets: &Budgets) -> Gate<'_> {
     Gate {
         stage,
         paused: false,
         budgets,
-        ledger,
         now: NOW,
     }
 }
@@ -25,13 +24,13 @@ fn gate<'a>(stage: AuthorityStage, budgets: &'a Budgets, ledger: &'a Ledger) -> 
 #[test]
 fn observe_allows_reads_and_letters_only() {
     let (budgets, ledger) = (budgets(), Ledger::new());
-    let g = gate(AuthorityStage::Observe, &budgets, &ledger);
+    let g = gate(AuthorityStage::Observe, &budgets);
     for action in [
         Action::ReadStatus,
         Action::LetterToOperator,
         Action::Escalate,
     ] {
-        assert_eq!(permit(&g, action, None), Ok(()), "{action:?}");
+        assert_eq!(permit(&g, &ledger, action, None), Ok(()), "{action:?}");
     }
     for action in [
         Action::PausePump,
@@ -42,7 +41,10 @@ fn observe_allows_reads_and_letters_only() {
         Action::FileFixNeed,
     ] {
         assert!(
-            matches!(permit(&g, action, Some("n1")), Err(Denial::Stage { .. })),
+            matches!(
+                permit(&g, &ledger, action, Some("n1")),
+                Err(Denial::Stage { .. })
+            ),
             "{action:?}"
         );
     }
@@ -51,18 +53,22 @@ fn observe_allows_reads_and_letters_only() {
 #[test]
 fn unstick_opens_pump_controls_but_not_fix_needs() {
     let (budgets, ledger) = (budgets(), Ledger::new());
-    let g = gate(AuthorityStage::Unstick, &budgets, &ledger);
+    let g = gate(AuthorityStage::Unstick, &budgets);
     for action in [
         Action::Requeue,
         Action::Replan,
         Action::Answer,
         Action::Unlock,
     ] {
-        assert_eq!(permit(&g, action, Some("n1")), Ok(()), "{action:?}");
+        assert_eq!(
+            permit(&g, &ledger, action, Some("n1")),
+            Ok(()),
+            "{action:?}"
+        );
     }
-    assert_eq!(permit(&g, Action::PausePump, None), Ok(()));
+    assert_eq!(permit(&g, &ledger, Action::PausePump, None), Ok(()));
     assert_eq!(
-        permit(&g, Action::FileFixNeed, None),
+        permit(&g, &ledger, Action::FileFixNeed, None),
         Err(Denial::Stage {
             required: AuthorityStage::FileFixes,
             current: AuthorityStage::Unstick,
@@ -73,14 +79,14 @@ fn unstick_opens_pump_controls_but_not_fix_needs() {
 #[test]
 fn file_fixes_opens_fix_needs_but_never_upgrades() {
     let (budgets, ledger) = (budgets(), Ledger::new());
-    let g = gate(AuthorityStage::FileFixes, &budgets, &ledger);
-    assert_eq!(permit(&g, Action::FileFixNeed, None), Ok(()));
+    let g = gate(AuthorityStage::FileFixes, &budgets);
+    assert_eq!(permit(&g, &ledger, Action::FileFixNeed, None), Ok(()));
     assert!(matches!(
-        permit(&g, Action::Upgrade, None),
+        permit(&g, &ledger, Action::Upgrade, None),
         Err(Denial::Stage { .. })
     ));
     assert!(matches!(
-        permit(&g, Action::SelfRelease, None),
+        permit(&g, &ledger, Action::SelfRelease, None),
         Err(Denial::Stage { .. })
     ));
 }
@@ -88,31 +94,40 @@ fn file_fixes_opens_fix_needs_but_never_upgrades() {
 #[test]
 fn unimplemented_stage_refuses_even_when_reached() {
     let (budgets, ledger) = (budgets(), Ledger::new());
-    let g = gate(AuthorityStage::SelfRelease, &budgets, &ledger);
+    let g = gate(AuthorityStage::SelfRelease, &budgets);
     assert_eq!(
-        permit(&g, Action::Upgrade, None),
+        permit(&g, &ledger, Action::Upgrade, None),
         Err(Denial::NotImplemented)
     );
-    assert_eq!(permit(&g, Action::Requeue, Some("n1")), Ok(()));
+    assert_eq!(permit(&g, &ledger, Action::Requeue, Some("n1")), Ok(()));
 }
 
 #[test]
 fn paused_mind_may_still_read_and_write_letters() {
     let (budgets, ledger) = (budgets(), Ledger::new());
-    let mut g = gate(AuthorityStage::Unstick, &budgets, &ledger);
+    let mut g = gate(AuthorityStage::Unstick, &budgets);
     g.paused = true;
-    assert_eq!(permit(&g, Action::Escalate, None), Ok(()));
-    assert_eq!(permit(&g, Action::Requeue, Some("n1")), Err(Denial::Paused));
-    assert_eq!(permit(&g, Action::PausePump, None), Err(Denial::Paused));
+    assert_eq!(permit(&g, &ledger, Action::Escalate, None), Ok(()));
+    assert_eq!(
+        permit(&g, &ledger, Action::Requeue, Some("n1")),
+        Err(Denial::Paused)
+    );
+    assert_eq!(
+        permit(&g, &ledger, Action::PausePump, None),
+        Err(Denial::Paused)
+    );
 }
 
 #[test]
 fn need_scoped_actions_need_a_need() {
     let (budgets, ledger) = (budgets(), Ledger::new());
-    let g = gate(AuthorityStage::Unstick, &budgets, &ledger);
-    assert_eq!(permit(&g, Action::Unlock, None), Err(Denial::MissingNeed));
+    let g = gate(AuthorityStage::Unstick, &budgets);
     assert_eq!(
-        permit(&g, Action::Unlock, Some("  ")),
+        permit(&g, &ledger, Action::Unlock, None),
+        Err(Denial::MissingNeed)
+    );
+    assert_eq!(
+        permit(&g, &ledger, Action::Unlock, Some("  ")),
         Err(Denial::MissingNeed)
     );
 }
@@ -123,21 +138,21 @@ fn budget_is_per_need_and_windowed() {
     let mut ledger = Ledger::new();
     spend(&mut ledger, "n1", NOW - 10, budgets.per_need_window_secs);
     spend(&mut ledger, "n1", NOW - 5, budgets.per_need_window_secs);
-    let g = gate(AuthorityStage::Unstick, &budgets, &ledger);
+    let g = gate(AuthorityStage::Unstick, &budgets);
     assert_eq!(
-        permit(&g, Action::Requeue, Some("n1")),
+        permit(&g, &ledger, Action::Requeue, Some("n1")),
         Err(Denial::Budget {
             need: "n1".into(),
             used: 2,
             limit: 2,
         })
     );
-    assert_eq!(permit(&g, Action::Requeue, Some("n2")), Ok(()));
+    assert_eq!(permit(&g, &ledger, Action::Requeue, Some("n2")), Ok(()));
     let later = Gate {
         now: NOW + 3600,
         ..g
     };
-    assert_eq!(permit(&later, Action::Requeue, Some("n1")), Ok(()));
+    assert_eq!(permit(&later, &ledger, Action::Requeue, Some("n1")), Ok(()));
 }
 
 #[test]

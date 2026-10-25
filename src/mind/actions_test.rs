@@ -17,12 +17,10 @@ fn run(stage: AuthorityStage, reply: &str) -> (Vec<Planned>, Ledger) {
         per_need_actions: 1,
         ..Budgets::default()
     };
-    let empty = Ledger::new();
     let gate = Gate {
         stage,
         paused: false,
         budgets: &budgets,
-        ledger: &empty,
         now: NOW,
     };
     let mut ledger = Ledger::new();

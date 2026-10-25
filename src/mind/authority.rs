@@ -129,15 +129,20 @@ pub struct Gate<'a> {
     pub stage: AuthorityStage,
     pub paused: bool,
     pub budgets: &'a Budgets,
-    pub ledger: &'a Ledger,
     pub now: u64,
 }
 
-/// Decide whether `action` on `need` may run.
+/// Decide whether `action` on `need` may run, given what `ledger` has
+/// already spent.
 ///
 /// # Errors
 /// Returns the [`Denial`] when the action is refused.
-pub fn permit(gate: &Gate<'_>, action: Action, need: Option<&str>) -> Result<(), Denial> {
+pub fn permit(
+    gate: &Gate<'_>,
+    ledger: &Ledger,
+    action: Action,
+    need: Option<&str>,
+) -> Result<(), Denial> {
     let required = action.required_stage();
     if gate.stage < required {
         return Err(Denial::Stage {
@@ -157,12 +162,7 @@ pub fn permit(gate: &Gate<'_>, action: Action, need: Option<&str>) -> Result<(),
     let Some(need) = need.filter(|need| !need.trim().is_empty()) else {
         return Err(Denial::MissingNeed);
     };
-    let used = used_in_window(
-        gate.ledger,
-        need,
-        gate.now,
-        gate.budgets.per_need_window_secs,
-    );
+    let used = used_in_window(ledger, need, gate.now, gate.budgets.per_need_window_secs);
     if used >= gate.budgets.per_need_actions {
         return Err(Denial::Budget {
             need: need.to_string(),
