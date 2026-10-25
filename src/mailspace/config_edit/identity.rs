@@ -62,6 +62,45 @@ pub fn patch_identity(
     Ok(())
 }
 
+/// Patch the identity named `name` in this file, or, when this file does not
+/// define it (the role comes from a base), append an override table holding
+/// `name` and the patch's keys; the merge applies it key by key over the base
+/// role. A clear cannot reach a base value from an override, so a patch that
+/// clears a key of a role this file does not define is refused.
+pub fn upsert_identity(
+    doc: &mut DocumentMut,
+    name: &str,
+    patch: &IdentityPatch,
+) -> Result<(), VivariumError> {
+    if identity_index(identities_mut(doc)?, name).is_some() {
+        return patch_identity(doc, name, patch);
+    }
+    if clears_a_key(patch) {
+        return Err(VivariumError::Message(format!(
+            "role '{name}' comes from a base config; clear an inherited key with \
+             `unset = [\"identities.{name}.<key>\"]` in this project's file"
+        )));
+    }
+    insert_identity(doc, name, patch)
+}
+
+fn clears_a_key(patch: &IdentityPatch) -> bool {
+    [
+        patch.kind.as_ref().is_some_and(Option::is_none),
+        patch.harness.as_ref().is_some_and(Option::is_none),
+        patch.provider.as_ref().is_some_and(Option::is_none),
+        patch.model.as_ref().is_some_and(Option::is_none),
+        patch.thinking.as_ref().is_some_and(Option::is_none),
+        patch.pid.as_ref().is_some_and(Option::is_none),
+        patch.host.as_ref().is_some_and(Option::is_none),
+        patch.cadence.as_ref().is_some_and(Option::is_none),
+        patch.pool.as_ref().is_some_and(Option::is_none),
+        patch.read_only.as_ref().is_some_and(Option::is_none),
+    ]
+    .into_iter()
+    .any(|cleared| cleared)
+}
+
 /// Rename an identity and record the old name as an alias.
 pub fn rename_identity(doc: &mut DocumentMut, old: &str, new: &str) -> Result<(), VivariumError> {
     let identities = identities_mut(doc)?;

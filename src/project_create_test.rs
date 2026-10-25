@@ -437,3 +437,59 @@ fn a_source_and_an_initial_commit_are_refused_together() {
     assert!(error.contains("drop the initial commit"), "{error}");
     assert!(host.nothing_left("app"));
 }
+
+/// A host base like hub's: shared pools and pump roles without `kind`, which
+/// the starter roles then set from the project.
+const BASE_ROLES: &str = "base = true\n\
+    [pools.studio]\nprovider = \"local\"\nslots = 2\n\n\
+    [[identities]]\nname = \"merge\"\npool = \"studio\"\nmodel = \"P2\"\n\n\
+    [[identities]]\nname = \"pump-planner\"\npool = \"studio\"\nmodel = \"P1\"\n\n\
+    [[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"studio\"\n";
+
+#[test]
+fn a_project_under_a_base_with_roles_is_created_and_inherits_them() {
+    let host = Host::new();
+    host.write_base(BASE_ROLES);
+    create_at(&host.request("app"), &host.registry).unwrap();
+    let mailspace = crate::mailspace::Mailspace::open_root(host.project("app")).unwrap();
+    let merge = mailspace.role_view("merge").unwrap();
+    assert_eq!(
+        merge.kind.as_deref(),
+        Some("merge"),
+        "the starter kind applies"
+    );
+    assert_eq!(
+        merge.pool.as_deref(),
+        Some("studio"),
+        "the base pool applies"
+    );
+    assert_eq!(merge.model.as_deref(), Some("P2"), "the base model applies");
+    let hand = mailspace.role_view("hand").unwrap();
+    assert_eq!(hand.pool.as_deref(), Some("studio"));
+    // The project's own file overrides only what the starter set.
+    let text = config_text(&host.project("app"));
+    let merge_table = text
+        .split("[[identities")
+        .find(|t| t.contains("name = \"merge\""))
+        .unwrap();
+    assert!(merge_table.contains("kind = \"merge\""), "{text}");
+    assert!(
+        !merge_table.contains("pool ="),
+        "the base pool is not copied: {text}"
+    );
+}
+
+#[test]
+fn clearing_an_inherited_role_key_is_refused() {
+    let host = Host::new();
+    host.write_base(BASE_ROLES);
+    create_at(&host.request("app"), &host.registry).unwrap();
+    let mut mailspace = crate::mailspace::Mailspace::open_root(host.project("app")).unwrap();
+    let update = crate::mailspace::RoleUpdate {
+        pool: Some(None),
+        ..crate::mailspace::RoleUpdate::default()
+    };
+    let error = mailspace.set_role("hand", update).unwrap_err().to_string();
+    assert!(error.contains("comes from a base config"), "{error}");
+    assert!(error.contains("identities.hand"), "{error}");
+}

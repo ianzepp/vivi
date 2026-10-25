@@ -202,7 +202,7 @@ impl Mailspace {
         apply_role_update(&mut self.config.identities[index], update.clone())?;
         let role = self.config.identities[index].clone();
         config_edit::apply(&self.config_path(), |doc| {
-            config_edit::patch_identity(doc, &role.name, &identity_patch(&update, &role))
+            config_edit::upsert_identity(doc, &role.name, &identity_patch(&update, &role))
         })?;
         self.role_view(&role.name)
     }
