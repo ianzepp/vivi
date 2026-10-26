@@ -4,9 +4,14 @@
 //! read-write [`crate::storage::Storage`], whose open runs schema-write
 //! transactions. The connection here is read-only at every level:
 //! `SQLITE_OPEN_READ_ONLY`, a query-only pragma, and a short busy timeout —
-//! it never blocks a writer.
+//! it never blocks a writer. The monitor runs as the database's owner, so
+//! its open may create the WAL index sidecar of a WAL database (the
+//! classified guard in [`crate::storage::read_only`]); foreign owners,
+//! unreadable files, and non-file paths are refused.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,6 +21,7 @@ use crate::error::VivariumError;
 use crate::mailspace::{POOL_EVENT_TYPES, PoolEventRow};
 use crate::pool::record::{DispatchRecord, OpenDispatch, fold_open};
 use crate::storage::Storage;
+use crate::storage::read_only;
 
 /// Subject and addressee role of a task seen in the pool event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,15 +93,11 @@ fn display_of(handles: &HashMap<String, String>, message_id: &str) -> String {
         .unwrap_or_else(|| message_id.to_string())
 }
 
-/// Open a mailspace database strictly for reading.
+/// Open a mailspace database strictly for reading, as its owner: the open
+/// may create the WAL index sidecar of a WAL database the monitor owns;
+/// a foreign owner, an unreadable file, or a non-file path is refused.
 fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
-    let dir = db.parent().ok_or_else(|| {
-        VivariumError::Other(format!(
-            "mail database path has no parent: {}",
-            db.display()
-        ))
-    })?;
-    let conn = Storage::open_mailspace_connection_read_only(dir)?;
+    let conn = read_only::open(db, read_only::IndexPolicy::OwnerMayCreateIndex)?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
     conn.execute_batch("PRAGMA query_only = true")
@@ -199,6 +201,17 @@ fn finished_rows(rows: &[EventRow], handles: &HashMap<String, String>) -> Vec<Fi
     finished
 }
 
+/// Is there a database file at `db`? Genuine absence means an empty
+/// history; any other stat failure is an error, and the guard inside
+/// [`open_read_only`] refuses unreadable or non-file paths.
+fn database_present(db: &Path) -> Result<bool, VivariumError> {
+    match fs::metadata(db) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Read the pool history of the mailspace database at `db`.
 ///
 /// A missing database reads as an empty history. `last_finished` keeps only
@@ -208,7 +221,7 @@ fn finished_rows(rows: &[EventRow], handles: &HashMap<String, String>) -> Vec<Fi
 /// Returns an error if the database cannot be opened read-only or a query
 /// fails.
 pub fn read(db: &Path, last_finished: usize) -> Result<ProjectEvents, VivariumError> {
-    if !db.exists() {
+    if !database_present(db)? {
         return Ok(ProjectEvents::default());
     }
     let conn = open_read_only(db)?;
@@ -284,6 +297,10 @@ fn add_record_metadata(
     }
 }
 
+/// Fill missing `need`s from strict Storage item metadata: the legacy
+/// fallback for dispatch records recorded before `need`/`kind`. The caller
+/// must keep the monitor's own connection open here — its owner-created WAL
+/// index sidecar is what lets this strict read-only open pass inspection.
 fn add_task_need_metadata(
     task_info: &mut BTreeMap<String, TaskInfo>,
     dir: &Path,

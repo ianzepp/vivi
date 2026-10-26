@@ -1,6 +1,6 @@
 use super::*;
 use crate::mailspace::{Mailspace, SendRequest};
-use crate::storage::Storage;
+use crate::storage::read_only::{IndexPolicy, inspect as strict_inspect};
 use std::fs;
 
 const DISPATCH: &str = r#"{"pool":"here","need":"need1234","kind":"fix","slot":"vivarium-here-slot-1","machine":"burgus","job":"3cc45261-3-a1","model":"zai/glm-5.3-flash","from":"mind","branch":"unit/3cc45261-3-a1","start":"1792421950abc","budget":1800,"at":1792421950,"read_only":false}"#;
@@ -125,24 +125,124 @@ fn read_missing_db_is_empty() {
     assert!(events.finished.is_empty());
 }
 
-#[test]
-fn read_only_wal_events_skip_when_shm_is_missing_without_creating_it() {
+/// A closed owner-owned WAL mailspace whose dispatch record predates
+/// `need`/`kind`, with the fallback need recorded as item metadata. Returns
+/// the temp dir, the mailspace dir, and the dispatch handle.
+fn closed_owner_space_with_legacy_dispatch() -> (tempfile::TempDir, std::path::PathBuf, String) {
     let tmp = tempfile::tempdir().unwrap();
-    let _storage = Storage::open_mailspace(tmp.path()).unwrap();
-    drop(_storage);
-    let db = tmp.path().join("mail.sqlite");
-    let shm = tmp.path().join("mail.sqlite-shm");
-    let wal = tmp.path().join("mail.sqlite-wal");
+    let mut space = Mailspace::init(Some(tmp.path())).unwrap();
+    space.add_identity("mind").unwrap();
+    space.add_identity("hand").unwrap();
+    let sent = space
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Fix the edge".into(),
+            body: crate::letter::fixture::task_body_with(
+                &crate::letter::work::TaskFront {
+                    from: Some("main".into()),
+                    branch: Some("factory/x".into()),
+                    ..Default::default()
+                },
+                "do it\n",
+            ),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = sent.delivered[0].handle.clone();
+    let space_dir = space.dir.clone();
+    let mut record: serde_json::Value = serde_json::from_str(DISPATCH).unwrap();
+    record.as_object_mut().unwrap().remove("need");
+    record.as_object_mut().unwrap().remove("kind");
+    space
+        .record_pool_note(
+            &handle,
+            "pool_dispatched",
+            &record.to_string(),
+            "dispatched",
+        )
+        .unwrap();
+    {
+        let storage = space.storage().unwrap();
+        let id = storage.resolve_message_token(&handle).unwrap();
+        storage
+            .set_item_metadata(
+                &id,
+                &std::collections::BTreeMap::from([
+                    ("source_handle".into(), "need5678".into()),
+                    ("source_kind".into(), "need".into()),
+                ]),
+            )
+            .unwrap();
+    }
+    drop(space);
+    (tmp, space_dir, handle)
+}
+
+#[cfg(unix)]
+#[test]
+fn owner_reads_dispatch_without_shm() {
+    let (_tmp, dir, handle) = closed_owner_space_with_legacy_dispatch();
+    let db = dir.join("mail.sqlite");
+    let shm = dir.join("mail.sqlite-shm");
+    let wal = dir.join("mail.sqlite-wal");
+    // The only writer is closed above; checkpoint its WAL into the main
+    // database, then drop any sidecar files so no index remains.
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .unwrap();
     drop(conn);
     let _ = fs::remove_file(&shm);
     let _ = fs::remove_file(&wal);
+
+    // Structurally WAL-only: the strict policy refuses it for the missing
+    // index, so the owner path below is the one exercised.
+    let refusal = strict_inspect(&db, IndexPolicy::ExistingIndexOnly)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(refusal.contains("mail.sqlite-shm"), "{refusal}");
+    assert!(!shm.exists());
     let before = fs::read(&db).unwrap();
 
+    let events = read(&db, 8).unwrap();
+    assert_eq!(events.open.len(), 1);
+    assert_eq!(events.open[0].task, handle);
+    assert_eq!(events.open[0].record.model, "zai/glm-5.3-flash");
+    assert_eq!(events.open[0].record.pool, "here");
+    assert_eq!(events.open[0].record.need, None, "legacy record fields");
+    assert_eq!(events.open[0].record.kind, None, "legacy record fields");
+    let info = &events.task_info[&handle];
+    assert_eq!(info.subject, "Fix the edge");
+    assert_eq!(info.role, "hand");
+    assert_eq!(
+        info.need.as_deref(),
+        Some("need5678"),
+        "the recorded metadata supplies the need"
+    );
+    assert_eq!(info.kind, None);
+    assert_eq!(fs::read(&db).unwrap(), before, "database unchanged");
+}
+
+#[test]
+fn read_refuses_a_non_file_database_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("mail.sqlite");
+    fs::create_dir(&db).unwrap();
     let error = read(&db, 8).err().unwrap().to_string();
-    assert!(error.contains("mail.sqlite-shm"), "{error}");
-    assert!(!shm.exists(), "the monitor created the missing sidecar");
-    assert_eq!(fs::read(&db).unwrap(), before);
+    assert!(error.contains("is not a regular file"), "{error}");
+}
+
+#[test]
+fn read_refuses_an_unreadable_database_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("mail.sqlite");
+    fs::write(&db, b"SQLite").unwrap();
+    let error = read(&db, 8).err().unwrap().to_string();
+    assert!(error.contains("could not read the header"), "{error}");
+    assert_eq!(fs::read(&db).unwrap(), b"SQLite");
 }
