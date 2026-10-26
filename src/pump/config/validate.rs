@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
+use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, ScopePath, known};
 use crate::VivariumError;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::envelope::roles::RoleKind;
@@ -304,8 +304,31 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     if target.github_repo.as_deref().is_some_and(str::is_empty) {
         found.invalid(format!("{prefix} github_repo must not be empty when set"));
     }
+    validate_target_scope(id, target, found);
     let merge = target.merge.as_ref();
     validate_target_merge(id, merge, found);
+}
+
+/// Every configured literal scope entry must parse as a literal path:
+/// malformed policy would silently authorize nothing or be skipped by the
+/// decision machinery, so it is a configuration error. The entries are
+/// otherwise free: a target that declares none keeps the unrestricted
+/// whole-repository default, and an explicit empty `scope_allow` is a legal
+/// "authorize nothing".
+fn validate_target_scope(id: &str, target: &PumpTarget, found: &mut Findings) {
+    let prefix = format!("[pump.targets.{id}]");
+    for (key, entries) in [
+        ("scope_allow", target.scope_allow.as_deref().unwrap_or(&[])),
+        ("scope_deny", target.scope_deny.as_slice()),
+    ] {
+        for entry in entries {
+            if let Err(error) = ScopePath::parse(entry) {
+                found.invalid(format!(
+                    "{prefix} {key} entry `{entry}` is not a literal path: {error}"
+                ));
+            }
+        }
+    }
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {
