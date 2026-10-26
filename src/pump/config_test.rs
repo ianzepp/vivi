@@ -1,7 +1,9 @@
 //! Tests for [`crate::pump::config`].
 
+use crate::VivariumError;
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget};
+use crate::pool::dispatch::BUDGET_RANGE;
+use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget, StepBudgets};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -630,6 +632,133 @@ fn findings_keep_wrong_values_as_errors_and_report_nothing_missing() {
 fn findings_for_a_complete_config_are_clean() {
     let found = valid().findings_for(Path::new("."), &pool_names());
     assert!(found.is_clean(), "{found:?}");
+}
+
+/// Valid lower overrides for all seven thinking steps; `envelope-fix` unset
+/// (its 300-second default is in range).
+fn overrides_below(secs: u64) -> StepBudgets {
+    StepBudgets {
+        planner: Some(secs),
+        admitter: Some(secs),
+        slicer: Some(secs),
+        auditor: Some(secs),
+        head_cto: Some(secs),
+        researcher: Some(secs),
+        judge: Some(secs),
+        envelope_fix: None,
+    }
+}
+
+/// Zero and oversized fallback budgets sit outside the pool range and are
+/// [`VivariumError::Config`] findings naming the fallback key.
+fn assert_fallback_out_of_range(budget: u64) {
+    let mut cfg = valid();
+    cfg.dispatch.budget = budget;
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("fallback outside the pool range must fail");
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(err.to_string().contains("[pump.dispatch] budget"), "{err}");
+}
+
+/// A fallback at the pool ceiling inherits into every thinking step; each
+/// finding names the fallback key and the step key that needs a lower value.
+fn assert_ceiling_fallback_names_step_keys() {
+    let mut cfg = valid();
+    cfg.dispatch.budget = *BUDGET_RANGE.end();
+    let found = cfg.findings_for(Path::new("."), &pool_names());
+    assert_eq!(found.errors.len(), 7, "{:?}", found.errors);
+    for step in [
+        "planner",
+        "admitter",
+        "slicer",
+        "auditor",
+        "head-cto",
+        "researcher",
+        "judge",
+    ] {
+        let key = format!("pump.dispatch.step_budgets.{step}");
+        assert!(
+            found
+                .errors
+                .iter()
+                .any(|e| e.contains(&key) && e.contains("[pump.dispatch] budget")),
+            "{step}: {:?}",
+            found.errors
+        );
+    }
+}
+
+/// With valid lower overrides on all seven thinking steps, a ceiling
+/// fallback is raisable and the config validates.
+fn assert_all_seven_overrides_make_ceiling_fallback_valid() {
+    let mut cfg = valid();
+    cfg.dispatch.budget = *BUDGET_RANGE.end();
+    cfg.dispatch.step_budgets = overrides_below(*BUDGET_RANGE.end() - 1);
+    cfg.validate(Path::new("."), &pool_names())
+        .expect("seven lower overrides make the ceiling fallback raisable");
+}
+
+/// A thinking override of zero or at the ceiling is an error naming its
+/// canonical key (`head-cto`, not `RoleKind::name`'s `cto`).
+fn assert_override_out_of_headroom_is_named(bad: u64) {
+    let mut cfg = valid();
+    cfg.dispatch.step_budgets = overrides_below(*BUDGET_RANGE.end() - 1);
+    cfg.dispatch.step_budgets.head_cto = Some(bad);
+    let found = cfg.findings_for(Path::new("."), &pool_names());
+    assert!(
+        found
+            .errors
+            .iter()
+            .any(|e| e.contains("pump.dispatch.step_budgets.head-cto")),
+        "{bad}: {:?}",
+        found.errors
+    );
+}
+
+/// Correction (`envelope-fix`) may use the full pool range but nothing
+/// outside it; findings name the canonical key.
+fn assert_correction_endpoints() {
+    let max = *BUDGET_RANGE.end();
+    for bad in [0, max + 1] {
+        let mut cfg = valid();
+        cfg.dispatch.step_budgets.envelope_fix = Some(bad);
+        let found = cfg.findings_for(Path::new("."), &pool_names());
+        assert!(
+            found
+                .errors
+                .iter()
+                .any(|e| e.contains("pump.dispatch.step_budgets.envelope-fix")),
+            "{bad}: {:?}",
+            found.errors
+        );
+    }
+    let mut cfg = valid();
+    cfg.dispatch.step_budgets.envelope_fix = Some(max);
+    cfg.validate(Path::new("."), &pool_names())
+        .expect("correction may use the full pool range");
+}
+
+/// Wrong override types never reach validation: they fail deserialization.
+/// (Direct `PumpConfig` text uses root-level tables; the `[pump]` header
+/// belongs to the mailspace file.)
+fn assert_wrong_types_are_deserialization_errors() {
+    let text = "[dispatch.step_budgets]\nplanner = \"long\"\n";
+    assert!(toml::from_str::<PumpConfig>(text).is_err());
+}
+
+#[test]
+fn step_budget_validation_rejects_invalid_and_unraisable_values() {
+    for budget in [0, *BUDGET_RANGE.end() + 1] {
+        assert_fallback_out_of_range(budget);
+    }
+    assert_ceiling_fallback_names_step_keys();
+    assert_all_seven_overrides_make_ceiling_fallback_valid();
+    for bad in [0, *BUDGET_RANGE.end()] {
+        assert_override_out_of_headroom_is_named(bad);
+    }
+    assert_correction_endpoints();
+    assert_wrong_types_are_deserialization_errors();
 }
 
 #[test]
