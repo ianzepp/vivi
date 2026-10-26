@@ -1,6 +1,5 @@
 use super::*;
 use crate::mailspace::{Mailspace, SendRequest};
-use crate::storage::Storage;
 use std::fs;
 
 const DISPATCH: &str = r#"{"pool":"here","need":"need1234","kind":"fix","slot":"vivarium-here-slot-1","machine":"burgus","job":"3cc45261-3-a1","model":"zai/glm-5.3-flash","from":"mind","branch":"unit/3cc45261-3-a1","start":"1792421950abc","budget":1800,"at":1792421950,"read_only":false}"#;
@@ -125,24 +124,105 @@ fn read_missing_db_is_empty() {
     assert!(events.finished.is_empty());
 }
 
+/// Record a legacy dispatch (need/kind stripped) plus recorded need
+/// metadata on `handle`. Every writer stays open; close them before reading.
+fn record_legacy_dispatch_with_need_metadata(
+    space: &Mailspace,
+    handle: &str,
+) -> std::path::PathBuf {
+    let db = space.dir.join("mail.sqlite");
+    let mut record: serde_json::Value = serde_json::from_str(DISPATCH).unwrap();
+    record.as_object_mut().unwrap().remove("need");
+    record.as_object_mut().unwrap().remove("kind");
+    space
+        .record_pool_note(handle, "pool_dispatched", &record.to_string(), "dispatched")
+        .unwrap();
+    let storage = space.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    storage
+        .set_item_metadata(
+            &id,
+            &std::collections::BTreeMap::from([
+                ("source_handle".into(), "need5678".into()),
+                ("source_kind".into(), "need".into()),
+            ]),
+        )
+        .unwrap();
+    drop(storage);
+    db
+}
+
 #[test]
-fn read_only_wal_events_skip_when_shm_is_missing_without_creating_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let _storage = Storage::open_mailspace(tmp.path()).unwrap();
-    drop(_storage);
-    let db = tmp.path().join("mail.sqlite");
-    let shm = tmp.path().join("mail.sqlite-shm");
-    let wal = tmp.path().join("mail.sqlite-wal");
+fn owner_reads_dispatch_without_shm() {
+    let (_tmp, space, handle) = space_with_task();
+    let db = record_legacy_dispatch_with_need_metadata(&space, &handle);
+    let shm = db.with_file_name("mail.sqlite-shm");
+    let wal = db.with_file_name("mail.sqlite-wal");
+    drop(space);
+    // No writer is live from here on: fold the WAL into the main database,
+    // then start the owner read without a WAL index. The index is never
+    // removed beneath a live writer.
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .unwrap();
     drop(conn);
     let _ = fs::remove_file(&shm);
     let _ = fs::remove_file(&wal);
+    assert!(
+        !shm.exists(),
+        "the closed store must start without an index"
+    );
     let before = fs::read(&db).unwrap();
 
+    let events = read(&db, 8).unwrap();
+    assert_eq!(events.open.len(), 1);
+    let record = &events.open[0].record;
+    assert_eq!(record.need, None, "the legacy record carries no need");
+    assert_eq!(record.kind, None, "the legacy record carries no kind");
+    assert_eq!(record.pool, "here");
+    assert_eq!(record.slot, "vivarium-here-slot-1");
+    assert_eq!(record.model, "zai/glm-5.3-flash");
+    assert_eq!(
+        events.task_info[&handle].need.as_deref(),
+        Some("need5678"),
+        "the fallback supplies the recorded need"
+    );
+    assert_eq!(
+        fs::read(&db).unwrap(),
+        before,
+        "the owner read changed the database"
+    );
+}
+
+#[test]
+fn a_non_file_database_path_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("mail.sqlite");
+    fs::create_dir(&db).unwrap();
     let error = read(&db, 8).err().unwrap().to_string();
-    assert!(error.contains("mail.sqlite-shm"), "{error}");
-    assert!(!shm.exists(), "the monitor created the missing sidecar");
-    assert_eq!(fs::read(&db).unwrap(), before);
+    assert!(error.contains("not a regular file"), "{error}");
+}
+
+#[test]
+fn an_unreadable_database_header_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("mail.sqlite");
+    fs::write(&db, b"SQLite").unwrap();
+    let error = read(&db, 8).err().unwrap().to_string();
+    assert!(error.contains("could not read the header"), "{error}");
+    assert_eq!(fs::read(&db).unwrap(), b"SQLite");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_uninspectable_database_path_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocker = tmp.path().join("blocker");
+    fs::write(&blocker, b"not a directory").unwrap();
+    let db = blocker.join("mail.sqlite");
+    let error = read(&db, 8).err().unwrap().to_string();
+    assert!(
+        error.contains("read-only inspection unavailable"),
+        "{error}"
+    );
 }

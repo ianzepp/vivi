@@ -4,9 +4,13 @@
 //! read-write [`crate::storage::Storage`], whose open runs schema-write
 //! transactions. The connection here is read-only at every level:
 //! `SQLITE_OPEN_READ_ONLY`, a query-only pragma, and a short busy timeout —
-//! it never blocks a writer.
+//! it never blocks a writer. When this process owns the database, the open
+//! may create the WAL index sidecar it needs; foreign or unprovable
+//! ownership is refused.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,6 +20,7 @@ use crate::error::VivariumError;
 use crate::mailspace::{POOL_EVENT_TYPES, PoolEventRow};
 use crate::pool::record::{DispatchRecord, OpenDispatch, fold_open};
 use crate::storage::Storage;
+use crate::storage::read_only::{self, IndexPolicy};
 
 /// Subject and addressee role of a task seen in the pool event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,20 +92,38 @@ fn display_of(handles: &HashMap<String, String>, message_id: &str) -> String {
         .unwrap_or_else(|| message_id.to_string())
 }
 
-/// Open a mailspace database strictly for reading.
+/// Open a mailspace database for reading. A database owned by this process
+/// may lack its WAL index; the owner-permitted open then creates the sidecar
+/// it needs, while foreign or unprovable ownership is refused.
 fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
-    let dir = db.parent().ok_or_else(|| {
-        VivariumError::Other(format!(
-            "mail database path has no parent: {}",
-            db.display()
-        ))
-    })?;
-    let conn = Storage::open_mailspace_connection_read_only(dir)?;
+    let conn =
+        read_only::open(db, IndexPolicy::OwnerMayCreateIndex).map_err(VivariumError::from)?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
     conn.execute_batch("PRAGMA query_only = true")
         .map_err(|e| VivariumError::Other(format!("failed to set query_only: {e}")))?;
     Ok(conn)
+}
+
+/// Whether the mailspace database is genuinely absent, per an error-aware
+/// stat. Only proven absence reads as an empty history; every other failed
+/// inspection falls through to the classified opener, which refuses an
+/// unprovable state instead of inventing absence.
+fn database_absent(db: &Path) -> bool {
+    matches!(
+        fs::metadata(db),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    )
+}
+
+/// The mailspace directory holding `db`, as strict `Storage` readers want it.
+fn mailspace_dir(db: &Path) -> Result<&Path, VivariumError> {
+    db.parent().ok_or_else(|| {
+        VivariumError::Other(format!(
+            "mail database path has no parent: {}",
+            db.display()
+        ))
+    })
 }
 
 /// The pool events, oldest first.
@@ -201,14 +224,15 @@ fn finished_rows(rows: &[EventRow], handles: &HashMap<String, String>) -> Vec<Fi
 
 /// Read the pool history of the mailspace database at `db`.
 ///
-/// A missing database reads as an empty history. `last_finished` keeps only
+/// A genuinely missing database reads as an empty history; a database that
+/// cannot be inspected or opened is an error. `last_finished` keeps only
 /// the newest that many collected dispatches.
 ///
 /// # Errors
-/// Returns an error if the database cannot be opened read-only or a query
-/// fails.
+/// Returns an error if the database cannot be inspected, opened read-only,
+/// or a query fails.
 pub fn read(db: &Path, last_finished: usize) -> Result<ProjectEvents, VivariumError> {
-    if !db.exists() {
+    if database_absent(db) {
         return Ok(ProjectEvents::default());
     }
     let conn = open_read_only(db)?;
@@ -251,12 +275,7 @@ pub fn read(db: &Path, last_finished: usize) -> Result<ProjectEvents, VivariumEr
         .collect();
     task_info.retain(|handle, _| relevant.contains(handle.as_str()));
     add_record_metadata(&mut task_info, &open, &finished);
-    let dir = db.parent().ok_or_else(|| {
-        VivariumError::Other(format!(
-            "mail database path has no parent: {}",
-            db.display()
-        ))
-    })?;
+    let dir = mailspace_dir(db)?;
     if task_info.values().any(|info| info.need.is_none()) {
         add_task_need_metadata(&mut task_info, dir)?;
     }
