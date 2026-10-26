@@ -6,10 +6,11 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread, requirements,
-    rung_report, whole_message_requirements,
+    admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread,
+    requirements, rung_report, whole_message_requirements,
 };
 use crate::pump::config::PumpConfig;
+use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -298,6 +299,194 @@ fn a_long_multi_line_message_still_yields_one_short_single_line_requirement() {
     assert_eq!(requirements.len(), 1);
     assert!(!requirements[0].text.contains('\n'));
     assert!(requirements[0].text.len() < 200);
+}
+
+// --- admitted plan continuation (the resolver behind the slicer brief) ---
+
+fn run_row(number: u32, entry: &str) -> RunRow {
+    RunRow {
+        need: NEED.into(),
+        run: number,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: entry.into(),
+        state: "live".into(),
+    }
+}
+
+fn seed_run(f: &Fixture, number: u32, entry: &str) {
+    f.store.insert_run(&run_row(number, entry)).unwrap();
+}
+
+/// A done planner step `node` of `run` whose stored payload body is `plan`.
+fn seed_planner(f: &Fixture, run: u32, node: &str, plan: &str) {
+    let task = format!("t-r{run}-{node}");
+    f.store
+        .record_step_payload(&StepPayloadRow {
+            need: NEED.into(),
+            run,
+            node: node.into(),
+            class: "planner".into(),
+            task: task.clone(),
+            payload: json!({
+                "front": { "answer": "planned" },
+                "body": plan,
+            }),
+        })
+        .unwrap();
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run,
+                node: node.into(),
+                task,
+                state: StepState::Done,
+                verdict: Some("planned".into()),
+            },
+        )
+        .unwrap();
+}
+
+/// A done admitter step `node` of `run` answering `verdict`.
+fn seed_admitter(f: &Fixture, run: u32, node: &str, verdict: &str) {
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run,
+                node: node.into(),
+                task: format!("t-r{run}-{node}"),
+                state: StepState::Done,
+                verdict: Some(verdict.into()),
+            },
+        )
+        .unwrap();
+}
+
+/// Run 1 at `plan` whose planner `planner` carries `plan` and whose admitter
+/// `admitter` admitted it.
+fn seed_admitted(f: &Fixture, planner: &str, admitter: &str, plan: &str) {
+    seed_run(f, 1, "plan");
+    seed_planner(f, 1, planner, plan);
+    seed_admitter(f, 1, admitter, "admitted");
+}
+
+/// Another need whose run 1 admitted its own plan.
+fn seed_other_need(f: &Fixture) {
+    f.store
+        .insert_run(&RunRow {
+            need: "need-2".into(),
+            ..run_row(1, "plan")
+        })
+        .unwrap();
+    f.store
+        .record_step_payload(&StepPayloadRow {
+            need: "need-2".into(),
+            run: 1,
+            node: "plan".into(),
+            class: "planner".into(),
+            task: "other-plan".into(),
+            payload: json!({
+                "front": { "answer": "planned" },
+                "body": "OTHER PLAN",
+            }),
+        })
+        .unwrap();
+    for (node, task, verdict) in [
+        ("plan", "other-plan", "planned"),
+        ("admit1", "other-admit", "admitted"),
+    ] {
+        f.store
+            .insert_step(
+                "need-2",
+                &StepRow {
+                    run: 1,
+                    node: node.into(),
+                    task: task.into(),
+                    state: StepState::Done,
+                    verdict: Some(verdict.into()),
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn slice_continuation_uses_previous_admitted_plan() {
+    // The first admission: a slice run inherits run 1's plan/admit1 plan.
+    let f = fixture();
+    seed_admitted(&f, "plan", "admit1", "PLAN ONE");
+    seed_run(&f, 2, "slice");
+    let plan = admitted_plan(&f.store, &run_row(2, "slice")).unwrap();
+    assert_eq!(plan.as_deref(), Some("PLAN ONE"));
+
+    // The revised admission: a slice run inherits the plan2/admit2 plan.
+    let f = fixture();
+    seed_run(&f, 1, "plan");
+    seed_planner(&f, 1, "plan", "PLAN ONE");
+    seed_admitter(&f, 1, "admit1", "revise");
+    seed_planner(&f, 1, "plan2", "PLAN TWO");
+    seed_admitter(&f, 1, "admit2", "admitted");
+    seed_run(&f, 2, "slice");
+    let plan = admitted_plan(&f.store, &run_row(2, "slice")).unwrap();
+    assert_eq!(plan.as_deref(), Some("PLAN TWO"));
+}
+
+#[test]
+fn newer_unadmitted_plan_does_not_replace_admitted_plan() {
+    let f = fixture();
+    seed_admitted(&f, "plan", "admit1", "PLAN ONE");
+    // A newer revision is planned, but no admitter admitted it.
+    seed_planner(&f, 1, "plan2", "PLAN TWO");
+    seed_run(&f, 2, "slice");
+
+    let plan = admitted_plan(&f.store, &run_row(2, "slice")).unwrap();
+
+    assert_eq!(plan.as_deref(), Some("PLAN ONE"));
+}
+
+#[test]
+fn plan_inheritance_respects_need_run_and_replan_boundaries() {
+    let f = fixture();
+    seed_admitted(&f, "plan", "admit1", "PLAN ONE");
+
+    // Repeated slice continuations keep reading the same admission.
+    for number in [2, 3] {
+        seed_run(&f, number, "slice");
+        let plan = admitted_plan(&f.store, &run_row(number, "slice")).unwrap();
+        assert_eq!(plan.as_deref(), Some("PLAN ONE"), "run {number}");
+    }
+    // A rework1 entry inherits it too.
+    seed_run(&f, 4, "rework1");
+    let plan = admitted_plan(&f.store, &run_row(4, "rework1")).unwrap();
+    assert_eq!(plan.as_deref(), Some("PLAN ONE"));
+
+    // A run with its own admission prefers it over every earlier run's.
+    seed_run(&f, 5, "plan");
+    seed_planner(&f, 5, "plan", "PLAN FIVE");
+    seed_admitter(&f, 5, "admit1", "admitted");
+    let plan = admitted_plan(&f.store, &run_row(5, "plan")).unwrap();
+    assert_eq!(plan.as_deref(), Some("PLAN FIVE"));
+    // and the next slice continues from the nearest earlier run, not run 1.
+    seed_run(&f, 6, "slice");
+    let plan = admitted_plan(&f.store, &run_row(6, "slice")).unwrap();
+    assert_eq!(plan.as_deref(), Some("PLAN FIVE"));
+
+    // A future run's admission is never read: run 2 predates run 5.
+    let plan = admitted_plan(&f.store, &run_row(2, "slice")).unwrap();
+    assert_eq!(plan.as_deref(), Some("PLAN ONE"));
+
+    // Another need's admission is never read, and a fresh unadmitted plan or
+    // research run ends the inheritance: the walk stops at the boundary.
+    seed_other_need(&f);
+    for (number, entry) in [(7, "plan"), (8, "slice"), (9, "research")] {
+        seed_run(&f, number, entry);
+        let plan = admitted_plan(&f.store, &run_row(number, entry)).unwrap();
+        assert_eq!(plan, None, "run {number} at {entry}");
+        assert_ne!(plan.as_deref(), Some("OTHER PLAN"), "run {number}");
+    }
 }
 
 #[test]

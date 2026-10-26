@@ -17,16 +17,17 @@ use crate::letter::fixture::step_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::fanout::slice_node;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
 
@@ -43,6 +44,25 @@ const BLOCK_WITH_FINDING: &str = "+++\nanswer = \"block_range\"\n\n[[finding]]\n
                                   content = 'the range is still broken'\npaths = [\"src/a.rs\"]\n\
                                   recheck_trigger = 'a.rs changes'\n+++\nthe range is still broken";
 const FAILING_TEST: &str = "pump::x::y";
+
+/// A planned envelope whose body is the stored plan the admission reads.
+const PLANNED_ONE: &str = "+++\nanswer = \"planned\"\n+++\nPLAN-ONE BODY";
+/// The revised planned envelope.
+const PLANNED_TWO: &str = "+++\nanswer = \"planned\"\n+++\nPLAN-TWO BODY";
+/// An admitter admitting the plan it reads.
+const ADMITTED: &str = "+++\nanswer = \"admitted\"\n+++\nadmitted";
+/// An admitter asking for a revision.
+const REVISE: &str =
+    "+++\nanswer = \"revise\"\nrequired_changes = ['tighten the scope']\n+++\nrevise";
+/// The slicer handing the decision to the CTO.
+const ESCALATE: &str = "+++\nanswer = \"escalate\"\nreason = 'needs a ruling'\n+++\nescalate";
+/// The plain slicer's `sliced` envelope: two declared slices, the second on
+/// the first.
+const SLICED_PLAN: &str = "+++\nanswer = \"sliced\"\nmode = \"slice\"\n\n\
+     [[slice]]\nid = \"a\"\ntitle = \"first\"\nbrief = 'build a'\ntarget = \"default\"\n\
+     write_scope = [\"src/a.rs\"]\ndeps = []\n\n\
+     [[slice]]\nid = \"b\"\ntitle = \"second\"\nbrief = 'build b on a'\ntarget = \"default\"\n\
+     write_scope = [\"src/b.rs\"]\ndeps = [\"a\"]\n+++\nsliced";
 
 #[derive(Default)]
 struct Jobs {
@@ -76,6 +96,8 @@ struct Rig {
     store: PumpStore,
     mail: FakeMail,
     jobs: Jobs,
+    /// Whether the tick uses the shipped fanout instead of the stub.
+    real_fanout: bool,
 }
 
 fn config() -> PumpConfig {
@@ -127,7 +149,47 @@ fn rig(entry: &str) -> Result<Rig, VivariumError> {
         store,
         mail,
         jobs: Jobs::default(),
+        real_fanout: false,
     })
+}
+
+/// A build need at `plan` with the front roles routed, the real fanout armed,
+/// and the need letter readable as the root task the planner brief reads.
+fn plan_rig() -> Result<Rig, VivariumError> {
+    let mut rig = rig("plan")?;
+    let mut routing = (*rig.ctx.routing).clone();
+    for (name, read_only) in [("admitter", Some(true)), ("slicer", Some(true))] {
+        routing.roles.push(RoutedRole {
+            name: name.into(),
+            kind: Some(name.into()),
+            status: String::from("active"),
+            pool: Some(String::from("test-planner-pool")),
+            read_only,
+            model: None,
+            models: Vec::new(),
+        });
+    }
+    rig.ctx = rig.ctx.with_routing(routing);
+    rig.real_fanout = true;
+    rig.mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: String::from("operator@local"),
+            to: String::from("mind"),
+            subject: NEED.into(),
+            body: crate::letter::fixture::need_body(&["it works"], "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+    Ok(rig)
 }
 
 fn receipt(exit: i32, message: &str) -> String {
@@ -141,7 +203,9 @@ fn receipt(exit: i32, message: &str) -> String {
 impl Rig {
     fn registry(&self) -> Registry<Jobs, FakeMail> {
         let mut registry = shipped(&self.ctx);
-        registry.handler(FlowKind::Build, NodeClass::Fanout, Box::new(BuiltAtOnce));
+        if !self.real_fanout {
+            registry.handler(FlowKind::Build, NodeClass::Fanout, Box::new(BuiltAtOnce));
+        }
         registry
     }
 
@@ -277,6 +341,17 @@ impl Rig {
         let fact = new_fact.map_or_else(String::new, |fact| format!("new_fact = '{fact}'\n"));
         let envelope = format!("+++\nanswer = \"{word}\"\nreason = '{reason}'\n{fact}+++\nruled");
         self.finish("cto", &receipt(0, &envelope))
+    }
+
+    /// Finish the open job of `node` in `run` with `receipt` and post the same
+    /// result on the step task, as the pool does; later steps read it there.
+    fn finish_with_reply(&mut self, run: u32, node: &str, receipt: &str) -> R {
+        let task = self
+            .row(run, node)
+            .ok_or_else(|| VivariumError::Message(format!("no {node} row in run {run}")))?
+            .task;
+        self.finish_in(run, node, receipt)?;
+        self.mail.reply(&task, receipt)
     }
 }
 
@@ -488,5 +563,174 @@ fn a_cto_rework_restart_briefs_rework1_and_audit2_from_run_one() -> R {
         audit.body
     );
     assert!(audit.body.contains("F-1"), "{}", audit.body);
+    Ok(())
+}
+
+/// The stored payload body of `node`'s step in `run`: what an admission reads.
+fn stored_body(rig: &Rig, run: u32, node: &str) -> Result<String, VivariumError> {
+    let task = rig
+        .row(run, node)
+        .ok_or_else(|| VivariumError::Message(format!("no run {run} {node} row")))?
+        .task;
+    let row = rig
+        .store
+        .step_payload(&task)?
+        .ok_or_else(|| VivariumError::Message(format!("{node} has no stored payload")))?;
+    row.payload["body"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| VivariumError::Message(format!("{node} payload has no body")))
+}
+
+/// Drive the fresh `plan` run through a real admission to its own slicer job:
+/// `revised` takes the plan2/admit2 revision, else plan/admit1. Returns the
+/// slicer job, whose brief already carries the stored plan.
+fn to_own_slicer(rig: &mut Rig, revised: bool) -> Result<PoolJob, VivariumError> {
+    rig.tick_until("the plan job", |rig| rig.open_job("plan").is_some())?;
+    rig.finish_with_reply(1, "plan", &receipt(0, PLANNED_ONE))?;
+    rig.tick_until("the admit1 job", |rig| rig.open_job("admit1").is_some())?;
+    if revised {
+        rig.finish_with_reply(1, "admit1", &receipt(0, REVISE))?;
+        rig.tick_until("the plan2 job", |rig| rig.open_job("plan2").is_some())?;
+        rig.finish_with_reply(1, "plan2", &receipt(0, PLANNED_TWO))?;
+        rig.tick_until("the admit2 job", |rig| rig.open_job("admit2").is_some())?;
+        rig.finish_with_reply(1, "admit2", &receipt(0, ADMITTED))?;
+    } else {
+        rig.finish_with_reply(1, "admit1", &receipt(0, ADMITTED))?;
+    }
+    rig.tick_until("the first slicer job", |rig| {
+        rig.open_job("slice").is_some()
+    })?;
+    rig.open_job("slice")
+        .ok_or_else(|| VivariumError::Message("no slicer job".into()))
+}
+
+/// The run's slicer escalates and the CTO rules `slice`: run 1 is superseded
+/// and run 2 is live at the slice entry.
+fn restart_at_slice(rig: &mut Rig) -> R {
+    rig.finish_in(1, "slice", &receipt(0, ESCALATE))?;
+    rig.tick_until("the cto job", |rig| rig.open_job("cto").is_some())?;
+    rig.answer_cto("slice")?;
+    rig.tick_until("the restart", |rig| {
+        rig.runs().is_ok_and(|runs| runs.len() == 2)
+    })?;
+    let runs = rig.runs()?;
+    assert_eq!(runs[0].state, "superseded");
+    assert_eq!((runs[1].run, runs[1].entry.as_str()), (2, "slice"));
+    assert_eq!(runs[1].state, "live");
+    let cto = rig
+        .row(1, "cto")
+        .ok_or_else(|| VivariumError::Message("no run 1 cto row".into()))?;
+    assert_eq!(
+        (cto.state, cto.verdict),
+        (StepState::Done, Some("slice".into()))
+    );
+    Ok(())
+}
+
+/// Run 2's real fanout sent the declared slices `a` and `b` from the
+/// slicer's posted reply, bound to the need, with the verify pass waiting.
+fn assert_fanned_out(rig: &Rig, slicer_task: &str) -> R {
+    let task = |title: &str| {
+        rig.mail
+            .tasks
+            .iter()
+            .find(|(_, task)| task.subject == format!("{title} ({NEED} r2)"))
+            .map(|(handle, _)| handle.clone())
+            .ok_or_else(|| VivariumError::Message(format!("no slice task {title}")))
+    };
+    let a = task("first")?;
+    let b = task("second")?;
+    let row = |node: &str| {
+        rig.row(2, node)
+            .ok_or_else(|| VivariumError::Message(format!("no run 2 {node} row")))
+    };
+    let sliced = row("slice")?;
+    assert_eq!(
+        (sliced.state, sliced.verdict),
+        (StepState::Done, Some("sliced".into()))
+    );
+    for (node, handle) in [("slice:a", &a), ("slice:b", &b)] {
+        let row = row(node)?;
+        assert_eq!(row.state, StepState::Pending, "{node}");
+        assert_eq!(row.task, *handle, "{node}");
+    }
+    // The second slice waits on the first; both wait on the slicer.
+    assert_eq!(rig.mail.tasks[&a].depends_on, vec![slicer_task.to_string()]);
+    assert_eq!(
+        rig.mail.tasks[&b].depends_on,
+        vec![slicer_task.to_string(), a.clone()]
+    );
+    // The declared write scopes landed and the units are bound to the need.
+    assert_eq!(
+        rig.store.slice_scope(&a)?,
+        Some(vec![String::from("src/a.rs")])
+    );
+    let bound = rig.mail.bound_units(NEED)?;
+    assert!(bound.contains(&a), "{bound:?}");
+    assert!(bound.contains(&b), "{bound:?}");
+    // The fanout itself stays open: unrelated later work does not run.
+    let build1 = row("build1")?;
+    assert_eq!((build1.state, build1.verdict), (StepState::Running, None));
+    assert!(rig.row(2, "audit1").is_none(), "the verify pass must wait");
+    assert!(rig.row(2, "test1").is_none(), "the verify pass must wait");
+    Ok(())
+}
+
+/// A CTO `slice` ruling restarts the need onto the admitted plan: run 2's
+/// real slicer inherits the stored plan body, answers `sliced`, and the real
+/// fanout expands the declared slices. Both the initial and the revised
+/// admission are exercised; the slicer and the fanout are the shipped ones.
+#[test]
+fn a_cto_slice_restart_slices_the_admitted_plan_and_fans_out() -> R {
+    for (revised, plan_node, plan, dropped) in [
+        (false, "plan", "PLAN-ONE BODY", "PLAN-TWO BODY"),
+        (true, "plan2", "PLAN-TWO BODY", "PLAN-ONE BODY"),
+    ] {
+        let mut rig = plan_rig()?;
+        let slicer = to_own_slicer(&mut rig, revised)?;
+        assert_eq!(stored_body(&rig, 1, plan_node)?, plan);
+        assert!(
+            slicer.body.contains(&format!("admitted plan:\n{plan}")),
+            "{}",
+            slicer.body
+        );
+        restart_at_slice(&mut rig)?;
+
+        // Run 2's actual slicer executes on the inherited admission.
+        rig.tick_until("run 2's slicer job", |rig| {
+            rig.open_job_of(2, "slice").is_some()
+        })?;
+        let slicer = rig
+            .open_job_of(2, "slice")
+            .ok_or_else(|| VivariumError::Message("no run 2 slicer job".into()))?;
+        assert!(
+            slicer.body.contains("need: n1\nrun: 2\n"),
+            "{}",
+            slicer.body
+        );
+        assert!(
+            slicer.body.contains(&format!("admitted plan:\n{plan}")),
+            "{}",
+            slicer.body
+        );
+        assert!(!slicer.body.contains(dropped), "{}", slicer.body);
+        let slicer_task = rig
+            .row(2, "slice")
+            .ok_or_else(|| VivariumError::Message("no run 2 slicer row".into()))?
+            .task;
+
+        rig.finish_with_reply(2, "slice", &receipt(0, SLICED_PLAN))?;
+        rig.tick_until("the declared slices", |rig| {
+            rig.row(2, "slice:a").is_some() && rig.row(2, "slice:b").is_some()
+        })?;
+        assert_fanned_out(&rig, &slicer_task)?;
+        // No hand role is routed here, so the pump cannot dispatch the slices
+        // it just created; that configuration gap is the only alarm.
+        for line in rig.exceptions().lines() {
+            assert!(line.contains("flow-run-error"), "{line}");
+            assert!(line.contains("no hand role"), "{line}");
+        }
+    }
     Ok(())
 }

@@ -70,9 +70,37 @@ fn rig() -> Result<Rig, VivariumError> {
     rig_with(PumpConfig::default())
 }
 
+impl Rig {
+    /// Point the rig's run at an existing run row.
+    fn aim_at(&mut self, number: u32, entry: &str) {
+        self.run.run = number;
+        self.run.entry = entry.into();
+    }
+
+    /// Add run `number` entering at `entry` and point the rig at it.
+    fn continue_with(&mut self, number: u32, entry: &str) -> R {
+        let run = RunRow {
+            need: NEED.into(),
+            run: number,
+            flow: "build".into(),
+            flow_version: 2,
+            kind: "build".into(),
+            entry: entry.into(),
+            state: "live".into(),
+        };
+        self.store.insert_run(&run)?;
+        self.aim_at(number, entry);
+        Ok(())
+    }
+}
+
 fn row(node: &str, task: &str, state: StepState) -> StepRow {
+    row_in(1, node, task, state)
+}
+
+fn row_in(run: u32, node: &str, task: &str, state: StepState) -> StepRow {
     StepRow {
-        run: 1,
+        run,
         node: node.into(),
         task: task.into(),
         state,
@@ -110,6 +138,40 @@ fn admitter_done(rig: &mut Rig, node: &str, verdict: &str) -> R {
         &StepRow {
             verdict: Some(verdict.into()),
             ..row(node, &format!("t-{node}"), StepState::Done)
+        },
+    )
+}
+
+/// A done planner step `node` of `run` whose stored payload carries `plan`.
+fn planner_done_in(rig: &mut Rig, run: u32, node: &str, plan: &str) -> R {
+    let task = format!("t-r{run}-{node}");
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run,
+        node: node.into(),
+        class: "planner".into(),
+        task: task.clone(),
+        payload: serde_json::json!({
+            "front": { "answer": "planned" },
+            "body": plan,
+        }),
+    })?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            verdict: Some("planned".into()),
+            ..row_in(run, node, &task, StepState::Done)
+        },
+    )
+}
+
+/// A done admitter step `node` of `run` answering `verdict`.
+fn admitter_done_in(rig: &mut Rig, run: u32, node: &str, verdict: &str) -> R {
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            verdict: Some(verdict.into()),
+            ..row_in(run, node, &format!("t-r{run}-{node}"), StepState::Done)
         },
     )
 }
@@ -282,6 +344,160 @@ fn an_admission_without_a_stored_plan_body_is_an_error() -> R {
 
     assert!(err.to_string().contains("no stored payload"), "{err}");
     Ok(())
+}
+
+#[test]
+fn slice_continuation_uses_previous_admitted_plan() -> R {
+    // The first admission travels to a later slice run.
+    {
+        let mut rig = rig()?;
+        admitted_first_plan(&mut rig)?;
+        rig.continue_with(2, "slice")?;
+
+        let spec = start(&rig)?;
+
+        assert!(
+            spec.body.contains("admitted plan:\nPLAN-ONE"),
+            "{}",
+            spec.body
+        );
+        assert!(spec.body.contains("need: n1\nrun: 2\n"), "{}", spec.body);
+    }
+
+    // The revised admission travels instead of the first plan.
+    {
+        let mut rig = rig()?;
+        planner_done(&mut rig, "plan", "PLAN-ONE")?;
+        admitter_done(&mut rig, "admit1", "revise")?;
+        planner_done(&mut rig, "plan2", "PLAN-TWO")?;
+        admitter_done(&mut rig, "admit2", "admitted")?;
+        rig.continue_with(2, "slice")?;
+
+        let spec = start(&rig)?;
+
+        assert!(
+            spec.body.contains("admitted plan:\nPLAN-TWO"),
+            "{}",
+            spec.body
+        );
+        assert!(!spec.body.contains("PLAN-ONE"), "{}", spec.body);
+    }
+    Ok(())
+}
+
+#[test]
+fn newer_unadmitted_plan_does_not_replace_admitted_plan() -> R {
+    let mut rig = rig()?;
+    admitted_first_plan(&mut rig)?;
+    // plan2 is planned, but no admitter admitted the revision.
+    planner_done(&mut rig, "plan2", "PLAN-TWO")?;
+    rig.continue_with(2, "slice")?;
+
+    let spec = start(&rig)?;
+
+    assert!(
+        spec.body.contains("admitted plan:\nPLAN-ONE"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("PLAN-TWO"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn plan_inheritance_respects_need_run_and_replan_boundaries() -> R {
+    let mut rig = rig()?;
+    admitted_first_plan(&mut rig)?;
+
+    // Repeated slice continuations and a rework1 entry inherit run 1's plan.
+    for (number, entry) in [(2, "slice"), (3, "slice"), (4, "rework1")] {
+        rig.continue_with(number, entry)?;
+        let spec = start(&rig)?;
+        assert!(
+            spec.body.contains("admitted plan:\nPLAN-ONE"),
+            "r{number}: {}",
+            spec.body
+        );
+    }
+
+    // A run with its own admission prefers it; the next slice continues there.
+    rig.continue_with(5, "plan")?;
+    planner_done_in(&mut rig, 5, "plan", "PLAN-FIVE")?;
+    admitter_done_in(&mut rig, 5, "admit1", "admitted")?;
+    let spec = start(&rig)?;
+    assert!(
+        spec.body.contains("admitted plan:\nPLAN-FIVE"),
+        "{}",
+        spec.body
+    );
+    rig.continue_with(6, "slice")?;
+    let spec = start(&rig)?;
+    assert!(
+        spec.body.contains("admitted plan:\nPLAN-FIVE"),
+        "{}",
+        spec.body
+    );
+
+    // A future run's admission is never read: run 2 predates run 5.
+    rig.aim_at(2, "slice");
+    let spec = start(&rig)?;
+    assert!(
+        spec.body.contains("admitted plan:\nPLAN-ONE"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("PLAN-FIVE"), "{}", spec.body);
+
+    // Another need's admission is never read, and a fresh unadmitted plan or
+    // research run ends the inheritance: the slicer rejects, naming the run.
+    seed_other_need(&rig)?;
+    for (number, entry) in [(7, "plan"), (8, "slice"), (9, "research")] {
+        rig.continue_with(number, entry)?;
+        let err = start(&rig).unwrap_err();
+        assert!(
+            err.to_string().contains("no admitted plan to slice"),
+            "r{number} at {entry}: {err}"
+        );
+        assert!(
+            err.to_string().contains(&format!("{NEED} run {number}")),
+            "r{number}: {err}"
+        );
+    }
+    Ok(())
+}
+
+/// Another need whose run 1 admitted its own plan; it must never be read.
+fn seed_other_need(rig: &Rig) -> R {
+    let mut run = rig.run.clone();
+    run.need = "need-2".into();
+    run.run = 1;
+    run.entry = "plan".into();
+    rig.store.insert_run(&run)?;
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: run.need.clone(),
+        run: 1,
+        node: "plan".into(),
+        class: "planner".into(),
+        task: "other-plan".into(),
+        payload: serde_json::json!({
+            "front": { "answer": "planned" },
+            "body": "OTHER PLAN",
+        }),
+    })?;
+    rig.store.insert_step(
+        "need-2",
+        &StepRow {
+            verdict: Some("planned".into()),
+            ..row_in(1, "plan", "other-plan", StepState::Done)
+        },
+    )?;
+    rig.store.insert_step(
+        "need-2",
+        &StepRow {
+            verdict: Some("admitted".into()),
+            ..row_in(1, "admit1", "other-admit", StepState::Done)
+        },
+    )
 }
 
 #[test]
