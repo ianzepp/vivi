@@ -18,6 +18,7 @@ pub mod merge_main;
 mod receipts;
 mod recovery;
 mod release;
+pub(crate) mod replay;
 mod retry;
 pub mod rung;
 pub mod rung_result;
