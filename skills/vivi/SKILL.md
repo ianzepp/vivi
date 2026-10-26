@@ -3030,7 +3030,7 @@ vivi sync quarantine drop <ID>   # give up on one held letter; it and its receip
 vivi sync key            # print this mailspace's public-key PEM (mints the key file)
 vivi sync create [--name <creator>]  # new project on the server; prints its id, writes nothing
 vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <pem>)
-vivi sync join           # register [sync] name (the key must be vouched for)
+vivi sync join           # register [sync] name (the key must be vouched for); joining again with the same key and mailspace prints "already joined"
 vivi sync directory      # members: name, address domain, fingerprint
 vivi sync status         # fingerprint, server, project, address, cursor, epoch, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
 vivi sync api-key mint --label <LABEL> [--out <FILE>]  # project API key (label 1 to 64 characters). Without --out: prints key_id, label, and the raw key once; Vivi never stores the key. With --out: writes the raw key to a new 0600 file (it must not exist; its directory must) and prints only key_id, label, and the file path. Automation and agents: always pass --out and read the key from the file — never capture a mint's stdout without it

@@ -145,7 +145,7 @@ struct Seen {
 /// `answer(method, path)`, and hand back what was seen.
 fn serve(
     connections: usize,
-    answer: fn(&str, &str) -> (u16, String),
+    answer: impl Fn(&str, &str) -> (u16, String) + Send + 'static,
 ) -> (u16, std::thread::JoinHandle<Vec<Seen>>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -322,6 +322,77 @@ fn join_registers_the_mailspace_id_and_tolerates_extra_response_fields() {
     let body: Value = serde_json::from_slice(&seen[1].body).unwrap();
     assert_eq!(body["mailspace_id"], "3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b");
     assert_eq!(body["name"], "alice");
+}
+
+/// A server where `alice` is already registered with `fingerprint` and
+/// `mailspace_id`, so a second join is refused as a name conflict.
+fn conflict_server(
+    fingerprint: String,
+    mailspace_id: &'static str,
+) -> impl Fn(&str, &str) -> (u16, String) + Send + 'static {
+    move |method, path| match (method, path.rsplit('/').next().unwrap_or_default()) {
+        ("POST", "identities") => (409, error_body("conflict", "name taken").to_string()),
+        ("GET", "directory") => (
+            200,
+            json!({"members": [{
+                "name": "alice",
+                "fingerprint": fingerprint,
+                "mailspace_id": mailspace_id,
+            }]})
+            .to_string(),
+        ),
+        _ => project_server(method, path),
+    }
+}
+
+#[test]
+fn joining_again_with_the_same_key_and_mailspace_is_not_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+    let mine = settings_for("x").mailspace_id;
+    let mine: &'static str = Box::leak(mine.into_boxed_str());
+    let (port, listener) = serve(5, conflict_server(identity.wire_fingerprint(), mine));
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+
+    let receipt = join(&settings, &identity).unwrap();
+
+    assert!(receipt.already_joined);
+    assert_eq!(receipt.name, "alice");
+    assert_eq!(receipt.fingerprint, identity.wire_fingerprint());
+    let seen = listener.join().unwrap();
+    assert_eq!(
+        seen.last().unwrap().path,
+        "/v1/projects/abcde-fghjk/directory"
+    );
+}
+
+#[test]
+fn a_name_held_by_another_key_is_still_a_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+    let mine: &'static str = Box::leak(settings_for("x").mailspace_id.into_boxed_str());
+    let other = "d".repeat(64);
+    let (port, listener) = serve(5, conflict_server(other, mine));
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+
+    let error = join(&settings, &identity).unwrap_err().to_string();
+
+    assert!(error.contains("already registered"), "{error}");
+    listener.join().unwrap();
+}
+
+#[test]
+fn a_name_held_by_the_same_key_for_another_mailspace_is_still_a_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+    let theirs = "00000000-0000-4000-8000-000000000000";
+    let (port, listener) = serve(5, conflict_server(identity.wire_fingerprint(), theirs));
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+
+    let error = join(&settings, &identity).unwrap_err().to_string();
+
+    assert!(error.contains("already registered"), "{error}");
+    listener.join().unwrap();
 }
 
 #[test]

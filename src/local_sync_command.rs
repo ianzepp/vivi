@@ -363,7 +363,12 @@ fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let receipt = http::join(&settings, &identity)?;
-    println!("joined project {} as {}", settings.project, receipt.name);
+    let verb = if receipt.already_joined {
+        "already joined"
+    } else {
+        "joined"
+    };
+    println!("{verb} project {} as {}", settings.project, receipt.name);
     println!("fingerprint {}", receipt.fingerprint);
     Ok(())
 }

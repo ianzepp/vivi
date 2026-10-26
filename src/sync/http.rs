@@ -27,6 +27,9 @@ pub struct JoinReceipt {
     pub name: String,
     pub fingerprint: String,
     pub token_expires_at: String,
+    /// The server already held this name for this key and mailspace, so the
+    /// join changed nothing.
+    pub already_joined: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -306,6 +309,12 @@ pub fn join(
         &[],
     )?;
     if status != 200 && status != 201 {
+        if status == 409
+            && error_code(&body) == "conflict"
+            && let Some(receipt) = already_joined(settings, identity)
+        {
+            return Ok(receipt);
+        }
         return Err(join_error(status, &body, settings, identity));
     }
     let registered: Registered = parse(&body)?;
@@ -313,7 +322,31 @@ pub fn join(
         name: registered.name,
         fingerprint: registered.fingerprint,
         token_expires_at: registered.token_expires_at,
+        already_joined: false,
     })
+}
+
+/// A join refused as a name conflict is still a success when the directory
+/// shows the name held by this checkout's own key and mailspace: joining twice
+/// changes nothing. A directory that cannot be read leaves the conflict.
+fn already_joined(settings: &SyncSettings, identity: &SyncIdentity) -> Option<JoinReceipt> {
+    let Ok(members) = HttpTransport::new(settings, identity).directory() else {
+        return None;
+    };
+    let own = identity.wire_fingerprint();
+    members
+        .into_iter()
+        .find(|member| {
+            member.name == settings.name
+                && member.fingerprint == own
+                && member.mailspace_id.as_deref() == Some(settings.mailspace_id.as_str())
+        })
+        .map(|member| JoinReceipt {
+            name: member.name,
+            fingerprint: member.fingerprint,
+            token_expires_at: String::new(),
+            already_joined: true,
+        })
 }
 
 #[derive(Debug, Deserialize)]
