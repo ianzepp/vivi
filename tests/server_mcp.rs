@@ -729,6 +729,35 @@ async fn a_durable_reply_carries_the_format_header_when_its_body_is_prose() {
     assert!(!raw.contains("X-Vivi-Depends-On"), "{raw}");
 }
 
+/// The hosted-only explicit `to` is refused on a server-owned project:
+/// such a reply always goes to the letter's sender, and a silently ignored
+/// redirect would lie to the caller about where the letter went.
+#[tokio::test]
+async fn a_server_reply_refuses_the_hosted_only_to_argument() {
+    let fx = fixture("reply-to-refused").await;
+    let (handle, _) = fx
+        .send_item(&fx.token, "need", &address("creator"), "to reply to")
+        .await;
+    for to in [json!(address("creator")), json!([address("creator")])] {
+        let message = fx
+            .call_err(
+                &fx.token,
+                "reply",
+                json!({"handle": handle, "to": to, "body": "hi"}),
+            )
+            .await;
+        assert!(
+            message.contains("to is available on a hosted project only"),
+            "{to}: {message}"
+        );
+    }
+    // The refusals delivered nothing: only the parent need is stored.
+    let thread = fx
+        .call(&fx.token, "thread", json!({"handle": handle}))
+        .await;
+    assert_eq!(thread["messages"].as_array().unwrap().len(), 1, "{thread}");
+}
+
 #[tokio::test]
 async fn a_memo_save_is_a_format_one_letter_with_tags_in_front_matter() {
     let fx = fixture("memo-shape").await;

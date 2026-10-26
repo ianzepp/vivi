@@ -93,19 +93,54 @@ pub(super) fn reply(
     rate_limit(limiter, project_id, &h.actor)?;
     let handle = req_str(arguments, "handle")?;
     let body = req_str(arguments, "body")?;
+    // An explicit `to` redirects the reply; absent keeps the parent's
+    // derived recipients. From stays the authenticated actor, cc and bcc
+    // stay empty.
+    let to = reply_to(arguments)?;
     let result =
-        h.ms.reply(
-            handle,
-            &h.actor,
-            Vec::new(),
-            Vec::new(),
-            None,
-            body.to_owned(),
-        )
-        .map_err(lib_error)?;
+        h.ms.reply(handle, &h.actor, to, Vec::new(), None, body.to_owned())
+            .map_err(lib_error)?;
     let mut out = delivery_json(h, &result)?;
     out["in_reply_to"] = json!(handle);
     Ok(out)
+}
+
+/// The hosted reply's explicit `to`. Absent (or null) keeps the parent's
+/// derived recipients; a present value must name at least one address.
+/// The strictness is the point: `Mailspace::reply` falls back to the
+/// parent's sender when the list is empty, so an explicitly empty or
+/// malformed value is refused rather than trimmed into that fallback.
+fn reply_to(arguments: &Value) -> Result<Vec<String>, ToolError> {
+    match arguments.get("to") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::String(raw)) => non_empty(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        ),
+        Some(Value::Array(items)) => {
+            let list: Result<Vec<String>, ToolError> = items
+                .iter()
+                .map(|item| match item.as_str().map(str::trim) {
+                    Some(raw) if !raw.is_empty() => Ok(raw.to_owned()),
+                    Some(_) => Err(ToolError::new("to must name at least one address")),
+                    None => Err(ToolError::new("to must be strings")),
+                })
+                .collect();
+            non_empty(list?)
+        }
+        Some(_) => Err(ToolError::new("to must be a string or an array of strings")),
+    }
+}
+
+fn non_empty(list: Vec<String>) -> Result<Vec<String>, ToolError> {
+    if list.is_empty() {
+        Err(ToolError::new("to must name at least one address"))
+    } else {
+        Ok(list)
+    }
 }
 
 /// `done` moves the item to the done folder; `reopen` moves it back to the

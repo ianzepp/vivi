@@ -423,15 +423,7 @@ fn tools_list() -> Value {
                 "additionalProperties": false
             })),
             tool_schema::send_tool(),
-            tool("reply", "Reply to a letter by handle as the authenticated caller.", json!({
-                "type": "object",
-                "properties": {
-                    "handle": { "type": "string" },
-                    "body": { "type": "string" }
-                },
-                "required": ["handle", "body"],
-                "additionalProperties": false
-            })),
+            reply_tool(),
             tool("done", "Close a need, task, or want. Travels as a stamped event letter when you authored it (same mailspace prefix); otherwise files a report reply. The newest event against an item controls its state, whichever member wrote it. Close metadata (verdict, branch, commit, repos) rides the event letter's front matter, never a header.", json!({
                 "type": "object",
                 "properties": {
@@ -886,6 +878,32 @@ fn role_set_schema() -> Value {
         );
     }
     schema
+}
+
+/// The `reply` tool: the parent handle and prose body, plus the
+/// hosted-only explicit `to`. A server-owned project refuses `to` and
+/// always replies to the original sender.
+fn reply_tool() -> Value {
+    tool(
+        "reply",
+        "Reply to a letter by handle as the authenticated caller. On a hosted project an explicit `to` redirects the reply to those roles or addresses instead of the original sender; on a server-owned project `to` is refused.",
+        json!({
+            "type": "object",
+            "properties": {
+                "handle": { "type": "string" },
+                "body": { "type": "string" },
+                "to": {
+                    "description": "Hosted projects only: reply to these roles or addresses instead of the original sender",
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                    ]
+                }
+            },
+            "required": ["handle", "body"],
+            "additionalProperties": false
+        }),
+    )
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
