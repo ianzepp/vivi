@@ -70,9 +70,9 @@ fn brief(
     let mut out = format!(
         "Pump verify mode\n\nneed: {need}\ntarget: {target}\nneed branch: {branch}\nreview range: {base}..{tip}\n"
     );
-    out.push_str("\nThe need rung runs in parallel with this audit. There is no thread-freshness refusal: a change to the need thread restarts the run elsewhere.\n");
+    out.push_str("\nThe need rung runs in parallel with this audit.\n");
     out.push_str("\n## Admitted plan\n\n");
-    match admitted_plan(cx.store, need)? {
+    match admitted_plan(cx.store, cx.run)? {
         Some(plan) => out.push_str(&capped(&plan, PLAN_CAP)),
         None => out.push_str("(no admitted plan recorded)"),
     }

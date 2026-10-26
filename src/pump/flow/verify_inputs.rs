@@ -13,8 +13,9 @@ use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 
-/// The planner verdict that marks an admitted plan.
-const PLANNED: &str = "planned";
+mod admitted;
+
+pub(crate) use admitted::admitted_plan;
 
 /// The class of an audit step.
 const AUDITOR: &str = "auditor";
@@ -139,27 +140,6 @@ pub fn whole_message_requirements(
             })
         })
         .collect()
-}
-
-/// The newest admitted plan of a need, over every run. Runs restarted at
-/// slice have no planner step, which is why this searches the whole need.
-///
-/// # Errors
-/// Returns [`VivariumError`] when the store cannot be read.
-pub(crate) fn admitted_plan(
-    store: &PumpStore,
-    need: &str,
-) -> Result<Option<String>, VivariumError> {
-    let rows = store.step_payloads_of_need(need)?;
-    for row in rows.iter().rev().filter(|row| row.class == "planner") {
-        let planned = store
-            .step_by_task(&row.task)?
-            .is_some_and(|step| step.verdict.as_deref() == Some(PLANNED));
-        if planned {
-            return Ok(row.payload["body"].as_str().map(str::to_string));
-        }
-    }
-    Ok(None)
 }
 
 /// The need branch row and its current tip.

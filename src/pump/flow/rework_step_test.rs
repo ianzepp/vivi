@@ -75,20 +75,22 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    let run = RunRow {
+        need: NEED.into(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    store.insert_run(&run)?;
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
         mail: FakeMail::new("mind"),
-        run: RunRow {
-            need: NEED.into(),
-            run: 1,
-            flow: "build".into(),
-            flow_version: 2,
-            kind: "build".into(),
-            entry: "plan".into(),
-            state: "live".into(),
-        },
+        run,
     })
 }
 
@@ -119,6 +121,7 @@ impl Rig {
     fn seed(&self) -> R {
         let rows = [
             ("plan", "planner", "t-plan", Some("planned")),
+            ("admit1", "admitter", "t-admit", Some("admitted")),
             ("audit1", "auditor", "t-audit", Some("block")),
             ("judge1", "judge", "t-judge", Some("block")),
             ("test1", "rung-need", "t-rung", Some("fail")),
@@ -283,10 +286,29 @@ fn a_rework_restart_run_reads_the_run_that_ended_at_the_cto() -> R {
     assert!(body.contains("F-77"), "{body}");
     assert!(body.contains("emit_harness::emit::a"), "{body}");
     assert!(body.contains("slice:s1 (task t-s1)"), "{body}");
+    // The restart inherits run 1's admitted plan through the walk.
+    assert!(body.contains("THE PLAN"), "{body}");
     assert!(body.contains("## CTO ruling"), "{body}");
     assert!(body.contains("reason: R-WHY"), "{body}");
     assert!(body.contains("new_fact: X-FACT"), "{body}");
 
+    Ok(())
+}
+
+#[test]
+fn a_rework_run_walks_through_repeated_continuations() -> R {
+    let mut rig = rig()?;
+    rig.seed()?;
+    // Run 2 continued at slice and admitted nothing of its own.
+    rig.store.insert_run(&RunRow {
+        run: 2,
+        entry: "slice".into(),
+        ..rig.run.clone()
+    })?;
+    rig.run.run = 3;
+    rig.run.entry = "rework1".into();
+    let body = rework_brief(&rig)?;
+    assert!(body.contains("THE PLAN"), "{body}");
     Ok(())
 }
 

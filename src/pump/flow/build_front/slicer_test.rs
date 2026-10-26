@@ -10,12 +10,11 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
-use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::JobSpec;
 use crate::pump::state::State;
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
 
@@ -81,17 +80,44 @@ fn row(node: &str, task: &str, state: StepState) -> StepRow {
     }
 }
 
-/// A Done planner step `node` whose task holds one pool result with `plan`.
-fn planner_done(rig: &mut Rig, node: &str, plan: Option<&str>) -> R {
-    let task = rig.mail.send_step("pump", "pump", node, "body", &[])?;
-    if let Some(plan) = plan {
-        let text = format!(
-            "{POOL_RESULT_MARKER}j-{node}: finished\npool p  slot 1  model m\n\n--- receipt\n{plan}"
-        );
-        rig.mail.reply(&task, &text)?;
-    }
-    rig.store
-        .insert_step(NEED, &row(node, &task, StepState::Done))
+/// A done planner step `node` whose stored payload carries `plan`.
+fn planner_done(rig: &mut Rig, node: &str, plan: &str) -> R {
+    let task = format!("t-{node}");
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run: 1,
+        node: node.into(),
+        class: "planner".into(),
+        task: task.clone(),
+        payload: serde_json::json!({
+            "front": { "answer": "planned" },
+            "body": plan,
+        }),
+    })?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            verdict: Some("planned".into()),
+            ..row(node, &task, StepState::Done)
+        },
+    )
+}
+
+/// A done admitter step `node` answering `verdict`.
+fn admitter_done(rig: &mut Rig, node: &str, verdict: &str) -> R {
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            verdict: Some(verdict.into()),
+            ..row(node, &format!("t-{node}"), StepState::Done)
+        },
+    )
+}
+
+/// The plain admission of a first plan: `plan` planned, `admit1` admitted.
+fn admitted_first_plan(rig: &mut Rig) -> R {
+    planner_done(rig, "plan", "PLAN-ONE")?;
+    admitter_done(rig, "admit1", "admitted")
 }
 
 fn start(rig: &Rig) -> Result<JobSpec, VivariumError> {
@@ -111,7 +137,7 @@ fn start(rig: &Rig) -> Result<JobSpec, VivariumError> {
 #[test]
 fn start_is_a_read_only_slicer_job_with_the_plan_and_default_minutes() -> R {
     let mut rig = rig()?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    admitted_first_plan(&mut rig)?;
 
     let spec = start(&rig)?;
 
@@ -140,7 +166,7 @@ fn configured_minutes_set_the_slice_size() -> R {
     let mut cfg = PumpConfig::default();
     cfg.slice.minutes = Some(6);
     let mut rig = rig_with(cfg)?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    admitted_first_plan(&mut rig)?;
 
     let spec = start(&rig)?;
 
@@ -158,7 +184,7 @@ fn slice_budgets_follow_a_nondefault_dispatch_fallback() -> R {
     let mut cfg = PumpConfig::default();
     cfg.dispatch.budget = 222;
     let mut rig = rig_with(cfg)?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    admitted_first_plan(&mut rig)?;
 
     let spec = start(&rig)?;
 
@@ -189,7 +215,7 @@ fn slice_budget_overrides_do_not_touch_the_slice_size_guidance() -> R {
     cfg.dispatch.step_budgets.judge = Some(88);
     cfg.dispatch.step_budgets.planner = Some(66);
     let mut rig = rig_with(cfg)?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    admitted_first_plan(&mut rig)?;
 
     let spec = start(&rig)?;
 
@@ -212,8 +238,10 @@ fn slice_budget_overrides_do_not_touch_the_slice_size_guidance() -> R {
 #[test]
 fn the_revised_plan_wins_over_the_first() -> R {
     let mut rig = rig()?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
-    planner_done(&mut rig, "plan2", Some("PLAN-TWO"))?;
+    planner_done(&mut rig, "plan", "PLAN-ONE")?;
+    admitter_done(&mut rig, "admit1", "revise")?;
+    planner_done(&mut rig, "plan2", "PLAN-TWO")?;
+    admitter_done(&mut rig, "admit2", "admitted")?;
 
     let spec = start(&rig)?;
 
@@ -223,23 +251,36 @@ fn the_revised_plan_wins_over_the_first() -> R {
 }
 
 #[test]
-fn no_done_planner_step_is_an_error() -> R {
+fn no_admitted_plan_is_rejected() -> R {
     let rig = rig()?;
 
     let err = start(&rig).unwrap_err();
 
+    assert!(
+        err.to_string().contains("no admitted plan to slice"),
+        "{err}"
+    );
     assert!(err.to_string().contains(NEED), "{err}");
     Ok(())
 }
 
 #[test]
-fn a_planner_step_without_a_reply_is_an_error() -> R {
+fn an_admission_without_a_stored_plan_body_is_an_error() -> R {
     let mut rig = rig()?;
-    planner_done(&mut rig, "plan", None)?;
+    // The planner step and the admission exist, but the planner stored no
+    // payload: the referenced material is missing, not merely absent.
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            verdict: Some("planned".into()),
+            ..row("plan", "t-plan", StepState::Done)
+        },
+    )?;
+    admitter_done(&mut rig, "admit1", "admitted")?;
 
     let err = start(&rig).unwrap_err();
 
-    assert!(err.to_string().contains("no reply"), "{err}");
+    assert!(err.to_string().contains("no stored payload"), "{err}");
     Ok(())
 }
 
