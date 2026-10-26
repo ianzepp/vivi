@@ -728,6 +728,154 @@ async fn dispatch_priority_uses_the_canonical_need_and_configured_home() {
     assert_eq!(plain["pump"]["need"], plain["handle"], "{plain}");
 }
 
+/// Dispatch partial failures: the shortcut files the need, hands it to the
+/// pump with one open record, and writes an optional priority row — and
+/// mail.sqlite and pump.db are not one transaction. A failure after the
+/// send answers as a tool error that names the durable work so it can be
+/// recovered; nothing is resent, deleted, or rolled back.
+#[tokio::test]
+async fn dispatch_reports_partial_failure_without_resending() {
+    pump_record_failure_names_the_retained_need().await;
+    priority_failure_names_the_filed_need_record_and_canonical_need().await;
+}
+
+/// The substring of `text` between the first `open` and the next `close`,
+/// trimmed: the recovery handles a partial-failure error carries are
+/// located by their markers, never by the exact sentence.
+fn marker_span(text: &str, open: &str, close: &str) -> String {
+    let start = text
+        .find(open)
+        .unwrap_or_else(|| panic!("{open:?} missing from {text:?}"))
+        + open.len();
+    let rest = &text[start..];
+    let end = rest.find(close).unwrap_or(rest.len());
+    rest[..end].trim().to_owned()
+}
+
+/// A `[pump] from` that names no local role: the need send never reads it,
+/// the pump record send fails to resolve its sender, and the error names
+/// the filed need — which still resolves, holding exactly its delivered
+/// and sent copies, with no record and no priority anywhere.
+async fn pump_record_failure_names_the_retained_need() {
+    let fx = fixture("record-fail", true);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+    // `[pump]` is the fixture's last table, so the line lands inside it.
+    let toml = fx.root.join(".vivi").join("mailspace.toml");
+    let mut text = std::fs::read_to_string(&toml).unwrap();
+    text.push_str("from = \"ghost\"\n");
+    std::fs::write(&toml, text).unwrap();
+
+    let error = fx
+        .refused(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true})),
+        )
+        .await;
+    let need = marker_span(&error, "need ", " was filed");
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let need_id = storage.resolve_message_token(&need).unwrap();
+    assert_eq!(
+        storage.message_by_id(&need_id).unwrap().unwrap().local_role,
+        "needs",
+        "{error}"
+    );
+
+    // The retained copies: one delivered need plus its sent copy, one
+    // content — no duplicate send, no pump record, no priority row and no
+    // database at either home.
+    let views = fx.stored_views();
+    let mut roles: Vec<&str> = views.iter().map(|view| view.local_role.as_str()).collect();
+    roles.sort_unstable();
+    assert_eq!(roles, ["needs", "sent"], "{views:?}");
+    // One content group holding both copies: the send happened once.
+    let mut contents: Vec<&str> = views.iter().map(|view| view.content_id.as_str()).collect();
+    contents.sort_unstable();
+    contents.dedup();
+    assert_eq!(contents, [views[0].content_id.as_str()], "{views:?}");
+    let delivered = views
+        .iter()
+        .find(|view| view.local_role == "needs")
+        .unwrap();
+    assert_eq!(storage.display_handle(&delivered.message_id).unwrap(), need);
+    assert!(fx.records(None).is_empty(), "{error}");
+    assert!(!fx.home().join("pump.db").exists());
+    assert!(!fx.default_home_db().exists());
+    assert!(fx.priorities().is_empty());
+}
+
+/// A directory occupying the configured home's `pump.db`: the need and its
+/// pump record file normally, and the priority write — the shortcut's last
+/// step — fails to open the store. The error names the filed need, the open
+/// record and the record's canonical need; all three resolve, the record is
+/// the only one, and nothing was deleted, retried, or prioritized.
+async fn priority_failure_names_the_filed_need_record_and_canonical_need() {
+    let fx = fixture("priority-fail", true);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+    let obstacle = fx.home().join("pump.db");
+    std::fs::create_dir_all(&obstacle).unwrap();
+
+    let error = fx
+        .refused(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true, "priority": 7})),
+        )
+        .await;
+    let need = marker_span(&error, "need ", " was filed");
+    let record = marker_span(&error, "pump record ", ",");
+    let canonical = marker_span(&error, " on ", " failed");
+
+    // All three recovery handles resolve independently, and the durable
+    // state agrees: exactly one open record, its handle and canonical need
+    // the ones the error named.
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let need_id = storage.resolve_message_token(&need).unwrap();
+    storage.resolve_message_token(&record).unwrap();
+    let canonical_id = storage.resolve_message_token(&canonical).unwrap();
+    let open = fx.records(Some(PumpState::Open));
+    assert_eq!(open.len(), 1, "{error}");
+    assert_eq!(open[0].handle, record);
+    assert_eq!(open[0].need, canonical);
+    let (shown, body) = ms.pump_show(&record).unwrap();
+    assert_eq!(shown.handle, record);
+    assert_eq!(shown.need, canonical);
+    assert!(body.contains(&need), "{body}");
+
+    // Exactly one need delivery plus its sent copy and the record's own
+    // two copies: no retry, no extra or done record, nothing deleted.
+    assert_eq!(fx.records(None).len(), 1, "{error}");
+    let views = fx.stored_views();
+    let mut roles: Vec<&str> = views.iter().map(|view| view.local_role.as_str()).collect();
+    roles.sort_unstable();
+    assert_eq!(roles, ["needs", "pumps", "sent", "sent"], "{views:?}");
+    // Two content groups of two copies each — the need's and the record's:
+    // the send and the record happened once, and no third letter exists.
+    let mut contents: Vec<&str> = views.iter().map(|view| view.content_id.as_str()).collect();
+    contents.sort_unstable();
+    contents.dedup();
+    assert_eq!(contents.len(), 2, "{views:?}");
+    for content in &contents {
+        assert_eq!(
+            views
+                .iter()
+                .filter(|view| view.content_id == *content)
+                .count(),
+            2,
+            "{views:?}"
+        );
+    }
+    assert_eq!(storage.display_handle(&need_id).unwrap(), need);
+    assert_eq!(canonical_id, need_id);
+
+    // Removing only the deliberate obstacle: no priority row was committed.
+    std::fs::remove_dir_all(&obstacle).unwrap();
+    assert!(fx.priorities().is_empty());
+    assert!(!fx.default_home_db().exists());
+}
+
 /// The library record contract (mailspace/pump_record.rs): an open record
 /// alone admits a need — the need's own addressee plays no part. A need
 /// addressed only to the hand role dispatches like any other.
