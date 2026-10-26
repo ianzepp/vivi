@@ -8,6 +8,28 @@
 # that only logs what would run.
 authority = "observe"
 
+# Action categories only the operator may take. Missing the key applies the
+# default below (all five); an explicit list replaces it and [] permits no
+# escalation at all. Duplicates and unknown names are refused. Listing a
+# category reserves it for the operator; it grants the mind none of those
+# execution powers.
+#
+# spending-accounts  spending from the operator's accounts: subscriptions,
+#                    purchases, purchased quotas, account administration,
+#                    GitHub or Tailscale account settings
+# credentials        creating or rotating keys, secrets, or credentials
+# host-root          acting on the host itself, as root
+# releases           authorizing a release, cutting tags, promoting a build
+# product-intent     whether a need is wanted at all, or a design question
+#                    the thread cannot settle
+human_only = [
+  "spending-accounts",
+  "credentials",
+  "host-root",
+  "releases",
+  "product-intent",
+]
+
 # Wake at least this often with nobody attached (role_schedule durations).
 heartbeat = "30m"
 

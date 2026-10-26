@@ -80,6 +80,47 @@ fn later_stages_are_refused() {
 }
 
 #[test]
+fn absent_human_only_defaults_to_all_five_categories() {
+    let config = parse("", paths()).unwrap();
+    assert_eq!(
+        config.human_only,
+        HumanOnlyPolicy::from_names(&[
+            "spending-accounts".into(),
+            "credentials".into(),
+            "host-root".into(),
+            "releases".into(),
+            "product-intent".into(),
+        ])
+        .unwrap()
+    );
+    assert!(config.human_only.contains("releases"));
+}
+
+#[test]
+fn explicit_human_only_replaces_the_defaults_and_empty_permits_none() {
+    let custom = parse("human_only = [\"host-root\", \"releases\"]", paths()).unwrap();
+    assert!(custom.human_only.contains("host-root"));
+    assert!(!custom.human_only.contains("credentials"));
+    let empty = parse("human_only = []", paths()).unwrap();
+    assert_eq!(empty.human_only.categories, vec![]);
+    assert!(!empty.human_only.contains("releases"));
+}
+
+#[test]
+fn duplicate_and_unknown_human_only_names_are_refused() {
+    let duplicate = parse(
+        "human_only = [\"releases\", \"host-root\", \"releases\"]",
+        paths(),
+    )
+    .unwrap_err();
+    assert!(duplicate.to_string().contains("duplicate"), "{duplicate}");
+    let unknown = parse("human_only = [\"cash\"]", paths()).unwrap_err();
+    let said = unknown.to_string();
+    assert!(said.contains("unknown category"), "{said}");
+    assert!(said.contains("spending-accounts"), "{said}");
+}
+
+#[test]
 fn unknown_stage_and_unknown_key_are_refused() {
     assert!(parse("authority = \"root\"", paths()).is_err());
     assert!(parse("authority = \"observe\"\nkeys = \"x\"", paths()).is_err());

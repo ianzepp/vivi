@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::VivariumError;
 use crate::duration::parse_duration_secs;
+use crate::mind::policy::HumanOnlyPolicy;
 
 /// Config file name, next to `pump-service.toml`.
 pub const CONFIG_FILENAME: &str = "mind.toml";
@@ -109,6 +110,9 @@ impl Default for Budgets {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MindConfig {
     pub authority: AuthorityStage,
+    /// Action categories reserved for the operator. An empty policy permits
+    /// no escalation; membership grants none of those powers.
+    pub human_only: HumanOnlyPolicy,
     /// Heartbeat as written (`30m`), for the role schedule helpers.
     pub heartbeat: String,
     pub heartbeat_secs: u64,
@@ -173,6 +177,8 @@ impl MindPaths {
 #[serde(deny_unknown_fields)]
 struct FileFormat {
     authority: Option<AuthorityStage>,
+    /// Missing applies the default list; `[]` permits no escalation.
+    human_only: Option<Vec<String>>,
     heartbeat: Option<String>,
     proxy_url: Option<String>,
     pi_command: Option<String>,
@@ -266,6 +272,10 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
             authority.as_str()
         )));
     }
+    let human_only = match file.human_only {
+        Some(names) => HumanOnlyPolicy::from_names(&names)?,
+        None => HumanOnlyPolicy::default(),
+    };
     let heartbeat = file
         .heartbeat
         .unwrap_or_else(|| DEFAULT_HEARTBEAT.to_string());
@@ -282,6 +292,7 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
     }
     Ok(MindConfig {
         authority,
+        human_only,
         heartbeat,
         heartbeat_secs,
         proxy_url,
