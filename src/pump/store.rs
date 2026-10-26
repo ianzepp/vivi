@@ -22,6 +22,7 @@ mod main_state;
 mod need_branch;
 mod priority;
 mod schema;
+mod scope_ruling;
 mod snapshot;
 mod state_rows;
 pub mod step_payload;
@@ -29,6 +30,7 @@ mod unit_extra;
 pub(super) use codec::{db_err, from_json, from_u32, from_u64, json, json_or_null};
 pub use need_branch::NeedBranchRow;
 use schema::{drop_request_queues, newer_schema, schema_version, take_migration_lock};
+pub use scope_ruling::{ScopeCoordination, ScopeJournalRow, ScopeRequest, ScopeRequestOutcome};
 use state_rows::{
     clear, load_meta, load_needs, load_order, load_strings, load_units, write_lists, write_meta,
     write_needs, write_units,
@@ -469,6 +471,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
+    scope_ruling::ensure_table(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
     }
