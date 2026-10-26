@@ -65,12 +65,13 @@ fn the_spec_names_the_step_and_asks_for_the_envelope_only() {
         &job,
         &error,
         1,
+        45,
     );
     assert_eq!(got.id, "j1-c1");
     assert_eq!(got.kind, KIND);
     assert_eq!(got.role, "planner");
     assert!(got.read_only);
-    assert_eq!(got.budget, 300);
+    assert_eq!(got.budget, 45);
     assert_eq!(got.target.as_deref(), Some("vivi"));
     assert!(
         got.payload
@@ -101,7 +102,9 @@ fn the_correction_carries_the_originals_dispatch_fields() {
         &job,
         &EnvelopeError::NoOpening,
         1,
+        300,
     );
+    assert_eq!(got.budget, 300);
     assert_eq!(got.from_ref.as_deref(), Some("main"));
     assert_eq!(got.extra_targets, vec!["vivi-server".to_owned()]);
     assert_eq!(got.with, vec!["need/x".to_owned()]);
@@ -121,6 +124,7 @@ fn a_correction_of_a_correction_keeps_one_base_id() {
         &job,
         &EnvelopeError::Unclosed,
         2,
+        300,
     );
     assert_eq!(got.id, "j1-c2");
     assert_eq!(base_id("j1-c2"), "j1");
@@ -142,6 +146,7 @@ fn the_original_message_is_capped_at_16_kib() {
         &job,
         &EnvelopeError::NoOpening,
         1,
+        300,
     );
     assert!(got.body.contains("[cut at 16384 bytes]"));
     assert!(got.body.len() < 17_000 + 2_000);
@@ -162,6 +167,7 @@ fn enqueue_records_the_job_under_the_steps_own_task_and_attempt() {
         &job,
         &EnvelopeError::NoOpening,
         1,
+        300,
     );
     enqueue(&mut jobs, &store, "n1", &source, fix).unwrap();
     assert!(jobs.jobs.contains_key("j1-c1"));
