@@ -7,10 +7,13 @@
 //! command and never edits `.vivi`, git, or config directly.
 //!
 //! [`permit`] is a pure function of the configured stage, whether the
-//! operator paused the mind, and the per-need budget ledger, so the gate is
-//! unit-testable without a server.
+//! operator paused the mind, and the budget ledger, so the gate is
+//! unit-testable without a server. Two buckets share one window rule: the
+//! bare need handles for need-scoped moves, and one reserved per-project
+//! key for filing and role/pool tuning.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -239,6 +242,14 @@ pub enum Denial {
     MissingNeed,
     /// The need's budget for the window is spent.
     Budget { need: String, used: u32, limit: u32 },
+    /// The project's shared filing-and-tuning budget for the window is
+    /// spent. The `project` is the reserved [`project_key`] ledger key,
+    /// never a bare need handle.
+    ProjectBudget {
+        project: String,
+        used: u32,
+        limit: u32,
+    },
     /// The stage is open but this build does not carry the action out.
     NotImplemented,
 }
@@ -257,6 +268,11 @@ impl std::fmt::Display for Denial {
             Self::Budget { need, used, limit } => {
                 write!(f, "need {need} budget spent ({used}/{limit})")
             }
+            Self::ProjectBudget {
+                project,
+                used,
+                limit,
+            } => write!(f, "{project} budget spent ({used}/{limit})"),
             Self::NotImplemented => write!(f, "not implemented in this build"),
         }
     }
@@ -304,19 +320,61 @@ pub fn permit(
     let Some(need) = need.filter(|need| !need.trim().is_empty()) else {
         return Err(Denial::MissingNeed);
     };
-    let used = used_in_window(ledger, need, gate.now, gate.budgets.per_need_window_secs);
-    if used >= gate.budgets.per_need_actions {
-        return Err(Denial::Budget {
+    window_check(ledger, need, gate.budgets, gate.now, |used, limit| {
+        Denial::Budget {
             need: need.to_string(),
             used,
-            limit: gate.budgets.per_need_actions,
-        });
+            limit,
+        }
+    })
+}
+
+/// The project half of the budget: filing and role/pool tuning draw down
+/// one shared window per watched project, on the reserved [`project_key`]
+/// ledger key. The stage and pause gates are [`permit`]'s; this is the
+/// window check alone. Bare-need entries never count here.
+///
+/// # Errors
+/// Returns [`Denial::ProjectBudget`] when the project's window is spent.
+pub fn permit_project(gate: &Gate<'_>, ledger: &Ledger, project: &Path) -> Result<(), Denial> {
+    let key = project_key(project);
+    window_check(ledger, &key, gate.budgets, gate.now, |used, limit| {
+        Denial::ProjectBudget {
+            project: key.clone(),
+            used,
+            limit,
+        }
+    })
+}
+
+/// The ledger key of a project's shared filing-and-tuning window. The
+/// `project:` prefix carries `:` and the path's separators, which cannot
+/// pass the handle validator, so a project key can never collide with a
+/// bare need handle and legacy bare-need entries keep their meaning.
+#[must_use]
+pub fn project_key(project: &Path) -> String {
+    format!("project:{}", project.display())
+}
+
+/// The one window rule both buckets share: count `key`'s entries inside the
+/// configured window and refuse with `denial(used, limit)` once they reach
+/// the limit.
+fn window_check(
+    ledger: &Ledger,
+    key: &str,
+    budgets: &Budgets,
+    now: u64,
+    denial: impl FnOnce(u32, u32) -> Denial,
+) -> Result<(), Denial> {
+    let used = used_in_window(ledger, key, now, budgets.per_need_window_secs);
+    if used >= budgets.per_need_actions {
+        return Err(denial(used, budgets.per_need_actions));
     }
     Ok(())
 }
 
-/// Record a permitted need-scoped action in the ledger and drop entries
-/// older than the window.
+/// Record a permitted action in its bucket — the bare need handle or the
+/// reserved project key — and drop entries older than the window.
 pub fn spend(ledger: &mut Ledger, need: &str, now: u64, window_secs: u64) {
     let entry = ledger.entry(need.to_string()).or_default();
     entry.retain(|at| now.saturating_sub(*at) < window_secs);

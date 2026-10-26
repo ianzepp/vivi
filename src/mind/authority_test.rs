@@ -1,5 +1,7 @@
 //! Tests for [`crate::mind::authority`].
 
+use std::path::Path;
+
 use super::*;
 
 const NOW: u64 = 1_000_000;
@@ -571,4 +573,83 @@ fn as_str_is_the_envelope_kind() {
             serde_json::Value::from(action.as_str())
         );
     }
+}
+
+#[test]
+fn project_keys_live_in_a_reserved_namespace() {
+    // The `project:` prefix carries `:` and path separators, characters the
+    // handle validator refuses, so a project key can never collide with a
+    // bare need handle.
+    let key = project_key(Path::new("/w/app"));
+    assert!(key.starts_with("project:"), "{key}");
+    assert!(key.contains('/'), "{key}");
+    // Bare-need entries keep their spelling: spend writes no prefix.
+    let mut ledger = Ledger::new();
+    spend(&mut ledger, "n1", NOW, 60);
+    assert_eq!(ledger["n1"], vec![NOW]);
+    assert!(ledger.get(&key).is_none());
+}
+
+#[test]
+fn project_budget_is_shared_windowed_and_per_project() {
+    let budgets = budgets();
+    let mut ledger = Ledger::new();
+    let g = gate(AuthorityStage::FileFixes, &budgets);
+    let app = project_key(Path::new("/w/app"));
+    spend(&mut ledger, &app, NOW - 10, budgets.per_need_window_secs);
+    spend(&mut ledger, &app, NOW - 5, budgets.per_need_window_secs);
+    assert_eq!(
+        permit_project(&g, &ledger, Path::new("/w/app")),
+        Err(Denial::ProjectBudget {
+            project: app.clone(),
+            used: 2,
+            limit: 2,
+        })
+    );
+    // Another watched project draws its own window.
+    assert_eq!(permit_project(&g, &ledger, Path::new("/w/vivi")), Ok(()));
+    // Outside the window the entries expire.
+    let later = Gate {
+        now: NOW + 3600,
+        ..g
+    };
+    assert_eq!(permit_project(&later, &ledger, Path::new("/w/app")), Ok(()));
+}
+
+#[test]
+fn project_budget_denial_is_distinct_from_the_need_denial() {
+    let project = Denial::ProjectBudget {
+        project: "project:/w/app".into(),
+        used: 3,
+        limit: 3,
+    };
+    assert_ne!(
+        project,
+        Denial::Budget {
+            need: "project:/w/app".into(),
+            used: 3,
+            limit: 3,
+        }
+    );
+    assert_eq!(project.to_string(), "project:/w/app budget spent (3/3)");
+}
+
+#[test]
+fn legacy_bare_need_entries_still_gate_their_need() {
+    let budgets = budgets();
+    let mut ledger = Ledger::new();
+    // Entries written before the project namespace existed are bare need
+    // handles; they keep counting against the need's own window.
+    ledger.insert(String::from("n1"), vec![NOW - 30, NOW - 20]);
+    let g = gate(AuthorityStage::Unstick, &budgets);
+    assert_eq!(
+        permit(&g, &ledger, Action::Requeue, Some("n1")),
+        Err(Denial::Budget {
+            need: "n1".into(),
+            used: 2,
+            limit: 2,
+        })
+    );
+    // The same legacy entries never touch a project's window.
+    assert_eq!(permit_project(&g, &ledger, Path::new("/w/app")), Ok(()));
 }

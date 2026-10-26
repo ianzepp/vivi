@@ -1,6 +1,6 @@
 //! Tests for [`crate::mind::actions`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::mind::authority::Ledger;
@@ -923,4 +923,206 @@ fn file_fix_need_requires_watched_vivi() {
     let fields = required_lines(Action::FileNeed);
     let planned = plan_at(Action::FileNeed, Some("/w/vivi"), &as_lines(&fields));
     assert_eq!(planned.verdict, Ok(()));
+}
+
+/// The role/pool tuning action body, the cheapest project-budgeted kind.
+fn tuning_body(project: &str) -> String {
+    format!(
+        "[[action]]\nkind = \"set-role-model\"\nproject = \"{project}\"\nrole = \"hand\"\nmodel = \"vendor/model.v1\"\n"
+    )
+}
+
+/// One TOML action body line list, as lines inside the `+++` fences.
+fn fenced(body: &str) -> String {
+    format!("+++\n{body}+++")
+}
+
+/// The project-budgeted kinds and the watched root each plans at.
+const PROJECT_BUDGETED: &[(Action, &str)] = &[
+    (Action::FileNeed, "/w/app"),
+    (Action::FileFixNeed, "/w/vivi"),
+    (Action::SetRoleModel, "/w/app"),
+    (Action::SetPoolCap, "/w/app"),
+    (Action::SetPoolBand, "/w/app"),
+];
+
+#[test]
+fn every_project_budgeted_action_spends_the_shared_project_bucket() {
+    for &(kind, project) in PROJECT_BUDGETED {
+        let fields = required_lines(kind);
+        let lines = as_lines(&fields);
+        let (planned, ledger) = run(
+            kind.required_stage(),
+            &envelope(kind, Some(project), &lines),
+        );
+        assert_eq!(planned[0].verdict, Ok(()), "{}", kind.as_str());
+        let key = authority::project_key(Path::new(project));
+        assert_eq!(ledger[&key], vec![NOW], "{}", kind.as_str());
+        // Filing never fabricates a destination need: no bare need key is
+        // written, every spend lands in the reserved project namespace.
+        assert!(
+            ledger.keys().all(|key| key.starts_with("project:")),
+            "{}",
+            kind.as_str()
+        );
+    }
+}
+
+#[test]
+fn mixed_filing_and_tuning_exhaust_one_project_window() {
+    // run() caps each window at one action: the first permitted project
+    // action spends the shared bucket, and a different kind on the same
+    // project is then refused without spending again.
+    let filing = format!(
+        "[[action]]\nkind = \"file-need\"\nproject = \"/w/app\"\n{}",
+        required_lines(Action::FileNeed)
+            .into_iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+    );
+    let (planned, ledger) = run(
+        AuthorityStage::FileFixes,
+        &fenced(&format!("{filing}{}", tuning_body("/w/app"))),
+    );
+    assert_eq!(planned[0].verdict, Ok(()));
+    assert_eq!(
+        planned[1].verdict,
+        Err(Refusal::Gate(Denial::ProjectBudget {
+            project: authority::project_key(Path::new("/w/app")),
+            used: 1,
+            limit: 1,
+        }))
+    );
+    assert_eq!(
+        ledger[&authority::project_key(Path::new("/w/app"))],
+        vec![NOW]
+    );
+}
+
+#[test]
+fn project_windows_are_independent_between_watched_roots() {
+    let (planned, ledger) = run(
+        AuthorityStage::Unstick,
+        &fenced(&format!(
+            "{}{}{}",
+            tuning_body("/w/app"),
+            tuning_body("/w/vivi"),
+            tuning_body("/w/app")
+        )),
+    );
+    assert_eq!(planned[0].verdict, Ok(()));
+    assert_eq!(planned[1].verdict, Ok(()));
+    assert_eq!(
+        planned[2].verdict,
+        Err(Refusal::Gate(Denial::ProjectBudget {
+            project: authority::project_key(Path::new("/w/app")),
+            used: 1,
+            limit: 1,
+        }))
+    );
+    // The refusal spent nothing: one entry per project key.
+    assert_eq!(
+        ledger[&authority::project_key(Path::new("/w/app"))],
+        vec![NOW]
+    );
+    assert_eq!(
+        ledger[&authority::project_key(Path::new("/w/vivi"))],
+        vec![NOW]
+    );
+}
+
+#[test]
+fn an_expired_project_entry_frees_the_bucket_in_plan() {
+    let budgets = Budgets {
+        per_need_actions: 1,
+        per_need_window_secs: 1800,
+        max_wakes_per_hour: 6,
+    };
+    let gate = Gate {
+        stage: AuthorityStage::Unstick,
+        paused: false,
+        budgets: &budgets,
+        now: 1_000_000,
+    };
+    let mut ledger = Ledger::new();
+    let key = authority::project_key(Path::new("/w/app"));
+    // NOW is far outside the 1800s window the gate above looks through.
+    ledger.insert(key, vec![NOW]);
+    let requests = parse_envelope(&fenced(&tuning_body("/w/app"))).unwrap();
+    let planned = plan(requests, &gate, &watched(), &mut ledger);
+    assert_eq!(planned[0].verdict, Ok(()));
+    // The out-of-window entry was pruned on spend, not counted.
+    assert_eq!(
+        ledger[&authority::project_key(Path::new("/w/app"))],
+        vec![1_000_000]
+    );
+}
+
+#[test]
+fn local_refusals_spend_nothing() {
+    // A stage refusal at the gate leaves every bucket untouched.
+    let (planned, ledger) = run(AuthorityStage::Observe, &fenced(&tuning_body("/w/app")));
+    assert!(matches!(
+        planned[0].verdict,
+        Err(Refusal::Gate(Denial::Stage { .. }))
+    ));
+    assert!(ledger.is_empty());
+    // A validation refusal after the gate order never spends either.
+    let oversized = format!(
+        "subject = \"{}\"",
+        "s".repeat(super::filing_fields::MAX_SUBJECT + 1)
+    );
+    let fields = with_field(Action::FileNeed, "subject", &oversized);
+    let body = format!(
+        "[[action]]\nkind = \"file-need\"\nproject = \"/w/app\"\n{}",
+        as_lines(&fields)
+            .into_iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+    );
+    let (planned, ledger) = run(AuthorityStage::FileFixes, &fenced(&body));
+    assert_eq!(planned[0].verdict, Err(Refusal::FilingTooLarge("subject")));
+    assert!(ledger.is_empty());
+}
+
+#[test]
+fn project_mutations_cannot_bypass_budget_with_a_need_field() {
+    // A `need` field is not one the tuning kinds read, so it cannot route a
+    // project mutation into the need bucket: the field is refused before the
+    // gate, and a refusal never spends.
+    let tuning = tuning_body("/w/app");
+    let with_need = tuning.replace(
+        "project = \"/w/app\"",
+        "project = \"/w/app\"\nneed = \"3f9a1c2e\"",
+    );
+    let (planned, ledger) = run(
+        AuthorityStage::Unstick,
+        &fenced(&format!("{tuning}{with_need}{}", tuning_body("/w/app"))),
+    );
+    assert_eq!(planned[0].verdict, Ok(()));
+    assert_eq!(planned[1].verdict, Err(Refusal::UnexpectedField("need")));
+    // The same tuning without the stray need field is refused on the spent
+    // project window instead — the need field rescues nothing.
+    assert!(matches!(
+        planned[2].verdict,
+        Err(Refusal::Gate(Denial::ProjectBudget { .. }))
+    ));
+    // The ledger holds exactly the one permitted spend, under the project
+    // key: nothing under the bare need handle.
+    assert!(ledger.get("3f9a1c2e").is_none());
+    assert_eq!(
+        ledger[&authority::project_key(Path::new("/w/app"))],
+        vec![NOW]
+    );
+}
+
+#[test]
+fn project_keys_cannot_pass_the_handle_validator() {
+    for project in ["/w/app", "/w/vivi", "plain", "app"] {
+        let key = authority::project_key(Path::new(project));
+        assert!(
+            !super::fields::plain_handle(&key),
+            "{key} must not pass the handle validator"
+        );
+    }
 }
