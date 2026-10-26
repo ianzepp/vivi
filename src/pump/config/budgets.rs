@@ -1,19 +1,41 @@
 //! Typed thinking-step budgets (the `[pump.dispatch.step_budgets]` table).
 //!
-//! Every dispatch runs under `pump.dispatch.budget` unless this table gives
-//! the step its own cap. The canonical keys are the seven thinking steps —
-//! `planner`, `admitter`, `slicer`, `auditor`, `head-cto`, `researcher` and
-//! `judge` — plus `envelope-fix` for the correction step. Every value is
-//! whole seconds. Fallback rules: an absent key falls back to
-//! `pump.dispatch.budget` for the seven thinking steps and to 300 seconds
-//! for `envelope-fix` (independent of `budget` and of every other
-//! override); roles with no key here (cto, merge, hand, repairer) always use
-//! the shared `budget`, so existing merge and explicit repair-cap rules keep
-//! working unchanged. A forthcoming change retries one timed-out thinking
-//! step once at twice its resolved budget, capped by the pool bound; this
-//! table only fixes the first attempt. These budgets are wall-clock caps per
-//! dispatch step, unrelated to `pump.slice.minutes`, which sizes the work
-//! units the slicer aims for; neither setting feeds the other.
+//! Every dispatch runs under `pump.dispatch.budget` (default 600 s) unless
+//! this table gives the step its own cap. The canonical table — every key
+//! optional, every value whole seconds:
+//!
+//! ```toml
+//! [pump.dispatch.step_budgets]
+//! planner = 900       # absent: `pump.dispatch.budget`
+//! admitter = 600      # absent: `pump.dispatch.budget`
+//! slicer = 1200       # absent: `pump.dispatch.budget`
+//! auditor = 900       # absent: `pump.dispatch.budget`
+//! head-cto = 1800     # absent: `pump.dispatch.budget`; only spelling
+//! researcher = 900    # absent: `pump.dispatch.budget`
+//! judge = 600         # absent: `pump.dispatch.budget`
+//! envelope-fix = 300  # absent: 300, independent of `budget`
+//! ```
+//!
+//! Fallback rules: an absent thinking key resolves to the shared
+//! `pump.dispatch.budget`; `envelope-fix` resolves to 300 seconds
+//! independently of `budget` and of every other override. Roles with no key
+//! here (cto, merge, hand, repairer) always use the shared `budget`, so
+//! existing merge and explicit repair-cap rules keep working unchanged.
+//! These budgets are wall-clock caps per dispatch step, unrelated to
+//! `pump.slice.minutes`, which sizes the work units the slicer aims for;
+//! neither setting feeds the other.
+//!
+//! A budget kill gets one retry at a raised budget before the step counts
+//! as failed: `pump::flow::budget_retry` runs the retry at twice the
+//! step's resolved budget, capped at the pool bound
+//! (`pool::dispatch::BUDGET_RANGE`), and marks it spent so a second kill
+//! is final. This table fixes the first attempt only; the raise is
+//! computed per dispatch.
+//!
+//! Ruling: "The slicer's ~300 s stays a sizing target, never a hard stop.
+//! Thinking steps (planner, admitter, slicer, auditor, head-cto) get their
+//! own budgets. A budget kill gets one retry at a raised budget before the
+//! step counts as failed."
 
 use crate::pump::envelope::roles::RoleKind;
 
