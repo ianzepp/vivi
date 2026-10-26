@@ -7,8 +7,8 @@
 //! One assessment feeds `vivi config validate`, `vivi pump run`, the service
 //! registry and `vivi pump health`, so they never disagree.
 
-use crate::mailspace::Mailspace;
 use crate::mailspace::shipped::pre_v20_charter;
+use crate::mailspace::{Mailspace, ROLE_STATUS_ACTIVE};
 use crate::pump::config::PumpConfig;
 use crate::routing::{self, Issue, Severity};
 
@@ -92,6 +92,7 @@ fn config_issues(mailspace: &Mailspace, cfg: &PumpConfig, issues: &mut Vec<Issue
             .map(|item| Issue::not_ready(item.name, item.detail)),
     );
     identity_issues(mailspace, cfg, issues);
+    mind_seat_issues(mailspace, issues);
 }
 
 /// The identities the pump speaks as: `[pump] from`, `to` and `reply_from`,
@@ -132,6 +133,52 @@ fn identity_issues(mailspace: &Mailspace, cfg: &PumpConfig, issues: &mut Vec<Iss
         } else {
             issues.push(Issue::error(format!("{key} = \"{value}\": {err}")));
         }
+    }
+}
+
+/// The pump's decision seat: the local role literally named `mind`.
+///
+/// Required on its own, not only when a configurable identity happens to
+/// name it: an alias to another role or a mind-kind role under another name
+/// is not the named seat. A missing or inactive seat is a missing item; a
+/// present seat of another kind is a wrong value. The seat supervises
+/// rather than runs jobs, so unlike dispatched worker roles it needs no
+/// pool, harness or model.
+fn mind_seat_issues(mailspace: &Mailspace, issues: &mut Vec<Issue>) {
+    const MIND: &str = "mind";
+    let Some(seat) = mailspace
+        .config
+        .identities
+        .iter()
+        .find(|role| role.name.eq_ignore_ascii_case(MIND))
+    else {
+        issues.push(Issue::not_ready(
+            "role mind",
+            "the pump has no decision seat: no role named `mind`; \
+             add it with `vivi role add mind --kind mind`",
+        ));
+        return;
+    };
+    if seat.status != ROLE_STATUS_ACTIVE {
+        issues.push(Issue::not_ready(
+            "role mind",
+            format!(
+                "role mind is {} and cannot hold the pump's decision seat; \
+                 set it active with `vivi role set mind --status active`",
+                seat.status
+            ),
+        ));
+        return;
+    }
+    if !seat
+        .kind
+        .as_deref()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case(MIND))
+    {
+        issues.push(Issue::error(format!(
+            "role mind holds the pump's decision seat but has kind `{}`, not `mind`",
+            seat.kind.as_deref().unwrap_or("unset")
+        )));
     }
 }
 

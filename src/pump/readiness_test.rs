@@ -180,6 +180,117 @@ fn give_role_a_pool(space: &mut Mailspace, name: &str, kind: &str) {
     }
 }
 
+/// A project one step from ready: the pool, every role and the committer
+/// values are in place, so `assess` reports ready unless the caller breaks
+/// exactly one thing.
+fn nearly_ready(root: &Path) -> Mailspace {
+    fresh(root);
+    edit(root, |text| text + POOL);
+    let mut space = reopen(root);
+    for (name, kind) in [
+        ("hand", "hand"),
+        ("merge", "merge"),
+        ("pump-planner", "planner"),
+        ("auditor", "auditor"),
+        ("mind", "mind"),
+    ] {
+        give_role_a_pool(&mut space, name, kind);
+    }
+    edit(root, |text| {
+        text.replace("committer_name = \"\"", "committer_name = \"T\"")
+            .replace(
+                "committer_email = \"\"",
+                "committer_email = \"t@example.com\"",
+            )
+    });
+    reopen(root)
+}
+
+#[test]
+fn the_named_mind_seat_is_required_even_when_no_configurable_identity_names_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    fresh(tmp.path());
+    edit(tmp.path(), |text| {
+        text.replace("[pump]\n", "[pump]\nreply_from = \"operator\"\n")
+    });
+    let issues = assess(&reopen(tmp.path()));
+    assert!(
+        items(&issues).iter().any(|name| name == "role mind"),
+        "{issues:?}"
+    );
+    assert!(!is_ready(&issues));
+}
+
+#[test]
+fn an_alias_to_another_role_is_not_the_mind_seat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = nearly_ready(tmp.path());
+    // Renaming keeps `mind` as an alias of the mind-kind role, so every
+    // configurable identity still resolves; the named seat is still gone.
+    space.rename_identity("mind", "seer").unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
+    assert_eq!(items(&issues), ["role mind"], "{issues:?}");
+    assert!(!is_ready(&issues));
+}
+
+#[test]
+fn an_inactive_mind_seat_is_not_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = nearly_ready(tmp.path());
+    space
+        .set_role(
+            "mind",
+            RoleUpdate {
+                status: Some(String::from("parked")),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
+    assert_eq!(items(&issues), ["role mind"], "{issues:?}");
+    assert!(!is_ready(&issues));
+}
+
+#[test]
+fn a_named_mind_seat_of_the_wrong_kind_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = nearly_ready(tmp.path());
+    space
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some(String::from("hand"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    assert_eq!(errors(&issues).len(), 1, "{issues:?}");
+    assert!(!items(&issues).iter().any(|name| name == "role mind"));
+    assert!(!is_ready(&issues));
+}
+
+#[test]
+fn an_active_mind_seat_needs_no_pool_harness_or_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = nearly_ready(tmp.path());
+    space
+        .set_role(
+            "mind",
+            RoleUpdate {
+                pool: Some(None),
+                model: Some(None),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let issues = assess(&reopen(tmp.path()));
+    assert!(errors(&issues).is_empty(), "{:?}", errors(&issues));
+    assert!(is_ready(&issues), "{issues:?}");
+}
+
 #[test]
 fn filling_in_the_missing_items_makes_the_project_ready_with_no_other_step() {
     let tmp = tempfile::tempdir().unwrap();
