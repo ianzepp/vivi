@@ -880,7 +880,7 @@ async fn target_log_and_show_read_the_landed_lane() {
     let (errored, log) = call_as(&fx, &key, "target_log", json!({"project": id})).await;
     assert!(!errored, "{log}");
     assert_eq!(log["target"], "logged");
-    assert_eq!(log["branch"], "main");
+    assert_eq!(log["branch"], "vivi/main");
     let commits = log["commits"].as_array().unwrap();
     assert_eq!(commits.len(), 1, "{log}");
     assert_eq!(commits[0]["commit"], made["initial_commit"]);
