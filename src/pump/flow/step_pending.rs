@@ -18,7 +18,7 @@ use crate::pump::flow::reslice;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
+use crate::pump::jobs::{JobStatus, JobStore, PoolJob, replay};
 use crate::pump::store::PumpStore;
 
 /// Exception kind of a step or job held Pending past its budget.
@@ -116,13 +116,17 @@ fn check_step(ctx: &Ctx, run: &RunRow, step: &StepRow) {
     }
 }
 
-/// Raise when a Pending job has waited longer than its budget plus grace. A
-/// held job already raised `job-dispatch-refused`, so it raises nothing here.
+/// Raise when a Pending job has waited longer than its budget plus grace,
+/// counting from the later of its queue time and any durable retry deadline
+/// in its payload, so an intentional backoff raises nothing early. A held
+/// job already raised `job-dispatch-refused`, so it raises nothing here.
 fn check_job(ctx: &Ctx, run: &RunRow, job: &PoolJob) {
     if job.held.is_some() {
         return;
     }
-    let waited = ctx.now().saturating_sub(job.queued_at);
+    let measured_from =
+        replay::dispatch_not_before(&job.payload).map_or(job.queued_at, |at| job.queued_at.max(at));
+    let waited = ctx.now().saturating_sub(measured_from);
     let limit = job.budget + GRACE_SECS;
     if waited > limit {
         raise_once(

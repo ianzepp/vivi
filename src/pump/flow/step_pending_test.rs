@@ -18,7 +18,7 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::reslice;
 use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, replay};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -211,6 +211,46 @@ fn a_held_overdue_job_raises_no_step_pending() -> Result<(), VivariumError> {
     rig.host.advance(past_limit(&rig));
     rig.tick()?;
     assert_eq!(rig.raised(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_job_backing_off_to_a_deadline_raises_only_after_deadline_plus_budget_and_grace()
+-> Result<(), VivariumError> {
+    let mut rig = rig("backoff")?;
+    rig.store
+        .set_step_state("P-backoff", StepState::Running, None)?;
+    rig.pending_job("backoff-job", "hand");
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "backoff-job".into(),
+            run: 1,
+            node: "plan".into(),
+            task: "P-backoff".into(),
+            attempt: 1,
+        },
+    )?;
+    if let Some(job) = rig.jobs.jobs.get_mut("backoff-job") {
+        replay::stamp_dispatch_not_before(&mut job.payload, rig.ctx.now() + 10);
+    }
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0, "intentional backoff raises nothing");
+    rig.host.advance(past_limit(&rig));
+    rig.tick()?;
+    assert_eq!(
+        rig.raised(),
+        0,
+        "still inside deadline plus budget plus grace"
+    );
+    rig.host.advance(10);
+    rig.tick()?;
+    assert_eq!(rig.raised(), 1);
+    let text = fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(
+        text.contains("backoff-job"),
+        "the normal pending diagnostic fires once the backoff is over"
+    );
     Ok(())
 }
 
