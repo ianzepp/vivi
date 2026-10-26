@@ -3,7 +3,8 @@
 //! One answer word takes every edge whose word list contains it. Successor
 //! step tasks are sent (blocked on the finished step) and bound together with
 //! the run sentinel before the finished step is closed with its verdict, so
-//! the need never looks complete in between.
+//! the need never looks complete in between. A park target additionally
+//! records the finished step as its park origin before the step closes.
 
 use std::collections::BTreeSet;
 
@@ -16,6 +17,7 @@ use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::Ctx;
+use crate::pump::store::ContinuationLink;
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
 
@@ -341,6 +343,7 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
             .iter()
             .find(|r| r.node == node.id && r.state != StepState::Done && r.task != o.task)
         {
+            self.link_park(node, &row.task)?;
             self.routed.sent.push(Sent {
                 node: node.id.clone(),
                 task: row.task.clone(),
@@ -368,11 +371,32 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
         };
         let row = run.step(&node.id, &task, state);
         self.store.insert_run_step(&run, &row)?;
+        self.link_park(node, &task)?;
         self.routed.sent.push(Sent {
             node: node.id.clone(),
             task,
         });
         Ok(())
+    }
+
+    /// Record which executable task parked the run at `node`: the finished
+    /// step whose verdict routed here, not a guessed planner node. Written
+    /// before the finished step closes, on the send path and on the reuse
+    /// path of a partial routing write. The store treats an identical
+    /// rewrite as a no-op and refuses a second, different source, so a
+    /// retried route neither duplicates the link nor moves its origin.
+    fn link_park(&self, node: &FlowNode, task: &str) -> Result<(), VivariumError> {
+        if node.class != NodeClass::Park {
+            return Ok(());
+        }
+        let o = self.outcome;
+        self.store.link_continuation(&ContinuationLink {
+            task: task.to_string(),
+            need: o.need.clone(),
+            run: o.run,
+            node: node.id.clone(),
+            source: o.task.clone(),
+        })
     }
 
     /// Bind the new tasks together with the run sentinel, in one call.

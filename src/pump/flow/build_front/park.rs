@@ -2,17 +2,18 @@
 //!
 //! The router opens a park row already Waiting, so the tick never calls
 //! `start` for it; the alarm is raised from `poll`, which runs for waiting
-//! rows (as the lock step does). The step raises one alarm naming the need and
-//! why the planner parked it, and keeps waiting: a reply on the need's thread
-//! restarts a parked run at `plan` (the `thread-change` phase), and an operator
-//! answer on the step routes it.
+//! rows (as the lock step does). The step raises one alarm naming the need,
+//! the executable task whose answer parked the run, and that task's verdict
+//! and reason, and keeps waiting: a reply on the need's thread supplies new
+//! input to that same stopped step, and an operator answer on the step
+//! routes it.
 
 use crate::error::VivariumError;
+use crate::pump::flow::continuation;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
-use crate::pump::flow::step_inputs;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::jobs::JobStore;
 
@@ -30,8 +31,8 @@ impl StepHandler for ParkStep {
     fn poll(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<Option<String>, VivariumError> {
         let actual = actual_text(cx, step)?;
         let text = format!(
-            "need {} r{} parked at {}: expected the planner to answer planned; actual: {actual}; \
-             a reply on the need thread restarts it at plan, or answer with `vivi pump answer {}`",
+            "need {} r{} parked at {}: actual: {actual}; a reply on the need thread \
+             supplies new input to that same step, or answer with `vivi pump answer {}`",
             cx.run.need, cx.run.run, step.node, step.task
         );
         raise_once(cx.ctx, NEED_PARKED, &step.task, &text);
@@ -39,15 +40,22 @@ impl StepHandler for ParkStep {
     }
 }
 
-/// The planner word and reason that routed the run here.
+/// The stopped source, from the shared origin resolver: the executable task
+/// whose verdict routed the run to the park, with its answer word and the
+/// reason recorded at it. A park opened before origins were linked resolves
+/// from the run's completed steps and the flow topology; missing or
+/// ambiguous evidence degrades the alarm text instead of failing the park.
 fn actual_text(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
-    let Some(planner) =
-        step_inputs::predecessor_step(cx.def, cx.store, cx.run, &step.node, &NodeClass::Planner)?
-    else {
-        return Ok("no planner step found".into());
+    let origin = match continuation::origin(cx.def, cx.store, cx.run, step) {
+        Ok(origin) => origin,
+        Err(error) => return Ok(format!("the stopped step is unresolved: {error}")),
     };
-    let word = planner.verdict.as_deref().unwrap_or("none");
-    let reason = match cx.store.step_payload(&planner.task)? {
+    let word = cx
+        .store
+        .step_by_task(&origin)?
+        .and_then(|row| row.verdict)
+        .unwrap_or_else(|| "none".into());
+    let reason = match cx.store.step_payload(&origin)? {
         Some(row) => row.payload["front"]["reason"]
             .as_str()
             .filter(|text| !text.is_empty())
@@ -55,7 +63,7 @@ fn actual_text(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError
         None => None,
     };
     Ok(format!(
-        "{word}: {}",
+        "{origin} answered {word}: {}",
         reason.as_deref().unwrap_or("none given")
     ))
 }

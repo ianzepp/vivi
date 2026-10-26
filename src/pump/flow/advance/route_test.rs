@@ -599,3 +599,123 @@ fn routing_an_outcome_whose_run_row_is_missing_errors_and_sends_nothing() -> R {
     assert_eq!(rig.store.steps_of(NEED, 9)?.len(), 0);
     Ok(())
 }
+
+/// The park task of the run, when one is indexed.
+fn task_at(rig: &Rig, node: &str) -> Result<Option<String>, VivariumError> {
+    Ok(rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|row| row.node == node)
+        .map(|row| row.task))
+}
+
+fn linked(rig: &Rig, park: &str) -> Result<crate::pump::store::ContinuationLink, VivariumError> {
+    rig.store
+        .continuation_of(park)?
+        .ok_or_else(|| VivariumError::Other("no continuation link recorded".into()))
+}
+
+#[test]
+fn a_park_route_links_its_origin_before_the_source_closes() -> R {
+    let mut rig = rig()?;
+    let plan = rig.step("plan")?;
+    rig.mail.calls.clear();
+
+    // Calls: send the park task, bind, then close the planner. Failing the
+    // close must still leave the link recorded: it is written before the
+    // finished step closes.
+    rig.mail.fail_at = Some(2);
+    assert!(rig.route(&with_word(plan.clone(), "hold"), "").is_err());
+    let park = task_at(&rig, "parked")?.expect("park row");
+    let link = linked(&rig, &park)?;
+    assert_eq!(link.task, park);
+    assert_eq!((link.need.as_str(), link.run), (NEED, 1));
+    assert_eq!(link.node, "parked");
+    assert_eq!(link.source, plan.task, "the finished step is the origin");
+
+    // The retry reuses the park row: still one park task, same link.
+    let routed = rig.route(&with_word(plan.clone(), "hold"), "")?;
+    assert_eq!(nodes(&routed), vec!["parked"]);
+    assert_eq!(routed.sent[0].task, park, "the park task is reused");
+    assert_eq!(
+        rig.store
+            .steps_of(NEED, 1)?
+            .iter()
+            .filter(|r| r.node == "parked")
+            .count(),
+        1
+    );
+    assert_eq!(linked(&rig, &park)?.source, plan.task);
+    Ok(())
+}
+
+#[test]
+fn a_park_row_from_a_partial_write_is_linked_on_the_retry() -> R {
+    let mut rig = rig()?;
+    let plan = rig.step("plan")?;
+
+    // A park task an earlier route sent and indexed before it could link its
+    // origin (a partial routing write under a binary without links).
+    let park = rig.mail.send_step(
+        "pump",
+        "pump",
+        &format!("Parked ({NEED} r1)"),
+        &step_body(NEED, 1, "parked", ""),
+        std::slice::from_ref(&plan.task),
+    )?;
+    rig.mail.bind(NEED, std::slice::from_ref(&park))?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 1,
+            node: "parked".into(),
+            task: park.clone(),
+            state: StepState::Waiting,
+            verdict: None,
+        },
+    )?;
+    assert!(rig.store.continuation_of(&park)?.is_none());
+
+    let routed = rig.route(&with_word(plan.clone(), "hold"), "")?;
+    assert_eq!(nodes(&routed), vec!["parked"]);
+    assert_eq!(routed.sent[0].task, park, "the earlier park task is reused");
+    let link = linked(&rig, &park)?;
+    assert_eq!(link.source, plan.task);
+    assert_eq!(link.node, "parked");
+    Ok(())
+}
+
+#[test]
+fn a_park_reached_from_a_non_planner_step_links_that_step() -> R {
+    let mut rig = rig()?;
+    rig.def = FlowDef {
+        kind: FlowKind::Build,
+        nodes: vec![
+            FlowNode {
+                id: "slice1".into(),
+                class: NodeClass::Slicer,
+                label: "Slice".into(),
+            },
+            FlowNode {
+                id: "parked".into(),
+                class: NodeClass::Park,
+                label: "Park".into(),
+            },
+        ],
+        edges: vec![FlowEdge {
+            from: "slice1".into(),
+            to: "parked".into(),
+            words: vec!["sliced".into()],
+        }],
+        entries: vec!["slice1".into()],
+    };
+    let slice = rig.step("slice1")?;
+
+    let routed = rig.route(&with_word(slice.clone(), "sliced"), "")?;
+    assert_eq!(nodes(&routed), vec!["parked"]);
+    let link = linked(&rig, &routed.sent[0].task)?;
+    assert_eq!(link.source, slice.task, "the slicer step is the origin");
+    assert_eq!(link.node, "parked");
+    Ok(())
+}
