@@ -2,6 +2,8 @@ use super::*;
 use chrono::TimeZone;
 
 use crate::letter::work::TaskFront;
+use crate::pool::bands::availability::{Availability, WaitingReason};
+use crate::pool::bands::health;
 use crate::pool::slot::PoolId;
 
 /// A task letter whose front matter sets `band`.
@@ -817,4 +819,345 @@ fn a_role_value_that_is_neither_band_nor_harness_model_is_refused() {
     assert!(message.contains("role slugger"), "got: {message}");
     assert!(message.contains("nope/model"), "got: {message}");
     assert!(message.contains("harness.models"), "got: {message}");
+}
+
+/// A view where one model slug is over its cap and nothing else is blocked.
+fn capped(model: &str) -> Availability {
+    let mut view = Availability::default();
+    view.capped_models.insert(model.to_string());
+    view
+}
+
+/// The routing shape of `vivi pool dispatch`: no flag, an empty body, and a
+/// role that carries the band.
+fn routing_input(role: &RoleFacts) -> Input<'_> {
+    input(Some(role), "", None, false)
+}
+
+/// A band the pool does not serve is a configuration error even under a poor
+/// view; a served band whose every entry is capped is a wait, not an error.
+#[test]
+fn missing_band_is_error_but_all_blocked_is_waiting() {
+    let view = capped("zai/glm-5.3-flash");
+    let err = resolve_eligible(&pool(), "bridge", &plain(&band_body("P3")), &view).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("band P3"), "got: {message}");
+    assert!(message.contains("bridge"), "got: {message}");
+
+    let waiting = resolve_eligible(&pool(), "bridge", &plain(&band_body("P1")), &view).unwrap();
+    assert_eq!(
+        waiting,
+        DispatchResolution::Waiting(Unavailable {
+            blocked_models: vec!["zai/glm-5.3-flash".into()],
+            reason: WaitingReason::ModelCap,
+            until: None,
+        })
+    );
+}
+
+/// Eligibility changes only whether the job waits: the body's `band` key
+/// still overrides the role's band, and read-only still follows the role.
+#[test]
+fn task_band_override_and_role_read_only_are_preserved() {
+    let auditor = role("reviewer", Some("auditor"), Some("P2-S0"));
+    let ready = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&auditor), &band_body("P1"), None, false),
+        &Availability::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        ready,
+        DispatchResolution::Ready(Resolved {
+            model: "zai/glm-5.3-flash".into(),
+            reasoning: Some("xhigh".into()),
+            band: Some(1),
+            read_only: true,
+            role: Some("reviewer".into()),
+        })
+    );
+
+    // With no band key the role's own band serves, still under eligibility.
+    let ready = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&auditor), "review it", None, false),
+        &Availability::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        ready,
+        DispatchResolution::Ready(Resolved {
+            model: "other/model".into(),
+            reasoning: Some("low".into()),
+            band: Some(2),
+            read_only: true,
+            role: Some("reviewer".into()),
+        })
+    );
+}
+
+/// A `-S` speed suffix picks the same band entries under eligibility as
+/// without it, from the body or from the role: the S axis is parsed and
+/// ignored.
+#[test]
+fn speed_suffix_does_not_change_band_selection() {
+    let plain_band = resolve_eligible(
+        &pool(),
+        "bridge",
+        &plain(&band_body("P1")),
+        &Availability::default(),
+    )
+    .unwrap();
+    let suffixed = resolve_eligible(
+        &pool(),
+        "bridge",
+        &plain(&band_body("P1-S2")),
+        &Availability::default(),
+    )
+    .unwrap();
+    assert_eq!(plain_band, suffixed);
+    assert_eq!(
+        suffixed,
+        DispatchResolution::Ready(Resolved {
+            model: "zai/glm-5.3-flash".into(),
+            reasoning: Some("xhigh".into()),
+            band: Some(1),
+            read_only: false,
+            role: None,
+        })
+    );
+
+    let worker = role("lane-3", Some("hand"), Some("P2-S3"));
+    let ready = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+        &Availability::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        ready,
+        DispatchResolution::Ready(Resolved {
+            model: "other/model".into(),
+            reasoning: Some("low".into()),
+            band: Some(2),
+            read_only: false,
+            role: Some("lane-3".into()),
+        })
+    );
+}
+
+/// The routing caller resolves with no flag and an empty body: `resolve`
+/// keeps answering the same job whatever the health view says, the eligible
+/// path waits under a blocker and agrees exactly when nothing is blocked,
+/// and an unserved band is refused by both.
+#[test]
+fn resolve_without_eligibility_remains_the_routing_contract() {
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let routed = resolve(&pool(), "bridge", &routing_input(&hand)).unwrap();
+    assert_eq!(
+        routed,
+        Resolved {
+            model: "zai/glm-5.3-flash".into(),
+            reasoning: Some("xhigh".into()),
+            band: Some(1),
+            read_only: false,
+            role: Some("lane-3".into()),
+        }
+    );
+
+    // Every model capped: the routing contract still routes; eligibility
+    // waits on the same input.
+    let view = capped("zai/glm-5.3-flash");
+    assert_eq!(
+        resolve(&pool(), "bridge", &routing_input(&hand)).unwrap(),
+        routed
+    );
+    assert!(matches!(
+        resolve_eligible(&pool(), "bridge", &routing_input(&hand), &view).unwrap(),
+        DispatchResolution::Waiting(_)
+    ));
+    assert_eq!(
+        resolve_eligible(
+            &pool(),
+            "bridge",
+            &routing_input(&hand),
+            &Availability::default()
+        )
+        .unwrap(),
+        DispatchResolution::Ready(routed),
+    );
+
+    // An unserved band is a configuration error under both, view or no view.
+    let unserved = role("lane-3", Some("hand"), Some("P4"));
+    assert!(resolve(&pool(), "bridge", &routing_input(&unserved)).is_err());
+    assert!(
+        resolve_eligible(
+            &pool(),
+            "bridge",
+            &routing_input(&unserved),
+            &capped("zai/glm-5.3-flash")
+        )
+        .is_err()
+    );
+}
+
+/// A `--model` job waits on its pinned slug under a poor view, never
+/// substitutes the band's other entry, and keeps the flag's model even when
+/// the band's own entry is the blocked one.
+#[test]
+fn a_blocked_pinned_model_flag_waits_rather_than_substituting() {
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let body = band_body("P1");
+    let pinned = input(Some(&hand), &body, Some("other/model"), false);
+
+    let waiting = resolve_eligible(&pool(), "bridge", &pinned, &capped("other/model")).unwrap();
+    assert_eq!(
+        waiting,
+        DispatchResolution::Waiting(Unavailable {
+            blocked_models: vec!["other/model".into()],
+            reason: WaitingReason::ModelCap,
+            until: None,
+        })
+    );
+
+    // Without the blocker the same input dispatches the pinned model, and a
+    // capped band entry never reaches it.
+    assert_eq!(
+        resolve_eligible(&pool(), "bridge", &pinned, &Availability::default()).unwrap(),
+        DispatchResolution::Ready(Resolved {
+            model: "other/model".into(),
+            reasoning: None,
+            band: Some(1),
+            read_only: false,
+            role: Some("lane-3".into()),
+        })
+    );
+    assert!(matches!(
+        resolve_eligible(&pool(), "bridge", &pinned, &capped("zai/glm-5.3-flash")).unwrap(),
+        DispatchResolution::Ready(_)
+    ));
+}
+
+/// A role slug is pinned too: blocked, it waits instead of taking the
+/// band's entry; free, it dispatches with its role thinking, and an
+/// available body band still takes precedence over it.
+#[test]
+fn a_blocked_role_slug_waits_rather_than_substituting() {
+    let worker = slug_role("other/model", Some("high"));
+
+    let waiting = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+        &capped("other/model"),
+    )
+    .unwrap();
+    assert_eq!(
+        waiting,
+        DispatchResolution::Waiting(Unavailable {
+            blocked_models: vec!["other/model".into()],
+            reason: WaitingReason::ModelCap,
+            until: None,
+        })
+    );
+
+    // Free again, the slug dispatches with its thinking.
+    let ready = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), "build it", None, false),
+        &Availability::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        ready,
+        DispatchResolution::Ready(Resolved {
+            model: "other/model".into(),
+            reasoning: Some("high".into()),
+            band: None,
+            read_only: false,
+            role: Some("slugger".into()),
+        })
+    );
+
+    // A body band takes precedence, so a capped slug never blocks a banded
+    // body.
+    let ready = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&worker), &band_body("P1"), None, false),
+        &capped("other/model"),
+    )
+    .unwrap();
+    assert!(matches!(ready, DispatchResolution::Ready(_)));
+}
+
+/// A provider cooldown on a band's only entry waits with that deadline as
+/// `until`, not a substitution.
+#[test]
+fn a_provider_cooldown_waits_until_the_deadline() {
+    let now = chrono::Utc.with_ymd_and_hms(2026, 10, 20, 9, 0, 0).unwrap();
+    let deadline = now + chrono::Duration::minutes(30);
+    let mut view = Availability::at(now);
+    view.provider_deadlines.insert(
+        health::provider_key("zai/glm-5.3-flash").to_string(),
+        deadline,
+    );
+
+    let waiting = resolve_eligible(&pool(), "bridge", &plain(&band_body("P1")), &view).unwrap();
+    assert_eq!(
+        waiting,
+        DispatchResolution::Waiting(Unavailable {
+            blocked_models: vec!["zai/glm-5.3-flash".into()],
+            reason: WaitingReason::ProviderCooldown,
+            until: Some(deadline),
+        })
+    );
+}
+
+/// Invalid inputs stay errors even when the availability view is poor: an
+/// unparseable role band, an unserved harness model under `--model`, and an
+/// input with no model at all.
+#[test]
+fn invalid_inputs_stay_errors_when_availability_is_poor() {
+    let view = capped("zai/glm-5.3-flash");
+
+    let worker = role("scribe", Some("hand"), Some("S1"));
+    assert!(
+        resolve_eligible(
+            &pool(),
+            "bridge",
+            &input(Some(&worker), "write it", None, false),
+            &view
+        )
+        .is_err()
+    );
+
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let mut view = capped("mystery/model");
+    view.capped_models.insert("zai/glm-5.3-flash".into());
+    let err = resolve_eligible(
+        &pool(),
+        "bridge",
+        &input(Some(&hand), &band_body("P1"), Some("mystery/model"), false),
+        &view,
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("mystery/model"), "got: {message}");
+    assert!(message.contains("harness.models"), "got: {message}");
+
+    let unmodeled = role("scribe", Some("hand"), None);
+    assert!(
+        resolve_eligible(
+            &pool(),
+            "bridge",
+            &input(Some(&unmodeled), "write it", None, false),
+            &view
+        )
+        .is_err()
+    );
 }

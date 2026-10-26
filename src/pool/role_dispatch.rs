@@ -14,22 +14,29 @@
 //!    model in the pool's `harness.models` is a model slug, not a band.
 //! 3. Model: `--model` wins; then the task front matter's `band` key; then the role's slug;
 //!    then the role's band, which must resolve through the pool's bands table
-//!    with [`choose`]. With `--model`, the reasoning is the first entry of
-//!    the applicable band's list that names the same model, else none. A
+//!    with a weighted draw ([`choose`], or [`choose_eligible`] once
+//!    eligibility applies). With `--model`, the reasoning is the first entry
+//!    of the applicable band's list that names the same model, else none. A
 //!    role's slug takes the role's `thinking`, else the reasoning of the
 //!    first band entry (P0 to P5, any position) that names the slug, else
 //!    none.
 //!
-//! There is no failover, no health tracking and no retry on another model:
-//! the pool's first choice for a band is the only choice. [`standing_prompt`]
-//! builds the worker's standing prompt: the role's charter above the pool
-//! rules, with a note on how the slot reaches the mailspace.
+//! There is no failover and no retry on another model: one decision — a
+//! pinned slug or one weighted band draw — resolves the job, and nothing
+//! falls back to a second choice. [`resolve`] is the routing contract and
+//! never consults health; [`resolve_eligible`] layers the pool's
+//! [`Availability`] view on top and answers [`DispatchResolution::Waiting`]
+//! — never another entry — when a pinned slug is blocked or a band's every
+//! entry is. [`standing_prompt`] builds the worker's standing prompt: the
+//! role's charter above the pool rules, with a note on how the slot reaches
+//! the mailspace.
 
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::routing::resolve_read_only;
 
-use super::bands::{self, choose, parse_band};
+use super::bands::availability::{Availability, Unavailable, WaitingReason};
+use super::bands::{self, choose, choose_eligible, parse_band};
 use super::config::PoolConfig;
 
 /// What the dispatch command knows about the role a task is addressed to,
@@ -98,26 +105,30 @@ pub struct Resolved {
     pub role: Option<String>,
 }
 
+/// The outcome of an eligibility-aware resolution: a job to dispatch, or a
+/// reason to wait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchResolution {
+    /// The job can run now: the same [`Resolved`] [`resolve`] answers.
+    Ready(Resolved),
+    /// Every path to a model this input allows is blocked at the view's
+    /// instant: a pinned slug, or a band whose every entry is blocked.
+    Waiting(Unavailable),
+}
+
 /// Resolve one dispatch: read-only, band and model from the role, the body
-/// and the flags. Pure: no I/O and no CLI.
+/// and the flags. Pure: no I/O and no CLI. The routing contract: eligibility
+/// never enters, [`resolve_eligible`] layers it on top.
 ///
 /// # Errors
 /// Returns an error when the role's band string does not parse, when neither
 /// `--model` nor any band names a model, when the pool has nothing for the
 /// band, or when the chosen model is not one the pool harness offers.
 pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolved, VivariumError> {
-    let band = resolve_band(config, input)?;
-    let slug = role_slug(config, input.role);
-    let (model, reasoning) = match input.model_flag {
-        Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => {
-            (slug_flag.to_string(), slug_reasoning(config, slug))
-        }
-        Some(flag) => (flag.to_string(), matching_reasoning(config, band, flag)),
-        None => match (band, slug) {
-            (Some(band), _) => choose_pair(config, pool, band)?,
-            (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
-            (None, None) => return Err(no_model(input.role)),
-        },
+    let (band, pick) = precedence(config, input)?;
+    let (model, reasoning) = match pick {
+        Pick::Pinned { model, reasoning } => (model, reasoning),
+        Pick::Band(band) => choose_pair(config, pool, band)?,
     };
     check_model(config, &model)?;
     Ok(Resolved {
@@ -127,6 +138,125 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
         read_only: is_read_only(input),
         role: input.role.map(|role| role.name.clone()),
     })
+}
+
+/// Resolve one dispatch the way [`resolve`] does, then hold it against the
+/// pool's [`Availability`] view: a pinned model (`--model` or the role's
+/// slug) that is blocked waits rather than substituting another entry, and a
+/// band whose every entry is blocked waits rather than drawing. Configuration
+/// errors stay errors whatever the view says: a band the pool does not serve,
+/// a role band that does not parse, a model the harness does not offer.
+///
+/// # Errors
+/// Returns the same errors [`resolve`] returns: eligibility never turns a
+/// configuration error into a wait.
+pub fn resolve_eligible(
+    config: &PoolConfig,
+    pool: &str,
+    input: &Input,
+    availability: &Availability,
+) -> Result<DispatchResolution, VivariumError> {
+    let (band, pick) = precedence(config, input)?;
+    let (model, reasoning) = match pick {
+        Pick::Pinned { model, reasoning } => {
+            check_model(config, &model)?;
+            if let Some(unavailable) = availability.unavailable([&model]) {
+                return Ok(DispatchResolution::Waiting(unavailable));
+            }
+            (model, reasoning)
+        }
+        Pick::Band(band) => match choose_eligible(config, pool, band, availability)? {
+            Some(choice) => {
+                check_model(config, &choice.model)?;
+                (choice.model, Some(choice.reasoning))
+            }
+            None => {
+                return Ok(DispatchResolution::Waiting(all_blocked(
+                    config,
+                    band,
+                    availability,
+                )));
+            }
+        },
+    };
+    Ok(DispatchResolution::Ready(Resolved {
+        model,
+        reasoning,
+        band,
+        read_only: is_read_only(input),
+        role: input.role.map(|role| role.name.clone()),
+    }))
+}
+
+/// What the precedence rules pick before eligibility is applied: a pinned
+/// model that is never substituted for another entry, or a band whose entry
+/// the pool draws (or, under [`resolve_eligible`], filters).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pick {
+    /// `--model`, or the role's own slug: blocked means wait, never another
+    /// entry.
+    Pinned {
+        /// Model slug the harness is run with.
+        model: String,
+        /// Reasoning effort the harness is run at, when one is known.
+        reasoning: Option<String>,
+    },
+    /// The band's entry comes from the pool's bands table.
+    Band(u8),
+}
+
+/// The precedence core shared by [`resolve`] and [`resolve_eligible`]:
+/// read-only aside, the band the job runs at and what picks its model.
+///
+/// # Errors
+/// Returns an error when the role's band string does not parse or when
+/// neither `--model` nor any band names a model.
+fn precedence(config: &PoolConfig, input: &Input) -> Result<(Option<u8>, Pick), VivariumError> {
+    let band = resolve_band(config, input)?;
+    let slug = role_slug(config, input.role);
+    let pick = match input.model_flag {
+        Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => Pick::Pinned {
+            model: slug_flag.to_string(),
+            reasoning: slug_reasoning(config, slug),
+        },
+        Some(flag) => Pick::Pinned {
+            model: flag.to_string(),
+            reasoning: matching_reasoning(config, band, flag),
+        },
+        None => match (band, slug) {
+            (Some(band), _) => Pick::Band(band),
+            (None, Some(role)) => Pick::Pinned {
+                model: role.0.to_string(),
+                reasoning: slug_reasoning(config, Some(role)),
+            },
+            (None, None) => return Err(no_model(input.role)),
+        },
+    };
+    Ok((band, pick))
+}
+
+/// The [`Unavailable`] behind a band whose every entry the view blocks: the
+/// same entries [`choose_eligible`] found nothing left of, aggregated by
+/// [`Availability::unavailable`]. That aggregation cannot come back `None`
+/// here — an entry survives only when it is neither capped nor cooling, and
+/// a band with a surviving entry is never all-blocked — so the empty
+/// fallback is a shape to stay total, never a state the pool reaches.
+fn all_blocked(config: &PoolConfig, band: u8, availability: &Availability) -> Unavailable {
+    let models: Vec<&str> = config
+        .bands
+        .entries
+        .get(&format!("P{band}"))
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.model.as_str())
+        .collect();
+    availability
+        .unavailable(models)
+        .unwrap_or_else(|| Unavailable {
+            blocked_models: Vec::new(),
+            reason: WaitingReason::ModelsUnavailable,
+            until: None,
+        })
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release
