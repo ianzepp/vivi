@@ -1032,6 +1032,7 @@ pub(super) fn close_arguments(arguments: &Value) -> Result<Option<CloseFront>, T
         branch: opt_str(arguments, "branch")?.map(str::to_owned),
         commit: opt_str(arguments, "commit")?.map(str::to_owned),
         repos,
+        flow: None,
     }))
 }
 

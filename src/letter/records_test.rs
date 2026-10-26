@@ -225,6 +225,7 @@ fn mail_round_trips_close_and_pool_tables() {
             repos: [("vivi".to_string(), "sha9".to_string())]
                 .into_iter()
                 .collect(),
+            flow: None,
         }),
         ..MailFront::default()
     };
@@ -260,7 +261,10 @@ fn every_note_word_round_trips() {
         NoteWord::MainRed,
         NoteWord::Abandoned,
         NoteWord::SliceMerge,
+        NoteWord::RunStart,
+        NoteWord::Progress,
     ] {
+        let run = matches!(note, NoteWord::RunStart | NoteWord::Progress);
         let front = MailFront {
             pump: Some(PumpNote {
                 note,
@@ -271,6 +275,124 @@ fn every_note_word_round_trips() {
                 id: "j1".to_string(),
                 kind: "build".to_string(),
                 builtin_role: None,
+            }),
+            flow: run.then(|| FlowRef {
+                need: "n1".to_string(),
+                record: "<r@x>".to_string(),
+                run: 2,
+                task: None,
+            }),
+            ..MailFront::default()
+        };
+        assert_eq!(round_trip(&front), front);
+    }
+}
+
+#[test]
+fn flow_ref_round_trips_full_and_minimal() {
+    let full = FlowRef {
+        need: "n1".to_string(),
+        record: "<record@x>".to_string(),
+        run: 3,
+        task: Some("t1".to_string()),
+    };
+    assert_eq!(round_trip(&full), full);
+    let minimal = FlowRef {
+        need: "n1".to_string(),
+        record: "<record@x>".to_string(),
+        run: 3,
+        task: None,
+    };
+    assert_eq!(round_trip(&minimal), minimal);
+    // The optional task is absent from the bytes when unset.
+    assert_eq!(
+        render(&minimal, "x").expect("render"),
+        "+++\nneed = \"n1\"\nrecord = \"<record@x>\"\nrun = 3\n+++\n\nx"
+    );
+}
+
+#[test]
+fn flow_ref_refusals() {
+    assert!(matches!(
+        refused::<FlowRef>("+++\nneed = \"n\"\nrecord = \"r\"\nrun = 1\nbogus = 1\n+++\n"),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>("+++\nneed = \"n\"\nrun = 1\n+++\n"),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>("+++\nneed = \"n\"\nrecord = \"r\"\n+++\n"),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>("+++\nneed = \"n\"\nrecord = \"r\"\nrun = \"two\"\n+++\n"),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>("+++\nneed = \"n\"\nrecord = \"r\"\nrun = -1\n+++\n"),
+        LetterError::Toml { .. }
+    ));
+    invalid_naming::<FlowRef>(
+        "+++\nneed = \"n\"\nrecord = \"r\"\nrun = 0\n+++\n",
+        &["flow.run"],
+    );
+    invalid_naming::<FlowRef>(
+        "+++\nneed = \" \"\nrecord = \"r\"\nrun = 1\n+++\n",
+        &["flow.need"],
+    );
+    invalid_naming::<FlowRef>(
+        "+++\nneed = \"n\"\nrecord = \" \"\nrun = 1\n+++\n",
+        &["flow.record"],
+    );
+    invalid_naming::<FlowRef>(
+        "+++\nneed = \"n\"\nrecord = \"r\"\nrun = 1\ntask = \"\"\n+++\n",
+        &["flow.task"],
+    );
+}
+
+#[test]
+fn a_mail_note_may_carry_a_flow_reference() {
+    let noted = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::Attempt,
+            t: 7,
+            reference: Some("job-1".to_string()),
+        }),
+        flow: Some(FlowRef {
+            need: "n1".to_string(),
+            record: "<record@x>".to_string(),
+            run: 1,
+            task: Some("t1".to_string()),
+        }),
+        ..MailFront::default()
+    };
+    assert_eq!(round_trip(&noted), noted);
+}
+
+#[test]
+fn run_start_and_progress_notes_require_a_flow() {
+    for note in [NoteWord::RunStart, NoteWord::Progress] {
+        let word = if note == NoteWord::RunStart {
+            "run-start"
+        } else {
+            "progress"
+        };
+        invalid_naming::<MailFront>(
+            &format!("+++\n[pump]\nnote = \"{word}\"\nt = 1\n+++\n"),
+            &["[flow]"],
+        );
+        let front = MailFront {
+            pump: Some(PumpNote {
+                note,
+                t: 1,
+                reference: None,
+            }),
+            flow: Some(FlowRef {
+                need: "n1".to_string(),
+                record: "r".to_string(),
+                run: 1,
+                task: None,
             }),
             ..MailFront::default()
         };

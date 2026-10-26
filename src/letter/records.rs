@@ -188,6 +188,38 @@ impl Validate for ActionFront {
     }
 }
 
+/// A structured reference to one flow run: the need the run serves, the
+/// pump record letter that opened it, and the run's one-based number,
+/// plus the task a task-specific notice is about. The handles are stable
+/// letter references, so a writer can name the run from any mailspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowRef {
+    /// The need the run serves.
+    pub need: String,
+    /// The pump record letter that opened the run.
+    pub record: String,
+    /// The run's one-based number on the need.
+    pub run: u32,
+    /// The task the notice is about, for a task-specific note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+impl Validate for FlowRef {
+    fn validate(&self) -> Result<(), String> {
+        check_text("flow.need", &self.need)?;
+        check_text("flow.record", &self.record)?;
+        if self.run == 0 {
+            return Err("`flow.run` must be greater than zero".to_string());
+        }
+        if let Some(task) = &self.task {
+            check_text("flow.task", task)?;
+        }
+        Ok(())
+    }
+}
+
 /// The marker word of a pump note, one per marked line the pump writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -202,6 +234,10 @@ pub enum NoteWord {
     MainRed,
     Abandoned,
     SliceMerge,
+    /// A run opened on a need; the note carries a `[flow]` table.
+    RunStart,
+    /// Progress on a flow run; the note carries a `[flow]` table.
+    Progress,
 }
 
 /// The `[pump]` table of a `mail` letter: one pump note.
@@ -242,6 +278,9 @@ pub struct MailFront {
     /// The pool event a pool note carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolNote>,
+    /// The flow run the note names; a run-start or progress note carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowRef>,
 }
 
 impl Validate for MailFront {
@@ -265,6 +304,9 @@ impl Validate for MailFront {
         if let Some(close) = &self.close {
             close.validate()?;
         }
+        if let Some(flow) = &self.flow {
+            flow.validate()?;
+        }
         if let Some(pool) = &self.pool {
             check_text("pool.event", &pool.event)?;
             check_text("pool.record", &pool.record)?;
@@ -277,6 +319,9 @@ impl Validate for MailFront {
         }
         if let Some(reference) = &pump.reference {
             check_text("pump.ref", reference)?;
+        }
+        if matches!(pump.note, NoteWord::RunStart | NoteWord::Progress) && self.flow.is_none() {
+            return Err("a run-start or progress note carries a `[flow]` table".to_string());
         }
         Ok(())
     }

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::letter::{LetterError, Validate, check_list, check_text};
+use crate::letter::records::FlowRef;
 
 /// The event verbs (`X-Vivi-Event` values) whose letters take [`CloseFront`].
 pub const CLOSE_EVENTS: [&str; 2] = ["done", "reopened"];
@@ -70,6 +71,9 @@ pub struct CloseFront {
     /// Repo name to the tip it landed at.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, String>,
+    /// The flow run the closed work belongs to, when the closer names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowRef>,
 }
 
 impl Validate for CloseFront {
@@ -90,7 +94,30 @@ impl Validate for CloseFront {
             check_text("repos name", repo)?;
             check_text(&format!("repos.{repo}"), tip)?;
         }
+        if let Some(flow) = &self.flow {
+            flow.validate()?;
+        }
         Ok(())
+    }
+}
+
+/// Front matter of an event letter that is not a close: it carries no facts
+/// of its own, and names the flow run the event belongs to when the writer
+/// gives one.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventFront {
+    /// The flow run the event belongs to, when named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowRef>,
+}
+
+impl Validate for EventFront {
+    fn validate(&self) -> Result<(), String> {
+        match &self.flow {
+            Some(flow) => flow.validate(),
+            None => Ok(()),
+        }
     }
 }
 

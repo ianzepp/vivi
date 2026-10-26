@@ -69,6 +69,7 @@ fn close_round_trips() -> Res {
         branch: Some("w3/x".to_string()),
         commit: Some("0123abc".to_string()),
         repos,
+        flow: None,
     };
     assert_eq!(round_trip(&full)?, full);
     assert_eq!(round_trip(&CloseFront::default())?, CloseFront::default());
@@ -84,6 +85,7 @@ fn close_repos_table_is_last_and_open() -> Res {
         branch: None,
         commit: None,
         repos,
+        flow: None,
     };
     let text = render(&front, "x")?;
     assert!(text.find("verdict").unwrap_or(usize::MAX) < text.find("[repos]").unwrap_or(0));
@@ -127,6 +129,65 @@ fn close_clear_sentinel_is_accepted() {
 #[test]
 fn close_unknown_key_refused() {
     assert!(refused::<CloseFront>("+++\nextra = 1\n+++\n\nx"));
+}
+
+#[test]
+fn close_flow_round_trips_and_absent_flow_keeps_the_bytes() -> Res {
+    let flow = FlowRef {
+        need: "n1".to_string(),
+        record: "<record@x>".to_string(),
+        run: 2,
+        task: Some("t1".to_string()),
+    };
+    let full = CloseFront {
+        verdict: Some("clean".to_string()),
+        branch: None,
+        commit: None,
+        repos: BTreeMap::new(),
+        flow: Some(flow),
+    };
+    assert_eq!(round_trip(&full)?, full);
+    // No `[flow]` table, no bytes: an absent optional field changes nothing.
+    assert_eq!(render(&CloseFront::default(), "close text")?, "close text");
+    Ok(())
+}
+
+#[test]
+fn close_flow_refusals() {
+    assert!(refused::<CloseFront>(
+        "+++\n[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 1\nbogus = 1\n+++\n\nx"
+    ));
+    assert!(refused::<CloseFront>("+++\n[flow]\nneed = \"n\"\nrun = 1\n+++\n\nx"));
+    let zero = "+++\n[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 0\n+++\n\nx";
+    assert!(matches!(
+        parse::<CloseFront>(zero),
+        Err(LetterError::Invalid(_))
+    ));
+}
+
+#[test]
+fn event_front_round_trips_its_flow() -> Res {
+    assert_eq!(render(&EventFront::default(), "event text")?, "event text");
+    let flow = FlowRef {
+        need: "n1".to_string(),
+        record: "<record@x>".to_string(),
+        run: 1,
+        task: None,
+    };
+    let full = EventFront {
+        flow: Some(flow.clone()),
+    };
+    assert_eq!(round_trip(&full)?, full);
+    let envelope = parse::<EventFront>(&render(&full, "x")?)?;
+    assert_eq!(envelope.front.flow, Some(flow));
+    Ok(())
+}
+
+#[test]
+fn event_front_refuses_close_facts_and_unknown_keys() {
+    assert!(refused::<EventFront>("+++\nverdict = \"ok\"\n+++\n\nx"));
+    assert!(refused::<EventFront>("+++\nbranch = \"b\"\n+++\n\nx"));
+    assert!(refused::<EventFront>("+++\n[flow]\nbogus = 1\n+++\n\nx"));
 }
 
 #[test]
@@ -186,6 +247,7 @@ fn a_plain_front_with_facts_renders_between_the_fences() -> Res {
         branch: Some("w3/x".to_string()),
         commit: Some("0123abc".to_string()),
         repos,
+        flow: None,
     };
     let text = render(&close, "closed it")?;
     assert_eq!(parse::<CloseFront>(&text)?.front, close);
@@ -203,6 +265,7 @@ fn plain_render_refuses_a_front_that_fails_its_own_rules() {
         branch: Some("w3/x".to_string()),
         commit: None,
         repos: BTreeMap::new(),
+        flow: None,
     };
     assert!(matches!(render(&half, "x"), Err(LetterError::Invalid(_))));
 }

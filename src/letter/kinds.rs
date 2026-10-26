@@ -5,7 +5,7 @@
 
 use serde::de::DeserializeOwned;
 
-use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, MemoFront, RuleFront};
+use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, EventFront, MemoFront, RuleFront};
 use crate::letter::records::{ActionFront, MailFront, RecordFront};
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::{NeedFront, TaskFront, WantFront};
@@ -175,14 +175,21 @@ fn parse_event(kind: &LetterKind, verb: &str, text: &str) -> Result<Letter, Lett
     if CLOSE_EVENTS.contains(&verb) {
         return stored_or_plain(kind, text, Front::Event);
     }
-    let prose = if opens_with_fence(text) {
-        parse_letter::<EmptyFront>(text)?.body
+    // A non-close event carries no facts of its own: the close keys stay
+    // refused, and the one thing it may name is the flow run it belongs
+    // to, kept on the event front rather than discarded.
+    let (flow, prose) = if opens_with_fence(text) {
+        let letter = parse_letter::<EventFront>(text)?;
+        (letter.front.flow, letter.body)
     } else {
-        text.trim().to_string()
+        (None, text.trim().to_string())
     };
     Ok(Letter {
         kind: kind.clone(),
-        front: Front::Event(CloseFront::default()),
+        front: Front::Event(CloseFront {
+            flow,
+            ..CloseFront::default()
+        }),
         prose,
     })
 }

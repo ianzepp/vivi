@@ -93,6 +93,7 @@ fn a_report_note_carries_its_close_facts_as_front_matter() {
         repos: [("vivi".to_string(), "sha9".to_string())]
             .into_iter()
             .collect(),
+        flow: None,
     };
     let reply = space
         .note_reply(

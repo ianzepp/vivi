@@ -81,6 +81,7 @@ impl Mailspace {
             branch: metadata.get("branch").cloned(),
             commit: metadata.get("commit").cloned(),
             repos: BTreeMap::new(),
+            flow: None,
         };
         for (key, tip) in metadata {
             if let Some(repo) = key.strip_prefix("repo:") {

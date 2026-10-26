@@ -6,7 +6,7 @@
 //! out strictly increasing microsecond stamps.
 
 use crate::error::VivariumError;
-use crate::letter::records::{MailFront, NoteWord, PumpNote};
+use crate::letter::records::{FlowRef, MailFront, NoteWord, PumpNote};
 use crate::letter::work::JobFront;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -18,6 +18,8 @@ static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
 pub struct Note {
     pub pump: PumpNote,
     pub job: Option<JobFront>,
+    /// The flow run the note names, for a run-start or progress note.
+    pub flow: Option<FlowRef>,
     pub prose: String,
 }
 
@@ -80,6 +82,36 @@ pub fn brief_body(job: JobFront, prose: &str) -> Result<String, VivariumError> {
         .map_err(|err| VivariumError::Message(format!("pump brief: {err}")))
 }
 
+/// The body of a run-start or progress note: `flow` in the `[flow]` table
+/// and `prose` below the front matter. Any other note word is refused: a
+/// flow reference is only read on a run note.
+///
+/// # Errors
+/// Returns [`VivariumError`] for another note word or when the letter does
+/// not render.
+pub fn flow_note_body(
+    word: NoteWord,
+    flow: FlowRef,
+    prose: &str,
+) -> Result<String, VivariumError> {
+    if !matches!(word, NoteWord::RunStart | NoteWord::Progress) {
+        return Err(VivariumError::Message(
+            "only a run-start or progress note carries a [flow] table: use note_body".to_string(),
+        ));
+    }
+    let front = MailFront {
+        pump: Some(PumpNote {
+            note: word,
+            t: next_stamp(),
+            reference: None,
+        }),
+        flow: Some(flow),
+        ..MailFront::default()
+    };
+    crate::letter::render(&front, prose)
+        .map_err(|err| VivariumError::Message(format!("pump note: {err}")))
+}
+
 /// The pump note `body` is, or `None` for plain mail, an invalid letter or a
 /// letter with no `[pump]` table.
 #[must_use]
@@ -92,6 +124,7 @@ pub fn note_of(body: &str) -> Option<Note> {
     Some(Note {
         pump,
         job: letter.front.job,
+        flow: letter.front.flow,
         prose: letter.body,
     })
 }

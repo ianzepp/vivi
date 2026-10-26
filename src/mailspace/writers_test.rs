@@ -124,6 +124,7 @@ fn note_writers(mailspace: &Mailspace) -> Vec<(&'static str, Vec<u8>)> {
                     branch: Some("mind/review".into()),
                     commit: Some("deadbeef".into()),
                     repos: BTreeMap::new(),
+                    flow: None,
                 }),
                 ..MailFront::default()
             },

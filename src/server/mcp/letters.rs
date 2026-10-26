@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, render as render_front};
+use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EventFront, render as render_front};
 use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Gated, gate, of_message};
 use crate::message::{ComposeDraft, build_compose_draft, normalize_message_id};
 
@@ -331,10 +331,11 @@ pub fn compose_event(
     }
     // Close metadata travels as front matter; an empty front stores the
     // note as written, with no fence (vivi's own event composer's rule).
+    // A non-close event names only a flow run when the close carries one.
     let body = if CLOSE_EVENTS.contains(&event) {
         render_front(&close, note)
     } else {
-        render_front(&EmptyFront {}, note)
+        render_front(&EventFront { flow: close.flow.clone() }, note)
     }
     .map_err(|error| format!("the {event} letter: {error}"))?;
     let from = operator_address(identity)?;

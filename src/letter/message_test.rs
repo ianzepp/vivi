@@ -1,6 +1,7 @@
 use super::*;
 use crate::letter::Front;
-use crate::letter::plain::{self, CloseFront, EmptyFront, MemoFront, RuleFront, RuleScope};
+use crate::letter::plain::{self, CloseFront, EmptyFront, EventFront, MemoFront, RuleFront, RuleScope};
+use crate::letter::records::FlowRef;
 use crate::message::{ComposeDraft, build_compose_draft};
 use std::collections::BTreeMap;
 
@@ -175,6 +176,7 @@ fn a_done_event_letter_round_trips_its_close_front_through_the_wire() {
         branch: Some("w3/x".to_string()),
         commit: Some("0123abc".to_string()),
         repos,
+        flow: None,
     };
     let body = plain::render(&front, "closed it").unwrap();
     let headers = "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\nX-Vivi-Event: done\r\n";
@@ -188,6 +190,56 @@ fn a_done_event_letter_round_trips_its_close_front_through_the_wire() {
     assert_eq!(close.commit.as_deref(), Some("0123abc"));
     assert_eq!(close.repos.get("vivi").map(String::as_str), Some("abc1234"));
     assert_eq!(letter.prose, "closed it");
+}
+
+#[test]
+fn a_done_event_letter_round_trips_its_flow_through_the_wire() {
+    let front = CloseFront {
+        verdict: None,
+        branch: None,
+        commit: None,
+        repos: BTreeMap::new(),
+        flow: Some(FlowRef {
+            need: "n1".to_string(),
+            record: "<record@x>".to_string(),
+            run: 4,
+            task: None,
+        }),
+    };
+    let body = plain::render(&front, "closed it").unwrap();
+    let headers = "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\nX-Vivi-Event: done\r\n";
+    let letter = of_message(&stored(headers, &body), "h1").expect("letter");
+    let Front::Event(close) = &letter.front else {
+        panic!("expected an event front");
+    };
+    let flow = close.flow.as_ref().expect("a flow");
+    assert_eq!(flow.need, "n1");
+    assert_eq!(flow.record, "<record@x>");
+    assert_eq!(flow.run, 4);
+    assert_eq!(letter.prose, "closed it");
+}
+
+#[test]
+fn a_non_close_event_letter_keeps_its_flow_through_the_wire() {
+    let front = EventFront {
+        flow: Some(FlowRef {
+            need: "n1".to_string(),
+            record: "<record@x>".to_string(),
+            run: 1,
+            task: Some("t1".to_string()),
+        }),
+    };
+    let body = plain::render(&front, "marked it").unwrap();
+    let headers = "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\nX-Vivi-Event: marked\r\n";
+    let letter = of_message(&stored(headers, &body), "h1").expect("letter");
+    assert_eq!(letter.kind, LetterKind::Event("marked".to_string()));
+    let Front::Event(close) = &letter.front else {
+        panic!("expected an event front");
+    };
+    let flow = close.flow.as_ref().expect("a flow");
+    assert_eq!(flow.need, "n1");
+    assert_eq!(flow.task.as_deref(), Some("t1"));
+    assert_eq!(letter.prose, "marked it");
 }
 
 #[test]

@@ -332,6 +332,41 @@ fn an_invalid_chat_front_is_still_refused() {
 }
 
 #[test]
+fn a_non_close_event_keeps_its_flow_reference() {
+    let marked = LetterKind::Event("marked".to_string());
+    let text = letter(
+        "[flow]\nneed = \"n1\"\nrecord = \"<record@x>\"\nrun = 2\ntask = \"t1\"\n",
+        "the note",
+    );
+    let parsed = parse_kind(&marked, &text).unwrap();
+    let Front::Event(close) = parsed.front else {
+        panic!("expected an event front");
+    };
+    let flow = close.flow.expect("a flow");
+    assert_eq!(flow.need, "n1");
+    assert_eq!(flow.record, "<record@x>");
+    assert_eq!(flow.run, 2);
+    assert_eq!(flow.task.as_deref(), Some("t1"));
+    assert_eq!(parsed.prose, "the note");
+}
+
+#[test]
+fn a_non_close_event_still_refuses_bad_reference_facts() {
+    let marked = LetterKind::Event("marked".to_string());
+    assert!(matches!(
+        parse_kind(&marked, &letter("[flow]\nbogus = 1\n", "x")),
+        Err(LetterError::Toml { .. })
+    ));
+    assert!(matches!(
+        parse_kind(
+            &marked,
+            &letter("[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 0\n", "x")
+        ),
+        Err(LetterError::Invalid(_))
+    ));
+}
+
+#[test]
 fn a_fenceless_memo_or_rule_body_is_an_empty_front() {
     let memo = parse_kind(&LetterKind::Memo, "\njust a note\n").unwrap();
     assert_eq!(memo.kind, LetterKind::Memo);
