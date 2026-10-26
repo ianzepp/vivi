@@ -26,6 +26,7 @@ mod snapshot;
 mod state_rows;
 pub mod step_execution;
 pub mod step_payload;
+pub mod step_retry;
 mod unit_extra;
 pub(super) use codec::{db_err, from_json, from_u32, from_u64, json, json_or_null};
 pub use need_branch::NeedBranchRow;
@@ -468,6 +469,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     drop_request_queues(conn)?;
     flow_index::ensure_tables(conn)?;
     step_execution::ensure_tables(conn)?;
+    step_retry::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
