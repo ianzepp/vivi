@@ -154,7 +154,9 @@ pub struct MailspaceEvent {
 pub struct Storage {
     mail_root: PathBuf,
     conn: RefCell<Connection>,
-    /// Cached handle index, cleared on any write.
+    /// Cached handle index, cleared on any local write and rebuilt when the
+    /// `PRAGMA data_version` freshness check in `handle_index` detects a
+    /// commit from another connection.
     handle_index: RefCell<Option<handles::HandleIndex>>,
 }
 

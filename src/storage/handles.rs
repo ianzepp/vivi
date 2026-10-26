@@ -11,7 +11,18 @@ use super::{
 /// repeated many times per command — `vivi step` resolves one token per ready
 /// node. Building this once per [`Storage`] keeps those calls out of the
 /// `messages` table, whose scan cost grows with the whole mailbox.
+///
+/// The index is stamped with the `PRAGMA data_version` sampled before its ids
+/// were loaded. This connection's own commits are handled by explicit
+/// invalidation (they do not advance its own `data_version`); observing a
+/// different version on a later access means another connection committed,
+/// and the index is rebuilt instead of served.
 pub(super) struct HandleIndex {
+    /// Freshness stamp: the `PRAGMA data_version` observed before `ids` was
+    /// loaded. Never sampled after the load — a sample taken afterward could
+    /// label stale ids as fresh, while an older stamp can only make the next
+    /// access rebuild, which is safe.
+    data_version: i64,
     /// Active message ids in `message_id` order.
     ids: Vec<String>,
     /// `message_id` -> short handle.
@@ -21,7 +32,10 @@ pub(super) struct HandleIndex {
 }
 
 impl HandleIndex {
-    fn new(ids: Vec<String>) -> Self {
+    /// Build an index over `ids`, stamped with the freshness version sampled
+    /// before `ids` was read. The stamp travels only in memory; it is never
+    /// persisted or compared across connections.
+    fn new(ids: Vec<String>, data_version: i64) -> Self {
         let mut by_message_id = HashMap::with_capacity(ids.len());
         let mut by_handle: HashMap<String, Vec<String>> = HashMap::new();
         for message_id in &ids {
@@ -33,6 +47,7 @@ impl HandleIndex {
             by_message_id.insert(message_id.clone(), handle);
         }
         Self {
+            data_version,
             ids,
             by_message_id,
             by_handle,
@@ -41,17 +56,48 @@ impl HandleIndex {
 }
 
 impl Storage {
-    /// Cached handle index, built on first use and cleared by any write.
+    /// Cached handle index, invalidated locally by any write and rebuilt
+    /// whenever `PRAGMA data_version` shows another connection committed.
+    /// A failing freshness check propagates rather than serving a possibly
+    /// stale cache.
     ///
     /// # Errors
-    /// Returns a [`VivariumError`] if the active-message-ids query fails.
+    /// Returns a [`VivariumError`] if the freshness check or the
+    /// active-message-ids query fails.
     fn handle_index(&self) -> Result<Ref<'_, HandleIndex>, VivariumError> {
-        if self.handle_index.borrow().is_none() {
-            let ids = self.active_message_ids()?;
-            *self.handle_index.borrow_mut() = Some(HandleIndex::new(ids));
+        // Sample once: the same observation decides reuse and labels any
+        // rebuilt index. Sampling before the id load means a concurrent
+        // external commit can only leave the stamp stale-looking, forcing a
+        // safe rebuild on the next access; a sample taken after the load
+        // could stamp stale ids as fresh.
+        let data_version = self.connection_data_version()?;
+        {
+            let cached = self.handle_index.borrow();
+            if let Some(index) = cached.as_ref()
+                && index.data_version == data_version
+            {
+                return Ref::filter_map(cached, Option::as_ref)
+                    .map_err(|_| VivariumError::Other("handle index is not available".into()));
+            }
         }
+        let ids = self.active_message_ids()?;
+        *self.handle_index.borrow_mut() = Some(HandleIndex::new(ids, data_version));
         Ref::filter_map(self.handle_index.borrow(), Option::as_ref)
             .map_err(|_| VivariumError::Other("handle index is not available".into()))
+    }
+
+    /// This connection's view of the database age (`PRAGMA data_version`).
+    /// The value changes when any other connection commits and is unchanged
+    /// for this connection's own commits.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the pragma query fails.
+    fn connection_data_version(&self) -> Result<i64, VivariumError> {
+        let conn = self.conn.borrow();
+        conn.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .map_err(|e| {
+                VivariumError::Other(format!("failed to read handle-index freshness: {e}"))
+            })
     }
 
     /// Resolve a message token (full ID, short handle, or ID prefix) to a
@@ -104,8 +150,9 @@ impl Storage {
     /// Compute a short display handle for a single message.
     ///
     /// Results come from the cached handle index, so repeated decoration does
-    /// not rescan the `messages` table. The index is invalidated on any write
-    /// that affects messages (ingest, move, flag update, delete).
+    /// not rescan the `messages` table. The index is invalidated on any local
+    /// write that affects messages (ingest, move, flag update, delete) and
+    /// rebuilt when the freshness check detects another connection's commit.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if the active-message-ids query fails.
@@ -457,3 +504,7 @@ fn to_sql_params(values: &[String]) -> Vec<&dyn rusqlite::types::ToSql> {
         .map(|value| value as &dyn rusqlite::types::ToSql)
         .collect()
 }
+
+#[cfg(test)]
+#[path = "handles_test.rs"]
+mod tests;
