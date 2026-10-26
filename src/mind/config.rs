@@ -1,4 +1,5 @@
-//! `mind.toml`: the mind's authority stage, wake heartbeat, and paths.
+//! `mind.toml`: the mind's authority stage, human-only policy, wake
+//! heartbeat, and paths.
 //!
 //! The file sits next to the host registry, at
 //! `<config_dir>/vivi/mind.toml` (`VIVI_CONFIG_DIR` overrides
@@ -13,6 +14,8 @@
 //! # model = "kimi/kimi-k2"       # passed to pi; resolved through the proxy
 //! # socket = "/run/vivi/mind.sock"
 //! # session_dir = "/var/lib/vivi/mind/sessions"
+//! # human_only = ["spending-accounts", "credentials", "host-root",
+//! #               "releases", "product-intent"]   # the defaults
 //!
 //! [budgets]
 //! per_need_actions = 3           # unstick actions per need per window
@@ -23,6 +26,7 @@
 //! The mind holds no model keys: models are reached only through the hub's
 //! loopback proxy, and a non-loopback `proxy_url` is refused.
 
+use super::policy::HumanOnlyPolicy;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -115,6 +119,9 @@ pub struct MindConfig {
     pub proxy_url: String,
     pub pi_command: String,
     pub model: Option<String>,
+    /// Categories the mind must hand to a human instead of acting on; see
+    /// [`super::policy`]. Missing from the file: the five defaults.
+    pub human_only: HumanOnlyPolicy,
     pub budgets: Budgets,
     /// The vivi-server the mind acts through; `None` leaves every permitted
     /// action a dry run.
@@ -177,6 +184,7 @@ struct FileFormat {
     proxy_url: Option<String>,
     pi_command: Option<String>,
     model: Option<String>,
+    human_only: Option<Vec<String>>,
     socket: Option<PathBuf>,
     session_dir: Option<PathBuf>,
     #[serde(default)]
@@ -289,6 +297,7 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
             .pi_command
             .unwrap_or_else(|| DEFAULT_PI_COMMAND.to_string()),
         model: file.model,
+        human_only: HumanOnlyPolicy::from_config(file.human_only)?,
         budgets: budgets(file.budgets)?,
         mcp: mcp(file.mcp, &paths)?,
         paths,

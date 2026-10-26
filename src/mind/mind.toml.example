@@ -8,6 +8,27 @@
 # that only logs what would run.
 authority = "observe"
 
+# Action categories the mind must hand to a human instead of doing itself.
+# Missing key: the five defaults below. An explicit list replaces the
+# defaults; [] permits no escalation at all. Unknown or duplicate entries
+# are refused. Membership obliges the mind to ask; it never grants the
+# power to do any of this.
+#
+#   spending-accounts  subscriptions, purchases, purchased quotas, account
+#                      administration, GitHub or Tailscale account settings
+#   credentials        keys, secrets, credential creation or rotation
+#   host-root          root on the host machine
+#   releases           release authorization, tags, promotion
+#   product-intent     whether a need is wanted at all, or a design
+#                      question the thread cannot settle
+human_only = [
+    "spending-accounts",
+    "credentials",
+    "host-root",
+    "releases",
+    "product-intent",
+]
+
 # Wake at least this often with nobody attached (role_schedule durations).
 heartbeat = "30m"
 

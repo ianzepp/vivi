@@ -139,6 +139,34 @@ fn load_at_reads_a_temp_file_and_tolerates_a_missing_one() {
 }
 
 #[test]
+fn human_only_defaults_to_every_category() {
+    let config = parse("", paths()).unwrap();
+    assert_eq!(config.human_only, HumanOnlyPolicy::default());
+    assert!(config.human_only.requires_human(HumanCategory::Credentials));
+}
+
+#[test]
+fn human_only_lists_replace_the_defaults_or_permit_nothing() {
+    let config = parse("human_only = [\"credentials\", \"product-intent\"]", paths()).unwrap();
+    assert!(config.human_only.requires_human(HumanCategory::Credentials));
+    assert!(!config.human_only.requires_human(HumanCategory::HostRoot));
+    let config = parse("human_only = []", paths()).unwrap();
+    assert!(config.human_only.is_empty());
+}
+
+#[test]
+fn duplicate_and_unknown_human_only_entries_are_refused() {
+    let error = parse(
+        "human_only = [\"credentials\", \"credentials\"]",
+        paths(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("duplicate"), "{error}");
+    let error = parse("human_only = [\"flow-lock\"]", paths()).unwrap_err();
+    assert!(error.to_string().contains("unknown category"), "{error}");
+}
+
+#[test]
 fn the_shipped_example_parses_to_the_defaults() {
     let example = include_str!("mind.toml.example");
     let config = parse(example, paths()).unwrap();
