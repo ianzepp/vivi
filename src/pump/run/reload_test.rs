@@ -261,6 +261,34 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
     assert!(queued.read_only);
     assert_eq!(queued.from_ref.as_deref(), Some(ctx.cfg.main.as_str()));
     assert_eq!(queued.extra_targets, step_inputs::targets(&ctx));
+
+    // A second valid reload that adds only an envelope-fix override resolves
+    // it independently: the planner override and the shared fallback the
+    // fresh jobs just captured are untouched, and the queued job keeps its
+    // startup budget.
+    write_toml(
+        dir.path(),
+        &budgeted_toml(2, 233, "planner = 151\nenvelope-fix = 279", ""),
+    );
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert!(last_error.is_none());
+    assert!(exceptions(&ctx).is_empty());
+    assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 279);
+    let replanned = step_inputs::read_only_job(
+        &ctx,
+        &run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "brief one",
+    )
+    .unwrap();
+    assert_eq!(replanned.budget, 151);
+    let rejudged =
+        step_inputs::read_only_job(&ctx, &run, &step, &NodeClass::Judge, "auditor", "brief two")
+            .unwrap();
+    assert_eq!(rejudged.budget, 233);
+    assert_eq!(queued.budget, 97);
 }
 
 #[test]
