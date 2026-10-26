@@ -19,7 +19,11 @@ use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, inherit};
 const FALLBACK_IDENTITY: (&str, &str) = ("vivi", "vivi@localhost");
 
 /// Make the bare repository `repo` on `branch` and, when `seed` is set, one
-/// empty commit on it. Returns the seed commit's id. The caller owns undo:
+/// empty commit on it. Returns the seed commit's id. Every new bare
+/// repository sets `uploadpack.allowReachableSHA1InWant` locally, so a peer
+/// may fetch any commit the repository can reach: a job pinned to an
+/// ancestor keeps fetching after the integration branch advances past it.
+/// The policy is repository-local, never global. The caller owns undo:
 /// `git init` creates `repo`, so a failure after it leaves `repo` for the
 /// caller to remove.
 pub(super) fn init_bare(
@@ -31,6 +35,16 @@ pub(super) fn init_bare(
     git(None, &["init", "--bare", "--shared=group", "-b", branch])
         .arg(repo)
         .run()?;
+    git(
+        Some(repo),
+        &[
+            "config",
+            "--local",
+            "uploadpack.allowReachableSHA1InWant",
+            "true",
+        ],
+    )
+    .run()?;
     if !seed {
         return Ok(None);
     }
