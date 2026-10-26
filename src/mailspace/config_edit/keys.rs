@@ -54,11 +54,67 @@ pub fn value_type(value: &Value) -> &'static str {
     }
 }
 
+/// Pump keys retired from `mailspace.toml`, as parsed segment paths: the
+/// sender and recipient knobs sends and replies no longer take from here
+/// (`config migrate` plans their removal). `config set` refuses to
+/// reintroduce any of them; `config unset` stays available as the repair.
+const RETIRED_KEYS: [&[&str]; 5] = [
+    &["pump", "from"],
+    &["pump", "reply_from"],
+    &["pump", "board", "from"],
+    &["pump", "board", "reply_to"],
+    &["pump", "dispatch", "from"],
+];
+
+/// The retired key sitting at or above `path`, if any.
+fn retired_above(path: &[String]) -> Option<&'static [&'static str]> {
+    RETIRED_KEYS.iter().copied().find(|retired| {
+        path.len() >= retired.len() && retired.iter().zip(path).all(|(r, p)| p == r)
+    })
+}
+
+/// The retired key that setting `value` at `path` would reintroduce, if
+/// any: an ancestor inline table (or array of them) may hold retired keys
+/// below `path`, directly or through nested inline tables.
+fn reintroduced_by(path: &[String], value: &Value) -> Option<&'static [&'static str]> {
+    if let Some(retired) = retired_above(path) {
+        return Some(retired);
+    }
+    match value {
+        Value::InlineTable(table) => {
+            for (key, item) in table.iter() {
+                let mut below = path.to_vec();
+                below.push(key.to_owned());
+                if let Some(retired) = reintroduced_by(&below, item) {
+                    return Some(retired);
+                }
+            }
+            None
+        }
+        Value::Array(array) => array.iter().find_map(|item| reintroduced_by(path, item)),
+        _ => None,
+    }
+}
+
+/// The refusal for reintroducing `retired` through `config set`.
+fn retired_error(retired: &[&str]) -> VivariumError {
+    let name = retired.join(".");
+    VivariumError::Config(format!(
+        "`{name}` is retired: config set refuses to reintroduce it; \
+         `vivi config unset {name}` removes it"
+    ))
+}
+
 /// Set `path` to `value`, creating missing parent tables as implicit tables.
 pub fn set_in(doc: &mut DocumentMut, path: &[String], value: Value) -> Result<(), VivariumError> {
     let (leaf, parents) = path
         .split_last()
         .ok_or_else(|| VivariumError::Config("empty config key".into()))?;
+    // Refuse before any mutation: neither the retired key itself nor a
+    // reintroduction through an ancestor inline-table value may land.
+    if let Some(retired) = retired_above(path).or_else(|| reintroduced_by(path, &value)) {
+        return Err(retired_error(retired));
+    }
     let mut cur: &mut dyn TableLike = doc.as_table_mut();
     for (i, segment) in parents.iter().enumerate() {
         if !cur.contains_key(segment) {
