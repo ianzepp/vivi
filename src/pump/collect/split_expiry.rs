@@ -182,8 +182,8 @@ fn retry_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64, live: usize, cap:
     true
 }
 
-/// Queue a split planner durably; a queue failure parks it for operator
-/// recovery instead of leaving a phantom live split.
+/// Queue a split planner durably; a queue failure parks it as Mind triage
+/// instead of leaving a phantom live split.
 pub(super) fn enqueue_split(
     ctx: &Ctx,
     st: &mut State,

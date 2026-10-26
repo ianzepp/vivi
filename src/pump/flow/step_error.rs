@@ -1,5 +1,6 @@
 //! Consecutive-failure counter for flow units; a unit that fails
-//! [`STEP_ERROR_LIMIT`] ticks in a row is held for the operator.
+//! [`STEP_ERROR_LIMIT`] ticks in a row is held as Mind triage for
+//! `vivi pump answer`.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -51,7 +52,8 @@ pub(crate) fn note_success(ctx: &Ctx, key: &str) {
     counts().remove(&scoped(ctx, key));
 }
 
-/// Hold the step `task` for the operator and raise [`STEP_ERROR_HELD`] once.
+/// Hold the step `task` as Mind triage for `vivi pump answer` and raise
+/// [`STEP_ERROR_HELD`] once.
 pub(crate) fn hold(
     ctx: &Ctx,
     store: &PumpStore,

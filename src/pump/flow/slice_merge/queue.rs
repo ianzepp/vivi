@@ -52,7 +52,7 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
                     row.node, run.need
                 ),
             );
-            // A start error holds the slice for the operator: it is never
+            // A start error holds the slice as Mind triage: it is never
             // retried tick after tick.
             store.set_step_state(&row.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
         }

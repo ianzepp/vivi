@@ -56,7 +56,8 @@ pub(crate) fn run<S: JobStore, M: FlowMail>(
 }
 
 /// A failed apply: alarm once below [`STEP_ERROR_LIMIT`] ticks in a row; at the
-/// limit mark the job applied and hold its slice for the operator.
+/// limit mark the job applied and hold its slice as Mind triage for
+/// `vivi pump answer`.
 fn give_up_or_alarm<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -259,7 +260,8 @@ impl Ended<'_> {
     }
 
     /// The worker could not run the job: alarm once, reply once and hold the
-    /// slice for the operator. No hand attempt is used or queued.
+    /// slice as Mind triage for `vivi pump answer`. No hand attempt is used
+    /// or queued.
     fn environment<M: FlowMail>(
         &self,
         mail: &mut M,

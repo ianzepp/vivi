@@ -21,7 +21,8 @@ const READY: &str = "ready";
 /// Alarm kind: a prerequisite was closed without landing; the step is held.
 pub(crate) const MILESTONE_UNLANDED: &str = "flow-release-prereq-unlanded";
 
-/// Alarm kind: a prerequisite is open but held by an operator-only state.
+/// Alarm kind: a prerequisite is open but held as Mind triage
+/// (`OPERATOR_HOLD` or an operator-only node).
 pub(crate) const MILESTONE_PREREQ_HELD: &str = "flow-release-prereq-held";
 
 /// Waits for the need's prerequisite needs; `poll` answers when all landed.
