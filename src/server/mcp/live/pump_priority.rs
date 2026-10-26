@@ -10,10 +10,12 @@
 //! rate limited as writes (the server route's accounting has already
 //! classified them), and `list` is a read.
 //!
-//! Keys stay literal: the need is never looked up, canonicalized, or
-//! required to exist, so an operator can pre-seed a priority for a need that
-//! is only sent later. Level 0 removes the row; a clear of a key without one
-//! still succeeds.
+//! The writes are canonical: the `need` argument names an anchor that
+//! [`super::locate`] resolves (a full handle or an unambiguous prefix) and
+//! that must be a need before anything is written, and the row is stored
+//! under the canonical handle — the same key a dispatch send files its
+//! priority under. Level 0 removes the row. `list` stays a plain read of
+//! whatever keys are stored.
 //!
 //! Authorization is `pump_control`'s (one shared check in `pump.rs`): an API
 //! key minted by the host's own member, acting as a role of kind `operator`.
@@ -29,7 +31,9 @@ use crate::server::mcp::send_options::non_negative_integer;
 use crate::server::mcp::tools::{ToolError, rate_limit, req_str};
 use crate::server::safety::RateLimiter;
 
+use super::Hosted;
 use super::lib_error;
+use super::locate;
 use super::pump::{acting_key, authorize};
 
 /// Run `pump_priority` for `caller` (the key's minting member) acting as
@@ -54,7 +58,19 @@ pub(in crate::server::mcp) fn pump_priority(
     }
 }
 
-/// Store `need` at `level`; level 0 removes the row.
+/// Resolve the `need` argument to one canonical need handle, before any
+/// write: locate the anchor in the hosted mailspace and refuse anything
+/// that is not a need.
+fn canonical_need(hosted: &Hosted, argument: &str) -> Result<String, ToolError> {
+    let storage = hosted.ms.storage().map_err(lib_error)?;
+    let located = locate(&storage, argument)?;
+    if located.kind != "need" {
+        return Err(ToolError::new(format!("not a need: {argument}")));
+    }
+    Ok(located.view.handle.clone())
+}
+
+/// Store the anchor's canonical handle at `level`; level 0 removes the row.
 fn set(
     limiter: &RateLimiter,
     project_id: &str,
@@ -69,13 +85,15 @@ fn set(
         None => return Err(ToolError::new("level is required to set")),
     };
     let hosted = authorize("pump_priority", root, caller, requested)?;
+    let canonical = canonical_need(&hosted, &need)?;
     rate_limit(limiter, project_id, &hosted.actor)?;
     let home = project_home(root).map_err(lib_error)?;
-    priority::set(&home, need, level).map_err(lib_error)?;
-    Ok(json!({ "action": "set", "need": need, "level": level }))
+    priority::set(&home, &canonical, level).map_err(lib_error)?;
+    Ok(json!({ "action": "set", "need": canonical, "level": level }))
 }
 
-/// Remove `need`'s priority row; an absent row still succeeds.
+/// Remove the anchor's canonical handle's priority row; an absent row still
+/// succeeds.
 fn clear(
     limiter: &RateLimiter,
     project_id: &str,
@@ -89,10 +107,11 @@ fn clear(
         return Err(ToolError::new("clear takes no level"));
     }
     let hosted = authorize("pump_priority", root, caller, requested)?;
+    let canonical = canonical_need(&hosted, &need)?;
     rate_limit(limiter, project_id, &hosted.actor)?;
     let home = project_home(root).map_err(lib_error)?;
-    priority::clear(&home, need).map_err(lib_error)?;
-    Ok(json!({ "action": "clear", "need": need, "level": 0 }))
+    priority::clear(&home, &canonical).map_err(lib_error)?;
+    Ok(json!({ "action": "clear", "need": canonical, "level": 0 }))
 }
 
 /// Every prioritized need, highest level first, then by need handle.

@@ -151,23 +151,30 @@ async fn fixture_write_limit_bounds_priority_writes() {
         state.limiter = RateLimiter::new(Some(1));
     });
     let key = fx.key_by(&fx.member, Some("operator"));
+    let need = fx.send(
+        "mind",
+        "need",
+        "hand",
+        "bounded anchor",
+        "+++\ndone_when = [\"it is bounded\"]\n+++\n\nanchor body",
+    );
     let answer = fx
         .call(
             &key,
             "pump_priority",
-            json!({"action": "set", "need": "n1", "level": 2}),
+            json!({"action": "set", "need": &need, "level": 2}),
         )
         .await;
     assert_eq!(
         answer,
-        json!({"action": "set", "need": "n1", "level": 2}),
+        json!({"action": "set", "need": need, "level": 2}),
         "{answer}"
     );
     let message = fx
         .refused(
             &key,
             "pump_priority",
-            json!({"action": "set", "need": "n2", "level": 3}),
+            json!({"action": "set", "need": &need, "level": 3}),
         )
         .await;
     assert!(message.contains("writes/min"), "{message}");
@@ -176,7 +183,7 @@ async fn fixture_write_limit_bounds_priority_writes() {
         .await;
     assert_eq!(
         listed["priorities"],
-        json!([{"need": "n1", "level": 2}]),
+        json!([{"need": need, "level": 2}]),
         "{listed}"
     );
 }
@@ -1155,21 +1162,23 @@ async fn repeated_reads_never_spend_the_write_allowance() {
         audit_lines(&fx.data)
     );
 
-    // The window's one write is still there for an unrelated write.
+    // The window's one write is still there: the anchored need's priority
+    // set takes it.
     let set = fx
         .call(
             &operator,
             "pump_priority",
-            json!({"action": "set", "need": "n1", "level": 2}),
+            json!({"action": "set", "need": &need, "level": 2}),
         )
         .await;
     assert_eq!(set["action"], "set", "{set}");
+    assert_eq!(set["need"], json!(need), "{set}");
     // The budget is spent by that single write — proving the reads spent
     // none of it.
     fx.refused(
         &operator,
         "pump_priority",
-        json!({"action": "set", "need": "n2", "level": 3}),
+        json!({"action": "set", "need": &need, "level": 3}),
     )
     .await;
     let lines = audit_lines(&fx.data);
