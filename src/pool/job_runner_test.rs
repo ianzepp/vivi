@@ -69,7 +69,7 @@ impl Rig {
         build_dir: &str,
         facts: &[&str],
     ) -> (JobResult, String) {
-        self.run_in_context_logged(harness, build_dir, facts, &self.f.repo, None, "")
+        self.run_in_context_logged(harness, build_dir, facts, &self.f.repo, None, "", "")
     }
 
     fn run_with_ramdisk_settings(
@@ -78,7 +78,7 @@ impl Rig {
         facts: &[&str],
         settings: &str,
     ) -> JobResult {
-        self.run_in_context_logged(harness, "build", facts, &self.f.repo, None, settings)
+        self.run_in_context_logged(harness, "build", facts, &self.f.repo, None, settings, "")
             .0
     }
 
@@ -90,7 +90,7 @@ impl Rig {
         source: &Path,
         target: Option<(&str, &str)>,
     ) -> JobResult {
-        self.run_in_context_logged(harness, build_dir, facts, source, target, "")
+        self.run_in_context_logged(harness, build_dir, facts, source, target, "", "")
             .0
     }
 
@@ -102,6 +102,7 @@ impl Rig {
         source: &Path,
         target: Option<(&str, &str)>,
         extra_params: &str,
+        extras_env: &str,
     ) -> (JobResult, String) {
         let job = self.work.path().join("job");
         if job.exists() {
@@ -131,6 +132,9 @@ impl Rig {
         if !facts.is_empty() {
             let list: String = facts.iter().map(|c| format!("{c}\n")).collect();
             std::fs::write(job.join("facts.cmd"), list).unwrap();
+        }
+        if !extras_env.is_empty() {
+            std::fs::write(job.join("extra-targets.env"), extras_env).unwrap();
         }
         let home = self.work.path().join("home");
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
@@ -538,4 +542,194 @@ fn one_slot_reuses_isolated_target_caches_across_a_b_a_jobs() {
         format!("file://{}", rig.f.repo.display())
     );
     assert_eq!(git(&rig.repo(), &["rev-parse", "HEAD"]), rig.start);
+}
+
+/// A harness that copies the delivered brief and its own view of the checkout
+/// into `out` beside the repository, then only reads the checkout.
+fn observe_harness(out: &Path) -> String {
+    format!(
+        "cp \"$HOME/brief.md\" {out}/brief.txt; pwd > {out}/pwd.txt; \
+         git rev-parse --abbrev-ref HEAD > {out}/ref.txt; \
+         git rev-parse HEAD > {out}/sha.txt; cat a.txt",
+        out = out.display()
+    )
+}
+
+fn observed(out: &Path, name: &str) -> String {
+    std::fs::read_to_string(out.join(name))
+        .unwrap_or_else(|e| panic!("no observed {name} ({e})"))
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn the_delivered_brief_opens_with_a_header_naming_the_real_detached_checkout() {
+    let rig = Rig::new();
+    let out = rig.work.path().join("observed");
+    std::fs::create_dir_all(&out).unwrap();
+
+    let result = rig.run(&observe_harness(&out), "build");
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    let brief = std::fs::read_to_string(out.join("brief.txt")).unwrap();
+    let repo = rig.repo();
+    assert!(
+        brief.starts_with("---\n"),
+        "the header opens the brief: {brief}"
+    );
+    assert!(
+        brief.contains(&format!("checkout: {}", repo.display())),
+        "{brief}"
+    );
+    assert!(
+        brief.contains(&format!("head: detached at {}", &rig.start[..12])),
+        "{brief}"
+    );
+    assert!(!brief.contains("output branch:"), "{brief}");
+    assert!(
+        brief.find("review it").unwrap() > brief.find("head: detached").unwrap(),
+        "the assignment follows the header: {brief}"
+    );
+    assert_eq!(
+        std::fs::canonicalize(observed(&out, "pwd.txt")).unwrap(),
+        std::fs::canonicalize(&repo).unwrap(),
+        "the header names the directory the harness runs in"
+    );
+    assert_eq!(observed(&out, "ref.txt"), "HEAD", "detached");
+    assert_eq!(observed(&out, "sha.txt"), rig.start);
+}
+
+#[test]
+fn the_header_names_a_target_cache_checkout_and_the_extra_note_survives() {
+    let rig = Rig::new();
+    let other = fixture();
+    let other_sha = git(&other.repo, &["rev-parse", "main"]);
+    let key = "a".repeat(64);
+    let extra_key = "b".repeat(64);
+    let out = rig.work.path().join("observed");
+    std::fs::create_dir_all(&out).unwrap();
+    let extras = format!(
+        "EXTRA_COUNT='1'\nEXTRA_0_ID='gradus'\nEXTRA_0_KEY='{extra_key}'\n\
+         EXTRA_0_REPOSITORY='file://{}'\nEXTRA_0_FROM='{other_sha}'\n\
+         EXTRA_0_LOCAL_SOURCE=''\nEXTRA_0_TOKEN=''\n",
+        other.repo.display()
+    );
+
+    let result = rig
+        .run_in_context_logged(
+            &observe_harness(&out),
+            "build",
+            &[],
+            &rig.f.repo,
+            Some(("a", &key)),
+            "",
+            &extras,
+        )
+        .0;
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    let cache = rig.work.path().join("targets").join(&key).join("repo");
+    let extra_checkout = rig
+        .work
+        .path()
+        .join("targets")
+        .join(&extra_key)
+        .join("repo");
+    let brief = std::fs::read_to_string(out.join("brief.txt")).unwrap();
+    assert!(
+        brief.contains(&format!("checkout: {}", cache.display())),
+        "{brief}"
+    );
+    assert!(
+        brief.contains(&format!("head: detached at {}", &rig.start[..12])),
+        "{brief}"
+    );
+    assert!(brief.contains("## Repositories"), "{brief}");
+    assert!(brief.contains("(your working directory)"), "{brief}");
+    assert!(
+        brief.contains(&format!(
+            "- gradus: {} (at {})",
+            extra_checkout.display(),
+            &other_sha[..12]
+        )),
+        "{brief}"
+    );
+    assert!(brief.contains("review it"), "{brief}");
+    assert_eq!(
+        std::fs::canonicalize(observed(&out, "pwd.txt")).unwrap(),
+        std::fs::canonicalize(&cache).unwrap(),
+        "the harness runs in the target cache checkout"
+    );
+}
+
+#[test]
+fn a_local_create_job_reports_the_assigned_branch_without_labeling_it_current() {
+    let rig = Rig::new();
+    let out = rig.work.path().join("observed");
+    std::fs::create_dir_all(&out).unwrap();
+    let params = format!(
+        "READ_ONLY=''\nBRANCH='work'\nLOCAL_ACTION='create'\nLOCAL_START='{}'\n",
+        rig.start
+    );
+
+    let result = rig
+        .run_in_context_logged(
+            &observe_harness(&out),
+            "build",
+            &[],
+            &rig.f.repo,
+            None,
+            &params,
+            "",
+        )
+        .0;
+
+    assert_eq!(result.get("push"), "no_changes", "{:?}", result.fields);
+    let brief = std::fs::read_to_string(out.join("brief.txt")).unwrap();
+    assert!(
+        brief.contains(&format!("head: detached at {}", &rig.start[..12])),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("output branch: work (assigned; the runner commits and publishes there)"),
+        "{brief}"
+    );
+    assert!(brief.contains("review it"), "{brief}");
+    assert_eq!(
+        observed(&out, "ref.txt"),
+        "HEAD",
+        "the harness starts detached: the assigned branch is not current"
+    );
+}
+
+#[test]
+fn a_written_job_names_both_the_current_branch_and_the_assigned_output_branch() {
+    let rig = Rig::new();
+    let out = rig.work.path().join("observed");
+    std::fs::create_dir_all(&out).unwrap();
+
+    let result = rig
+        .run_in_context_logged(
+            &observe_harness(&out),
+            "build",
+            &[],
+            &rig.f.repo,
+            None,
+            "READ_ONLY=''\nBRANCH='work'\n",
+            "",
+        )
+        .0;
+
+    assert_eq!(result.get("push"), "no_changes", "{:?}", result.fields);
+    let brief = std::fs::read_to_string(out.join("brief.txt")).unwrap();
+    assert!(
+        brief.contains(&format!("head: work at {}", &rig.start[..12])),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("output branch: work (assigned; the runner commits and publishes there)"),
+        "{brief}"
+    );
+    assert_eq!(observed(&out, "ref.txt"), "work");
+    assert!(brief.contains("review it"), "{brief}");
 }
