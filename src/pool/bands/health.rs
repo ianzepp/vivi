@@ -7,12 +7,16 @@
 //! upstreams, so the slug is the truth. The classifier reads only the
 //! collected receipt, stderr, and the agent's execution result — never the
 //! runner log or task prose — and stays narrow on purpose: a wrong
-//! observation idles a healthy provider. Nothing here replays events or
-//! performs I/O; a later slice wires the collected-note replay.
+//! observation idles a healthy provider. Nothing here performs I/O:
+//! [`cooldowns`] replays stored observations from an event log in memory,
+//! and a later slice wires it into admission.
+
+use std::collections::BTreeMap;
 
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
+use crate::mailspace::PoolEventRow;
 use crate::pool::collect::{Collected, JobResult, Outcome};
 use crate::pool::record::DispatchRecord;
 
@@ -20,9 +24,9 @@ use crate::pool::record::DispatchRecord;
 /// rate-limit or quota observation.
 pub const COOLDOWN_SECS: u64 = 60;
 
-/// The namespaced `pool_collected` note key that carries a serialized
-/// [`HealthObservation`]. Dotted with a `pool.` prefix so it cannot collide
-/// with a job's plain result fields.
+/// The namespaced `pool_collected` note key under whose value a
+/// [`HealthObservation`] is stored in the note's JSON. Dotted with a
+/// `pool.` prefix so it cannot collide with a job's plain result fields.
 pub const COLLECTED_NOTE_KEY: &str = "pool.health";
 
 /// Which upstream failure an observation saw.
@@ -105,6 +109,49 @@ pub fn observation(
         classify(collected)?,
         now,
     ))
+}
+
+/// The provider cooldown deadlines replayed from stored observations:
+/// every `pool_collected` event collected on `pool` whose note carries a
+/// [`COLLECTED_NOTE_KEY`] [`HealthObservation`] contributes its stored
+/// `cooldown_until`, and each provider keeps the maximum. Pure replay over
+/// the log: nothing is recomputed and nothing adds [`COOLDOWN_SECS`] to any
+/// clock, an event of another pool is skipped, and a note without the
+/// metadata (older binaries) or with malformed metadata contributes
+/// nothing — a success never clears a deadline, because only observations
+/// fold in. Which deadlines are still active is the caller's call at its
+/// injected instant, exactly as `Availability` decides it at `now >=
+/// deadline`.
+#[must_use]
+pub fn cooldowns(
+    events: &[PoolEventRow],
+    pool: &str,
+) -> BTreeMap<String, chrono::DateTime<chrono::Utc>> {
+    let mut deadlines: BTreeMap<String, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
+    for event in events {
+        if event.event_type != "pool_collected" {
+            continue;
+        }
+        let Ok(note) = serde_json::from_str::<serde_json::Value>(&event.note) else {
+            continue;
+        };
+        if note.get("pool").and_then(|value| value.as_str()) != Some(pool) {
+            continue;
+        }
+        let Some(stored) = note.get(COLLECTED_NOTE_KEY) else {
+            continue;
+        };
+        let Ok(seen) = serde_json::from_value::<HealthObservation>(stored.clone()) else {
+            continue;
+        };
+        let deadline = deadlines
+            .entry(seen.provider)
+            .or_insert(seen.cooldown_until);
+        if seen.cooldown_until > *deadline {
+            *deadline = seen.cooldown_until;
+        }
+    }
+    deadlines
 }
 
 /// The rate-limit or quota classification of one collected run, or `None`

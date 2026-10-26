@@ -1,5 +1,9 @@
 use super::*;
 
+use std::collections::BTreeMap;
+
+use crate::mailspace::PoolEventRow;
+use crate::pool::bands::availability::{Availability, WaitingReason};
 use crate::pool::collect::{Collected, JobResult, Outcome};
 use crate::pool::config::PoolConfig;
 use crate::pool::record::DispatchRecord;
@@ -117,6 +121,44 @@ fn finished(result: &str, receipt: &str, stderr: &str) -> Outcome {
 /// The classification of one run of `model`, collected at second 0.
 fn classified(model: &str, outcome: &Outcome) -> Option<Classification> {
     observation(&record(model), outcome, at(0)).map(|seen| seen.classification)
+}
+
+/// An observation of `provider` seen at second `seen_secs`.
+fn observed(provider: &str, seen_secs: i64) -> HealthObservation {
+    HealthObservation::at(provider, Classification::RateLimit, at(seen_secs))
+}
+
+/// The JSON collected note of `pool`, carrying `seen` under the namespaced
+/// health key when present.
+fn collected_note(pool: &str, seen: Option<&HealthObservation>) -> String {
+    let mut note = serde_json::json!({
+        "job": "job000000001",
+        "pool": pool,
+        "slot": "slot-a",
+        "outcome": "finished",
+    });
+    if let Some(seen) = seen {
+        note[COLLECTED_NOTE_KEY] = serde_json::to_value(seen).unwrap();
+    }
+    note.to_string()
+}
+
+/// A `pool_collected` event row of `pool` with the given observation.
+fn collected(pool: &str, seen: Option<&HealthObservation>) -> PoolEventRow {
+    PoolEventRow {
+        handle: "t1".into(),
+        event_type: "pool_collected".into(),
+        note: collected_note(pool, seen),
+    }
+}
+
+/// The availability view answering at `now_secs` with `pool`'s replayed
+/// deadlines from `events`.
+fn view_at(events: &[PoolEventRow], pool: &str, now_secs: i64) -> Availability {
+    Availability {
+        provider_deadlines: cooldowns(events, pool),
+        ..Availability::at(at(now_secs))
+    }
 }
 
 #[test]
@@ -338,4 +380,110 @@ fn other_failures_do_not_cool_a_provider() {
         ),
         None
     );
+}
+
+#[test]
+fn replaying_failure_does_not_extend_cooldown() {
+    // One failure observed at second 0: the deadline is the stored one —
+    // its own observed_at plus the default cooldown — never now plus 60.
+    let events = [collected("p1", Some(&observed("zai", 0)))];
+    assert_eq!(
+        cooldowns(&events, "p1"),
+        BTreeMap::from([("zai".to_string(), at(COOLDOWN_SECS as i64))])
+    );
+    // Several failures of one provider keep the maximum stored deadline,
+    // in any event order.
+    let events = [
+        collected("p1", Some(&observed("zai", 30))),
+        collected("p1", Some(&observed("zai", 0))),
+        collected("p1", Some(&observed("zai", 10))),
+    ];
+    assert_eq!(
+        cooldowns(&events, "p1").get("zai"),
+        Some(&at(30 + COOLDOWN_SECS as i64))
+    );
+}
+
+#[test]
+fn cooldown_excludes_sibling_models_but_not_other_providers() {
+    // A failure of one qualified slug cools every slug of its provider.
+    let events = [collected("p1", Some(&observed("zai", 0)))];
+    let view = view_at(&events, "p1", COOLDOWN_SECS as i64 / 2);
+    assert!(!view.model_available("zai/glm-5.3-flash"));
+    assert!(!view.model_available("zai/glm-5.3"));
+    assert!(view.model_available("openai/gpt-5.2"));
+    // An unqualified slug is its own provider key: other slugs keep
+    // working.
+    let events = [collected("p1", Some(&observed("glm-5.3-flash", 0)))];
+    let view = view_at(&events, "p1", COOLDOWN_SECS as i64 / 2);
+    assert!(!view.model_available("glm-5.3-flash"));
+    assert!(view.model_available("zai/glm-5.3-flash"));
+}
+
+#[test]
+fn cooldown_is_pool_scoped() {
+    // The observation was recorded on pool p2; pool p1 replays nothing.
+    let events = [collected("p2", Some(&observed("zai", 0)))];
+    assert!(cooldowns(&events, "p1").is_empty());
+    assert_eq!(
+        cooldowns(&events, "p2").get("zai"),
+        Some(&at(COOLDOWN_SECS as i64))
+    );
+    // Only collected events count: a dispatched event carrying the same
+    // payload contributes nothing.
+    let dispatched = PoolEventRow {
+        event_type: "pool_dispatched".into(),
+        ..collected("p1", Some(&observed("zai", 0)))
+    };
+    assert!(cooldowns(&[dispatched], "p1").is_empty());
+}
+
+#[test]
+fn older_success_does_not_clear_active_cooldown() {
+    // A job dispatched before the failure but collected after it carries no
+    // observation in its note and never clears what the failure set.
+    let events = [
+        collected("p1", Some(&observed("zai", 0))),
+        collected("p1", None),
+    ];
+    let view = view_at(&events, "p1", 30);
+    assert_eq!(view.provider_deadlines.get("zai"), Some(&at(60)));
+    let blocked = view.unavailable(["zai/glm-5.3-flash"]).unwrap();
+    assert_eq!(blocked.reason, WaitingReason::ProviderCooldown);
+    assert_eq!(blocked.until, Some(at(60)));
+}
+
+#[test]
+fn legacy_and_malformed_notes_imply_no_cooldown() {
+    // Older notes carry no health metadata at all.
+    assert!(cooldowns(&[collected("p1", None)], "p1").is_empty());
+    // Malformed metadata invents no deadline and poisons no other
+    // provider's stored one.
+    let mut string_note = collected("p1", None);
+    let mut payload = serde_json::from_str::<serde_json::Value>(&string_note.note).unwrap();
+    payload[COLLECTED_NOTE_KEY] = serde_json::json!("not an observation");
+    string_note.note = payload.to_string();
+    let mut partial_note = collected("p1", None);
+    let mut payload = serde_json::from_str::<serde_json::Value>(&partial_note.note).unwrap();
+    payload[COLLECTED_NOTE_KEY] = serde_json::json!({"provider": "zai"});
+    partial_note.note = payload.to_string();
+    let events = [
+        string_note,
+        partial_note,
+        collected("p1", Some(&observed("openai", 0))),
+    ];
+    let deadlines = cooldowns(&events, "p1");
+    assert_eq!(deadlines.len(), 1);
+    assert_eq!(deadlines.get("openai"), Some(&at(COOLDOWN_SECS as i64)));
+}
+
+#[test]
+fn eligibility_turns_exactly_at_the_deadline() {
+    let events = [collected("p1", Some(&observed("zai", 0)))];
+    let view = view_at(&events, "p1", COOLDOWN_SECS as i64 - 1);
+    assert!(!view.model_available("zai/glm-5.3-flash"));
+    // At the deadline itself the provider is eligible again.
+    let view = view_at(&events, "p1", COOLDOWN_SECS as i64);
+    assert!(view.model_available("zai/glm-5.3-flash"));
+    assert_eq!(view.unavailable(["zai/glm-5.3-flash"]), None);
 }
