@@ -10,8 +10,6 @@ use crate::pump::store::PumpStore;
 
 /// Job kind of a correction job.
 pub const KIND: &str = "envelope-fix";
-/// Pool execution budget of a correction, in seconds.
-const BUDGET: u64 = 300;
 /// The original final message is cut to this many bytes in the body.
 const ORIGINAL_CAP: usize = 16 * 1024;
 
@@ -51,6 +49,9 @@ fn split_id(job_id: &str) -> (&str, u32) {
 /// `need` and the step's run and node are named in the body's first prose
 /// line. The body is a pool job body, not a task letter, so it carries no
 /// `[step]` table; the job's own front matter (W3-B3) is where one can go.
+///
+/// `budget` is the resolved envelope-fix budget in seconds, from
+/// configuration — never the failed role's own budget.
 #[must_use]
 pub fn spec(
     need: &str,
@@ -60,6 +61,7 @@ pub fn spec(
     original: &PoolJob,
     error: &EnvelopeError,
     n: u32,
+    budget: u64,
 ) -> JobSpec {
     let id = format!("{}-c{n}", base_id(&original.id));
     let body = format!(
@@ -85,7 +87,7 @@ pub fn spec(
     spec.builtin_role.clone_from(&original.builtin_role);
     spec.model.clone_from(&original.model);
     spec.read_only = true;
-    spec.budget = BUDGET;
+    spec.budget = budget;
     spec
 }
 

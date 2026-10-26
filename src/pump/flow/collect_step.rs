@@ -267,7 +267,8 @@ where
         error: &crate::pump::envelope::EnvelopeError,
     ) -> Result<(), VivariumError> {
         let n = correct::correction_n(&job.id) + 1;
-        let spec = correct::spec(&self.run.need, row, &job.role, kind, job, error, n);
+        let budget = self.ctx.cfg.dispatch.envelope_fix_budget();
+        let spec = correct::spec(&self.run.need, row, &job.role, kind, job, error, n, budget);
         correct::enqueue(self.st, self.store, &self.run.need, row, spec)
     }
 

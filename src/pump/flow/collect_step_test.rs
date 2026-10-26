@@ -9,7 +9,9 @@ use tempfile::{TempDir, tempdir};
 use super::{RoleCollector, RunCx, StepCollector};
 use crate::error::VivariumError;
 use crate::letter::fixture::record_body;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
+use crate::pump::envelope::EnvelopeError;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::def::FlowKind;
@@ -54,8 +56,18 @@ struct Rig {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(DispatchConfig::default())
+}
+
+fn rig_with(dispatch: DispatchConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, _host) = test_ctx(
+        dir.path(),
+        PumpConfig {
+            dispatch,
+            ..PumpConfig::default()
+        },
+    );
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
@@ -425,5 +437,74 @@ fn a_sync_merge_job_that_ran_and_published_nothing_still_answers_conflict() -> R
     assert!(env_lines(&rig).is_empty());
     assert_ne!(step.verdict.as_deref(), Some(OPERATOR_HOLD));
     assert_eq!(step.verdict.as_deref(), Some("conflict"));
+    Ok(())
+}
+
+/// Queue the broken reply of `plan-j1` and correct it through the real
+/// [`RunCx::correct`] enqueue path, returning the queued job's budget.
+fn corrected_budget(dispatch: DispatchConfig) -> Result<u64, VivariumError> {
+    let mut rig = rig_with(dispatch)?;
+    let step = rig.plan_step()?;
+    let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
+    spec.task = Some(step.task.clone());
+    spec.from_ref = Some("main".into());
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    let mut job = rig.jobs.jobs["plan-j1"].clone();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: "no envelope here".into(),
+        at: 0,
+    });
+    let row = StepJobRow {
+        job: "plan-j1".into(),
+        run: 1,
+        node: "plan".into(),
+        task: step.task.clone(),
+        attempt: 1,
+    };
+    rig.store.insert_step_job(NEED, &row)?;
+    let run = rig.store.runs_of(NEED)?.remove(0);
+    let decide = |_: &_, _: &_| Err(VivariumError::Message("no decision".into()));
+    let mut cx = RunCx {
+        ctx: &rig.ctx,
+        st: &mut rig.jobs,
+        store: &rig.store,
+        mail: &mut rig.mail,
+        registry: &rig.registry,
+        decide: &decide,
+        def: rig.def.clone(),
+        run,
+    };
+    cx.correct(&job, &row, RoleKind::Planner, &EnvelopeError::NoOpening)?;
+    Ok(rig.jobs.jobs["plan-j1-c1"].budget)
+}
+
+#[test]
+fn envelope_fix_uses_config_and_defaults_to_300() -> R {
+    // The explicit `envelope-fix` override wins over a differing shared and
+    // planner budget.
+    let explicit = DispatchConfig {
+        budget: 1_200,
+        step_budgets: StepBudgets {
+            planner: Some(900),
+            envelope_fix: Some(45),
+            ..StepBudgets::default()
+        },
+        ..DispatchConfig::default()
+    };
+    assert_eq!(corrected_budget(explicit)?, 45);
+    // With no override the correction falls back to 300: it inherits neither
+    // the shared dispatch budget nor the failed planner step's own.
+    let absent = DispatchConfig {
+        budget: 1_200,
+        step_budgets: StepBudgets {
+            planner: Some(900),
+            ..StepBudgets::default()
+        },
+        ..DispatchConfig::default()
+    };
+    assert_eq!(corrected_budget(absent)?, 300);
     Ok(())
 }
