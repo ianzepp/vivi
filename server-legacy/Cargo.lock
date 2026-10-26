@@ -2693,8 +2693,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivi"
-version = "21.3.2"
-source = "git+https://github.com/ianzepp/vivi?tag=v21.3.2#085588995ad967c4ef3283609e53ab8c497c1688"
+version = "21.4.1"
+source = "git+https://github.com/ianzepp/vivi?tag=v21.4.1#08ecb22456d35db27b9c4ae3cffa77f19998e3a7"
 dependencies = [
  "axum",
  "bytes",
@@ -2732,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-server"
-version = "2.3.2"
+version = "2.4.0"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -2741,6 +2741,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "getrandom 0.4.3",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

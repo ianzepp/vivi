@@ -2,8 +2,7 @@
 
 ## Unreleased
 
-Pairs with vivi 21.3.2. A project made by `create_project` comes up with its
-pump running.
+A project made by `create_project` comes up with its pump running.
 
 - **`create_project` and `lane_create` accept only a GitHub source.** A
   `source` must match
@@ -42,6 +41,36 @@ pump running.
   with no server metadata) is refused: the lifecycle is metadata-only by
   design. **Warning:** older binaries ignore archived metadata and must not
   be used to downgrade across this change.
+
+## 2.4.0
+
+Pairs with vivi 21.4.1, which the server now builds against (see its release
+notes for the pump and mind changes).
+
+- A project made by `create_project` or `lane_create` lands its work on
+  `vivi/main`; the lane's own branch (`branch`, default `main`) is the
+  upstream the pump never writes. `target_log` and `target_show` read
+  `vivi/main`, which a new lane has from the start (vivi 21.4.1), so
+  `target_log` reports `branch: "vivi/main"` where it reported `main`. A
+  project made before this keeps its target main.
+- `vivi-server --help` and `--version` print the usage and the version and
+  exit. Before, every argument was ignored and the binary booted a server, so
+  an unattended `--help` started a second instance. Any other argument now
+  exits 2 with a usage hint instead of booting.
+- The README says `STORE_ENCRYPTION_KEY` is base64 of exactly 32 bytes.
+- Startup is stricter. `BIND` defaults to `127.0.0.1` (it was `0.0.0.0`), and
+  `DATA_DIR` is required and must be an absolute path (it defaulted to the
+  relative `data`); either mistake exits 2. The listener binds before the data
+  directory is touched, so a second instance on a taken address exits 1 without
+  writing, and a bind failure is an error exit, not a panic. A host that relied
+  on the old `BIND` default must now set it.
+- On Linux the server makes itself non-dumpable at boot, so another process
+  running as the same user cannot read its `/proc/<pid>/environ` or `mem`, and
+  a crash writes no core dump.
+- `STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN` and `HOST_OPERATOR_TOKEN` are read
+  from `$CREDENTIALS_DIRECTORY/<NAME>` (systemd `LoadCredential=`) before the
+  environment. Secrets taken from the environment are removed from it at boot,
+  so child processes do not inherit them.
 
 ## 2.3.2
 

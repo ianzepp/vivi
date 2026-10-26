@@ -124,7 +124,7 @@ pub(super) fn tools_list() -> Value {
             "properties": {
                 "name": { "type": "string", "description": "Project name: one safe path segment" },
                 "target": { "type": "string", "description": "The first target's id (lowercase letters, digits and hyphens); defaults to the project name" },
-                "branch": { "type": "string", "default": "main", "description": "The first target's default branch, also its main" },
+                "branch": { "type": "string", "default": "main", "description": "The lane's default branch, the upstream the pump never writes. The target's main, where the pump lands work, is vivi/main" },
                 "pool": { "type": "string", "description": "Pool whose remote_url is set to the git URL; overrides the host default" },
                 "initial_commit": { "type": "boolean", "default": false, "description": "Create an empty first commit on the branch" },
                 "source": { "type": "string", "description": "Fill the first target from this Git address (every branch and tag), fetched by this host; branch must be one of its branches. Excludes initial_commit. Must match ^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?$; local paths, file://, ssh://, other hosts, user info, query and fragment are refused" },
