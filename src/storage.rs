@@ -30,6 +30,7 @@ mod metadata;
 mod mutate;
 mod pending_deps;
 mod query;
+pub(crate) mod read_only;
 pub(crate) mod schema;
 mod sync;
 #[cfg(test)]
