@@ -23,13 +23,25 @@
 //! One decision needs the filesystem: a bare request path (no trailing
 //! slash, so literally a file) that is also a component-prefix of a
 //! configured directory entry could name that directory on disk, and then
-//! the entry would apply to it. Until filesystem verification lands in a
-//! later slice, such a path fails safe as
-//! [`ScopeDecision::UnverifiablePath`] and needs an operator.
+//! the entry would apply to it. The pure policy layer
+//! ([`ScopePolicy::decide`]) has no filesystem and fails safe there: such a
+//! path is [`ScopeDecision::UnverifiablePath`] and needs an operator. The
+//! checked layer ([`authorize`]) holds the target's resolved integration
+//! checkout, asks the filesystem what each requested path names without
+//! following symlinks, and decides what the filesystem proves; every
+//! uncertain traversal — an existing symlink, a dangling alias, an
+//! inaccessible component, a missing or unverifiable checkout root — still
+//! fails safe as [`ScopeDecision::UnverifiablePath`] and needs an operator.
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 use super::PumpTarget;
+
+use checkout::OnDisk;
+
+mod checkout;
 
 /// How a normalized literal path behaves in containment checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,15 +321,37 @@ impl ScopePolicy {
     /// would cover a denied descendant is refused, and an ambiguous bare
     /// file path fails safe before the allow list is consulted.
     fn decide_one(&self, path: &ScopePath) -> ScopeDecision {
-        if self.deny.iter().any(|entry| entry.covers(path)) {
-            return ScopeDecision::Denied;
-        }
-        if path.kind() != ScopePathKind::File && self.deny.iter().any(|entry| path.covers(entry)) {
+        if self.deny_blocks(path) {
             return ScopeDecision::Denied;
         }
         if let Some(ambiguity) = self.unverifiable(path) {
             return ambiguity;
         }
+        self.allow_decides(path)
+    }
+
+    /// The policy decision for a path whose kind the checkout has already
+    /// settled: deny wins, then the allow list. No ambiguity gate remains
+    /// once the filesystem has said what the path names.
+    fn decide_resolved(&self, path: &ScopePath) -> ScopeDecision {
+        if self.deny_blocks(path) {
+            return ScopeDecision::Denied;
+        }
+        self.allow_decides(path)
+    }
+
+    /// Whether a deny entry blocks the path: a denied ancestor covers it,
+    /// and a non-file request is refused when it would cover a denied
+    /// descendant.
+    fn deny_blocks(&self, path: &ScopePath) -> bool {
+        self.deny.iter().any(|entry| entry.covers(path))
+            || (path.kind() != ScopePathKind::File
+                && self.deny.iter().any(|entry| path.covers(entry)))
+    }
+
+    /// The allow-list verdict: an omitted allow list is repository-wide,
+    /// otherwise some entry must cover the path.
+    fn allow_decides(&self, path: &ScopePath) -> ScopeDecision {
         match &self.allow {
             None => ScopeDecision::Allowed,
             Some(allow) => {
@@ -354,6 +388,80 @@ impl ScopePolicy {
         }
         None
     }
+}
+
+/// Checked authorization of one request against a target's live policy and
+/// that target's own resolved integration checkout. `configs` is the pump's
+/// target map exactly as [`super::PumpConfig::target_configs`] provides it,
+/// and the policy is always the named target's own resolved
+/// [`ScopePolicy`]. The `checkout` must be that same target's resolved
+/// checkout (`PumpConfig::target_repo_dir`): never the controller's current
+/// checkout, and never another target's — a request against one target is
+/// not verified inside another tree. An unresolved checkout (`None`) and a
+/// target missing from the map both fail safe as
+/// [`ScopeDecision::UnverifiablePath`]; the structural unknown-target
+/// rejection stays with the caller that owns the target registry.
+///
+/// The request is authorized whole or not at all, reporting the strongest
+/// blocking reason. Typed lexical and policy refusals are preserved; every
+/// otherwise-allowed path is additionally verified inside the checkout
+/// without following symlinks. New files and directories beneath a
+/// verifiable checkout are valid; existing symlinks, dangling aliases,
+/// inaccessible components, and missing or unverifiable checkout roots
+/// keep the request an operator decision.
+#[must_use]
+pub fn authorize(
+    configs: &BTreeMap<String, PumpTarget>,
+    target: &str,
+    checkout: Option<&Path>,
+    request: &[String],
+) -> ScopeDecision {
+    let Some(checkout) = checkout else {
+        return ScopeDecision::UnverifiablePath;
+    };
+    let Some(config) = configs.get(target) else {
+        return ScopeDecision::UnverifiablePath;
+    };
+    let Ok(policy) = ScopePolicy::resolve(config) else {
+        return ScopeDecision::InvalidPath;
+    };
+    let mut worst = ScopeDecision::Allowed;
+    for raw in request {
+        let decision = checked_one(&policy, checkout, raw);
+        if rank(decision) > rank(worst) {
+            worst = decision;
+        }
+    }
+    worst
+}
+
+/// Decide one request path with the checkout in hand. The filesystem says
+/// what the path names: a bare request whose leaf exists as a directory is
+/// a directory (resolving the ambiguity the pure layer fails safe on), and
+/// any uncertain traversal — an existing symlink, a dangling alias, an
+/// inaccessible component — stays unverifiable rather than silently
+/// authorizing an alias.
+fn checked_one(policy: &ScopePolicy, checkout: &Path, raw: &str) -> ScopeDecision {
+    let Ok(parsed) = ScopePath::parse(raw) else {
+        return ScopeDecision::InvalidPath;
+    };
+    let Some(on_disk) = checkout::classify(checkout, &parsed) else {
+        return ScopeDecision::UnverifiablePath;
+    };
+    policy.decide_resolved(&resolved_path(parsed, on_disk))
+}
+
+/// The effective scope path: a bare file-kind request whose leaf exists as
+/// a directory on disk names that directory, so a configured directory
+/// entry applies to it; every other request keeps its lexical kind.
+fn resolved_path(path: ScopePath, on_disk: OnDisk) -> ScopePath {
+    if path.kind() == ScopePathKind::File && on_disk == OnDisk::Directory {
+        return ScopePath {
+            text: format!("{}/", path.text),
+            kind: ScopePathKind::Directory,
+        };
+    }
+    path
 }
 
 #[cfg(test)]
