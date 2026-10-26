@@ -93,3 +93,7 @@ pub fn role_job(
     spec.budget = ctx.cfg.dispatch.step_budget(execution);
     spec
 }
+
+#[cfg(test)]
+#[path = "outcome_test.rs"]
+mod tests;
