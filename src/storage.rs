@@ -1,14 +1,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
@@ -30,6 +29,7 @@ mod metadata;
 mod mutate;
 mod pending_deps;
 mod query;
+pub(crate) mod read_only;
 pub(crate) mod schema;
 mod sync;
 #[cfg(test)]
@@ -205,32 +205,21 @@ impl Storage {
         mailspace_dir: &Path,
     ) -> Result<Connection, VivariumError> {
         let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if Self::read_only_wal_index_missing(mailspace_dir) {
-            return Err(VivariumError::Other(
-                "read-only inspection unavailable: the WAL-mode mail store has no mail.sqlite-shm sidecar; refusing to create it".into(),
-            ));
-        }
-        Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
-            VivariumError::Other(format!("failed to open storage database read-only: {e}"))
-        })
+        read_only::open(&db_path, read_only::IndexPolicy::ExistingIndexOnly)
+            .map_err(VivariumError::from)
     }
 
     /// True when a read-only WAL open would need to create the missing
-    /// shared-memory index beside the database.
+    /// shared-memory index beside the database. Strictly the detector for
+    /// Doctor's report: filesystem inspection failures stay `false` there,
+    /// while the actual open boundary refuses them.
     #[must_use]
     pub(crate) fn read_only_wal_index_missing(mailspace_dir: &Path) -> bool {
         let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if mailspace_dir
-            .join(format!("{MAILSPACE_DB_FILENAME}-shm"))
-            .exists()
-        {
-            return false;
-        }
-        let Ok(mut file) = fs::File::open(db_path) else {
-            return false;
-        };
-        let mut header = [0_u8; 20];
-        file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2
+        matches!(
+            read_only::inspect(&db_path, read_only::IndexPolicy::ExistingIndexOnly),
+            Err(read_only::ReadOnlyRefusal::StrictIndexMissing { .. })
+        )
     }
 
     fn open_with_db(mail_root: &Path, db_path: &Path) -> Result<Self, VivariumError> {
