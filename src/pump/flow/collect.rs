@@ -42,6 +42,9 @@ pub enum Collected {
     Correct { error: EnvelopeError },
     /// A side-effect step with no decisive receipt: check git before answering.
     Verify,
+    /// A budget kill: run the step's job again once at a raised budget
+    /// before the step counts as failed.
+    BudgetRetry { budget: u64 },
     /// The attempts or corrections are spent: the step answers `failed`.
     Failed,
 }

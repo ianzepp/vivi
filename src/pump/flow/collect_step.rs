@@ -8,6 +8,7 @@ use crate::error::VivariumError;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::{self, route};
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect::{self, Collected};
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::{FAILED, FlowDef, FlowKind, NodeClass};
@@ -172,6 +173,12 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
                 cx.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
             }
             Collected::Retry => cx.rerun(job, row, step),
+            // A correction never receives a full-role raised rerun: its
+            // budget policy is the correction's own.
+            Collected::BudgetRetry { .. } if job.kind == correct::KIND => {
+                cx.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
+            }
+            Collected::BudgetRetry { budget } => cx.rerun_budget(job, row, step, budget),
             Collected::Correct { error } => {
                 let kind = RoleKind::from_class(class).ok_or_else(|| {
                     VivariumError::Parse(format!("node {} has no role kind", step.node))
@@ -300,6 +307,30 @@ where
         self.store.insert_step_job(&self.run.need, &new_row)?;
         self.store
             .set_step_state(&step.task, StepState::Running, None)
+    }
+
+    /// [`Self::rerun`] after a budget kill: run the job again as the next
+    /// ordinary attempt at the raised `budget`, marked durably as the spent
+    /// budget retry. Only the budget and the [`budget_retry`] marker change;
+    /// every other execution input and payload key is the ordinary copy's,
+    /// and the same task and run stay running. A repeat of the same request
+    /// finds the raised job already queued and queues no duplicate.
+    pub(crate) fn rerun_budget(
+        &mut self,
+        job: &PoolJob,
+        row: &StepJobRow,
+        step: &StepRow,
+        budget: u64,
+    ) -> Result<(), VivariumError> {
+        let attempt = row.attempt + 1;
+        let id = format!("{}-a{attempt}", correct::base_id(&job.id));
+        if self.st.jobs().contains_key(&id) {
+            return Ok(());
+        }
+        self.rerun_with(job, row, step, |spec| {
+            spec.budget = budget;
+            budget_retry::mark_retry(&mut spec.payload);
+        })
     }
 
     /// A side-effect step with no decisive receipt: git decides.

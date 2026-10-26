@@ -72,9 +72,12 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RepairerCollector {
                     spec.branch = Some(fresh);
                 })
             }
-            Collected::Retry | Collected::Failed | Collected::Verify => {
-                cx.advance_word(step, FAILED, json!({"job": job.id}))
-            }
+            // A budget retry never applies to repairer jobs: their timeouts
+            // answer `overtime` with no retry, so a stray one counts as failed.
+            Collected::BudgetRetry { .. }
+            | Collected::Retry
+            | Collected::Failed
+            | Collected::Verify => cx.advance_word(step, FAILED, json!({"job": job.id})),
             Collected::Correct { error } => cx.correct(job, row, RoleKind::Repairer, &error),
         }
     }
