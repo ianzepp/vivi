@@ -19,6 +19,13 @@
 //! recognizes an already-posted ruling through the reply readers and never
 //! reposts. Thread evidence only deduplicates an already-saved decision; it
 //! never manufactures a grant.
+//!
+//! The module also carries the two pieces a role collector needs to act on a
+//! settled grant: extraction of the structured request from a validated
+//! planner `operator` or admitter `escalate` payload (the structured scope
+//! fields only — free-form reasons are never scanned for paths), and the
+//! same-attempt continuation that restarts the requesting step through its
+//! registered handler so the fresh brief sees the effective scope.
 
 use std::collections::BTreeMap;
 
@@ -29,11 +36,20 @@ use crate::letter::work::NeedFront;
 use crate::pump::config::PumpTarget;
 use crate::pump::config::scope::{self, ScopeAuthorization, ScopePolicy, ScopeRejection};
 use crate::pump::envelope::correct;
+use crate::pump::envelope::review::{Admitter, AdmitterAnswer};
+use crate::pump::envelope::roles::{Planner, PlannerAnswer};
+use crate::pump::flow::def::FlowDef;
+use crate::pump::flow::handlers::Registry;
+use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::outcome::{StartAction, StartCx};
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::host::Ctx;
+use crate::pump::jobs::{self, JobSpec, JobStore};
 use crate::pump::store::PumpStore;
-use crate::pump::store::scope_ruling::{RulingDecision, ScopeRulingRequest, ScopeRulingRow};
+use crate::pump::store::scope_ruling::{
+    RulingDecision, ScopeRulingRequest, ScopeRulingRow, continuation_id,
+};
 
 /// The stable exception kind for the hand integration: raised when a scope
 /// request ends without a usable grant and the operator must settle it.
@@ -146,6 +162,232 @@ pub fn adjudicate<M: SliceMail + MailWriter>(
         reused,
         already_posted,
     })
+}
+
+/// Who and where a request came from, before its payload is read: the
+/// identity the collector holds for the finished job whose reply carried
+/// the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestOrigin {
+    /// The id of the finished job whose reply carried the request.
+    pub job: String,
+    /// The kind of that job.
+    pub job_kind: String,
+    /// The need the request belongs to.
+    pub need: String,
+    /// The run the request belongs to.
+    pub run: u32,
+    /// The flow node the request came from.
+    pub node: String,
+    /// The step task that made the request.
+    pub task: String,
+    /// The role that made the request.
+    pub role: String,
+}
+
+/// The structured scope request of a validated planner payload: `Some` only
+/// for an `operator` answer that carries both scope fields. The payload has
+/// already passed validation, so a requesting answer always has a reason;
+/// it is carried as the request reason, never scanned for paths.
+#[must_use]
+pub fn planner_request(origin: RequestOrigin, payload: &Planner) -> Option<ScopeRequest> {
+    structured(
+        origin,
+        payload.answer == PlannerAnswer::Operator,
+        &payload.scope_target,
+        &payload.scope_paths,
+        payload.reason.as_deref(),
+    )
+}
+
+/// The structured scope request of a validated admitter payload: `Some`
+/// only for an `escalate` answer that carries both scope fields.
+#[must_use]
+pub fn admitter_request(origin: RequestOrigin, payload: &Admitter) -> Option<ScopeRequest> {
+    structured(
+        origin,
+        payload.answer == AdmitterAnswer::Escalate,
+        &payload.scope_target,
+        &payload.scope_paths,
+        payload.reason.as_deref(),
+    )
+}
+
+/// The request shared by both extractions: only a requesting answer with
+/// both structured fields present is one. An ordinary outcome gives `None`
+/// and is never intercepted here.
+fn structured(
+    origin: RequestOrigin,
+    requesting: bool,
+    target: &Option<String>,
+    paths: &Option<Vec<String>>,
+    reason: Option<&str>,
+) -> Option<ScopeRequest> {
+    if !requesting {
+        return None;
+    }
+    Some(ScopeRequest {
+        job: origin.job,
+        job_kind: origin.job_kind,
+        need: origin.need,
+        run: origin.run,
+        node: origin.node,
+        task: origin.task,
+        role: origin.role,
+        target: target.clone()?,
+        paths: paths.clone()?,
+        reason: reason.unwrap_or_default().to_string(),
+    })
+}
+
+/// A same-attempt continuation started for an approved scope request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Continued {
+    /// The deterministic continuation job id: [`continuation_id`] of the
+    /// originating request job, the next id in its correction chain.
+    pub job: String,
+    /// True when the continuation job was already enqueued: its stored
+    /// inputs were reused as they are and only missing index and progress
+    /// writes were repaired.
+    pub reused: bool,
+}
+
+/// Continue a role step in place after its approved request: restart the
+/// step through its registered handler so the fresh brief sees the
+/// effective scope and all current inputs, then enqueue the handler's job
+/// under a deterministic continuation identity at the same task, run and
+/// attempt. The step stays open and running and the run stays live:
+/// attempts are never incremented and no rerun is issued.
+///
+/// Progress is persisted through the ruling store: the continuation
+/// identity is written before the job is enqueued and the completion mark
+/// after it, so a crash on the way leaves a recoverable gap.
+///
+/// A replay repairs gaps without duplicating work. When the continuation
+/// job is already enqueued, its stored inputs are reused instead of
+/// rebuilding a possibly conflicting brief, and only the missing index row
+/// and ruling progress are written back.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the step's node is not in the loaded
+/// flow, no handler is registered for the node, the handler does not offer
+/// a job, no ruling for the request job exists, or a store or job operation
+/// fails. Every error propagates before the caller advances anything.
+pub(crate) fn continue_role<S: JobStore, M: SliceMail>(
+    ctx: &Ctx,
+    st: &mut S,
+    store: &PumpStore,
+    mail: &mut M,
+    registry: &Registry<S, M>,
+    def: &FlowDef,
+    run: &RunRow,
+    row: &StepJobRow,
+    step: &StepRow,
+    request: &ScopeRequest,
+) -> Result<Continued, VivariumError> {
+    let id = String::from(continuation_id(&request.job));
+    let at = unix(ctx.now());
+    if st.jobs().contains_key(&id) {
+        repair(store, run, row, &request.job, &id, at)?;
+        return Ok(Continued {
+            job: id,
+            reused: true,
+        });
+    }
+    store.set_ruling_continuation(&request.job, &id)?;
+    let spec = resumed_brief(ctx, store, mail, registry, def, run, step, request)?;
+    enqueue_continuation(st, store, run, row, step, *spec, &id)?;
+    store.mark_ruling_continuation_posted(&request.job, at)?;
+    Ok(Continued {
+        job: id,
+        reused: false,
+    })
+}
+
+/// Queue `spec` as `id`, the same-attempt continuation of the request job:
+/// the identity rides the payload via [`StepJobRow::again`] and `stamp`, the
+/// index row is written and the step is left running for the live run.
+fn enqueue_continuation<S: JobStore>(
+    st: &mut S,
+    store: &PumpStore,
+    run: &RunRow,
+    row: &StepJobRow,
+    step: &StepRow,
+    mut spec: JobSpec,
+    id: &str,
+) -> Result<(), VivariumError> {
+    spec.id = id.to_string();
+    if spec.task.is_none() {
+        spec.task = Some(step.task.clone());
+    }
+    let record = row.again(id);
+    record.stamp(&run.need, &mut spec.payload);
+    jobs::enqueue(st, spec)?;
+    store.insert_step_job(&run.need, &record)?;
+    store.set_step_state(&step.task, StepState::Running, None)
+}
+
+/// The registered handler's fresh job for the step. Any action but a job
+/// would fabricate an answer the role never gave, so a job is required.
+fn resumed_brief<S, M>(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &mut M,
+    registry: &Registry<S, M>,
+    def: &FlowDef,
+    run: &RunRow,
+    step: &StepRow,
+    request: &ScopeRequest,
+) -> Result<Box<JobSpec>, VivariumError>
+where
+    S: JobStore,
+    M: SliceMail,
+{
+    let Some(node) = def.nodes.iter().find(|node| node.id == step.node) else {
+        return Err(VivariumError::Parse(format!(
+            "scope continuation for job {}: node {} is not in the loaded flow",
+            request.job, step.node
+        )));
+    };
+    let Some(handler) = registry.handler_for(def.kind, node) else {
+        return Err(VivariumError::Message(format!(
+            "scope continuation for job {}: no registered handler for node {}",
+            request.job, step.node
+        )));
+    };
+    let cx = StartCx {
+        ctx,
+        store,
+        mail: &*mail,
+        run,
+        def,
+    };
+    match handler.start(&cx, step)? {
+        StartAction::Job(spec) => Ok(spec),
+        _other => Err(VivariumError::Message(format!(
+            "scope continuation for job {}: the handler for node {} did not \
+             offer a job, so no answer is fabricated",
+            request.job, step.node
+        ))),
+    }
+}
+
+/// Repair a replay whose continuation job is already enqueued: write back
+/// any missing step-job index row and ruling progress. The stored job's
+/// inputs are reused as they are; nothing is rebuilt or duplicated.
+fn repair(
+    store: &PumpStore,
+    run: &RunRow,
+    row: &StepJobRow,
+    request_job: &str,
+    id: &str,
+    at: i64,
+) -> Result<(), VivariumError> {
+    if store.step_job(id)?.is_none() {
+        store.insert_step_job(&run.need, &row.again(id))?;
+    }
+    store.set_ruling_continuation(request_job, id)?;
+    store.mark_ruling_continuation_posted(request_job, at)
 }
 
 /// The typed front of the immutable need root.
