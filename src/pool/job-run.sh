@@ -929,7 +929,10 @@ fi
 # failed attempt says so in its commit subject. When the failed agent left
 # nothing uncommitted but made commits of its own, an empty marker commit puts
 # the same subject on the branch tip. The branch is published as it is; the
-# pool's caller decides what a failed attempt means.
+# pool's caller decides what a failed attempt means. The identity is installed
+# through the environment behind the as_hand boundary: `git -c` alone would
+# lose to GIT_AUTHOR_*/GIT_COMMITTER_* variables inherited from an enclosing
+# slot.
 COMMIT_SUBJECT=$SUBJECT
 COMMIT_ALLOW=()
 if [ "${AGENT_RC:-0}" != 0 ]; then
@@ -942,11 +945,10 @@ if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
   # GIT_COMMITTER_*; assign the pool identity command-locally instead.
   as_hand git add -A && { [ -z "${BUILD_DIR:-}" ] || as_hand git reset -q -- "$BUILD_DIR"; } \
     && as_hand env \
-         "GIT_AUTHOR_NAME=$COMMIT_NAME" \
-         "GIT_AUTHOR_EMAIL=$COMMIT_EMAIL" \
-         "GIT_COMMITTER_NAME=$COMMIT_NAME" \
-         "GIT_COMMITTER_EMAIL=$COMMIT_EMAIL" \
-         git commit -q -m "$COMMIT_SUBJECT" "${COMMIT_ALLOW[@]}" || finish commit_failed
+         GIT_AUTHOR_NAME="$COMMIT_NAME" GIT_AUTHOR_EMAIL="$COMMIT_EMAIL" \
+         GIT_COMMITTER_NAME="$COMMIT_NAME" GIT_COMMITTER_EMAIL="$COMMIT_EMAIL" \
+         git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
+         commit -q -m "$COMMIT_SUBJECT" "${COMMIT_ALLOW[@]}" || finish commit_failed
 fi
 RUNNER_SHA=$(hand_git rev-parse --verify 'HEAD^{commit}') || finish commit_failed
 valid_git_oid "$RUNNER_SHA" || finish commit_failed

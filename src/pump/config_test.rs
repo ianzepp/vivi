@@ -633,6 +633,50 @@ fn findings_for_a_complete_config_are_clean() {
 }
 
 #[test]
+fn repair_attempt_seconds_default_and_override() {
+    assert_eq!(PumpConfig::default().repair_attempt_secs, 1800);
+    let minimal = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(minimal.repair_attempt_secs, 1800, "minimal table default");
+    let set = pump("name = \"t\"\n[pump]\nbranch = \"next\"\nrepair_attempt_secs = 7200\n");
+    assert_eq!(set.repair_attempt_secs, 7200);
+    let text = toml::to_string(&set).expect("pump config should serialize");
+    let reparsed: PumpConfig =
+        toml::from_str(&text).expect("serialized pump config should reparse");
+    assert_eq!(reparsed.repair_attempt_secs, 7200, "round trip keeps it");
+}
+
+#[test]
+fn repair_attempt_seconds_fit_pool_budget_range() {
+    for seconds in [1u64, 43200] {
+        let mut cfg = valid();
+        cfg.repair_attempt_secs = seconds;
+        cfg.validate(Path::new("."), &pool_names())
+            .unwrap_or_else(|err| panic!("{seconds} should validate: {err}"));
+    }
+    for seconds in [0u64, 43201] {
+        let mut cfg = valid();
+        cfg.repair_attempt_secs = seconds;
+        let found = cfg.findings_for(Path::new("."), &pool_names());
+        assert!(
+            found
+                .errors
+                .iter()
+                .any(|message| message.contains("pump.repair_attempt_secs")),
+            "{seconds} should be an errors finding naming the key: {:?}",
+            found.errors
+        );
+        let err = cfg
+            .validate(Path::new("."), &pool_names())
+            .expect_err("out-of-range repair_attempt_secs must fail");
+        assert!(matches!(err, crate::VivariumError::Config(_)), "{err}");
+        assert!(
+            err.to_string().contains("pump.repair_attempt_secs"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn a_target_with_only_a_path_reports_no_gap() {
     let mut cfg = valid();
     cfg.targets.insert(

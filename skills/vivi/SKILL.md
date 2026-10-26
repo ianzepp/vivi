@@ -2742,9 +2742,27 @@ It may publish only to the target's main, **vivi/need/&lt;x&gt;**,
 
 A red main files a **repair** need for the target (one per target; a repeat
 red with the same failing set does nothing). Its run makes up to two repairer
-attempts, each tested on a repair branch and merged to main. If both fail the
-run ends unrepaired: main stays red and the pump raises an alarm for the
-operator.
+attempts — the **fix1** and **fix2** jobs — each tested on a repair branch
+and merged to main. If both fail the run ends unrepaired: main stays red and
+the pump raises an alarm for the operator.
+
+Each newly constructed repair job carries one hard time cap:
+**[pump] repair_attempt_secs** — seconds, default 1800, accepted range 1
+through 43200 inclusive. The job brief advertises the exact same seconds
+value, and the cap covers everything the repairer does inside that job,
+builds and tests included. The main-rung job the pump runs afterwards on the
+repair branch has its own timeout. **[pump.dispatch] budget** is a different
+control and does not size repair attempts. A valid reload of the key applies
+to newly constructed repair jobs only; already-created pending or dispatched
+jobs keep their saved budget, and an automatic lost-job rerun reruns the
+saved job with its saved budget. The two-attempt policy and the meaning of an
+`overtime` attempt are unchanged. For repairs that need more room the recipe
+is a larger cap, e.g. **repair_attempt_secs = 7200** under **[pump]**; that
+admits longer attempts and does not guarantee that a slow repair finishes. A
+project that copied the shipped repairer charter keeps its own copy — it is
+not overwritten automatically — so remove any old fixed-limit text by hand.
+The flow details are in
+[the pump contract](references/pump-contract.md#repair-flow).
 
 ### Cadence and research
 
@@ -2774,6 +2792,7 @@ main = "main"
 committer_name = "<name>"
 committer_email = "<email>"
 tick = 20
+repair_attempt_secs = 1800   # seconds per new fix1/fix2 repair job; 1..=43200
 from = "operator"
 to = "hand"
 reply_from = "mind"

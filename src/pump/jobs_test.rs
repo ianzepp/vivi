@@ -436,6 +436,30 @@ fn pool_command_carries_repository_and_write_context() {
 }
 
 #[test]
+fn pool_command_preserves_a_long_repair_budget() {
+    let mut spec = JobSpec::new(
+        "repair-1",
+        "repair",
+        "repairer",
+        "repair branch",
+        "undo the drift on the branch",
+    );
+    spec.budget = 7200;
+    spec.target = Some(String::from("default"));
+    spec.branch = Some(String::from("repair/repair-1"));
+    let job = PoolJob::from(spec);
+    assert_eq!(job.budget, 7200);
+    let command = pool_command(&job, "local", "a1b2c3d4");
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut budgets = tokens
+        .windows(2)
+        .filter(|pair| pair[0] == "--budget")
+        .map(|pair| pair[1]);
+    assert_eq!(budgets.next(), Some("7200"));
+    assert_eq!(budgets.next(), None);
+}
+
+#[test]
 fn pool_command_names_the_job_role_only_when_it_has_one() {
     let mut job = PoolJob::from(spec("merge-2"));
     job.role = String::from("merge");

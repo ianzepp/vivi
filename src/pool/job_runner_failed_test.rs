@@ -13,6 +13,11 @@ use crate::pool::local_fixture::{Fixture, fixture, git};
 
 const FAILED_SUBJECT: &str = "WIP (attempt failed): review";
 
+/// Identities an enclosing pool slot leaks into the runner's environment; both
+/// must lose to the pool's configured commit identity.
+const OUTER_AUTHOR: (&str, &str) = ("Outer Author", "outer-author@localhost");
+const OUTER_COMMITTER: (&str, &str) = ("Outer Committer", "outer-committer@localhost");
+
 struct Rig {
     f: Fixture,
     work: tempfile::TempDir,
@@ -115,13 +120,10 @@ impl Rig {
             .env("HOME", &home)
             .env("PATH", path)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            // A conflicting inherited identity on all four values: the runner
-            // must assign the pool identity itself, never trust the ambient
-            // environment.
-            .env("GIT_AUTHOR_NAME", "Inherited Author")
-            .env("GIT_AUTHOR_EMAIL", "inherited-author@example.invalid")
-            .env("GIT_COMMITTER_NAME", "Inherited Committer")
-            .env("GIT_COMMITTER_EMAIL", "inherited-committer@example.invalid")
+            .env("GIT_AUTHOR_NAME", OUTER_AUTHOR.0)
+            .env("GIT_AUTHOR_EMAIL", OUTER_AUTHOR.1)
+            .env("GIT_COMMITTER_NAME", OUTER_COMMITTER.0)
+            .env("GIT_COMMITTER_EMAIL", OUTER_COMMITTER.1)
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -216,6 +218,38 @@ fn in_worktree_mode_a_failed_agents_work_is_committed_with_the_failure_subject()
         "HEAD",
         "the worktree goes back to a detached HEAD"
     );
+}
+
+#[test]
+fn runner_commits_use_the_pool_identity_despite_inherited_git_identity() {
+    for worktree in [false, true] {
+        for harness in ["echo partial >> a.txt; exit 3", "echo done >> a.txt"] {
+            let rig = Rig::new();
+            let rig = if worktree { rig.as_worktree() } else { rig };
+            let (result, _) = rig.run_with(harness, 60, worktree, "");
+            assert_eq!(
+                result.push(),
+                if worktree { "committed" } else { "pushed" },
+                "(worktree={worktree}, harness={harness}) {:?}",
+                result.fields
+            );
+            let repo = if worktree {
+                rig.repo()
+            } else {
+                rig.f.repo.clone()
+            };
+            for (whose, format) in [("author", "%an %ae"), ("committer", "%cn %ce")] {
+                let who = git(
+                    &repo,
+                    &["log", "-1", &format!("--format={format}"), "pool/w"],
+                );
+                assert_eq!(
+                    who, "Bot bot@localhost",
+                    "the {whose} of the runner commit (worktree={worktree}, harness={harness})"
+                );
+            }
+        }
+    }
 }
 
 const FORBID: &str = "FORBID='3ea8dee9-1 vivi/unit/3ea8dee9-1-a1 refs/vivi/with/'\n";
