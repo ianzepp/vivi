@@ -13,6 +13,8 @@ use crate::pump::flow::def::{FlowDef, FlowEdge, NodeClass};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::store::{ContinuationLink, PumpStore};
 
+pub mod input;
+
 /// The origin of park step `park`: the executable task whose verdict routed
 /// the run here.
 ///
@@ -155,3 +157,7 @@ fn class_of<'a>(def: &'a FlowDef, id: &str) -> Option<&'a NodeClass> {
 #[cfg(test)]
 #[path = "continuation/origin_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "continuation/input_test.rs"]
+mod input_tests;

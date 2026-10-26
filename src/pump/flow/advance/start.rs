@@ -6,12 +6,14 @@ use crate::error::VivariumError;
 use crate::letter::read::step_of;
 use crate::letter::render;
 use crate::letter::work::TaskFront;
+use crate::pump::flow::continuation::input;
 use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepRow, StepState, run_state};
 use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
+use crate::pump::record::open_mailspace;
 use crate::pump::store::PumpStore;
 
 /// The step-row node name of a run's sentinel task.
@@ -86,6 +88,7 @@ where
     let number = run.run;
     let entry = run.entry.as_str();
     let rows = store.steps_of(need, number)?;
+    capture_baseline(ctx, store, &rows, need, number)?;
     let sentinel = send_missing(
         ctx,
         store,
@@ -125,6 +128,48 @@ where
         state: run_state::LIVE.to_string(),
         ..run.clone()
     })
+}
+
+/// Capture the run's input baseline before the run can consume a new reply:
+/// the replies the need's thread carries at this moment, journalled as
+/// identity snapshots. Idempotent: an existing baseline is never moved
+/// forward, and a run whose earlier attempt already sent (step rows exist)
+/// keeps the empty baseline it established, so input arriving between the
+/// attempts is never swallowed. Without a readable mailspace or thread there
+/// is nothing to snapshot; no identity is invented.
+///
+/// # Errors
+/// Returns a [`VivariumError`] when the store cannot be read or written, or
+/// a thread date does not parse.
+fn capture_baseline(
+    ctx: &Ctx,
+    store: &PumpStore,
+    rows: &[StepRow],
+    need: &str,
+    number: u32,
+) -> Result<(), VivariumError> {
+    if !rows.is_empty() || !store.run_inputs(need, number)?.is_empty() {
+        return Ok(());
+    }
+    let Some(mailspace) = open_mailspace(ctx) else {
+        return Ok(());
+    };
+    let thread = match mailspace.thread(need, false, usize::MAX, usize::MAX) {
+        Ok(thread) => thread,
+        Err(error) => {
+            ctx.log(&format!(
+                "run start: no thread to baseline for {need} r{number}: {error}"
+            ));
+            return Ok(());
+        }
+    };
+    let pump = ctx.cfg.reply_from.as_str();
+    let snapshots = input::snapshots(&thread, pump)?;
+    let inputs: Vec<_> = snapshots
+        .into_iter()
+        .map(|snapshot| snapshot.input)
+        .collect();
+    store.journal_run_inputs(need, number, &inputs)
 }
 
 /// The longest `new_fact` the run-4 alarm quotes (the exception text is cut at 600).

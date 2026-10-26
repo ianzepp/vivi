@@ -2,14 +2,19 @@
 //! run is resumed, and the need ends with one run and no duplicate tasks.
 
 use super::{SENTINEL_NODE, resume, start};
+use crate::error::VivariumError;
 use crate::letter::read::step_of;
 use crate::pump::fixture::{Project, project};
+use crate::pump::flow::continuation::input::new_inputs;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::index::run_state;
+use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow};
 use crate::pump::flow::mail::MailReader;
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+
+const PUMP: &str = "mind";
 
 const NEED: &str = "need1";
 
@@ -92,4 +97,87 @@ fn the_run_number_follows_the_store_when_nothing_was_bound() {
         next.run, 2,
         "no sentinel was bound, the store still has run 1"
     );
+}
+
+/// A reply by the operator on the need's real thread.
+fn reply_on(project: &Project, need: &str, body: &str) -> Result<(), VivariumError> {
+    project
+        .mailspace
+        .reply(
+            need,
+            "operator",
+            vec![PUMP.into()],
+            Vec::new(),
+            None,
+            body.into(),
+        )
+        .map(|_| ())
+}
+
+#[test]
+fn an_interrupted_start_keeps_its_baseline_when_it_resumes() -> Result<(), VivariumError> {
+    let (project, ctx, store, mut mail) = setup();
+    let need = project.need("interrupt me");
+    reply_on(&project, &need, "before the run")?;
+    // The sentinel send fails: the run row and its baseline are in, no step is.
+    mail.fail_at = Some(0);
+    start(&ctx, &store, &mut mail, &need, None).unwrap_err();
+
+    // A reply that arrives while the run sits between the two attempts.
+    reply_on(&project, &need, "while stuck")?;
+    let runs = store.runs_of(&need).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, run_state::STARTING);
+
+    resume(&ctx, &store, &mut mail, &runs[0]).unwrap();
+    let baseline = store.run_inputs(&need, 1).unwrap();
+    let bodies: Vec<&str> = baseline.iter().map(|input| input.body.as_str()).collect();
+    assert_eq!(
+        bodies,
+        vec![
+            "+++\ndone_when = [\"it works\"]\n+++\n\n",
+            "before the run\n"
+        ],
+        "the reply from the crash window must not be swallowed into the baseline"
+    );
+
+    // And it is still pending input for the run, by identity.
+    let thread = project
+        .mailspace
+        .thread(&need, false, usize::MAX, usize::MAX)
+        .unwrap();
+    let news = new_inputs(&thread, PUMP, &store, &need, 1).unwrap();
+    let bodies: Vec<&str> = news.iter().map(|snap| snap.input.body.as_str()).collect();
+    assert_eq!(bodies, vec!["while stuck\n"]);
+    Ok(())
+}
+
+#[test]
+fn a_recovery_that_never_captured_journals_before_it_sends() -> Result<(), VivariumError> {
+    let (project, ctx, store, mut mail) = setup();
+    let need = project.need("recover me");
+    reply_on(&project, &need, "waiting on the thread")?;
+    let row = RunRow {
+        need: need.clone(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: FLOW_VERSION_NUMBER,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: run_state::STARTING.to_string(),
+    };
+    store.insert_run(&row).unwrap();
+    assert!(store.run_inputs(&need, 1).unwrap().is_empty());
+
+    resume(&ctx, &store, &mut mail, &row).unwrap();
+    let baseline = store.run_inputs(&need, 1).unwrap();
+    let bodies: Vec<&str> = baseline.iter().map(|input| input.body.as_str()).collect();
+    assert_eq!(
+        bodies,
+        vec![
+            "+++\ndone_when = [\"it works\"]\n+++\n\n",
+            "waiting on the thread\n"
+        ]
+    );
+    Ok(())
 }
