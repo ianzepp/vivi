@@ -291,23 +291,7 @@ where
     ) -> Result<(), VivariumError> {
         let attempt = row.attempt + 1;
         let id = format!("{}-a{attempt}", correct::base_id(&job.id));
-        let mut spec = JobSpec::new(
-            id.clone(),
-            &job.kind,
-            &job.role,
-            job.subject.clone(),
-            job.body.clone(),
-        );
-        spec.task.clone_from(&job.task);
-        spec.target.clone_from(&job.target);
-        spec.from_ref.clone_from(&job.from_ref);
-        spec.branch.clone_from(&job.branch);
-        spec.publish_ref.clone_from(&job.publish_ref);
-        spec.pool_candidates.clone_from(&job.pool_candidates);
-        spec.local_only = job.local_only;
-        spec.read_only = job.read_only;
-        spec.budget = job.budget;
-        spec.payload = job.payload.clone();
+        let mut spec = job.rerun_spec(id.clone());
         edit(&mut spec);
         let new_row = row.next(&id);
         new_row.stamp(&self.run.need, &mut spec.payload);
