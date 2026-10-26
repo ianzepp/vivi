@@ -2,13 +2,13 @@
 //! dirs, a fake probe, and the fake session.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tempfile::tempdir;
 
 use super::*;
 use crate::mind::config::{AuthorityStage, MindPaths, parse};
-use crate::mind::pi::FakePi;
+use crate::mind::pi::{FakePi, PiSession, TurnSummary};
 
 const NOW: u64 = 5_000_000;
 
@@ -27,6 +27,38 @@ impl TestClock {
 impl Clock for TestClock {
     fn now(&self) -> u64 {
         *self.0.lock().unwrap()
+    }
+}
+
+struct SlowPi {
+    clock: Arc<TestClock>,
+    secs: u64,
+    reply: String,
+    fail: bool,
+}
+
+impl PiSession for SlowPi {
+    async fn prompt(
+        &mut self,
+        _message: String,
+        _events: Option<tokio::sync::mpsc::UnboundedSender<crate::mind::pi::TurnEvent>>,
+    ) -> Result<TurnSummary, crate::VivariumError> {
+        self.clock.advance(self.secs);
+        if self.fail {
+            Err(crate::VivariumError::Other("turn failed".into()))
+        } else {
+            Ok(TurnSummary {
+                text: self.reply.clone(),
+            })
+        }
+    }
+
+    async fn compact(&mut self) -> Result<String, crate::VivariumError> {
+        Ok(String::new())
+    }
+
+    async fn history(&mut self, _limit: usize) -> Result<Vec<String>, crate::VivariumError> {
+        Ok(Vec::new())
     }
 }
 
@@ -85,21 +117,73 @@ async fn one_tick(
     probe: &FakeProbe,
     now: u64,
 ) -> (TickOutcome, FakePi, DryRun) {
+    let clock = TestClock::fixed(now);
+    one_tick_with_clock(fx, pi, probe, &clock).await
+}
+
+async fn one_tick_with_clock<P: PiSession>(
+    fx: &Fixture,
+    pi: P,
+    probe: &FakeProbe,
+    clock: &TestClock,
+) -> (TickOutcome, P, DryRun) {
     let shared = Shared::new(
         pi,
         fx.config.authority.as_str(),
         fx.config.paths.state.clone(),
     );
-    let clock = TestClock::fixed(now);
     let cx = TickContext {
         config: &fx.config,
         registry: &fx.registry,
         probe,
-        clock: &clock,
+        clock,
     };
     let mut actuator = DryRun::default();
     let outcome = tick(&shared, &cx, &mut actuator).await.unwrap();
     (outcome, shared.pi.into_inner(), actuator)
+}
+
+#[tokio::test]
+async fn a_successful_wake_ends_when_its_turn_returns() {
+    let fx = fixture("unstick");
+    let clock = Arc::new(TestClock::fixed(NOW));
+    let pi = SlowPi {
+        clock: Arc::clone(&clock),
+        secs: 137,
+        reply: UNLOCK.into(),
+        fail: false,
+    };
+    let (outcome, _, _) = one_tick_with_clock(&fx, pi, &stalled(), &clock).await;
+    assert!(matches!(outcome, TickOutcome::Woke { .. }));
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    let wake = state.last_wake.unwrap();
+    assert_eq!(wake.started_at, NOW);
+    assert_eq!(wake.ended_at, Some(NOW + 137));
+    assert_eq!(wake.outcome.as_deref(), Some("success"));
+    assert_eq!(state.recent_wakes, vec![NOW]);
+    assert_eq!(state.ledger["3f9a1c2e"], vec![NOW + 137]);
+}
+
+#[tokio::test]
+async fn a_failed_wake_ends_when_its_turn_returned_and_backs_off_from_there() {
+    let fx = fixture("unstick");
+    let clock = Arc::new(TestClock::fixed(NOW));
+    let pi = SlowPi {
+        clock: Arc::clone(&clock),
+        secs: 137,
+        reply: String::new(),
+        fail: true,
+    };
+    let (outcome, _, _) = one_tick_with_clock(&fx, pi, &stalled(), &clock).await;
+    assert!(matches!(outcome, TickOutcome::Failed(_)));
+    let wake = store::load_at(&fx.config.paths.state)
+        .unwrap()
+        .last_wake
+        .unwrap();
+    assert_eq!(wake.started_at, NOW);
+    assert_eq!(wake.ended_at, Some(NOW + 137));
+    assert_eq!(wake.outcome.as_deref(), Some("failed"));
+    assert_eq!(wake.retry_at, Some(NOW + 137 + 60));
 }
 
 #[tokio::test]
