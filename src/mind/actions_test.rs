@@ -131,7 +131,7 @@ fn long_notes_and_floods_are_refused() {
     let long = REQUEUE.replace("flaky gate", &"x".repeat(MAX_NOTE + 1));
     let (planned, _) = run(AuthorityStage::Unstick, &long);
     assert_eq!(planned[0].verdict, Err(Refusal::NoteTooLong));
-    let one = "[[action]]\nkind = \"escalate\"\n";
+    let one = "[[action]]\nkind = \"escalate\"\nproject = \"/w/app\"\n";
     let flood = format!("+++\n{}+++", one.repeat(MAX_ACTIONS + 1));
     let (planned, _) = run(AuthorityStage::Observe, &flood);
     assert_eq!(planned[MAX_ACTIONS].verdict, Err(Refusal::TooMany));
@@ -228,6 +228,162 @@ fn a_dry_run_letter_names_its_project_need_and_note() {
         line,
         "would send Escalate (letter or stub) project=/w/app need=3f9a1c2e note=\"locked at the operator gate\""
     );
+}
+
+/// One otherwise-valid request per canonical kind: the fields it requires
+/// beyond the common watched project. Keep one entry per `Action` variant.
+const VALID_FIELDS: [(Action, &str); 28] = [
+    (Action::ReadStatus, ""),
+    (Action::ReadPumpLog, ""),
+    (Action::ReadPumpHistory, ""),
+    (Action::ReadNeed, "need = \"n1\"\n"),
+    (Action::ReadNeedThread, "need = \"n1\"\n"),
+    (Action::ReadNeedUnits, "need = \"n1\"\n"),
+    (Action::ReadTaskThread, "step = \"s1\"\n"),
+    (Action::ReadConfig, ""),
+    (Action::ReadPool, ""),
+    (Action::LetterToOperator, ""),
+    (Action::Escalate, ""),
+    (Action::PausePump, ""),
+    (Action::ResumePump, ""),
+    (Action::Requeue, "step = \"s1\"\n"),
+    (Action::Replan, "need = \"n1\"\n"),
+    (Action::Answer, "step = \"s1\"\nword = \"done\"\n"),
+    (Action::Unlock, "need = \"n1\"\n"),
+    (Action::ReplyNeed, "need = \"n1\"\n"),
+    (Action::FileNeed, "need = \"n1\"\n"),
+    (Action::DispatchNeed, "need = \"n1\"\n"),
+    (Action::SetPriority, "need = \"n1\"\npriority = 2\n"),
+    (Action::WithdrawNeed, "need = \"n1\"\n"),
+    (Action::SetRoleModel, "role = \"r1\"\nmodel = \"m1\"\n"),
+    (Action::SetPoolCap, "pool = \"p1\"\ncap = 3\n"),
+    (Action::SetPoolBand, "pool = \"p1\"\nband = \"b1\"\n"),
+    (Action::FileFixNeed, "need = \"n1\"\n"),
+    (Action::Upgrade, "target = \"v9\"\n"),
+    (Action::SelfRelease, ""),
+];
+
+/// One `[[action]]` envelope for `kind`, with an optional project line and
+/// extra fields as written.
+fn envelope(kind: Action, project: Option<&str>, fields: &str) -> String {
+    let mut body = format!("kind = \"{}\"\n", kind.as_str());
+    if let Some(project) = project {
+        body.push_str(&format!("project = \"{project}\"\n"));
+    }
+    body.push_str(fields);
+    format!("+++\n[[action]]\n{body}\n+++\n")
+}
+
+/// The implemented stage that opens `kind`; unimplemented stubs get the
+/// lowest stage, since their gate denial is what a valid request meets.
+fn opening_stage(kind: Action) -> AuthorityStage {
+    let stage = kind.required_stage();
+    if stage.implemented() {
+        stage
+    } else {
+        AuthorityStage::Observe
+    }
+}
+
+#[test]
+fn all_actions_require_watched_projects() {
+    assert_eq!(VALID_FIELDS.len(), 28, "one row per canonical action");
+    for (kind, fields) in VALID_FIELDS {
+        let stage = opening_stage(kind);
+        let (planned, _) = run(stage, &envelope(kind, Some("/w/app"), fields));
+        assert!(
+            matches!(planned[0].verdict, Ok(()) | Err(Refusal::Gate(_))),
+            "{kind:?} watched should clear fields and project: {:?}",
+            planned[0].verdict
+        );
+        let (planned, _) = run(stage, &envelope(kind, Some("/elsewhere"), fields));
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::UnwatchedProject),
+            "{kind:?} unwatched"
+        );
+        let (planned, _) = run(stage, &envelope(kind, None, fields));
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::MissingField("project")),
+            "{kind:?} without a project"
+        );
+    }
+}
+
+#[test]
+fn inapplicable_fields_are_refused() {
+    let surplus = [
+        (Action::ReadStatus, "entry = \"e1\"", "entry"),
+        (Action::ReadStatus, "model = \"m1\"", "model"),
+        (Action::ReadStatus, "priority = 1", "priority"),
+        (Action::ReadStatus, "need = \"n1\"", "need"),
+        (Action::ReadStatus, "lines = 5", "lines"),
+        (Action::LetterToOperator, "model = \"m1\"", "model"),
+        (Action::LetterToOperator, "entry = \"e1\"", "entry"),
+        (Action::Escalate, "cap = 2", "cap"),
+        (Action::Requeue, "step = \"s1\"\npriority = 1", "priority"),
+        (Action::ReadNeed, "need = \"n1\"\npool = \"p1\"", "pool"),
+        (Action::ReadPool, "file = \"f1\"", "file"),
+    ];
+    for (kind, fields, field) in surplus {
+        let (planned, _) = run(opening_stage(kind), &envelope(kind, Some("/w/app"), fields));
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::UnexpectedField(field)),
+            "{kind:?} with {fields:?}"
+        );
+    }
+    // A blank inapplicable string is an absent one, so the request passes.
+    let blank = "+++\n[[action]]\nkind = \"read-status\"\nproject = \"/w/app\"\nentry = \"\"\nmodel = \" \"\n+++\n";
+    let (planned, _) = run(AuthorityStage::Observe, blank);
+    assert_eq!(planned[0].verdict, Ok(()));
+    // Reads and letters honour their documented fields, and unlock alone
+    // takes entry.
+    let valid = [
+        (
+            Action::ReadPumpLog,
+            "file = \"log\"\nlines = 40\nfilter = \"err\"\n",
+        ),
+        (Action::ReadPumpHistory, "need = \"n1\"\nflow = \"main\"\n"),
+        (Action::ReadNeed, "need = \"n1\"\nlimit = 10\noffset = 5\n"),
+        (Action::ReadNeedThread, "need = \"n1\"\nlimit = 10\n"),
+        (Action::ReadNeedUnits, "need = \"n1\"\noffset = 5\n"),
+        (
+            Action::ReadTaskThread,
+            "step = \"s1\"\nlimit = 10\noffset = 5\n",
+        ),
+        (Action::ReadPool, "pool = \"p1\"\n"),
+        (
+            Action::LetterToOperator,
+            "to = \"operator\"\nsubject = \"status\"\nbody = \"all clear\"\n",
+        ),
+        (Action::Unlock, "need = \"n1\"\nentry = \"e1\"\n"),
+    ];
+    for (kind, fields) in valid {
+        let (planned, _) = run(opening_stage(kind), &envelope(kind, Some("/w/app"), fields));
+        assert_eq!(planned[0].verdict, Ok(()), "{kind:?} documented fields");
+    }
+}
+
+#[test]
+fn new_actions_validate_required_fields() {
+    let cases = [
+        (Action::ReadNeed, "", "need"),
+        (Action::ReadNeedThread, "", "need"),
+        (Action::ReadNeedUnits, "", "need"),
+        (Action::ReadTaskThread, "", "step"),
+        (Action::Requeue, "", "step"),
+        (Action::Answer, "step = \"s1\"", "word"),
+    ];
+    for (kind, fields, field) in cases {
+        let (planned, _) = run(opening_stage(kind), &envelope(kind, Some("/w/app"), fields));
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::MissingField(field)),
+            "{kind:?} without {field}"
+        );
+    }
 }
 
 const TYPED_REQUEST: &str = "+++\n[[action]]\nkind = \"read-status\"\n\

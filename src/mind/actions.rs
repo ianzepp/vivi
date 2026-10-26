@@ -27,6 +27,8 @@ use serde::Deserialize;
 
 use super::authority::{self, Action, Denial, Gate};
 
+mod validation;
+
 /// Longest free-text note accepted from a turn.
 pub const MAX_NOTE: usize = 500;
 /// Most actions honoured from one envelope.
@@ -256,54 +258,23 @@ fn check(
     ledger: &authority::Ledger,
 ) -> Result<(), Refusal> {
     validate_fields(request)?;
-    if request.kind.mutates() {
-        let project = request
-            .project
-            .as_deref()
-            .ok_or(Refusal::MissingField("project"))?;
-        if !watched.iter().any(|root| root == project) {
-            return Err(Refusal::UnwatchedProject);
-        }
+    // Every action names a watched project, reads and letters included.
+    // The match stays exact: no canonicalisation, no picking a near root.
+    let project = request
+        .project
+        .as_deref()
+        .ok_or(Refusal::MissingField("project"))?;
+    if !watched.iter().any(|root| root == project) {
+        return Err(Refusal::UnwatchedProject);
     }
     authority::permit(gate, ledger, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
 }
 
-fn validate_fields(request: &ActionRequest) -> Result<(), Refusal> {
-    if request
-        .note
-        .as_deref()
-        .is_some_and(|note| note.chars().count() > MAX_NOTE)
-    {
-        return Err(Refusal::NoteTooLong);
-    }
-    for (field, value) in [
-        ("need", request.need.as_deref()),
-        ("step", request.step.as_deref()),
-        ("word", request.word.as_deref()),
-    ] {
-        if value.is_some_and(|value| !plain_handle(value)) {
-            return Err(Refusal::BadHandle(field));
-        }
-    }
-    let needs_step = matches!(request.kind, Action::Requeue | Action::Answer);
-    if needs_step && request.step.is_none() {
-        return Err(Refusal::MissingField("step"));
-    }
-    if request.kind == Action::Answer && request.word.is_none() {
-        return Err(Refusal::MissingField("word"));
-    }
-    Ok(())
-}
-
-/// Handles and answer words are short ASCII tokens; anything else (spaces,
-/// shell metacharacters, flags) is refused before it nears a command line.
-fn plain_handle(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 64
-        && !value.starts_with('-')
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+/// Field checks shared with the MCP actuator: which fields each kind
+/// accepts, which it requires, and the note and handle rules. Delegates to
+/// [`validation`]; needs the gate never sees stay out of it.
+pub(super) fn validate_fields(request: &ActionRequest) -> Result<(), Refusal> {
+    validation::validate_fields(request)
 }
 
 impl ActionRequest {
