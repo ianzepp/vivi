@@ -44,9 +44,13 @@ struct Fx {
     member: String,
 }
 
-/// A served host root with `operator` and `hand` roles and a `[pump]` table
-/// whose home is the non-default [`PUMP_HOME`].
 fn fixture(name: &str) -> Fx {
+    fixture_with(name, true)
+}
+
+/// A served host root with `operator` and `hand` roles and, when `pump`, a
+/// `[pump]` table whose home is the non-default [`PUMP_HOME`].
+fn fixture_with(name: &str, pump: bool) -> Fx {
     let base = scratch(name);
     let root = base.join("hosts").join("app");
     let mut ms = Mailspace::init(Some(&root)).unwrap();
@@ -60,10 +64,12 @@ fn fixture(name: &str) -> Fx {
         },
     )
     .unwrap();
-    let toml = root.join(".vivi").join("mailspace.toml");
-    let mut text = std::fs::read_to_string(&toml).unwrap();
-    text.push_str(&format!("\n[pump]\ntick = 20\nhome = \"{PUMP_HOME}\"\n"));
-    std::fs::write(&toml, text).unwrap();
+    if pump {
+        let toml = root.join(".vivi").join("mailspace.toml");
+        let mut text = std::fs::read_to_string(&toml).unwrap();
+        text.push_str(&format!("\n[pump]\ntick = 20\nhome = \"{PUMP_HOME}\"\n"));
+        std::fs::write(&toml, text).unwrap();
+    }
     let state = app_state(base.join("data"), None, None).expect("app state");
     let report = hosted::reconcile(
         &state.projects,
@@ -149,7 +155,8 @@ impl Fx {
         serde_json::from_str(text).unwrap()
     }
 
-    async fn refused(&self, token: &str, tool: &str, arguments: Value) -> String {
+    /// The full tool result of a refused call, for checks beyond the message.
+    async fn refused_result(&self, token: &str, tool: &str, arguments: Value) -> Value {
         let value = self
             .rpc(
                 token,
@@ -158,7 +165,12 @@ impl Fx {
             )
             .await;
         assert_eq!(value["result"]["isError"], true, "{value}");
-        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        value["result"].clone()
+    }
+
+    async fn refused(&self, token: &str, tool: &str, arguments: Value) -> String {
+        let result = self.refused_result(token, tool, arguments).await;
+        let text = result["content"][0]["text"].as_str().unwrap();
         serde_json::from_str::<Value>(text).unwrap()["error"]
             .as_str()
             .unwrap()
@@ -196,6 +208,28 @@ impl Fx {
         assert_eq!(answer, json!({"priorities": expected}), "{answer}");
         stored
     }
+}
+
+/// A key granted at operator level on `project` whose identity names
+/// `identity` even when that role is not an operator: the stored grant level
+/// must not matter, because authorization is re-derived per call.
+fn operator_grant_key(state: &AppState, project: &str, member: &str, identity: &str) -> String {
+    state
+        .server_keys
+        .mint(
+            &format!("{member}.{identity}-operator@{project}"),
+            false,
+            vec![GrantRecord {
+                project_id: project.to_owned(),
+                member: member.to_owned(),
+                identity: Some(identity.to_owned()),
+                level: GrantLevel::Operator,
+            }],
+            "test",
+            member,
+        )
+        .unwrap()
+        .key
 }
 
 fn server_key(state: &AppState, project: &str, member: &str, identity: Option<&str>) -> String {
@@ -312,6 +346,248 @@ async fn pump_priority_set_clear_and_list_match_the_library() {
             ("z-canary".to_owned(), 1),
         ]
     );
+}
+
+fn spki_pem(seed: u8) -> String {
+    use base64::Engine;
+    const PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut der = PREFIX.to_vec();
+    der.extend_from_slice(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes(),
+    );
+    format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        base64::engine::general_purpose::STANDARD.encode(der)
+    )
+}
+
+#[tokio::test]
+async fn pump_priority_validates_actions_and_requires_operator_for_every_action() {
+    let fx = fixture("guard");
+    let operator = fx.key_by(&fx.member, None);
+
+    // Seed known literal-key priorities through the library and snapshot the
+    // rows; the needs under test resolve to no letters and no pump records.
+    priority::set(&fx.pump_home(), "seed-a", 4).unwrap();
+    priority::set(&fx.pump_home(), "seed-b", 9).unwrap();
+    priority::set(&fx.pump_home(), "seed-c", 1).unwrap();
+    let before = fx.priorities();
+    assert_eq!(
+        before,
+        vec![
+            ("seed-b".to_owned(), 9),
+            ("seed-a".to_owned(), 4),
+            ("seed-c".to_owned(), 1),
+        ]
+    );
+
+    // Argument validation, table-tested with an operator key: every row
+    // keeps its other arguments valid so each refusal isolates one
+    // condition, and nothing is ever written.
+    let invalid: Vec<Value> = vec![
+        // The action: missing, null, non-string, unknown.
+        json!({}),
+        json!({"action": null}),
+        json!({"action": 7}),
+        json!({"action": "wipe"}),
+        // set: a need is required and must be a non-blank string.
+        json!({"action": "set", "level": 2}),
+        json!({"action": "set", "need": "", "level": 2}),
+        json!({"action": "set", "need": "   ", "level": 2}),
+        json!({"action": "set", "need": 7, "level": 2}),
+        // set: a level is required and must be a whole number of 0 or more.
+        json!({"action": "set", "need": "guard"}),
+        json!({"action": "set", "need": "guard", "level": null}),
+        json!({"action": "set", "need": "guard", "level": true}),
+        json!({"action": "set", "need": "guard", "level": "2"}),
+        json!({"action": "set", "need": "guard", "level": -1}),
+        json!({"action": "set", "need": "guard", "level": 1.5}),
+        json!({"action": "set", "need": "guard", "level": 9_223_372_036_854_775_808_u64}),
+        // clear: a need is required, and any level is refused.
+        json!({"action": "clear"}),
+        json!({"action": "clear", "need": ""}),
+        json!({"action": "clear", "need": 7}),
+        json!({"action": "clear", "need": "guard", "level": 1}),
+        json!({"action": "clear", "need": "guard", "level": null}),
+        json!({"action": "clear", "need": "guard", "level": false}),
+        // list: any need or level is refused, null fields included.
+        json!({"action": "list", "need": "guard"}),
+        json!({"action": "list", "need": null}),
+        json!({"action": "list", "level": 1}),
+        json!({"action": "list", "level": null}),
+        json!({"action": "list", "need": null, "level": null}),
+    ];
+    for arguments in &invalid {
+        let message = fx
+            .refused(&operator, "pump_priority", arguments.clone())
+            .await;
+        assert!(!message.is_empty(), "{arguments}: {message}");
+    }
+    assert_eq!(fx.priorities(), before);
+
+    // Authorization, per action, with otherwise-valid arguments: the shared
+    // pump authorization must hold for set, clear, and list alike.
+    let set_arguments = json!({"action": "set", "need": "guard", "level": 2});
+    let clear_arguments = json!({"action": "clear", "need": "guard"});
+    let list_arguments = json!({"action": "list"});
+
+    // The host's hand key, and a misleading stored grant: the hand
+    // identity's key carries an operator-level grant, but authorization is
+    // re-derived from the mailspace's roles, never read from the grant.
+    let hand = fx.key_by(&fx.member, Some("hand"));
+    let hand_as_operator = operator_grant_key(&fx.state, &fx.project, &fx.member, "hand");
+    // Another registered member, acting as the operator role or with no
+    // acting identity at all, both at operator grant level.
+    fx.state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(9),
+            "0b0b0b0b-1010-4222-8333-444444444444",
+        )
+        .unwrap();
+    let bob_operator = fx.key_by("bob", Some("operator"));
+    let bob_default = fx.key_by("bob", None);
+
+    for (token, expected) in [
+        (&hand, "kind operator"),
+        (&hand_as_operator, "kind operator"),
+        (&bob_operator, "host's own member"),
+        (&bob_default, "host's own member"),
+    ] {
+        for arguments in [&set_arguments, &clear_arguments, &list_arguments] {
+            let result = fx
+                .refused_result(token, "pump_priority", arguments.clone())
+                .await;
+            let text = result["content"][0]["text"].as_str().unwrap();
+            if arguments["action"] == "list" {
+                // A refused list answers the refusal only; it must not
+                // disclose the stored priorities.
+                assert!(!text.contains("priorities"), "{text}");
+                assert!(!text.contains("seed-"), "{text}");
+            }
+            let decoded = serde_json::from_str::<Value>(text).unwrap();
+            let message = decoded["error"].as_str().unwrap();
+            assert!(message.contains(expected), "{arguments}: {message}");
+        }
+    }
+    assert_eq!(fx.priorities(), before);
+
+    // Non-hosted projects the server owns end to end, one durable and one
+    // chat, refuse every action by name even with an operator-level key.
+    let durable = fx
+        .state
+        .projects
+        .create_project_with_creator(&spki_pem(7), "carol")
+        .unwrap()
+        .project_id;
+    fx.state
+        .identities
+        .register(
+            &durable,
+            "carol",
+            &spki_pem(7),
+            "0c0c0c0c-1010-4222-8333-444444444444",
+        )
+        .ok();
+    let chat = fx
+        .state
+        .projects
+        .create_chat_project(3600)
+        .unwrap()
+        .project_id;
+    fx.state
+        .identities
+        .register(
+            &chat,
+            "chatter",
+            &spki_pem(8),
+            "0d0d0d0d-1010-4222-8333-444444444444",
+        )
+        .ok();
+    let durable_key = server_key(&fx.state, &durable, "carol", Some("operator"));
+    let chat_key = server_key(&fx.state, &chat, "chatter", Some("operator"));
+    for (token, project) in [(&durable_key, &durable), (&chat_key, &chat)] {
+        for arguments in [&set_arguments, &clear_arguments, &list_arguments] {
+            let mut arguments = arguments.clone();
+            arguments["project"] = json!(project);
+            let message = fx.refused(token, "pump_priority", arguments).await;
+            assert!(
+                message.contains("only available on a hosted project"),
+                "{message}"
+            );
+        }
+    }
+    assert_eq!(fx.priorities(), before);
+
+    // A member (identity) token is refused at /v1/mcp itself, with the
+    // proper HTTP status; this is not a substitute for the per-action
+    // operator refusals above.
+    let dana = fx
+        .state
+        .identities
+        .register(
+            &fx.project,
+            "dana",
+            &spki_pem(10),
+            "0e0e0e0e-1010-4222-8333-444444444444",
+        )
+        .unwrap();
+    let (status, value) = fx
+        .post(
+            &dana.token,
+            "tools/call",
+            json!({"name": "pump_priority", "arguments": {"action": "list"}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("identity tokens are not accepted on /v1/mcp"),
+        "{message}"
+    );
+    assert_eq!(fx.priorities(), before);
+
+    // A project without a [pump] table has no priority home at all: every
+    // action is an error rather than an empty successful result, and no
+    // database appears at either the configured or the default home.
+    let bare = fixture_with("no-pump", false);
+    let bare_key = bare.key_by(&bare.member, None);
+    for arguments in [&set_arguments, &clear_arguments, &list_arguments] {
+        let message = bare
+            .refused(&bare_key, "pump_priority", arguments.clone())
+            .await;
+        assert!(message.contains("[pump]"), "{arguments}: {message}");
+    }
+    assert!(!bare.pump_home().join("pump.db").exists());
+    assert!(
+        !bare
+            .root
+            .join(".vivi")
+            .join("pump")
+            .join("pump.db")
+            .exists()
+    );
+
+    // A genuine priority-store opening failure stays an error for every
+    // action too: the configured home is a plain file, so the store at
+    // `<home>/pump.db` cannot open, and the file itself is left alone.
+    let broken = fixture("broken-store");
+    std::fs::write(broken.pump_home(), "not a pump home").unwrap();
+    let corrupt = std::fs::read(broken.pump_home()).unwrap();
+    let broken_key = broken.key_by(&broken.member, None);
+    for arguments in [&set_arguments, &clear_arguments, &list_arguments] {
+        let message = broken
+            .refused(&broken_key, "pump_priority", arguments.clone())
+            .await;
+        assert!(!message.is_empty(), "{arguments}: {message}");
+    }
+    assert_eq!(std::fs::read(broken.pump_home()).unwrap(), corrupt);
 }
 
 #[tokio::test]
