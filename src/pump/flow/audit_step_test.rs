@@ -89,6 +89,8 @@ fn with_branch(f: &Fixture) {
 }
 
 fn plan(f: &Fixture) {
+    // The run row the admission walk reads on a continuation restart.
+    f.store.insert_run(&f.run).unwrap();
     f.store
         .insert_step(
             NEED,
@@ -102,6 +104,19 @@ fn plan(f: &Fixture) {
         )
         .unwrap();
     payload(f, "t-plan", "plan", "planner", json!({"body": "PLAN TEXT"}));
+    // The admission: a done admitter that answered `admitted`.
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run: 1,
+                node: "admit1".into(),
+                task: "t-admit".into(),
+                state: StepState::Done,
+                verdict: Some("admitted".into()),
+            },
+        )
+        .unwrap();
 }
 
 fn payload(f: &Fixture, task: &str, node: &str, class: &str, body: serde_json::Value) {
@@ -122,13 +137,19 @@ fn payload_in(f: &Fixture, run: u32, task: &str, node: &str, class: &str, body: 
 }
 
 fn start(f: &Fixture, node: &str) -> Result<JobSpec, crate::error::VivariumError> {
-    start_in(f, 1, node)
+    start_in(f, 1, "plan", node)
 }
 
-fn start_in(f: &Fixture, run: u32, node: &str) -> Result<JobSpec, crate::error::VivariumError> {
+fn start_in(
+    f: &Fixture,
+    run: u32,
+    entry: &str,
+    node: &str,
+) -> Result<JobSpec, crate::error::VivariumError> {
     let def = load(FlowKind::Build)?;
     let run_row = RunRow {
         run,
+        entry: entry.into(),
         ..f.run.clone()
     };
     let cx = StartCx {
@@ -225,7 +246,7 @@ fn a_second_pass_after_a_rework_restart_finds_the_audit_of_the_earlier_run() {
         "slicer",
         json!({"front": {"slice": [{"id": "rw-1", "title": "Rework it"}]}}),
     );
-    let spec = start_in(&f, 2, "audit2").unwrap();
+    let spec = start_in(&f, 2, "rework1", "audit2").unwrap();
     assert!(
         spec.body.contains("## Second pass: prior audit (run 1)"),
         "{}",
@@ -235,6 +256,8 @@ fn a_second_pass_after_a_rework_restart_finds_the_audit_of_the_earlier_run() {
     assert!(spec.body.contains("RUN ONE BODY"));
     assert!(spec.body.contains("## Rework slices"));
     assert!(spec.body.contains("rw-1"));
+    // The restart inherits run 1's admitted plan through the walk.
+    assert!(spec.body.contains("PLAN TEXT"), "{}", spec.body);
 }
 
 #[test]
@@ -243,9 +266,11 @@ fn a_first_pass_never_falls_back_to_an_earlier_run() {
     with_branch(&f);
     plan(&f);
     run_one_audit(&f);
-    let spec = start_in(&f, 2, "audit1").unwrap();
+    let spec = start_in(&f, 2, "plan", "audit1").unwrap();
     assert!(!spec.body.contains("Second pass"), "{}", spec.body);
     assert!(!spec.body.contains("F-1"));
+    // A fresh plan-entry run does not inherit an earlier run's admission.
+    assert!(!spec.body.contains("PLAN TEXT"), "{}", spec.body);
 }
 
 #[test]
@@ -334,7 +359,7 @@ fn audit2_without_an_override_uses_the_dispatch_fallback_despite_unrelated_overr
     let f = fixture_with(cfg);
     with_branch(&f);
     plan(&f);
-    let spec = start_in(&f, 2, "audit2").unwrap();
+    let spec = start_in(&f, 2, "rework1", "audit2").unwrap();
     assert_eq!(spec.budget, 4242);
 }
 

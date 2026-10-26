@@ -51,7 +51,7 @@ impl StepHandler for ReworkStart {
 fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     let need = &cx.run.need;
     let range = branch_range(cx.ctx, cx.store, need)?;
-    let plan = admitted_plan(cx.store, need)?;
+    let plan = admitted_plan(cx.store, cx.run)?;
     let (context_run, rows) = audit_context(cx.store, need, cx.run.run)?;
     let mut text = format!(
         "mode: rework\nneed: {need}\ntarget: {}\nneed branch: {}\n\n",

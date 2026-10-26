@@ -10,6 +10,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
+use crate::pump::flow::verify_inputs;
 use crate::pump::jobs::JobStore;
 
 /// The node this handler owns.
@@ -45,28 +46,16 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     ))
 }
 
-/// The newest reply of the newest Done planner step: `plan2` when the run
-/// revised its plan, else `plan`.
+/// The admitted plan the run continues, or an error when the run has none:
+/// the slicer rejects missing input instead of slicing without a plan.
 fn admitted_plan(cx: &StartCx<'_>) -> Result<String, VivariumError> {
-    let need = &cx.run.need;
-    let planner = match step_inputs::done_step(cx.store, cx.run, "plan2")? {
-        Some(row) => Some(row),
-        None => step_inputs::done_step(cx.store, cx.run, "plan")?,
+    match verify_inputs::admitted_plan(cx.store, cx.run)? {
+        Some(plan) => Ok(plan),
+        None => Err(VivariumError::Parse(format!(
+            "slice step of {} run {}: no admitted plan to slice",
+            cx.run.need, cx.run.run
+        ))),
     }
-    .ok_or_else(|| {
-        VivariumError::Parse(format!(
-            "slice step of {need}: no done planner step to slice"
-        ))
-    })?;
-    step_inputs::step_replies(cx.mail, &planner.task)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            VivariumError::Parse(format!(
-                "slice step of {need}: planner step {} has no reply",
-                planner.node
-            ))
-        })
 }
 
 /// Registry hook: the slicer handler for node `slice` of the build flow.

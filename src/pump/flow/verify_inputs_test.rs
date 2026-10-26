@@ -6,11 +6,10 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread,
-    requirements, rung_report, whole_message_requirements,
+    audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread, requirements,
+    rung_report, whole_message_requirements,
 };
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -47,38 +46,6 @@ fn payload(task: &str, run: u32, class: &str, body: serde_json::Value) -> StepPa
         task: task.into(),
         payload: body,
     }
-}
-
-fn step(task: &str, run: u32, verdict: Option<&str>) -> StepRow {
-    StepRow {
-        run,
-        node: "plan".into(),
-        task: task.into(),
-        state: StepState::Done,
-        verdict: verdict.map(str::to_string),
-    }
-}
-
-fn record_plan(f: &Fixture, task: &str, run: u32, verdict: &str, text: &str) {
-    f.store
-        .insert_step(NEED, &step(task, run, Some(verdict)))
-        .unwrap();
-    f.store
-        .record_step_payload(&payload(task, run, "planner", json!({ "body": text })))
-        .unwrap();
-}
-
-#[test]
-fn admitted_plan_is_the_planned_plan_not_an_earlier_revision() {
-    let f = fixture();
-    record_plan(&f, "t1", 1, "revised", "plan one");
-    record_plan(&f, "t2", 1, "planned", "plan two");
-    record_plan(&f, "t3", 2, "revised", "plan three");
-    assert_eq!(
-        admitted_plan(&f.store, NEED).unwrap().as_deref(),
-        Some("plan two")
-    );
-    assert_eq!(admitted_plan(&f.store, "other").unwrap(), None);
 }
 
 #[test]
