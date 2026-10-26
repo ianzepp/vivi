@@ -127,3 +127,44 @@ fn an_unknown_field_in_a_band_choice_is_refused() {
         "got: {err}"
     );
 }
+
+#[test]
+fn band_weights_validate_and_roundtrip() {
+    let config = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"xhigh\"\n\
+         [[bands.P2]]\nmodel = \"other/model\"\nreasoning = \"low\"\nweight = 1\n\
+         [[bands.P2]]\nmodel = \"other/model\"\nreasoning = \"mid\"\nweight = 4294967295\n{TAIL}"
+    ));
+    // An omitted weight defaults to 1; an explicit 1 and u32::MAX survive.
+    assert_eq!(config.bands.entries["P1"][0].weight, 1);
+    assert_eq!(config.bands.entries["P2"][0].weight, 1);
+    assert_eq!(config.bands.entries["P2"][1].weight, u32::MAX);
+    config.validate(&id()).unwrap();
+    let text = toml::to_string(&config).unwrap();
+    let again: PoolConfig = toml::from_str(&text).unwrap();
+    again.validate(&id()).unwrap();
+    assert_eq!(again.bands.entries["P1"][0].weight, 1);
+    assert_eq!(again.bands.entries["P2"][1].weight, u32::MAX);
+}
+
+#[test]
+fn invalid_band_weights_are_config_errors() {
+    let zero = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\nweight = 0\n{TAIL}"
+    ));
+    let err = zero.validate(&id()).unwrap_err().to_string();
+    assert!(err.contains("bands.P1 has weight 0"), "got: {err}");
+    assert!(err.contains("at least 1"), "got: {err}");
+
+    for bad in ["-1", "1.5", "\"high\"", "4294967296"] {
+        let text = format!(
+            "provider = \"local\"\nslots = 4\n{HARNESS}\
+             [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\nweight = {bad}\n{TAIL}"
+        );
+        let err = toml::from_str::<PoolConfig>(&text).expect_err("a malformed weight must fail");
+        let err = err.to_string();
+        assert!(!err.contains("unknown field"), "weight {bad}: {err}");
+    }
+}
