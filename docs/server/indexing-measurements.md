@@ -1,0 +1,147 @@
+# Hosted indexing measurements
+
+Captured evidence for the hosted transport-index work, taken with the
+real `vivi server run` process via
+[`tests/server_measure_process.rs`](../../tests/server_measure_process.rs)
+(`process_benchmark_windows_report_cpu_pass_latency_and_candidate_work`).
+This file records what was measured, never what is assumed; historical
+phase-04 timings are not reused. Each number below is labeled as either a
+**measured** value (read out of the harness report) or a **derived**
+value (arithmetic over measured values, as the harness itself labels its
+`candidate` field).
+
+Status: baseline candidate captured **before** the push selector is
+replaced. Later runs reproduce the same workload with the commands here
+and compare against it.
+
+## Reproducing
+
+```sh
+VIVI_MEASURE_MODE=idle cargo test --release --test server_measure_process \
+  process_benchmark_windows_report_cpu_pass_latency_and_candidate_work \
+  -- --ignored --nocapture
+```
+
+Environment settings, none of them secret:
+
+- `VIVI_MEASURE_MODE=idle` — this capture runs the no-write idle window
+  only. Unset selects all three modes (`idle,local,mixed`).
+- `VIVI_MEASURE_CORPUS` unset — the harness uses its 5,000-sends-per-host
+  minimum. `VIVI_MEASURE_SENDS` must stay unset (it is smoke-only and
+  refuses values at or above the smoke cap).
+- `RUST_LOG` is not set for the test; the harness itself boots the child
+  with `RUST_LOG=vivi=debug` (`ServerSpec::with_rust_log`), never
+  inherited, so the server's per-pass latency tracing is visible.
+
+The test is `#[ignore]` by default; `-- --ignored` runs it. It is
+self-contained: it creates a fresh temp base, two disposable hosted
+mailspaces, an isolated server data directory, and its own registry; it
+mints disposable sync keys and cleans up after itself. It never touches
+a deployed server or `~/.vivarium/`.
+
+## Environment (measured at capture)
+
+| Item | Value |
+| --- | --- |
+| Date | 2026-10-26 (~21:30 UTC) |
+| Host hardware | Apple M5 Max, 18 cores, 36 GiB RAM |
+| OS | macOS 27.0.1 (Build 26A434), arm64 |
+| Source revision | `a52197d5204a1c27dc6186969c2f6c6048832fc5` (clean tree, package `vivi` 22.0.0) |
+| Toolchain | rustc/cargo 1.99.1 (58cf8f9c3 2026-10-13, Homebrew) |
+| Build mode | `--release`; `[profile.release]` is `strip = true`, `lto = "thin"`, other settings default (opt-level 3) |
+
+The run builds and boots `CARGO_BIN_EXE_vivi` — the release-linked
+binary this `cargo test` invocation itself produced — so the measured
+code is exactly the checkout at the revision above.
+
+## Workload configuration (equivalence contract for later runs)
+
+Fixed by the harness; a later run must keep all of this to stay
+comparable:
+
+- Two hosted mailspaces, `before` and `after`, freshly
+  `Mailspace::init`-ed in a temp base, each with `mind` and `hand`
+  identities, `[sync] name = "hub"` and `send = "addressed"` appended to
+  the mailspace config, and its own disposable sync key; both registered
+  `serve = true` by one reconcile into an isolated server data directory.
+- Corpus: **5,000 sends per host** (`build_initial_corpus`, which
+  refuses less), bootstrapped strictly before any server or window
+  exists. Traffic is predominantly local to the host's own `hand`
+  address, plus one off-host letter when the writer starts and then one
+  every **2 s** to `mind@0badc0de.local` (alternating need / mail by
+  count; need letters carry format-1 front matter). Letter text is
+  deterministic (`letter n` / `letter n body\n`).
+- Server child on its own defaults: indexer cadence
+  `INDEX_INTERVAL = 5 s` (`src/server/hosted.rs`), registry watcher
+  poll 3 s.
+- Warm-up: after boot (30 s ready deadline), `wait_index_settled` polls
+  up to 180 s until both transport indexes have served every off-host
+  letter from the corpus. Verification reads happen only between
+  windows, never inside one.
+- Window: 120 s (`MEASURE_WINDOW`) with no writer threads (idle mode).
+  CPU integrates sysinfo per-refresh `cpu_usage()` over refresh
+  intervals ≥ `MINIMUM_CPU_UPDATE_INTERVAL`; pass latencies come from
+  the server's own `timed_push` debug lines (`elapsed_ms`), parsed
+  within the window's wall-clock bounds.
+
+## Baseline: no-write idle window (2026-10-26)
+
+Directly measured, one idle window against both hosted mailspaces:
+
+| Quantity | Value |
+| --- | --- |
+| Window wall time | 120.281 s |
+| Server CPU seconds over the window | 0.073 s |
+| Average fraction of one core | 0.0006 |
+| Push passes completed in-window | 1, slowest 0.257 s |
+| Message rows, window start | 19,947 (both mailspaces) |
+| Message rows, window end | 19,947 (no writes: rows unchanged) |
+| Writer sends / threads in-window | 0 / 0 |
+| Harness total (`test result: ok. 1 passed`) | 225.47 s |
+
+Derived (harness-labeled candidate-work arithmetic, not a measured
+counter):
+
+| Quantity | Value |
+| --- | --- |
+| Candidate selector work | 1 full-listing pass × 19,947 rows = **19,947 row visits** in the window |
+
+Phase durations across the run:
+
+| Phase | Duration | Kind |
+| --- | --- | --- |
+| Fixture + corpus bootstrap (2 × 5,000 sends) + server boot + warm-up settle | ≈ 105 s | derived (225.47 s total − 120.28 s window; the harness does not print per-phase seconds) |
+| Measured idle window | 120.281 s | measured |
+| Post-window off-host verification + teardown | remainder of 225.47 s | derived |
+
+The corpus bootstrap enforces the 5,000-send floor per host before
+anything is sent and re-checks it via `Traffic::enforce_minimum` after
+each host builds; the row count (19,947 for 10,000 sends) reflects the
+storage shape: a local letter files one row per recipient plus the
+sender's sent copy, an off-host letter only its sent copy.
+
+Why only one in-window pass: under a settled no-write steady state the
+indexer's passes do nothing — a pass skips when the watermark has not moved (and
+when a pass is already running or the sync lock is held), and a skipped
+pass emits no `timed_push` line. The single in-window pass (0.257 s) is
+the settling push immediately after warm-up. This is the honest
+steady-state shape of the no-write baseline: near-zero CPU, and pass
+work only when something actually changed.
+
+## Limitations
+
+- Single machine, single run, no repetitions; the machine was otherwise
+  idle but not pinned, and wall time is first-to-last CPU sample, so
+  the window slightly exceeds its 120 s deadline.
+- macOS task accounting through sysinfo deltas; platforms without
+  kernel CPU accounting are an explicit `AccountingError::Unsupported`,
+  so these numbers do not transfer to such hosts.
+- This capture selected only the idle mode. The `local` and `mixed`
+  write windows are part of the same harness (`VIVI_MEASURE_MODE`) and
+  are not yet captured here.
+- Pass-latency evidence under a no-write steady state is sparse by
+  design (skipped passes are silent); a run with in-window writes
+  produces denser pass evidence.
+- The fixture lives in a fresh temp directory per run; its absolute
+  paths and pid-derived name differ run to run, which is fine — the
+  workload contract above is what must stay fixed.
