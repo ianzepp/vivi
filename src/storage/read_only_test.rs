@@ -73,6 +73,66 @@ fn owner_reads_wal_without_index() {
 
 #[cfg(unix)]
 #[test]
+fn owner_reads_uncheckpointed_wal_without_index() {
+    const WAL_ONLY_KEY: &str = "w";
+    const WAL_ONLY_VALUE: &str = "wal-only-N7Q3K-inspection";
+
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+
+    // Checkpointed baseline, then a commit that must survive only in the
+    // source WAL: automatic checkpointing is off and the source connection
+    // stays alive until the pair has been copied.
+    drop(Storage::open_mailspace(source.path()).unwrap());
+    let source_db = source.path().join("mail.sqlite");
+    let source_conn = Connection::open(&source_db).unwrap();
+    source_conn
+        .execute_batch("PRAGMA wal_autocheckpoint=0; PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    source_conn
+        .execute(
+            "INSERT INTO storage_metadata (key, value) VALUES (?1, ?2)",
+            rusqlite::params![WAL_ONLY_KEY, WAL_ONLY_VALUE],
+        )
+        .unwrap();
+
+    // The source is quiescent: copy the stable database/WAL pair to a
+    // separate destination, never its shared-memory index, and never unlink
+    // a sidecar beneath the live writer. Only then may the source close.
+    let source_wal = source_db.with_extension("sqlite-wal");
+    let db = destination.path().join("mail.sqlite");
+    let wal = db.with_extension("sqlite-wal");
+    fs::copy(&source_db, &db).unwrap();
+    fs::copy(&source_wal, &wal).unwrap();
+    drop(source_conn);
+
+    let before_db = fs::read(&db).unwrap();
+    let before_wal = fs::read(&wal).unwrap();
+    assert!(
+        !before_db
+            .windows(WAL_ONLY_VALUE.len())
+            .any(|window| window == WAL_ONLY_VALUE.as_bytes()),
+        "the committed value leaked into the checkpointed main database"
+    );
+    assert!(!db.with_extension("sqlite-shm").exists());
+
+    let conn = super::open(&db, IndexPolicy::OwnerMayCreateIndex).unwrap();
+    let seen: String = conn
+        .query_row(
+            "SELECT value FROM storage_metadata WHERE key = ?1",
+            [WAL_ONLY_KEY],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seen, WAL_ONLY_VALUE);
+    assert_write_refused(&conn);
+    assert_eq!(fs::read(&db).unwrap(), before_db);
+    assert_eq!(fs::read(&wal).unwrap(), before_wal);
+    drop(conn);
+}
+
+#[cfg(unix)]
+#[test]
 fn foreign_reader_refuses_missing_index() {
     use std::os::unix::fs::MetadataExt;
 
