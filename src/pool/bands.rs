@@ -11,6 +11,7 @@
 //! there is no primary with reserved spares — and [`availability`] is the
 //! view of which entries can take work right now.
 
+pub mod admission;
 pub mod availability;
 pub mod health;
 
