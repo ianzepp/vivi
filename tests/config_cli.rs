@@ -250,6 +250,165 @@ local = { worktree_of = "/tmp/x" }
     assert_eq!(band(&raw), None, "{raw}");
 }
 
+/// A project whose glm pool serves interchangeable band choices, with the
+/// harness allow-list and role/pump wiring the routing checks read. `rows`
+/// is the body of the `[pools.glm.bands]` table.
+fn weighted_bands_project(rows: &str) -> String {
+    format!(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+model = "m/a"
+
+[[identities]]
+name = "pump-planner"
+kind = "planner"
+pool = "glm"
+model = "m/b"
+
+[[identities]]
+name = "merge"
+kind = "merge"
+pool = "glm"
+model = "m/a"
+
+[[identities]]
+name = "auditor"
+kind = "auditor"
+pool = "glm"
+model = "m/a"
+
+[[identities]]
+name = "operator"
+kind = "operator"
+
+[[identities]]
+name = "mind"
+kind = "mind"
+
+[pools.glm]
+provider = "local"
+slots = 2
+
+[pools.glm.harness]
+name = "fake"
+run = "fake --model {{model}} @{{brief}}"
+models = ["m/a", "m/b"]
+
+[pools.glm.bands]
+{rows}
+
+[pump]
+to = "hand"
+committer_name = "t"
+committer_email = "t@t"
+[pump.rungs]
+task = "true"
+need = "true"
+main = "true"
+pools = ["glm"]
+"#
+    )
+}
+
+/// The `[pools.glm.bands]` table of a stored mailspace file.
+fn bands_of(raw: &str) -> toml::Table {
+    let doc: toml::Value = toml::from_str(raw).unwrap();
+    let pools = doc.get("pools").expect("a pools table");
+    let glm = pools.get("glm").expect("a pools.glm table");
+    glm.get("bands")
+        .and_then(toml::Value::as_table)
+        .cloned()
+        .expect("a [pools.glm.bands] table")
+}
+
+/// The weight one stored band row carries, or `None` when it carries none.
+fn weight_of(bands: &toml::Table, key: &str, index: usize) -> Option<f64> {
+    let row = bands.get(key)?.as_array()?.get(index)?;
+    match row.get("weight")? {
+        toml::Value::Integer(n) => Some(*n as f64),
+        toml::Value::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+#[test]
+fn config_validate_accepts_weighted_bands() {
+    let dir = project_with(&weighted_bands_project(
+        "P1 = [
+    { model = \"m/a\", reasoning = \"high\", weight = 3 },
+    { model = \"m/b\", reasoning = \"low\", weight = 0.25 },
+]
+P2 = [{ model = \"m/a\", reasoning = \"xhigh\" }]",
+    ));
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&["config", "validate", "--project", root]));
+
+    // The entries and their weights survive an unrelated pool write.
+    assert_success(&vivi(&[
+        "pool",
+        "set",
+        "glm",
+        "slots",
+        "3",
+        "--project",
+        root,
+    ]));
+    let raw = fs::read_to_string(config_file(&dir)).unwrap();
+    let bands = bands_of(&raw);
+    assert_eq!(
+        bands
+            .get("P1")
+            .and_then(toml::Value::as_array)
+            .map(|rows| rows.len()),
+        Some(2),
+        "{raw}"
+    );
+    assert_eq!(weight_of(&bands, "P1", 0), Some(3.0), "{raw}");
+    assert_eq!(weight_of(&bands, "P1", 1), Some(0.25), "{raw}");
+    let p2 = bands.get("P2").and_then(toml::Value::as_array).unwrap();
+    assert_eq!(p2.len(), 1, "{raw}");
+    assert!(
+        p2[0].get("weight").is_none(),
+        "an omitted weight stays omitted: {raw}"
+    );
+
+    // The written config still validates.
+    assert_success(&vivi(&["config", "validate", "--project", root]));
+}
+
+#[test]
+fn config_validate_refuses_invalid_band_weights() {
+    for bad in ["0", "-2", "0.0", "nan", "\"heavy\"", "true"] {
+        let rows = format!("P1 = [{{ model = \"m/a\", reasoning = \"high\", weight = {bad} }}]");
+        let dir = project_with(&weighted_bands_project(&rows));
+        let root = dir.path().to_str().unwrap();
+        let out = vivi(&["config", "validate", "--project", root]);
+        assert!(!out.status.success(), "weight {bad}: {}", stdout(&out));
+        let text = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(text.contains("pools.glm"), "weight {bad}: {text}");
+        assert!(text.contains("bands.P1"), "weight {bad}: {text}");
+        assert!(text.contains("\"weight\""), "weight {bad}: {text}");
+    }
+}
+
+#[test]
+fn config_validate_still_refuses_an_unrelated_band_property() {
+    let rows = "P1 = [{ model = \"m/a\", reasoning = \"high\", weight = 2, effort = 3 }]";
+    let dir = project_with(&weighted_bands_project(rows));
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(text.contains("\"effort\""), "{text}");
+    assert!(text.contains("pools.glm.bands.P1"), "{text}");
+}
+
 #[test]
 fn pool_set_takes_a_whole_harness_as_an_inline_table() {
     let dir = project_with(
