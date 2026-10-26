@@ -17,7 +17,9 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, FakeHost};
-use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, dispatch_pending, enqueue};
+use crate::pump::jobs::{
+    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, dispatch_pending, enqueue,
+};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
@@ -209,6 +211,106 @@ fn a_requeue_queues_the_newest_job_again_at_the_same_attempt_once() -> R {
     rig.phase()?;
     assert!(rig.jobs.jobs().contains_key("hand-a2-q2"));
     assert!(rig.applied(&again)?);
+    Ok(())
+}
+
+/// A fully populated finished job, with runtime ownership and result state
+/// that must not travel into a requeued copy.
+fn rich_finished_job(step: &str) -> PoolJob {
+    let mut spec = JobSpec::new("hand-a2", "hand", "hand", "subject", "body");
+    spec.task = Some(step.to_string());
+    spec.pool_candidates = vec!["alpha".into(), "beta".into()];
+    spec.local_only = true;
+    spec.pool_exclude = vec!["refused".into()];
+    spec.target = Some("target-repo".into());
+    spec.extra_targets = vec!["side-repo".into()];
+    spec.from_ref = Some("refs/heads/from".into());
+    spec.with = vec!["refs/heads/extra".into()];
+    spec.model = Some("model-x".into());
+    spec.command = Some("run.sh".into());
+    spec.builtin_role = Some("tugboat".into());
+    spec.branch = Some("vivi/work/x".into());
+    spec.allow_default_branch = true;
+    spec.publish_ref = Some("refs/heads/publish".into());
+    spec.publish_expect = Some("expect-sha".into());
+    spec.publish_contains = Some("contain-sha".into());
+    spec.delete_ref = Some("refs/heads/delete".into());
+    spec.delete_expect = Some("delete-sha".into());
+    spec.budget = 900;
+    spec.read_only = true;
+    spec.units = vec!["unit-1".into()];
+    spec.source_jobs = vec!["src-1".into()];
+    spec.payload = serde_json::json!({"custom": 7});
+    let mut job = PoolJob::from(spec);
+    job.queued_at = 100;
+    job.pool = Some("alpha".into());
+    job.dispatched_at = Some(200);
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: "ok".into(),
+        receipt: "receipt text".into(),
+        at: 300,
+    });
+    job.applied_at = Some(400);
+    job.dispatch_refusals = 2;
+    job.held = Some("too many refusals".into());
+    job
+}
+
+#[test]
+fn a_requeue_preserves_the_complete_dispatch_contract() -> R {
+    let mut rig = rig()?;
+    let step = rig.step.clone();
+    let rich = rich_finished_job(&step);
+    *rig.jobs.jobs.get_mut("hand-a2").expect("rig job") = rich.clone();
+    let id = rig.post(&PumpActionRequest::requeue(&step, "again"))?;
+    rig.phase()?;
+
+    let copy = rig.jobs.jobs.get("hand-a2-q1").expect("queued copy");
+    // Only the identity and the restamped payload differ from the source.
+    assert_eq!(copy.id, "hand-a2-q1");
+    assert_eq!(copy.kind, rich.kind);
+    assert_eq!(copy.role, rich.role);
+    assert_eq!(copy.subject, rich.subject);
+    assert_eq!(copy.body, rich.body);
+    assert_eq!(copy.pool_candidates, rich.pool_candidates);
+    assert_eq!(copy.local_only, rich.local_only);
+    assert_eq!(copy.pool_exclude, rich.pool_exclude);
+    assert_eq!(copy.target, rich.target);
+    assert_eq!(copy.extra_targets, rich.extra_targets);
+    assert_eq!(copy.from_ref, rich.from_ref);
+    assert_eq!(copy.with, rich.with);
+    assert_eq!(copy.model, rich.model);
+    assert_eq!(copy.command, rich.command);
+    assert_eq!(copy.builtin_role, rich.builtin_role);
+    assert_eq!(copy.branch, rich.branch);
+    assert_eq!(copy.allow_default_branch, rich.allow_default_branch);
+    assert_eq!(copy.publish_ref, rich.publish_ref);
+    assert_eq!(copy.publish_expect, rich.publish_expect);
+    assert_eq!(copy.publish_contains, rich.publish_contains);
+    assert_eq!(copy.delete_ref, rich.delete_ref);
+    assert_eq!(copy.delete_expect, rich.delete_expect);
+    assert_eq!(copy.budget, rich.budget);
+    assert_eq!(copy.read_only, rich.read_only);
+    assert_eq!(copy.units, rich.units);
+    assert_eq!(copy.source_jobs, rich.source_jobs);
+    assert_eq!(copy.payload["custom"], rich.payload["custom"]);
+    assert_eq!(copy.task, rich.task);
+    // Fresh pending runtime state: nothing owned or reported travels.
+    assert_eq!(copy.status, JobStatus::Pending);
+    assert_eq!(copy.pool, None);
+    assert_eq!(copy.dispatched_at, None);
+    assert_eq!(copy.outcome, None);
+    assert_eq!(copy.applied_at, None);
+    assert_eq!(copy.dispatch_refusals, 0);
+    assert_eq!(copy.held, None);
+    assert_ne!(copy.queued_at, rich.queued_at);
+    // Same attempt, identity restamped into the payload.
+    let row = rig.store.step_job("hand-a2-q1")?.expect("step job row");
+    assert_eq!((row.attempt, row.task.as_str()), (2, step.as_str()));
+    assert_eq!(copy.payload["attempt"], 2);
+    assert!(rig.applied(&id)?);
     Ok(())
 }
 
