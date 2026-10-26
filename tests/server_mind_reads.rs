@@ -7,12 +7,18 @@
 mod mind_server;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use tower::util::ServiceExt;
 
 use vivi::letter::records::NoteWord;
-use vivi::mailspace::SendRequest;
 use vivi::mailspace::pump_note::note_body;
+use vivi::mailspace::{RoleUpdate, SendRequest};
+use vivi::server::grants::{GrantLevel, GrantRecord};
 use vivi::server::safety::RateLimiter;
 
 /// The registered tool entry named `name` on an operator key's tools/list.
@@ -795,4 +801,392 @@ async fn task_thread_pages_walk_the_whole_library_order_without_duplication_or_o
             .contains("429 rate limit exceeded"),
         "{newest}"
     );
+}
+
+// -----------------------------------------------------------------
+// Operator-read authorization and absence of writes
+
+/// Everything one successful or refused read must leave untouched: the
+/// letters with their read/starred marks, the backlog graph's nodes and
+/// edges (states and timestamps included), the need's and the task's
+/// lifecycle event, the mailspace configuration, the server audit log, and
+/// the pump database — which must not even be created.
+#[derive(Debug, PartialEq, Eq)]
+struct Snapshot {
+    letters: BTreeMap<String, (String, bool, bool, String)>,
+    nodes: BTreeMap<String, (String, String, String, String, String)>,
+    edges: BTreeSet<(String, String, Option<String>, String)>,
+    need_event: Option<(String, String, usize)>,
+    task_event: Option<(String, String, usize)>,
+    config: String,
+    audit: Vec<Value>,
+    pump_home: bool,
+}
+
+/// Read the whole comparable mailspace + server state in one pass.
+fn snapshot(fx: &mind_server::Fx, need: &str, task: &str) -> Snapshot {
+    let ms = mind_server::open_root(&fx.root);
+    let letters = {
+        let storage = ms.storage().unwrap();
+        storage
+            .list_messages()
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.handle, (m.message_id, m.read_state, m.starred, m.subject)))
+            .collect()
+    };
+    let (nodes, edges) = {
+        let storage = ms.storage().unwrap();
+        let graph = storage.work_graph_by_code("backlog").unwrap();
+        match graph {
+            None => (BTreeMap::new(), BTreeSet::new()),
+            Some(graph) => {
+                let nodes = storage
+                    .work_graph_nodes(&graph.handle)
+                    .unwrap()
+                    .into_iter()
+                    .map(|node| {
+                        (
+                            node.handle,
+                            (
+                                node.source_id,
+                                node.label,
+                                node.state,
+                                node.kind,
+                                node.updated_at,
+                            ),
+                        )
+                    })
+                    .collect();
+                let edges = storage
+                    .work_graph_edges(&graph.handle)
+                    .unwrap()
+                    .into_iter()
+                    .map(|edge| (edge.from_node, edge.to_node, edge.label, edge.style))
+                    .collect();
+                (nodes, edges)
+            }
+        }
+    };
+    let event = |handle: &str| {
+        ms.item_event_state(handle)
+            .unwrap()
+            .map(|state| (state.state, state.event, state.heads))
+    };
+    Snapshot {
+        letters,
+        nodes,
+        edges,
+        need_event: event(need),
+        task_event: event(task),
+        config: fs::read_to_string(fx.root.join(".vivi").join("mailspace.toml")).unwrap(),
+        audit: audit_lines(&fx.data),
+        pump_home: fx.root.join(".vivi").join("pump").exists(),
+    }
+}
+
+/// The server's write audit log: empty unless a write tool call ran.
+fn audit_lines(dir: &Path) -> Vec<Value> {
+    fs::read_to_string(dir.join("audit.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// One raw `tools/call` POST that keeps the HTTP status: for the token-level
+/// refusals the endpoint answers before any tool runs, so there is no tool
+/// result to parse. The caller passes `project` itself.
+async fn raw_call(
+    fx: &mind_server::Fx,
+    token: &str,
+    name: &str,
+    arguments: Value,
+) -> (StatusCode, Value) {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments}
+    });
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mcp")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+/// A throwaway but well-formed ed25519 SPKI PEM, minted from `seed`.
+fn spki_pem(seed: u8) -> String {
+    use base64::Engine;
+    const PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut der = PREFIX.to_vec();
+    der.extend_from_slice(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes(),
+    );
+    format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        base64::engine::general_purpose::STANDARD.encode(der)
+    )
+}
+
+/// The authorization matrix for the operator-only mind reads, over the real
+/// router: the host's own member's key acting as the operator role answers
+/// all three reads; a member bearer token is refused on the wire (401,
+/// `unauthorized`) before any tool runs; a key of a nonoperator role, a
+/// foreign member's key acting as operator, a key with no grant on the
+/// project, and a granted key whose project is not hosted are all refused
+/// as `isError` — with no message-text coupling. After demoting the
+/// operator role's kind with the mailspace's own editor, the same
+/// previously minted operator key is refused too: the rule is read live per
+/// call, never from the grant. Around every successful and refused read
+/// the whole mailspace, config, audit and pump state is snapshotted and
+/// proven byte-for-byte unchanged, the pump database never coming into
+/// existence at all.
+#[tokio::test]
+async fn mind_reads_answer_only_the_live_operator_and_write_nothing() {
+    let fx = mind_server::fixture("mind-read-authorization");
+    let need = fx.send(
+        "mind",
+        "need",
+        "hand",
+        "operator read anchor",
+        "+++\ndone_when = [\"it is anchored\"]\n+++\n\nanchor body",
+    );
+    letter(&fx, Some(&need), "first reply", "one");
+    letter(&fx, Some(&need), "second reply", "two");
+    let task = fx.send(
+        "mind",
+        "task",
+        "hand",
+        "bound unit",
+        "+++\n+++\n\nunit body",
+    );
+    mind_server::open_root(&fx.root)
+        .backlog_bind_units(&need, &[task.clone()])
+        .unwrap();
+
+    let operator = fx.key_by(&fx.member, Some("operator"));
+    let hand = fx.key_by(&fx.member, Some("hand"));
+    let bob_token = fx
+        .state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(9),
+            "0b0b0b0b-1111-4222-8333-444444444444",
+        )
+        .unwrap()
+        .token;
+    let bobs = fx.key_by("bob", Some("operator"));
+    let ungranted = fx
+        .state
+        .server_keys
+        .mint(
+            &format!("{}.ungranted@{}", fx.member, fx.project),
+            false,
+            Vec::new(),
+            "test",
+            &fx.member,
+        )
+        .unwrap()
+        .key;
+    let elsewhere = fx
+        .state
+        .projects
+        .create_project_with_creator(&spki_pem(7), "alice")
+        .unwrap()
+        .project_id;
+    fx.state
+        .identities
+        .register(
+            &elsewhere,
+            "alice",
+            &spki_pem(7),
+            "0a0a0a0a-1111-4222-8333-444444444444",
+        )
+        .ok();
+    let alice = fx
+        .state
+        .server_keys
+        .mint(
+            &format!("alice.operator@{elsewhere}"),
+            false,
+            vec![GrantRecord {
+                project_id: elsewhere.clone(),
+                member: "alice".into(),
+                identity: Some("operator".into()),
+                level: GrantLevel::Operator,
+            }],
+            "test",
+            "alice",
+        )
+        .unwrap()
+        .key;
+
+    // Operator success: all three reads answer the live mailspace.
+    let shown = fx
+        .call(&operator, "need_show", json!({"handle": &need}))
+        .await;
+    assert_eq!(shown["item"]["kind"], "need", "{shown}");
+    let thread = fx
+        .call(&operator, "need_thread", json!({"handle": &need}))
+        .await;
+    // The anchor, the two replies, and the bind's own letter.
+    assert_eq!(thread["total"], 4, "{thread}");
+    let units = fx
+        .call(&operator, "task_thread", json!({"handle": &task}))
+        .await;
+    assert_eq!(units["total"], 1, "{units}");
+
+    let before = snapshot(&fx, &need, &task);
+    assert!(!before.pump_home, "{before:?}");
+
+    // A member bearer token never reaches a tool on /v1/mcp: the endpoint
+    // refuses with the unauthorized wire code before dispatch.
+    for name in ["need_show", "need_thread", "task_thread"] {
+        let (status, value) = raw_call(
+            &fx,
+            &bob_token,
+            name,
+            json!({"project": fx.project, "handle": &need}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{name}: {value}");
+        assert_eq!(value["error"]["code"], "unauthorized", "{name}: {value}");
+    }
+    // Every nonoperator principal is refused on the wire as isError, for
+    // both anchors: a key of a nonoperator role, a foreign member's key
+    // acting as operator, a key with no grant on this project, and a key
+    // granted on a project that is not hosted.
+    for (token, arguments) in [
+        (&hand, json!({"handle": &need})),
+        (&bobs, json!({"handle": &need})),
+        (&ungranted, json!({"handle": &need})),
+        (&alice, json!({"project": &elsewhere, "handle": &need})),
+        (&hand, json!({"handle": &task})),
+        (&bobs, json!({"handle": &task})),
+        (&ungranted, json!({"handle": &task})),
+        (&alice, json!({"project": &elsewhere, "handle": &task})),
+    ] {
+        for name in ["need_show", "need_thread", "task_thread"] {
+            fx.refused(token, name, arguments.clone()).await;
+        }
+    }
+    assert_eq!(snapshot(&fx, &need, &task), before);
+
+    // Demote the operator role's kind: the previously minted grant must not
+    // bypass the operator rule, which is read live per call.
+    mind_server::open_root(&fx.root)
+        .set_role(
+            "operator",
+            RoleUpdate {
+                kind: Some(Some("hand".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    let demoted = snapshot(&fx, &need, &task);
+    assert_ne!(demoted.config, before.config, "the demotion must land");
+    for name in ["need_show", "need_thread", "task_thread"] {
+        fx.refused(&operator, name, json!({"handle": &need})).await;
+        fx.refused(&operator, name, json!({"handle": &task})).await;
+    }
+    assert_eq!(snapshot(&fx, &need, &task), demoted);
+}
+
+/// With the write window at one, repeated reads never spend the key's
+/// write allowance: six reads keep answering, the first unrelated write
+/// afterwards is still admitted (and audited, as writes are while reads
+/// are not), and only the second write finds the budget spent. The reads
+/// go on answering with the window exhausted.
+#[tokio::test]
+async fn repeated_reads_never_spend_the_write_allowance() {
+    let fx = mind_server::fixture_with("mind-reads-write-limit", |state| {
+        state.limiter = RateLimiter::new(Some(1));
+    });
+    let need = fx.send(
+        "mind",
+        "need",
+        "hand",
+        "allowance anchor",
+        "+++\ndone_when = [\"it is anchored\"]\n+++\n\nanchor body",
+    );
+    letter(&fx, Some(&need), "a reply", "body");
+    let task = fx.send(
+        "mind",
+        "task",
+        "hand",
+        "allowance unit",
+        "+++\n+++\n\nunit body",
+    );
+    let operator = fx.key_by(&fx.member, Some("operator"));
+    let reads = [
+        ("need_show", json!({"handle": &need})),
+        ("need_thread", json!({"handle": &need})),
+        ("task_thread", json!({"handle": &task})),
+    ];
+    for _ in 0..2 {
+        for (name, arguments) in &reads {
+            fx.call(&operator, name, arguments.clone()).await;
+        }
+    }
+    assert!(
+        audit_lines(&fx.data).is_empty(),
+        "reads are never audited: {:?}",
+        audit_lines(&fx.data)
+    );
+
+    // The window's one write is still there for an unrelated write.
+    let set = fx
+        .call(
+            &operator,
+            "pump_priority",
+            json!({"action": "set", "need": "n1", "level": 2}),
+        )
+        .await;
+    assert_eq!(set["action"], "set", "{set}");
+    // The budget is spent by that single write — proving the reads spent
+    // none of it.
+    fx.refused(
+        &operator,
+        "pump_priority",
+        json!({"action": "set", "need": "n2", "level": 3}),
+    )
+    .await;
+    let lines = audit_lines(&fx.data);
+    // Two lines only — the admitted and the refused write. The twelve
+    // reads around them wrote none.
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines.iter().all(|line| line["tool"] == "pump_priority"),
+        "{lines:?}"
+    );
+    assert_eq!(lines[0]["outcome"], "ok", "{lines:?}");
+    assert_eq!(lines[1]["outcome"], "refused", "{lines:?}");
+
+    // And the reads go on answering with the write window exhausted.
+    for (name, arguments) in &reads {
+        fx.call(&operator, name, arguments.clone()).await;
+    }
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "reads still write no audit: {lines:?}");
 }
