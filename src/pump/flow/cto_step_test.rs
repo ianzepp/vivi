@@ -6,12 +6,15 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::CtoStart;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
+use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::JobSpec;
@@ -68,6 +71,30 @@ fn add_step(f: &Fixture, run: u32, node: &str, state: StepState, verdict: Option
                 node: node.into(),
                 task: format!("t-{node}-r{run}"),
                 state,
+                verdict: verdict.map(str::to_string),
+            },
+        )
+        .unwrap();
+}
+
+/// A readable slice task in the fake mailspace: its handle.
+fn slice_task(f: &mut Fixture) -> String {
+    f.mail
+        .send_step("pump", "hand", "slice alpha", "slice body", &[])
+        .unwrap()
+}
+
+/// Index `handle` as the step row of a slice node, as a fanout would, so a
+/// thread read through the mail port sees the actual handle.
+fn add_slice_step(f: &Fixture, run: u32, node: &str, handle: &str, verdict: Option<&str>) {
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run,
+                node: node.into(),
+                task: handle.to_string(),
+                state: StepState::Done,
                 verdict: verdict.map(str::to_string),
             },
         )
@@ -296,6 +323,101 @@ fn an_admit2_escalation_names_the_step_and_has_no_block_ship_line() {
     );
     assert!(!spec.body.contains("automatic block-ship"));
     assert!(spec.body.contains("## Failing rung output\n\n(none)"));
+}
+
+#[test]
+fn missing_attempt_notes_do_not_prevent_cto_dispatch() {
+    let mut f = fixture();
+    let run = two_runs(&f, "defects");
+    let task = slice_task(&mut f);
+    add_slice_step(&f, 2, "slice:alpha", &task, Some("merged"));
+    let spec = start(&f, &run);
+    assert_eq!(spec.role, "head-cto");
+    assert!(spec.read_only);
+    assert_eq!(spec.kind, "flow-cto");
+    assert!(
+        spec.body.contains("## Slice attempt records"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("## Slice attempt records\n\n(none recorded)"),
+        "{}",
+        spec.body
+    );
+}
+
+#[test]
+fn a_typed_attempt_note_reaches_the_brief_with_source_and_outcome() {
+    let mut f = fixture();
+    let run = two_runs(&f, "defects");
+    let task = slice_task(&mut f);
+    f.mail
+        .reply(
+            &task,
+            &note_body(
+                NoteWord::Attempt,
+                Some("agent failed: proof-failed"),
+                "pump: attempt record\nfailing command:\n  cargo test --lib\nexcerpt:\n  error: test failed",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    f.mail
+        .reply(
+            &task,
+            &note_body(
+                NoteWord::Attempt,
+                Some("delivered"),
+                "second attempt landed",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    add_slice_step(&f, 1, "slice:alpha", &task, Some("merged"));
+    let spec = start(&f, &run);
+    let first = format!("run 1 slice:alpha (task {task}, outcome agent failed: proof-failed):");
+    assert!(spec.body.contains(&first), "{}", spec.body);
+    assert!(
+        spec.body.contains("failing command:\n  cargo test --lib"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("error: test failed"));
+    let second =
+        format!("run 1 slice:alpha (task {task}, outcome delivered):\nsecond attempt landed");
+    assert!(spec.body.contains(&second), "{}", spec.body);
+    let head = spec.body.find(&first).expect("first record");
+    let tail = spec.body.find(&second).expect("second record");
+    assert!(head < tail, "notes must keep their thread order");
+    assert!(!spec.body.contains("[...]"), "{}", spec.body);
+}
+
+#[test]
+fn an_oversized_attempt_note_keeps_its_tail_and_the_marker_per_record() {
+    let mut f = fixture();
+    let run = two_runs(&f, "defects");
+    for (node, tail) in [("slice:alpha", "ALPHA-TAIL"), ("slice:beta", "BETA-TAIL")] {
+        let task = slice_task(&mut f);
+        f.mail
+            .reply(
+                &task,
+                &note_body(
+                    NoteWord::Attempt,
+                    Some("agent failed: timeout"),
+                    &format!("{}{tail}", "x".repeat(12_500)),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        add_slice_step(&f, 1, node, &task, Some("exhausted"));
+    }
+    let spec = start(&f, &run);
+    assert_eq!(spec.body.matches("[...]").count(), 2, "{}", spec.body);
+    assert!(spec.body.contains("ALPHA-TAIL"));
+    assert!(spec.body.contains("BETA-TAIL"));
+    assert!(!spec.body.contains(&"x".repeat(12_500)));
 }
 
 fn slice_link(f: &Fixture, task: &str, fanout: &str) {
