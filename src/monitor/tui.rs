@@ -17,7 +17,7 @@ use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 
 use super::history::SessionHistory;
-use super::model::{MonitorRow, RowState, running_text, started_text};
+use super::model::{MonitorRow, RowState, format_secs, is_finished, running_text, started_text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -69,8 +69,10 @@ pub fn render(
     selected: usize,
     warning_count: usize,
 ) {
+    let (live, stale, finished) = freshness_counts(rows);
     let title = format!(
-        " vivi monitor · {} row(s) · {} warning(s) · ↑/↓ select · enter tail · q quit ",
+        " vivi monitor · {} row(s) · {live} live · {stale} stale · {finished} finished · \
+         {} warning(s) · ↑/↓ select · enter tail · q quit ",
         rows.len(),
         warning_count
     );
@@ -120,12 +122,47 @@ pub fn render(
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+/// Display freshness of one row: fresh live work, a stale observation, or a
+/// finished lane. Stale finished rows count as finished, so the three classes
+/// partition every row and stale rows never inflate the live count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Freshness {
+    Live,
+    Stale,
+    Finished,
+}
+
+fn freshness(row: &MonitorRow) -> Freshness {
+    if is_finished(row) {
+        Freshness::Finished
+    } else if row.stale_age_secs.is_some() {
+        Freshness::Stale
+    } else {
+        Freshness::Live
+    }
+}
+
+/// Live/stale/finished row counts, in that order.
+fn freshness_counts(rows: &[MonitorRow]) -> (usize, usize, usize) {
+    let mut counts = (0, 0, 0);
+    for row in rows {
+        match freshness(row) {
+            Freshness::Live => counts.0 += 1,
+            Freshness::Stale => counts.1 += 1,
+            Freshness::Finished => counts.2 += 1,
+        }
+    }
+    counts
+}
+
+/// Finished lanes stay dim; stale observations get a warning color so they
+/// stand apart from fresh running work.
 fn styled_row(item: &MonitorRow) -> Row<'static> {
     let row = Row::new(cells(item));
-    if matches!(item.state, RowState::Finished(_)) {
-        row.style(Style::default().fg(Color::DarkGray))
-    } else {
-        row
+    match freshness(item) {
+        Freshness::Finished => row.style(Style::default().fg(Color::DarkGray)),
+        Freshness::Stale => row.style(Style::default().fg(Color::Yellow)),
+        Freshness::Live => row,
     }
 }
 
@@ -133,11 +170,20 @@ fn cells(row: &MonitorRow) -> Vec<Cell<'static>> {
     cell_text(row).into_iter().map(Cell::from).collect()
 }
 
-fn cell_text(row: &MonitorRow) -> Vec<String> {
+/// Last known lifecycle state, prefixed with the observation's stale age when
+/// the row is stale: `stale 20s (running)` or `stale 20s (pushed)`.
+fn state_text(row: &MonitorRow) -> String {
     let state = match &row.state {
         RowState::Running => "running".to_owned(),
         RowState::Finished(outcome) => outcome.clone(),
     };
+    match row.stale_age_secs {
+        Some(age) => format!("stale {} ({state})", format_secs(age)),
+        None => state,
+    }
+}
+
+fn cell_text(row: &MonitorRow) -> Vec<String> {
     let provider = if row.remote {
         format!("{} remote", row.provider)
     } else {
@@ -163,7 +209,7 @@ fn cell_text(row: &MonitorRow) -> Vec<String> {
         row.role.clone(),
         task,
         row.model.clone(),
-        state,
+        state_text(row),
         started_text(row.started_at),
         running_text(row),
         row.read_only.map_or_else(
