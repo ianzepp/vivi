@@ -29,7 +29,22 @@ pub(super) fn call_for(request: &ActionRequest) -> Result<Call, String> {
         Action::Answer => answer_call(&project, request)?,
         Action::Unlock => pump_action(
             &project,
-            json!({ "action": "unlock", "need": need_of(request)?, "note": note }),
+            json!({
+                "action": "unlock",
+                "need": need_of(request)?,
+                "entry": request.entry,
+                "note": note,
+            }),
+        ),
+        Action::ReplyNeed => reply_call(&project, request)?,
+        Action::SetPriority => priority_call(&project, request)?,
+        Action::WithdrawNeed => pump_action(
+            &project,
+            json!({
+                "action": "withdraw",
+                "needs": [need_of(request)?],
+                "reason": note,
+            }),
         ),
         Action::ReadStatus => read_status_call(&project, request),
         Action::ReadLog => read_log_call(&project, request)?,
@@ -40,10 +55,7 @@ pub(super) fn call_for(request: &ActionRequest) -> Result<Call, String> {
         Action::ReadConfig => config_show_call(&project),
         Action::ReadPool => pool_show_call(&project, request)?,
         Action::LetterToOperator | Action::Escalate => letter(&project, request),
-        Action::ReplyNeed
-        | Action::SetPriority
-        | Action::WithdrawNeed
-        | Action::SetRoleModel
+        Action::SetRoleModel
         | Action::SetPoolCap
         | Action::SetPoolBand
         | Action::FileNeed
@@ -96,6 +108,34 @@ fn answer_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
             "word": request.word.as_deref().ok_or("the action names no word")?,
             "note": request.note.as_deref(),
         }),
+    ))
+}
+
+/// The operator's reply on a need's thread: `reply` names the need as the
+/// handle and carries the note as the body. No `from` travels: the
+/// authenticated operator grant decides authorship.
+fn reply_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "reply",
+        without_unset(json!({
+            "project": project,
+            "handle": need_of(request)?,
+            "body": request.note.as_deref(),
+        })),
+    ))
+}
+
+/// The priority set: one `pump_priority` `set` for the need. Level 0 is a
+/// real level (none), so it travels; an absent level is left out.
+fn priority_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "pump_priority",
+        without_unset(json!({
+            "project": project,
+            "action": "set",
+            "need": need_of(request)?,
+            "level": request.priority,
+        })),
     ))
 }
 
