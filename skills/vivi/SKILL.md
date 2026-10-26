@@ -2649,10 +2649,10 @@ the need's open pump record. Each posts one `mail` reply on the record whose
 front matter is an action (**action**, **need**, and per action **unit**,
 **step**, **word**; see [the pump action](references/envelope.md#pump-action));
 the body is the reason. The pump applies each letter once, at its next tick. A
-need with no open record is refused and nothing is posted, so send a record
-first (**vivi pump send --need**). An action on a closed record is never
-applied, and a refused one raises **flow-action-refused**. The library call is
-**Mailspace::pump_post_action**; it prints nothing.
+need with no open record is refused and nothing is posted. An action on a
+closed record is never applied, and a refused one raises
+**flow-action-refused**. The library call is **Mailspace::pump_post_action**;
+it prints nothing.
 
 - **requeue** queues a step's newest job again at the same attempt. It takes
   the step task's handle (see **vivi step**), and is refused unless that job is
@@ -2661,8 +2661,24 @@ applied, and a refused one raises **flow-action-refused**. The library call is
   **requeue --job &lt;job-id&gt;** releases it.
 - **replan** restarts the live run at **plan** as a new run; the old run and its
   open step tasks close **superseded**.
-- **withdraw** closes the need **withdrawn**; the pump then closes every open
-  step task and the record **withdrawn**.
+- **withdraw** takes one or more needs and a required nonblank **--reason**.
+  It preflights every named need first: if ANY named need has no open pump
+  record — never dispatched, or its record already closed — the whole call is
+  refused before any need is closed or any action is posted, and the valid
+  members of the batch are not withdrawn either: withdrawing need A (open
+  record) together with need B (never dispatched) withdraws neither. The
+  guarantee is this preflight, not a rollback of every possible later
+  failure. If a need must not run, close it on the board instead: **vivi
+  need done &lt;handle&gt; --for &lt;identity&gt; --note "No longer needed; do
+  not dispatch."** records the close and the note but writes no verdict.
+  Only when a dispatch should exist, send first (**vivi pump send --need
+  &lt;need&gt;**) and then withdraw; sending is intake, not a harmless
+  cancellation prerequisite, and the next tick can start a run before the
+  withdrawal applies. When withdraw closes an otherwise-open need while its
+  record is open it writes the need verdict **withdrawn** (a board close
+  writes none); at the next tick the pump then closes the record
+  **withdrawn** and every open step task of an existing run. An open record
+  is required, not a prior live run.
 - **answer** gives a held step its word (one of the step's words, **failed**
   included); the pump routes the run from it.
 - **unlock** restarts a locked run at the flow's first entry (**plan** for
