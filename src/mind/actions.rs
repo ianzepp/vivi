@@ -235,6 +235,9 @@ pub fn plan(
     out
 }
 
+/// Check one request: the per-kind field matrix, then the project rule —
+/// every action names a watched root, reads and letters included — then the
+/// authority gate.
 fn check(
     request: &ActionRequest,
     gate: &Gate<'_>,
@@ -242,14 +245,12 @@ fn check(
     ledger: &authority::Ledger,
 ) -> Result<(), Refusal> {
     validate_fields(request)?;
-    if request.kind.mutates() {
-        let project = request
-            .project
-            .as_deref()
-            .ok_or(Refusal::MissingField("project"))?;
-        if !watched.iter().any(|root| root == project) {
-            return Err(Refusal::UnwatchedProject);
-        }
+    let project = request
+        .project
+        .as_deref()
+        .ok_or(Refusal::MissingField("project"))?;
+    if !watched.iter().any(|root| root == project) {
+        return Err(Refusal::UnwatchedProject);
     }
     authority::permit(gate, ledger, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
 }
