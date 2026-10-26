@@ -15,6 +15,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use crate::error::VivariumError;
 
 mod codec;
+pub mod flow_continuation;
 mod flow_index;
 pub mod flow_links;
 pub mod flow_retry;
@@ -28,6 +29,7 @@ mod state_rows;
 pub mod step_payload;
 mod unit_extra;
 pub(super) use codec::{db_err, from_json, from_u32, from_u64, json, json_or_null};
+pub use flow_continuation::ContinuationLink;
 pub use need_branch::NeedBranchRow;
 use schema::{drop_request_queues, newer_schema, schema_version, take_migration_lock};
 use state_rows::{
@@ -469,6 +471,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     flow_index::ensure_tables(conn)?;
     flow_links::ensure_tables(conn)?;
     flow_retry::ensure_tables(conn)?;
+    flow_continuation::ensure_tables(conn)?;
     step_payload::ensure_table(conn)?;
     job_release::ensure_table(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
