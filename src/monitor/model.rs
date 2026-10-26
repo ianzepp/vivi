@@ -46,6 +46,12 @@ pub struct MonitorRow {
     pub state: RowState,
     /// Epoch seconds the lane started.
     pub started_at: Option<u64>,
+    /// Seconds since this lane was last observed, when known: how fresh the
+    /// observation is, not how far the lane's lifecycle has progressed.
+    pub stale_age_secs: Option<u64>,
+    /// Authoritative epoch-seconds completion time, when known; recorded by the
+    /// source that observed the finish, independent of the state outcome word.
+    pub finished_at: Option<u64>,
     pub running_secs: Option<u64>,
     pub budget_secs: Option<u64>,
     pub read_only: Option<bool>,
@@ -59,9 +65,13 @@ pub fn is_finished(row: &MonitorRow) -> bool {
     matches!(row.state, RowState::Finished(_))
 }
 
-/// Identity of one lane across snapshots, for session history.
+/// Identity of one lane across snapshots, for session history. Includes
+/// `started_at` so repeated attempts of the same task keep distinct identities.
 pub fn activity_key(row: &MonitorRow) -> String {
-    format!("{}|{}|{}|{:?}", row.project, row.pool, row.slot, row.task)
+    format!(
+        "{}|{}|{}|{:?}|{:?}",
+        row.project, row.pool, row.slot, row.task, row.started_at
+    )
 }
 
 /// Human duration: `45s`, `12m30s` (or `12m` with no remainder), `1h23m`.

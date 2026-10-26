@@ -16,6 +16,8 @@ fn row(task: &str) -> MonitorRow {
         model: "m".into(),
         state: RowState::Running,
         started_at: Some(100),
+        stale_age_secs: None,
+        finished_at: None,
         running_secs: Some(1),
         budget_secs: Some(600),
         read_only: Some(false),
