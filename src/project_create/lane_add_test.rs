@@ -153,6 +153,29 @@ fn the_seed_commit_lands_on_the_lane_and_the_clone() {
         git(&project.join("sandbox"), &["rev-parse", "HEAD"]),
         commit
     );
+    // The target's main exists from the start, at the seed commit.
+    assert_eq!(
+        git(&site.repo("app", "sandbox"), &["rev-parse", "vivi/main"]),
+        commit
+    );
+    assert_eq!(
+        git(&project.join("sandbox"), &["rev-parse", "origin/vivi/main"]),
+        commit
+    );
+}
+
+#[test]
+fn an_empty_lane_has_no_integration_branch_until_the_pump_makes_it() {
+    let site = Site::new();
+    let project = site.project("app");
+    add_with(&site.request(&project, "sandbox"), &|_| Ok(())).unwrap();
+    assert_eq!(
+        git(
+            &site.repo("app", "sandbox"),
+            &["branch", "--list", "vivi/main"]
+        ),
+        ""
+    );
 }
 
 #[test]
@@ -277,4 +300,46 @@ fn a_source_fills_the_new_lane_with_its_history() {
         tip
     );
     assert!(project.join("server/x.txt").is_file());
+    assert_eq!(
+        git(&site.repo("app", "server"), &["rev-parse", "vivi/main"]),
+        tip
+    );
+}
+
+#[test]
+fn a_vivi_main_the_source_brought_is_left_alone() {
+    let site = Site::new();
+    let project = site.project("app");
+    let src = site.projects.parent().unwrap().join("source");
+    fs::create_dir(&src).unwrap();
+    git(&src, &["init", "--quiet", "-b", "main"]);
+    let commit = |name: &str| {
+        fs::write(src.join(name), name).unwrap();
+        git(&src, &["add", name]);
+        git(
+            &src,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "-m",
+                name,
+            ],
+        );
+        git(&src, &["rev-parse", "HEAD"])
+    };
+    let first = commit("one");
+    git(&src, &["branch", "vivi/main"]);
+    let second = commit("two");
+    assert_ne!(first, second);
+
+    let mut request = site.request(&project, "server");
+    request.source = Some(src.display().to_string());
+    add_with(&request, &|_| Ok(())).unwrap();
+    let repo = site.repo("app", "server");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), second);
+    assert_eq!(git(&repo, &["rev-parse", "vivi/main"]), first);
 }

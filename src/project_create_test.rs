@@ -309,6 +309,8 @@ fn initial_commit_makes_exactly_one_commit_on_the_branch() {
     let commit = created.initial_commit.unwrap();
     assert_eq!(git(&repo, &["rev-parse", "refs/heads/trunk"]), commit);
     assert_eq!(git(&repo, &["rev-list", "--count", "trunk"]), "1");
+    // The target's main exists from the start, at the same commit.
+    assert_eq!(git(&repo, &["rev-parse", "refs/heads/vivi/main"]), commit);
     assert_eq!(
         git(&repo, &["log", "-1", "--format=%an <%ae>"]),
         "vivi <vivi@localhost>"
@@ -349,6 +351,7 @@ fn without_an_initial_commit_the_repo_stays_empty() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+    assert_eq!(git(&repo, &["branch", "--list", "vivi/main"]), "");
 }
 
 #[test]

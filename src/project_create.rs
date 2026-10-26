@@ -334,6 +334,7 @@ fn run_steps(
         Some(source) => Some(lane::import(&plan.repo, source, &request.branch)?),
         None => None,
     };
+    lane::point_integration_branch(&plan.repo, &request.branch)?;
 
     inject(Step::Target)?;
     let attached = lane_add::attach_target(

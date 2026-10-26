@@ -229,8 +229,10 @@ A target made by `project create` or `lane add` keeps the upstream branch
 (`main`) as a mirror that the pump never writes, and lands everything on its
 own integration branch, **vivi/main**. A need's branch, **vivi/need/&lt;need&gt;**,
 merges into `vivi/main`, and a unit's branch, **vivi/unit/&lt;unit&gt;**, into its
-need's branch. The pump creates `vivi/main` on the lane, from the lane's
-default branch, the first time it finds it missing; it only ever creates a
+need's branch. A lane made with a seed commit or a source already has
+`vivi/main`, at the tip of `main`. Otherwise the pump creates `vivi/main` on
+the lane, from the lane's default branch, the first time it finds it missing;
+it only ever creates a
 `main` under `vivi/`, so a mistyped branch elsewhere stays an error. Promoting
 work to the upstream branch is yours: merge `vivi/main` into `main` and push,
 or open a pull request from `vivi/main`. Commit messages may name `vivi/main`;

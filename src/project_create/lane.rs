@@ -84,6 +84,30 @@ pub(super) fn import(repo: &Path, source: &str, branch: &str) -> Result<String, 
         })
 }
 
+/// Point the integration branch (`vivi/main`) at the tip of `branch`, so a
+/// new lane already has the branch its target's main names and a read of the
+/// lane works before any pump has run. A lane with no commits has no tip to
+/// point at; the pump makes the branch once the lane has a default branch. A
+/// `vivi/main` the source brought is left as it is.
+pub(super) fn point_integration_branch(repo: &Path, branch: &str) -> Result<(), VivariumError> {
+    let integration = format!("refs/heads/{}", super::INTEGRATION_BRANCH);
+    let exists = |reference: &str| {
+        git(Some(repo), &["rev-parse", "--verify", "--quiet", reference])
+            .run()
+            .is_ok()
+    };
+    if exists(&integration) || !exists(&format!("refs/heads/{branch}")) {
+        return Ok(());
+    }
+    let tip = git(
+        Some(repo),
+        &["rev-parse", &format!("refs/heads/{branch}^{{commit}}")],
+    )
+    .run()?;
+    git(Some(repo), &["update-ref", &integration, &tip]).run()?;
+    Ok(())
+}
+
 /// A source must be one Git address: not empty, no whitespace, and not a
 /// word git would read as an option.
 fn check_source(source: &str) -> Result<(), VivariumError> {

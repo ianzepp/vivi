@@ -164,6 +164,7 @@ fn run_steps(
         Some(source) => Some(lane::import(repo, source, branch)?),
         None => None,
     };
+    lane::point_integration_branch(repo, branch)?;
     inject(Step::Target)?;
     made.push(project_dir.join(&request.target_id));
     let remote_url = request.git_url_prefix.as_ref().map(|_| url);
