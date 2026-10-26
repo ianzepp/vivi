@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, RoleUpdate};
+use vivi::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use vivi::pump::priority;
 use vivi::server::grants::{GrantLevel, GrantRecord};
 use vivi::server::safety::RateLimiter;
@@ -306,6 +306,28 @@ fn audit_lines(dir: &PathBuf) -> Vec<Value> {
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+/// A hosted need seeded straight into the mailspace at `root` — no server
+/// call, so the audit ledger stays empty. Its handle.
+fn seed_need(root: &PathBuf, subject: &str) -> String {
+    Mailspace::open_root(root.clone())
+        .unwrap()
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            body: "+++\ndone_when = [\"it works\"]\n+++\n\nmake it work".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
 }
 
 fn legacy_keys_file(count: usize) -> String {
@@ -844,6 +866,138 @@ async fn a_hosted_write_is_audited_with_its_project() {
     let lines = audit_lines(&fx.dir);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0]["project_id"], project);
+}
+
+/// `pump_action action=priority` is pinned to the single-audit write
+/// contract: one record per call — ok for a set and a zero-clear, refused
+/// for invalid arguments and a member-acting key — whatever the tool did
+/// inside, while the diagnostic read never costs an entry.
+#[tokio::test]
+async fn priority_has_one_audit_record() {
+    // The hosted root carries a `[pump]` table whose home is a known
+    // non-default directory, so the stored level is directly readable.
+    let fx = hosted_with("audit-priority", |_| {}, &["app"]);
+    let (project, member) = fx.served[0].clone();
+    let key = server_key(
+        &fx.state,
+        &project,
+        &member,
+        Some("operator"),
+        GrantLevel::Operator,
+    );
+    let root = fx
+        .state
+        .projects
+        .load_meta(&project)
+        .unwrap()
+        .mailspace_root
+        .unwrap();
+    let toml = root.join(".vivi").join("mailspace.toml");
+    let mut text = std::fs::read_to_string(&toml).unwrap();
+    text.push_str("\n[pump]\ntick = 20\nhome = \"pump-home\"\n");
+    std::fs::write(&toml, text).unwrap();
+    let home = root.join("pump-home");
+
+    // One hosted need, seeded locally so the audit ledger starts empty.
+    let need = seed_need(&root, "fix auth");
+    assert!(audit_lines(&fx.dir).is_empty());
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    // The diagnostic read is free before any write.
+    assert_eq!(listed_priorities(&fx.app, &key, &project).await, vec![]);
+    assert!(audit_lines(&fx.dir).is_empty(), "a read is not audited");
+
+    // The successful set (by hosted name): exactly one record, with the
+    // canonical project the call resolved to, and the stored level.
+    call_ok(
+        &fx.app,
+        &key,
+        "pump_action",
+        json!({"project": "app", "action": "priority", "need": &need, "priority": 5}),
+    )
+    .await;
+    let lines = audit_lines(&fx.dir);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["tool"], "pump_action");
+    assert_eq!(lines[0]["outcome"], "ok");
+    assert_eq!(lines[0]["project_id"], project);
+    assert_eq!(lines[0]["principal"], format!("{member}@{project}"));
+    assert_eq!(priority::list(&home).unwrap(), vec![(need.clone(), 5)]);
+
+    // The read between writes still costs nothing.
+    assert_eq!(
+        listed_priorities(&fx.app, &key, &project).await,
+        vec![(need.clone(), 5)]
+    );
+    assert_eq!(audit_lines(&fx.dir).len(), 1);
+
+    // The zero-clear: one more record, and the stored level is gone.
+    call_ok(
+        &fx.app,
+        &key,
+        "pump_action",
+        json!({"project": project, "action": "priority", "need": &need, "priority": 0}),
+    )
+    .await;
+    let lines = audit_lines(&fx.dir);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1]["tool"], "pump_action");
+    assert_eq!(lines[1]["outcome"], "ok");
+    assert_eq!(lines[1]["project_id"], project);
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    // Invalid arguments: exactly the one refused record, priority untouched.
+    call_err(
+        &fx.app,
+        &key,
+        "pump_action",
+        json!({"project": project, "action": "priority", "need": &need}),
+    )
+    .await;
+    let lines = audit_lines(&fx.dir);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[2]["tool"], "pump_action");
+    assert_eq!(lines[2]["outcome"], "refused");
+    assert_eq!(lines[2]["project_id"], project);
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    // A member-acting key: its own principal (a shared principal would add
+    // the hand grant beside the operator grant), acting as the hand role —
+    // the same single refused record, priority still untouched.
+    let hand = fx
+        .state
+        .server_keys
+        .mint(
+            &format!("{member}.hand@{project}"),
+            false,
+            vec![GrantRecord {
+                project_id: project.clone(),
+                member: member.clone(),
+                identity: Some("hand".into()),
+                level: GrantLevel::Member,
+            }],
+            "test",
+            &member,
+        )
+        .unwrap()
+        .key;
+    call_err(
+        &fx.app,
+        &hand,
+        "pump_action",
+        json!({"project": project, "action": "priority", "need": &need, "priority": 9}),
+    )
+    .await;
+    let lines = audit_lines(&fx.dir);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(lines[3]["tool"], "pump_action");
+    assert_eq!(lines[3]["outcome"], "refused");
+    assert_eq!(lines[3]["project_id"], project);
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    // The diagnostic read at the end: right answer, still no audit entry.
+    assert_eq!(listed_priorities(&fx.app, &key, &project).await, vec![]);
+    assert_eq!(audit_lines(&fx.dir).len(), 4);
 }
 
 // ------------------------------------------------------- write accounting
