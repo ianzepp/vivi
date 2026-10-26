@@ -5,6 +5,8 @@ use tempfile::{TempDir, tempdir};
 use crate::error::VivariumError;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::config::PumpConfig;
+use crate::pump::config::PumpTarget;
+use crate::pump::config::scope::ScopePolicy;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::shipped;
@@ -13,8 +15,9 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::State;
+use crate::pump::store::scope_ruling::{RulingDecision, ScopeRulingRequest};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
@@ -26,6 +29,7 @@ const THREAD: &str = "need thread: build the widget";
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    host: std::sync::Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     run: RunRow,
@@ -73,6 +77,7 @@ fn rig_with(cfg: PumpConfig, with_role: bool, run_no: u32) -> Result<Rig, Vivari
     Ok(Rig {
         _dir: dir,
         ctx,
+        host,
         store,
         mail,
         run,
@@ -91,6 +96,27 @@ fn row(run: u32, node: &str, task: &str, state: StepState) -> StepRow {
 
 fn result(message: &str) -> String {
     format!("{POOL_RESULT_MARKER}j1: finished\npool p  slot 1  model m\n\n--- receipt\n{message}")
+}
+
+/// Store one scope ruling for `NEED` on `target`.
+fn ruling(store: &PumpStore, job: &str, target: &str, paths: &[&str], decision: RulingDecision) {
+    store
+        .insert_scope_ruling(&ScopeRulingRequest {
+            job: job.into(),
+            job_kind: "hand".into(),
+            need: NEED.into(),
+            run: 1,
+            node: "slice:n1-1".into(),
+            task: format!("task-{job}"),
+            role: "hand".into(),
+            target: target.into(),
+            paths: paths.iter().map(|path| (*path).to_string()).collect(),
+            reason: "the slice needs the path to land".into(),
+            decision,
+            policy_reason: None,
+            policy: ScopePolicy::snapshot(target, &["./".into()], &[]).expect("policy snapshot"),
+        })
+        .expect("ruling stored");
 }
 
 /// Starts the planner handler on `node` and returns the job's spec.
@@ -141,8 +167,96 @@ fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
 
     let spec = start(&rig, "plan")?;
 
-    let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\nthread:";
-    assert!(spec.body.contains(lines), "{}", spec.body);
+    let lines =
+        "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\n";
+    let at = spec.body.find(lines).expect("front lines in order");
+    let rest = &spec.body[at + lines.len()..];
+    // The authoritative scope section sits between the front lines and the
+    // thread, so ordering is now front lines, scope section, thread.
+    assert!(
+        rest.starts_with("AUTHORITATIVE SCOPE AND POLICY"),
+        "scope section directly after the front lines: {rest}"
+    );
+    let thread = rest
+        .find("\nthread:\n")
+        .expect("thread after the scope section");
+    assert!(
+        rest[..thread].contains("ORIGINAL NEED SCOPE"),
+        "{}",
+        spec.body
+    );
+    assert!(rest[thread..].contains(THREAD), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn effective_scope_is_present_even_when_thread_is_capped() -> R {
+    // An explicit target map: inserting beside the legacy default keeps it
+    // configured.
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("default"), PumpTarget::default());
+    cfg.targets
+        .insert(String::from("web"), PumpTarget::default());
+    let mut rig = rig_with(cfg, true, 1)?;
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("build the widget")]);
+    front.write_scope = vec![String::from("src/pump/")];
+    front.target = Some(String::from("default"));
+    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let sent = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    if let Some(task) = rig.mail.tasks.remove(&sent) {
+        rig.mail.tasks.insert(NEED.to_string(), task);
+    }
+    ruling(
+        &rig.store,
+        "j1",
+        "default",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+    // Another target's grant must never reach the default block.
+    ruling(
+        &rig.store,
+        "j2",
+        "web",
+        &["skills/"],
+        RulingDecision::Approved,
+    );
+    // A thread past the 40 000-character cap: the ruling is named only in the
+    // dropped tail, so the brief cannot be quoting thread prose.
+    rig.host.reply(
+        "need show",
+        0,
+        &format!("{}\nruling approves docs/", "x".repeat(40_001)),
+    );
+
+    let spec = start(&rig, "plan")?;
+
+    let at = spec.body.find("\nthread:\n").expect("thread block");
+    let (head, thread) = (&spec.body[..at], &spec.body[at..]);
+    assert!(head.contains("AUTHORITATIVE SCOPE AND POLICY"), "{}", head);
+    assert!(head.contains("- src/pump/"), "{head}");
+    assert!(head.contains("APPROVED ADDITIONS on default"), "{head}");
+    assert!(head.contains("- docs/"), "{head}");
+    assert!(head.contains("CURRENT POLICY of default"), "{head}");
+    assert!(head.contains("allow: ./"), "{head}");
+    assert!(!head.contains("skills/"), "another target's grant: {head}");
+    assert!(!thread.contains("docs/"), "capped thread: {thread}");
+    Ok(())
+}
+
+#[test]
+fn an_unspecified_original_scope_stays_unspecified() -> R {
+    let rig = rig(true, 1)?;
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(
+        spec.body.contains("ORIGINAL NEED SCOPE: unspecified"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("not a deny-all"), "{}", spec.body);
     Ok(())
 }
 
