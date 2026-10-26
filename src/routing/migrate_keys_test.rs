@@ -1,7 +1,7 @@
 //! Retired merge keys under `[pump.targets.<id>.merge]` are planned for removal.
 
 use crate::mailspace::MailspaceConfig;
-use crate::routing::{MigrateInputs, MigratePlan, plan_migrate};
+use crate::routing::{MigrateInputs, MigratePlan, Severity, plan_migrate};
 
 const BASE: &str = r#"
 name = "t"
@@ -161,27 +161,52 @@ fn every_key_vivi_21_does_not_read_is_planned_for_removal_with_a_reason() {
     );
 }
 
+/// The five pump keys scheduled for removal while the pump still reads them.
+const PLANNED: [&str; 5] = [
+    "pump.from",
+    "pump.reply_from",
+    "pump.board.from",
+    "pump.board.reply_to",
+    "pump.dispatch.from",
+];
+
 #[test]
-fn the_read_pump_keys_are_not_planned_for_removal() {
+fn pump_keys_planned_for_removal_warn_under_their_dotted_names() {
     let plan = plan_of(
         r#"
-hand_rules = "rules.md"
+from = "operator"
+reply_from = "mind"
 [pump.board]
 from = ["operator@x"]
-every = 120
-pull = false
 reply_to = "operator@x"
-push_since = "30m"
 [pump.dispatch]
-budget = 600
-parallel = 2
 from = "origin/main"
-[pump.merge]
-format = "cargo fmt"
-remote_limit = 1800
 "#,
     );
-    assert!(plan.removals.is_empty(), "{plan:?}");
+    for dotted in PLANNED {
+        let (table, key) = dotted.rsplit_once('.').expect("dotted key");
+        let row = plan
+            .removals
+            .iter()
+            .find(|row| row.table == table && row.key == key)
+            .unwrap_or_else(|| panic!("{dotted} is not planned for removal: {plan:?}"));
+        assert_eq!(row.severity, Severity::Warning, "{row:?}");
+        assert_eq!(row.issue.as_deref(), Some(dotted), "{row:?}");
+        assert!(!row.behaviour_change, "{row:?}");
+        assert!(row.reason.starts_with("planned for removal:"), "{row:?}");
+    }
+    // Nothing else is flagged: the pump keys vivi keeps reading (every,
+    // pull, push_since, budget, parallel, format, remote_limit, hand_rules)
+    // and the unrelated retired settings stay out of the warning set.
+    let mut planned: Vec<&str> = plan
+        .removals
+        .iter()
+        .map(|row| row.issue.as_deref().expect("issue name"))
+        .collect();
+    planned.sort_unstable();
+    let mut expected = PLANNED.to_vec();
+    expected.sort_unstable();
+    assert_eq!(planned, expected, "{plan:?}");
 }
 
 #[test]

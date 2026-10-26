@@ -77,8 +77,13 @@ fn missing_rung_issues(mailspace: &Mailspace) -> Vec<Issue> {
         .collect()
 }
 
-/// One error per key the project file carries that vivi no longer reads, from
-/// the same list `config migrate` removes. The message says how to fix it.
+/// One finding per key the project file carries that vivi ignores or has
+/// scheduled for removal, from the same catalogue `config migrate` reads.
+/// Presence is read from the raw document, so an empty string or array still
+/// counts; the typed config fills in defaults for absent keys and cannot
+/// tell them apart. Severity and issue name come from the catalogue: keys
+/// the pump still reads warn under their dotted key until retirement,
+/// ignored keys error. The message says how to fix it.
 fn retired_key_issues(mailspace: &Mailspace) -> Result<Vec<Issue>, VivariumError> {
     let doc = config_edit::load(&mailspace.config_path())?;
     let plan = plan_migrate(&mailspace.config, &doc, &MigrateInputs::default());
@@ -86,11 +91,24 @@ fn retired_key_issues(mailspace: &Mailspace) -> Result<Vec<Issue>, VivariumError
         .removals
         .into_iter()
         .map(|removal| {
-            Issue::error(format!(
-                "[{}] {}: {}; fix: run `vivi config migrate --write` (it removes the key) or \
-                 delete the key",
-                removal.table, removal.key, removal.reason
-            ))
+            let message = if removal.severity == Severity::Warning {
+                format!(
+                    "[{}] {}: {}; the pump still reads it, so `vivi config migrate` leaves it \
+                     until retirement",
+                    removal.table, removal.key, removal.reason
+                )
+            } else {
+                format!(
+                    "[{}] {}: {}; fix: run `vivi config migrate --write` (it removes the key) or \
+                     delete the key",
+                    removal.table, removal.key, removal.reason
+                )
+            };
+            Issue {
+                severity: removal.severity,
+                item: removal.issue,
+                message,
+            }
         })
         .collect())
 }

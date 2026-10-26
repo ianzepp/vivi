@@ -64,6 +64,76 @@ fn validate_names_a_wrong_tick_and_keeps_not_ready() {
     );
 }
 
+/// The five pump keys the catalogue schedules for removal while the pump
+/// still reads them, as `(table, key)`.
+const PLANNED_PUMP_KEYS: [(&str, &str); 5] = [
+    ("pump", "from"),
+    ("pump", "reply_from"),
+    ("pump.board", "from"),
+    ("pump.board", "reply_to"),
+    ("pump.dispatch", "from"),
+];
+
+#[test]
+fn removed_pump_keys_warn_individually() {
+    let tmp = init();
+    append(
+        tmp.path(),
+        r#"
+from = "dispatcher"
+reply_from = "pump"
+[pump.board]
+from = ["operator@x"]
+reply_to = "operator@x"
+[pump.dispatch]
+from = "origin/main"
+"#,
+    );
+    let report = validate(Some(tmp.path())).unwrap();
+    for (table, key) in PLANNED_PUMP_KEYS {
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| {
+                issue.severity == Severity::Warning
+                    && issue.item.as_deref() == Some(&format!("{table}.{key}"))
+            })
+            .unwrap_or_else(|| panic!("no warning for [{table}] {key}: {:?}", report.issues));
+        assert!(
+            issue.message.contains(&format!("[{table}] {key}: ")),
+            "{issue:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_removed_values_still_warn() {
+    let tmp = init();
+    append(
+        tmp.path(),
+        r#"
+from = ""
+reply_from = ""
+[pump.board]
+from = []
+reply_to = ""
+[pump.dispatch]
+from = ""
+"#,
+    );
+    let report = validate(Some(tmp.path())).unwrap();
+    for (table, key) in PLANNED_PUMP_KEYS {
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.severity == Severity::Warning
+                    && issue.item.as_deref() == Some(&format!("{table}.{key}"))
+            }),
+            "no warning for [{table}] {key}: {:?}",
+            report.issues
+        );
+    }
+}
+
 #[test]
 fn validate_names_a_retired_key_and_the_migrate_fix() {
     let tmp = init();

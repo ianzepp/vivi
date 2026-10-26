@@ -8,6 +8,7 @@ use crate::pool::config::PoolConfig;
 use crate::pool::slot::space_slug;
 
 use super::migrate::{KeyRemoval, MigratePlan, RootSet};
+use super::validate::Severity;
 
 /// The root 15.0.0 used for every local pool without one.
 const V15_LOCAL_ROOT: &str = "~/vivi-pool";
@@ -43,89 +44,368 @@ const WORKSPACE_REASON: &str = "not read by vivi 21: merge lanes run on the merg
      not a lane RAM disk; the whole table is ignored";
 const NEED_REASON: &str = "retired: no repair-round counter; the whole table is ignored";
 
-/// Keys that are always ignored: `(table, key, reason, behaviour_change)`.
-/// A key that holds a table retires the whole table. A `*` in the table path
-/// stands for each `[pump.targets.<id>]`.
-const RETIRED: [(&str, &str, &str, bool); 43] = [
-    ("pump", "planner", PLANNER_REASON, false),
-    ("pump", "proof", PROOF_REASON, false),
-    ("pump", "plan", PLAN_REASON, false),
-    ("pump", "alarm", ALARM_REASON, false),
-    ("pump", "workspace", WORKSPACE_REASON, false),
-    ("pump", "reserved_file", UNIT_FILE_REASON, false),
-    ("pump", "fix_prefix", UNIT_FILE_REASON, false),
-    ("pump.board", "planners_max", PLANNER_CAP_REASON, false),
-    ("pump.board", "plan_timeout", PLANNER_CAP_REASON, false),
-    ("pump.dispatch", "kinds", ROUTING_REASON, false),
-    ("pump.dispatch", "default_kind", ROUTING_REASON, false),
-    ("pump.dispatch", "lanes", ROUTING_REASON, false),
-    ("pump.dispatch", "max_attempts", ATTEMPT_REASON, false),
-    ("pump.dispatch", "per_tick", ATTEMPT_REASON, false),
-    ("pump.dispatch", "transient_max", ATTEMPT_REASON, false),
-    ("pump.dispatch", "transient_backoff", ATTEMPT_REASON, false),
-    ("pump.dispatch", "overdue_grace", ATTEMPT_REASON, false),
-    ("pump.dispatch", "last_resort", ATTEMPT_REASON, false),
-    ("pump.merge", "repair_budget", REPAIR_REASON, false),
+/// The pump's sender and recipient knobs are scheduled for removal: sends
+/// and replies take their identities from the mailspace, not these keys.
+/// The pump still reads them, so the findings are warnings and `config
+/// migrate` leaves the keys until retirement removes the readers.
+const PUMP_ADDRESS_RETIRED: &str = "planned for removal: sends and replies take their sender and \
+     recipient from the mailspace's identities; vivi still reads this key";
+const PUMP_DISPATCH_FROM_RETIRED: &str = "planned for removal: dispatches start from `main`; \
+     vivi still reads this key";
+
+/// Keys the plan removes: `(table, key, reason, behaviour_change, severity,
+/// issue)`. A key that holds a table retires the whole table. A `*` in the
+/// table path stands for each `[pump.targets.<id>]`. `severity` is the
+/// `config validate` finding for a file that still sets the key, and `issue`
+/// is the stable name validate reports that finding under: ignored keys are
+/// errors with no name; keys the pump still reads warn under their dotted
+/// key and migrate holds them back until retirement.
+const RETIRED: [(&str, &str, &str, bool, Severity, Option<&str>); 48] = [
+    (
+        "pump",
+        "planner",
+        PLANNER_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    ("pump", "proof", PROOF_REASON, false, Severity::Error, None),
+    ("pump", "plan", PLAN_REASON, false, Severity::Error, None),
+    ("pump", "alarm", ALARM_REASON, false, Severity::Error, None),
+    (
+        "pump",
+        "workspace",
+        WORKSPACE_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump",
+        "reserved_file",
+        UNIT_FILE_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump",
+        "fix_prefix",
+        UNIT_FILE_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.board",
+        "planners_max",
+        PLANNER_CAP_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.board",
+        "plan_timeout",
+        PLANNER_CAP_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "kinds",
+        ROUTING_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "default_kind",
+        ROUTING_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "lanes",
+        ROUTING_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "max_attempts",
+        ATTEMPT_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "per_tick",
+        ATTEMPT_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "transient_max",
+        ATTEMPT_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "transient_backoff",
+        ATTEMPT_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "overdue_grace",
+        ATTEMPT_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.dispatch",
+        "last_resort",
+        ATTEMPT_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.merge",
+        "repair_budget",
+        REPAIR_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
     (
         "pump.targets.*.merge",
         "repair_budget",
         REPAIR_REASON,
         false,
+        Severity::Error,
+        None,
     ),
-    ("pump.board", "mark", INTAKE_REASON, true),
-    ("pump.board", "since", INTAKE_REASON, true),
-    ("pump", "gate", GATE_REASON, true),
-    ("pump", "branch", BRANCH_REASON, true),
-    ("pump", "promote", PROMOTE_REASON, true),
-    ("pump", "need", NEED_REASON, false),
-    ("pump.merge", "batch", MERGE_BATCH_REASON, true),
-    ("pump.merge", "need_parallel", MERGE_BATCH_REASON, true),
-    ("pump.merge", "shared_checks", MERGE_CHECKS_REASON, true),
-    ("pump.merge", "checks_for", MERGE_CHECKS_REASON, true),
-    ("pump.merge", "proof_timeout", MERGE_TIMER_REASON, false),
-    ("pump.merge", "remote_wait", MERGE_TIMER_REASON, false),
+    (
+        "pump.board",
+        "mark",
+        INTAKE_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.board",
+        "since",
+        INTAKE_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    ("pump", "gate", GATE_REASON, true, Severity::Error, None),
+    ("pump", "branch", BRANCH_REASON, true, Severity::Error, None),
+    (
+        "pump",
+        "promote",
+        PROMOTE_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    ("pump", "need", NEED_REASON, false, Severity::Error, None),
+    (
+        "pump.merge",
+        "batch",
+        MERGE_BATCH_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.merge",
+        "need_parallel",
+        MERGE_BATCH_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.merge",
+        "shared_checks",
+        MERGE_CHECKS_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.merge",
+        "checks_for",
+        MERGE_CHECKS_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.merge",
+        "proof_timeout",
+        MERGE_TIMER_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.merge",
+        "remote_wait",
+        MERGE_TIMER_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
     (
         "pump",
         "priority_file",
         "retired: need priority lives in pump.db (`vivi pump priority`)",
         false,
+        Severity::Error,
+        None,
     ),
     // Retired keys of each `[pump.targets.<id>]`: the table is `pump.targets.*`.
-    ("pump.targets.*", "branch", BRANCH_REASON, true),
-    ("pump.targets.*", "promote", PROMOTE_REASON, true),
-    ("pump.targets.*", "gate", GATE_REASON, true),
-    ("pump.targets.*.merge", "batch", MERGE_BATCH_REASON, true),
+    (
+        "pump.targets.*",
+        "branch",
+        BRANCH_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.targets.*",
+        "promote",
+        PROMOTE_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.targets.*",
+        "gate",
+        GATE_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
+    (
+        "pump.targets.*.merge",
+        "batch",
+        MERGE_BATCH_REASON,
+        true,
+        Severity::Error,
+        None,
+    ),
     (
         "pump.targets.*.merge",
         "need_parallel",
         MERGE_BATCH_REASON,
         true,
+        Severity::Error,
+        None,
     ),
     (
         "pump.targets.*.merge",
         "shared_checks",
         MERGE_CHECKS_REASON,
         true,
+        Severity::Error,
+        None,
     ),
     (
         "pump.targets.*.merge",
         "checks_for",
         MERGE_CHECKS_REASON,
         true,
+        Severity::Error,
+        None,
     ),
     (
         "pump.targets.*.merge",
         "proof_timeout",
         MERGE_TIMER_REASON,
         false,
+        Severity::Error,
+        None,
     ),
     (
         "pump.targets.*.merge",
         "remote_wait",
         MERGE_TIMER_REASON,
         false,
+        Severity::Error,
+        None,
     ),
-    ("pump.targets.*.merge", "lanes", MERGE_LANES_REASON, false),
+    (
+        "pump.targets.*.merge",
+        "lanes",
+        MERGE_LANES_REASON,
+        false,
+        Severity::Error,
+        None,
+    ),
+    // Scheduled for removal while the pump still reads them: validate warns
+    // under the dotted key, migrate leaves the key until retirement.
+    (
+        "pump",
+        "from",
+        PUMP_ADDRESS_RETIRED,
+        false,
+        Severity::Warning,
+        Some("pump.from"),
+    ),
+    (
+        "pump",
+        "reply_from",
+        PUMP_ADDRESS_RETIRED,
+        false,
+        Severity::Warning,
+        Some("pump.reply_from"),
+    ),
+    (
+        "pump.board",
+        "from",
+        PUMP_ADDRESS_RETIRED,
+        false,
+        Severity::Warning,
+        Some("pump.board.from"),
+    ),
+    (
+        "pump.board",
+        "reply_to",
+        PUMP_ADDRESS_RETIRED,
+        false,
+        Severity::Warning,
+        Some("pump.board.reply_to"),
+    ),
+    (
+        "pump.dispatch",
+        "from",
+        PUMP_DISPATCH_FROM_RETIRED,
+        false,
+        Severity::Warning,
+        Some("pump.dispatch.from"),
+    ),
 ];
 
 /// Plan the removal of every ignored key the document still holds.
@@ -146,14 +426,32 @@ pub(super) fn plan_removals(
                 .collect()
         })
         .unwrap_or_default();
-    for (table, key, reason, behaviour_change) in RETIRED {
+    for (table, key, reason, behaviour_change, severity, issue) in RETIRED {
         if table.contains('*') {
             for id in &target_ids {
                 let path = table.replace('*', id);
-                push_removal(doc, &path, key, reason, behaviour_change, plan);
+                push_removal(
+                    doc,
+                    &path,
+                    key,
+                    reason,
+                    behaviour_change,
+                    severity,
+                    issue,
+                    plan,
+                );
             }
         } else {
-            push_removal(doc, table, key, reason, behaviour_change, plan);
+            push_removal(
+                doc,
+                table,
+                key,
+                reason,
+                behaviour_change,
+                severity,
+                issue,
+                plan,
+            );
         }
     }
     plan_lanes_removal(doc, config, merge_pool, plan);
@@ -195,7 +493,16 @@ fn plan_lanes_removal(
             "ignored: merge concurrency follows the slots of the merge role's pool `{merge_pool}`"
         ),
     };
-    push_removal(doc, "pump.merge", "lanes", &reason, short.is_some(), plan);
+    push_removal(
+        doc,
+        "pump.merge",
+        "lanes",
+        &reason,
+        short.is_some(),
+        Severity::Error,
+        None,
+        plan,
+    );
 }
 
 fn push_removal(
@@ -204,6 +511,8 @@ fn push_removal(
     key: &str,
     reason: &str,
     behaviour_change: bool,
+    severity: Severity,
+    issue: Option<&str>,
     plan: &mut MigratePlan,
 ) {
     let Some(item) = table_at(doc, table).and_then(|found| found.get(key)) else {
@@ -215,6 +524,8 @@ fn push_removal(
         value: describe(item),
         reason: reason.into(),
         behaviour_change,
+        severity,
+        issue: issue.map(str::to_string),
     });
 }
 
@@ -248,9 +559,13 @@ fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &str) -> Option<&'a mut dyn 
     Some(current)
 }
 
-/// Delete the keys the plan removes.
+/// Delete the keys the plan removes. Warning-severity removals name keys the
+/// pump still reads: they stay until retirement removes the reader too.
 pub(super) fn apply_removals(doc: &mut DocumentMut, plan: &MigratePlan) {
     for removal in &plan.removals {
+        if removal.severity == Severity::Warning {
+            continue;
+        }
         if let Some(table) = table_at_mut(doc, &removal.table) {
             table.remove(&removal.key);
         }
