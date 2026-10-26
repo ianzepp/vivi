@@ -61,6 +61,8 @@ fn open_row(
         started_at: Some(open.record.at),
         running_secs: Some(now.saturating_sub(open.record.at)),
         budget_secs: Some(open.record.budget),
+        finished_at: None,
+        stale_age_secs: None,
         read_only: Some(open.record.read_only),
         remote: true,
         need: open
@@ -105,6 +107,8 @@ fn finished_row(
                 .saturating_sub(done.started_at),
         ),
         budget_secs: Some(done.budget_secs),
+        finished_at: crate::pump::attempt_read::opened_epoch(&done.ended_at),
+        stale_age_secs: None,
         read_only: Some(done.read_only),
         remote: !local,
         need: done

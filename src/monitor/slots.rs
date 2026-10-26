@@ -111,6 +111,9 @@ fn row(
         budget_secs: slot
             .budget_secs
             .or_else(|| dispatch.map(|open| open.record.budget)),
+        // Uncollected stops carry no completion timestamp; do not fabricate one.
+        finished_at: None,
+        stale_age_secs: None,
         read_only: slot
             .read_only
             .or_else(|| dispatch.map(|open| open.record.read_only)),

@@ -19,6 +19,8 @@ fn row(state: RowState) -> MonitorRow {
         started_at: Some(0),
         running_secs: Some(90),
         budget_secs: Some(1800),
+        finished_at: None,
+        stale_age_secs: None,
         read_only: Some(false),
         remote: false,
         tail: None,
@@ -80,6 +82,34 @@ fn activity_key_is_stable_shape() {
     let mut r = row(RowState::Running);
     r.task = None;
     assert_eq!(activity_key(&r), "proj|here|slot-1|None");
+}
+
+#[test]
+fn additive_completion_fields_serialize_as_null_when_absent() {
+    let text = serde_json::to_string(&row(RowState::Running)).unwrap();
+    assert!(text.contains("\"finished_at\":null"), "{text}");
+    assert!(text.contains("\"stale_age_secs\":null"), "{text}");
+}
+
+#[test]
+fn additive_completion_fields_serialize_when_present() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.finished_at = Some(1060);
+    r.stale_age_secs = Some(42);
+    let text = serde_json::to_string(&r).unwrap();
+    assert!(text.contains("\"finished_at\":1060"), "{text}");
+    assert!(text.contains("\"stale_age_secs\":42"), "{text}");
+}
+
+#[test]
+fn row_state_shape_is_unchanged_by_additive_fields() {
+    let running = serde_json::to_string(&row(RowState::Running)).unwrap();
+    assert!(running.contains("\"state\":\"running\""), "{running}");
+    let finished = serde_json::to_string(&row(RowState::Finished("pushed".to_string()))).unwrap();
+    assert!(
+        finished.contains("\"state\":{\"finished\":\"pushed\"}"),
+        "{finished}"
+    );
 }
 
 #[test]

@@ -18,6 +18,8 @@ fn row(task: &str) -> MonitorRow {
         started_at: Some(100),
         running_secs: Some(1),
         budget_secs: Some(600),
+        finished_at: None,
+        stale_age_secs: None,
         read_only: Some(false),
         remote: false,
         tail: None,
