@@ -11,6 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::health;
+use crate::mailspace::PoolEventRow;
+use crate::pool::config::PoolConfig;
+use crate::pool::record::fold_open;
 
 /// The availability of a pool's models at one instant: which model slugs
 /// are over their cap and which providers hold a cooldown deadline. `now`
@@ -62,6 +65,45 @@ impl Availability {
             now,
             ..Self::default()
         }
+    }
+
+    /// A snapshot derived from durable evidence: `events` (oldest first)
+    /// fold to the still-open dispatches via [`fold_open`], and each open
+    /// dispatch in `pool` counts once against its exact model slug's cap in
+    /// `config`. A slug whose open count has reached its cap — including a
+    /// cap of zero with no dispatches at all — is capped; a slug with no cap
+    /// entry is unlimited. Distinct reasoning entries on one model share the
+    /// slug's single cap, records from other pools consume nothing, records
+    /// without a model consume nothing, and a dispatch made outside the pump
+    /// counts like any other, as does one finished but not yet collected; a
+    /// collected closure (finished, timeout, or lost) releases the count.
+    /// Pure and I/O-free: no provider is asked anything. The returned view
+    /// answers at `now`, carries the caps in `capped_models`, and leaves
+    /// `provider_deadlines` empty — admission orchestration adds those to
+    /// the same owned view later.
+    #[must_use]
+    pub fn from_events(
+        config: &PoolConfig,
+        pool: &str,
+        events: &[PoolEventRow],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        let mut open: BTreeMap<String, u32> = BTreeMap::new();
+        for dispatch in fold_open(events) {
+            let record = &dispatch.record;
+            if record.pool != pool || record.model.is_empty() {
+                continue;
+            }
+            *open.entry(record.model.clone()).or_default() += 1;
+        }
+        let mut view = Self::at(now);
+        for (model, cap) in &config.caps {
+            let count = open.get(model.as_str()).copied().unwrap_or_default();
+            if count >= *cap {
+                view.capped_models.insert(model.clone());
+            }
+        }
+        view
     }
 
     /// Whether `model` can take work at this view's instant: it is not
