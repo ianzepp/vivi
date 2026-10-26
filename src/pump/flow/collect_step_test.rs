@@ -214,6 +214,154 @@ fn rerun_with_applies_the_edit_and_inserts_the_next_attempt() -> R {
     Ok(())
 }
 
+#[test]
+fn rerun_with_preserves_execution_context() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    let mut spec = JobSpec::new(
+        "plan-j1",
+        "planner",
+        "pump-planner",
+        "plan the slice",
+        "body",
+    );
+    spec.task = Some(step.task.clone());
+    spec.target = Some("default".into());
+    spec.from_ref = Some("refs/heads/from".into());
+    spec.with = vec!["refs/heads/extra".into()];
+    spec.extra_targets = vec!["side-repo".into()];
+    spec.pool_candidates = vec!["alpha".into()];
+    spec.pool_exclude = vec!["refused".into()];
+    spec.local_only = true;
+    spec.read_only = true;
+    spec.branch = Some("vivi/repair/x".into());
+    spec.allow_default_branch = true;
+    spec.publish_ref = Some("refs/heads/vivi/repair/x".into());
+    spec.publish_expect = Some("expect-sha".into());
+    spec.publish_contains = Some("contain-sha".into());
+    spec.delete_ref = Some("refs/heads/delete".into());
+    spec.delete_expect = Some("delete-sha".into());
+    spec.model = Some("model-q4".into());
+    spec.command = Some("harness.sh".into());
+    spec.builtin_role = Some("tugboat".into());
+    spec.units = vec!["unit-1".into()];
+    spec.source_jobs = vec!["src-1".into()];
+    spec.budget = 600;
+    spec.payload = serde_json::json!({"plan_file": "plan/one.md", (PAYLOAD_KEY): true});
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    // Runtime ownership and result state on the finished job must not
+    // travel: make the queued job dirty before the rerun.
+    let owned = rig.jobs.jobs.get_mut("plan-j1").unwrap();
+    owned.status = JobStatus::Dispatched;
+    owned.pool = Some("fast".into());
+    owned.dispatched_at = Some(11);
+    owned.outcome = Some(JobOutcome {
+        state: "lost".to_owned(),
+        detail: "detail".to_owned(),
+        receipt: "agent exit 124 after 600s\n".to_owned(),
+        at: 12,
+    });
+    owned.applied_at = Some(13);
+    owned.dispatch_refusals = 2;
+    owned.held = Some("refused".into());
+    let job = rig.jobs.jobs["plan-j1"].clone();
+    let row = StepJobRow {
+        job: "plan-j1".into(),
+        run: 1,
+        node: "plan".into(),
+        task: step.task.clone(),
+        attempt: 1,
+    };
+    rig.store.insert_step_job(NEED, &row)?;
+    let run = rig.store.runs_of(NEED)?.remove(0);
+    let decide = |_: &_, _: &_| Err(VivariumError::Message("no decision".into()));
+    let mut cx = RunCx {
+        ctx: &rig.ctx,
+        st: &mut rig.jobs,
+        store: &rig.store,
+        mail: &mut rig.mail,
+        registry: &rig.registry,
+        decide: &decide,
+        def: rig.def.clone(),
+        run,
+    };
+    // Repair-style fresh refs: the edit must survive into the queued attempt.
+    let edit = |spec: &mut JobSpec| {
+        spec.publish_ref = Some("refs/heads/vivi/repair/x-t2".into());
+        spec.branch = Some("vivi/repair/x-t2".into());
+    };
+    cx.rerun_with(&job, &row, &step, &edit)?;
+    // A literal replay of the same rerun specification enqueues no duplicate
+    // and no different work: enqueue recognizes the identical spec as the
+    // already-queued attempt, and the step-job row's primary key refuses the
+    // repeat instead of storing it twice.
+    assert!(cx.rerun_with(&job, &row, &step, &edit).is_err());
+
+    let queued = &rig.jobs.jobs["plan-j1-a2"];
+    assert_eq!(queued.id, "plan-j1-a2");
+    // Fresh pending runtime state: no pool ownership, timestamps, outcome,
+    // applied stamp, refusal count or held reason travels.
+    assert_eq!(queued.status, JobStatus::Pending);
+    assert_eq!(queued.pool, None);
+    assert_eq!(queued.dispatched_at, None);
+    assert_eq!(queued.outcome, None);
+    assert_eq!(queued.applied_at, None);
+    assert_eq!(queued.dispatch_refusals, 0);
+    assert_eq!(queued.held, None);
+    // Every execution input survives the copy.
+    assert_eq!(queued.kind, "planner");
+    assert_eq!(queued.role, "pump-planner");
+    assert_eq!(queued.subject, "plan the slice");
+    assert_eq!(queued.body, "body");
+    assert_eq!(queued.task.as_deref(), Some(step.task.as_str()));
+    assert_eq!(queued.target.as_deref(), Some("default"));
+    assert_eq!(queued.from_ref.as_deref(), Some("refs/heads/from"));
+    assert_eq!(queued.with, vec!["refs/heads/extra".to_owned()]);
+    assert_eq!(queued.extra_targets, vec!["side-repo".to_owned()]);
+    assert_eq!(queued.pool_candidates, vec!["alpha".to_owned()]);
+    assert_eq!(queued.pool_exclude, vec!["refused".to_owned()]);
+    assert!(queued.local_only);
+    assert!(queued.read_only);
+    assert!(queued.allow_default_branch);
+    assert_eq!(queued.publish_expect.as_deref(), Some("expect-sha"));
+    assert_eq!(queued.publish_contains.as_deref(), Some("contain-sha"));
+    assert_eq!(queued.delete_ref.as_deref(), Some("refs/heads/delete"));
+    assert_eq!(queued.delete_expect.as_deref(), Some("delete-sha"));
+    assert_eq!(queued.model.as_deref(), Some("model-q4"));
+    assert_eq!(queued.command.as_deref(), Some("harness.sh"));
+    assert_eq!(queued.builtin_role.as_deref(), Some("tugboat"));
+    assert_eq!(queued.units, vec!["unit-1".to_owned()]);
+    assert_eq!(queued.source_jobs, vec!["src-1".to_owned()]);
+    // An ordinary rerun keeps the old stored budget.
+    assert_eq!(queued.budget, 600);
+    // Retained callback edits: the repair-style fresh ref wins over the copy.
+    assert_eq!(queued.branch.as_deref(), Some("vivi/repair/x-t2"));
+    assert_eq!(
+        queued.publish_ref.as_deref(),
+        Some("refs/heads/vivi/repair/x-t2")
+    );
+    // The preserved payload keeps unrelated keys and the spent budget-retry
+    // marker from the original job.
+    assert_eq!(
+        queued.payload["plan_file"],
+        serde_json::json!("plan/one.md")
+    );
+    assert_eq!(queued.payload[PAYLOAD_KEY], serde_json::json!(true));
+    // The stored row carries the incremented attempt; the stamp matches it.
+    let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(stored.attempt, row.attempt + 1);
+    assert_eq!(queued.payload["attempt"], serde_json::json!(stored.attempt));
+    assert_eq!(queued.payload["run"], serde_json::json!(stored.run));
+    assert_eq!(queued.payload["node"], serde_json::json!(stored.node));
+    assert_eq!(queued.payload["task"], serde_json::json!(stored.task));
+    // The replay landed no duplicate: one queued attempt, one stored row.
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert_eq!(rig.store.last_attempt(&step.task)?, stored.attempt);
+    // The same task and run are running again.
+    assert_eq!(rig.plan_step()?.state, StepState::Running);
+    Ok(())
+}
+
 fn merge_job(publish_ref: Option<&str>, target: Option<&str>) -> PoolJob {
     let mut spec = JobSpec::new("j1", "merge", "merge", "s", "b");
     spec.publish_ref = publish_ref.map(str::to_owned);
