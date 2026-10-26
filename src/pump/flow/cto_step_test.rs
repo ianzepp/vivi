@@ -30,8 +30,13 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(PumpConfig::default())
+}
+
+/// A fixture over `cfg`, so tests can shape the dispatch budgets.
+fn fixture_with(cfg: PumpConfig) -> Fixture {
     let dir = tempdir().expect("tempdir");
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
     Fixture {
         _dir: dir,
@@ -202,6 +207,35 @@ fn a_long_front_is_capped() {
     let spec = start(&f, &run);
     assert!(spec.body.contains("[...]"));
     assert!(spec.body.len() < 9000);
+}
+
+#[test]
+fn a_configured_head_cto_override_does_not_reach_the_cto_job() {
+    // The flow cto step is seated at head-cto but budgets by its execution
+    // kind, RoleKind::Cto, which carries no step_budgets key: the job keeps
+    // the shared budget, so resolving from the head-cto seat would fail.
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 611;
+    cfg.dispatch.step_budgets.head_cto = Some(888);
+    cfg.dispatch.step_budgets.auditor = Some(44);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let f = fixture_with(cfg);
+    let run = two_runs(&f, "defects");
+    let spec = start(&f, &run);
+    assert_eq!(spec.budget, 611);
+}
+
+#[test]
+fn the_cto_job_follows_a_changed_dispatch_fallback_despite_unrelated_overrides() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 4242;
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.auditor = Some(44);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let f = fixture_with(cfg);
+    let run = two_runs(&f, "defects");
+    let spec = start(&f, &run);
+    assert_eq!(spec.budget, 4242);
 }
 
 #[test]

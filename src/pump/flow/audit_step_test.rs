@@ -32,8 +32,13 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(PumpConfig::default())
+}
+
+/// A fixture over `cfg`, so tests can shape the dispatch budgets.
+fn fixture_with(cfg: PumpConfig) -> Fixture {
     let dir = tempdir().expect("tempdir");
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
     Fixture {
         _dir: dir,
@@ -267,6 +272,70 @@ fn a_prose_need_root_fails_the_audit_brief_naming_the_handle() {
     let err = start(&f, "audit1").unwrap_err();
     assert!(err.to_string().contains(NEED), "{err}");
     assert!(err.to_string().contains("front matter"), "{err}");
+}
+
+#[test]
+fn a_configured_auditor_budget_reaches_audit1_with_range_and_refs() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.auditor = Some(777);
+    // Unrelated thinking steps stay distinguishable: resolving the budget
+    // from any other kind must fail.
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let f = fixture_with(cfg);
+    with_branch(&f);
+    plan(&f);
+    let spec = start(&f, "audit1").unwrap();
+    assert_eq!(spec.budget, 777);
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some(TIP));
+    assert_eq!(spec.with, vec![BASE.to_string()]);
+    assert!(spec.body.contains(&format!("{BASE}..{TIP}")));
+}
+
+#[test]
+fn a_configured_auditor_budget_reaches_audit2_too() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.auditor = Some(888);
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let f = fixture_with(cfg);
+    with_branch(&f);
+    plan(&f);
+    let spec = start(&f, "audit2").unwrap();
+    assert_eq!(spec.budget, 888);
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some(TIP));
+}
+
+#[test]
+fn audit1_without_an_override_uses_the_dispatch_fallback_despite_unrelated_overrides() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 4242;
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let f = fixture_with(cfg);
+    with_branch(&f);
+    plan(&f);
+    let spec = start(&f, "audit1").unwrap();
+    assert_eq!(spec.budget, 4242);
+}
+
+#[test]
+fn audit2_without_an_override_uses_the_dispatch_fallback_despite_unrelated_overrides() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 4242;
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let f = fixture_with(cfg);
+    with_branch(&f);
+    plan(&f);
+    let spec = start_in(&f, 2, "audit2").unwrap();
+    assert_eq!(spec.budget, 4242);
 }
 
 #[test]
