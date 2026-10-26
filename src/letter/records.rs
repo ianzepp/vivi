@@ -196,6 +196,7 @@ pub enum NoteWord {
     Brief,
     Deviations,
     FollowUp,
+    ScopeRuling,
     SliceEnv,
     RepairAttempt,
     RepairRung,
