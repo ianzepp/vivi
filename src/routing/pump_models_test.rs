@@ -110,6 +110,16 @@ fn validate_reports_the_findings_as_errors() {
 }
 
 #[test]
+fn the_no_model_error_names_the_one_write_that_sets_pool_and_model() {
+    let issues = validate(&config("model = \"P2-S0\"", HARNESS));
+    let hint = "vivi role set merge --pool p --model <slug>";
+    assert!(
+        issues.iter().any(|issue| issue.message.contains(hint)),
+        "{issues:?}"
+    );
+}
+
+#[test]
 fn roles_with_a_model_slug_in_the_harness_models_pass() {
     let found = model_failures(&config("model = \"m/ok\"", HARNESS));
     assert!(found.is_empty(), "{found:?}");

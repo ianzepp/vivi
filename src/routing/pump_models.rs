@@ -54,8 +54,10 @@ pub(super) fn check_role_runs(
              {error}; fix: add [pools.{pool_name}.bands] entries (`vivi pool bands set \
              {pool_name} {band} <model> <reasoning>`) and give the role a band they serve \
              (`vivi role set {} --model {band}`), or give it a model slug from the pool \
-             harness models (`vivi role set {} --model <slug>`)",
-            role.name, role.name, role.name
+             harness models (`vivi role set {} --model <slug>`); to point the role at the \
+             pool and give it the model in one write, `vivi role set {} --pool {pool_name} \
+             --model <slug>`",
+            role.name, role.name, role.name, role.name
         )));
     }
 }
