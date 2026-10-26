@@ -110,6 +110,8 @@ A merge to main closes the need and the record **landed**. The runner publishes 
 
 Every failure path ends at head-cto. It is read-only. It receives the run history of the need (every run, its entry and its steps), why this run reached it, the admitter, auditor, judge and earlier head-cto replies, the block-ship audit text, and the rung failure reports.
 
+The brief also carries the slice attempt records: every attempt note recorded on a slice task of the need, across all of the need's runs oldest first and each task's notes in thread order, including slices that have since merged or been replaced. Each record names its run, slice node, task and recorded outcome in a source label, then keeps the note's own prose — the failing command with its excerpt and the hand's final message — under an independent 12,000-byte cap that retains the tail and opens a cut with a `[...]` marker. A need whose slices carry no attempt notes shows the empty state instead.
+
 Its words restart the need in a new run: `research`, `plan`, `slice` or `rework` (the build flow's entries), or `lock`. From the third run on, every answer except `lock` needs a non-empty `new_fact`. A locked run waits for the operator and nothing else: no reply frees it. The pump raises **flow-need-locked** once. **vivi pump unlock &lt;need&gt; [--entry &lt;entry&gt;]** restarts it at the named entry, or at **plan** when none is named.
 
 A parked run (the planner said `operator` or `hold`) waits too: a reply on the need thread restarts it at **plan**, or answer the step by hand.
