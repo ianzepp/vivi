@@ -259,6 +259,26 @@ async fn dispatch_tool(
                 &arguments,
             );
         }
+        // A send's dispatch options are parsed for every send, hosted or
+        // transport, so an invalid combination is refused before anything is
+        // routed. `dispatch true` never files a transport letter: it takes
+        // the hosted pump shortcut, which authorizes the operator itself and
+        // keeps a member token's call free of any acting context.
+        if name == "send" && send_options::SendOptions::parse(&arguments)?.dispatch {
+            let Some(root) = live::hosted_root(&store, &project_id) else {
+                return Err(tools::ToolError::new(format!(
+                    "{name} with dispatch is only available on a hosted project"
+                )));
+            };
+            return live::send_dispatch(
+                &limiter,
+                &project_id,
+                &root,
+                &identity,
+                hosted_as.as_deref(),
+                &arguments,
+            );
+        }
         if via_key
             && let Some(root) = live::hosted_root(&store, &project_id)
             && live::handles(&name)

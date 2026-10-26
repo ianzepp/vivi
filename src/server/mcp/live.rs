@@ -23,6 +23,7 @@ mod pump_action;
 mod pump_record;
 mod read;
 mod role_write;
+mod send_dispatch;
 mod target_git;
 mod views;
 mod write;
@@ -46,6 +47,10 @@ use pump::{pump_control, pump_rungs};
 use pump_action::{pump_action, pump_reset};
 use pump_record::{pump_list, pump_send, pump_show};
 use role_write::{charter_set, role_add, role_set};
+
+/// The hosted `send` with `dispatch true`: the operator-authorized pump
+/// shortcut the router reaches before the ordinary hosted dispatch.
+pub(in crate::server::mcp) use send_dispatch::send_dispatch;
 
 /// The one live helper the durable tools share: a string-or-list argument.
 pub(in crate::server::mcp) use read::string_list;
