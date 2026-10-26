@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::Validate;
-use super::roles::Check;
+use super::roles::{Check, validate_scope_request};
 
 fn missing(text: &Option<String>) -> bool {
     text.as_deref().is_none_or(|t| t.trim().is_empty())
@@ -66,7 +66,9 @@ pub enum AdmitterAnswer {
     Escalate,
 }
 
-/// An admitter's envelope.
+/// An admitter's envelope. Only the `escalate` answer may carry the
+/// structured scope request: both fields, with a nonblank target and
+/// nonempty nonblank paths, alongside the required reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Admitter {
@@ -77,19 +79,28 @@ pub struct Admitter {
     pub findings: Vec<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub scope_target: Option<String>,
+    #[serde(default)]
+    pub scope_paths: Option<Vec<String>>,
 }
 
 impl Validate for Admitter {
     fn validate(&self) -> Result<(), String> {
-        match self.answer {
-            AdmitterAnswer::Revise if self.required_changes.is_empty() => {
-                Err("answer \"revise\" requires a non-empty `required_changes`".to_string())
-            }
-            AdmitterAnswer::Escalate if missing(&self.reason) => {
-                Err("answer \"escalate\" requires a `reason`".to_string())
-            }
-            _ => Ok(()),
+        if self.answer == AdmitterAnswer::Revise && self.required_changes.is_empty() {
+            return Err("answer \"revise\" requires a non-empty `required_changes`".to_string());
         }
+        if self.answer == AdmitterAnswer::Escalate && missing(&self.reason) {
+            return Err("answer \"escalate\" requires a `reason`".to_string());
+        }
+        if (self.scope_target.is_some() || self.scope_paths.is_some())
+            && self.answer != AdmitterAnswer::Escalate
+        {
+            return Err(
+                "only answer \"escalate\" may carry `scope_target` and `scope_paths`".to_string(),
+            );
+        }
+        validate_scope_request(&self.scope_target, &self.scope_paths)
     }
 }
 

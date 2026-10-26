@@ -172,6 +172,35 @@ fn blank(text: &str) -> bool {
     text.trim().is_empty()
 }
 
+/// Shape rules for the optional structured scope request (`scope_target` +
+/// `scope_paths`) that a planner `operator` or an admitter `escalate` reply
+/// may carry when path permission is the sole blocker. The two fields appear
+/// together, the target is nonblank, and the paths are nonempty with no blank
+/// entries. The fields are `Option`s, so presence survives parsing and an
+/// explicitly empty list cannot disappear into a default.
+pub(crate) fn validate_scope_request(
+    target: &Option<String>,
+    paths: &Option<Vec<String>>,
+) -> Result<(), String> {
+    if target.is_some() != paths.is_some() {
+        return Err("`scope_target` and `scope_paths` must appear together".to_string());
+    }
+    if let Some(target) = target.as_deref()
+        && target.trim().is_empty()
+    {
+        return Err("`scope_target` must be nonblank".to_string());
+    }
+    if let Some(paths) = paths {
+        if paths.is_empty() {
+            return Err("`scope_paths` must be nonempty".to_string());
+        }
+        if paths.iter().any(|path| path.trim().is_empty()) {
+            return Err("`scope_paths` entries must be nonblank".to_string());
+        }
+    }
+    Ok(())
+}
+
 // ---- hand ----------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,13 +327,19 @@ pub enum PlannerAnswer {
     Design,
 }
 
-/// A planner's envelope.
+/// A planner's envelope. Only the `operator` answer may carry the structured
+/// scope request: both fields, with a nonblank target, nonempty nonblank
+/// paths, and the usual reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Planner {
     pub answer: PlannerAnswer,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub scope_target: Option<String>,
+    #[serde(default)]
+    pub scope_paths: Option<Vec<String>>,
 }
 
 impl Validate for Planner {
@@ -312,7 +347,14 @@ impl Validate for Planner {
         if self.answer != PlannerAnswer::Planned && self.reason.as_deref().is_none_or(blank) {
             return Err("every planner answer except \"planned\" requires a `reason`".to_string());
         }
-        Ok(())
+        if (self.scope_target.is_some() || self.scope_paths.is_some())
+            && self.answer != PlannerAnswer::Operator
+        {
+            return Err(
+                "only answer \"operator\" may carry `scope_target` and `scope_paths`".to_string(),
+            );
+        }
+        validate_scope_request(&self.scope_target, &self.scope_paths)
     }
 }
 
