@@ -148,6 +148,10 @@ Each control posts one action on the need's open pump record ([envelope](envelop
 | **vivi pump answer** &lt;step&gt; &lt;word&gt; | answers a step by hand; the step closes with that word as its verdict and the flow follows its edge |
 | **vivi pump unlock** &lt;need&gt; | restarts a locked run |
 
+**vivi pump withdraw** refuses a blank reason and preflights every named need before it posts anything: if ANY named need has no open pump record, the WHOLE call is refused before any need is closed or any action is posted, and the valid members of the batch are not withdrawn. Withdrawing a need with an open record together with one that was never dispatched withdraws neither. This preflight refusal is not transactional rollback for every possible later failure. An open record is required, not a prior live run.
+
+If a need must not run at all, close it directly on the board with an authorized identity: **vivi need done &lt;need&gt; --for &lt;identity&gt; --note "No longer needed; do not dispatch."** records the close and the note but no verdict. Only when a dispatch should exist, file one first — **vivi pump send --need &lt;need&gt;**, then **vivi pump withdraw &lt;need&gt; --reason TEXT** — and note that sending is intake, not a harmless cancellation prerequisite: the next tick can start a run before the withdrawal. **vivi pump withdraw** writes the need verdict `withdrawn` when it closes an otherwise-open need while an open record exists; the board close is immediate, and at its next tick the pump closes the record `withdrawn` and every open task of an existing run. **vivi need done** writes no verdict.
+
 Answer a step only with one of its words. A slice task takes `merged`, `no-defect` or `failed`. Closing a step task by hand is a foreign close: the pump reopens it. When git cannot settle whether a step's side effect landed, the step is held for **vivi pump answer**. A step that fails on several ticks in a row is held for the operator, with an exception.
 
 An action posted on a closed record, or a letter that does not parse as an action, is never applied (the pump raises an alarm for it).

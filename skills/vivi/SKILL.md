@@ -2649,10 +2649,11 @@ the need's open pump record. Each posts one `mail` reply on the record whose
 front matter is an action (**action**, **need**, and per action **unit**,
 **step**, **word**; see [the pump action](references/envelope.md#pump-action));
 the body is the reason. The pump applies each letter once, at its next tick. A
-need with no open record is refused and nothing is posted, so send a record
-first (**vivi pump send --need**). An action on a closed record is never
-applied, and a refused one raises **flow-action-refused**. The library call is
-**Mailspace::pump_post_action**; it prints nothing.
+need with no open record is refused and nothing is posted (see **withdraw**
+below for the refusal rule and the safe remedies when no record exists). An
+action on a closed record is never applied, and a refused one raises
+**flow-action-refused**. The library call is **Mailspace::pump_post_action**;
+it prints nothing.
 
 - **requeue** queues a step's newest job again at the same attempt. It takes
   the step task's handle (see **vivi step**), and is refused unless that job is
@@ -2661,8 +2662,26 @@ applied, and a refused one raises **flow-action-refused**. The library call is
   **requeue --job &lt;job-id&gt;** releases it.
 - **replan** restarts the live run at **plan** as a new run; the old run and its
   open step tasks close **superseded**.
-- **withdraw** closes the need **withdrawn**; the pump then closes every open
-  step task and the record **withdrawn**.
+- **withdraw** stops a dispatched need. It takes one or more needs and
+  **--reason TEXT**, refuses a blank reason, and preflights every named need
+  before it posts anything: if ANY named need has no open pump record, the
+  WHOLE call is refused before any need is closed or any action is posted, and
+  the valid members of the batch are not withdrawn — withdrawing a need with an
+  open record together with one that was never dispatched withdraws neither.
+  This preflight refusal is not transactional rollback for every possible
+  later failure. An open record is required, not a prior live run. If the need
+  must not run at all, close it directly on the board with an authorized
+  identity:
+  `vivi need done <handle> --for <identity> --note "No longer needed; do not dispatch."`
+  records the close and the note but no verdict. Only when a dispatch should
+  exist, file one first — `vivi pump send --need <need>`, then
+  `vivi pump withdraw <need> --reason TEXT` — and note that sending is intake,
+  not a harmless cancellation prerequisite: the next tick can start a run
+  before the withdrawal. **withdraw** writes the need verdict **withdrawn**
+  when it closes an otherwise-open need while an open record exists; the board
+  close is immediate, and at its next tick the pump closes the record
+  **withdrawn** and every open step task of an existing run.
+  **vivi need done** writes no verdict.
 - **answer** gives a held step its word (one of the step's words, **failed**
   included); the pump routes the run from it.
 - **unlock** restarts a locked run at the flow's first entry (**plan** for
