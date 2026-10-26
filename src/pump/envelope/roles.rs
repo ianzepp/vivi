@@ -57,6 +57,14 @@ impl RoleKind {
         }
     }
 
+    /// The role whose name is exactly `name`, or `None`. The inverse of
+    /// [`Self::name`]: an exact match on the eleven stable names, with no
+    /// aliasing.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|role| role.name() == name)
+    }
+
     /// The `answer` words the role's envelope accepts.
     pub fn answer_words(self) -> &'static [&'static str] {
         match self {

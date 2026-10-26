@@ -269,6 +269,7 @@ fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError>
         id: job.id.clone(),
         kind: job.kind.clone(),
         builtin_role: job.builtin_role.clone(),
+        reply_kind: None,
     };
     let body = crate::mailspace::pump_note::brief_body(front, &prose)?;
     if crate::pump::record::reply_on_task(ctx, task, &job.id, "brief", &body) {
@@ -384,6 +385,7 @@ pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, Viva
             id: job.id.clone(),
             kind: job.kind.clone(),
             builtin_role: job.builtin_role.clone(),
+            reply_kind: None,
         }),
         ..TaskFront::default()
     };

@@ -295,3 +295,19 @@ fn a_preamble_does_not_hide_a_bad_envelope() {
     let err = parse_for(RoleKind::Hand, &text).unwrap_err();
     assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
 }
+
+#[test]
+fn from_name_is_the_exact_inverse_of_name() {
+    for role in RoleKind::ALL {
+        assert_eq!(RoleKind::from_name(role.name()), Some(role));
+    }
+}
+
+#[test]
+fn from_name_matches_exact_names_only() {
+    assert_eq!(RoleKind::from_name("cto"), Some(RoleKind::Cto));
+    assert_eq!(RoleKind::from_name("head-ceo"), Some(RoleKind::HeadCeo));
+    for name in ["head-cto", "Hand", "hand ", "", "merge-kind"] {
+        assert_eq!(RoleKind::from_name(name), None, "{name:?}");
+    }
+}

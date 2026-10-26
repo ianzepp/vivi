@@ -42,6 +42,7 @@ fn full_task() -> TaskFront {
             id: s("job-1"),
             kind: s("build"),
             builtin_role: Some(s("hand")),
+            reply_kind: None,
         }),
     }
 }
@@ -256,6 +257,7 @@ fn job_table_round_trips_and_is_validated() {
             id: s("j1"),
             kind: s("research"),
             builtin_role: None,
+            reply_kind: None,
         }),
         ..TaskFront::default()
     };
@@ -272,4 +274,64 @@ fn job_table_round_trips_and_is_validated() {
         invalid::<TaskFront>("[job]\nid = \"i\"\nkind = \"k\"\nbuiltin_role = \"\"\n")
             .contains("job.builtin_role")
     );
+}
+
+#[test]
+fn an_old_job_table_without_reply_kind_stays_valid() {
+    let envelope =
+        parse::<TaskFront>("+++\n[job]\nid = \"j1\"\nkind = \"research\"\n+++\n\nbody").unwrap();
+    let job = envelope.front.job.clone().expect("a [job] table");
+    assert_eq!(job.reply_kind, None);
+    assert!(job.validate().is_ok());
+    let text = render(&envelope.front, "body").unwrap();
+    assert!(!text.contains("reply_kind"));
+}
+
+#[test]
+fn reply_kind_round_trips_every_role_name() {
+    for role in RoleKind::ALL {
+        let job = JobFront {
+            id: s("j1"),
+            kind: s("research"),
+            builtin_role: None,
+            reply_kind: Some(s(role.name())),
+        };
+        let front = TaskFront {
+            job: Some(job.clone()),
+            ..TaskFront::default()
+        };
+        assert_eq!(round(&front), front);
+        assert_eq!(RoleKind::from_name(role.name()), Some(role));
+    }
+}
+
+#[test]
+fn reply_kind_rejects_unknown_and_blank_names() {
+    let job_with = |kind: &str| JobFront {
+        id: s("j1"),
+        kind: s("research"),
+        builtin_role: None,
+        reply_kind: Some(s(kind)),
+    };
+    for kind in ["head-cto", "", "Hand", "hand "] {
+        let front = TaskFront {
+            job: Some(job_with(kind)),
+            ..TaskFront::default()
+        };
+        assert!(
+            front
+                .job
+                .as_ref()
+                .expect("a [job] table")
+                .validate()
+                .is_err(),
+            "reply_kind {kind:?} must fail validation"
+        );
+        let text = render(&front, "body").unwrap();
+        assert!(
+            matches!(parse::<TaskFront>(&text), Err(LetterError::Invalid(_))),
+            "reply_kind {kind:?} must fail to parse"
+        );
+    }
+    assert_eq!(RoleKind::from_name("head-cto"), None);
 }

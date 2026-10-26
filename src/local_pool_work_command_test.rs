@@ -104,6 +104,7 @@ fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
                     id: String::from("audit-1"),
                     kind: String::from("auditor:range"),
                     builtin_role: Some(String::from("auditor")),
+                    reply_kind: None,
                 }),
                 ..Default::default()
             },

@@ -45,6 +45,7 @@ fn a_brief_body_round_trips_with_its_job() {
         id: "h1".into(),
         kind: "merge".into(),
         builtin_role: Some("hand".into()),
+        reply_kind: None,
     };
     let note = note_of(&brief_body(job.clone(), "WRITE SCOPE: a.rs").unwrap()).expect("a note");
     assert_eq!(note.pump.note, NoteWord::Brief);
@@ -61,4 +62,18 @@ fn plain_prose_and_an_empty_front_are_not_notes() {
     let empty = crate::letter::render(&MailFront::default(), "words").unwrap();
     assert_eq!(note_of(&empty), None);
     assert_eq!(note_of(&task_body("a task")), None);
+}
+
+#[test]
+fn a_brief_note_preserves_the_reply_kind() {
+    let job = JobFront {
+        id: "h1".into(),
+        kind: "merge".into(),
+        builtin_role: None,
+        reply_kind: Some("hand".into()),
+    };
+    let body = brief_body(job.clone(), "WRITE SCOPE: a.rs").unwrap();
+    assert!(body.contains("reply_kind"), "{body}");
+    let note = note_of(&body).expect("a note");
+    assert_eq!(note.job, Some(job));
 }

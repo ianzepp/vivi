@@ -334,6 +334,7 @@ fn recovery_finds_a_task_created_before_the_last_state_save() {
                             id: String::from("plan-board-1"),
                             kind: String::from("planner:board"),
                             builtin_role: None,
+                            reply_kind: None,
                         }),
                         ..Default::default()
                     },
@@ -824,6 +825,7 @@ fn a_task_that_already_has_this_jobs_brief_gets_no_second_one() {
             id: "h1".into(),
             kind: "merge".into(),
             builtin_role: None,
+            reply_kind: None,
         },
         "WRITE SCOPE",
     )

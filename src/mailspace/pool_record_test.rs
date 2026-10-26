@@ -154,6 +154,7 @@ fn brief_note(job: &str, prose: &str) -> String {
         id: job.into(),
         kind: "merge".into(),
         builtin_role: None,
+        reply_kind: None,
     };
     crate::mailspace::pump_note::brief_body(job, prose).unwrap()
 }

@@ -271,6 +271,7 @@ fn every_note_word_round_trips() {
                 id: "j1".to_string(),
                 kind: "build".to_string(),
                 builtin_role: None,
+                reply_kind: None,
             }),
             ..MailFront::default()
         };
@@ -319,6 +320,7 @@ fn brief_note_carries_a_job() {
             id: "j1".to_string(),
             kind: "build".to_string(),
             builtin_role: Some("hand".to_string()),
+            reply_kind: None,
         }),
         ..MailFront::default()
     };

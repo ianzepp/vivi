@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::letter::{Validate, check_list, check_text, is_false};
+use crate::pump::envelope::roles::RoleKind;
 
 /// Front matter of a need: the unit of delegated work.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -179,13 +180,31 @@ pub struct JobFront {
     /// The built-in role the job runs, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin_role: Option<String>,
+    /// The reply protocol the job's letters speak: one of the eleven stable
+    /// [`RoleKind`] names. Absent on letters written before the field existed
+    /// and for job kinds with no reply protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_kind: Option<String>,
 }
 
 impl Validate for JobFront {
     fn validate(&self) -> Result<(), String> {
         check_text("job.id", &self.id)?;
         check_text("job.kind", &self.kind)?;
-        check_opt("job.builtin_role", self.builtin_role.as_deref())
+        check_opt("job.builtin_role", self.builtin_role.as_deref())?;
+        if let Some(kind) = self.reply_kind.as_deref()
+            && RoleKind::from_name(kind).is_none()
+        {
+            let names = RoleKind::ALL
+                .iter()
+                .map(|role| role.name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "job.reply_kind `{kind}` is not a reply kind: expected one of {names}"
+            ));
+        }
+        Ok(())
     }
 }
 

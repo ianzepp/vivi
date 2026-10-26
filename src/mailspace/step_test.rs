@@ -657,6 +657,7 @@ fn job_only_task_is_pump_owned_not_no_done_when() {
             id: "j1".into(),
             kind: "correction".into(),
             builtin_role: None,
+            reply_kind: None,
         }),
         ..TaskFront::default()
     };
