@@ -31,6 +31,16 @@ pub(super) fn init_bare(
     git(None, &["init", "--bare", "--shared=group", "-b", branch])
         .arg(repo)
         .run()?;
+    // Pool jobs fetch their start commit by SHA. Once the pump moves the
+    // integration branch past it, that commit is no longer a tip, and a lane
+    // without this setting refuses it (unadvertised object): every job
+    // dispatched against the old tip then fails with fetch_failed. Only
+    // commits reachable from a ref are served.
+    git(
+        Some(repo),
+        &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+    )
+    .run()?;
     if !seed {
         return Ok(None);
     }

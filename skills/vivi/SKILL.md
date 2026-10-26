@@ -241,6 +241,13 @@ this keeps the `main` it has.
 
 ### Adding a lane
 
+Every lane vivi makes (`project create`, `lane add`) sets
+`uploadpack.allowReachableSHA1InWant = true`: pool jobs fetch their start
+commit by SHA, and once the pump moves the integration branch past it a lane
+without the setting refuses the commit, so the job fails with `fetch_failed`.
+A lane made before 22.0.0 needs it set by hand, once:
+`git -C <lane>.git config uploadpack.allowReachableSHA1InWant true`.
+
 `vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
 [--seed]` adds one repository target to a project that already exists: the
 group-shared bare repo `L/<project>/<id>.git` (`<project>` is the project

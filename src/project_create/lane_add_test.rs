@@ -343,3 +343,50 @@ fn a_vivi_main_the_source_brought_is_left_alone() {
     assert_eq!(git(&repo, &["rev-parse", "main"]), second);
     assert_eq!(git(&repo, &["rev-parse", "vivi/main"]), first);
 }
+
+/// Run git with a fixed identity, panicking on failure; returns stdout.
+fn git_as(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@localhost")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@localhost")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+#[test]
+fn a_lane_serves_a_commit_its_branch_has_moved_past() {
+    let site = Site::new();
+    site.project("app");
+    let repo = site.repo("app", "app");
+    assert_eq!(
+        git_as(
+            &repo,
+            &["config", "--get", "uploadpack.allowReachableSHA1InWant"]
+        ),
+        "true"
+    );
+
+    // Two commits on the lane's branch: the first is no longer a tip.
+    let tree = git_as(&repo, &["mktree"]);
+    let first = git_as(&repo, &["commit-tree", &tree, "-m", "first"]);
+    let second = git_as(&repo, &["commit-tree", &tree, "-p", &first, "-m", "second"]);
+    git_as(&repo, &["update-ref", "refs/heads/main", &second]);
+
+    // A pool job fetches its start commit by SHA, over a real transport.
+    let job = tempdir().unwrap();
+    git_as(job.path(), &["init", "-q"]);
+    let url = format!("file://{}", repo.display());
+    git_as(job.path(), &["fetch", "-q", "--depth", "50", &url, &first]);
+    assert_eq!(git_as(job.path(), &["rev-parse", "FETCH_HEAD"]), first);
+}
