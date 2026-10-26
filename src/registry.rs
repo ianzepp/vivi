@@ -276,7 +276,7 @@ pub fn update_at<T>(
     change: impl FnOnce(&mut Registry) -> Result<T, VivariumError>,
 ) -> Result<T, VivariumError> {
     let _lock = lock_file_waiting(
-        file.with_extension("config.lock"),
+        &file.with_extension("config.lock"),
         "another Vivi registry update is running",
     )?;
     let mut registry = load_at(file)?;
@@ -332,10 +332,10 @@ const REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(20);
 /// process forked by another thread holds a copy of every open file until it
 /// execs. Waiting briefly rides that out; a real concurrent writer still gets
 /// `message` once the wait is over.
-fn lock_file_waiting(path: PathBuf, message: &str) -> Result<File, VivariumError> {
+pub(crate) fn lock_file_waiting(path: &Path, message: &str) -> Result<File, VivariumError> {
     let deadline = Instant::now() + REGISTRY_LOCK_WAIT;
     loop {
-        match lock_file(path.clone(), message) {
+        match lock_file(path.to_path_buf(), message) {
             Err(VivariumError::Message(_)) if Instant::now() < deadline => {
                 std::thread::sleep(REGISTRY_LOCK_RETRY);
             }

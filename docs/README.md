@@ -19,3 +19,5 @@ Current documentation for this repository:
 - [`../README.md`](../README.md) — the mailspace reference
 - [`../AGENTS.md`](../AGENTS.md) — agent and contributor guide
 - [`../skills/vivi/SKILL.md`](../skills/vivi/SKILL.md) — agent-facing CLI guidance
+- [`design-vivi-mind.md`](design-vivi-mind.md) — exploratory spike: the hub-wide `vivi mind` supervisor (not released)
+- [`vivi-mind-quickstart.md`](vivi-mind-quickstart.md) — standing that spike up on one box from a fresh clone

@@ -115,6 +115,12 @@ fn adds_the_repo_the_checkout_and_the_target_under_the_project() {
     assert_eq!(target_ids(&project), ["app", "sandbox"]);
     let text = fs::read_to_string(project.join(".vivi/mailspace.toml")).unwrap();
     assert!(text.contains(&format!("remote_url = \"{url}\"")), "{text}");
+    let section = text
+        .split("[pump.targets.sandbox]")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .unwrap_or_default();
+    assert!(section.contains("main = \"vivi/main\""), "{text}");
 }
 
 #[test]

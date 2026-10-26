@@ -196,8 +196,8 @@ setgid `L` with default ACLs hands both to everything made inside it).
 makes a whole pumped project in one step: `L/<name>/` with the first
 target's bare repo, a mailspace at `P/<name>` (with the starter `[pump]`
 unless a base supplies one), the first target's checkout and
-`[pump.targets.<target>]` entry (`remote_url` and `main` set), the project's
-own values, and a host-registry entry (pump and serve on unless `--no-pump` /
+`[pump.targets.<target>]` entry (`remote_url` set, and `main = "vivi/main"`: see
+the branch model below), the project's own values, and a host-registry entry (pump and serve on unless `--no-pump` /
 `--no-serve`). Both roots must already exist.
 
 - `--target <id>` names the first target (default: the project name, which
@@ -205,8 +205,8 @@ own values, and a host-registry entry (pump and serve on unless `--no-pump` /
 - `--pool <p>` writes `[pools.<p>] remote_url = <U><name>/<target>.git` in
   the project's file; the pool itself must come from a base mailspace above
   `P` (`base = true`).
-- `--branch` names the first target's default branch and `main` (default
-  `main`).
+- `--branch` names the lane's default (upstream) branch (default `main`). The
+  target's own `main` is the pump's integration branch, `vivi/main`.
 - `--initial-commit` makes one empty commit on the branch; without it the repo
   stays empty until the first push.
 - `--source <git-address>` fills the first target from an existing repository
@@ -223,6 +223,20 @@ Checkouts are cloned from the lane's local path, then `origin` is pointed at
 the lane URL, so creating a project never needs the network. The library
 entry point is `vivi::project_create::create`; it prints nothing.
 
+### Branch model
+
+A target made by `project create` or `lane add` keeps the upstream branch
+(`main`) as a mirror that the pump never writes, and lands everything on its
+own integration branch, **vivi/main**. A need's branch, **vivi/need/&lt;need&gt;**,
+merges into `vivi/main`, and a unit's branch, **vivi/unit/&lt;unit&gt;**, into its
+need's branch. The pump creates `vivi/main` on the lane, from the lane's
+default branch, the first time it finds it missing; it only ever creates a
+`main` under `vivi/`, so a mistyped branch elsewhere stays an error. Promoting
+work to the upstream branch is yours: merge `vivi/main` into `main` and push,
+or open a pull request from `vivi/main`. Commit messages may name `vivi/main`;
+need and unit branch names stay forbidden in them. A target configured before
+this keeps the `main` it has.
+
 ### Adding a lane
 
 `vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
@@ -235,8 +249,8 @@ seed commit when `--seed` is given; a clone at `<project-root>/<id>`; and the
 pump refuses (`vivi pump pause` first). Without `--git-url-prefix` the target
 writes no `remote_url` and the checkout's `origin` is the lane's local path.
 
-The target id must be lowercase letters, digits and hyphens (the
-`[pump.targets.<id>]` key rule). A second `lane add` for the same id is
+A new target gets `main = "vivi/main"` as well. The target id must be
+lowercase letters, digits and hyphens (the `[pump.targets.<id>]` key rule). A second `lane add` for the same id is
 refused: the lane repository, the checkout or the target entry already
 exists, and the refusal names it. A failing step undoes only what that run
 created. The library entry point is `vivi::project_create::lane_add::add`;

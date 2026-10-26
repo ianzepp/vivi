@@ -85,6 +85,9 @@ async fn run(cli: Cli) -> Result<(), VivariumError> {
     {
         return vivi::proxy::run(cmd).await;
     }
+    if let Command::Mind(command) = &cli.command {
+        return run_mind(command).await;
+    }
     if let Command::Doctor(command) = &cli.command {
         // Doctor probes use reqwest's blocking client, which builds and drops
         // its own runtime; that panics on an async worker thread.
@@ -96,6 +99,16 @@ async fn run(cli: Cli) -> Result<(), VivariumError> {
         return result;
     }
     run_mailspace_command(&cli.command)
+}
+
+#[cfg(unix)]
+async fn run_mind(command: &vivi::cli::MindCommand) -> Result<(), VivariumError> {
+    vivi::mind::run(command).await
+}
+
+#[cfg(not(unix))]
+async fn run_mind(_command: &vivi::cli::MindCommand) -> Result<(), VivariumError> {
+    Err(VivariumError::Other("vivi mind needs a Unix host".into()))
 }
 
 fn dispatch_self_update(command: &Command) -> Option<Result<(), VivariumError>> {

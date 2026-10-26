@@ -18,6 +18,7 @@ pub mod flow;
 pub mod health;
 pub mod hold;
 pub mod host;
+pub(crate) mod integration_branch;
 pub mod jobs;
 pub mod logview;
 pub mod need;

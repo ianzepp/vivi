@@ -127,7 +127,7 @@ fn creates_the_lane_checkout_target_mailspace_and_registration() {
         text.contains("remote_url = \"git@hub.example.ts.net:app/app.git\""),
         "{text}"
     );
-    assert!(text.contains("main = \"main\""), "{text}");
+    assert!(text.contains("main = \"vivi/main\""), "{text}");
     let ids: Vec<String> = targets::list(&project)
         .unwrap()
         .into_iter()
@@ -315,7 +315,8 @@ fn initial_commit_makes_exactly_one_commit_on_the_branch() {
     );
     let checkout = host.project("app").join("app");
     assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), commit);
-    assert!(config_text(&host.project("app")).contains("main = \"trunk\""));
+    // The upstream branch is the lane's; the target lands on the pump's branch.
+    assert!(config_text(&host.project("app")).contains("main = \"vivi/main\""));
 }
 
 #[test]

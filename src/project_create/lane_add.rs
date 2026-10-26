@@ -167,7 +167,14 @@ fn run_steps(
     inject(Step::Target)?;
     made.push(project_dir.join(&request.target_id));
     let remote_url = request.git_url_prefix.as_ref().map(|_| url);
-    let attached = attach(project_dir, &request.target_id, repo, url, remote_url, None)?;
+    let attached = attach(
+        project_dir,
+        &request.target_id,
+        repo,
+        url,
+        remote_url,
+        Some(super::INTEGRATION_BRANCH),
+    )?;
     Ok(LaneAdded {
         target_id: request.target_id.clone(),
         repo_path: repo.to_path_buf(),

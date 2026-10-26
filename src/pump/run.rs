@@ -29,6 +29,11 @@ pub(super) use reload::refresh_config;
 pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
     write_status(ctx, st);
     boardpass.apply(ctx, st);
+    tick_steps::soft_step(
+        ctx,
+        "integration-branch",
+        crate::pump::integration_branch::ensure_all(ctx),
+    );
     collect_phase(ctx, st)?;
     tick_steps::soft_step(ctx, "flow", crate::pump::flow::tick::tick(ctx, st));
     save(ctx, st)?;

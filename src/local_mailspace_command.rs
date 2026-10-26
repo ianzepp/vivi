@@ -49,6 +49,9 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Project { command } => crate::local_project_command::handle(command),
         Command::Pump { command } => crate::local_pump_command::handle_pump_command(command),
         Command::Proxy { command } => vivi::proxy::handle(command),
+        Command::Mind(_) => Err(VivariumError::Other(
+            "vivi mind requires the async command entry point".into(),
+        )),
         Command::Config { command } => crate::local_config_command::handle_config_command(command),
         Command::Role { command } => crate::local_role_command::handle_role_command(command),
         Command::Cycle { command } => handle_cycle_command(command),

@@ -10,6 +10,7 @@ mod doctor_command;
 mod flow_command;
 mod mailspace_command;
 mod mcp_command;
+mod mind_command;
 mod monitor_command;
 mod pool_command;
 mod project_command;
@@ -39,6 +40,9 @@ pub use mailspace_command::{
     WantStatus, WatchCommon,
 };
 pub use mcp_command::{McpCommand, McpSubcommand};
+pub use mind_command::{
+    MindCommand, MindServiceCommand, MindServiceProjectCommand, MindSubcommand,
+};
 pub use monitor_command::MonitorCommand;
 pub use pool_command::{
     PoolAddCommand, PoolBandsCommand, PoolCleanCommand, PoolConfigSetCommand, PoolCreateCommand,
@@ -192,6 +196,10 @@ pub enum Command {
 
     /// Export fixed project timing reports from synced attempt records
     Report(ReportCommand),
+
+    /// Attach to the hub-wide mind that watches every registered pump
+    /// (exploratory; see docs/design-vivi-mind.md)
+    Mind(MindCommand),
 
     /// Local loopback front door for model providers
     Proxy {
