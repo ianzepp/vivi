@@ -9,9 +9,10 @@
 use serde_json::json;
 
 use crate::pump::attempt_record::hand_message;
-use crate::pump::envelope::correct::correction_n;
+use crate::pump::envelope::correct::{self, correction_n};
 use crate::pump::envelope::roles::{Parsed, RoleKind, parse_for};
 use crate::pump::envelope::{EnvelopeError, split};
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::flow::mail::MailWriter;
@@ -29,6 +30,10 @@ const NEW_FACT_RUN: u32 = 3;
 pub const ENVELOPE_FAILED: &str = "flow-envelope-failed";
 /// Exception kind: the envelope's answer contradicts the machine receipt.
 pub const ENVELOPE_DISAGREES: &str = "flow-envelope-disagrees";
+/// Exception kind: an unspent budget kill has no legal raised budget to
+/// retry with (the stored budget is unusable by the pool or already at the
+/// ceiling, so no strict raise at or above it exists).
+pub const BUDGET_UNRAISABLE: &str = "flow-budget-unraisable";
 
 /// What a finished role-step job amounts to.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +76,11 @@ pub fn collect<M: MailWriter>(
     if kind == RoleKind::Merge {
         return merge(ctx, mail, job, step, expected_ref);
     }
+    // Machine evidence decides before any envelope is read: an eligible
+    // thinking-step budget kill takes the one raised retry or fails.
+    if budget_retry::is_thinking(kind) && budget_retry::is_budget_kill(job) {
+        return budget_kill(ctx, job, step);
+    }
     if job.status != JobStatus::Finished {
         return lost(step);
     }
@@ -89,6 +99,31 @@ fn lost(step: &StepJobRow) -> Collected {
         Collected::Retry
     } else {
         Collected::Failed
+    }
+}
+
+/// A thinking-step budget kill: the stored budget's strict raise, once.
+/// A killed correction has its own budget policy and answers `failed` for
+/// both kill representations, a spent marker has no raise left, and an
+/// unspent historical budget the pool cannot strictly raise fails through
+/// the existing route with a recorded reason instead of an invalid rerun.
+fn budget_kill(ctx: &Ctx, job: &PoolJob, step: &StepJobRow) -> Collected {
+    if job.kind == correct::KIND || budget_retry::spent(job) {
+        return Collected::Failed;
+    }
+    match budget_retry::retry_budget(job) {
+        Some(budget) => Collected::BudgetRetry { budget },
+        None => {
+            ctx.exception(
+                BUDGET_UNRAISABLE,
+                &step.task,
+                &format!(
+                    "{} job {}: budget {} has no strict raise at or above the pool ceiling",
+                    step.node, job.id, job.budget
+                ),
+            );
+            Collected::Failed
+        }
     }
 }
 

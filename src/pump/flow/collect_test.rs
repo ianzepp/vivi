@@ -4,10 +4,12 @@ use std::fs;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{Collected, collect};
+use super::{BUDGET_UNRAISABLE, Collected, collect};
 use crate::letter::fixture::step_body;
+use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepJobRow;
@@ -156,15 +158,135 @@ fn a_third_broken_output_is_failed_with_an_alarm() {
     assert!(text.contains("j1-c2"), "{text}");
 }
 
+/// The pool summary head of a job the runner killed at its time budget.
+const KILL_SUMMARY: &str = "unit a1\nagent exit 124 after 600s\npool: local";
+
+/// A `status` job killed at its time budget, stored with `budget`.
+fn killed(id: &str, status: JobStatus, budget: u64) -> PoolJob {
+    let mut killed = job(id, status, KILL_SUMMARY);
+    killed.budget = budget;
+    killed
+}
+
 #[test]
-fn timeout_and_lost_retry_then_fail() {
-    for status in [JobStatus::Timeout, JobStatus::Lost] {
+fn lost_and_nonthinking_timeouts_keep_the_attempt_limit() {
+    // A lost job keeps the unchanged-budget attempt rule whatever its
+    // receipt claims, and so does every nonthinking class: neither ever
+    // spends the budget retry, which is raised-marker business only.
+    for (status, class) in [
+        (JobStatus::Lost, NodeClass::Planner),
+        (JobStatus::Timeout, NodeClass::Repairer),
+    ] {
         let mut f = fixture();
         let j = job("j1", status, PLANNED);
-        assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Retry);
+        assert_eq!(run(&mut f, &j, 1, &class), Collected::Retry);
+        assert_eq!(run(&mut f, &j, 2, &class), Collected::Failed);
+        assert!(exceptions(&f).is_empty());
+    }
+}
+
+#[test]
+fn a_first_budget_kill_raises_the_stored_budget() {
+    // Representation one: the pool's terminal timeout status.
+    let mut f = fixture();
+    let j = killed("j1", JobStatus::Timeout, 600);
+    assert_eq!(
+        run(&mut f, &j, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert!(exceptions(&f).is_empty());
+    // Representation two: a finished job whose bounded pool summary reports
+    // agent exit 124; the raise is the stored budget doubled.
+    let mut f = fixture();
+    let j = killed("j1", JobStatus::Finished, 600);
+    assert_eq!(
+        run(&mut f, &j, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn budget_kill_beats_a_partial_valid_envelope() {
+    let mut f = fixture();
+    let mut j = killed("j1", JobStatus::Finished, 600);
+    // The kill summary is followed by a receipt section carrying a valid
+    // `planned` envelope: the machine evidence decides before any parse,
+    // so the envelope is never read.
+    j.outcome = Some(JobOutcome {
+        state: "finished".to_owned(),
+        detail: String::new(),
+        receipt: format!("{KILL_SUMMARY}\n\n--- receipt\n{PLANNED}"),
+        at: 0,
+    });
+    assert_eq!(
+        run(&mut f, &j, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn budget_kill_is_machine_evidence_only() {
+    // Exit 124 in the stderr tail is prose, not pool evidence: the summary
+    // says exit 0, so the valid envelope alone decides and it stands.
+    let mut f = fixture();
+    let prose = format!(
+        "pool result j1: finished\nagent exit 0 in 8s\n\n--- receipt\n{PLANNED}\
+         \n\n--- stderr tail\nchild command output: agent exit 124 after 30s"
+    );
+    let got = run(
+        &mut f,
+        &job("j1", JobStatus::Finished, &prose),
+        1,
+        &NodeClass::Planner,
+    );
+    assert!(
+        matches!(&got, Collected::Outcome(word, _) if word == "planned"),
+        "{got:?}"
+    );
+    assert!(exceptions(&f).is_empty());
+    // A lost job is never a kill, even with a kill-shaped receipt: the
+    // ordinary attempt rule holds.
+    let mut f = fixture();
+    let j = killed("j1", JobStatus::Lost, 600);
+    assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Retry);
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn a_spent_budget_kill_fails_without_another_raise() {
+    // The durable marker spends the one retry at any attempt count: the
+    // killed job answers failed for both kill representations.
+    for status in [JobStatus::Timeout, JobStatus::Finished] {
+        let mut f = fixture();
+        let mut j = killed("j1", status, 600);
+        budget_retry::mark_retry(&mut j.payload);
+        assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Failed);
         assert_eq!(run(&mut f, &j, 2, &NodeClass::Planner), Collected::Failed);
         assert!(exceptions(&f).is_empty());
     }
+}
+
+#[test]
+fn an_unraisable_budget_kill_fails_with_a_recorded_reason() {
+    let mut f = fixture();
+    // Budget zero is outside the pool range: no strict raise exists, so the
+    // kill fails through the existing route with a recorded reason naming
+    // node, job and budget instead of queueing an invalid rerun.
+    let j = killed("j1", JobStatus::Timeout, 0);
+    assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Failed);
+    let text = exceptions(&f);
+    assert!(text.contains(BUDGET_UNRAISABLE), "{text}");
+    assert!(text.contains("plan job j1"), "{text}");
+    assert!(text.contains("budget 0"), "{text}");
+    // A budget already at the pool ceiling cannot strictly rise either.
+    let mut f = fixture();
+    let j = killed("j1", JobStatus::Timeout, *BUDGET_RANGE.end());
+    assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Failed);
+    let text = exceptions(&f);
+    assert!(text.contains(BUDGET_UNRAISABLE), "{text}");
+    assert!(text.contains("budget 43200"), "{text}");
 }
 
 #[test]
