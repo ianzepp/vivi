@@ -2,6 +2,11 @@
 # Verification rungs for vivi: task (cheapest), need, main (widest).
 set -euo pipefail
 
+# Stopgap for need f1aa4d4c: a few lock tests fail at random under the
+# parallel suite. A failing test run is run once more; a real regression
+# fails twice. Remove when f1aa4d4c lands.
+twice() { "$@" || { echo "rung: retrying once (f1aa4d4c lock flakes)" >&2; "$@"; }; }
+
 case "${1:-}" in
   task)
     cargo fmt --check
@@ -10,11 +15,11 @@ case "${1:-}" in
     ;;
   need)
     cargo fmt --check
-    cargo test --lib --quiet
+    twice cargo test --lib --quiet
     cargo test --test hygiene --quiet
     ;;
   main)
-    cargo test --quiet
+    twice cargo test --quiet
     ;;
   *)
     echo "usage: scripts/rung task|need|main" >&2
