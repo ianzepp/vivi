@@ -145,10 +145,20 @@ Each control posts one action on the need's open pump record ([envelope](envelop
 | Command | Effect on a flow run |
 | --- | --- |
 | **vivi pump requeue** &lt;step task&gt; | queues the step's newest job again, once that job is terminal and the step is open; a job held after pool refusals is released in place |
-| **vivi pump withdraw** &lt;need&gt;... --reason | closes the need `withdrawn` and the record `withdrawn`; the run closes every open task |
+| **vivi pump withdraw** &lt;need&gt;... --reason | the CLI closes the need `withdrawn` at the call, as the pump identity so the close travels; the pump then closes the record `withdrawn`, and a live run closes every open task `withdrawn` |
 | **vivi pump replan** &lt;need&gt; | restarts the live run at **plan** |
 | **vivi pump answer** &lt;step&gt; &lt;word&gt; | answers a step by hand; the step closes with that word as its verdict and the flow follows its edge |
 | **vivi pump unlock** &lt;need&gt; | restarts a locked run |
+
+**vivi pump withdraw** checks every named need before posting: one need with no open pump record refuses the entire call, names that need, and posts nothing; a blank **--reason** is refused before posting too.
+
+When the need must not run, close it on the board with **vivi need done &lt;handle&gt; --for &lt;identity&gt; --note "..."**. That close records no need verdict, and **vivi pump send --need** refuses a done need, so no run starts. A board close also ends a live run: the next tick withdraws that run, closing its open tasks and its record `withdrawn`.
+
+Only when a dispatch should exist, open a record with **vivi pump send --need &lt;need&gt;** and then withdraw it. Send is intake, and the next tick can start a run from the open record.
+
+**vivi need withdraw** withdraws an assignment, not the need; it is a different command.
+
+The need verdict `withdrawn` comes only from **vivi pump withdraw**, and only while a pump record is open. An already-closed need is reported "need already closed" with its verdict unchanged, and the action is still posted. With no live run, the tick closes only the record `withdrawn`.
 
 Answer a step only with one of its words. A slice task takes `merged`, `no-defect` or `failed`. Closing a step task by hand is a foreign close: the pump reopens it. When git cannot settle whether a step's side effect landed, the step is held for **vivi pump answer**. A step that fails on several ticks in a row is held for the operator, with an exception.
 

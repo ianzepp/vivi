@@ -2649,10 +2649,21 @@ the need's open pump record. Each posts one `mail` reply on the record whose
 front matter is an action (**action**, **need**, and per action **unit**,
 **step**, **word**; see [the pump action](references/envelope.md#pump-action));
 the body is the reason. The pump applies each letter once, at its next tick. A
-need with no open record is refused and nothing is posted, so send a record
-first (**vivi pump send --need**). An action on a closed record is never
-applied, and a refused one raises **flow-action-refused**. The library call is
-**Mailspace::pump_post_action**; it prints nothing.
+need with no open record is refused and nothing is posted. An action on a
+closed record is never applied, and a refused one raises
+**flow-action-refused**. The library call is **Mailspace::pump_post_action**;
+it prints nothing.
+
+**vivi pump withdraw** checks every named need before it posts: one need
+without an open pump record refuses the entire call, names that need, and
+nothing is posted. A blank **--reason** is refused before anything is posted
+too. When the need must never run, close it on the board instead:
+**vivi need done &lt;handle&gt; --for &lt;identity&gt; --note "..."**
+records no need verdict, and **vivi pump send --need** refuses a done need,
+so no run starts. Only when a dispatch should exist, open a record with
+**vivi pump send --need &lt;need&gt;** and withdraw it. Send is intake and the
+next tick starts a run from an open record; it is not the general way to
+stop a need.
 
 - **requeue** queues a step's newest job again at the same attempt. It takes
   the step task's handle (see **vivi step**), and is refused unless that job is
@@ -2661,8 +2672,12 @@ applied, and a refused one raises **flow-action-refused**. The library call is
   **requeue --job &lt;job-id&gt;** releases it.
 - **replan** restarts the live run at **plan** as a new run; the old run and its
   open step tasks close **superseded**.
-- **withdraw** closes the need **withdrawn**; the pump then closes every open
-  step task and the record **withdrawn**.
+- **withdraw** closes the need **withdrawn** as the pump identity, so the close
+  travels; the pump then closes the record **withdrawn**, and a live run closes
+  every open step task **withdrawn**. The need verdict **withdrawn** is written
+  only by **vivi pump withdraw**, and only while a pump record is open. If the
+  need is already closed, the call reports "need already closed" and leaves
+  its verdict alone; **vivi need done** records no verdict.
 - **answer** gives a held step its word (one of the step's words, **failed**
   included); the pump routes the run from it.
 - **unlock** restarts a locked run at the flow's first entry (**plan** for
@@ -2921,6 +2936,28 @@ After merging the delivered branch, the merge role runs `delivery close`. The
 command accepts the delivery need, records `main` and the merge commit as close
 provenance, and `need show` exposes the result. For general task or need closes,
 see [close provenance](#close-provenance).
+
+## Server
+
+The hosted project server (formerly the separate `vivi-server` binary) is part
+of vivi: one release ships both.
+
+```sh
+vivi server run              # foreground, for an OS service manager
+vivi server run --help       # the environment variables it reads
+vivi server run --version
+```
+
+It is configured only by environment variables (`BIND`, `PORT`, `DATA_DIR`,
+`STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN`, `HOST_OPERATOR_TOKEN`, the
+`HOST_*` settings, `RUST_LOG`); the three secrets may instead come from
+systemd credentials (`LoadCredential=`). It starts single-threaded, before
+vivi's own runtime: it makes itself non-dumpable and takes its secrets out of
+the environment first. A link named `vivi-server` to the `vivi` binary runs
+the server too, so a unit or script that called the old binary keeps working.
+Its log target is `vivi::server` (the default filter is
+`vivi::server=info,tower_http=info`). The wire contract, design notes and
+changelog are under `docs/server/`, the smoke scripts under `scripts/server/`.
 
 ## Proxy
 

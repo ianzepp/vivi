@@ -1,0 +1,17 @@
+# Railway deploy config for vivi-server (VC-5). Secrets (STORE_ENCRYPTION_KEY,
+# MODERATION_TOKEN) are set as service variables, not here.
+
+[build]
+builder = "DOCKERFILE"
+dockerfile_path = "Dockerfile"
+
+[deploy]
+startCommand = "vivi-server"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# The persistent /data volume must be attached to the service before deploy
+# (`railway volume add --mount-path /data` or dashboard); the deploy fails
+# closed if it is missing.
+requiredMountPath = "/data"

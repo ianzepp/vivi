@@ -265,3 +265,33 @@ fn a_repairer_has_no_diff_cap() {
     let parsed = parse_for(RoleKind::Repairer, &text).unwrap();
     assert_eq!(parsed.front["change"].as_array().map(Vec::len), Some(500));
 }
+
+#[test]
+fn a_reply_with_a_prose_preamble_parses_and_keeps_the_preamble() {
+    let text = format!(
+        "All checks pass on the delivered tip. Final receipt:\n\n{}",
+        hand("answer = \"built\"\nchange = [\"src/a.rs\"]\nremaining = []\n")
+    );
+    let parsed = parse_for(RoleKind::Hand, &text).unwrap();
+    assert_eq!(parsed.answer, "built");
+    assert_eq!(
+        parsed.body,
+        "All checks pass on the delivered tip. Final receipt:\n\nreport"
+    );
+}
+
+#[test]
+fn a_reply_with_no_fence_line_is_still_no_opening() {
+    let err = parse_for(RoleKind::Hand, "done, everything passes\n").unwrap_err();
+    assert_eq!(err, EnvelopeError::NoOpening);
+}
+
+#[test]
+fn a_preamble_does_not_hide_a_bad_envelope() {
+    let text = format!(
+        "Here it is:\n{}",
+        hand("[hand]\nanswer = \"built\"\nremaining = []\n")
+    );
+    let err = parse_for(RoleKind::Hand, &text).unwrap_err();
+    assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
+}

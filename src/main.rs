@@ -8,7 +8,9 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use vivi::VivariumError;
-use vivi::cli::{Cli, Command, ProxySubcommand, PumpServiceCommand, PumpSubcommand};
+use vivi::cli::{
+    Cli, Command, ProxySubcommand, PumpServiceCommand, PumpSubcommand, ServerSubcommand,
+};
 use vivi::update::CheckOutcome;
 
 mod local_board_command;
@@ -45,12 +47,44 @@ mod quiet_pipe;
 
 use local_mailspace_command::run_mailspace_command;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     quiet_pipe::install();
 
-    let cli = Cli::parse();
+    // The server must start single-threaded (it hardens the process and
+    // takes its secrets out of the environment before building its own
+    // runtime), so it is dispatched before vivi's runtime exists: by name
+    // (a `vivi-server` link to this binary) or as `vivi server run`.
+    let mut argv = std::env::args();
+    let invoked_as = argv.next().unwrap_or_default();
+    if std::path::Path::new(&invoked_as)
+        .file_name()
+        .and_then(|n| n.to_str())
+        == Some("vivi-server")
+    {
+        vivi::server::entry::run(argv.collect());
+        return;
+    }
 
+    let cli = Cli::parse();
+    if let Command::Server {
+        command: ServerSubcommand::Run { args },
+    } = cli.command
+    {
+        vivi::server::entry::run(args);
+        return;
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot start the async runtime: {e}");
+            process::exit(1);
+        });
+    runtime.block_on(async_main(cli));
+}
+
+async fn async_main(cli: Cli) {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {

@@ -1,0 +1,65 @@
+
+######## R9 pool dispatch ignores a task the other member already completed (F15)
+note: body declares no 'done_when:' clause; vivi step will report this task as no_done_when
+sent c3c7ec94
+sync push: 1 sent, 0 already on server, 1 skipped
+sync pull: 1 fetched, 0 new, 1 already present, 0 reply link(s), 0 refused, cursor 6
+sync push: 0 sent, 0 already on server
+sync pull: 2 fetched, 2 new (1 inbox, 1 tasks), 0 already present, 0 reply link(s), 0 refused, cursor 6
+task handle c3c7ec94
+created here b-here-slot-1 b/here/slot-1 stopped 5 0 seeded -
+$ B dispatch + wait + done
+dispatched c3c7ec94 here b-here-slot-1 e3cb6cd67a6e fake/model main 7babd947c015829a5f2a4c087a4d92b93e7a4fe8 a
+collected c3c7ec94 here b-here-slot-1 finished no_changes
+done c3c7ec94
+sync push: 2 sent, 0 already on server
+sync pull: 2 fetched, 0 new, 2 already present, 0 reply link(s), 0 refused, cursor 8
+sync push: 0 sent, 0 already on server, 1 skipped
+sync pull: 2 fetched, 2 new (2 inbox), 0 already present, 2 reply link(s), 0 refused, cursor 8
+$ A (sender, holds sent copy) dispatches the SAME task, B already did and closed it
+created here a-here-slot-1 a/here/slot-1 stopped 5 0 seeded -
+dispatched c3c7ec94 here a-here-slot-1 2cd73049cd50 fake/model main 7babd947c015829a5f2a4c087a4d92b93e7a4fe8 a
+exit=0
+collected c3c7ec94 here a-here-slot-1 finished no_changes
+replies in the thread (all synced as letters):
+4
+1 slot(s) destroyed in pool here
+1 slot(s) destroyed in pool here
+$ pool destroy --porcelain
+error: unexpected argument '--porcelain' found
+
+
+######## R10 prune evicts a sent letter; mail show has no hint (F16)
+would evict 4 letter(s) dated before 2026-10-11T22:07:57+00:00 (open needs/tasks/wants, starred, absorbed, and local mail are kept)
+  414592da sent 2026-10-11T22:07:37+00:00 v
+  99aa2b33 sent 2026-10-11T22:07:37+00:00 after-ahead
+evicted 7 letter(s) dated before 2026-10-11T22:08:58+00:00 (open needs/tasks/wants, starred, absorbed, and local mail are kept)
+  ef55ca19 inbox 2026-10-11T22:08:37+00:00 Re: pool job
+  2c037802 inbox 2026-10-11T22:08:29+00:00 Re: pool job
+handle(first sent after prune) b8cf2054
+evicted handle 414592da
+error: message error: message not found: 414592da
+
+######## R11 switching [sync] project: history is never re-pushed, one cursor (F14)
+P2=m82d7-17kn0-efdjy-v28jx-kr6w3
+joined project m82d7-17kn0-efdjy-v28jx-kr6w3 as bob
+$ sync (B under P2): every old letter is 'already bound to vivi-project <P1>'
+sync push: 0 sent, 0 already on server, 5 skipped
+skipped 3faf9945: already bound to vivi-project tvwv1-m54t1-n1mf2-rq4f4-zzgcc
+skipped 99aa2b33: already bound to vivi-project tvwv1-m54t1-n1mf2-rq4f4-zzgcc
+skipped c3c7ec94: already bound to vivi-project tvwv1-m54t1-n1mf2-rq4f4-zzgcc
+$ back on P1:
+sync cursor: 0
+sync history from: nothing pulled yet
+
+######## R12 two syncs at once on one checkout (F12)
+   2 error: message error: push stopped with 2 letter(s) unsent: project server rate limit hit (30 sends/min per member); the rest stays unsent
+   6 exit=1
+   1 not bound 03d27f9f: not bound: failed to upsert remote binding: database is locked
+   1 not bound 0f1cf2fa: not bound: failed to upsert remote binding: database is locked
+   1 not bound 2ab5400c: not bound: failed to upsert remote binding: database is locked
+   1 not bound 2e21accd: not bound: failed to upsert remote binding: database is locked
+   1 not bound 38e69acf: not bound: failed to upsert remote binding: database is locked
+   1 not bound 5f1c870a: not bound: failed to upsert remote binding: database is locked
+   1 not bound 627c244d: not bound: failed to upsert remote binding: database is locked
+   1 not bound 71722214: not bound: failed to upsert remote binding: database is locked

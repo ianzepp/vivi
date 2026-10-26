@@ -64,6 +64,11 @@ impl Rig {
         git(repo, &["log", "-1", "--format=%s", "pool/w"])
     }
 
+    /// The author then the committer of `tip` in `repo`, as `Name <email>`.
+    fn identity(repo: &Path, tip: &str) -> String {
+        git(repo, &["log", "-1", "--format=%an <%ae>%n%cn <%ce>", tip])
+    }
+
     /// Run the runner as a written job with `harness` and a budget of
     /// `budget` seconds.
     fn run(&self, harness: &str, budget: u32, worktree: bool) -> JobResult {
@@ -135,6 +140,11 @@ fn a_failed_agents_leftover_work_is_pushed_with_the_failure_subject() {
     assert_eq!(result.push(), "pushed", "{:?}", result.fields);
     assert_eq!(result.get("agent_rc"), "3");
     assert_eq!(Rig::subject(&rig.f.repo), FAILED_SUBJECT);
+    assert_eq!(
+        Rig::identity(&rig.f.repo, "pool/w"),
+        "Bot <bot@localhost>\nBot <bot@localhost>",
+        "the configured identity wins over the inherited environment"
+    );
     assert!(git(&rig.f.repo, &["show", "pool/w:a.txt"]).contains("partial"));
     let body = git(&rig.f.repo, &["log", "-1", "--format=%b", "pool/w"]);
     assert!(body.is_empty(), "the commit has only a subject: {body}");
@@ -147,6 +157,11 @@ fn a_successful_agent_keeps_the_plain_subject() {
     assert_eq!(result.push(), "pushed", "{:?}", result.fields);
     assert_eq!(result.get("agent_rc"), "0");
     assert_eq!(Rig::subject(&rig.f.repo), "review");
+    assert_eq!(
+        Rig::identity(&rig.f.repo, "pool/w"),
+        "Bot <bot@localhost>\nBot <bot@localhost>",
+        "the configured identity wins over the inherited environment"
+    );
 }
 
 #[test]
@@ -165,6 +180,11 @@ fn a_failed_agents_own_commit_gets_a_failure_marker_on_the_tip() {
     let result = rig.run(harness, 60, false);
     assert_eq!(result.push(), "pushed", "{:?}", result.fields);
     assert_eq!(Rig::subject(&rig.f.repo), FAILED_SUBJECT);
+    assert_eq!(
+        Rig::identity(&rig.f.repo, "pool/w"),
+        "Bot <bot@localhost>\nBot <bot@localhost>",
+        "the failure marker carries the configured identity"
+    );
     assert_eq!(
         git(&rig.f.repo, &["log", "-1", "--format=%s", "pool/w~1"]),
         "agent commit",
@@ -188,6 +208,11 @@ fn in_worktree_mode_a_failed_agents_work_is_committed_with_the_failure_subject()
     assert_eq!(result.push(), "committed", "{:?}", result.fields);
     assert_eq!(result.get("agent_rc"), "3");
     assert_eq!(Rig::subject(&rig.repo()), FAILED_SUBJECT);
+    assert_eq!(
+        Rig::identity(&rig.repo(), "pool/w"),
+        "Bot <bot@localhost>\nBot <bot@localhost>",
+        "the configured identity wins over the inherited environment"
+    );
     assert_eq!(
         git(&rig.repo(), &["rev-parse", "--abbrev-ref", "HEAD"]),
         "HEAD",
