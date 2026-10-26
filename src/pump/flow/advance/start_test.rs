@@ -163,6 +163,7 @@ fn the_run_4_alarm_names_each_earlier_cto_answer_and_new_fact() {
         .find(|line| line.contains("flow-run-4"))
         .unwrap();
     assert!(line.contains("run 4"), "{line}");
+    assert!(line.contains("the mind triages"), "{line}");
     assert!(line.contains("r1 no CTO answer"), "{line}");
     assert!(line.contains("r2 rework (F2)"), "{line}");
     assert!(line.contains("r3 failed (no new fact)"), "{line}");

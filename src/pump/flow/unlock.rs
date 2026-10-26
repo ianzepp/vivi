@@ -1,6 +1,6 @@
 //! The lock handler and the unlock tick phase. N5 holds a lock step until its release condition is met, then advances it.
 //!
-//! A lock step waits for the operator and nothing else: no reply and no poll
+//! A lock step waits for a mind unlock and nothing else: no reply and no poll
 //! frees it. `vivi pump unlock` posts an `unlock` action
 //! ([`crate::mailspace::PumpActionRequest::unlock`]); each tick the
 //! [`Unlocks`] phase closes the need's locked step `unlocked` and restarts the
@@ -46,8 +46,8 @@ impl StepHandler for LockWait {
         let runs = cx.store.runs_of(&cx.run.need)?.len();
         let why = cto_why(&cx.store.step_payloads_of_run(&cx.run.need, cx.run.run)?);
         let text = format!(
-            "need {need} r{run} is locked (run count {runs}): {why}; expected an operator \
-             decision; actual: the run waits at `{node}`; release with \
+            "need {need} r{run} is locked (run count {runs}): {why}; routed to the mind for \
+             triage; actual: the run waits at `{node}`; release with \
              `vivi pump unlock {need} [entry]`",
             need = cx.run.need,
             run = cx.run.run,
