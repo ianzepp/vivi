@@ -393,6 +393,146 @@ async fn a_requested_priority_lands_at_the_configured_home_and_zero_clears() {
     assert_eq!(fx.records(Some(PumpState::Open)).len(), 2);
 }
 
+/// The canonical need of a multi-recipient dispatch: the content copy with
+/// the lowest message id, which is the key the priority row is written
+/// under — not necessarily the first delivered copy handle in the response.
+#[tokio::test]
+async fn dispatch_priority_uses_the_canonical_need_and_configured_home() {
+    let fx = fixture("canonical-home", true);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+
+    // A dispatched need to two local recipients files one content copy per
+    // recipient plus the sender's own; `handle` is only the first delivered
+    // copy, while the record and the priority row key the canonical copy.
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({
+                "dispatch": true,
+                "priority": 7,
+                "to": ["mind", "hand"],
+            })),
+        )
+        .await;
+    assert_eq!(sent["priority"], 7, "{sent}");
+    let need = sent["handle"].as_str().unwrap().to_owned();
+    let pump_need = sent["pump"]["need"].as_str().unwrap().to_owned();
+    let pump_handle = sent["pump"]["handle"].as_str().unwrap().to_owned();
+    let copies: Vec<String> = sent["delivered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["handle"].as_str().unwrap().to_owned())
+        .chain(std::iter::once(sent["sent"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(copies.len(), 3, "{sent}");
+
+    // Every returned handle resolves in the mailspace store.
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let need_id = storage.resolve_message_token(&need).unwrap();
+    for handle in &copies {
+        storage.resolve_message_token(handle).unwrap();
+    }
+    storage.resolve_message_token(&pump_handle).unwrap();
+
+    // The record's need is the canonical copy: the lowest message id among
+    // the content's copies, whatever handle the response led with.
+    let content_id = storage.message_by_id(&need_id).unwrap().unwrap().content_id;
+    let canonical = storage
+        .message_ids_by_content(&content_id)
+        .unwrap()
+        .into_iter()
+        .min()
+        .unwrap();
+    assert_eq!(pump_need, storage.display_handle(&canonical).unwrap());
+
+    // The library record agrees with the response, and the entire priority
+    // listing carries exactly the canonical need at the configured home; no
+    // priority state reached the default home.
+    let open = fx.records(Some(PumpState::Open));
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].handle, pump_handle);
+    assert_eq!(open[0].need, pump_need);
+    assert_eq!(fx.priorities(), vec![(pump_need.clone(), 7)]);
+    assert!(!fx.default_home_db().exists());
+
+    // A requested zero files the record and confirms the level but leaves
+    // no row; an omitted priority is absent from the response. Neither
+    // adds a row, and the first need's row stays alone.
+    let mut zero = Fx::need_arguments(json!({"dispatch": true, "priority": 0}));
+    zero["subject"] = json!("fix billing");
+    let zero = fx.call(&operator, "send", zero).await;
+    assert_eq!(zero["priority"], 0, "{zero}");
+    assert_eq!(zero["pump"]["need"], zero["handle"], "{zero}");
+
+    let mut plain = Fx::need_arguments(json!({"dispatch": true}));
+    plain["subject"] = json!("fix search");
+    let plain = fx.call(&operator, "send", plain).await;
+    assert!(plain["priority"].is_null(), "{plain}");
+    assert_eq!(plain["pump"]["need"], plain["handle"], "{plain}");
+
+    assert_eq!(fx.records(Some(PumpState::Open)).len(), 3);
+    assert_eq!(fx.priorities(), vec![(pump_need, 7)]);
+    assert!(!fx.default_home_db().exists());
+
+    // A hosted root without [pump] refuses a requested priority — zero
+    // included — before any need or sent copy is filed; the refusal names
+    // the missing table in its decoded error.
+    let bare = fixture("canonical-bare", false);
+    let bare_operator = bare.key_by(&bare.member, Some("operator"));
+    for level in [3, 0] {
+        let mut arguments = Fx::need_arguments(json!({"dispatch": true, "priority": level}));
+        arguments["subject"] = json!(format!("bare refusal {level}"));
+        let message = bare.refused(&bare_operator, "send", arguments).await;
+        assert!(message.contains("[pump]"), "{message}");
+        assert!(bare.records(None).is_empty(), "level {level}");
+        assert!(bare.stored_views().is_empty(), "level {level}");
+        assert!(!bare.home().join("pump.db").exists());
+        assert!(!bare.default_home_db().exists());
+    }
+    // The missing table is a precondition of a requested priority only: a
+    // dispatch without one keeps the library defaults and files normally.
+    let plain = bare
+        .call(
+            &bare_operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true})),
+        )
+        .await;
+    assert_eq!(bare.records(Some(PumpState::Open)).len(), 1);
+    assert_eq!(plain["pump"]["need"], plain["handle"], "{plain}");
+}
+
+/// The library record contract (mailspace/pump_record.rs): an open record
+/// alone admits a need — the need's own addressee plays no part. A need
+/// addressed only to the hand role dispatches like any other.
+#[tokio::test]
+async fn dispatch_preserves_library_recipient_rules() {
+    let fx = fixture("hand-recipient", true);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true, "to": ["hand"]})),
+        )
+        .await;
+    assert_eq!(sent["kind"], "need", "{sent}");
+    assert_eq!(sent["delivered"][0]["identity"], "hand", "{sent}");
+    let need = sent["handle"].as_str().unwrap().to_owned();
+    assert_eq!(sent["pump"]["status"], "open", "{sent}");
+    assert_eq!(sent["pump"]["need"], need.as_str(), "{sent}");
+
+    // Exactly one open record, agreeing with the response's handles.
+    let open = fx.records(Some(PumpState::Open));
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].need, need);
+    assert_eq!(open[0].handle, sent["pump"]["handle"].as_str().unwrap());
+}
+
 #[tokio::test]
 async fn dispatch_without_priority_needs_no_pump_table_and_files_no_row() {
     let fx = fixture("no-pump-table", false);
