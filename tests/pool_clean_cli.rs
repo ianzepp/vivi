@@ -153,6 +153,32 @@ fn dry_run_reports_bytes_and_live_clean_empties_the_build_dir() {
     );
 }
 
+/// `pool destroy --porcelain` shares this rig: it prints the `destroyed` line
+/// and no summary, where the human form prints both.
+#[test]
+fn destroy_porcelain_prints_only_the_destroyed_line() {
+    let (_tmp, project, _repo, root) = scaffold();
+    plant_slot(&root, &project);
+    let proj = project.to_str().unwrap();
+    let out = vivi(&[
+        "pool",
+        "destroy",
+        "--pool",
+        "lanes",
+        "--all",
+        "--yes",
+        "--porcelain",
+        "--project",
+        proj,
+    ]);
+    assert!(out.status.success(), "{}", text(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "{stdout}");
+    assert!(lines[0].starts_with("destroyed lanes "), "{stdout}");
+    assert!(!stdout.contains("slot(s)"), "{stdout}");
+}
+
 fn plant_worktree(root: &Path, project: &Path, repo: &Path) -> PathBuf {
     let slot = plant_slot(root, project);
     std::fs::write(slot.join("marks/last_task"), "abcd1234\n").unwrap();

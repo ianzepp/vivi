@@ -389,6 +389,11 @@ pub struct PoolDestroyCommand {
     #[arg(long)]
     pub yes: bool,
 
+    /// Print only `destroyed` result lines in a fixed format, for scripts and
+    /// agents: no summary line
+    #[arg(long)]
+    pub porcelain: bool,
+
     /// Pool name (`[pools.<name>]`); optional when the mailspace has one pool
     #[arg(long)]
     pub pool: Option<String>,

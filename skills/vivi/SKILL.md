@@ -1052,7 +1052,7 @@ vivi pool bands unset <pool> <band>
 vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool status [--pool <name>] [--json | --porcelain]
-vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes
+vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes [--porcelain]
 vivi pool dispatch --pool <name> <task> [--target <id>] [--model <slug>] [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--ready-timeout SECS] [--porcelain]   # --ready-timeout: RunPod pools only
 vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]

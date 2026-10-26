@@ -378,13 +378,19 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
     };
     let destroyed = run::destroy_slots(handle.provider.as_ref(), &handle.id, &target)?;
     for slot in &destroyed {
-        println!("destroyed {}  {}  {}", slot.pool, slot.name, slot.id);
+        if command.porcelain {
+            println!("{}", porcelain::destroyed(slot));
+        } else {
+            println!("destroyed {}  {}  {}", slot.pool, slot.name, slot.id);
+        }
     }
-    println!(
-        "{} slot(s) destroyed in pool {}",
-        destroyed.len(),
-        handle.id.pool
-    );
+    if !command.porcelain {
+        println!(
+            "{} slot(s) destroyed in pool {}",
+            destroyed.len(),
+            handle.id.pool
+        );
+    }
     if matches!(target, DestroyTarget::All) && handle.config.bridge.enabled {
         revoke_bridge_keys(&space, &handle.id.pool);
     }
