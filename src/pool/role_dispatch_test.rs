@@ -356,6 +356,94 @@ fn a_model_override_needs_no_band_and_ignores_a_band_the_pool_does_not_serve() {
     assert_eq!(resolved.reasoning, None);
 }
 
+/// A pool whose P1 list holds the flash model first and the other model as a
+/// later entry, with the other model duplicated at a second reasoning.
+fn later_entry_pool() -> PoolConfig {
+    pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["zai/glm-5.3-flash", "other/model"]
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "xhigh"
+[[bands.P1]]
+model = "other/model"
+reasoning = "low"
+[[bands.P1]]
+model = "other/model"
+reasoning = "high"
+[local]
+root = "~/lanes"
+"#,
+    )
+}
+
+#[test]
+fn explicit_model_matches_later_entry() {
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let resolved = resolve(
+        &later_entry_pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("other/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.band, Some(1));
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(resolved.reasoning.as_deref(), Some("low"));
+}
+
+#[test]
+fn duplicate_model_reasoning_uses_first_match() {
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let resolved = resolve(
+        &later_entry_pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("other/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(
+        resolved.reasoning.as_deref(),
+        Some("low"),
+        "first, not high"
+    );
+    let flash = resolve(
+        &later_entry_pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("zai/glm-5.3-flash"), false),
+    )
+    .unwrap();
+    assert_eq!(flash.model, "zai/glm-5.3-flash");
+    assert_eq!(flash.reasoning.as_deref(), Some("xhigh"));
+}
+
+#[test]
+fn eligible_single_entry_preserves_resolution() {
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("zai/glm-5.3-flash"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.band, Some(1));
+    assert_eq!(resolved.model, "zai/glm-5.3-flash");
+    assert_eq!(resolved.reasoning.as_deref(), Some("xhigh"));
+    let drawn = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&hand), "build it", None, false),
+    )
+    .unwrap();
+    assert_eq!(drawn.band, Some(1));
+    assert_eq!(drawn.model, "zai/glm-5.3-flash");
+    assert_eq!(drawn.reasoning.as_deref(), Some("xhigh"));
+}
+
 #[test]
 fn a_model_the_harness_does_not_offer_is_refused_naming_the_model() {
     let hand = role("lane-3", Some("hand"), Some("P1"));

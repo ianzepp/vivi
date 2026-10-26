@@ -14,13 +14,16 @@
 //!    model in the pool's `harness.models` is a model slug, not a band.
 //! 3. Model: `--model` wins; then the task front matter's `band` key; then the role's slug;
 //!    then the role's band, which must resolve through the pool's bands table
-//!    with [`choose`]. With `--model`, the band's reasoning is taken only
-//!    when the pool's choice for that band names the same model. A role's
-//!    slug takes the role's `thinking`, else the reasoning of the first band
-//!    entry (P0 to P5, any position) that names the slug, else none.
+//!    with [`choose`]. With `--model`, the reasoning is the first band
+//!    entry's whose model is the flag's model, so a randomized band draw
+//!    cannot lose it. A role's slug takes the role's `thinking`, else the
+//!    reasoning of the first band entry (P0 to P5, any position) that names
+//!    the slug, else none.
 //!
-//! There is no failover, no health tracking and no retry on another model:
-//! the pool's first choice for a band is the only choice. [`standing_prompt`]
+//! There is no failover, no health tracking and no retry on another model.
+//! Which band entry serves a job may be randomized; live availability —
+//! whether the drawn model is actually up — remains the responsibility of
+//! the dispatch orchestration around [`resolve`]. [`standing_prompt`]
 //! builds the worker's standing prompt: the role's charter above the pool
 //! rules, with a note on how the slot reaches the mailspace.
 
@@ -111,10 +114,7 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
         Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => {
             (slug_flag.to_string(), slug_reasoning(config, slug))
         }
-        Some(flag) => (
-            flag.to_string(),
-            matching_reasoning(config, pool, band, flag),
-        ),
+        Some(flag) => (flag.to_string(), matching_reasoning(config, band, flag)),
         None => match (band, slug) {
             (Some(band), _) => choose_pair(config, pool, band)?,
             (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
@@ -212,8 +212,9 @@ fn is_read_only(input: &Input) -> bool {
 /// The task front matter's `band` key, else the role's band string. The role's band is
 /// only consulted (and so only refused when neither a band nor a harness
 /// model) when the body gives no band of its own. A role model slug is no
-/// band.
-fn resolve_band(config: &PoolConfig, input: &Input) -> Result<Option<u8>, VivariumError> {
+/// band. Pure: no I/O. Public for the dispatch orchestration that needs the
+/// band without the full resolution; the body's band always wins.
+pub fn resolve_band(config: &PoolConfig, input: &Input) -> Result<Option<u8>, VivariumError> {
     if let Some(band) = bands::body_band(input.body)? {
         return Ok(Some(band));
     }
@@ -277,19 +278,19 @@ fn choose_pair(
     Ok((choice.model, Some(choice.reasoning)))
 }
 
-/// The band choice's reasoning when the pool's choice for the band names the
-/// same model as the flag, else none. A band the pool does not serve is not
-/// an error here: `--model` already names a model.
-fn matching_reasoning(
-    config: &PoolConfig,
-    pool: &str,
-    band: Option<u8>,
-    model: &str,
-) -> Option<String> {
-    let Ok(choice) = choose(config, pool, band?) else {
-        return None;
-    };
-    (choice.model == model).then_some(choice.reasoning)
+/// The reasoning of the first entry of the requested band whose model is the
+/// flag's model, else none. Deliberately independent of [`choose`]: the
+/// band's draw may be randomized, and a draw naming another model must not
+/// lose the reasoning of an explicit `--model`. A band the pool does not
+/// serve is not an error here: `--model` already names a model.
+fn matching_reasoning(config: &PoolConfig, band: Option<u8>, model: &str) -> Option<String> {
+    config
+        .bands
+        .entries
+        .get(&format!("P{}", band?))?
+        .iter()
+        .find(|entry| entry.model == model)
+        .map(|entry| entry.reasoning.clone())
 }
 
 /// The chosen model must be one the harness offers. The bands table is
