@@ -30,6 +30,12 @@
 //!                                                                  works because they did not answer on SSH in time (0 on
 //!                                                                  every other host); COST: their approximate total charge
 //!                                                                  in dollars, `0.12`, or - when none or no price known
+//!                waiting TASK POOL REASON UNTIL                     REASON: model-cap|provider-cooldown|
+//!                                                                  models-unavailable|admission-busy; UNTIL: epoch
+//!                                                                  seconds, or - when none is known. A successful
+//!                                                                  no-launch: the command exits as a dispatch does,
+//!                                                                  but nothing was sent to a slot; sending the task
+//!                                                                  again at or after UNTIL may dispatch.
 //! pool wait      collected TASK POOL SLOT STATE DETAIL             STATE: finished|timeout|lost
 //!                nothing-open
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED     KIND: poll-error
@@ -56,6 +62,7 @@
 //! recorded without one (made before pools were named), or an issue that is
 //! not about one pool.
 
+use super::bands::availability::WaitingReason;
 use super::collect::RoundLine;
 use super::doctor::{Check, Counts};
 use super::progress::Issue;
@@ -150,6 +157,90 @@ pub fn refused_reason(output: &str) -> Option<String> {
             let (_task, rest) = next_token(rest)?;
             next_token(rest).map(|(reason, _)| reason)
         })
+}
+
+/// One `waiting TASK POOL REASON UNTIL` record: the task and pool it was
+/// meant for, why nothing was launched, and when it may be tried again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitingRecord {
+    /// The task the dispatch was for.
+    pub task: String,
+    /// The pool the dispatch was to.
+    pub pool: String,
+    /// Why the models cannot take work.
+    pub reason: WaitingReason,
+    /// When the block lifts, when the record names one.
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `waiting TASK POOL REASON UNTIL`: the dispatch launched nothing and may
+/// again at or after UNTIL; the command itself succeeded.
+#[must_use]
+pub fn waiting(
+    task: &str,
+    pool: &str,
+    reason: WaitingReason,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let fields = [
+        quote(task),
+        quote(pool),
+        waiting_word(reason).to_string(),
+        until.map_or_else(|| "-".to_string(), |at| at.timestamp().to_string()),
+    ];
+    line("waiting", &fields)
+}
+
+fn waiting_word(reason: WaitingReason) -> &'static str {
+    match reason {
+        WaitingReason::ModelCap => "model-cap",
+        WaitingReason::ProviderCooldown => "provider-cooldown",
+        WaitingReason::ModelsUnavailable => "models-unavailable",
+        WaitingReason::AdmissionBusy => "admission-busy",
+    }
+}
+
+fn waiting_reason(word: &str) -> Option<WaitingReason> {
+    match word {
+        "model-cap" => Some(WaitingReason::ModelCap),
+        "provider-cooldown" => Some(WaitingReason::ProviderCooldown),
+        "models-unavailable" => Some(WaitingReason::ModelsUnavailable),
+        "admission-busy" => Some(WaitingReason::AdmissionBusy),
+        _ => None,
+    }
+}
+
+/// The first complete `waiting TASK POOL REASON UNTIL` record in command
+/// output, with its task and pool identities: `None` when no line is exactly
+/// one, so prose that merely says "waiting" is never taken for a record.
+#[must_use]
+pub fn waiting_record(output: &str) -> Option<WaitingRecord> {
+    output.lines().find_map(waiting_line)
+}
+
+fn waiting_line(l: &str) -> Option<WaitingRecord> {
+    let (task, rest) = next_token(l.strip_prefix("waiting ")?)?;
+    let (pool, rest) = next_token(rest)?;
+    let (word, rest) = next_token(rest)?;
+    let (until_text, rest) = next_token(rest)?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    let until = match until_text.as_str() {
+        "-" => None,
+        secs => {
+            let Ok(secs) = secs.parse::<i64>() else {
+                return None;
+            };
+            chrono::DateTime::from_timestamp(secs, 0)
+        }
+    };
+    Some(WaitingRecord {
+        task,
+        pool,
+        reason: waiting_reason(&word)?,
+        until,
+    })
 }
 
 /// One value of a line (see [`quote`]) and the text after it.

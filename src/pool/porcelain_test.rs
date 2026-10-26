@@ -443,3 +443,111 @@ fn output_without_a_refused_line_gives_none() {
     );
     assert_eq!(refused_reason("not refused here"), None);
 }
+
+#[test]
+fn waiting_porcelain_roundtrips_reason_and_deadline() {
+    let at = chrono::DateTime::from_timestamp(1_800_000_000, 0).expect("epoch");
+    for (reason, word) in [
+        (WaitingReason::ModelCap, "model-cap"),
+        (WaitingReason::ProviderCooldown, "provider-cooldown"),
+        (WaitingReason::ModelsUnavailable, "models-unavailable"),
+        (WaitingReason::AdmissionBusy, "admission-busy"),
+    ] {
+        let said = waiting("t-1", "p", reason, Some(at));
+        assert_eq!(said, format!("waiting t-1 p {word} 1800000000"), "{word}");
+        assert_eq!(
+            waiting_record(&said).expect("a complete record"),
+            WaitingRecord {
+                task: "t-1".into(),
+                pool: "p".into(),
+                reason,
+                until: Some(at),
+            }
+        );
+        let open = waiting("t-1", "p", reason, None);
+        assert_eq!(open, format!("waiting t-1 p {word} -"), "{word}");
+        let got = waiting_record(&open).expect("a complete record");
+        assert_eq!(
+            (got.task.as_str(), got.pool.as_str(), got.reason),
+            ("t-1", "p", reason)
+        );
+        assert_eq!(got.until, None);
+    }
+}
+
+#[test]
+fn waiting_porcelain_roundtrips_quoted_identities_and_mixed_output() {
+    let at = chrono::DateTime::from_timestamp(1_800_000_001, 0).expect("epoch");
+    for (task, pool) in [
+        ("t 1", "p two"),
+        (r#"say "hi""#, r"a\\b"),
+        ("tab\there\nline", "ctrl\u{7}"),
+        ("-", "back\\slash"),
+        ("", ""),
+    ] {
+        let said = waiting(task, pool, WaitingReason::AdmissionBusy, Some(at));
+        let got = waiting_record(&said).expect("a complete record");
+        assert_eq!(
+            (got.task.as_str(), got.pool.as_str()),
+            (task, pool),
+            "{said}"
+        );
+        assert_eq!(got.until, Some(at));
+    }
+    let head = collected(&round_line("9f", "finished", "no_changes"));
+    let mid = waiting("t-9", "pool x", WaitingReason::ProviderCooldown, Some(at));
+    let tail = refused("t-9", "no from: pass --from");
+    let mixed = format!("prose about waiting\n{head}\n{mid}\n{tail}\n");
+    let got = waiting_record(&mixed).expect("the record between prose");
+    assert_eq!(
+        got,
+        WaitingRecord {
+            task: "t-9".into(),
+            pool: "pool x".into(),
+            reason: WaitingReason::ProviderCooldown,
+            until: Some(at),
+        }
+    );
+    assert_eq!(waiting_record(""), None);
+}
+
+#[test]
+fn output_without_a_waiting_record_gives_none() {
+    // Ordinary prose, with and without the word, is never a record.
+    assert_eq!(waiting_record("we are waiting for a free slot"), None);
+    assert_eq!(waiting_record("waiting for the models to cool down"), None);
+    // Prefix lookalikes.
+    assert_eq!(waiting_record("waiting-extra t p model-cap -"), None);
+    assert_eq!(waiting_record("waitingly t p model-cap -"), None);
+    // Missing fields.
+    assert_eq!(waiting_record("waiting"), None);
+    assert_eq!(waiting_record("waiting t"), None);
+    assert_eq!(waiting_record("waiting t p"), None);
+    assert_eq!(waiting_record("waiting t p model-cap"), None);
+    // Extra fields.
+    assert_eq!(waiting_record("waiting t p model-cap - extra"), None);
+    // Unknown reasons, including the serde snake_case spellings.
+    assert_eq!(waiting_record("waiting t p nope -"), None);
+    assert_eq!(waiting_record("waiting t p model_cap -"), None);
+    // Invalid deadlines.
+    assert_eq!(waiting_record("waiting t p model-cap soon"), None);
+    assert_eq!(waiting_record("waiting t p model-cap 12x3"), None);
+    assert_eq!(
+        waiting_record("waiting t p model-cap 99999999999999999999999"),
+        None
+    );
+    // Malformed quotes.
+    assert_eq!(waiting_record(r#"waiting "t p model-cap -"#), None);
+    assert_eq!(waiting_record(r#"waiting t "p model-cap -"#), None);
+    assert_eq!(waiting_record(r#"waiting t p "model-cap -"#), None);
+    // The existing dispatched and refused layouts are not waiting records.
+    assert_eq!(
+        waiting_record("dispatched t p s j m main x - 1 write 0 -"),
+        None
+    );
+    assert_eq!(waiting_record(&refused("t", "model-cap later")), None);
+    assert_eq!(
+        waiting_record(&refused("t", "waiting: models are capped")),
+        None
+    );
+}
