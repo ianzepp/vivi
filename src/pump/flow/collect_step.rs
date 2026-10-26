@@ -20,7 +20,7 @@ use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, WORD_REJECTED,
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure};
-use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
+use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob, replay};
 use crate::pump::store::PumpStore;
 
 /// One live run's tick: the context every step and slice collector works in.
@@ -290,9 +290,11 @@ where
     }
 
     /// [`Self::rerun`], with `edit` applied to the new job's spec before it
-    /// is queued. The copy goes through [`budget_retry::rerun_spec`], so
-    /// every execution input survives; only the identity, the stamped
-    /// attempt and `edit` may differ.
+    /// is queued. The copy goes through [`replay::copy_spec`], so every
+    /// execution input survives and the replay metadata rides along: the
+    /// copy keeps its generation and names `job` as the superseded
+    /// execution at a raised replacement order. Only the identity, the
+    /// stamped attempt, that replay stamp and `edit` may differ.
     pub(crate) fn rerun_with(
         &mut self,
         job: &PoolJob,
@@ -302,7 +304,8 @@ where
     ) -> Result<(), VivariumError> {
         let attempt = row.attempt + 1;
         let id = format!("{}-a{attempt}", correct::base_id(&job.id));
-        let mut spec = budget_retry::rerun_spec(job, &id);
+        let mut spec = replay::copy_spec(job, id.clone());
+        replay::stamp_replacement(&mut spec.payload, job);
         edit(&mut spec);
         let new_row = row.next(&id);
         new_row.stamp(&self.run.need, &mut spec.payload);
