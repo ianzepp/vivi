@@ -41,6 +41,7 @@ pub mod research_post;
 pub mod residual;
 pub mod reslice;
 pub mod reslice_apply;
+pub mod retained_work;
 pub mod rework_step;
 pub mod rung_step;
 pub mod scope;
