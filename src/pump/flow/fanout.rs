@@ -420,7 +420,15 @@ impl SliceEdges for crate::pump::flow::fake_mail::FakeMail {
             .tasks
             .get_mut(task)
             .ok_or_else(|| VivariumError::Message(format!("fake mail: no task {task}")))?;
-        entry.depends_on.push(depends_on.to_string());
+        // The real mailspace dependency write replaces the task's dependency
+        // set, so a repeated edge write is a no-op; the fake matches.
+        if !entry
+            .depends_on
+            .iter()
+            .any(|existing| existing == depends_on)
+        {
+            entry.depends_on.push(depends_on.to_string());
+        }
         Ok(())
     }
 }

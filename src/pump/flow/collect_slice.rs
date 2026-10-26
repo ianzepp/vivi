@@ -226,15 +226,25 @@ where
         row: &StepJobRow,
         request: &BlockedScope,
     ) -> Result<(), VivariumError> {
-        let resolution = resolve(self.store, self.mail, self.run.run, &step.task, request)?;
+        // Correction-stable: a corrected reply settles the same request as
+        // its original job, so the store replays the first resolution.
+        let source_job = correct::base_id(&row.job);
+        let resolution = resolve(
+            self.store,
+            self.mail,
+            self.run.run,
+            &step.task,
+            source_job,
+            request,
+        )?;
         match resolution {
             Resolution::Widen(_) => self.redispatch(step, row.attempt),
             Resolution::WaitOn(_) => {
                 self.store
                     .set_step_state(&step.task, StepState::Waiting, None)
             }
+            // The settlement already recorded the rework state atomically.
             Resolution::Rework(reason) => {
-                self.store.set_scope_state(&step.task, ScopeState::Rework)?;
                 self.ctx.exception(SCOPE_REWORK, &step.task, &reason);
                 self.rework(step, request)
             }

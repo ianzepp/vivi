@@ -1,14 +1,13 @@
 //! Blocked-scope resolution: a deterministic check of a hand's request for
 //! paths outside its slice's write scope against the scopes of the run's
-//! other open slices. No model is involved.
+//! other open slices. No model is involved. The settlement itself is the
+//! store's, keyed by the request's originating source job
+//! ([`PumpStore::apply_scope_resolution`]), so a replayed answer is free.
 
 use crate::error::VivariumError;
-use crate::pump::config::ScopePath;
 use crate::pump::flow::fanout::{self, SliceEdges};
 use crate::pump::store::PumpStore;
-
-/// A request for more paths than this goes to the slicer.
-const MAX_REQUEST_PATHS: usize = 5;
+use crate::pump::store::scope_resolution::HELD_PATH_PREFIX;
 
 /// Where a slice stands in blocked-scope resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +50,7 @@ impl ScopeState {
 }
 
 /// What a hand asked for when it answered `blocked-scope`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockedScope {
     pub paths: Vec<String>,
     pub reason: String,
@@ -60,7 +59,7 @@ pub struct BlockedScope {
 }
 
 /// How the request was settled.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Resolution {
     /// No slice holds the paths: they were added to the slice's scope.
     Widen(Vec<String>),
@@ -69,10 +68,6 @@ pub enum Resolution {
     /// The slicer must rework the scopes; the reason says why.
     Rework(String),
 }
-
-/// Marks a requested-but-held path in the stored wait record (the
-/// `slice_scope.holders` list); holder task handles never start with it.
-const HELD_PATH_PREFIX: &str = "path:";
 
 /// The slice tasks a waiting slice is waiting on.
 ///
@@ -113,57 +108,12 @@ pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> 
     store.set_scope_holders(task, &[])
 }
 
-/// True when a scope entry and a requested path share at least one repository
-/// path: the same path, a holder directory containing the requested file, a
-/// requested directory enclosing a held file, or two directories with one
-/// inside the other. Both sides normalize through [`ScopePath`], so leading
-/// `./` and root spellings compare by component, never by string prefix
-/// (`src/` does not touch `src-old/`, and a file entry named `src/pump` does
-/// not cover `src/pump/run.rs`). A declaration that fails normalization can
-/// only match an identical one.
-fn overlaps(entry: &str, path: &str) -> bool {
-    match (ScopePath::parse(entry), ScopePath::parse(path)) {
-        (Ok(entry), Ok(path)) => entry.intersects(&path),
-        _ => entry == path,
-    }
-}
-
-/// A request split by who holds its paths.
-struct Split {
-    /// The open slices whose scope shares a repository path with the request.
-    holders: Vec<String>,
-    /// Requested paths no open slice holds.
-    free: Vec<String>,
-    /// Requested paths some open slice holds.
-    held_paths: Vec<String>,
-}
-
-fn split_request(paths: &[String], others: &[(String, Vec<String>)]) -> Split {
-    let mut split = Split {
-        holders: Vec::new(),
-        free: Vec::new(),
-        held_paths: Vec::new(),
-    };
-    for path in paths {
-        let mut held = false;
-        for (other, scope) in others {
-            if scope.iter().any(|entry| overlaps(entry, path)) {
-                held = true;
-                if !split.holders.contains(other) {
-                    split.holders.push(other.clone());
-                }
-            }
-        }
-        if held {
-            split.held_paths.push(path.clone());
-        } else {
-            split.free.push(path.clone());
-        }
-    }
-    split
-}
-
-/// Settle a blocked-scope request from `task`, a slice of `run`.
+/// Settle a blocked-scope request from `task`, a slice of `run`, keyed by the
+/// request's originating source job. A source the store has already settled
+/// returns its stored resolution: no new request count, no recomputation
+/// against the scopes as they stand now. The holder dependency edges are
+/// (re-)written after the store commit; the mailspace dependency write is
+/// idempotent, so a replayed settlement cannot duplicate an edge.
 ///
 /// # Errors
 /// Returns [`VivariumError`] when the store or the mailspace fails.
@@ -172,48 +122,12 @@ pub fn resolve(
     mail: &mut impl SliceEdges,
     run: u32,
     task: &str,
+    source_job: &str,
     req: &BlockedScope,
 ) -> Result<Resolution, VivariumError> {
-    let requests = store.bump_scope_requests(task)?;
-    if requests >= 2 {
-        return Ok(Resolution::Rework(format!(
-            "second blocked-scope request on {task}"
-        )));
-    }
-    if req.paths.len() > MAX_REQUEST_PATHS {
-        return Ok(Resolution::Rework(format!(
-            "{} paths requested; the limit is {MAX_REQUEST_PATHS}",
-            req.paths.len()
-        )));
-    }
-    if req.design {
-        return Ok(Resolution::Rework(format!(
-            "design question: {}",
-            req.reason
-        )));
-    }
-    let others = store.open_scopes_of_run(task, run)?;
-    let Split {
-        holders,
-        free,
-        held_paths,
-    } = split_request(&req.paths, &others);
-    if !free.is_empty() {
-        store.widen_slice_scope(task, &free)?;
-    }
-    if holders.is_empty() {
-        return Ok(Resolution::Widen(free));
-    }
-    fanout::wait_on(mail, task, &holders)?;
-    let mut record = holders.clone();
-    record.extend(
-        held_paths
-            .iter()
-            .map(|path| format!("{HELD_PATH_PREFIX}{path}")),
-    );
-    store.set_scope_holders(task, &record)?;
-    store.set_scope_state(task, ScopeState::Wait)?;
-    Ok(Resolution::WaitOn(holders))
+    let record = store.apply_scope_resolution(source_job, task, run, req)?;
+    fanout::wait_on(mail, task, &record.holders)?;
+    Ok(record.resolution)
 }
 
 #[cfg(test)]

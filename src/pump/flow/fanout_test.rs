@@ -657,3 +657,32 @@ fn target_of_reads_the_front_matter_target() {
     assert_eq!(target_of(&body), Some("vivi".to_string()));
     assert_eq!(target_of(&crate::letter::fixture::task_body("x")), None);
 }
+
+#[test]
+fn repeated_dependency_writes_keep_one_edge_per_holder() -> R {
+    let mut r = rig()?;
+    let task = r.mail.send_step(
+        "pump",
+        "hand",
+        "slice",
+        &step_body(NEED, 1, "slice", ""),
+        &[],
+    )?;
+    let holder = r.mail.send_step(
+        "pump",
+        "hand",
+        "slice",
+        &step_body(NEED, 1, "slice", ""),
+        &[],
+    )?;
+    // A replayed settlement repeats the dependency write; like the real
+    // mailspace operation it must stay one edge per holder.
+    wait_on(
+        &mut r.mail,
+        &task,
+        &[holder.clone(), holder.clone(), holder],
+    )?;
+    let edges = r.mail.tasks[&task].depends_on.len();
+    assert_eq!(edges, 1);
+    Ok(())
+}
