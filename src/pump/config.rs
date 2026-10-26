@@ -14,6 +14,7 @@ mod migrate;
 mod origins;
 mod planner;
 mod rungs;
+pub mod scope;
 mod show;
 pub mod targets;
 mod validate;
@@ -24,6 +25,7 @@ pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
 pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
+pub use scope::{ScopeDecision, ScopePath, ScopePathError, ScopePolicy};
 pub use show::{ShowReport, show};
 pub use validate::{Findings, Missing, valid_target_id};
 
@@ -381,6 +383,21 @@ pub struct PumpTarget {
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
     pub rungs: RungsConfig,
+    /// Literal paths units of this target may claim without an operator.
+    /// `None` (the default) is repository-wide: scope anywhere in the
+    /// repository, its source, tests, docs and skills included, is then a
+    /// mechanical decision. An explicit empty list authorizes nothing.
+    /// Entries are literal — files exactly, directories with a trailing
+    /// slash, `.` for the root — and `pump config validate` rejects
+    /// malformed ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_allow: Option<Vec<String>>,
+    /// Literal paths units of this target may never claim, even when the
+    /// allow list covers them: `deny` wins. A trailing-slash directory
+    /// denies its whole subtree, and a requested directory that would cover
+    /// any denied descendant is refused whole.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_deny: Vec<String>,
 }
 
 impl Default for PumpTarget {
@@ -394,6 +411,8 @@ impl Default for PumpTarget {
             integration_repo: None,
             merge: None,
             rungs: RungsConfig::default(),
+            scope_allow: None,
+            scope_deny: Vec::new(),
         }
     }
 }

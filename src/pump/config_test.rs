@@ -915,3 +915,113 @@ fn reply_to_prefers_the_board_setting_then_the_first_sender_then_the_operator() 
     cfg.board.reply_to = Some("team".into());
     assert_eq!(cfg.reply_to(), "team");
 }
+
+#[test]
+fn target_scope_policy_parses_none_versus_empty_allow() {
+    // Absent keys parse as the unrestricted default: no allow list, no deny.
+    let cfg = pump("name = \"t\"\n[pump]\n[pump.targets.web]\npath = \"web\"\n");
+    assert_eq!(cfg.targets["web"].scope_allow, None);
+    assert!(cfg.targets["web"].scope_deny.is_empty());
+
+    // An explicit empty allow survives as an empty list: it authorizes
+    // nothing, unlike the absent key.
+    let cfg = pump("name = \"t\"\n[pump]\n[pump.targets.web]\npath = \"web\"\nscope_allow = []\n");
+    assert_eq!(cfg.targets["web"].scope_allow, Some(Vec::<String>::new()));
+
+    // Serializing keeps the distinction: None writes no key, Some([])
+    // writes an empty array, and both round-trip unchanged.
+    let unrestricted = PumpTarget::default();
+    let text = toml::to_string(&unrestricted).expect("target should serialize");
+    assert!(!text.contains("scope_allow"), "{text}");
+    assert!(!text.contains("scope_deny"), "{text}");
+    let parsed: PumpTarget = toml::from_str(&text).expect("round trip");
+    assert_eq!(parsed.scope_allow, None);
+    assert!(parsed.scope_deny.is_empty());
+
+    let empty_allow = PumpTarget {
+        scope_allow: Some(Vec::new()),
+        scope_deny: vec![String::from("docs/drafts/")],
+        ..PumpTarget::default()
+    };
+    let text = toml::to_string(&empty_allow).expect("target should serialize");
+    assert!(text.contains("scope_allow = []"), "{text}");
+    assert!(text.contains("scope_deny"), "{text}");
+    let parsed: PumpTarget = toml::from_str(&text).expect("round trip");
+    assert_eq!(parsed.scope_allow, Some(Vec::<String>::new()));
+    assert_eq!(parsed.scope_deny, vec![String::from("docs/drafts/")]);
+}
+
+#[test]
+fn legacy_default_target_keeps_unrestricted_scope_defaults() {
+    let default = &PumpConfig::default().target_configs()["default"];
+    assert_eq!(default.scope_allow, None);
+    assert!(default.scope_deny.is_empty());
+
+    // A configured target keeps its own policy; nothing is inherited and
+    // the legacy fields stay untouched.
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("web"),
+        PumpTarget {
+            scope_allow: Some(vec![String::from("docs/")]),
+            scope_deny: vec![String::from("docs/drafts/")],
+            ..PumpTarget::default()
+        },
+    );
+    let targets = cfg.target_configs();
+    assert_eq!(
+        targets["web"].scope_allow,
+        Some(vec![String::from("docs/")])
+    );
+    assert_eq!(
+        targets["web"].scope_deny,
+        vec![String::from("docs/drafts/")]
+    );
+}
+
+#[test]
+fn malformed_scope_policy_entries_are_configuration_errors() {
+    let mut cfg = valid();
+    cfg.targets.insert(
+        String::from("web"),
+        PumpTarget {
+            path: String::from("web"),
+            scope_allow: Some(vec![
+                String::from("docs/"),
+                String::from("/abs"),
+                String::from("  "),
+            ]),
+            scope_deny: vec![
+                String::from("src/ok.rs"),
+                String::from("../up"),
+                String::from("a*b"),
+                String::from("C:/x"),
+            ],
+            ..PumpTarget::default()
+        },
+    );
+    let found = cfg.findings_for(Path::new("."), &pool_names());
+    assert!(found.missing.is_empty(), "{:?}", found.missing);
+    let errors = found.errors.join("\n");
+    for entry in ["/abs", "../up", "a*b", "C:/x"] {
+        assert!(errors.contains(&format!("`{entry}`")), "{errors}");
+    }
+    assert!(errors.contains("scope_allow"), "{errors}");
+    assert!(errors.contains("scope_deny"), "{errors}");
+    assert!(!errors.contains("docs/"), "{errors}");
+    assert!(!errors.contains("src/ok.rs"), "{errors}");
+
+    // Valid entries, including an explicit empty allow list, stay clean.
+    let mut cfg = valid();
+    cfg.targets.insert(
+        String::from("web"),
+        PumpTarget {
+            path: String::from("web"),
+            scope_allow: Some(Vec::new()),
+            scope_deny: vec![String::from("docs/drafts/")],
+            ..PumpTarget::default()
+        },
+    );
+    let found = cfg.findings_for(Path::new("."), &pool_names());
+    assert!(found.errors.is_empty(), "{:?}", found.errors);
+}
