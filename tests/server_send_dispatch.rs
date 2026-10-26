@@ -17,6 +17,7 @@ use vivi::mailspace::{Mailspace, PumpState, RoleUpdate};
 use vivi::pump::priority;
 use vivi::server::grants::{GrantLevel, GrantRecord};
 use vivi::server::{AppState, app_state, hosted, router};
+use vivi::storage::StoredMessageView;
 
 /// The non-default pump home the fixture configures, relative to the project
 /// root, so tests can tell the configured home from the default one.
@@ -115,6 +116,36 @@ impl Fx {
 
     fn priorities(&self) -> Vec<(String, i64)> {
         priority::list(&self.home()).unwrap()
+    }
+
+    /// Every stored message copy in the mailspace, sent copies included.
+    fn stored_views(&self) -> Vec<StoredMessageView> {
+        self.ms().storage().unwrap().list_messages().unwrap()
+    }
+
+    /// A key whose stored grant is operator level whatever identity it
+    /// names: the strongest stored authority a principal can hold, to prove
+    /// the dispatch authorization reads current membership and role kind,
+    /// never grant rows. The principal tag keeps each grant alone (the
+    /// first grant for a project on a principal wins).
+    fn operator_grant_key(&self, member: &str, identity: Option<&str>) -> String {
+        let tag = identity.unwrap_or("default");
+        self.state
+            .server_keys
+            .mint(
+                &format!("{member}.grant-{tag}@{}", self.project),
+                false,
+                vec![GrantRecord {
+                    project_id: self.project.clone(),
+                    member: member.to_owned(),
+                    identity: identity.map(str::to_owned),
+                    level: GrantLevel::Operator,
+                }],
+                "test",
+                member,
+            )
+            .unwrap()
+            .key
     }
 
     /// The need-level arguments of a dispatch send: one recipient, one
@@ -229,6 +260,49 @@ fn server_key(state: &AppState, project: &str, member: &str, identity: Option<&s
         )
         .unwrap()
         .key
+}
+
+/// An ED25519 public key PEM for registering another member, from a fixed
+/// seed so the test needs no entropy.
+fn spki_pem(seed: u8) -> String {
+    use base64::Engine;
+    const PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut der = PREFIX.to_vec();
+    der.extend_from_slice(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes(),
+    );
+    format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        base64::engine::general_purpose::STANDARD.encode(der)
+    )
+}
+
+/// The persisted state a refusal must preserve: every stored message copy
+/// in the mailspace (sent ones included), every pump record, and the
+/// priority rows at the configured home. The first priority listing creates
+/// its database, so the before-side of a comparison initializes the store
+/// the after-side then reads.
+#[derive(Debug, PartialEq)]
+struct Snapshot {
+    views: Vec<StoredMessageView>,
+    records: Vec<Value>,
+    priorities: Vec<(String, i64)>,
+}
+
+fn snapshot(fx: &Fx) -> Snapshot {
+    Snapshot {
+        views: fx.stored_views(),
+        records: fx
+            .records(None)
+            .into_iter()
+            .map(|record| serde_json::to_value(&record).unwrap())
+            .collect(),
+        priorities: fx.priorities(),
+    }
 }
 
 #[tokio::test]
@@ -391,4 +465,147 @@ async fn a_non_operator_key_is_refused_and_nothing_is_filed() {
     assert!(message.contains("priority requires dispatch"), "{message}");
     assert!(fx.records(None).is_empty());
     assert!(fx.stored_roles().iter().all(|role| role != "needs"));
+}
+
+#[tokio::test]
+async fn dispatch_requires_pump_send_authority_before_filing() {
+    let fx = fixture("authority", true);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+
+    // Seed real persisted state — one dispatched need with a priority — so
+    // the snapshots below have message copies, an open record, and a row to
+    // preserve across every refusal.
+    let seeded = fx
+        .call(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true, "priority": 7})),
+        )
+        .await;
+    assert_eq!(seeded["priority"], 7, "{seeded}");
+    assert_eq!(fx.records(Some(PumpState::Open)).len(), 1);
+    assert_eq!(fx.priorities().len(), 1);
+    let before = snapshot(&fx);
+    assert!(!before.views.is_empty());
+
+    // The host member acting as the `hand` role: right member, wrong role
+    // kind. The key carries an operator-level grant, and the stored grant
+    // does not stand in for the role kind the mailspace has now.
+    let hand = fx.operator_grant_key(&fx.member, Some("hand"));
+    let message = fx
+        .refused(&hand, "send", Fx::need_arguments(json!({"dispatch": true})))
+        .await;
+    assert!(message.contains("kind operator"), "{message}");
+    assert_eq!(snapshot(&fx), before);
+
+    // A different registered member, whose key holds a real operator grant
+    // on this project and acts as the operator role: stored grant authority
+    // is not membership of the hosted mailspace.
+    fx.state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(9),
+            "0b0b0b0b-1111-4222-8333-444444444444",
+        )
+        .unwrap();
+    let bobs = fx.operator_grant_key("bob", Some("operator"));
+    let message = fx
+        .refused(&bobs, "send", Fx::need_arguments(json!({"dispatch": true})))
+        .await;
+    assert!(message.contains("host's own member"), "{message}");
+    assert_eq!(snapshot(&fx), before);
+
+    // The same other member with no acting identity: the key would fall
+    // back to the hosted default (the operator role) and is still refused
+    // on membership before anything is filed.
+    let bobs_default = fx.operator_grant_key("bob", None);
+    let message = fx
+        .refused(
+            &bobs_default,
+            "send",
+            Fx::need_arguments(json!({"dispatch": true})),
+        )
+        .await;
+    assert!(message.contains("host's own member"), "{message}");
+    assert_eq!(snapshot(&fx), before);
+}
+
+#[tokio::test]
+async fn dispatch_options_are_validated_before_filing() {
+    let fx = fixture("options", false);
+    let operator = fx.key_by(&fx.member, Some("operator"));
+
+    // Control for the established optional-boolean convention: an accepted
+    // null dispatch is an ordinary send — it files its letter and no pump
+    // record, which is exactly the state the refusals must keep still.
+    let filed = fx
+        .call(
+            &operator,
+            "send",
+            Fx::need_arguments(json!({"dispatch": null})),
+        )
+        .await;
+    assert_eq!(filed["kind"], "need", "{filed}");
+    assert!(filed["pump"].is_null(), "{filed}");
+    assert!(fx.records(None).is_empty());
+    assert!(!fx.stored_views().is_empty());
+
+    let before = snapshot(&fx);
+    for arguments in option_refusal_cases() {
+        // `refused` asserts HTTP 200, isError true, and a decoded error
+        // object; the exact prose is not pinned. Nothing may file.
+        let message = fx.refused(&operator, "send", arguments.clone()).await;
+        assert!(!message.is_empty(), "{arguments}");
+        assert_eq!(snapshot(&fx), before, "{arguments}");
+    }
+}
+
+/// The refused dispatch option combinations, each starting from an
+/// otherwise-valid need send so that an ignored option would file a
+/// letter: dispatch with a kind the pump never settles, malformed dispatch
+/// values, priority levels of every invalid type, and a priority — zero
+/// included — whose dispatch is omitted, false, or null. The numeric
+/// boundaries themselves are additionally covered by the shared parser
+/// tests in `send_options_test.rs`.
+fn option_refusal_cases() -> Vec<Value> {
+    let mut cases = Vec::new();
+    for kind in ["mail", "task", "want", "chat"] {
+        cases.push(Fx::need_arguments(json!({"dispatch": true, "kind": kind})));
+    }
+    for dispatch in [json!("yes"), json!(1), json!(1.5), json!([]), json!({})] {
+        cases.push(Fx::need_arguments(json!({"dispatch": dispatch})));
+    }
+    for priority in [
+        Value::Null,
+        json!("7"),
+        json!(false),
+        json!(1.0),
+        json!(1.5),
+        json!(-1),
+        json!(9_223_372_036_854_775_808u64),
+        json!([]),
+        json!({}),
+    ] {
+        cases.push(Fx::need_arguments(json!({
+            "dispatch": true,
+            "priority": priority,
+        })));
+    }
+    for (priority, dispatch) in [
+        (json!(2), None),
+        (json!(2), Some(json!(false))),
+        (json!(2), Some(Value::Null)),
+        (json!(0), None),
+        (json!(0), Some(json!(false))),
+        (json!(0), Some(Value::Null)),
+    ] {
+        let mut arguments = json!({"priority": priority});
+        if let Some(dispatch) = dispatch {
+            arguments["dispatch"] = dispatch;
+        }
+        cases.push(Fx::need_arguments(arguments));
+    }
+    cases
 }
