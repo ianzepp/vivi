@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 use super::*;
+use crate::mind::actions::ActionRequest;
 use crate::mind::config::{AuthorityStage, MindPaths, parse};
 use crate::mind::pi::{FakePi, PiSession, TurnSummary};
 
@@ -281,7 +282,16 @@ async fn observe_refuses_the_same_unlock_and_reports_it_next_wake() {
     assert_eq!(fx.config.authority, AuthorityStage::Observe);
     let later = NOW + 4000;
     let (_, pi, _) = one_tick(&fx, FakePi::default(), &stalled(), later).await;
-    assert!(pi.prompts[0].starts_with("Action results:\n- Unlock: refused"));
+    assert!(
+        pi.prompts[0].starts_with("Action results ("),
+        "{}",
+        pi.prompts[0]
+    );
+    assert!(
+        pi.prompts[0].contains("\n- Unlock: refused"),
+        "{}",
+        pi.prompts[0]
+    );
 }
 
 #[tokio::test]
@@ -351,4 +361,133 @@ fn a_wake_left_open_by_a_dead_mind_is_closed_as_failed_on_start() {
     assert_eq!(closed.outcome.as_deref(), Some("failed"));
     assert!(closed.retry_at.is_some_and(|at| at > NOW));
     assert!(!close_interrupted_wake(&state, NOW).unwrap());
+}
+
+fn fixture_with_mcp(follow_ups: u32) -> Fixture {
+    let dir = tempdir().unwrap();
+    let registry = dir.path().join("vivi").join("pump-service.toml");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(&registry, "[[project]]\nroot = \"/w/app\"\n").unwrap();
+    let home = dir.path().join("mind");
+    std::fs::create_dir_all(&home).unwrap();
+    let paths = MindPaths::under(dir.path().join("mind.toml"), &home);
+    let config = parse(
+        &format!(
+            "authority = \"unstick\"\n[mcp]\nserver = \"http://127.0.0.1:1\"\nfollow_ups = {follow_ups}\n"
+        ),
+        paths,
+    )
+    .unwrap();
+    Fixture {
+        _dir: dir,
+        config,
+        registry,
+    }
+}
+
+/// An actuator that answers like a live server: it runs the action and says
+/// what it did.
+#[derive(Default)]
+struct Answering {
+    ran: Vec<String>,
+}
+
+impl Actuator for Answering {
+    fn apply(&mut self, request: &ActionRequest) -> Result<String, String> {
+        let line = format!(
+            "{:?} ok for {}",
+            request.kind,
+            request.need.as_deref().unwrap_or("-")
+        );
+        self.ran.push(line.clone());
+        Ok(line)
+    }
+
+    fn feeds_back(&self) -> bool {
+        true
+    }
+}
+
+async fn tick_answering(fx: &Fixture, pi: FakePi, now: u64) -> (TickOutcome, FakePi, Answering) {
+    let shared = Shared::new(pi, "unstick", fx.config.paths.state.clone());
+    let clock = TestClock::fixed(now);
+    let stalled = stalled();
+    let cx = TickContext {
+        config: &fx.config,
+        registry: &fx.registry,
+        probe: &stalled,
+        clock: &clock,
+    };
+    let mut actuator = Answering::default();
+    let outcome = tick(&shared, &cx, &mut actuator).await.unwrap();
+    (outcome, shared.pi.into_inner(), actuator)
+}
+
+const REQUEUE: &str =
+    "Checking.\n+++\n[[action]]\nkind = \"unlock\"\nproject = \"/w/app\"\nneed = \"4b8c0d1e\"\n+++";
+
+#[tokio::test]
+async fn the_session_sees_what_its_actions_answered_and_may_act_again() {
+    let fx = fixture_with_mcp(2);
+    let replies = [UNLOCK, REQUEUE, "Both done."];
+    let (outcome, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&replies), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert_eq!(planned.len(), 2, "both rounds' actions are reported");
+    assert_eq!(
+        actuator.ran,
+        ["Unlock ok for 3f9a1c2e", "Unlock ok for 4b8c0d1e"]
+    );
+    assert_eq!(pi.prompts.len(), 3, "the wake prompt and two follow-ups");
+    assert!(
+        pi.prompts[1].contains("Action results ("),
+        "{}",
+        pi.prompts[1]
+    );
+    assert!(
+        pi.prompts[1].contains("<<<untrusted source=\"action-result\">"),
+        "{}",
+        pi.prompts[1]
+    );
+    assert!(pi.prompts[1].contains("Unlock ok for 3f9a1c2e"));
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert_eq!(state.last_wake.unwrap().outcome.as_deref(), Some("success"));
+}
+
+#[tokio::test]
+async fn follow_ups_stop_at_the_configured_count() {
+    let fx = fixture_with_mcp(1);
+    let replies = [UNLOCK, REQUEUE, "never asked"];
+    let (outcome, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&replies), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert_eq!(pi.prompts.len(), 2, "one follow-up, then the wake ends");
+    assert_eq!(planned.len(), 2);
+    assert_eq!(actuator.ran.len(), 2);
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert!(
+        state.pending_report.unwrap().contains("Unlock: permitted"),
+        "the last round's results wait for the next wake"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_without_actions_ends_the_wake_without_a_follow_up() {
+    let fx = fixture_with_mcp(3);
+    let (_, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&["All healthy."]), NOW).await;
+    assert_eq!(pi.prompts.len(), 1);
+    assert!(actuator.ran.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_follow_up_turn_does_not_fail_a_wake_whose_actions_ran() {
+    let fx = fixture_with_mcp(2);
+    // The wake's one reply is used; the follow-up finds the fake exhausted.
+    let (outcome, _, actuator) = tick_answering(&fx, FakePi::with_replies(&[UNLOCK]), NOW).await;
+    assert!(matches!(outcome, TickOutcome::Woke { .. }), "{outcome:?}");
+    assert_eq!(actuator.ran.len(), 1);
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert_eq!(state.last_wake.unwrap().outcome.as_deref(), Some("success"));
 }

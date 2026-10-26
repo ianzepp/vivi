@@ -85,6 +85,9 @@ impl std::fmt::Display for Refusal {
 pub struct Planned {
     pub request: ActionRequest,
     pub verdict: Result<(), Refusal>,
+    /// What the actuator answered, once a permitted action has run: its
+    /// receipt, or the failure text.
+    pub executed: Option<Result<String, String>>,
 }
 
 /// A `+++` fence line. A live model opened its envelope with `+++ TOML`
@@ -172,7 +175,11 @@ pub fn plan(
         {
             authority::spend(ledger, need, gate.now, gate.budgets.per_need_window_secs);
         }
-        out.push(Planned { request, verdict });
+        out.push(Planned {
+            request,
+            verdict,
+            executed: None,
+        });
     }
     out
 }
@@ -276,6 +283,12 @@ pub trait Actuator {
     /// # Errors
     /// Returns the failure text.
     fn apply(&mut self, request: &ActionRequest) -> Result<String, String>;
+
+    /// Whether receipts are real answers the session should see on a
+    /// follow-up turn. A dry run's are not.
+    fn feeds_back(&self) -> bool {
+        false
+    }
 }
 
 /// Records what would run and runs nothing.

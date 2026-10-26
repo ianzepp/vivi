@@ -16,6 +16,7 @@ use crate::VivariumError;
 use super::actions::{self, Actuator, DryRun, Planned};
 use super::authority::Gate;
 use super::config::{self, MindConfig};
+use super::mcp_actuator::{HttpCaller, McpActuator};
 use super::pi::{PiSession, ProcessPi};
 use super::probe::{HealthProbe, Probe, ProjectSignals};
 use super::prompt;
@@ -101,12 +102,20 @@ pub async fn tick<P: PiSession, Q: Probe>(
     if let Some(report) = &state.pending_report {
         message = format!("{report}\n{message}");
     }
-    let turn = {
-        let mut pi = shared.pi.lock().await;
-        let _busy = BusyGuard::hold(&shared.busy);
-        pi.prompt(message, None).await
-    };
-    finish_wake(cx, record, turn, &watched, actuator)
+    let turn = prompt_once(shared, message).await;
+    settle_wake(shared, cx, record, turn, &watched, actuator).await
+}
+
+/// One autonomous turn: take the turn lock, send `message`, return the
+/// reply. The lock is held for this turn only, so an attached operator can
+/// speak between a wake's turns.
+async fn prompt_once<P: PiSession>(
+    shared: &Shared<P>,
+    message: String,
+) -> Result<super::pi::TurnSummary, VivariumError> {
+    let mut pi = shared.pi.lock().await;
+    let _busy = BusyGuard::hold(&shared.busy);
+    pi.prompt(message, None).await
 }
 
 /// What an attached operator prompt is sent as: a fresh probe of every
@@ -145,36 +154,93 @@ fn begin_wake(
     Ok(record)
 }
 
-fn finish_wake<Q: Probe>(
+/// Turn the first reply into actions, run them, and while the actuator
+/// returns real answers show them to the session so it can check its work:
+/// each follow-up turn may name more actions, up to `follow_ups` times. The
+/// wake ends after the last turn returns.
+async fn settle_wake<P: PiSession, Q: Probe>(
+    shared: &Shared<P>,
     cx: &TickContext<'_, Q>,
     mut record: WakeRecord,
-    turn: Result<super::pi::TurnSummary, VivariumError>,
+    first: Result<super::pi::TurnSummary, VivariumError>,
     watched: &[PathBuf],
     actuator: &mut dyn Actuator,
 ) -> Result<TickOutcome, VivariumError> {
-    let ended = cx.clock.now();
     let config = cx.config;
-    let summary = match turn {
-        Ok(summary) => summary,
-        Err(error) => {
-            wake::finish(&mut record, false, ended);
-            store::update_at(&config.paths.state, |state| {
-                state.last_wake = Some(record);
-                Ok(())
-            })?;
-            log_line(&config.paths.log, &format!("wake failed: {error}"));
-            return Ok(TickOutcome::Failed(error.to_string()));
+    let max_follow_ups = config.mcp.as_ref().map_or(0, |mcp| mcp.follow_ups);
+    let mut turn = first;
+    let mut all = Vec::new();
+    let mut round = 0;
+    let mut unreported = Vec::new();
+    loop {
+        let summary = match turn {
+            Ok(summary) => summary,
+            Err(error) if round == 0 => return fail_wake(cx, record, &error),
+            Err(error) => {
+                log_line(
+                    &config.paths.log,
+                    &format!("follow-up turn failed: {error}"),
+                );
+                break;
+            }
+        };
+        let label = if round == 0 {
+            "wake turn"
+        } else {
+            "follow-up turn"
+        };
+        log_line(&config.paths.log, &format!("{label}:\n{}", summary.text));
+        let planned = run_envelope(cx, &summary.text, watched, actuator)?;
+        let ran = planned.iter().any(|item| item.executed.is_some());
+        if ran && actuator.feeds_back() && round < max_follow_ups {
+            round += 1;
+            turn = prompt_once(shared, prompt::plan_report(&planned)).await;
+            all.extend(planned);
+            unreported.clear();
+        } else {
+            unreported = planned.clone();
+            all.extend(planned);
+            break;
         }
-    };
-    log_line(&config.paths.log, &format!("wake turn:\n{}", summary.text));
-    let planned = store::update_at(&config.paths.state, |state| {
-        let planned = apply_envelope(config, state, &summary.text, watched, ended, actuator);
+    }
+    let ended = cx.clock.now();
+    store::update_at(&config.paths.state, |state| {
         wake::finish(&mut record, true, ended);
         state.last_wake = Some(record);
-        state.pending_report = (!planned.is_empty()).then(|| prompt::plan_report(&planned));
-        Ok(planned)
+        state.pending_report = (!unreported.is_empty()).then(|| prompt::plan_report(&unreported));
+        Ok(())
     })?;
-    Ok(TickOutcome::Woke { planned })
+    Ok(TickOutcome::Woke { planned: all })
+}
+
+fn fail_wake<Q: Probe>(
+    cx: &TickContext<'_, Q>,
+    mut record: WakeRecord,
+    error: &VivariumError,
+) -> Result<TickOutcome, VivariumError> {
+    let ended = cx.clock.now();
+    store::update_at(&cx.config.paths.state, |state| {
+        wake::finish(&mut record, false, ended);
+        state.last_wake = Some(record);
+        Ok(())
+    })?;
+    log_line(&cx.config.paths.log, &format!("wake failed: {error}"));
+    Ok(TickOutcome::Failed(error.to_string()))
+}
+
+/// Parse a reply's envelope, gate it, run what is permitted, and log each
+/// line.
+fn run_envelope<Q: Probe>(
+    cx: &TickContext<'_, Q>,
+    reply: &str,
+    watched: &[PathBuf],
+    actuator: &mut dyn Actuator,
+) -> Result<Vec<Planned>, VivariumError> {
+    let config = cx.config;
+    let now = cx.clock.now();
+    store::update_at(&config.paths.state, |state| {
+        Ok(apply_envelope(config, state, reply, watched, now, actuator))
+    })
 }
 
 fn apply_envelope(
@@ -198,12 +264,18 @@ fn apply_envelope(
         budgets: &config.budgets,
         now,
     };
-    let planned = actions::plan(requests, &gate, watched, &mut state.ledger);
-    for item in &planned {
+    let mut planned = actions::plan(requests, &gate, watched, &mut state.ledger);
+    for item in &mut planned {
         let line = match &item.verdict {
-            Ok(()) => actuator
-                .apply(&item.request)
-                .unwrap_or_else(|error| format!("failed: {error}")),
+            Ok(()) => {
+                let result = actuator.apply(&item.request);
+                let line = match &result {
+                    Ok(receipt) => receipt.clone(),
+                    Err(error) => format!("failed: {error}"),
+                };
+                item.executed = Some(result);
+                line
+            }
             Err(refusal) => format!("refused {:?}: {refusal}", item.request.kind),
         };
         log_line(&config.paths.log, &line);
@@ -316,12 +388,31 @@ async fn start_pi(config: &MindConfig) -> Result<ProcessPi, VivariumError> {
     Ok(pi)
 }
 
+/// The actuator the config asks for: MCP calls when `[mcp]` names a server,
+/// else a dry run.
+///
+/// # Errors
+/// Fails when the key file cannot be read.
+fn actuator_for(config: &MindConfig) -> Result<Box<dyn Actuator>, VivariumError> {
+    let Some(mcp) = &config.mcp else {
+        return Ok(Box::new(DryRun::default()));
+    };
+    let caller =
+        HttpCaller::from_key_file(&mcp.server, &mcp.key_file).map_err(VivariumError::Config)?;
+    log_line(
+        &config.paths.log,
+        &format!("acting through the server at {}", mcp.server),
+    );
+    Ok(Box::new(McpActuator::new(caller)))
+}
+
 async fn wake_loop(
     config: &MindConfig,
     shared: &Arc<Shared<ProcessPi>>,
 ) -> Result<(), VivariumError> {
     let registry = crate::registry::path()?;
     let clock = SystemClock;
+    let mut actuator = actuator_for(config)?;
     let mut interval = tokio::time::interval(TICK);
     let mut stop = shared.shutdown.subscribe();
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -339,7 +430,7 @@ async fn wake_loop(
             probe: &HealthProbe,
             clock: &clock,
         };
-        match tick(shared, &cx, &mut DryRun::default()).await {
+        match tick(shared, &cx, &mut *actuator).await {
             Ok(outcome) => tracing::debug!(?outcome, "mind tick"),
             Err(error) => log_line(&config.paths.log, &format!("tick failed: {error}")),
         }

@@ -150,3 +150,49 @@ fn the_shipped_example_parses_to_the_defaults() {
         Some("proxy/~deepseek/deepseek-flash-latest")
     );
 }
+
+#[test]
+fn no_mcp_table_leaves_actions_a_dry_run() {
+    assert_eq!(parse("", paths()).unwrap().mcp, None);
+}
+
+#[test]
+fn an_mcp_table_names_the_server_and_defaults_the_key_file_and_follow_ups() {
+    let config = parse("[mcp]\nserver = \"http://127.0.0.1:18190/\"\n", paths()).unwrap();
+    assert_eq!(
+        config.mcp,
+        Some(McpConfig {
+            server: "http://127.0.0.1:18190".into(),
+            key_file: PathBuf::from("/home/mind/mcp.key"),
+            follow_ups: 3,
+        })
+    );
+    let custom = parse(
+        "[mcp]\nserver = \"https://hub\"\nkey_file = \"/etc/mind.key\"\nfollow_ups = 0\n",
+        paths(),
+    )
+    .unwrap()
+    .mcp
+    .unwrap();
+    assert_eq!(custom.key_file, PathBuf::from("/etc/mind.key"));
+    assert_eq!(custom.follow_ups, 0);
+}
+
+#[test]
+fn a_bad_mcp_table_is_refused() {
+    for (text, want) in [
+        ("[mcp]\n", "needs a server URL"),
+        ("[mcp]\nserver = \"hub:18190\"\n", "must be an http(s) URL"),
+        (
+            "[mcp]\nserver = \"http://h\"\nfollow_ups = 9\n",
+            "follow_ups is at most 8",
+        ),
+        (
+            "[mcp]\nserver = \"http://h\"\nkey = \"x\"\n",
+            "unknown field",
+        ),
+    ] {
+        let said = parse(text, paths()).unwrap_err().to_string();
+        assert!(said.contains(want), "{text:?}: {said}");
+    }
+}

@@ -3,8 +3,9 @@
 # <config_dir>). Every key is optional; no file at all is `observe` with the
 # defaults below. Unknown keys are refused.
 
-# What the mind may do: observe | unstick | file-fixes. The spike's actuator
-# is dry-run at every stage: permitted actions are only logged to mind.log.
+# What the mind may do: observe | unstick | file-fixes. Permitted actions run
+# through the server named in [mcp] below; with no [mcp] they are a dry run
+# that only logs what would run.
 authority = "observe"
 
 # Wake at least this often with nobody attached (role_schedule durations).
@@ -32,3 +33,12 @@ pi_command = "pi"
 per_need_actions = 3       # unstick actions per need per window
 per_need_window = "24h"
 max_wakes_per_hour = 6
+
+# The server the mind acts through, the way any MCP client does: it calls the
+# server's tools (pump_control, pump_action, pump_list, pump_log, send) with a
+# server key, and the server decides what the key may do. Without this table
+# every permitted action is a dry run.
+# [mcp]
+# server = "http://127.0.0.1:18190"
+# key_file = "/var/lib/vivi/mind/mcp.key"   # default: <mind home>/mcp.key
+# follow_ups = 3    # turns after one that ran actions, to see the results

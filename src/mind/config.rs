@@ -116,8 +116,29 @@ pub struct MindConfig {
     pub pi_command: String,
     pub model: Option<String>,
     pub budgets: Budgets,
+    /// The vivi-server the mind acts through; `None` leaves every permitted
+    /// action a dry run.
+    pub mcp: Option<McpConfig>,
     pub paths: MindPaths,
 }
+
+/// How the mind reaches the server that runs the pumps. The mind acts the
+/// way any MCP client does: it calls the server's tools with its own key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpConfig {
+    /// Server base URL, for example `http://127.0.0.1:18190`.
+    pub server: String,
+    /// File holding the mind's server key.
+    pub key_file: PathBuf,
+    /// Follow-up turns after one that ran actions, so the session sees the
+    /// results and can check its work. `0` ends the wake after the first
+    /// turn.
+    pub follow_ups: u32,
+}
+
+/// Longest follow-up chain one wake may run.
+const MAX_FOLLOW_UPS: u32 = 8;
+const DEFAULT_FOLLOW_UPS: u32 = 3;
 
 /// Where the mind keeps its files. Everything lives under one home owned by
 /// the service user, apart from the config file.
@@ -160,6 +181,15 @@ struct FileFormat {
     session_dir: Option<PathBuf>,
     #[serde(default)]
     budgets: BudgetsFormat,
+    mcp: Option<McpFormat>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpFormat {
+    server: Option<String>,
+    key_file: Option<PathBuf>,
+    follow_ups: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -260,8 +290,36 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
             .unwrap_or_else(|| DEFAULT_PI_COMMAND.to_string()),
         model: file.model,
         budgets: budgets(file.budgets)?,
+        mcp: mcp(file.mcp, &paths)?,
         paths,
     })
+}
+
+fn mcp(file: Option<McpFormat>, paths: &MindPaths) -> Result<Option<McpConfig>, VivariumError> {
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    let server = file
+        .server
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| VivariumError::Config("[mcp] needs a server URL".into()))?;
+    if !(server.starts_with("http://") || server.starts_with("https://")) {
+        return Err(VivariumError::Config(format!(
+            "[mcp] server must be an http(s) URL, got {server:?}"
+        )));
+    }
+    let follow_ups = file.follow_ups.unwrap_or(DEFAULT_FOLLOW_UPS);
+    if follow_ups > MAX_FOLLOW_UPS {
+        return Err(VivariumError::Config(format!(
+            "[mcp] follow_ups is at most {MAX_FOLLOW_UPS}, got {follow_ups}"
+        )));
+    }
+    Ok(Some(McpConfig {
+        server,
+        key_file: file.key_file.unwrap_or_else(|| paths.home.join("mcp.key")),
+        follow_ups,
+    }))
 }
 
 fn budgets(file: BudgetsFormat) -> Result<Budgets, VivariumError> {

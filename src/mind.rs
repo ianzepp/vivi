@@ -15,6 +15,7 @@ pub mod actions;
 pub mod authority;
 pub mod commands;
 pub mod config;
+pub mod mcp_actuator;
 pub mod pi;
 pub mod probe;
 pub mod projects;
