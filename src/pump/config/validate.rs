@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
+use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, ScopePath, known};
 use crate::VivariumError;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::envelope::roles::RoleKind;
@@ -306,6 +306,7 @@ fn validate_target(id: &str, target: &PumpTarget, found: &mut Findings) {
     }
     let merge = target.merge.as_ref();
     validate_target_merge(id, merge, found);
+    validate_target_scope(id, target, found);
 }
 
 fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Findings) {
@@ -321,6 +322,52 @@ fn validate_target_merge(id: &str, merge: Option<&MergeConfig>, found: &mut Find
             ));
         }
     }
+}
+
+/// The repository trees whose internal scope is not an operator decision: a
+/// target's scope policy may not name a path inside them. Units work those
+/// trees under their own need scope, so an allow or deny entry there would
+/// decide what is not the operator's to decide.
+const OPERATOR_SCOPE_TREES: [&str; 4] = ["src", "tests", "docs", "skills"];
+
+/// Every declared `scope_allow` / `scope_deny` entry must normalize with the
+/// scope primitives, and none may decide scope inside the operator-reserved
+/// trees. The resolved whole-repository default is not a declared entry and
+/// is never flagged.
+fn validate_target_scope(id: &str, target: &PumpTarget, found: &mut Findings) {
+    let prefix = format!("[pump.targets.{id}]");
+    let declared: [(&str, &[String]); 2] = [
+        ("scope_allow", target.scope_allow.as_deref().unwrap_or(&[])),
+        ("scope_deny", target.scope_deny.as_slice()),
+    ];
+    for (key, entries) in declared {
+        for entry in entries {
+            match ScopePath::parse(entry) {
+                Ok(path) => {
+                    if let Some(tree) = reserved_tree(&path) {
+                        found.invalid(format!(
+                            "{prefix} {key} entry `{entry}` decides scope inside `{tree}/`; \
+                             scope inside the repository's source, tests, docs and skills \
+                             is not an operator decision"
+                        ));
+                    }
+                }
+                Err(problem) => {
+                    found.invalid(format!(
+                        "{prefix} {key} entry `{entry}` is unusable: {problem}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// The operator-reserved tree a normalized entry names, if any: its first
+/// path component, matched at the component boundary. The repository root is
+/// not inside any tree.
+fn reserved_tree(path: &ScopePath) -> Option<&'static str> {
+    let first = path.first_segment()?;
+    OPERATOR_SCOPE_TREES.into_iter().find(|tree| first == *tree)
 }
 
 fn validate_rungs(scope: &str, rungs: &RungsConfig, pools: &[String], found: &mut Findings) {

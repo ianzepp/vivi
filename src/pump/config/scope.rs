@@ -13,10 +13,13 @@
 //! repository); an explicit `scope_allow = []` allows nothing; `scope_deny`
 //! defaults to empty. This module supplies primitives and evidence — path
 //! normalization, coverage and intersection, a serializable policy snapshot,
-//! and typed rejection reasons — for later consumers such as target policy
-//! matching and slice overlap resolution. Nothing here authorizes a dispatch
-//! on its own.
+//! typed rejection reasons, and an all-or-nothing request authorizer over a
+//! resolved target's policy. Policy eligibility is not itself a need-scope
+//! grant: nothing here authorizes a dispatch on its own.
 
+use std::collections::BTreeMap;
+
+use super::PumpTarget;
 use serde::{Deserialize, Serialize};
 
 /// The allow default for an omitted `scope_allow`: the whole repository.
@@ -122,6 +125,12 @@ impl ScopePath {
         self.directory
     }
 
+    /// The first path component, or none at the repository root.
+    #[must_use]
+    pub fn first_segment(&self) -> Option<&str> {
+        self.segments.first().map(String::as_str)
+    }
+
     /// True when this declaration covers `other`: the root covers the whole
     /// repository, a directory covers itself and every descendant by
     /// component boundary, and a file covers only its exact self.
@@ -220,6 +229,51 @@ impl ScopePolicy {
             path: path.canonical(),
             allow: self.allow.clone(),
         })
+    }
+
+    /// All-or-nothing authorization of one whole request against this
+    /// policy. Every requested path must normalize — invalid input fails
+    /// closed — and be eligible: any intersection between a requested path
+    /// and a deny entry, in either direction, rejects the whole request, and
+    /// an allow entry must cover each requested path completely, so a
+    /// directory request needs one allow entry covering its descendants
+    /// while a file entry covers only its exact self. One failure rejects
+    /// the whole request; an allowed subset of a mixed request is never
+    /// granted. Eligibility under this policy is not itself a need-scope
+    /// grant.
+    #[must_use]
+    pub fn authorize(&self, request: &[String]) -> ScopeAuthorization {
+        let mut requested = Vec::with_capacity(request.len());
+        for raw in request {
+            match ScopePath::parse(raw) {
+                Ok(path) => requested.push(path),
+                Err(error) => {
+                    return ScopeAuthorization::Reject(ScopeRejection::InvalidPath {
+                        path: String::from(raw),
+                        problem: error.to_string(),
+                    });
+                }
+            }
+        }
+        let denies = parsed(&self.deny);
+        for path in &requested {
+            if let Some(entry) = denies.iter().find(|entry| entry.intersects(path)) {
+                return ScopeAuthorization::Reject(ScopeRejection::DeniedPath {
+                    path: path.canonical(),
+                    deny: entry.canonical(),
+                });
+            }
+        }
+        let allows = parsed(&self.allow);
+        for path in &requested {
+            if !allows.iter().any(|entry| entry.covers(path)) {
+                return ScopeAuthorization::Reject(ScopeRejection::OutsideAllow {
+                    path: path.canonical(),
+                    allow: self.allow.clone(),
+                });
+            }
+        }
+        ScopeAuthorization::Grant(requested.iter().map(ScopePath::canonical).collect())
     }
 }
 
@@ -340,6 +394,46 @@ pub enum ScopeDecision {
     Allow,
     /// The path is rejected for the carried reason.
     Reject(ScopeRejection),
+}
+
+/// All-or-nothing outcome of authorizing one request against target scope
+/// policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeAuthorization {
+    /// Every requested path is policy-eligible; carries the request
+    /// normalized, in declaration order.
+    Grant(Vec<String>),
+    /// The whole request is rejected; no subset is ever granted.
+    Reject(ScopeRejection),
+}
+
+/// Authorize one request against a named target's policy as
+/// `PumpConfig::target_configs` resolves it: an omitted `scope_allow` is
+/// already default-filled to the whole repository, and `scope_deny` stays as
+/// declared. An unknown target name is [`ScopeRejection::UnknownTarget`] and
+/// never inherits another target's policy or the legacy default
+/// configuration. Unusable policy entries fail closed. Policy eligibility is
+/// not itself a need-scope grant.
+#[must_use]
+pub fn authorize(
+    configs: &BTreeMap<String, PumpTarget>,
+    target: &str,
+    request: &[String],
+) -> ScopeAuthorization {
+    let Some(config) = configs.get(target) else {
+        return ScopeAuthorization::Reject(ScopeRejection::UnknownTarget {
+            target: String::from(target),
+            known: configs.keys().cloned().collect(),
+        });
+    };
+    let allow = config
+        .scope_allow
+        .clone()
+        .unwrap_or_else(|| vec![String::from(WHOLE_REPOSITORY)]);
+    match ScopePolicy::snapshot(target, &allow, &config.scope_deny) {
+        Ok(policy) => policy.authorize(request),
+        Err(rejection) => ScopeAuthorization::Reject(rejection),
+    }
 }
 
 #[cfg(test)]
