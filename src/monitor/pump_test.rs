@@ -57,11 +57,14 @@ fn pump_tick_rows_show_timing_and_keep_finished_cycles_gray() {
 }
 
 #[test]
-fn monitor_skips_wal_pump_db_without_creating_its_shm_sidecar() {
+fn owner_reads_pump_control_without_shm() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let db = home.join(crate::pump::store::DB_FILENAME);
-    drop(crate::pump::store::PumpStore::open(&db).unwrap());
+    let mut store = crate::pump::store::PumpStore::open(&db).unwrap();
+    store.initialize_control("running").unwrap();
+    store.set_control_mode("paused").unwrap();
+    drop(store);
     let connection = rusqlite::Connection::open(&db).unwrap();
     connection
         .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -73,8 +76,8 @@ fn monitor_skips_wal_pump_db_without_creating_its_shm_sidecar() {
     let _ = std::fs::remove_file(&wal);
     let before = std::fs::read(&db).unwrap();
 
-    let error = row("alpha", home, 1000).err().unwrap().to_string();
-    assert!(error.contains("pump.db-shm"), "{error}");
-    assert!(!shm.exists(), "the monitor created the missing sidecar");
-    assert_eq!(std::fs::read(db).unwrap(), before);
+    let row = row("alpha", home, 1000).unwrap();
+    assert_eq!(row.role, "paused");
+    assert_eq!(row.state, RowState::Finished("paused".into()));
+    assert_eq!(std::fs::read(&db).unwrap(), before);
 }
