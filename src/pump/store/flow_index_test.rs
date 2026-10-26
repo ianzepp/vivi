@@ -117,6 +117,33 @@ fn runs_steps_and_jobs_round_trip() {
 }
 
 #[test]
+fn the_latest_step_job_is_the_highest_attempt_then_the_last_recorded() {
+    let dir = tempdir().expect("tempdir");
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+
+    let job = |name: &str, attempt: u32| StepJobRow {
+        job: name.into(),
+        run: 2,
+        node: "admit".into(),
+        task: "t1".into(),
+        attempt,
+    };
+    assert!(store.latest_step_job("t1").expect("read").is_none());
+    store.insert_step_job("n1", &job("j1", 1)).expect("job 1");
+    let latest = store.latest_step_job("t1").expect("read").expect("some");
+    assert_eq!(latest.job, "j1");
+    store.insert_step_job("n1", &job("j2", 2)).expect("job 2");
+    store.insert_step_job("n1", &job("j3", 2)).expect("job 3");
+    let latest = store.latest_step_job("t1").expect("read").expect("some");
+    assert_eq!(
+        latest.job, "j3",
+        "the row recorded last wins at one attempt"
+    );
+    assert_eq!(latest.attempt, 2);
+    assert!(store.latest_step_job("t9").expect("read").is_none());
+}
+
+#[test]
 fn a_v8_database_keeps_its_version_and_gains_the_tables() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join(DB_FILENAME);

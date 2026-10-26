@@ -425,6 +425,32 @@ impl PumpStore {
             .map_err(db_err("read step job"))
     }
 
+    /// The newest job row of the step task: the highest attempt first, the
+    /// row recorded last breaking ties between jobs at one attempt. `None`
+    /// when the task has no job row. Read-only.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be read.
+    pub fn latest_step_job(&self, task: &str) -> Result<Option<StepJobRow>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT job, run, node, task, attempt FROM step_jobs WHERE task = ?1 \
+                 ORDER BY attempt DESC, rowid DESC LIMIT 1",
+                params![task],
+                |row| {
+                    Ok(StepJobRow {
+                        job: row.get(0)?,
+                        run: row.get(1)?,
+                        node: row.get(2)?,
+                        task: row.get(3)?,
+                        attempt: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_err("read latest step job"))
+    }
+
     /// The highest attempt number the step task has had (0 when none).
     ///
     /// # Errors

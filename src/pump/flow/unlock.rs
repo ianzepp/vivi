@@ -58,8 +58,10 @@ impl StepHandler for LockWait {
     }
 }
 
-/// What the run's newest CTO step said, for the lock alarm.
-fn cto_why(rows: &[StepPayloadRow]) -> String {
+/// What the run's newest CTO step said, for the lock alarm and the wait
+/// inventory: the answer word with its reason and any new fact, or why no
+/// usable CTO answer exists.
+pub(crate) fn cto_why(rows: &[StepPayloadRow]) -> String {
     let Some(row) = rows.iter().rfind(|row| row.class == NodeClass::Cto.name()) else {
         return "reached without a CTO answer".to_string();
     };
