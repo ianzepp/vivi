@@ -12,6 +12,7 @@ pub mod letters;
 mod live;
 mod send_options;
 pub mod server;
+mod tool_schema;
 mod tools;
 
 use axum::Json;
@@ -421,47 +422,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("send", "Send a need, task, want, chat, or mail as the authenticated caller. The server composes the letter and mints its id. For kind=chat, to is optional. For a need, task, or want the sugar arguments build the letter's front matter as the CLI's flags do (a need needs done_when, a want needs question; a missing one is refused with vivi's message). A body that opens with +++ is the whole letter, and a sugar argument beside it is refused. Mail and chat take no sugar arguments.", json!({
-                "type": "object",
-                "properties": {
-                    "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail"] },
-                    "to": {
-                        "oneOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
-                        ]
-                    },
-                    "subject": { "type": "string" },
-                    "body": { "type": "string", "description": "The prose, or the whole letter when it opens with +++" },
-                    "done_when": {
-                        "description": "need (required there) or task: what must be true for the work to be done",
-                        "oneOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
-                        ]
-                    },
-                    "target": { "type": "string", "description": "need or task: the repo or checkout the work targets" },
-                    "write_scope": {
-                        "description": "need or task: paths the work may change",
-                        "oneOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
-                        ]
-                    },
-                    "serves": { "type": "string", "description": "need: the want this need serves" },
-                    "explores": { "type": "string", "description": "need: the want this research need explores" },
-                    "question": { "type": "string", "description": "want (required there): the question or goal the want explores" },
-                    "depends_on": {
-                        "description": "need, task, or want: handles of the items this one waits for; rides in the letter's front matter",
-                        "oneOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" } }
-                        ]
-                    }
-                },
-                "required": ["kind", "to", "subject", "body"],
-                "additionalProperties": false
-            })),
+            tool_schema::send_tool(),
             tool("reply", "Reply to a letter by handle as the authenticated caller.", json!({
                 "type": "object",
                 "properties": {
@@ -683,7 +644,7 @@ fn tools_list() -> Value {
                 "required": ["id"],
                 "additionalProperties": false
             })),
-            tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need not addressed to the pump identity, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
+            tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. The need itself need not be addressed to the pump — it is the record that goes to the pump identity — so a need addressed to any role dispatches the same way. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need that is done, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
                 "type": "object",
                 "properties": {
                     "need": { "type": "string", "description": "The need handle the dispatch covers" },
@@ -693,6 +654,7 @@ fn tools_list() -> Value {
                 "required": ["need"],
                 "additionalProperties": false
             })),
+            tool_schema::pump_priority_tool(),
             tool("pump_list", "Hosted projects only, operator only. List pump records, oldest first, as `vivi pump list` does. Same authorization as pump_control. At most `limit` records are returned (the newest when more match); `total` counts every match. Returns {records, total, truncated}.", json!({
                 "type": "object",
                 "properties": {

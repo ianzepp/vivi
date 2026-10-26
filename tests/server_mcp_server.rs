@@ -460,6 +460,24 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
     for name in ["pump_action", "pump_reset"] {
         assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
     }
+    // The dispatch tools copied from the shared definitions acquire the
+    // required project argument like every other project tool.
+    for name in ["send", "pump_priority"] {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        let schema = &tool["inputSchema"];
+        assert!(
+            schema["properties"]["project"].is_object(),
+            "{name} declares project"
+        );
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            required.contains(&json!("project")),
+            "{name} requires project"
+        );
+    }
     // The lifecycle trio replaced delete_project outright: no alias, exact
     // required arguments, no `project` argument, closed schemas.
     assert!(
