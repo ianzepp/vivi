@@ -393,8 +393,9 @@ where
 
     /// Per-step error boundary: a failing unit never ends the run's tick.
     /// Failures below [`STEP_ERROR_LIMIT`] ticks in a row go to the run
-    /// boundary; at the limit the step is held for the operator, its job (if
-    /// any) is marked applied, and one alarm is raised.
+    /// boundary; at the limit the step is held as Mind triage for
+    /// `vivi pump answer`, its job (if any) is marked applied, and one alarm
+    /// is raised.
     fn step_unit(
         &mut self,
         task: &str,
@@ -625,7 +626,8 @@ where
 
     /// Ask each waiting step's handler for an answer. Lock, park and
     /// milestone rows go straight to waiting, so polling is how their
-    /// handlers answer. A held step is the operator's and is not polled.
+    /// handlers answer. A held step is Mind triage, answered by
+    /// `vivi pump answer`, so it is not polled.
     fn poll_waiting(&mut self) -> Result<(), VivariumError> {
         let rows = self.store.steps_of(&self.run.need, self.run.run)?;
         for step in rows {

@@ -185,8 +185,9 @@ where
         }
     }
 
-    /// The worker could not run the hand job: alarm once, reply once and hold
-    /// the slice for the operator. No attempt is counted, queued or split.
+    /// The worker could not run the hand job: alarm once, reply once and
+    /// hold the slice as Mind triage (`vivi pump requeue` or
+    /// `vivi pump answer`). No attempt is counted, queued or split.
     fn environment(
         &mut self,
         step: &StepRow,
@@ -306,8 +307,8 @@ where
     }
 
     /// The slice rows of this run that wait on holders (`ScopeState::Wait`).
-    /// A row held for the operator (`OPERATOR_HOLD`) is skipped: the hold is
-    /// sticky, and the wait resumes only after the operator lifts it.
+    /// A held row (`OPERATOR_HOLD`) is skipped: the hold is sticky, and the
+    /// wait resumes only after a posted `vivi pump answer` lifts it.
     pub(crate) fn scope_wait_rows(&self) -> Result<Vec<StepRow>, VivariumError> {
         let mut rows = Vec::new();
         for step in self.store.steps_of(&self.run.need, self.run.run)? {

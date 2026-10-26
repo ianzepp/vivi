@@ -105,8 +105,9 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RungCollector {
 }
 
 /// The worker could not run the rung script: the job says nothing about the
-/// code. Alarm once, queue nothing, and hold the step for the operator. The
-/// rung's lost-retry cap and the flow attempt are untouched.
+/// code. Alarm once, queue nothing, and hold the step as Mind triage for
+/// `vivi pump answer`. The rung's lost-retry cap and the flow attempt are
+/// untouched.
 pub(crate) fn hold_env<S: JobStore, M: FlowMail>(
     cx: &mut RunCx<'_, S, M>,
     job: &PoolJob,

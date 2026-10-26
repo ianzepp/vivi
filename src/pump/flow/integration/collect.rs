@@ -56,7 +56,8 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for BuildMergeMain {
 }
 
 /// The worker could not run git or its checkout failed: the job says nothing
-/// about main. Alarm once, queue nothing, and hold the step for the operator.
+/// about main. Alarm once, queue nothing, and hold the step as Mind triage
+/// for `vivi pump answer`.
 fn hold_env<S: JobStore, M: FlowMail>(
     cx: &mut RunCx<'_, S, M>,
     job: &PoolJob,

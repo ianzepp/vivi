@@ -242,8 +242,9 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for Reslices {
 
 /// Count one more failing tick of `job`. Below [`STEP_ERROR_LIMIT`] the error
 /// is kept for the caller and the job stays unapplied. At the limit the job is
-/// marked applied and the reslice row is held for the operator; the error is
-/// then settled and gives `None` (a failed hold is the only error returned).
+/// marked applied and the reslice row is held as Mind triage for
+/// `vivi pump answer`; the error is then settled and gives `None` (a failed
+/// hold is the only error returned).
 /// A job whose payload names no task has no row to hold: it raises
 /// [`STEP_ERROR_HELD`] on the job id instead.
 fn settle_error<S: JobStore>(
@@ -275,7 +276,7 @@ fn settle_error<S: JobStore>(
 }
 
 /// The slicer agent could not run: the reply says nothing about the slice.
-/// Alarm once, hold the reslice row for the operator, settle the job. The
+/// Alarm once, hold the reslice row as Mind triage, settle the job. The
 /// slice and its attempts are untouched.
 fn hold_env<S: JobStore>(
     ctx: &Ctx,
