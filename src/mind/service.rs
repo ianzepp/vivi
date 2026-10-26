@@ -16,6 +16,7 @@ use crate::VivariumError;
 use super::actions::{self, Actuator, DryRun, Planned};
 use super::authority::Gate;
 use super::config::{self, MindConfig};
+use super::edge::{self, EdgeActuator};
 use super::mcp_actuator::{HttpCaller, McpActuator};
 use super::pi::{PiSession, ProcessPi};
 use super::probe::{HealthProbe, Probe, ProjectSignals};
@@ -75,6 +76,14 @@ pub async fn tick<P: PiSession, Q: Probe>(
     let state = store::load_at(state_path)?;
     let watched = super::projects::watched_at(cx.registry, &state.ignored)?;
     let signals: Vec<ProjectSignals> = watched.iter().map(|root| cx.probe.probe(root)).collect();
+    let edge = cx
+        .config
+        .edge
+        .as_ref()
+        .map(|edge| edge::read(&edge.status).unwrap_or_default());
+    let hub = edge
+        .as_ref()
+        .map_or_else(Vec::new, |status| status.fingerprints(started));
     let decision = wake::decide(&WakeInputs {
         now: started,
         heartbeat: &cx.config.heartbeat,
@@ -83,6 +92,7 @@ pub async fn tick<P: PiSession, Q: Probe>(
         max_wakes_per_hour: cx.config.budgets.max_wakes_per_hour,
         paused: state.paused,
         signals: &signals,
+        hub: &hub,
     });
     let (reasons, attempt, seen) = match decision {
         WakeDecision::Sleep(why) => return Ok(TickOutcome::Slept(why)),
@@ -98,7 +108,12 @@ pub async fn tick<P: PiSession, Q: Probe>(
         &cx.config.paths.log,
         &format!("wake begins: {}", why.join("; ")),
     );
-    let mut message = prompt::wake_prompt(cx.config.authority, &reasons, &signals);
+    let mut message = prompt::wake_prompt(
+        cx.config.authority,
+        &reasons,
+        &signals,
+        edge.as_ref().map(|status| (status, started)),
+    );
     if let Some(report) = &state.pending_report {
         message = format!("{report}\n{message}");
     }
@@ -389,7 +404,8 @@ async fn start_pi(config: &MindConfig) -> Result<ProcessPi, VivariumError> {
 }
 
 /// The actuator the config asks for: MCP calls when `[mcp]` names a server,
-/// else a dry run.
+/// else a dry run. With `[edge]` as well, `rollback-edge` writes its request
+/// for the root unit; a dry run never does.
 ///
 /// # Errors
 /// Fails when the key file cannot be read.
@@ -403,7 +419,18 @@ fn actuator_for(config: &MindConfig) -> Result<Box<dyn Actuator>, VivariumError>
         &config.paths.log,
         &format!("acting through the server at {}", mcp.server),
     );
-    Ok(Box::new(McpActuator::new(caller)))
+    let actuator: Box<dyn Actuator> = Box::new(McpActuator::new(caller));
+    let Some(edge) = &config.edge else {
+        return Ok(actuator);
+    };
+    log_line(
+        &config.paths.log,
+        &format!("watching edge builds through {}", edge.status.display()),
+    );
+    Ok(Box::new(EdgeActuator {
+        inner: actuator,
+        edge: edge.clone(),
+    }))
 }
 
 async fn wake_loop(

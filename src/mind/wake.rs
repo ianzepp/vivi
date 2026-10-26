@@ -106,6 +106,8 @@ pub struct WakeInputs<'a> {
     pub max_wakes_per_hour: u32,
     pub paused: bool,
     pub signals: &'a [ProjectSignals],
+    /// Hub-wide fingerprints beside the projects' (edge build checkpoints).
+    pub hub: &'a [String],
 }
 
 /// Decide whether to wake now.
@@ -125,7 +127,8 @@ pub fn decide(inputs: &WakeInputs<'_>) -> WakeDecision {
     if wakes_in_last_hour(inputs.recent, inputs.now) >= inputs.max_wakes_per_hour as usize {
         return WakeDecision::Sleep("wake cap reached");
     }
-    let seen = alarming(inputs.signals);
+    let mut seen = alarming(inputs.signals);
+    seen.extend(inputs.hub.iter().cloned());
     let mut reasons = new_signals(&seen, inputs.last);
     if let Some(state) = heartbeat_due(inputs.heartbeat, inputs.last, inputs.now) {
         reasons.insert(0, WakeReason::Heartbeat { state });

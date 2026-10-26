@@ -1,0 +1,69 @@
+name: Edge
+
+# Every commit the hub publishes to vivi/main is built once and kept as a
+# prerelease tagged edge-<12-hex commit>. The hub's root timer installs the
+# newest one (vivi-install follow) and the mind rolls a bad one back.
+# Prereleases are invisible to `vivi update` and install.sh, which read only
+# released v* tags.
+
+on:
+  push:
+    branches:
+      - vivi/main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: edge
+  cancel-in-progress: true
+
+env:
+  TARGET: x86_64-unknown-linux-gnu
+  KEEP: 20
+
+jobs:
+  edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup target add "$TARGET"
+
+      - name: Build release binary
+        run: cargo build --release --target "$TARGET"
+
+      - name: Package binary
+        run: |
+          set -euo pipefail
+          archive="vivi-$TARGET.tar.gz"
+          tar czf "$archive" -C "target/$TARGET/release" vivi
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Publish edge prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="edge-${GITHUB_SHA::12}"
+          archive="vivi-$TARGET.tar.gz"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$archive" "$archive.sha256" --clobber
+          else
+            gh release create "$tag" "$archive" "$archive.sha256" \
+              --prerelease --target "$GITHUB_SHA" \
+              --title "edge ${GITHUB_SHA::12}" \
+              --notes "Unreleased build of vivi/main at $GITHUB_SHA, for the hub edge channel."
+          fi
+
+      - name: Prune old edge prereleases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("edge-"))] | sort_by(.createdAt) | reverse | .[env.KEEP | tonumber:] | .[].tagName' |
+            while read -r tag; do
+              gh release delete "$tag" --cleanup-tag --yes
+            done
