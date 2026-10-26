@@ -67,9 +67,47 @@ pub fn is_finished(row: &MonitorRow) -> bool {
     matches!(row.state, RowState::Finished(_))
 }
 
-/// Identity of one lane across snapshots, for session history.
+/// One recent-finished window, shared by one-shot snapshots and session
+/// retention: recorded finished activity within this many seconds of its
+/// completion is still fresh.
+pub const RECENT_FINISHED_SECS: u64 = 300;
+
+/// Whether the row is the current pump control header rather than a
+/// historical cycle tick: kind `Pump` with no task and an empty slot.
+/// Status headers are exempt from activity expiry even when idle, paused, or
+/// stopped.
+pub fn is_pump_status(row: &MonitorRow) -> bool {
+    matches!(row.kind, RowKind::Pump) && row.task.is_none() && row.slot.is_empty()
+}
+
+/// Whether the activity is recent enough to keep. Running rows always pass.
+/// Recorded finished activity passes while
+/// `now.saturating_sub(finished_at)` is within [`RECENT_FINISHED_SECS`].
+/// Finished activity with an unknown completion passes this stateless
+/// helper; session retention separately bounds it. Pump status headers are
+/// exempt from expiry entirely.
+pub fn recent_activity(row: &MonitorRow, now: u64) -> bool {
+    if is_pump_status(row) {
+        return true;
+    }
+    if !is_finished(row) {
+        return true;
+    }
+    match row.finished_at {
+        Some(finished_at) => now.saturating_sub(finished_at) <= RECENT_FINISHED_SECS,
+        None => true,
+    }
+}
+
+/// Identity of one lane across snapshots, for session history. Includes kind
+/// and start time alongside the project, pool, slot, and task so display
+/// names alone never provide project isolation; session caches may nest
+/// these keys under project root paths.
 pub fn activity_key(row: &MonitorRow) -> String {
-    format!("{}|{}|{}|{:?}", row.project, row.pool, row.slot, row.task)
+    format!(
+        "{}|{:?}|{}|{}|{:?}|{:?}",
+        row.project, row.kind, row.pool, row.slot, row.task, row.started_at
+    )
 }
 
 /// Human duration: `45s`, `12m30s` (or `12m` with no remainder), `1h23m`.
@@ -89,14 +127,20 @@ pub fn format_secs(secs: u64) -> String {
     format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
 }
 
-/// `<running>/<budget>`; budget unknown shows running alone, both unknown `-`.
+/// `<running>/<budget>`; budget unknown shows running alone, both unknown
+/// `-`. Rows kept past their freshness window carry a compact stale suffix
+/// with the formatted age.
 pub fn running_text(row: &MonitorRow) -> String {
-    match (row.running_secs, row.budget_secs) {
+    let base = match (row.running_secs, row.budget_secs) {
         (running, None) => running.map_or("-".to_string(), format_secs),
         (None, Some(budget)) => format!("-/{}", format_secs(budget)),
         (Some(running), Some(budget)) => {
             format!("{}/{}", format_secs(running), format_secs(budget))
         }
+    };
+    match row.stale_age_secs {
+        Some(age) => format!("{base} (stale {})", format_secs(age)),
+        None => base,
     }
 }
 

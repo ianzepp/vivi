@@ -27,6 +27,17 @@ fn row(state: RowState) -> MonitorRow {
     }
 }
 
+/// A pump control header: kind `Pump`, no task, empty slot.
+fn pump_status_row(state: RowState) -> MonitorRow {
+    let mut r = row(state);
+    r.kind = RowKind::Pump;
+    r.pool = "pump".to_string();
+    r.slot = String::new();
+    r.task = None;
+    r.role = "running".to_string();
+    r
+}
+
 #[test]
 fn running_text_formats_budget_pair() {
     assert_eq!(running_text(&row(RowState::Running)), "1m30s/30m");
@@ -77,11 +88,98 @@ fn started_text_zero_is_utc_midnight() {
 fn activity_key_is_stable_shape() {
     assert_eq!(
         activity_key(&row(RowState::Running)),
-        "proj|here|slot-1|Some(\"a1b2c3d4\")"
+        "proj|Slot|here|slot-1|Some(\"a1b2c3d4\")|Some(0)"
     );
     let mut r = row(RowState::Running);
     r.task = None;
-    assert_eq!(activity_key(&r), "proj|here|slot-1|None");
+    r.started_at = None;
+    assert_eq!(activity_key(&r), "proj|Slot|here|slot-1|None|None");
+}
+
+#[test]
+fn activity_key_distinguishes_row_kind() {
+    let mut pump = row(RowState::Running);
+    pump.kind = RowKind::Pump;
+    assert_ne!(activity_key(&row(RowState::Running)), activity_key(&pump));
+    assert!(activity_key(&pump).starts_with("proj|Pump|"));
+}
+
+#[test]
+fn activity_key_distinguishes_retry_start_times() {
+    let mut retry = row(RowState::Running);
+    retry.started_at = Some(500);
+    assert_ne!(activity_key(&row(RowState::Running)), activity_key(&retry));
+    assert!(activity_key(&retry).ends_with("|Some(500)"));
+}
+
+#[test]
+fn recent_finished_window_is_300_seconds() {
+    assert_eq!(RECENT_FINISHED_SECS, 300);
+}
+
+#[test]
+fn recent_activity_always_keeps_running_rows() {
+    let mut old = row(RowState::Running);
+    old.started_at = Some(0);
+    assert!(recent_activity(&old, 10_000));
+}
+
+#[test]
+fn recent_activity_cutoff_is_inclusive() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.finished_at = Some(1_000);
+    assert!(recent_activity(&r, 1_000 + RECENT_FINISHED_SECS));
+    assert!(!recent_activity(&r, 1_000 + RECENT_FINISHED_SECS + 1));
+}
+
+#[test]
+fn recent_activity_keeps_unknown_completion_finishes() {
+    let mut r = row(RowState::Finished("uncollected".to_string()));
+    r.finished_at = None;
+    assert!(recent_activity(&r, 10_000));
+}
+
+#[test]
+fn pump_status_header_is_distinguished_from_ticks_and_slots() {
+    assert!(is_pump_status(&pump_status_row(RowState::Running)));
+    assert!(is_pump_status(&pump_status_row(RowState::Finished(
+        "stopped".to_string()
+    ))));
+    let mut tick = pump_status_row(RowState::Running);
+    tick.slot = "tick".to_string();
+    tick.task = Some("t1".to_string());
+    assert!(!is_pump_status(&tick));
+    assert!(!is_pump_status(&row(RowState::Running)));
+}
+
+#[test]
+fn pump_status_header_exempt_from_expiry_when_stopped() {
+    let mut stopped = pump_status_row(RowState::Finished("stopped".to_string()));
+    stopped.finished_at = Some(0);
+    assert!(recent_activity(&stopped, RECENT_FINISHED_SECS + 1));
+}
+
+#[test]
+fn running_text_appends_stale_label_when_stale() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.stale_age_secs = Some(42);
+    assert_eq!(running_text(&r), "1m30s/30m (stale 42s)");
+}
+
+#[test]
+fn running_text_labels_zero_stale_age() {
+    let mut r = row(RowState::Running);
+    r.stale_age_secs = Some(0);
+    assert_eq!(running_text(&r), "1m30s/30m (stale 0s)");
+}
+
+#[test]
+fn running_text_stale_age_grows_with_age() {
+    let mut r = row(RowState::Finished("failed".to_string()));
+    r.stale_age_secs = Some(90);
+    assert_eq!(running_text(&r), "1m30s/30m (stale 1m30s)");
+    r.stale_age_secs = Some(150);
+    assert_eq!(running_text(&r), "1m30s/30m (stale 2m30s)");
 }
 
 #[test]
