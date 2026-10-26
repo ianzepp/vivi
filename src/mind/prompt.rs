@@ -4,8 +4,9 @@
 
 use std::fmt::Write as _;
 
+mod menu;
+
 use super::actions::Planned;
-use super::authority::Action;
 use super::config::AuthorityStage;
 use super::probe::ProjectSignals;
 use super::wake::WakeReason;
@@ -15,20 +16,6 @@ const OPEN: &str = "<<<untrusted";
 const CLOSE: &str = "untrusted>>>";
 /// Longest untrusted text kept per field.
 const MAX_FIELD: usize = 2000;
-/// Every action a turn may name, in stage order; a wake lists the ones its
-/// stage opens.
-const ACTIONS: [Action; 10] = [
-    Action::ReadStatus,
-    Action::LetterToOperator,
-    Action::Escalate,
-    Action::PausePump,
-    Action::ResumePump,
-    Action::Requeue,
-    Action::Replan,
-    Action::Answer,
-    Action::Unlock,
-    Action::FileFixNeed,
-];
 /// What the probe's signals mean. A live model read a need locked at its
 /// operator gate as "normal queue state" without this.
 const LEGEND: &str = "Signals: locked = a need's run waits at an operator-only lock and will not \
@@ -71,19 +58,12 @@ pub fn wake_prompt(
     }
     out.push_str(LEGEND);
     out.push_str(&project_blocks(signals));
-    let kinds: Vec<&str> = ACTIONS
-        .iter()
-        .filter(|action| action.required_stage() <= stage)
-        .map(|action| action.as_str())
-        .collect();
     let _ignored = writeln!(
         out,
         "Decide: leave it, act within your stage, or pause and escalate to the operator.\n\
-         End with a +++ TOML envelope of [[action]] tables (kind, project, need, step, word, note),\n\
-         or no envelope to take no action. Kinds open at this stage: {}. project is the project's \
-         root path; need and step are bare handles such as 6c02e949; leave out every field the \
-         kind does not use.",
-        kinds.join(", ")
+         End with a +++ TOML envelope of [[action]] tables, or no envelope to take no action.\n\
+         {}",
+        menu::for_stage(stage)
     );
     out
 }
