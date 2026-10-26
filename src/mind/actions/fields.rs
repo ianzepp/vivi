@@ -1,6 +1,7 @@
 //! Field-level checks for [`ActionRequest`]s: blank normalization, the
 //! per-kind field matrix, the value rules, and the handle token rule.
 
+use super::filing_fields;
 use super::{Action, ActionRequest, MAX_NOTE, Refusal};
 use crate::pool::config::is_model_slug;
 
@@ -193,6 +194,9 @@ pub(super) fn validate_fields(request: &ActionRequest) -> Result<(), Refusal> {
     }
     for &name in required.iter().chain(optional.iter()) {
         check_value(name, field(request, name))?;
+    }
+    if matches!(request.kind, Action::FileNeed | Action::FileFixNeed) {
+        filing_fields::validate_filing(request)?;
     }
     for name in KNOWN {
         if required.contains(&name) || optional.contains(&name) {

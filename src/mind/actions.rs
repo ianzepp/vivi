@@ -24,6 +24,7 @@
 //! actions into server tool calls.
 
 mod fields;
+mod filing_fields;
 
 use std::path::PathBuf;
 
@@ -251,6 +252,9 @@ fn check(
         .ok_or(Refusal::MissingField("project"))?;
     if !watched.iter().any(|root| root == project) {
         return Err(Refusal::UnwatchedProject);
+    }
+    if request.kind == Action::FileFixNeed {
+        filing_fields::check_fix_policy(request, project)?;
     }
     authority::permit(gate, ledger, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
 }
