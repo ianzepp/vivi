@@ -3,16 +3,17 @@
 //! `pump_log` and `send`, and reads what they answer. It runs no `vivi`
 //! command and writes no file in a project.
 //!
-//! [`McpActuator`] turns one permitted action into one or more tool calls.
+//! [`McpActuator`] turns one permitted action into exactly one tool call.
 //! The server decides what the key may do, so a refusal comes back as the
 //! tool's error text, which the session sees on its next turn.
 
+mod calls;
+
 use std::path::Path;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::actions::{ActionRequest, Actuator};
-use super::authority::Action;
 use crate::mcp::HttpUpstream;
 use crate::mcp::client::{Client, result_is_error, result_text};
 
@@ -103,15 +104,12 @@ impl<C: ToolCaller> McpActuator<C> {
 
 impl<C: ToolCaller> Actuator for McpActuator<C> {
     fn apply(&mut self, request: &ActionRequest) -> Result<String, String> {
-        let mut receipt = Vec::new();
-        for (tool, arguments) in calls_for(request)? {
-            let answer = self
-                .caller
-                .call(tool, &arguments)
-                .map_err(|error| format!("{tool}: {error}"))?;
-            receipt.push(format!("{tool}: {}", clip(&answer)));
-        }
-        Ok(receipt.join("\n"))
+        let (tool, arguments) = calls::call_for(request)?;
+        let answer = self
+            .caller
+            .call(tool, &arguments)
+            .map_err(|error| format!("{tool}: {error}"))?;
+        Ok(format!("{tool}: {}", clip(&answer)))
     }
 
     fn feeds_back(&self) -> bool {
@@ -126,143 +124,6 @@ fn clip(text: &str) -> String {
     }
     let kept: String = text.chars().take(MAX_RECEIPT).collect();
     format!("{kept}\n[cut]")
-}
-
-/// The server's name for a project: its root's directory name, which is how
-/// a hosted project is named.
-fn project_name(request: &ActionRequest) -> Result<String, String> {
-    request
-        .project
-        .as_deref()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .ok_or_else(|| String::from("the action names no project"))
-}
-
-fn need_of(request: &ActionRequest) -> Result<&str, String> {
-    request
-        .need
-        .as_deref()
-        .ok_or_else(|| String::from("the action names no need"))
-}
-
-fn step_of(request: &ActionRequest) -> Result<&str, String> {
-    request
-        .step
-        .as_deref()
-        .ok_or_else(|| String::from("the action names no step"))
-}
-
-/// The failure text for an action the mapping slices have not wired to the
-/// server's tools yet.
-fn not_wired(kind: Action) -> String {
-    format!("{} is not wired to the server yet", kind.as_str())
-}
-
-/// The tool calls one action makes.
-fn calls_for(request: &ActionRequest) -> Result<Vec<Call>, String> {
-    let project = project_name(request)?;
-    let note = request.note.as_deref();
-    let calls = match request.kind {
-        Action::PausePump => vec![control(&project, "pause")],
-        Action::ResumePump => vec![control(&project, "resume")],
-        Action::Requeue => vec![pump_action(
-            &project,
-            json!({ "action": "requeue", "steps": [step_of(request)?], "reason": note }),
-        )],
-        Action::Replan => vec![pump_action(
-            &project,
-            json!({ "action": "replan", "need": need_of(request)? }),
-        )],
-        Action::Answer => vec![answer_call(&project, request)?],
-        Action::Unlock => vec![pump_action(
-            &project,
-            json!({ "action": "unlock", "need": need_of(request)?, "note": note }),
-        )],
-        Action::ReadStatus => read_status_calls(&project),
-        Action::LetterToOperator | Action::Escalate => vec![letter(&project, request)],
-        Action::ReadLog
-        | Action::ReadNeed
-        | Action::ReadNeedThread
-        | Action::ReadTaskThread
-        | Action::ReadFlow
-        | Action::ReadConfig
-        | Action::ReadPool
-        | Action::ReplyNeed
-        | Action::SetPriority
-        | Action::WithdrawNeed
-        | Action::SetRoleModel
-        | Action::SetPoolCap
-        | Action::SetPoolBand
-        | Action::FileNeed
-        | Action::FileFixNeed
-        | Action::DispatchNeed
-        | Action::Upgrade
-        | Action::SelfRelease => return Err(not_wired(request.kind)),
-    };
-    Ok(calls)
-}
-
-/// The `pump_action` answer call for one step.
-fn answer_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
-    Ok(pump_action(
-        project,
-        json!({
-            "action": "answer",
-            "step": step_of(request)?,
-            "word": request.word.as_deref().ok_or("the action names no word")?,
-            "note": request.note.as_deref(),
-        }),
-    ))
-}
-
-/// The status read: open steps plus the log tail.
-fn read_status_calls(project: &str) -> Vec<Call> {
-    vec![
-        (
-            "pump_list",
-            json!({ "project": project, "status": "open", "limit": 20 }),
-        ),
-        (
-            "pump_log",
-            json!({ "project": project, "file": "log", "lines": 40 }),
-        ),
-    ]
-}
-
-fn control(project: &str, action: &str) -> Call {
-    (
-        "pump_control",
-        json!({ "project": project, "action": action }),
-    )
-}
-
-/// `pump_action` arguments: the given object plus the project, with unset
-/// (`null`) fields left out.
-fn pump_action(project: &str, mut arguments: Value) -> Call {
-    if let Some(object) = arguments.as_object_mut() {
-        object.insert("project".into(), Value::String(project.to_string()));
-        object.retain(|_, value| !value.is_null());
-    }
-    ("pump_action", arguments)
-}
-
-fn letter(project: &str, request: &ActionRequest) -> Call {
-    let subject = match request.need.as_deref() {
-        Some(need) => format!("mind: {} (need {need})", request.kind.as_str()),
-        None => format!("mind: {}", request.kind.as_str()),
-    };
-    (
-        "send",
-        json!({
-            "project": project,
-            "kind": "mail",
-            "to": "operator",
-            "subject": subject,
-            "body": request.note.as_deref().unwrap_or_default(),
-        }),
-    )
 }
 
 #[cfg(test)]
