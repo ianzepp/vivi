@@ -65,6 +65,10 @@ pub struct PumpConfig {
     /// dispatched. A relative value resolves against `home`. Default
     /// `reserved.txt`.
     pub reserved_file: String,
+    /// Seconds a newly constructed repair fix-job may run: each repair fix
+    /// unit receives this attempt budget when the pump constructs it.
+    /// `validate` accepts only the pool dispatch budget range.
+    pub repair_attempt_secs: u64,
     /// Retired: need priority lives in `pump.db` (`vivi pump priority`). The
     /// key is accepted and ignored so an old `priority_file = "priority.txt"`
     /// line in `mailspace.toml` still parses; it is never written back.
@@ -119,6 +123,7 @@ impl Default for PumpConfig {
             shell_prefix: String::new(),
             hand_rules: None,
             reserved_file: "reserved.txt".into(),
+            repair_attempt_secs: 1800,
             retired_priority_file: None,
             fix_prefix: "pumpfix".into(),
             from: "operator".into(),
