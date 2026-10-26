@@ -888,7 +888,7 @@ fn validate_build_dir(dir: &str) -> Result<(), VivariumError> {
     Ok(())
 }
 
-pub(super) fn is_model_slug(value: &str) -> bool {
+pub(crate) fn is_model_slug(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '@' | '+' | '-')
