@@ -13,35 +13,73 @@ pub struct SessionHistory {
     rows: Vec<MonitorRow>,
     /// First epoch second each undated finished activity was observed
     /// finished, by activity key: the completion time of last resort for rows
-    /// whose source never supplied `finished_at`. Never backfilled from
-    /// `started_at`, which says when work began, not when it ended.
+    /// whose source never supplied `finished_at`. The stamp outlives the
+    /// visible row — for as long as the activity stays observed — so repeated
+    /// polls cannot restart the window after expiry. A different `started_at`
+    /// is a new attempt with its own stamp. Never backfilled from
+    /// `started_at`, which says when work began, not when it ended, and never
+    /// written back into the authoritative `finished_at` field.
     first_finished: HashMap<String, u64>,
 }
 
 impl SessionHistory {
-    /// Merge one poll into the session view. Currently observed rows always
-    /// carry themselves; running rows missing from the poll drop without a
-    /// manufactured completion; finished rows linger for
-    /// [`COMPLETION_WINDOW_SECS`] past their completion time — `finished_at`
-    /// when the source supplied one, otherwise the first observation of the
-    /// finish. Pump status headers are mode reports, not completions, and
-    /// never enter the window.
+    /// Merge one poll into the session view. Currently observed rows carry
+    /// themselves, except a finished row whose completion window has already
+    /// expired: it stays invisible however often the poll re-lists it,
+    /// because the completion time — `finished_at` when the source supplied
+    /// one, otherwise the first observation of the finish — outlives the
+    /// visible row. Finished rows linger for [`COMPLETION_WINDOW_SECS`] past
+    /// completion. Running rows missing from the poll drop without a
+    /// manufactured completion, and a running report for an activity already
+    /// seen finished preserves the terminal state instead of reviving it.
+    /// Pump status headers are mode reports, not completions, and never enter
+    /// the window.
     pub fn refresh(&mut self, fresh: Vec<MonitorRow>, now: u64) {
         let current: HashSet<String> = fresh.iter().map(activity_key).collect();
-        let mut next = fresh;
-        for old in self.rows.drain(..) {
-            let key = activity_key(&old);
-            if current.contains(&key) || !is_finished(&old) {
+        let mut prior: Vec<(String, MonitorRow)> = self
+            .rows
+            .drain(..)
+            .map(|row| (activity_key(&row), row))
+            .collect();
+        let mut next = Vec::with_capacity(fresh.len());
+        for row in fresh {
+            let key = activity_key(&row);
+            let previous = prior
+                .iter()
+                .position(|(old, _)| *old == key)
+                .map(|at| prior.remove(at).1);
+            if is_status_row(&row) {
+                next.push(row);
                 continue;
             }
-            let completed = old
-                .finished_at
-                .or_else(|| self.first_finished.get(&key).copied());
-            if completed.is_some_and(|at| now.saturating_sub(at) <= COMPLETION_WINDOW_SECS) {
-                next.push(old);
+            if is_finished(&row) {
+                // Expired finishes stay gone however often re-observed.
+                if !self.expired(&key, row.finished_at, now) {
+                    next.push(row);
+                }
+                continue;
+            }
+            // Live row: an activity already seen finished stays finished.
+            let done = previous.filter(|old| is_finished(old));
+            if done.is_none() && !self.first_finished.contains_key(&key) {
+                next.push(row);
+                continue;
+            }
+            if let Some(done) = done {
+                if !self.expired(&key, done.finished_at, now) {
+                    next.push(done);
+                }
             }
         }
-        self.stamp_undated_finishes(&next, now);
+        for (key, row) in prior {
+            if is_status_row(&row) || !is_finished(&row) {
+                continue;
+            }
+            if !self.expired(&key, row.finished_at, now) {
+                next.push(row);
+            }
+        }
+        self.stamp_undated_finishes(&next, &current, now);
         self.rows = next;
     }
 
@@ -50,16 +88,27 @@ impl SessionHistory {
         &self.rows
     }
 
+    /// True when the activity finished strictly more than the window ago:
+    /// the authoritative `finished_at` when supplied, else the inferred
+    /// first-observed finish.
+    fn expired(&self, key: &str, finished_at: Option<u64>, now: u64) -> bool {
+        finished_at
+            .or_else(|| self.first_finished.get(key).copied())
+            .is_some_and(|at| now.saturating_sub(at) > COMPLETION_WINDOW_SECS)
+    }
+
     /// Stamp newly seen undated finishes, keep the earliest stamp for rows
-    /// already tracked, and drop stamps whose activity left the history.
-    fn stamp_undated_finishes(&mut self, rows: &[MonitorRow], now: u64) {
+    /// already tracked, and drop stamps for identities no longer needed:
+    /// keys neither visible in the history nor observed in this poll.
+    fn stamp_undated_finishes(&mut self, rows: &[MonitorRow], current: &HashSet<String>, now: u64) {
         for row in rows {
             if !is_status_row(row) && is_finished(row) && row.finished_at.is_none() {
                 self.first_finished.entry(activity_key(row)).or_insert(now);
             }
         }
-        self.first_finished
-            .retain(|key, _| rows.iter().any(|row| &activity_key(row) == key));
+        self.first_finished.retain(|key, _| {
+            current.contains(key) || rows.iter().any(|row| &activity_key(row) == key)
+        });
     }
 }
 

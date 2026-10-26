@@ -149,3 +149,62 @@ fn pump_headers_survive_mode_changes_without_window_math() {
     history.refresh(vec![pump_header("running"), pump_header("stopped")], 50_000);
     assert_eq!(history.rows().len(), 2);
 }
+
+#[test]
+fn repeated_observation_of_undated_finished_row_does_not_reset_age() {
+    let done = finished(row("a"), "pushed", None);
+    let mut history = SessionHistory::default();
+    history.refresh(vec![done.clone()], 500);
+    history.refresh(vec![done.clone()], 600);
+    history.refresh(vec![done.clone()], 800);
+    assert_eq!(history.rows(), &[done.clone()]);
+    history.refresh(vec![done.clone()], 801);
+    assert!(history.rows().is_empty());
+    history.refresh(vec![done], 900);
+    assert!(history.rows().is_empty());
+}
+
+#[test]
+fn expired_undated_finish_stays_invisible_while_the_row_keeps_appearing() {
+    let done = finished(row("a"), "pushed", None);
+    let mut history = SessionHistory::default();
+    history.refresh(vec![done.clone()], 0);
+    history.refresh(vec![done.clone()], 100);
+    history.refresh(vec![done.clone()], 301);
+    assert!(history.rows().is_empty());
+    history.refresh(vec![done.clone()], 400);
+    history.refresh(vec![done.clone()], 60_000);
+    assert!(history.rows().is_empty());
+    history.refresh(Vec::new(), 60_001);
+    assert!(history.rows().is_empty());
+}
+
+#[test]
+fn a_new_attempt_receives_a_new_finish_age() {
+    let first = finished(row("a"), "pushed", None);
+    let mut retried = row("a");
+    retried.started_at = Some(200);
+    let second = finished(retried, "pushed", None);
+    let mut history = SessionHistory::default();
+    history.refresh(vec![first], 500);
+    history.refresh(vec![second.clone()], 600);
+    history.refresh(vec![second.clone()], 801);
+    assert_eq!(history.rows(), &[second.clone()]);
+    history.refresh(vec![second], 901);
+    assert!(history.rows().is_empty());
+}
+
+#[test]
+fn finished_activity_is_never_converted_back_to_running() {
+    let done = finished(row("a"), "pushed", None);
+    let live = row("a");
+    let mut history = SessionHistory::default();
+    history.refresh(vec![done.clone()], 500);
+    history.refresh(vec![live.clone()], 700);
+    assert_eq!(history.rows(), &[done.clone()]);
+    assert_eq!(history.rows()[0].state, RowState::Finished("pushed".into()));
+    history.refresh(vec![live.clone()], 801);
+    assert!(history.rows().is_empty());
+    history.refresh(vec![live], 60_000);
+    assert!(history.rows().is_empty());
+}
