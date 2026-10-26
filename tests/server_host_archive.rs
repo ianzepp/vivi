@@ -56,6 +56,16 @@ const BASE_SECONDS: i64 = 1_792_000_000;
 
 static ENV: Once = Once::new();
 
+/// Serializes every test of this binary that builds a fixture, for the
+/// test's whole life. The host registry is process-global
+/// (`VIVI_CONFIG_DIR`) and `reconcile` serves every registry-served root
+/// into whatever data dir it is handed, so a sibling registering a project
+/// mid-test can import it into this fixture's data dir: distinct names do
+/// not isolate data-dir assertions. The guard lives in the fixture, so it is
+/// released only after the fixture (and its cleanup) is dropped; a test that
+/// panics does not poison it for the rest.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// One scratch config directory for the whole test binary: the host
 /// registry is process-global (`VIVI_CONFIG_DIR`). Every test uses its own
 /// names.
@@ -81,9 +91,14 @@ struct Fx {
     /// The store's clock in whole Unix seconds; store it forward to
     /// simulate elapsed time.
     clock: Arc<AtomicI64>,
+    /// Held for the fixture's life: see [`SERIAL`].
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 fn fixture(name: &str) -> Fx {
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     isolate_registry();
     let base = std::env::temp_dir().join(format!(
         "vivi-server-host-archive-{}-{name}",
@@ -115,6 +130,7 @@ fn fixture(name: &str) -> Fx {
         lanes,
         data,
         clock,
+        _serial: serial,
     }
 }
 

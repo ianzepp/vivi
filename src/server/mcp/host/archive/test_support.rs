@@ -38,6 +38,17 @@ const GIT_URL_PREFIX: &str = "git@hub.example.ts.net:";
 pub(super) const BASE_SECONDS: i64 = 1_792_000_000;
 
 static CONFIG_DIR: Once = Once::new();
+
+/// Serializes every test of this binary that builds a fixture, for the
+/// test's whole life. The host registry is process-global
+/// (`VIVI_CONFIG_DIR`) and `reconcile` serves every registry-served root
+/// into whatever data dir it is handed, so a sibling registering a project
+/// mid-test can import it into this fixture's data dir: distinct names do
+/// not isolate data-dir assertions. The guard lives in the fixture, so it is
+/// released only after the fixture (and its cleanup) is dropped; a test that
+/// panics does not poison it for the rest.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 static NAMES: AtomicU64 = AtomicU64::new(0);
 
 /// One scratch config directory for the whole test binary: the host
@@ -99,12 +110,17 @@ pub(super) struct Fixture {
     pub(super) lanes_dir: PathBuf,
     /// The server's own data directory (`DATA_DIR/projects/<id>/`).
     pub(super) data_dir: PathBuf,
+    /// Held for the fixture's life: see [`SERIAL`].
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 /// Create one project through the real parent `create_project` handler over
 /// scratch roots and a fixed clock. Panics when creation fails: every test
 /// needs the project.
 pub(super) async fn fixture(label: &str, pump: bool) -> Fixture {
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     isolate_registry();
     let name = unique_name(label);
     let base = std::env::temp_dir().join(format!(
@@ -152,6 +168,7 @@ pub(super) async fn fixture(label: &str, pump: bool) -> Fixture {
         lanes_dir: PathBuf::from(made["lanes_dir"].as_str().expect("lanes_dir")),
         name,
         data_dir,
+        _serial: serial,
     }
 }
 

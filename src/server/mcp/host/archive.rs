@@ -179,6 +179,13 @@ fn answer(
 /// Host principals are skipped: they hold no project grants by rule. A
 /// failed grant removal or revocation propagates instead of being skipped,
 /// so a caller never reports a cleanup that did not happen.
+///
+/// A final-grant holder has its keys revoked before the grant comes off.
+/// The two are separate saves, and a retry finds its principals by the grant
+/// they still hold: revoking first means an interruption between the writes
+/// leaves an inert grant (its keys no longer verify) that the next run still
+/// finds and finishes, never a removed grant with live keys that no run
+/// would revoke.
 pub(super) fn drop_project_grants(
     state: &AppState,
     project_id: &str,
@@ -189,15 +196,6 @@ pub(super) fn drop_project_grants(
         if principal.host || !principal.grants.iter().any(|g| g.project_id == project_id) {
             continue;
         }
-        state
-            .server_keys
-            .remove_grant(&principal.principal, project_id)
-            .map_err(|e| {
-                ToolError::new(format!(
-                    "could not remove the grant on {project_id} from {}: {e:?}",
-                    principal.principal
-                ))
-            })?;
         if principal.grants.len() == 1 {
             revoked += state
                 .server_keys
@@ -209,6 +207,15 @@ pub(super) fn drop_project_grants(
                     ))
                 })?;
         }
+        state
+            .server_keys
+            .remove_grant(&principal.principal, project_id)
+            .map_err(|e| {
+                ToolError::new(format!(
+                    "could not remove the grant on {project_id} from {}: {e:?}",
+                    principal.principal
+                ))
+            })?;
         ungranted.push(principal.principal);
     }
     Ok((ungranted, revoked))
@@ -386,6 +393,48 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["other-project"]
         );
+    }
+
+    /// A cleanup interrupted after its first write (the final-grant holder's
+    /// keys revoked, its grant not yet removed) leaves an inert grant, and
+    /// the retry still finds that principal, removes the grant and keeps
+    /// the keys revoked: no interruption leaves live keys behind.
+    #[tokio::test]
+    async fn an_interrupted_cleanup_is_finished_by_the_retry_and_never_fails_open() {
+        let fx = fixture("grants-retry", true).await;
+        let id = fx.project_id.clone();
+
+        let solo = fx
+            .state
+            .server_keys
+            .mint(
+                &format!("solo@{id}"),
+                false,
+                vec![grant(&id, "solo")],
+                "solo",
+                "test",
+            )
+            .unwrap();
+        let principal = format!("solo@{id}");
+
+        // The first write of the cleanup, then the interruption.
+        fx.state.server_keys.revoke_principal(&principal).unwrap();
+        assert!(
+            holders(&fx.state, &id).contains(&principal),
+            "the grant is still there for the retry to find"
+        );
+        assert!(
+            fx.state.server_keys.verify(&solo.key).is_none(),
+            "the leftover grant is inert: its key no longer verifies"
+        );
+
+        let (ungranted, _) = drop_project_grants(&fx.state, &id)
+            .map_err(|e| e.message)
+            .unwrap();
+
+        assert!(ungranted.contains(&principal), "{ungranted:?}");
+        assert!(holders(&fx.state, &id).is_empty());
+        assert!(fx.state.server_keys.verify(&solo.key).is_none());
     }
 
     /// The fixture creates a project through the real handler and
