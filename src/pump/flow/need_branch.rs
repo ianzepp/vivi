@@ -56,16 +56,60 @@ fn ls_remote(target: &Ctx, remote_ref: &str) -> Result<Option<String>, VivariumE
     remote_tip(target, &target.cfg.remote, remote_ref).map_err(VivariumError::Other)
 }
 
+/// Whether run `run` may take the need branch of `need` now: the verdict of
+/// [`readiness`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Readiness {
+    /// Nothing blocks the run: the base may be recorded.
+    Ready,
+    /// An older `live` row awaits adoption by the restart phase: an expected
+    /// ownership wait, not a preparation error.
+    AwaitsAdoption,
+    /// The old branch is still being moved: blocked until the restart phase
+    /// recovers it, which raises `flow-need-branch-rename-failed` when the
+    /// move cannot run or fails.
+    Moving,
+    /// The row is recorded on another target.
+    WrongTarget,
+}
+
+/// Classify whether run `run` may take the need branch of `need` on `target`.
+///
+/// One predicate for flow preparation and jobs release. It is pure: it adopts
+/// nothing, moves nothing and raises nothing. [`Readiness::AwaitsAdoption`]
+/// separates an expected ownership wait from a refusal without matching error
+/// prose, and a `renaming`/`deleting` row stays blocked for explicit recovery.
+#[must_use]
+pub(crate) fn readiness(row: Option<&NeedBranchRow>, run: u32, target: &str) -> Readiness {
+    let Some(row) = row else {
+        return Readiness::Ready;
+    };
+    if row.status == RENAMING || row.status == DELETING {
+        return Readiness::Moving;
+    }
+    if row.status == LIVE && row.run != run {
+        return Readiness::AwaitsAdoption;
+    }
+    if row.target != target {
+        return Readiness::WrongTarget;
+    }
+    Readiness::Ready
+}
+
 /// Record the base of `need` for run `run`: the target's main tip, read once.
 ///
-/// A `live` row for this run returns its base unchanged. A `renaming` or
-/// `deleting` row is an error: the old branch is still being moved. Any other
-/// row (or none) is written as `live` with the current main tip, keeping its
-/// `priors`.
+/// A `live` row of this run on the row's target returns its base unchanged.
+/// The stored row is never replaced by a later caller: a `renaming` or
+/// `deleting` row is refused while the old branch is still being moved, an
+/// older `live` row is refused until the restart phase adopts it, and a row
+/// recorded on another target is refused. Every refusal leaves the stored row
+/// unchanged. Any other row (or none) is written as `live` with the current
+/// main tip, keeping its `priors`.
 ///
 /// # Errors
-/// Returns [`VivariumError`] for an unknown target, a moving old branch, a
-/// missing main ref, or a failed ls-remote or store write.
+/// Returns [`VivariumError`] for an unknown target, a moving old branch, an
+/// unadopted older live row, a target mismatch, a missing main ref, or a
+/// failed ls-remote or store write.
 pub fn record_base(
     ctx: &Ctx,
     store: &PumpStore,
@@ -75,14 +119,28 @@ pub fn record_base(
 ) -> Result<String, VivariumError> {
     let existing = store.need_branch(need)?;
     if let Some(row) = &existing {
-        if row.status == RENAMING || row.status == DELETING {
-            return Err(VivariumError::Other(format!(
-                "need branch of {need} is {}: the old branch is still being moved",
-                row.status
-            )));
+        match readiness(Some(row), run, target) {
+            Readiness::Ready => {}
+            Readiness::Moving => {
+                return Err(VivariumError::Other(format!(
+                    "need branch of {need} is {}: the old branch is still being moved",
+                    row.status
+                )));
+            }
+            Readiness::AwaitsAdoption => {
+                return Err(VivariumError::Other(format!(
+                    "need branch of {need} belongs to run {} and awaits adoption by run {run}",
+                    row.run
+                )));
+            }
+            Readiness::WrongTarget => {
+                return Err(VivariumError::Config(format!(
+                    "need branch of {need} is recorded on target {}, but run {run} targets {target}",
+                    row.target
+                )));
+            }
         }
         if row.status == LIVE
-            && row.run == run
             && let Some(base) = &row.base
         {
             return Ok(base.clone());
