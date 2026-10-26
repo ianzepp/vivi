@@ -167,6 +167,7 @@ fn slice_budgets_follow_a_nondefault_dispatch_fallback() -> R {
     assert_eq!(spec.budget, 222);
     assert!(spec.read_only);
     assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(spec.extra_targets, vec![String::from("default")]);
     // The sizing guidance stays the ten-minute default; the budget is not a
     // sizing input and the minutes are not a hard stop.
     assert_eq!(rig.ctx.cfg.slice.minutes(), 10);
@@ -184,14 +185,18 @@ fn slice_budget_overrides_do_not_touch_the_slice_size_guidance() -> R {
     let mut cfg = PumpConfig::default();
     cfg.dispatch.budget = 222;
     cfg.dispatch.step_budgets.slicer = Some(77);
-    // Another kind configured: it must not reach the slice node.
+    // Other kinds configured: none of them may reach the slice node.
     cfg.dispatch.step_budgets.judge = Some(88);
+    cfg.dispatch.step_budgets.planner = Some(66);
     let mut rig = rig_with(cfg)?;
     planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
 
     let spec = start(&rig)?;
 
     assert_eq!(spec.budget, 77);
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(spec.extra_targets, vec![String::from("default")]);
     // Execution budgets never move `SliceConfig::minutes()` or the brief's
     // default "aim for 5 to 10 minutes" guidance.
     assert_eq!(rig.ctx.cfg.slice.minutes(), 10);
