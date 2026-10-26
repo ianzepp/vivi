@@ -20,6 +20,9 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{NeedBranchRow, PumpStore};
 
+/// The cross-run inventory of completed slices over the retained runs.
+pub mod history;
+
 /// No base yet for the row's run.
 pub const FRESH: &str = "fresh";
 /// A base is recorded for the row's run.
