@@ -22,6 +22,8 @@ use crate::error::VivariumError;
 
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
+mod missing;
+pub use missing::MissingSetting;
 
 // The `pool list` / `pool show` views, named at the config path for callers.
 pub use super::config_view::{BandRow, PoolRow, PoolShow, list_view, show_view};
@@ -482,6 +484,23 @@ impl PoolConfig {
     /// # Errors
     /// Returns a configuration error naming the first bad field.
     pub fn validate(&self, id: &PoolId) -> Result<(), VivariumError> {
+        self.validate_shape(id)?;
+        match self.missing_settings(&id.pool).into_iter().next() {
+            Some(missing) => Err(VivariumError::Config(format!(
+                "[pools.{}] {}",
+                id.pool, missing.message
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Check every value the table sets, and nothing it leaves out. A pool
+    /// that only lacks the settings [`Self::missing_settings`] names passes:
+    /// it is incomplete, not wrong.
+    ///
+    /// # Errors
+    /// Returns a configuration error naming the first bad field.
+    pub fn validate_shape(&self, id: &PoolId) -> Result<(), VivariumError> {
         self.validate_fields(id).map_err(|e| match e {
             VivariumError::Config(message) => {
                 VivariumError::Config(format!("[pools.{}] {message}", id.pool))
@@ -559,13 +578,9 @@ impl PoolConfig {
     }
 
     fn validate_fly_names(&self) -> Result<(), VivariumError> {
-        let Some(app) = &self.fly.app else {
-            return Err(bad(
-                "fly.app is required for a fly pool and has no default (Fly app names are unique across all Fly accounts); set `app = \"<your-unique-app-name>\"` in [fly]",
-            ));
-        };
+        let app = self.fly.app.as_deref().unwrap_or("app");
         for (field, value) in [
-            ("app", app.as_str()),
+            ("app", app),
             ("organization", self.fly.organization_name()),
             ("region", self.fly.region.as_str()),
         ] {
@@ -612,7 +627,7 @@ impl PoolConfig {
                 )))
             };
         }
-        if self.image.trim().is_empty() || self.image.chars().any(char::is_whitespace) {
+        if self.image.chars().any(char::is_whitespace) {
             return Err(bad("image must be a single word"));
         }
         Ok(())
@@ -694,12 +709,9 @@ impl PoolDocker {
 
 impl PoolSsh {
     fn validate(&self) -> Result<(), VivariumError> {
-        let Some(host) = &self.host else {
-            return Err(bad(
-                "ssh.host is required (user@server, or a Host alias from ~/.ssh/config)",
-            ));
-        };
-        check_ssh_host(host).map_err(bad)?;
+        if let Some(host) = &self.host {
+            check_ssh_host(host).map_err(bad)?;
+        }
         check_ssh_root(self.root_or_default()).map_err(bad)
     }
 }

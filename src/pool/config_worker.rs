@@ -66,21 +66,39 @@ impl PoolWorker {
     /// Returns a configuration error naming the first problem.
     pub fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         reject_unknown(pool, ".worker", &self.unknown)?;
-        if self.host.as_deref().is_none_or(|h| h.trim().is_empty()) {
-            return Err(bad("[worker] host is required (an ssh host or alias)"));
-        }
         let kind = self.kind.as_deref().unwrap_or_default();
-        if !WORKER_KINDS.contains(&kind) {
+        if !kind.is_empty() && !WORKER_KINDS.contains(&kind) {
             return Err(bad(format!(
                 "[worker] kind must be one of {}, got {kind:?}",
                 WORKER_KINDS.join(", ")
             )));
         }
-        match (kind, self.size_gib) {
-            ("apfs" | "ram", None | Some(0)) => Err(bad(format!(
-                "[worker] size_gib is required for kind {kind} (whole GiB, at least 1)"
-            ))),
-            _ => Ok(()),
+        Ok(())
+    }
+
+    /// Report each setting a `worker` pool needs and does not have.
+    pub(super) fn missing(&self, need: &mut dyn FnMut(&str, &str)) {
+        if self.host.as_deref().is_none_or(|h| h.trim().is_empty()) {
+            need(
+                "worker.host",
+                "[worker] host is required (an ssh host or alias)",
+            );
+        }
+        let kind = self.kind.as_deref().unwrap_or_default();
+        if kind.is_empty() {
+            need(
+                "worker.kind",
+                &format!(
+                    "[worker] kind is required (one of {})",
+                    WORKER_KINDS.join(", ")
+                ),
+            );
+        }
+        if matches!(kind, "apfs" | "ram") && matches!(self.size_gib, None | Some(0)) {
+            need(
+                "worker.size_gib",
+                &format!("[worker] size_gib is required for kind {kind} (whole GiB, at least 1)"),
+            );
         }
     }
 }

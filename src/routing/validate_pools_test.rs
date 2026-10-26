@@ -47,3 +47,43 @@ fn a_plain_harness_model_slug_adds_no_pool_error() {
     let issues = validate(&config("[\"deepseek/flash\"]"));
     assert!(pool_errors(&issues).is_empty(), "{issues:?}");
 }
+
+fn fly_without_an_app(models: &str) -> MailspaceConfig {
+    let text = format!(
+        "name = \"t\"\n\
+         [pools.f]\nprovider = \"fly\"\nslots = 1\nimage = \"debian:13\"\n\
+         [pools.f.harness]\nname = \"fake\"\nrun = \"fake --model {{model}} @{{brief}}\"\n\
+         models = {models}\n"
+    );
+    toml::from_str(&text).expect("mailspace toml")
+}
+
+#[test]
+fn a_setting_the_provider_needs_is_not_ready_not_an_error() {
+    let issues = validate(&fly_without_an_app("[\"deepseek/flash\"]"));
+    assert!(pool_errors(&issues).is_empty(), "{issues:?}");
+    let missing: Vec<&Issue> = issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::NotReady)
+        .filter(|issue| issue.item.as_deref() == Some("pools.f.fly.app"))
+        .collect();
+    assert_eq!(missing.len(), 1, "{issues:?}");
+    assert!(
+        missing[0]
+            .message
+            .starts_with("[pools.f] fly.app is required"),
+        "{missing:?}"
+    );
+}
+
+#[test]
+fn an_incomplete_pool_still_reports_a_bad_value() {
+    let issues = validate(&fly_without_an_app("[\"\"]"));
+    assert_eq!(pool_errors(&issues).len(), 1, "{issues:?}");
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.item.as_deref() == Some("pools.f.fly.app")),
+        "{issues:?}"
+    );
+}

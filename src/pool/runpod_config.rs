@@ -156,12 +156,9 @@ impl PoolRunpod {
     }
 
     pub(super) fn validate(&self, pool: &str) -> Result<(), VivariumError> {
-        let Some(key) = self.api_key_file.as_deref() else {
-            return Err(bad(
-                "runpod.api_key_file is required (the file that holds the RunPod API key; Vivi hands its path to runpodctl and never reads it)",
-            ));
-        };
-        check_key_path(key)?;
+        if let Some(key) = self.api_key_file.as_deref() {
+            check_key_path(key)?;
+        }
         self.validate_hardware()?;
         reject_unknown(pool, ".runpod", &self.unknown)
     }

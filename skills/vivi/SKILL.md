@@ -1077,6 +1077,12 @@ vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
 ```
 
+`pool add` makes the pool even when its provider still needs a setting that
+has no flag (`fly.app`, `ssh.host`, `runpod.api_key_file`, a container
+`image`, a worker's `host` and `kind`): `vivi config validate` reports each as
+not ready, naming the key, and the commands that create machines or dispatch
+refuse the pool until `pool set` has filled it in.
+
 #### Role → pool
 
 Each `[[identities]]` row may set `pool`, optional `read_only`, and

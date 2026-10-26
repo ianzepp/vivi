@@ -625,3 +625,42 @@ fn pool_show_prints_each_band_model_and_effort() {
     assert_eq!(value["bands"]["P2"][0]["reasoning"], "high");
     assert_eq!(value["harness_models"], serde_json::json!(["m/ok"]));
 }
+
+#[test]
+fn pool_add_makes_an_incomplete_pool_and_validate_names_what_is_missing() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    let initialized = vivi(["mailspace", "init", "--project", root]);
+    assert!(initialized.status.success(), "{}", text(&initialized));
+
+    let added = vivi([
+        "pool",
+        "add",
+        "box",
+        "--provider",
+        "ssh",
+        "--slots",
+        "1",
+        "--project",
+        root,
+    ]);
+    assert!(added.status.success(), "{}", text(&added));
+    let before = text(&vivi(["config", "validate", "--project", root]));
+    assert!(
+        before.contains("[pools.box] ssh.host is required"),
+        "{before}"
+    );
+
+    let set = vivi([
+        "pool",
+        "set",
+        "box",
+        "ssh.host",
+        "me@box",
+        "--project",
+        root,
+    ]);
+    assert!(set.status.success(), "{}", text(&set));
+    let after = text(&vivi(["config", "validate", "--project", root]));
+    assert!(!after.contains("ssh.host is required"), "{after}");
+}

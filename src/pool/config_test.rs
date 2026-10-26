@@ -573,9 +573,11 @@ fn an_image_is_refused_for_ssh_and_still_required_elsewhere() {
     );
     let mut config = docker();
     config.image = String::new();
-    assert!(err(&config).contains("image must be a single word"));
+    assert!(err(&config).contains("image is required"));
     let mut config = full();
     config.image = String::new();
+    assert!(err(&config).contains("image is required"));
+    config.image = "debian 12".into();
     assert!(err(&config).contains("image must be a single word"));
 }
 

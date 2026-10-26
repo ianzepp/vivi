@@ -148,15 +148,24 @@ fn check_role_pools(routing: &RoleRouting, issues: &mut Vec<Issue>) {
 
 /// Run each pool table's own checks, the ones every `vivi pool` command runs
 /// when it starts. Without this a table such as one holding an empty model
-/// slug passes validation and then silently stalls dispatch.
+/// slug passes validation and then silently stalls dispatch. A setting the
+/// provider needs and the table does not have yet (`fly.app`, `ssh.host`) is
+/// reported as not ready, not as an error: `vivi pool add` makes the pool
+/// first and `vivi pool set` fills the setting in.
 fn check_pool_tables(config: &MailspaceConfig, issues: &mut Vec<Issue>) {
     let mailspace_id = config.id.as_deref().unwrap_or_default();
     for (name, pool) in &config.pools {
-        if let Err(error) = pool.validate(&PoolId::new(&config.name, mailspace_id, name)) {
+        if let Err(error) = pool.validate_shape(&PoolId::new(&config.name, mailspace_id, name)) {
             issues.push(Issue::error(match error {
                 VivariumError::Config(message) => message,
                 other => other.to_string(),
             }));
+        }
+        for missing in pool.missing_settings(name) {
+            issues.push(Issue::not_ready(
+                missing.item,
+                format!("[pools.{name}] {}", missing.message),
+            ));
         }
     }
 }
