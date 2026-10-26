@@ -20,6 +20,7 @@ use super::migrate_keys::{
     apply_removals, apply_roots, plan_pool_roots, plan_removals, raw_merge_lanes, review_slot_dirs,
 };
 use super::migrate_pool::{add_pool, settings_source};
+use super::validate::Severity;
 
 /// The flow roles take no band from the hand role.
 const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
@@ -93,6 +94,14 @@ pub struct KeyRemoval {
     pub reason: String,
     /// The removal changes how the pump behaves, not just the file.
     pub behaviour_change: bool,
+    /// How serious it is that the file still carries the key. An error key
+    /// is ignored and `config migrate` deletes it; a warning key is one the
+    /// pump still reads, so the plan holds it back until retirement removes
+    /// the reader too.
+    pub severity: Severity,
+    /// The stable issue name `config validate` reports the key under, when
+    /// the catalogue names the key on its own (its dotted `table.key`).
+    pub issue: Option<String>,
 }
 
 /// `[pools.<pool>.local] root = ...`.
