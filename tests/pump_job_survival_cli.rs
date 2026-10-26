@@ -179,7 +179,7 @@ fn local_pool_jobs_survive_sigkill_and_apply_once() {
 #[test]
 fn flow_merge_main_job_survives_sigkill_and_applies_once() {
     let rig = scaffold(MERGE_SLOTS);
-    let seeded = seed_merge_run(&rig);
+    let seeded = seed_merge_run(&rig, None, 1);
     let main_before = git_output(&rig.seed, &["rev-parse", "main"]);
 
     let mut first = pump_child(&rig);
@@ -293,25 +293,34 @@ struct SeededMerge {
 }
 
 /// A need with an open pump record and a live build run whose `merge` step
-/// is pending, over a need branch one commit ahead of main on the remote.
-fn seed_merge_run(rig: &Rig) -> SeededMerge {
+/// is pending, over a need branch one commit ahead of the bare remote's
+/// current main. With `existing_need`, reuse that exact need (the caller has
+/// reopened it through the real lifecycle); with `None`, send a fresh need.
+/// Each seeded run opens a fresh pump record and numbers its sentinel, merge
+/// step, run rows and branch row with `run`.
+fn seed_merge_run(rig: &Rig, existing_need: Option<&str>, run: u32) -> SeededMerge {
     let mailspace = Mailspace::discover(Some(&rig.project)).unwrap();
-    let need = mailspace
-        .send(SendRequest {
-            from: "operator".into(),
-            to: vec!["mind".into()],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: "merge survival".into(),
-            body: render(&NeedFront::new(vec!["it works".into()]), "").unwrap(),
-            role: "needs".into(),
-            kind: Some("need".into()),
-            reply_to: None,
-        })
-        .unwrap()
-        .delivered
-        .remove(0)
-        .handle;
+    let need = match existing_need {
+        Some(need) => String::from(need),
+        None => {
+            mailspace
+                .send(SendRequest {
+                    from: "operator".into(),
+                    to: vec!["mind".into()],
+                    cc: Vec::new(),
+                    bcc: Vec::new(),
+                    subject: "merge survival".into(),
+                    body: render(&NeedFront::new(vec!["it works".into()]), "").unwrap(),
+                    role: "needs".into(),
+                    kind: Some("need".into()),
+                    reply_to: None,
+                })
+                .unwrap()
+                .delivered
+                .remove(0)
+                .handle
+        }
+    };
     let mut port = MailspacePort {
         mailspace,
         pump_identity: String::from("mind"),
@@ -319,17 +328,45 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
     MailWriter::open_record(&mut port, &need, "").unwrap();
 
     let branch = need_branch::branch(&need);
-    git(&rig.seed, &["checkout", "-q", "-B", "need-work", "main"]);
-    let base = git_output(&rig.seed, &["rev-parse", "HEAD"]);
-    fs::write(rig.seed.join("need.txt"), "the finished work\n").unwrap();
+    // Base the candidate on the bare remote's current main, not on stale
+    // local main: an earlier run may have landed merges there.
+    git(
+        &rig.seed,
+        &[
+            "fetch",
+            "-q",
+            path(&rig.bare),
+            "main:refs/remotes/bare/main",
+        ],
+    );
+    git(
+        &rig.seed,
+        &[
+            "checkout",
+            "-q",
+            "-B",
+            "need-work",
+            "refs/remotes/bare/main",
+        ],
+    );
+    let base = git_output(&rig.seed, &["rev-parse", "refs/remotes/bare/main"]);
+    fs::write(
+        rig.seed.join("need.txt"),
+        format!("the finished work, run {run}\n"),
+    )
+    .unwrap();
     git(&rig.seed, &["add", "need.txt"]);
-    git(&rig.seed, &["commit", "-q", "-m", "finished work"]);
+    git(
+        &rig.seed,
+        &["commit", "-q", "-m", &format!("finished work r{run}")],
+    );
     let need_tip = git_output(&rig.seed, &["rev-parse", "HEAD"]);
     git(
         &rig.seed,
         &[
             "push",
             "-q",
+            "--force",
             path(&rig.bare),
             &format!("HEAD:refs/heads/{branch}"),
         ],
@@ -341,49 +378,55 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
     let store = PumpStore::open(&rig.home.join(DB_FILENAME)).unwrap();
     // A live build run: the sentinel, and the pending `merge` step where the
     // verified build would have routed. (Run start is crate-private.)
-    let run = RunRow {
+    let run_row = RunRow {
         need: need.clone(),
-        run: 1,
+        run,
         flow: String::from("build"),
         flow_version: FLOW_VERSION_NUMBER,
         kind: String::from("build"),
         entry: String::from("rework1"),
         state: String::from(run_state::STARTING),
     };
-    store.insert_run(&run).unwrap();
+    store.insert_run(&run_row).unwrap();
     let sentinel = port
         .send_step(
             "mind",
             "mind",
-            &format!("{need} r1 sentinel"),
-            &render(&TaskFront::sentinel(&need, 1), "").unwrap(),
+            &format!("{need} r{run} sentinel"),
+            &render(&TaskFront::sentinel(&need, run), "").unwrap(),
             &[],
         )
         .unwrap();
     store
-        .insert_run_step(&run, &run.step("sentinel", &sentinel, StepState::Running))
+        .insert_run_step(
+            &run_row,
+            &run_row.step("sentinel", &sentinel, StepState::Running),
+        )
         .unwrap();
     let step_task = port
         .send_step(
             "mind",
             "mind",
-            &format!("{need} r1 merge"),
-            &render(&TaskFront::step(&need, 1, "merge"), "").unwrap(),
+            &format!("{need} r{run} merge"),
+            &render(&TaskFront::step(&need, run, "merge"), "").unwrap(),
             &[],
         )
         .unwrap();
     store
-        .insert_run_step(&run, &run.step("merge", &step_task, StepState::Pending))
+        .insert_run_step(
+            &run_row,
+            &run_row.step("merge", &step_task, StepState::Pending),
+        )
         .unwrap();
     port.bind(&need, &[sentinel, step_task.clone()]).unwrap();
-    store.set_run_state(&need, 1, run_state::LIVE).unwrap();
+    store.set_run_state(&need, run, run_state::LIVE).unwrap();
     store
         .upsert_need_branch(&NeedBranchRow {
             need: need.clone(),
             branch,
             base: Some(base),
             status: String::from("live"),
-            run: 1,
+            run,
             target: String::from("default"),
             priors: Vec::new(),
         })
