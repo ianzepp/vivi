@@ -41,6 +41,8 @@ fn row_cells_show_need_and_work_kind_in_distinct_columns() {
         subject: Some("Fix the thing".into()),
         model: "model-x".into(),
         state: RowState::Running,
+        finished_at: None,
+        stale_age_secs: None,
         started_at: Some(100),
         running_secs: Some(10),
         budget_secs: Some(600),
