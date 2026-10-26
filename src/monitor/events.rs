@@ -4,7 +4,10 @@
 //! read-write [`crate::storage::Storage`], whose open runs schema-write
 //! transactions. The connection here is read-only at every level:
 //! `SQLITE_OPEN_READ_ONLY`, a query-only pragma, and a short busy timeout —
-//! it never blocks a writer.
+//! it never blocks a writer. The monitor runs as the database owner, so it
+//! authorizes SQLite to create the missing WAL shared-memory sidecar beside
+//! an owned database; the strict metadata fallback below still refuses when
+//! that sidecar is missing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -16,6 +19,7 @@ use crate::error::VivariumError;
 use crate::mailspace::{POOL_EVENT_TYPES, PoolEventRow};
 use crate::pool::record::{DispatchRecord, OpenDispatch, fold_open};
 use crate::storage::Storage;
+use crate::storage::read_only::{self, WalIndexPolicy};
 
 /// Subject and addressee role of a task seen in the pool event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -88,14 +92,13 @@ fn display_of(handles: &HashMap<String, String>, message_id: &str) -> String {
 }
 
 /// Open a mailspace database strictly for reading.
+///
+/// The open keeps `SQLITE_OPEN_READ_ONLY` and authorizes the missing WAL
+/// shared-memory sidecar only when the database file is owned by this
+/// process's effective user ([`WalIndexPolicy::OwnerMayCreateIndex`]);
+/// anything else still refuses.
 fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
-    let dir = db.parent().ok_or_else(|| {
-        VivariumError::Other(format!(
-            "mail database path has no parent: {}",
-            db.display()
-        ))
-    })?;
-    let conn = Storage::open_mailspace_connection_read_only(dir)?;
+    let conn = read_only::open(db, WalIndexPolicy::OwnerMayCreateIndex)?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
     conn.execute_batch("PRAGMA query_only = true")
@@ -284,6 +287,12 @@ fn add_record_metadata(
     }
 }
 
+/// Fill missing need handles from strict side metadata.
+///
+/// Must run while the owner-side connection of [`read`] is still open: that
+/// connection has created the WAL shared-memory sidecar, so this strict
+/// `Storage` open ([`WalIndexPolicy::ExistingIndex`]) finds it and refuses
+/// nothing.
 fn add_task_need_metadata(
     task_info: &mut BTreeMap<String, TaskInfo>,
     dir: &Path,
