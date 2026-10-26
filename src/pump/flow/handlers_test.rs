@@ -219,6 +219,29 @@ fn phases_come_back_in_registration_order() -> Result<(), VivariumError> {
 }
 
 #[test]
+fn shipped_registers_decision_after_recovery_and_build_front() -> Result<(), VivariumError> {
+    let rig = rig()?;
+    let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
+    let names: Vec<&str> = registry.phases().iter().map(|p| p.name()).collect();
+    assert_eq!(names.last().copied(), Some("decision"), "{names:?}");
+    let recovery = names
+        .iter()
+        .position(|name| *name == "restarts")
+        .expect("the shipped registry runs the restarts phase");
+    let build_front = names
+        .iter()
+        .position(|name| *name == "step-pending")
+        .expect("the shipped registry runs the build-front phases");
+    let decision = names
+        .iter()
+        .position(|name| *name == "decision")
+        .expect("the shipped registry runs the decision phase");
+    assert!(recovery < decision, "{names:?}");
+    assert!(build_front < decision, "{names:?}");
+    Ok(())
+}
+
+#[test]
 fn shipped_has_a_start_handler_for_every_step_node_of_every_flow() -> Result<(), VivariumError> {
     let rig = rig()?;
     let registry = super::shipped::<Jobs, FakeMail>(&rig.ctx);
