@@ -34,16 +34,50 @@ fn leading_tags(subject: &str) -> (Vec<&str>, &str) {
 }
 
 /// The commit subject for a task subject: its first line without any leading
-/// bracketed tags, or [`FALLBACK_SUBJECT`] when nothing is left.
+/// bracketed tags and, when `need` is known, without the trailing
+/// ` (<need> r<N>)` the pump puts on the subject of every task it mints. It
+/// is [`FALLBACK_SUBJECT`] when nothing is left.
 #[must_use]
-pub fn commit_subject(task_subject: &str) -> String {
+pub fn commit_subject(task_subject: &str, need: Option<&str>) -> String {
     let first = task_subject.lines().next().unwrap_or_default();
     let (_, rest) = leading_tags(first);
+    let rest = need.map_or(rest, |need| without_run_suffix(rest, need));
     if rest.is_empty() {
         FALLBACK_SUBJECT.to_string()
     } else {
         rest.to_string()
     }
+}
+
+/// `subject` without a trailing ` (<need> r<digits>)`, or unchanged.
+fn without_run_suffix<'a>(subject: &'a str, need: &str) -> &'a str {
+    let Some(open) = subject
+        .rfind(" (")
+        .or_else(|| subject.starts_with('(').then_some(0))
+    else {
+        return subject;
+    };
+    let group = subject[open..].trim_start().trim_start_matches('(');
+    let run = group
+        .strip_suffix(')')
+        .and_then(|inner| inner.strip_prefix(need))
+        .and_then(|rest| rest.strip_prefix(" r"));
+    match run {
+        Some(digits) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            subject[..open].trim_end()
+        }
+        _ => subject,
+    }
+}
+
+/// The commit-message rule of a pool job's brief, ending with the commit
+/// subject the job should use.
+#[must_use]
+pub fn commit_rule(task_subject: &str, need: Option<&str>) -> String {
+    format!(
+        "{COMMIT_MESSAGE_RULE} Use this commit subject: {}",
+        commit_subject(task_subject, need)
+    )
 }
 
 /// The unit id inside a `.../unit/<uid>-a<N>` branch name.

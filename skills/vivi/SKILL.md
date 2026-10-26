@@ -2104,7 +2104,7 @@ user `hand` with a clean environment (only `HOME`, `PATH`, and the names in
 the pool's `harness.env`; the Git token is never among them and is readable only by
 root), then commits what changed as the configured bot identity and pushes
 without force. The commit message is the task subject with any leading
-`[...]` tags removed (a failed attempt is prefixed `WIP (attempt failed): `),
+`[...]` tags and the pump's trailing ` (<need> r<N>)` removed (a failed attempt is prefixed `WIP (attempt failed): `),
 with no body or trailer: a commit a pool job writes into the repository never
 carries a task, need, unit, attempt or job identifier or a branch or ref name.
 The runner enforces this. Before any publication (and before reporting

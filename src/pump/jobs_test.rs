@@ -445,6 +445,19 @@ fn pool_command_names_the_job_role_only_when_it_has_one() {
 }
 
 #[test]
+fn pool_command_names_the_need_only_when_the_payload_has_one() {
+    let mut job = PoolJob::from(spec("step-1"));
+    job.payload = serde_json::json!({ "need": "4c01ea79", "run": 1 });
+    assert!(pool_command(&job, "local", "a1b2c3d4").contains("--need 4c01ea79"));
+    job.payload = serde_json::json!({ "run": 1 });
+    assert!(!pool_command(&job, "local", "a1b2c3d4").contains("--need"));
+    job.payload = serde_json::json!({ "need": "" });
+    assert!(!pool_command(&job, "local", "a1b2c3d4").contains("--need"));
+    job.payload = serde_json::Value::Null;
+    assert!(!pool_command(&job, "local", "a1b2c3d4").contains("--need"));
+}
+
+#[test]
 fn outcome_reports_success_only_when_agent_exit_is_explicit() {
     let outcome = JobOutcome {
         state: String::from("finished"),

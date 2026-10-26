@@ -130,11 +130,34 @@ fn a_valid_request_plans_a_job() {
     assert_eq!(
         p.brief,
         format!(
-            "{}\n\n{}\n",
+            "{}\n\n{} Use this commit subject: Subject line\n",
             body_text().trim_end(),
             crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE
         )
     );
+}
+
+#[test]
+fn the_brief_gives_the_commit_subject_without_the_pump_run_suffix() {
+    let flags = DispatchFlags {
+        need: Some("4c01ea79".into()),
+        ..flags("m/ok")
+    };
+    let p = plan_job(
+        &config(),
+        "p",
+        ("abcd1234", "Add a clock (4c01ea79 r1)", &body_text()),
+        &flags,
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap();
+    assert!(
+        p.brief.ends_with("Use this commit subject: Add a clock\n"),
+        "{}",
+        p.brief
+    );
+    assert!(!p.brief.contains("4c01ea79"), "{}", p.brief);
 }
 
 #[test]

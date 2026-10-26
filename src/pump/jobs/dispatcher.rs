@@ -453,6 +453,14 @@ pub(super) fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
         format!("--pool {}", shell_quote(pool)),
         shell_quote(task),
     ];
+    if let Some(need) = job
+        .payload
+        .get("need")
+        .and_then(serde_json::Value::as_str)
+        .filter(|need| !need.is_empty())
+    {
+        args.push(format!("--need {}", shell_quote(need)));
+    }
     if let Some(target) = &job.target {
         args.push(format!("--target {}", shell_quote(target)));
     }

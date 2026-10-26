@@ -567,7 +567,7 @@ fn core_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
         ("SLOT", slot.to_string()),
         (
             "SUBJECT",
-            super::commit_hygiene::commit_subject(&spec.subject),
+            super::commit_hygiene::commit_subject(&spec.subject, spec.need.as_deref()),
         ),
         (
             "FORBID",

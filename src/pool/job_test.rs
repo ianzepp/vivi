@@ -154,6 +154,23 @@ fn the_bundle_lists_the_tokens_a_commit_message_must_not_carry() {
 }
 
 #[test]
+fn a_known_need_is_forbidden_and_leaves_the_runner_subject() {
+    let mut p = plan();
+    p.need = Some("4c01ea79".into());
+    p.subject = "[pump-job:x] Retire X (4c01ea79 r1)".into();
+    let params = text(
+        &build_bundle(&p, "p-slot-2", &Secret::new(SECRET.into())),
+        "params.env",
+    );
+    assert!(params.contains("SUBJECT='Retire X'\n"), "{params}");
+    let forbid = params
+        .lines()
+        .find_map(|l| l.strip_prefix("FORBID='"))
+        .expect("FORBID is in params.env");
+    assert!(forbid.split(' ').any(|t| t == "4c01ea79"), "{forbid}");
+}
+
+#[test]
 fn the_bundle_carries_the_pool_fetch_depth() {
     let mut p = plan();
     p.depth = 50;

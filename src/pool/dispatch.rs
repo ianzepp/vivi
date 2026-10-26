@@ -179,7 +179,7 @@ fn assemble_job_plan(
         need: flags.need.clone(),
         kind: flags.kind.clone(),
         subject: subject.to_string(),
-        brief: brief_for(config, handle, subject, body),
+        brief: brief_for(config, handle, subject, body, flags.need.as_deref()),
         rules,
         refs,
         publish_ref: flags.publish_ref.clone(),
@@ -333,8 +333,15 @@ fn plan_reasoning(
 
 /// The brief the worker reads: with the bridge on, a pointer at the task on
 /// the server (the worker reads it with the vivi tools); without it, the
-/// task body itself. Either way ends with the commit message rule.
-fn brief_for(config: &PoolConfig, handle: &str, subject: &str, body: &str) -> String {
+/// task body itself. Either way ends with the commit message rule and the commit
+/// subject to use.
+fn brief_for(
+    config: &PoolConfig,
+    handle: &str,
+    subject: &str,
+    body: &str,
+    need: Option<&str>,
+) -> String {
     let brief = if config.bridge.enabled {
         bridge_brief(handle, subject)
     } else {
@@ -343,7 +350,7 @@ fn brief_for(config: &PoolConfig, handle: &str, subject: &str, body: &str) -> St
     format!(
         "{}\n\n{}\n",
         brief.trim_end(),
-        super::commit_hygiene::COMMIT_MESSAGE_RULE
+        super::commit_hygiene::commit_rule(subject, need)
     )
 }
 
