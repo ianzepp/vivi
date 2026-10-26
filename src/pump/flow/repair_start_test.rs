@@ -56,8 +56,12 @@ struct Rig {
 }
 
 fn rig(role: bool, record: &str) -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default(), role, record)
+}
+
+fn rig_with(cfg: PumpConfig, role: bool, record: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (mut ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (mut ctx, host) = test_ctx(dir.path(), cfg);
     if role {
         let mut routing = (*ctx.routing).clone();
         routing.roles.push(RoutedRole {
@@ -205,6 +209,42 @@ fn attempt_two_reads_a_new_tip_and_names_the_rung_verdict() -> R {
     );
     let row = rig.store.need_branch(NEED)?.expect("row");
     assert_eq!(row.base.as_deref(), Some(MAIN_B));
+    Ok(())
+}
+
+#[test]
+fn attempts_keep_the_repair_cap_despite_thinking_overrides() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.researcher = Some(90);
+    cfg.dispatch.step_budgets.head_cto = Some(55);
+    let mut rig = rig_with(cfg, true, &record())?;
+    main_tip(&rig.host, MAIN_A);
+
+    let fix1 = job(start(&rig, &step("fix1", "t1", StepState::Pending, None))?);
+
+    // Repairer is not a thinking kind: every attempt keeps the explicit
+    // repair cap, whatever the shared fallback and thinking overrides say.
+    assert_eq!(fix1.budget, repair::ATTEMPT_SECS);
+    assert_ne!(fix1.budget, rig.ctx.cfg.dispatch.budget);
+
+    let fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
+    rig.store
+        .insert_step(NEED, &step("fix1", &fix, StepState::Done, Some("built")))?;
+    let facts = AttemptFacts {
+        branch: repair::branch(NEED, 1, 1),
+        commit: "c".repeat(40),
+        base: MAIN_A.into(),
+    };
+    rig.mail.reply(
+        &fix,
+        &note_body(NoteWord::RepairAttempt, None, &repair::facts_text(&facts))?,
+    )?;
+    main_tip(&rig.host, MAIN_B);
+
+    let fix2 = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
+
+    assert_eq!(fix2.budget, repair::ATTEMPT_SECS);
     Ok(())
 }
 

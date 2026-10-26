@@ -45,8 +45,12 @@ fn with_merge_route(ctx: Ctx) -> Ctx {
 }
 
 fn rig(base: Option<&str>) -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default(), base)
+}
+
+fn rig_with(cfg: PumpConfig, base: Option<&str>) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     host.reply(
         "ls-remote origin main",
@@ -185,4 +189,32 @@ fn sync_asks_the_merge_role_to_merge_main_into_the_need_branch() {
     let tail = branch.strip_prefix("pump/merge-main/").unwrap();
     assert!(!tail.contains('/'), "{branch}");
     assert!(tail.ends_with("-sync"), "{branch}");
+}
+
+#[test]
+fn sync_and_merge_main_keep_their_budgets_when_thinking_steps_are_capped() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.slicer = Some(300);
+    cfg.dispatch.step_budgets.head_cto = Some(55);
+    let rig = rig_with(cfg, Some(OLD_BASE)).unwrap();
+    rig.host.reply(
+        "ls-remote origin refs/heads/vivi/need/n1",
+        0,
+        &format!("{BASE}\trefs/heads/vivi/need/n1\n"),
+    );
+
+    let sync = start(&rig, &SyncStart, "sync1").unwrap();
+
+    // Merge has no thinking-step key: the sync job takes the changed shared
+    // fallback, never a thinking override.
+    assert_eq!(sync.budget, 222);
+    assert_eq!(sync.budget, rig.ctx.cfg.dispatch.budget);
+
+    let merge_main = start(&rig, &MergeMainStart, "merge").unwrap();
+
+    // The merge-main budget keeps its own rule: the merge remote limit,
+    // independent of `dispatch.budget` and of every thinking override.
+    assert_eq!(merge_main.budget, rig.ctx.cfg.merge.remote_limit);
+    assert_ne!(merge_main.budget, 222);
 }

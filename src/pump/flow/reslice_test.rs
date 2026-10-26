@@ -64,8 +64,12 @@ fn step(node: &str, task: &str) -> StepRow {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default())
+}
+
+fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != SLICER_ROLE);
     routing.roles.push(RoutedRole {
@@ -193,6 +197,79 @@ fn other_input_gets_the_next_node_number() -> R {
     let row = rig.store.step_by_task(&second)?.expect("row");
     assert_eq!(row.node, "reslice:a-2");
     assert_eq!(rig.jobs.jobs.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn reslice_jobs_budget_as_slicers_for_every_initial_mode() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.slicer = Some(300);
+    // Another thinking kind configured: it must not reach a reslice job.
+    cfg.dispatch.step_budgets.judge = Some(88);
+    let mut rig = rig_with(cfg)?;
+
+    let split = ask(&mut rig, Mode::Split, "too big")?;
+    let rework = ask(&mut rig, Mode::Rework, "redo it")?;
+    let follow = ask(&mut rig, Mode::FollowUp, "then this")?;
+
+    for (task, mode) in [
+        (&split, "split"),
+        (&rework, "rework"),
+        (&follow, "follow-up"),
+    ] {
+        let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+        // The configured slicer override wins under the durable `reslice`
+        // kind; the judge override never reaches it.
+        assert_eq!(job.budget, 300, "{mode}");
+        assert_eq!(job.payload["mode"], mode, "{mode}");
+        assert_eq!(job.payload["slice"], rig.slice.task, "{mode}");
+        assert_eq!(job.task.as_deref(), Some(task.as_str()), "{mode}");
+        assert!(job.read_only, "{mode}");
+        assert_eq!(
+            job.from_ref.as_deref(),
+            Some(rig.ctx.cfg.main.as_str()),
+            "{mode}"
+        );
+        assert_eq!(
+            job.extra_targets,
+            crate::pump::flow::step_inputs::targets(&rig.ctx),
+            "{mode}"
+        );
+        // Slice sizing guidance keeps the default minutes; the execution
+        // budget is never a sizing input.
+        assert_eq!(rig.ctx.cfg.slice.minutes(), 10);
+        assert!(
+            job.body.contains("slice size: aim for 5 to 10 minutes"),
+            "{}",
+            job.body
+        );
+    }
+    assert_eq!(rig.store.last_attempt(&split)?, 0);
+    Ok(())
+}
+
+#[test]
+fn reslice_jobs_without_a_slicer_override_take_the_changed_fallback() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.planner = Some(90);
+    let mut rig = rig_with(cfg)?;
+
+    let task = ask(&mut rig, Mode::Rework, "redo it")?;
+    let before = sends(&rig);
+
+    // No slicer key: the job takes the changed shared budget, exactly.
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.budget, 222);
+    assert_eq!(job.budget, rig.ctx.cfg.dispatch.budget);
+    // Idempotence survives the changed budgets: the same request again sends
+    // nothing and books no second attempt.
+    let again = ask(&mut rig, Mode::Rework, "redo it")?;
+    assert_eq!(again, task);
+    assert_eq!(sends(&rig), before);
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    assert_eq!(rig.store.last_attempt(&task)?, 0);
     Ok(())
 }
 

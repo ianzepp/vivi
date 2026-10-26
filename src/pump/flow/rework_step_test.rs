@@ -15,7 +15,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
-use crate::pump::jobs::{JobStore, PoolJob};
+use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
@@ -59,8 +59,12 @@ struct Rig {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default())
+}
+
+fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),
@@ -298,6 +302,69 @@ fn an_unlock_restart_names_the_missing_cto_ruling() -> R {
         body.contains("(no CTO ruling; an operator unlock"),
         "{body}"
     );
+    Ok(())
+}
+
+/// The rework1 job the shipped registry starts, for budget assertions.
+fn shipped_rework_job(rig: &Rig) -> Result<Box<JobSpec>, VivariumError> {
+    let registry = shipped::<Jobs, FakeMail>(&rig.ctx);
+    let def = load(FlowKind::Build)?;
+    let cx = StartCx {
+        ctx: &rig.ctx,
+        store: &rig.store,
+        mail: &rig.mail,
+        run: &rig.run,
+        def: &def,
+    };
+    let node = FlowNode {
+        id: "rework1".into(),
+        class: NodeClass::Slicer,
+        label: String::new(),
+    };
+    let handler = registry
+        .handler_for(FlowKind::Build, &node)
+        .ok_or_else(|| VivariumError::Other("no handler for rework1".into()))?;
+    match handler.start(&cx, &step("rework1", "t-rw", None))? {
+        StartAction::Job(job) => Ok(job),
+        other => Err(VivariumError::Other(format!(
+            "rework1 did not start a job: {other:?}"
+        ))),
+    }
+}
+
+#[test]
+fn rework1_takes_the_configured_slicer_budget_despite_the_flow_rework_label() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.slicer = Some(300);
+    // Another thinking kind configured: it must not reach the rework node.
+    cfg.dispatch.step_budgets.judge = Some(88);
+    let rig = rig_with(cfg)?;
+    rig.seed()?;
+
+    let job = shipped_rework_job(&rig)?;
+
+    // The durable kind label stays `flow-rework`; the budget is the slicer's
+    // own override, not the shared fallback and not another kind's.
+    assert_eq!(job.kind, "flow-rework");
+    assert_eq!(job.budget, 300);
+    Ok(())
+}
+
+#[test]
+fn rework1_without_a_slicer_override_takes_the_changed_dispatch_fallback() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    // A thinking override for an unrelated kind must not reach the rework
+    // node either.
+    cfg.dispatch.step_budgets.planner = Some(90);
+    let rig = rig_with(cfg)?;
+    rig.seed()?;
+
+    let job = shipped_rework_job(&rig)?;
+
+    assert_eq!(job.budget, 222);
+    assert_eq!(job.budget, rig.ctx.cfg.dispatch.budget);
     Ok(())
 }
 
