@@ -119,6 +119,24 @@ fn rerun_with_applies_the_edit_and_inserts_the_next_attempt() -> R {
     let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
     spec.task = Some(step.task.clone());
     spec.branch = Some("vivi/repair/x".into());
+    spec.pool_candidates = vec!["alpha".into()];
+    spec.pool_exclude = vec!["refused".into()];
+    spec.extra_targets = vec!["side-repo".into()];
+    spec.from_ref = Some("refs/heads/from".into());
+    spec.with = vec!["refs/heads/extra".into()];
+    spec.model = Some("model-old".into());
+    spec.command = Some("run.sh".into());
+    spec.builtin_role = Some("tugboat".into());
+    spec.allow_default_branch = true;
+    spec.publish_expect = Some("expect-sha".into());
+    spec.publish_contains = Some("contain-sha".into());
+    spec.delete_ref = Some("refs/heads/delete".into());
+    spec.delete_expect = Some("delete-sha".into());
+    spec.budget = 600;
+    spec.read_only = true;
+    spec.units = vec!["unit-1".into()];
+    spec.source_jobs = vec!["src-1".into()];
+    spec.payload = serde_json::json!({"plan_file": "plan/one.md"});
     jobs::enqueue(&mut rig.jobs, spec)?;
     let row = StepJobRow {
         job: "plan-j1".into(),
@@ -143,16 +161,42 @@ fn rerun_with_applies_the_edit_and_inserts_the_next_attempt() -> R {
     };
     cx.rerun_with(&job, &row, &step, |spec| {
         spec.branch = Some("vivi/repair/x-t2".into());
+        spec.model = Some("model-new".into());
     })?;
 
     let queued = &rig.jobs.jobs["plan-j1-a2"];
     assert_eq!(queued.branch.as_deref(), Some("vivi/repair/x-t2"));
+    // The edit wins over the copied field.
+    assert_eq!(queued.model.as_deref(), Some("model-new"));
+    // Every other execution input survives the copy.
+    assert_eq!(queued.pool_candidates, vec!["alpha"]);
+    assert_eq!(queued.pool_exclude, vec!["refused"]);
+    assert_eq!(queued.extra_targets, vec!["side-repo"]);
+    assert_eq!(queued.from_ref.as_deref(), Some("refs/heads/from"));
+    assert_eq!(queued.with, vec!["refs/heads/extra"]);
+    assert_eq!(queued.command.as_deref(), Some("run.sh"));
+    assert_eq!(queued.builtin_role.as_deref(), Some("tugboat"));
+    assert!(queued.allow_default_branch);
+    assert_eq!(queued.publish_expect.as_deref(), Some("expect-sha"));
+    assert_eq!(queued.publish_contains.as_deref(), Some("contain-sha"));
+    assert_eq!(queued.delete_ref.as_deref(), Some("refs/heads/delete"));
+    assert_eq!(queued.delete_expect.as_deref(), Some("delete-sha"));
+    assert_eq!(queued.budget, 600);
+    assert!(queued.read_only);
+    assert_eq!(queued.units, vec!["unit-1"]);
+    assert_eq!(queued.source_jobs, vec!["src-1"]);
+    // Next-row accounting: the row is stored at the next attempt.
     let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
     assert_eq!(stored.attempt, row.attempt + 1);
     assert_eq!(queued.payload["attempt"], serde_json::json!(stored.attempt));
     assert_eq!(queued.payload["run"], serde_json::json!(stored.run));
     assert_eq!(queued.payload["node"], serde_json::json!(stored.node));
     assert_eq!(queued.payload["task"], serde_json::json!(stored.task));
+    // Payload keys the stamp does not own survive the copy.
+    assert_eq!(
+        queued.payload["plan_file"],
+        serde_json::json!("plan/one.md")
+    );
     assert_eq!(rig.plan_step()?.state, StepState::Running);
     Ok(())
 }
