@@ -116,6 +116,97 @@ fn a_band_model_the_harness_does_not_offer_is_refused() {
 }
 
 #[test]
+fn weight_defaults_to_one_and_roundtrips() {
+    let text = format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\nweight = 1\n\
+         [[bands.P2]]\nmodel = \"other/model\"\nreasoning = \"low\"\nweight = {}\n\
+         [[bands.P3]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\n{TAIL}",
+        u32::MAX
+    );
+    let config = pool(&text);
+    config.validate(&id()).unwrap();
+    assert_eq!(
+        config.bands.entries["P1"][0]
+            .effective_weight("main", "P1")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        config.bands.entries["P2"][0]
+            .effective_weight("main", "P2")
+            .unwrap(),
+        u32::MAX
+    );
+    assert_eq!(
+        config.bands.entries["P3"][0]
+            .effective_weight("main", "P3")
+            .unwrap(),
+        1,
+        "an omitted weight means 1"
+    );
+
+    let round_tripped = pool(&toml::to_string(&config).unwrap());
+    round_tripped.validate(&id()).unwrap();
+    assert_eq!(
+        round_tripped.bands.entries["P1"][0]
+            .effective_weight("main", "P1")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        round_tripped.bands.entries["P2"][0]
+            .effective_weight("main", "P2")
+            .unwrap(),
+        u32::MAX
+    );
+    assert_eq!(
+        round_tripped.bands.entries["P3"][0]
+            .effective_weight("main", "P3")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn invalid_weights_are_configuration_errors() {
+    let bad_weights = ["0", "-1", "1.5", "\"high\"", "true", "4294967296"];
+    for bad in bad_weights {
+        let text = format!(
+            "provider = \"local\"\nslots = 4\n{HARNESS}\
+             [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\
+             \nweight = {bad}\n{TAIL}"
+        );
+        let config = pool(&text);
+        let err = config.validate(&id()).unwrap_err();
+        assert!(
+            matches!(err, VivariumError::Config(_)),
+            "weight {bad}: {err}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("pools.main"), "weight {bad}: {message}");
+        assert!(message.contains("bands.P1"), "weight {bad}: {message}");
+        assert!(
+            message.contains("use an integer from 1 to 4294967295"),
+            "weight {bad}: {message}"
+        );
+    }
+
+    let mut unknown = BTreeMap::new();
+    unknown.insert("weight".to_owned(), toml::Value::Integer(-1));
+    let choice = BandChoice {
+        model: "zai/glm-5.3-flash".to_owned(),
+        reasoning: "low".to_owned(),
+        unknown,
+    };
+    let err = choice.effective_weight("main", "P1").unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("pools.main"), "{message}");
+    assert!(message.contains("bands.P1"), "{message}");
+}
+
+#[test]
 fn an_unknown_field_in_a_band_choice_is_refused() {
     let config = pool(&format!(
         "provider = \"local\"\nslots = 4\n{HARNESS}\
