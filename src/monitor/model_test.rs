@@ -16,6 +16,8 @@ fn row(state: RowState) -> MonitorRow {
         subject: Some("Fix the thing".to_string()),
         model: "test/model".to_string(),
         state,
+        finished_at: None,
+        stale_age_secs: None,
         started_at: Some(0),
         running_secs: Some(90),
         budget_secs: Some(1800),
@@ -75,11 +77,72 @@ fn started_text_zero_is_utc_midnight() {
 fn activity_key_is_stable_shape() {
     assert_eq!(
         activity_key(&row(RowState::Running)),
-        "proj|here|slot-1|Some(\"a1b2c3d4\")"
+        "proj|Slot|here|slot-1|Some(\"a1b2c3d4\")|Some(0)"
     );
     let mut r = row(RowState::Running);
     r.task = None;
-    assert_eq!(activity_key(&r), "proj|here|slot-1|None");
+    assert_eq!(activity_key(&r), "proj|Slot|here|slot-1|None|Some(0)");
+}
+
+#[test]
+fn activity_key_separates_retries_in_the_same_slot() {
+    let first = row(RowState::Running);
+    let mut retry = row(RowState::Running);
+    retry.started_at = Some(60);
+    assert_ne!(activity_key(&first), activity_key(&retry));
+}
+
+#[test]
+fn activity_key_separates_row_kinds() {
+    let slot = row(RowState::Running);
+    let mut pump = row(RowState::Running);
+    pump.kind = RowKind::Pump;
+    assert_ne!(activity_key(&slot), activity_key(&pump));
+}
+
+#[test]
+fn activity_key_stable_across_freshness_and_lifecycle_changes() {
+    let running = row(RowState::Running);
+    let mut later = row(RowState::Finished("pushed".to_string()));
+    later.finished_at = Some(400);
+    later.stale_age_secs = Some(120);
+    later.running_secs = Some(400);
+    later.budget_secs = None;
+    assert_eq!(activity_key(&running), activity_key(&later));
+}
+
+#[test]
+fn finished_window_boundary_is_inclusive() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.finished_at = Some(1000);
+    assert!(recently_finished(&r, 1299));
+    assert!(recently_finished(&r, 1300));
+    assert!(!recently_finished(&r, 1301));
+}
+
+#[test]
+fn missing_completion_cannot_establish_recency() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.finished_at = None;
+    r.stale_age_secs = Some(0);
+    assert!(!recently_finished(&r, 1000));
+}
+
+#[test]
+fn row_serializes_optional_metadata_when_present() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.finished_at = Some(400);
+    r.stale_age_secs = Some(120);
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["finished_at"], 400);
+    assert_eq!(json["stale_age_secs"], 120);
+}
+
+#[test]
+fn row_serializes_absent_optional_metadata_as_null() {
+    let json = serde_json::to_value(&row(RowState::Running)).unwrap();
+    assert!(json["finished_at"].is_null());
+    assert!(json["stale_age_secs"].is_null());
 }
 
 #[test]

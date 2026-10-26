@@ -49,6 +49,8 @@ fn cycle_row(
         subject: None,
         model: String::new(),
         state,
+        finished_at: None,
+        stale_age_secs: None,
         started_at: Some(cycle.started_at),
         running_secs: Some(
             cycle
@@ -87,6 +89,8 @@ pub fn row(project: &str, home: &Path, _now: u64) -> Result<MonitorRow, crate::V
         subject: None,
         model: String::new(),
         state,
+        finished_at: None,
+        stale_age_secs: None,
         started_at: None,
         running_secs: None,
         budget_secs: None,

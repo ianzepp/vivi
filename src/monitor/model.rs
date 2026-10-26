@@ -44,6 +44,12 @@ pub struct MonitorRow {
     pub subject: Option<String>,
     pub model: String,
     pub state: RowState,
+    /// Epoch seconds of recorded completion, when the lane finished and the
+    /// completion time is known; absent while running.
+    pub finished_at: Option<u64>,
+    /// Age in seconds since completion once the recent-finished window has
+    /// lapsed; fresh rows have no stale age.
+    pub stale_age_secs: Option<u64>,
     /// Epoch seconds the lane started.
     pub started_at: Option<u64>,
     pub running_secs: Option<u64>,
@@ -59,9 +65,26 @@ pub fn is_finished(row: &MonitorRow) -> bool {
     matches!(row.state, RowState::Finished(_))
 }
 
-/// Identity of one lane across snapshots, for session history.
+/// Shared recency window for finished rows: a completion no older than this
+/// many seconds counts as recently finished.
+pub const RECENT_FINISHED_SECS: u64 = 300;
+
+/// Whether the row completed within [`RECENT_FINISHED_SECS`] of `now`,
+/// inclusive at exactly the window boundary. Recency is determined from the
+/// recorded completion; an unavailable completion cannot establish recency.
+pub fn recently_finished(row: &MonitorRow, now: u64) -> bool {
+    row.finished_at
+        .is_some_and(|finished_at| now.saturating_sub(finished_at) <= RECENT_FINISHED_SECS)
+}
+
+/// Execution identity of one lane across snapshots, for session history.
+/// Kind and start time separate retries of the same task in the same slot;
+/// freshness, runtime, and lifecycle changes leave the key unchanged.
 pub fn activity_key(row: &MonitorRow) -> String {
-    format!("{}|{}|{}|{:?}", row.project, row.pool, row.slot, row.task)
+    format!(
+        "{}|{:?}|{}|{}|{:?}|{:?}",
+        row.project, row.kind, row.pool, row.slot, row.task, row.started_at
+    )
 }
 
 /// Human duration: `45s`, `12m30s` (or `12m` with no remainder), `1h23m`.
