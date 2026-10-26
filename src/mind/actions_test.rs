@@ -131,7 +131,7 @@ fn long_notes_and_floods_are_refused() {
     let long = REQUEUE.replace("flaky gate", &"x".repeat(MAX_NOTE + 1));
     let (planned, _) = run(AuthorityStage::Unstick, &long);
     assert_eq!(planned[0].verdict, Err(Refusal::NoteTooLong));
-    let one = "[[action]]\nkind = \"escalate\"\n";
+    let one = "[[action]]\nkind = \"escalate\"\nproject = \"/w/app\"\n";
     let flood = format!("+++\n{}+++", one.repeat(MAX_ACTIONS + 1));
     let (planned, _) = run(AuthorityStage::Observe, &flood);
     assert_eq!(planned[MAX_ACTIONS].verdict, Err(Refusal::TooMany));
@@ -228,6 +228,158 @@ fn a_dry_run_letter_names_its_project_need_and_note() {
         line,
         "would send Escalate (letter or stub) project=/w/app need=3f9a1c2e note=\"locked at the operator gate\""
     );
+}
+
+/// One otherwise valid request per canonical kind, as envelope fields
+/// without the `project` line, plus whether the build's implemented stages
+/// carry the action out once the project is watched.
+const EVERY_ACTION: &[(&str, bool)] = &[
+    ("kind = \"read-status\"", true),
+    (
+        "kind = \"read-pump-log\"\nfile = \"pump.log\"\nlines = 40\nfilter = \"panic\"",
+        true,
+    ),
+    (
+        "kind = \"read-pump-history\"\nneed = \"aa11\"\nflow = \"main\"",
+        true,
+    ),
+    ("kind = \"read-need\"\nneed = \"bb22\"", true),
+    ("kind = \"read-need-thread\"\nneed = \"cc33\"", true),
+    ("kind = \"read-need-units\"\nneed = \"dd44\"", true),
+    ("kind = \"read-task-thread\"\nstep = \"ee55\"", true),
+    ("kind = \"read-config\"", true),
+    ("kind = \"read-pool\"\npool = \"runpod\"", true),
+    ("kind = \"letter-to-operator\"", true),
+    ("kind = \"escalate\"", true),
+    ("kind = \"pause-pump\"", true),
+    ("kind = \"resume-pump\"", true),
+    ("kind = \"requeue\"\nneed = \"ff66\"\nstep = \"0077\"", true),
+    ("kind = \"replan\"\nneed = \"1188\"", true),
+    (
+        "kind = \"answer\"\nneed = \"2299\"\nstep = \"33aa\"\nword = \"done\"",
+        true,
+    ),
+    ("kind = \"unlock\"\nneed = \"44bb\"", true),
+    ("kind = \"reply-need\"\nneed = \"55cc\"", true),
+    ("kind = \"file-need\"\nneed = \"66dd\"", true),
+    ("kind = \"dispatch-need\"\nneed = \"77ee\"", true),
+    (
+        "kind = \"set-priority\"\nneed = \"88ff\"\npriority = 1",
+        true,
+    ),
+    ("kind = \"withdraw-need\"\nneed = \"9900\"", true),
+    (
+        "kind = \"set-role-model\"\nneed = \"bb01\"\nrole = \"tugboat\"\nmodel = \"m1\"",
+        true,
+    ),
+    (
+        "kind = \"set-pool-cap\"\nneed = \"bb02\"\npool = \"runpod\"\ncap = 5",
+        true,
+    ),
+    (
+        "kind = \"set-pool-band\"\nneed = \"bb03\"\npool = \"runpod\"\nband = \"cheap\"",
+        true,
+    ),
+    ("kind = \"file-fix-need\"\nneed = \"aa00\"", true),
+    ("kind = \"upgrade\"\ntarget = \"v1.2.3\"", false),
+    ("kind = \"self-release\"\ntarget = \"v1.2.3\"", false),
+];
+
+#[test]
+fn all_actions_require_watched_projects() {
+    assert_eq!(
+        EVERY_ACTION.len(),
+        28,
+        "every canonical action needs a watched-project row"
+    );
+    for (fields, implemented) in EVERY_ACTION {
+        let bare = format!("+++\n[[action]]\n{fields}\n+++");
+        let (planned, _) = run(AuthorityStage::FileFixes, &bare);
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::MissingField("project")),
+            "{fields}"
+        );
+        let elsewhere = format!("+++\n[[action]]\nproject = \"/etc\"\n{fields}\n+++");
+        let (planned, _) = run(AuthorityStage::FileFixes, &elsewhere);
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::UnwatchedProject),
+            "{fields}"
+        );
+        let watched = format!("+++\n[[action]]\nproject = \"/w/app\"\n{fields}\n+++");
+        let (planned, _) = run(AuthorityStage::FileFixes, &watched);
+        if *implemented {
+            assert_eq!(planned[0].verdict, Ok(()), "{fields}");
+        } else {
+            assert!(
+                matches!(planned[0].verdict, Err(Refusal::Gate(_))),
+                "{fields}: {:?}",
+                planned[0].verdict
+            );
+        }
+    }
+}
+
+#[test]
+fn inapplicable_fields_are_refused() {
+    // A letter carries no entry, a read no model, a requeue no priority.
+    let letter =
+        "+++\n[[action]]\nkind = \"letter-to-operator\"\nproject = \"/w/app\"\nentry = \"e1\"\n+++";
+    let (planned, _) = run(AuthorityStage::Observe, letter);
+    assert_eq!(planned[0].verdict, Err(Refusal::UnexpectedField("entry")));
+    let read = "+++\n[[action]]\nkind = \"read-status\"\nproject = \"/w/app\"\nmodel = \"m1\"\n+++";
+    let (planned, _) = run(AuthorityStage::Observe, read);
+    assert_eq!(planned[0].verdict, Err(Refusal::UnexpectedField("model")));
+    let surplus = REQUEUE.trim_end().trim_end_matches("+++");
+    let requeue = format!("{surplus}priority = 1\n+++");
+    let (planned, _) = run(AuthorityStage::Unstick, &requeue);
+    assert_eq!(
+        planned[0].verdict,
+        Err(Refusal::UnexpectedField("priority"))
+    );
+    // Unlock alone among the pump controls accepts an entry.
+    let unlock = "+++\n[[action]]\nkind = \"unlock\"\nproject = \"/w/app\"\nneed = \"3f9a1c2e\"\nentry = \"u1\"\n+++";
+    let (planned, _) = run(AuthorityStage::Unstick, unlock);
+    assert_eq!(planned[0].verdict, Ok(()));
+    // Blank surplus fields normalized to absent at parse time stay absent:
+    // no UnexpectedField, and the parsed request carries nothing.
+    let blanked = "+++\n[[action]]\nkind = \"letter-to-operator\"\nproject = \"/w/app\"\nentry = \" \"\nmodel = \"\"\n+++";
+    let (planned, _) = run(AuthorityStage::Observe, blanked);
+    assert_eq!(planned[0].verdict, Ok(()));
+    assert_eq!(planned[0].request.entry, None);
+    assert_eq!(planned[0].request.model, None);
+}
+
+#[test]
+fn new_actions_validate_required_fields() {
+    for (fields, missing) in [
+        ("kind = \"read-need\"\nlimit = 5", "need"),
+        ("kind = \"read-need-thread\"", "need"),
+        ("kind = \"read-need-units\"\noffset = 2", "need"),
+        ("kind = \"read-task-thread\"\nlimit = 5\noffset = 1", "step"),
+        ("kind = \"set-role-model\"\nmodel = \"m1\"", "role"),
+        ("kind = \"set-role-model\"\nrole = \"tugboat\"", "model"),
+        ("kind = \"set-pool-cap\"\ncap = 5", "pool"),
+        ("kind = \"set-pool-cap\"\npool = \"runpod\"", "cap"),
+        ("kind = \"set-pool-band\"\nband = \"cheap\"", "pool"),
+        ("kind = \"set-pool-band\"\npool = \"runpod\"", "band"),
+        ("kind = \"set-priority\"\nneed = \"3f9a1c2e\"", "priority"),
+        ("kind = \"upgrade\"", "target"),
+        ("kind = \"requeue\"\nneed = \"3f9a1c2e\"", "step"),
+        (
+            "kind = \"answer\"\nneed = \"3f9a1c2e\"\nstep = \"b71d04aa\"",
+            "word",
+        ),
+    ] {
+        let reply = format!("+++\n[[action]]\nproject = \"/w/app\"\n{fields}\n+++");
+        let (planned, _) = run(AuthorityStage::FileFixes, &reply);
+        assert_eq!(
+            planned[0].verdict,
+            Err(Refusal::MissingField(missing)),
+            "{fields}"
+        );
+    }
 }
 
 const TYPED_REQUEST: &str = "+++\n[[action]]\nkind = \"read-status\"\n\
