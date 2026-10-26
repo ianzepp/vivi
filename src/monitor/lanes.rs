@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::pool::config::PoolConfig;
 
 use super::events::{FinishedDispatch, ProjectEvents};
-use super::model::{MonitorRow, RowKind, RowState};
+use super::model::{MonitorRow, RECENT_FINISHED_SECS, RowKind, RowState};
 use super::slots::slot_tail;
 
 pub fn rows(
@@ -30,6 +30,7 @@ pub fn rows(
             done,
             pools,
             events.task_info.get(&done.task),
+            now,
         )
     }));
     rows
@@ -86,9 +87,15 @@ fn finished_row(
     done: &FinishedDispatch,
     pools: &BTreeMap<String, PoolConfig>,
     info: Option<&super::events::TaskInfo>,
+    now: u64,
 ) -> Option<MonitorRow> {
     let config = pools.get(&done.pool)?;
     let local = config.provider == "local";
+    // Recorded completion: the only evidence of recency and the runtime end.
+    let ended = crate::pump::attempt_read::opened_epoch(&done.ended_at)?;
+    if now.saturating_sub(ended) > RECENT_FINISHED_SECS {
+        return None;
+    }
     Some(MonitorRow {
         project: project.to_owned(),
         kind: RowKind::Slot,
@@ -100,14 +107,10 @@ fn finished_row(
         subject: Some(done.subject.clone()),
         model: done.model.clone(),
         state: RowState::Finished(done.outcome.clone()),
-        finished_at: None,
+        finished_at: Some(ended),
         stale_age_secs: None,
         started_at: Some(done.started_at),
-        running_secs: Some(
-            crate::pump::attempt_read::opened_epoch(&done.ended_at)
-                .unwrap_or(done.started_at)
-                .saturating_sub(done.started_at),
-        ),
+        running_secs: Some(ended.saturating_sub(done.started_at)),
         budget_secs: Some(done.budget_secs),
         read_only: Some(done.read_only),
         remote: !local,
