@@ -15,7 +15,7 @@ use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_error::{self, STEP_ERROR_HELD, STEP_ERROR_LIMIT};
-use crate::pump::flow::step_inputs::{read_only_job, targets};
+use crate::pump::flow::step_inputs::{read_only_job, scope_brief, targets};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
@@ -123,7 +123,7 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
     store.insert_run_step(run, &row)?;
     let fanout = store.slice_link(&slice.task)?.and_then(|link| link.fanout);
     store.link_slice(&SliceLink::for_run(run, &task, fanout, Vec::new()))?;
-    let brief = brief(ctx, mail, slice, mode, input)?;
+    let brief = brief(ctx, store, mail, run, slice, mode, input)?;
     let spec = job(ctx, run, &row, slice, mode, &brief)?;
     jobs::enqueue(st, spec)?;
     Ok(task)
@@ -182,18 +182,25 @@ fn body_tail(body: &str) -> &str {
     body.find("mode: ").map_or("", |at| &body[at..])
 }
 
+/// The slicer brief for one reslice: the mode, sizing, targets, the ask, the
+/// authoritative scope and policy section of the need, and the original slice
+/// task. The scope section is its own block beside the structured reads, so
+/// brief truncation can never cut a grant out of the ask's context.
 fn brief<M: FlowMail>(
     ctx: &Ctx,
+    store: &PumpStore,
     mail: &M,
+    run: &RunRow,
     slice: &StepRow,
     mode: Mode,
     input: &str,
 ) -> Result<String, VivariumError> {
     Ok(format!(
-        "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n{input}\noriginal slice task:\n{}",
+        "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n\n{}\n\n{input}\noriginal slice task:\n{}",
         mode.word(),
         ctx.cfg.slice.minutes(),
         targets(ctx).join(", "),
+        scope_brief(ctx, store, mail, &run.need)?,
         mail.task_body(&slice.task)?
     ))
 }

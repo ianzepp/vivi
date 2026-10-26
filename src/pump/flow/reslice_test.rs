@@ -6,21 +6,24 @@ use tempfile::{TempDir, tempdir};
 
 use super::{KIND, Mode, RESLICE_FAILED, Reslices, request, settle_error};
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
+use crate::pump::config::scope::ScopePolicy;
 use crate::pump::envelope::roles::Slice;
-use crate::pump::flow::fake_mail::{Call, FakeMail};
+use crate::pump::flow::fake_mail::{Call, FakeMail, FakeTask};
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::TickPhase;
 use crate::pump::flow::index::{JOB_STALE, RunRow, StepRow, StepState};
-use crate::pump::flow::mail::MailReader;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailReader, MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::step_error::STEP_ERROR_HELD;
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
+use crate::pump::store::scope_ruling::{RulingDecision, ScopeRulingRequest};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
 
@@ -94,6 +97,7 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    seed_need_root(&mut mail, &["src/"]);
     let sentinel = mail.send_step("pump", "pump", "run", "sentinel", &[])?;
     let slice_task = mail.send_step("pump", "pump", "s", "slice body text", &[])?;
     store.insert_step(NEED, &step("sentinel", &sentinel))?;
@@ -115,6 +119,52 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         run,
         slice,
     })
+}
+
+/// Store a valid need root letter for `NEED`, so the brief's scope section
+/// reads the root the way the mailspace port reads a thread's root message.
+fn seed_need_root(mail: &mut FakeMail, write_scope: &[&str]) {
+    let mut front = NeedFront::new(vec![String::from("the run reaches done")]);
+    front.write_scope = write_scope.iter().map(|path| (*path).to_string()).collect();
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: String::from("mind"),
+            to: String::from("pump"),
+            subject: format!("need {NEED}"),
+            body: need_body_with(&front, "the need prose"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
+/// Store one scope ruling for `NEED` on `target`.
+fn ruling(store: &PumpStore, job: &str, target: &str, paths: &[&str], decision: RulingDecision) {
+    store
+        .insert_scope_ruling(&ScopeRulingRequest {
+            job: job.into(),
+            job_kind: "hand".into(),
+            need: NEED.into(),
+            run: 1,
+            node: "slice:a-1".into(),
+            task: format!("task-{job}"),
+            role: "hand".into(),
+            target: target.into(),
+            paths: paths.iter().map(|path| (*path).to_string()).collect(),
+            reason: "the reslice needs the path to land".into(),
+            decision,
+            policy_reason: None,
+            policy: ScopePolicy::snapshot(target, &["./".into()], &[]).expect("policy snapshot"),
+        })
+        .expect("ruling stored");
 }
 
 fn ask(rig: &mut Rig, mode: Mode, input: &str) -> Result<String, VivariumError> {
@@ -169,6 +219,68 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
     );
     assert!(job.body.contains("slice body text"), "{}", job.body);
     assert_eq!(rig.store.last_attempt(&task)?, 0);
+    Ok(())
+}
+
+#[test]
+fn every_reslice_brief_shows_the_need_scope_stored_additions_and_policy() -> R {
+    let mut rig = rig()?;
+    ruling(
+        &rig.store,
+        "j-scope",
+        "default",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+
+    for mode in [Mode::Split, Mode::Rework, Mode::FollowUp] {
+        let task = ask(&mut rig, mode, &format!("the ask for {}", mode.name()))?;
+        let body = rig.jobs.jobs[&format!("reslice-{task}-a1")].body.clone();
+        assert!(
+            body.contains("AUTHORITATIVE SCOPE AND POLICY"),
+            "{mode:?}: {body}"
+        );
+        assert!(body.contains("ORIGINAL NEED SCOPE"), "{mode:?}: {body}");
+        assert!(body.contains("- src/"), "{mode:?}: {body}");
+        assert!(
+            body.contains("APPROVED ADDITIONS on default"),
+            "{mode:?}: {body}"
+        );
+        // The stored grant survives into every mode's brief, so the slicer
+        // never re-asks for already-authorized work.
+        assert!(body.contains("- docs/"), "{mode:?}: {body}");
+        assert!(
+            body.contains("EFFECTIVE SCOPE on default"),
+            "{mode:?}: {body}"
+        );
+        // Additions and policy are separate, labeled sections.
+        assert!(
+            body.contains("CURRENT POLICY of default"),
+            "{mode:?}: {body}"
+        );
+        assert!(
+            body.contains("eligibility for automatic approval"),
+            "{mode:?}: {body}"
+        );
+        // The scope section is its own block before the ask and the original
+        // slice task, never inside either.
+        let scope = body.find("AUTHORITATIVE SCOPE AND POLICY").expect("scope");
+        let ask = body.find("the ask for").expect("ask");
+        let tail = body.find("original slice task:").expect("tail");
+        assert!(scope < ask && ask < tail, "{mode:?}: {body}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_reslice_brief_without_grants_shows_no_approved_additions() -> R {
+    let mut rig = rig()?;
+
+    let task = ask(&mut rig, Mode::FollowUp, "then this")?;
+
+    let body = rig.jobs.jobs[&format!("reslice-{task}-a1")].body.clone();
+    assert!(body.contains("AUTHORITATIVE SCOPE AND POLICY"), "{body}");
+    assert!(body.contains("(none approved for this target)"), "{body}");
     Ok(())
 }
 

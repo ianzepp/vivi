@@ -6,17 +6,19 @@ use tempfile::{TempDir, tempdir};
 
 use super::FollowUpRework;
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::{FollowUp, Hand, HandAnswer};
 use crate::pump::flow::collect_slice::BuiltHook;
 use crate::pump::flow::collect_step::RunCx;
 use crate::pump::flow::def::FlowKind;
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
@@ -89,6 +91,7 @@ fn rig() -> Result<Rig, VivariumError> {
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    seed_need_root(&mut mail);
     let sentinel = mail.send_step("pump", "pump", "run", "sentinel", &[])?;
     let slice_task = mail.send_step("pump", "pump", "s", "slice body text", &[])?;
     store.insert_step(NEED, &step("sentinel", &sentinel))?;
@@ -118,6 +121,31 @@ fn item(need: &str, optional: bool) -> FollowUp {
         need: need.into(),
         optional,
     }
+}
+
+/// Store a valid need root letter for `NEED`, so the follow-up job's brief
+/// reads its scope section from a parseable root like the mailspace port.
+fn seed_need_root(mail: &mut FakeMail) {
+    let mut front = NeedFront::new(vec![String::from("the run reaches done")]);
+    front.write_scope = vec![String::from("src/")];
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: String::from("mind"),
+            to: String::from("pump"),
+            subject: format!("need {NEED}"),
+            body: need_body_with(&front, "the need prose"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
 }
 
 fn hand(follow_up: Vec<FollowUp>) -> Hand {
@@ -164,6 +192,12 @@ fn only_the_required_follow_up_queues_a_follow_up_reslice_job() -> R {
     assert!(job.body.contains("fix the parser"), "{}", job.body);
     assert!(job.body.contains("src/a.rs, src/b.rs"), "{}", job.body);
     assert!(!job.body.contains("tidy docs"), "{}", job.body);
+    // The shared brief carries the authoritative scope section beside the ask.
+    assert!(
+        job.body.contains("AUTHORITATIVE SCOPE AND POLICY"),
+        "{}",
+        job.body
+    );
     let task = job.task.clone().expect("task");
     let body = rig.mail.tasks[&task].body.clone();
     assert!(body.contains("follow-up from slice slice:a"), "{body}");

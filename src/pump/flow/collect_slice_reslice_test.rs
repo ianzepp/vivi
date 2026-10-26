@@ -7,16 +7,15 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
-use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
+use crate::letter::fixture::{need_body_with, record_body, task_body_with};
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepRow, StepState};
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::reslice;
 use crate::pump::flow::scope::ScopeState;
@@ -71,6 +70,31 @@ fn role(name: &str, kind: &str, pool: &str) -> RoutedRole {
     }
 }
 
+/// Store a valid need root letter for `NEED`, so a split or rework job's brief
+/// reads its scope section from a parseable root like the mailspace port.
+fn seed_need_root(mail: &mut FakeMail) {
+    let mut front = NeedFront::new(vec![String::from("the run reaches done")]);
+    front.write_scope = vec![String::from("src/")];
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: String::from("mind"),
+            to: String::from("pump"),
+            subject: format!("need {NEED}"),
+            body: need_body_with(&front, "the need prose"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
@@ -94,6 +118,7 @@ fn rig() -> Result<Rig, VivariumError> {
         priors: Vec::new(),
     })?;
     let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail);
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     Ok(Rig {
         _dir: dir,
