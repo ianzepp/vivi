@@ -222,3 +222,119 @@ fn granting_the_held_paths_widens_the_scope_and_the_next_request_is_the_second()
         Resolution::Rework(_)
     ));
 }
+
+#[test]
+fn a_directory_request_enclosing_a_held_file_waits() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/b.rs"], StepState::Running);
+    let got = f.resolve(1, &a, &["src/", "docs/x.md"], false);
+    assert_eq!(got, Resolution::WaitOn(vec![b.clone()]));
+    assert_eq!(f.mail.tasks[&a].depends_on, vec![b.clone()]);
+    assert_eq!(wait_holders(&f.store, &a).expect("holders"), vec![b]);
+    // The free path widened right away; the enclosed one is granted later.
+    assert_eq!(
+        f.store.slice_scope(&a).expect("scope"),
+        Some(strings(&["src/a.rs", "docs/x.md"]))
+    );
+}
+
+#[test]
+fn nested_directories_overlap_in_both_directions() {
+    // Holder has the ancestor: it covers the requested descendant.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src/pump/"], false),
+        Resolution::WaitOn(vec![b])
+    );
+
+    // Holder has the descendant: the requested ancestor encloses it.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/pump/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src/"], false),
+        Resolution::WaitOn(vec![b])
+    );
+
+    // Equal directory declarations hold too.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/pump/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src/pump/"], false),
+        Resolution::WaitOn(vec![b])
+    );
+}
+
+#[test]
+fn leading_dots_and_root_spellings_normalize_before_overlap() {
+    // A holder declaration spelled `./src/` holds a plainly spelled file.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["./src/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["./src/run.rs"], false),
+        Resolution::WaitOn(vec![b])
+    );
+
+    // A root request encloses every held path, so nothing stays free.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/b.rs"], StepState::Running);
+    let c = f.slice("n1", 1, &["docs/"], StepState::Pending);
+    assert_eq!(
+        f.resolve(1, &a, &["./"], false),
+        Resolution::WaitOn(vec![b, c])
+    );
+    assert_eq!(
+        f.store.slice_scope(&a).expect("scope"),
+        Some(strings(&["src/a.rs"]))
+    );
+}
+
+#[test]
+fn sibling_prefixes_never_overlap() {
+    // A holder of `src-old/` does not hold a `src/` request.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src-old/a.rs"], StepState::Running);
+    f.slice("n1", 1, &["src-old/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src/b.rs"], false),
+        Resolution::Widen(strings(&["src/b.rs"]))
+    );
+
+    // ...and a holder of `src/` does not hold a `src-old/` request.
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    f.slice("n1", 1, &["src/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src-old/b.rs"], false),
+        Resolution::Widen(strings(&["src-old/b.rs"]))
+    );
+}
+
+#[test]
+fn a_file_request_does_not_enclose_a_held_file() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    f.slice("n1", 1, &["src/pump/run.rs"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src/pump"], false),
+        Resolution::Widen(strings(&["src/pump"]))
+    );
+}
+
+#[test]
+fn one_holder_with_several_held_paths_appears_once() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/pump/"], StepState::Running);
+    assert_eq!(
+        f.resolve(1, &a, &["src/pump/run.rs", "src/pump/mod.rs"], false),
+        Resolution::WaitOn(vec![b.clone()])
+    );
+    assert_eq!(wait_holders(&f.store, &a).expect("holders"), vec![b]);
+}

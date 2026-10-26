@@ -3,6 +3,7 @@
 //! other open slices. No model is involved.
 
 use crate::error::VivariumError;
+use crate::pump::config::ScopePath;
 use crate::pump::flow::fanout::{self, SliceEdges};
 use crate::pump::store::PumpStore;
 
@@ -112,15 +113,24 @@ pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> 
     store.set_scope_holders(task, &[])
 }
 
-/// True when a scope entry holds `path`: the same path, or a directory entry
-/// (ending in `/`) that is a prefix of it.
-fn holds(entry: &str, path: &str) -> bool {
-    entry == path || (entry.ends_with('/') && path.starts_with(entry))
+/// True when a scope entry and a requested path share at least one repository
+/// path: the same path, a holder directory containing the requested file, a
+/// requested directory enclosing a held file, or two directories with one
+/// inside the other. Both sides normalize through [`ScopePath`], so leading
+/// `./` and root spellings compare by component, never by string prefix
+/// (`src/` does not touch `src-old/`, and a file entry named `src/pump` does
+/// not cover `src/pump/run.rs`). A declaration that fails normalization can
+/// only match an identical one.
+fn overlaps(entry: &str, path: &str) -> bool {
+    match (ScopePath::parse(entry), ScopePath::parse(path)) {
+        (Ok(entry), Ok(path)) => entry.intersects(&path),
+        _ => entry == path,
+    }
 }
 
 /// A request split by who holds its paths.
 struct Split {
-    /// The open slices that hold some requested path.
+    /// The open slices whose scope shares a repository path with the request.
     holders: Vec<String>,
     /// Requested paths no open slice holds.
     free: Vec<String>,
@@ -137,7 +147,7 @@ fn split_request(paths: &[String], others: &[(String, Vec<String>)]) -> Split {
     for path in paths {
         let mut held = false;
         for (other, scope) in others {
-            if scope.iter().any(|entry| holds(entry, path)) {
+            if scope.iter().any(|entry| overlaps(entry, path)) {
                 held = true;
                 if !split.holders.contains(other) {
                     split.holders.push(other.clone());
