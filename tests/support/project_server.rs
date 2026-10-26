@@ -11,8 +11,8 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::{Value, json};
@@ -32,6 +32,9 @@ const MAX_LIVE_KEYS: usize = 32;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Idle sleep of the nonblocking accept loop while it watches the stop flag.
 const ACCEPT_IDLE: Duration = Duration::from_millis(5);
+/// Longest a mint response stays parked behind the key barrier without a
+/// release, so a forgotten release cannot strand a serving thread forever.
+const KEY_HOLD_BOUND: Duration = Duration::from_secs(10);
 
 /// One `/v1/mcp` request as the fake saw it, recorded before any judgment.
 #[derive(Clone)]
@@ -58,6 +61,42 @@ pub struct HttpReply {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: String,
+}
+
+/// One `DELETE /keys/{key_id}` attempt the fake recorded, refused or not.
+#[derive(Clone)]
+pub struct RevokeAttempt {
+    pub key_id: String,
+    /// Label of the targeted key when it existed at attempt time.
+    pub label: Option<String>,
+    /// Authenticated member, or empty when the bearer was not a live token.
+    pub member: String,
+    /// The fake answered 409 `revoke_refused` instead of applying it.
+    pub refused: bool,
+}
+
+/// The parked pieces of a one-shot key-mint response barrier. This has its
+/// own mutex on purpose: a parked mint waits here, never on `State`'s
+/// mutex, so list/revoke/auth requests keep progressing while it waits.
+#[derive(Default)]
+struct KeyBarrierInner {
+    /// `arm_key_barrier` set this; the next successful mint claims it.
+    armed: bool,
+    /// A mint is parked, observable through `wait_key_barrier`.
+    created: bool,
+    /// The test released the parked response.
+    release: bool,
+    /// The server is dropped; a parked thread must hand back at once.
+    closed: bool,
+    /// The held 201 response, handed back on release.
+    parked: Option<Reply>,
+}
+
+/// The one-shot key-mint response barrier.
+#[derive(Default)]
+struct KeyBarrier {
+    inner: Mutex<KeyBarrierInner>,
+    signal: Condvar,
 }
 
 /// One reply appended to a seeded item: who said it and what.
@@ -133,6 +172,8 @@ struct State {
     reports: Vec<Report>,
     refuse_next: usize,
     refuse_always: bool,
+    refuse_revocations: bool,
+    revoke_attempts: Vec<RevokeAttempt>,
     token_lifetime_secs: i64,
     tokens_minted: usize,
     requests_seen: usize,
@@ -152,6 +193,8 @@ impl State {
             reports: Vec::new(),
             refuse_next: 0,
             refuse_always: false,
+            refuse_revocations: false,
+            revoke_attempts: Vec::new(),
             token_lifetime_secs: DEFAULT_TOKEN_LIFETIME_SECS,
             tokens_minted: 0,
             requests_seen: 0,
@@ -164,6 +207,7 @@ impl State {
 /// The running fake: serves until dropped.
 pub struct ProjectServer {
     state: Arc<Mutex<State>>,
+    barrier: Arc<KeyBarrier>,
     stop: Arc<AtomicBool>,
     port: u16,
     accepter: Option<std::thread::JoinHandle<()>>,
@@ -180,9 +224,16 @@ impl ProjectServer {
             .expect("set listener nonblocking");
         let state = Arc::new(Mutex::new(State::new()));
         let stop = Arc::new(AtomicBool::new(false));
-        let accepter = accept_loop(listener, Arc::clone(&state), Arc::clone(&stop));
+        let barrier = Arc::new(KeyBarrier::default());
+        let accepter = accept_loop(
+            listener,
+            Arc::clone(&state),
+            Arc::clone(&stop),
+            Arc::clone(&barrier),
+        );
         ProjectServer {
             state,
+            barrier,
             stop,
             port,
             accepter: Some(accepter),
@@ -294,6 +345,68 @@ impl ProjectServer {
         self.state.lock().unwrap().reports.clone()
     }
 
+    /// Arm the one-shot key-mint barrier: the next *successful* `POST /keys`
+    /// mints the key as usual — it sits in `keys()` at once — but its 201
+    /// response is held from the client until `release_key_barrier`, the
+    /// hold bound, or server drop. Arming while a mint is already parked
+    /// does nothing.
+    pub fn arm_key_barrier(&self) {
+        let mut inner = self.barrier.inner.lock().unwrap();
+        if !inner.created {
+            *inner = KeyBarrierInner {
+                armed: true,
+                ..KeyBarrierInner::default()
+            };
+        }
+    }
+
+    /// Wait up to `deadline` for a key to be created behind the barrier.
+    /// True means the key already sits in `keys()` while its response is
+    /// still held; false means the deadline passed first.
+    pub fn wait_key_barrier(&self, deadline: Duration) -> bool {
+        let end = Instant::now() + deadline;
+        let mut inner = self.barrier.inner.lock().unwrap();
+        while !inner.created {
+            let now = Instant::now();
+            if now >= end {
+                return false;
+            }
+            let (guard, _) = self
+                .barrier
+                .signal
+                .wait_timeout(inner, end - now)
+                .expect("wait on the key barrier");
+            inner = guard;
+        }
+        true
+    }
+
+    /// Release the response parked behind the barrier, if one is parked.
+    pub fn release_key_barrier(&self) {
+        let mut inner = self.barrier.inner.lock().unwrap();
+        inner.release = true;
+        self.barrier.signal.notify_all();
+    }
+
+    /// Whether a minted-key response is parked behind the barrier now.
+    #[must_use]
+    pub fn key_barrier_parked(&self) -> bool {
+        self.barrier.inner.lock().unwrap().created
+    }
+
+    /// Make every later revocation attempt fail with 409 `revoke_refused`
+    /// without touching any key, so a test can drive a failed revoke.
+    pub fn refuse_revocations(&self) {
+        self.state.lock().unwrap().refuse_revocations = true;
+    }
+
+    /// Every `DELETE /keys/{key_id}` attempt so far, in arrival order, so a
+    /// test can tell a failed revoke from no attempt at all. Never a secret.
+    #[must_use]
+    pub fn revoke_attempts(&self) -> Vec<RevokeAttempt> {
+        self.state.lock().unwrap().revoke_attempts.clone()
+    }
+
     /// Every API key this fake minted, with secrets.
     #[must_use]
     pub fn keys(&self) -> Vec<KeyRecord> {
@@ -319,6 +432,11 @@ impl Drop for ProjectServer {
         if let Some(accepter) = self.accepter.take() {
             let _ = accepter.join();
         }
+        // Free a mint parked behind the barrier so its serving thread cannot
+        // outlive the server.
+        let mut inner = self.barrier.inner.lock().unwrap();
+        inner.closed = true;
+        self.barrier.signal.notify_all();
     }
 }
 
@@ -327,13 +445,15 @@ fn accept_loop(
     listener: TcpListener,
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
+    barrier: Arc<KeyBarrier>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _)) => {
                     let state = Arc::clone(&state);
-                    std::thread::spawn(move || serve_connection(state, stream));
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || serve_connection(state, barrier, stream));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(ACCEPT_IDLE);
@@ -345,7 +465,7 @@ fn accept_loop(
 }
 
 /// Answer one keep-alive-free HTTP/1.1 request, then close.
-fn serve_connection(state: Arc<Mutex<State>>, mut stream: TcpStream) {
+fn serve_connection(state: Arc<Mutex<State>>, barrier: Arc<KeyBarrier>, mut stream: TcpStream) {
     // BSD/macOS hand `O_NONBLOCK` down from the nonblocking listener to
     // every accepted socket; a read on such a stream returns `WouldBlock`
     // while the request bytes are still in flight, which `read_request`
@@ -363,7 +483,45 @@ fn serve_connection(state: Arc<Mutex<State>>, mut stream: TcpStream) {
     };
     state.lock().unwrap().requests_seen += 1;
     let reply = route(&state, &request);
+    let reply = hold_key_mint(&barrier, &request, reply);
     let _ = write_response(&mut stream, &reply);
+}
+
+/// Park a successful key mint behind the armed barrier until the test
+/// releases it, the hold bound passes, or the server drops. Runs after
+/// `create_key` — the key is already in `State.keys` — and before the
+/// socket write, so a dispatching client sees nothing until hand-back.
+/// Waits only on the barrier's own mutex, never on `State`'s.
+fn hold_key_mint(barrier: &KeyBarrier, request: &Request, reply: Reply) -> Reply {
+    let mint_path = format!("/v1/projects/{PROJECT}/keys");
+    if request.method != "POST" || request.path != mint_path || reply.status != 201 {
+        return reply;
+    }
+    let mut inner = barrier.inner.lock().unwrap();
+    if !inner.armed {
+        return reply;
+    }
+    inner.armed = false;
+    inner.created = true;
+    inner.parked = Some(reply);
+    barrier.signal.notify_all();
+    let end = Instant::now() + KEY_HOLD_BOUND;
+    while !inner.release && !inner.closed {
+        let now = Instant::now();
+        if now >= end {
+            break;
+        }
+        let (guard, _) = barrier
+            .signal
+            .wait_timeout(inner, end - now)
+            .expect("wait on the key barrier");
+        inner = guard;
+    }
+    inner.created = false;
+    inner
+        .parked
+        .take()
+        .unwrap_or_else(|| error_reply(500, "barrier_lost", "the held key response vanished"))
 }
 
 /// An HTTP/1.1 request: request line, lowercased headers, Content-Length body.
@@ -701,14 +859,30 @@ fn keys_list_body(keys: &[StoredKey]) -> Value {
 /// Only an id that never existed, or another member's, is 404.
 fn revoke_key(state: &Mutex<State>, request: &Request, key_id: &str) -> Reply {
     let bearer = request.bearer().unwrap_or_default();
-    let Some(member) = token_member(state, bearer) else {
+    let member = token_member(state, bearer);
+    let mut state = state.lock().unwrap();
+    let label = state
+        .keys
+        .iter()
+        .find(|key| key.key_id == key_id)
+        .map(|key| key.label.clone());
+    let refused = state.refuse_revocations && member.is_some();
+    state.revoke_attempts.push(RevokeAttempt {
+        key_id: key_id.to_string(),
+        label,
+        member: member.clone().unwrap_or_default(),
+        refused,
+    });
+    let Some(member) = member else {
         return error_reply(
             401,
             "unauthorized",
             "only an identity token can revoke keys",
         );
     };
-    let mut state = state.lock().unwrap();
+    if state.refuse_revocations {
+        return error_reply(409, "revoke_refused", "the fake refused this revocation");
+    }
     match state.keys.iter_mut().find(|key| key.key_id == key_id) {
         Some(key) if key.created_by == member => {
             key.revoked = true;
