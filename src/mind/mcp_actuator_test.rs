@@ -118,6 +118,112 @@ fn pump_actions_carry_their_fields_and_leave_unset_ones_out() {
 }
 
 #[test]
+fn unlock_travels_with_its_entry_when_one_is_named() {
+    let mut restart = request(Action::Unlock);
+    restart.entry = Some("rework1".into());
+    restart.note = Some("gate flaked".into());
+    let (result, calls) = run(&restart);
+    assert_eq!(result, Ok("pump_action: pump_action ok".into()));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0],
+        (
+            "pump_action".to_string(),
+            json!({
+                "project": "app",
+                "action": "unlock",
+                "need": "3f9a1c2e",
+                "entry": "rework1",
+                "note": "gate flaked"
+            })
+        )
+    );
+    // No entry named: the key stays out so the server's own restart
+    // point holds; the call count stays at one either way.
+    let (_, calls) = run(&request(Action::Unlock));
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.get("entry").is_none());
+}
+
+#[test]
+fn a_reply_need_replies_on_the_needs_thread_without_a_from() {
+    let mut reply = request(Action::ReplyNeed);
+    reply.note = Some("the fix landed".into());
+    let (result, calls) = run(&reply);
+    assert_eq!(result, Ok("reply: reply ok".into()));
+    // One call, and no implicit unlock after it.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "reply");
+    assert_eq!(
+        calls[0].1,
+        json!({ "project": "app", "handle": "3f9a1c2e", "body": "the fix landed" })
+    );
+    // Authorship is never sent: the authenticated operator grant decides.
+    assert!(calls[0].1.get("from").is_none());
+}
+
+#[test]
+fn set_priority_sends_the_level_even_when_it_is_zero() {
+    let mut level = request(Action::SetPriority);
+    level.priority = Some(0);
+    let (result, calls) = run(&level);
+    assert_eq!(result, Ok("pump_priority: pump_priority ok".into()));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0],
+        (
+            "pump_priority".to_string(),
+            json!({
+                "project": "app",
+                "action": "set",
+                "need": "3f9a1c2e",
+                "level": 0
+            })
+        )
+    );
+    level.priority = Some(3);
+    let (_, calls) = run(&level);
+    assert_eq!(calls[0].1["level"], 3);
+}
+
+#[test]
+fn a_withdrawal_names_one_need_and_its_reason() {
+    let mut withdraw = request(Action::WithdrawNeed);
+    withdraw.note = Some("superseded by the refiled need".into());
+    let (result, calls) = run(&withdraw);
+    assert_eq!(result, Ok("pump_action: pump_action ok".into()));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "pump_action");
+    assert_eq!(calls[0].1["action"], "withdraw");
+    assert_eq!(calls[0].1["needs"], json!(["3f9a1c2e"]));
+    assert_eq!(calls[0].1["reason"], "superseded by the refiled need");
+}
+
+#[test]
+fn a_server_refusal_on_a_new_operator_action_is_the_failure_text() {
+    for (kind, tool) in [
+        (Action::ReplyNeed, "reply"),
+        (Action::SetPriority, "pump_priority"),
+        (Action::WithdrawNeed, "pump_action"),
+    ] {
+        let mut actuator = McpActuator::new(Recorder {
+            fail_with: Some("the key is not an operator".into()),
+            ..Recorder::default()
+        });
+        let mut ask = request(kind);
+        if kind != Action::SetPriority {
+            ask.note = Some("because".into());
+        } else {
+            ask.priority = Some(2);
+        }
+        let error = actuator.apply(&ask).unwrap_err();
+        assert_eq!(error, format!("{tool}: the key is not an operator"));
+        // One call, and no retry or second tool after the refusal.
+        assert_eq!(actuator.caller.calls.borrow().len(), 1);
+    }
+}
+
+#[test]
 fn read_status_is_one_pump_list_call_with_absent_values_left_out() {
     // The request's need travels; the absent status and limit are omitted
     // rather than sent as nulls, so open steps stay the server's default.
