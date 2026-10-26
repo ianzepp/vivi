@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::server::AppState;
 
 use super::super::tools::{ToolError, opt_str, req_str};
-use super::{HostConfig, blocking, hosted_entry, require};
+use super::{blocking, hosted_entry, require};
 
 /// Add one lane. The `/v1/mcp` host tool.
 pub(crate) async fn lane_create(state: &AppState, arguments: &Value) -> Result<Value, ToolError> {
