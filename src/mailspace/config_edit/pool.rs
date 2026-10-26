@@ -110,14 +110,40 @@ pub fn set_band(
     model: &str,
     reasoning: &str,
 ) -> Result<(), VivariumError> {
-    let table = pool_table_mut(doc, pool)?;
+    let bands = bands_table_mut(pool_table_mut(doc, pool)?, pool)?;
     let mut choice = Table::new();
     choice["model"] = toml_edit::value(model);
     choice["reasoning"] = toml_edit::value(reasoning);
     let mut rows = ArrayOfTables::new();
     rows.push(choice);
-    table["bands"][band] = Item::ArrayOfTables(rows);
+    bands.insert(band, Item::ArrayOfTables(rows));
     Ok(())
+}
+
+/// The pool's `bands` table, made when the pool has none. Indexing a missing
+/// key would make an inline table, which cannot hold the rows, and the write
+/// would be dropped without an error.
+fn bands_table_mut<'a>(table: &'a mut Table, pool: &str) -> Result<&'a mut Table, VivariumError> {
+    match table.remove("bands") {
+        None | Some(Item::None) => {}
+        Some(Item::Table(bands)) => {
+            table.insert("bands", Item::Table(bands));
+        }
+        Some(Item::Value(toml_edit::Value::InlineTable(bands))) => {
+            table.insert("bands", Item::Table(bands.into_table()));
+        }
+        Some(_) => {
+            return Err(VivariumError::Message(format!(
+                "pool '{pool}' has a bands setting that is not a table"
+            )));
+        }
+    }
+    if !table.contains_key("bands") {
+        table.insert("bands", Item::Table(Table::new()));
+    }
+    table["bands"]
+        .as_table_mut()
+        .ok_or_else(|| VivariumError::Message(format!("pool '{pool}' has no bands table")))
 }
 
 /// Remove `[pools.<name>.bands.<band>]`.
@@ -162,7 +188,7 @@ fn parse_value(raw: &str) -> Value {
 }
 
 fn parse_array_or_string(raw: &str) -> Value {
-    if raw.starts_with('[')
+    if (raw.starts_with('[') || raw.starts_with('{'))
         && let Ok(doc) = format!("v = {raw}").parse::<DocumentMut>()
         && let Some(value) = doc.get("v").and_then(Item::as_value)
     {

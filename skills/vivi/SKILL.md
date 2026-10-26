@@ -1114,8 +1114,10 @@ allow-list: any path under that table is settable (`provider`, `slots`,
 `fallback`, `repo`, `image`, `local.worktree_of`, `local.root`, `caps.<model>`,
 `harness.models`, `harness.name`, `harness.run`, `committer.name`,
 `committer.email`, `bridge.enabled`, and the provider tables). Values:
-a decimal integer (`10`), `true` / `false`, a TOML array (`["a", "b"]`),
-or any other string. Comments and unrelated keys are left alone. Like every
+a decimal integer (`10`), `true` / `false`, a TOML array (`["a", "b"]`), an
+inline table, or any other string. A new `harness` needs `name`, `run` and
+`models` together, so set it whole as an inline table; one key at a time is
+refused until they all exist. Comments and unrelated keys are left alone. Like every
 pool writer (`pool add`, `set`, `unset`, `remove`, `bands`), `set` and `unset`
 go through the config write guard: refused while the pump runs (pause it
 first), a `mailspace.toml.bak.<stamp>` backup kept, and a write that adds a
@@ -1126,6 +1128,7 @@ notes.
 vivi pool set glm slots 10
 vivi pool set glm local.worktree_of /path/to/repo
 vivi pool set glm harness.models '["m1", "m2"]'
+vivi pool set glm harness '{ name = "pi", run = "runner {model} {brief}", models = ["m1"] }'
 vivi pool unset glm image
 ```
 

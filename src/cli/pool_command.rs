@@ -482,7 +482,7 @@ pub struct PoolConfigSetCommand {
     /// Key, possibly dotted (`local.worktree_of`)
     pub key: String,
 
-    /// Value (string, bool, integer, or TOML array)
+    /// Value (string, bool, integer, TOML array, or inline table such as a whole `harness`)
     pub value: String,
 
     /// Project root that owns .vivi/

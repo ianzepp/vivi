@@ -207,6 +207,85 @@ to = "hand"
 }
 
 #[test]
+fn pool_bands_set_writes_the_band_on_a_pool_that_has_none() {
+    let dir = project_with(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[pools.p]
+provider = "local"
+slots = 2
+local = { worktree_of = "/tmp/x" }
+"#,
+    );
+    let root = dir.path().to_str().unwrap();
+    let band = |raw: &str| -> Option<(String, String)> {
+        let doc: toml::Value = toml::from_str(raw).unwrap();
+        let row = doc["pools"]["p"].get("bands")?.get("P2")?.get(0)?;
+        Some((
+            row["model"].as_str()?.to_string(),
+            row["reasoning"].as_str()?.to_string(),
+        ))
+    };
+    let file = dir.path().join(".vivi/mailspace.toml");
+
+    let set = vivi(&[
+        "pool",
+        "bands",
+        "set",
+        "p",
+        "P2",
+        "m/ok",
+        "high",
+        "--project",
+        root,
+    ]);
+    assert_success(&set);
+    let raw = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(band(&raw), Some(("m/ok".into(), "high".into())), "{raw}");
+
+    let unset = vivi(&["pool", "bands", "unset", "p", "P2", "--project", root]);
+    assert_success(&unset);
+    let raw = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(band(&raw), None, "{raw}");
+}
+
+#[test]
+fn pool_set_takes_a_whole_harness_as_an_inline_table() {
+    let dir = project_with(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[pools.p]
+provider = "local"
+slots = 2
+local = { worktree_of = "/tmp/x" }
+"#,
+    );
+    let root = dir.path().to_str().unwrap();
+    // One key at a time cannot work: a harness without all its keys is refused.
+    let one = vivi(&[
+        "pool",
+        "set",
+        "p",
+        "harness.name",
+        "fake",
+        "--project",
+        root,
+    ]);
+    assert!(!one.status.success());
+
+    let whole = r#"{ name = "fake", run = "fake --model {model} @{brief}", models = ["m/ok"] }"#;
+    let set = vivi(&["pool", "set", "p", "harness", whole, "--project", root]);
+    assert_success(&set);
+    let raw = std::fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    let doc: toml::Value = toml::from_str(&raw).unwrap();
+    let harness = &doc["pools"]["p"]["harness"];
+    assert_eq!(harness["name"].as_str(), Some("fake"), "{raw}");
+    assert_eq!(harness["models"][0].as_str(), Some("m/ok"), "{raw}");
+}
+
+#[test]
 fn role_and_pool_writers_keep_comments() {
     let dir = project_with(
         r#"
