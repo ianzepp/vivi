@@ -30,6 +30,9 @@
 //!                                                                  works because they did not answer on SSH in time (0 on
 //!                                                                  every other host); COST: their approximate total charge
 //!                                                                  in dollars, `0.12`, or - when none or no price known
+//!                deferred TASK POOL REASON RETRY_AT               REASON: band-capacity|provider-cooldown|
+//!                                                                    band-unavailable|admission-busy;
+//!                                                                    RETRY_AT: epoch seconds, or - when unknown
 //! pool wait      collected TASK POOL SLOT STATE DETAIL             STATE: finished|timeout|lost
 //!                nothing-open
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED     KIND: poll-error
@@ -56,6 +59,7 @@
 //! recorded without one (made before pools were named), or an issue that is
 //! not about one pool.
 
+use super::bands::eligibility::Reason;
 use super::collect::RoundLine;
 use super::doctor::{Check, Counts};
 use super::progress::Issue;
@@ -138,6 +142,96 @@ fn mode_word(read_only: bool) -> &'static str {
 #[must_use]
 pub fn refused(task: &str, reason: &str) -> String {
     line("refused", &[quote(task), quote(reason)])
+}
+
+/// A dispatch the pool could not start yet: `deferred TASK POOL REASON
+/// RETRY_AT`. The task and pool are kept so the caller can match the
+/// attempt it actually made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deferred {
+    /// The task whose dispatch was put off.
+    pub task: String,
+    /// The pool that put it off.
+    pub pool: String,
+    /// Why the dispatch could not start now.
+    pub reason: Reason,
+    /// When asking again could help, as epoch seconds; `None` when retrying
+    /// changes nothing.
+    pub retry_at: Option<u64>,
+}
+
+/// `deferred TASK POOL REASON RETRY_AT`: the dispatch was not started; the
+/// pool could not take it just now and will be asked again.
+#[must_use]
+pub fn deferred(task: &str, pool: &str, reason: Reason, retry_at: Option<u64>) -> String {
+    line(
+        "deferred",
+        &[
+            quote(task),
+            quote(pool),
+            quote(reason.code()),
+            num(retry_at),
+        ],
+    )
+}
+
+/// The one `deferred TASK POOL REASON RETRY_AT` record of a single output
+/// line, or `None` for any other line. Strict: exactly four fields, a
+/// [`Reason`] code as [`deferred`] writes it, a bare `-` or epoch-seconds
+/// `RETRY_AT`, and every value spelled exactly as [`quote`] writes it — a
+/// quoted literal dash is a task or pool value, never an absent field or
+/// deadline.
+#[must_use]
+pub fn parse_deferred(text: &str) -> Option<Deferred> {
+    let fields = text.strip_prefix("deferred ")?;
+    let (task, fields) = strict_token(fields)?;
+    let (pool, fields) = strict_token(fields)?;
+    let (code, fields) = strict_token(fields)?;
+    let (retry_at, fields) = retry_field(fields)?;
+    let reason = deferred_reason(&code)?;
+    fields.trim().is_empty().then_some(Deferred {
+        task,
+        pool,
+        reason,
+        retry_at,
+    })
+}
+
+/// The [`Reason`] behind a `deferred` record's code, or `None` for any other
+/// word.
+fn deferred_reason(code: &str) -> Option<Reason> {
+    match code {
+        "band-capacity" => Some(Reason::Capacity),
+        "provider-cooldown" => Some(Reason::ProviderCooldown),
+        "band-unavailable" => Some(Reason::BandUnavailable),
+        "admission-busy" => Some(Reason::AdmissionBusy),
+        _ => None,
+    }
+}
+
+/// One field value and the text after it (see [`next_token`]), but only when
+/// [`quote`] would write the value back exactly as the line spells it.
+fn strict_token(text: &str) -> Option<(String, &str)> {
+    let (value, rest) = next_token(text)?;
+    let written = quote(&value);
+    (text.trim_start().strip_prefix(written.as_str())? == rest).then_some((value, rest))
+}
+
+/// The `RETRY_AT` field: a bare `-` when absent, else epoch seconds. A
+/// quoted deadline is a literal value — never the absent mark, never an
+/// epoch.
+fn retry_field(text: &str) -> Option<(Option<u64>, &str)> {
+    if text.trim_start().starts_with('"') {
+        return None;
+    }
+    let (raw, rest) = next_token(text)?;
+    if raw == "-" {
+        return Some((None, rest));
+    }
+    let Ok(secs) = raw.parse::<u64>() else {
+        return None;
+    };
+    (quote(&raw) == raw).then_some((Some(secs), rest))
 }
 
 /// The reason of the first `refused TASK REASON` line in command output.

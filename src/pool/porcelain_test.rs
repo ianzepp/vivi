@@ -443,3 +443,98 @@ fn output_without_a_refused_line_gives_none() {
     );
     assert_eq!(refused_reason("not refused here"), None);
 }
+
+#[test]
+fn deferred_lines_round_trip_every_reason_and_deadline() {
+    for reason in [
+        Reason::Capacity,
+        Reason::ProviderCooldown,
+        Reason::BandUnavailable,
+        Reason::AdmissionBusy,
+    ] {
+        let said = deferred("hand-9", "studio", reason, Some(1_760_000_090));
+        assert_eq!(
+            said,
+            format!("deferred hand-9 studio {} 1760000090", reason.code())
+        );
+        let got = parse_deferred(&said).unwrap_or_else(|| panic!("unparsed: {said}"));
+        assert_eq!(got.task, "hand-9", "{said}");
+        assert_eq!(got.pool, "studio", "{said}");
+        assert_eq!(got.reason, reason, "{said}");
+        assert_eq!(got.reason.code(), reason.code(), "{said}");
+        assert_eq!(got.retry_at, Some(1_760_000_090), "{said}");
+
+        let open = deferred("hand-9", "studio", reason, None);
+        assert_eq!(open, format!("deferred hand-9 studio {} -", reason.code()));
+        let got = parse_deferred(&open).unwrap_or_else(|| panic!("unparsed: {open}"));
+        assert_eq!(got.task, "hand-9");
+        assert_eq!(got.pool, "studio");
+        assert_eq!(got.reason, reason);
+        assert_eq!(got.retry_at, None, "{open}");
+    }
+    let zero = deferred("t", "p", Reason::AdmissionBusy, Some(0));
+    assert_eq!(parse_deferred(&zero).unwrap().retry_at, Some(0));
+}
+
+#[test]
+fn deferred_round_trips_hard_task_and_pool_values() {
+    for (task, pool) in [
+        ("a b", "c d"),
+        (r#"say "hi""#, r#"pool "7""#),
+        (r"a\b", r"b\c"),
+        ("two\nlines\ttab", "bell\u{7}"),
+        ("-", "p"),
+        ("t", "-"),
+        ("-", "-"),
+        ("", ""),
+    ] {
+        let said = deferred(task, pool, Reason::BandUnavailable, Some(90));
+        let got = parse_deferred(&said).unwrap_or_else(|| panic!("unparsed: {said}"));
+        assert_eq!(got.task, task, "{said}");
+        assert_eq!(got.pool, pool, "{said}");
+        assert_eq!(got.reason, Reason::BandUnavailable, "{said}");
+        assert_eq!(got.retry_at, Some(90), "{said}");
+    }
+    // A quoted literal dash is the value itself, never an absent field.
+    let dashed = deferred("-", "-", Reason::Capacity, None);
+    assert!(dashed.starts_with("deferred \"-\" \"-\""), "{dashed}");
+    let got = parse_deferred(&dashed).unwrap_or_else(|| panic!("unparsed: {dashed}"));
+    assert_eq!(got.task, "-", "{dashed}");
+    assert_eq!(got.pool, "-", "{dashed}");
+    assert_eq!(got.retry_at, None);
+}
+
+#[test]
+fn parse_deferred_rejects_incomplete_or_extra_records() {
+    assert_eq!(parse_deferred("deferred"), None);
+    assert_eq!(parse_deferred("deferred t"), None);
+    assert_eq!(parse_deferred("deferred t p"), None);
+    assert_eq!(parse_deferred("deferred t p band-capacity"), None);
+    assert_eq!(parse_deferred("deferred t p band-capacity - extra"), None);
+    assert_eq!(parse_deferred("deferred t p band-capacity 5 6"), None);
+}
+
+#[test]
+fn parse_deferred_rejects_invalid_reasons_and_deadlines() {
+    assert_eq!(parse_deferred("deferred t p cooldown 5"), None);
+    assert_eq!(parse_deferred("deferred t p Band-Capacity 5"), None);
+    assert_eq!(parse_deferred("deferred t p - 5"), None);
+    assert_eq!(parse_deferred(r#"deferred t p "band-capacity" 5"#), None);
+    assert_eq!(parse_deferred("deferred t p band-capacity soon"), None);
+    assert_eq!(parse_deferred("deferred t p band-capacity -5"), None);
+    assert_eq!(parse_deferred(r#"deferred t p band-capacity "90""#), None);
+    // A quoted literal dash is a value, never the absent mark.
+    assert_eq!(parse_deferred(r#"deferred t p band-capacity "-""#), None);
+}
+
+#[test]
+fn parse_deferred_rejects_malformed_quoting_and_other_kinds() {
+    assert_eq!(parse_deferred(""), None);
+    assert_eq!(parse_deferred("refused t why"), None);
+    assert_eq!(parse_deferred(r#"deferred "t p band-capacity 5"#), None);
+    assert_eq!(parse_deferred(r#"deferred t" p band-capacity 5"#), None);
+    // Text that merely contains the word deferred is not a record.
+    assert_eq!(parse_deferred("the dispatch was deferred until 5"), None);
+    assert_eq!(parse_deferred("deferredness t p band-capacity 5"), None);
+    assert_eq!(parse_deferred("note\ndeferred t p band-capacity 5"), None);
+}
