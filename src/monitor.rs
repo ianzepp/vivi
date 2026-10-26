@@ -10,9 +10,11 @@ pub mod events;
 pub mod history;
 pub mod lanes;
 pub mod model;
+pub mod observation;
 pub mod pump;
 pub mod slots;
 pub mod snapshot;
 pub mod tui;
 
+pub use observation::{IssueKind, ProjectObservation, ProjectWarning, ReadIssue, StorePresence};
 pub use snapshot::{Snapshot, merge_roots, snapshot};
