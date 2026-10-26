@@ -44,6 +44,10 @@ pub use delete::{ProjectDelete, ProjectDeleted};
 
 const NAME_LIMIT: usize = 64;
 const DEFAULT_BRANCH: &str = "main";
+/// The pump's integration branch, and the `main` of every target made here:
+/// needs land on it, and the upstream branch stays a mirror the pump never
+/// writes. The pump creates it on the lane the first time it is missing.
+pub const INTEGRATION_BRANCH: &str = "vivi/main";
 
 /// Everything needed to create one project.
 #[derive(Clone, Debug)]
@@ -66,7 +70,9 @@ pub struct ProjectCreate {
     /// must come from a base config above the projects root. `None` skips
     /// it.
     pub pool: Option<String>,
-    /// The first target's default branch, also its `main`.
+    /// The first target's default branch: the lane's upstream branch. The
+    /// target's own `main` is the pump's integration branch,
+    /// [`INTEGRATION_BRANCH`].
     pub branch: String,
     /// Register the project for the pump supervisor.
     pub pump: bool,
@@ -335,7 +341,7 @@ fn run_steps(
         &plan.target,
         &plan.repo,
         &plan.git_url,
-        Some(&request.branch),
+        Some(INTEGRATION_BRANCH),
     )?;
 
     inject(Step::Values)?;

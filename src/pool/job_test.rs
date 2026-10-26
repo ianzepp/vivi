@@ -913,3 +913,30 @@ fn ancestry_and_need_cleanup_controls_stay_in_runner_only_parameters() {
         assert!(!contents.contains(SECRET));
     }
 }
+
+#[test]
+fn the_integration_branch_may_appear_in_a_commit_message_but_need_and_unit_branches_may_not() {
+    use crate::pool::commit_hygiene::forbidden_tokens;
+
+    let mut p = plan();
+    p.refs.from = "vivi/main".into();
+    p.refs.branch = "vivi/need/abcdef12".into();
+    let tokens = forbidden_tokens(&p);
+    assert!(!tokens.iter().any(|t| t == "vivi/main"), "{tokens:?}");
+    assert!(
+        tokens.iter().any(|t| t == "vivi/need/abcdef12"),
+        "{tokens:?}"
+    );
+
+    p.refs.from = "vivi/need/abcdef12".into();
+    p.refs.branch = "vivi/main".into();
+    let tokens = forbidden_tokens(&p);
+    assert!(!tokens.iter().any(|t| t == "vivi/main"), "{tokens:?}");
+    assert!(
+        tokens.iter().any(|t| t == "vivi/need/abcdef12"),
+        "{tokens:?}"
+    );
+
+    p.refs.from = "pump/old".into();
+    assert!(forbidden_tokens(&p).iter().any(|t| t == "pump/old"));
+}

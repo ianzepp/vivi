@@ -66,8 +66,16 @@ fn push_token(tokens: &mut Vec<String>, token: &str) {
     }
 }
 
+/// Whether `name` is the pump's integration branch (`vivi/main`, or whatever
+/// a target's `main` names under `vivi/`) rather than a branch that carries a
+/// need or unit id. The integration branch is a plain, fixed name; a commit
+/// message may mention it.
+fn is_integration_branch(name: &str) -> bool {
+    name.starts_with("vivi/") && !name.starts_with("vivi/need/") && !name.starts_with("vivi/unit/")
+}
+
 fn push_ref(tokens: &mut Vec<String>, name: &str) {
-    if is_commit_id(name) {
+    if is_commit_id(name) || is_integration_branch(name) {
         return;
     }
     push_token(tokens, name);
