@@ -2903,6 +2903,28 @@ command accepts the delivery need, records `main` and the merge commit as close
 provenance, and `need show` exposes the result. For general task or need closes,
 see [close provenance](#close-provenance).
 
+## Server
+
+The hosted project server (formerly the separate `vivi-server` binary) is part
+of vivi: one release ships both.
+
+```sh
+vivi server run              # foreground, for an OS service manager
+vivi server run --help       # the environment variables it reads
+vivi server run --version
+```
+
+It is configured only by environment variables (`BIND`, `PORT`, `DATA_DIR`,
+`STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN`, `HOST_OPERATOR_TOKEN`, the
+`HOST_*` settings, `RUST_LOG`); the three secrets may instead come from
+systemd credentials (`LoadCredential=`). It starts single-threaded, before
+vivi's own runtime: it makes itself non-dumpable and takes its secrets out of
+the environment first. A link named `vivi-server` to the `vivi` binary runs
+the server too, so a unit or script that called the old binary keeps working.
+Its log target is `vivi::server` (the default filter is
+`vivi::server=info,tower_http=info`). The wire contract, design notes and
+changelog are under `docs/server/`, the smoke scripts under `scripts/server/`.
+
 ## Proxy
 
 `vivi proxy` is a user-level loopback front door. It is not a mailspace

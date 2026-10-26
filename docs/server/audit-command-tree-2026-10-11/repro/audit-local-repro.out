@@ -1,0 +1,157 @@
+
+##### F1 setup: A sends need/task/want to B's hand, and a local task to its own hand
+N1=e58705b1 T1=3fc3bc3b W1=8ba96ad0 T3=1675cdc3
+
+##### F1 A: vivi step (before any sync) -- sent copies dispatch, want included, kind=sent
+graph backlog
+
+  node  item  kind  clauses  scope  subject
+  nod_4c997f17764e4c3c  1675cdc3  task  1  yes  T3 alice-local task
+  nod_5d4e70f21aeff4e9  3fc3bc3b  sent  1  yes  T1 task to bob
+  nod_fc02c625fc7ed782  8ba96ad0  sent  1  yes  W1 want to bob
+  nod_7769cf5188da2ac5  e58705b1  sent  1  yes  N1 need to bob
+
+  no exceptions
+
+  no decisions
+
+##### F1 A: graph activate on a sent copy
+error: message error: activate requires a task handle; got role 'sent'
+[exit 1]
+
+##### F2 sync A then B; B: vivi step lists alice's local task T3
+sync push: 4 sent, 0 already on server
+sync pull: 5 fetched, 1 new (1 inbox), 4 already present, 0 reply link(s), 0 refused, cursor 5
+sync push: 0 sent, 0 already on server
+sync pull: 5 fetched, 5 new (1 inbox, 1 needs, 2 tasks, 1 wants), 0 already present, 0 reply link(s), 0 refused, cursor 5
+graph backlog
+
+  node  item  kind  clauses  scope  subject
+  nod_4c997f17764e4c3c  1675cdc3  task  1  yes  T3 alice-local task
+  nod_5d4e70f21aeff4e9  3fc3bc3b  task  1  yes  T1 task to bob
+  nod_7769cf5188da2ac5  e58705b1  need  1  yes  N1 need to bob
+
+  node  item  kind  reason  detail
+  nod_fc02c625fc7ed782  8ba96ad0  want  want_requires_promotion  parked: wants never dispatch before explicit promotion
+
+  no decisions
+
+##### F2 B: board does NOT list T3, boot counts it
+mailspace b
+root      /private/tmp/claude-501/-Users-ianzepp-work-ianzepp-vivi/2214cfc8-c994-47ee-8080-9f3236d10e73/scratchpad/audit-local/b
+actionable open: 2  tasks: 1  needs: 1  wants: 1
+
+hand <hand@5a60aa5c.local>  actionable:2  tasks:1  needs:1  wants:1
+tasks:
+  3fc3bc3b  2026-10-11T21:59:47+00:00  mind@3d0e8067.local  T1 task to bob
+needs:
+  e58705b1  2026-10-11T21:59:47+00:00  mind@3d0e8067.local  N1 need to bob
+wants:
+  8ba96ad0  2026-10-11T21:59:47+00:00  mind@3d0e8067.local  W1 want to bob
+
+totals  2 roles | open 2 task 1 need 1 want | stale 0 blocked 0
+-- handles: open work with a verdict -----------------------
+  1675cdc3  task  0m   open       mind@3d0e8067.local    T3 alice-local task
+  3fc3bc3b  task  0m   open       mind@3d0e8067.local    T1 task to bob
+  e58705b1  need  0m   open       mind@3d0e8067.local    N1 need to bob
+  8ba96ad0  want  0m   open       mind@3d0e8067.local    W1 want to bob
+
+  slice 1  2 handles: e58705b1 8ba96ad0
+      N1 need to bob
+      W1 want to bob
+
+
+##### F2 B: activate alice's local task, then try to close it
+graph activate
+  code     backlog
+  handle   gph_3b1d8b812e8948cc
+  revision 1
+  node     1675cdc3
+  task     1675cdc3
+  content  5a974764de41441f8c831301ebf1d203e8cb2aef598c5847ba0e07838dd9f4f7
+  ready    3fc3bc3b, 8ba96ad0, e58705b1
+error: message error: message not found: 1675cdc3
+[exit 1]
+
+##### F3 dependency edges lost on pull: B sends T5 depending on N1 (pulled need)
+T5=690b4c53
+--- B graph ready (T5 blocked)
+  counts   ready=3 blocked=1 active=1 gates=0
+  ready    3fc3bc3b, 8ba96ad0, e58705b1
+  blocked  690b4c53
+  active   1675cdc3
+  gates    (none)
+sync push: 1 sent, 0 already on server
+sync pull: 1 fetched, 0 new, 1 already present, 0 reply link(s), 0 refused, cursor 6
+sync push: 0 sent, 0 already on server
+sync pull: 1 fetched, 1 new (1 tasks), 0 already present, 0 reply link(s), 0 refused, cursor 6
+--- A graph ready (T5 ready, nothing blocked)
+  counts   ready=5 blocked=0 active=0 gates=0
+  ready    1675cdc3, 3fc3bc3b, 690b4c53, 8ba96ad0, e58705b1
+  blocked  (none)
+  active   (none)
+  gates    (none)
+--- A graph audit (clean)
+backlog audit backlog
+  checked  2
+  findings missing=0 state=0 kind=0 orphan=0
+--- A: header carries the dependency
+X-Vivi-Depends-On: e58705b1
+
+##### F3b --depends-on on a sent copy is refused
+error: message error: dependency '3fc3bc3b' has role 'sent'; expected a task, need, or want handle
+[exit 1]
+
+##### F4 closing on the other side never reaches the sender's step
+done 3fc3bc3b
+sync push: 1 sent, 0 already on server
+sync pull: 1 fetched, 0 new, 1 already present, 0 reply link(s), 0 refused, cursor 7
+sync push: 0 sent, 0 already on server
+sync pull: 1 fetched, 1 new (1 inbox), 0 already present, 1 reply link(s), 0 refused, cursor 7
+--- A step still dispatches T1
+  nod_5d4e70f21aeff4e9  3fc3bc3b  sent  1  yes  T1 task to bob
+--- A step --apply
+  node  item  kind  reason  detail
+    3fc3bc3b  sent  not_settled  settle the item (task done with receipt flags) before apply
+
+  no decisions
+
+##### F5 boot unabsorbed mail holds the governance letter nobody can absorb
+-- unabsorbed mail: no reader has absorbed these -----------
+  b842e64d  0m   hand@5a60aa5c.local      Re: T1 task to bob
+  fb1c32bc  9h   alice@audit.local        vouch bob
+
+error: message error: message not found: fb1c32bc
+[exit 1]
+
+##### F6 rename alias filing and unknown-role warning
+renamed hand -> worker (worker@3d0e8067.local)
+historical mail sent as hand still resolves under worker
+--- A pull (stdout then stderr)
+sync pull: 2 fetched, 2 new (2 tasks), 0 already present, 0 reply link(s), 0 refused, cursor 9
+warning: filed for unknown role ghost
+--- A board has worker's R1 but not ghost's R3
+  a53fb6c8  2026-10-11T21:59:47+00:00  mind@5a60aa5c.local  R1 old name
+(R3 grep exit 0)
+--- A step has both
+  nod_59ed625dd68438f6  07002c6d  task  1  yes  R3 unknown role
+  nod_717acb46d15e720b  a53fb6c8  task  1  yes  R1 old name
+
+##### F7 prune evicts sent copies of open work; audit calls them deleted
+evicted 1 letter(s) dated before 2026-10-11T21:58:47+00:00 (open needs/tasks/wants, starred, absorbed, and local mail are kept)
+  fb1c32bc inbox 2026-10-11T12:00:00+00:00 vouch bob
+vivi sync resync, vivi sync fetch <handle>, or vivi sync pull --refs restores evicted letters from the server
+backlog audit backlog
+  checked  4
+  findings missing=0 state=0 kind=0 orphan=0
+sync pull: 9 fetched, 1 new (1 inbox), 1 restored, 8 already present, 0 reply link(s), 0 refused, cursor 9
+
+##### F8 memo delete trashes any record; trashed work still dispatches
+deleted e58705b1
+  nod_7769cf5188da2ac5  e58705b1  trash  1  yes  N1 need to bob
+
+##### F9 rules do not sync; memo dump has no bodies
+saved c64006e3
+sync push: 0 sent, 0 already on server, not synced by design: 1 kind rule
+  no rules
+    "body": "",

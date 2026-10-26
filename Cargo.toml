@@ -19,7 +19,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "6"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 hex = "0.4"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 mail-builder = "0.3"
@@ -28,7 +28,7 @@ regex = "1.12"
 rand_core = { version = "0.6", features = ["getrandom"] }
 ratatui = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "brotli", "deflate", "gzip", "json", "rustls-tls", "stream", "zstd"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = "0.8"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-stream = "0.1"
@@ -43,10 +43,22 @@ sysinfo = "0.32"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing = "0.1"
 toml = "0.8"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml_edit = "0.22"
+# vivi server (formerly the vivi-server crate)
+aes-gcm = "0.10"
+base64 = "0.22"
+getrandom = "0.4"
+subtle = "2"
+tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 strip = true

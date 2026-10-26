@@ -201,6 +201,13 @@ pub enum Command {
     /// (exploratory; see docs/design-vivi-mind.md)
     Mind(MindCommand),
 
+    /// The hosted project server (formerly vivi-server): serves project
+    /// mailspaces, MCP and rooms over HTTP
+    Server {
+        #[command(subcommand)]
+        command: ServerSubcommand,
+    },
+
     /// Local loopback front door for model providers
     Proxy {
         #[command(subcommand)]
@@ -340,5 +347,19 @@ pub enum DeliveryCommand {
         /// Project root to use
         #[arg(long)]
         project: Option<PathBuf>,
+    },
+}
+
+/// `vivi server` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ServerSubcommand {
+    /// Run the server in the foreground (for an OS service manager). It is
+    /// configured by environment variables only: `vivi server run --help`
+    /// lists them.
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Run {
+        /// Passed to the server: `--help` or `--version`; anything else is refused
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }

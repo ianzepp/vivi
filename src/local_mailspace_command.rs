@@ -49,6 +49,10 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Project { command } => crate::local_project_command::handle(command),
         Command::Pump { command } => crate::local_pump_command::handle_pump_command(command),
         Command::Proxy { command } => vivi::proxy::handle(command),
+        // main dispatches the server before any runtime starts; it never gets here.
+        Command::Server { .. } => Err(VivariumError::Other(
+            "vivi server run is dispatched by main before the runtime starts".into(),
+        )),
         Command::Mind(_) => Err(VivariumError::Other(
             "vivi mind requires the async command entry point".into(),
         )),
