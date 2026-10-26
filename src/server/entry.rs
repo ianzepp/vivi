@@ -92,9 +92,10 @@ async fn serve(config: ServerConfig) {
     state.host = crate::server::mcp::host::HostConfig::from_env();
     // Serve the projects the host registry lists, now and whenever it
     // changes. The first pass finishes before the server accepts a request.
-    let _hosted = crate::server::hosted::start(state.projects.clone(), state.identities.clone());
+    // Both handles pass to the serving helper: draining aborts them.
+    let watcher = crate::server::hosted::start(state.projects.clone(), state.identities.clone());
     // Keep each hosted project's transport index current with its mailspace.
-    let _indexer = crate::server::hosted::start_indexer(state.projects.clone());
+    let indexer = crate::server::hosted::start_indexer(state.projects.clone());
     let app = crate::server::router(state).route("/healthz", get(healthz));
 
     match config.send_rate_per_minute {
@@ -107,11 +108,19 @@ async fn serve(config: ServerConfig) {
         config.data_dir.display()
     );
 
-    if let Err(err) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(Duration::from_secs(10)))
-        .await
+    match crate::server::shutdown::serve_with_shutdown(
+        listener,
+        app,
+        crate::server::shutdown::shutdown_signals(),
+        vec![watcher, indexer],
+        Duration::from_secs(10),
+    )
+    .await
     {
-        die(1, &format!("server error: {err}"));
+        // Drained and deadline-expired both stop normally; the runtime
+        // teardown after this returns is bounded either way.
+        Ok(_) => {}
+        Err(err) => die(1, &format!("server error: {err}")),
     }
 }
 
@@ -139,33 +148,4 @@ fn check_store_and_warn(config: &ServerConfig) {
     if config.host_operator_token.is_none() {
         tracing::warn!("HOST_OPERATOR_TOKEN not set; /v1/mcp has no built-in host principal");
     }
-}
-
-async fn shutdown_signal(drain: Duration) {
-    let ctrl_c = async {
-        if let Err(err) = tokio::signal::ctrl_c().await {
-            tracing::error!("cannot listen for ctrl-c: {err}");
-            std::future::pending::<()>().await;
-        }
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(err) => {
-                tracing::error!("cannot listen for SIGTERM: {err}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
-    tracing::info!("shutdown signal received; draining {drain:?}");
 }
