@@ -49,6 +49,12 @@ async fn run_checks(config: &ProxyConfig, names: &[String]) -> Result<(), Vivari
             }
         }
         if let Some(provider) = config.providers.get(name)
+            && let Some(problem) = credentials_problem(provider)
+        {
+            failed = true;
+            println!("{name} credentials-check-failed: {problem}");
+        }
+        if let Some(provider) = config.providers.get(name)
             && needs_stream_probe(provider)
             && let Err(reason) = stream_probe(&client, config, name, provider).await
         {
@@ -62,6 +68,29 @@ async fn run_checks(config: &ProxyConfig, names: &[String]) -> Result<(), Vivari
     } else {
         Ok(())
     }
+}
+
+/// Why this provider's credentials cannot be read, or `None` when they can.
+/// The health probe only reaches the proxy, so on its own it says `ok` for a
+/// provider whose key command fails or whose credentials file is gone.
+fn credentials_problem(provider: &ProviderConfig) -> Option<String> {
+    if let Some(command) = provider.key_cmd.as_deref() {
+        return super::cmd::run_secret_cmd("key_cmd", command)
+            .err()
+            .map(|error| error.to_string());
+    }
+    let candidates: Vec<std::path::PathBuf> =
+        [&provider.credentials, &provider.fallback_credentials]
+            .into_iter()
+            .flatten()
+            .map(std::path::PathBuf::from)
+            .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    super::credentials::first_existing(&candidates)
+        .err()
+        .map(|error| error.to_string())
 }
 
 /// The streaming probe is native-codex only; other kinds stay health-only.
@@ -177,3 +206,7 @@ async fn probe(
     };
     Ok((status, format!("{name} {status} {label} {url}")))
 }
+
+#[cfg(test)]
+#[path = "check_test.rs"]
+mod tests;
