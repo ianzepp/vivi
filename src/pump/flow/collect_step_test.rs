@@ -666,17 +666,23 @@ fn envelope_fix_uses_config_and_defaults_to_300() -> R {
         ..DispatchConfig::default()
     };
     assert_eq!(corrected_budget(explicit)?, 45);
-    // With no override the correction falls back to 300: it inherits neither
-    // the shared dispatch budget nor the failed planner step's own.
-    let absent = DispatchConfig {
+    // Absent the override, a changed shared dispatch budget does not leak
+    // into the correction: it still queues at the 300-second default.
+    let changed_budget = DispatchConfig {
         budget: 1_200,
+        ..DispatchConfig::default()
+    };
+    assert_eq!(corrected_budget(changed_budget)?, 300);
+    // Absent the override, a changed planner step budget does not leak in
+    // either: a correction is not a full-role rerun of the failed role.
+    let changed_planner = DispatchConfig {
         step_budgets: StepBudgets {
             planner: Some(900),
             ..StepBudgets::default()
         },
         ..DispatchConfig::default()
     };
-    assert_eq!(corrected_budget(absent)?, 300);
+    assert_eq!(corrected_budget(changed_planner)?, 300);
     Ok(())
 }
 
