@@ -226,7 +226,7 @@ fn run_loop(
     loop {
         if last_poll.elapsed() >= Duration::from_secs(1) {
             let snapshot = super::snapshot(roots, epoch_secs());
-            history.refresh(snapshot.rows, |_| None);
+            history.refresh(snapshot.rows, epoch_secs());
             warnings = snapshot.warnings;
             last_poll = Instant::now();
         }
