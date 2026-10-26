@@ -10,14 +10,14 @@ use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
 use crate::letter::read::step_of;
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode};
+use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::{Ctx, test_ctx};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 type R = Result<(), VivariumError>;
 
@@ -124,6 +124,109 @@ fn with_word(mut out: Outcome, word: &str) -> Outcome {
 
 fn nodes(routed: &Routed) -> Vec<&str> {
     routed.sent.iter().map(|s| s.node.as_str()).collect()
+}
+
+fn live_branch() -> NeedBranchRow {
+    NeedBranchRow {
+        need: NEED.into(),
+        branch: "vivi/unit/n1-a1".into(),
+        base: Some("main".into()),
+        status: "live".into(),
+        run: 1,
+        target: ".".into(),
+        priors: vec![],
+    }
+}
+
+#[test]
+fn cto_rework_without_need_branch_is_rejected_without_effects() -> R {
+    let mut rig = rig()?;
+    let cto = rig.step("cto")?;
+    rig.mail.calls.clear();
+
+    let mut out = with_word(cto.clone(), "rework");
+    out.payload = json!({"body": "x"});
+    let routed = rig.route(&out, "")?;
+
+    let reason = routed
+        .rejected
+        .clone()
+        .expect("rework without a branch is rejected");
+    assert!(reason.contains(NEED), "{reason}");
+    assert!(reason.contains("rework"), "{reason}");
+    assert!(reason.contains("need-branch row is required"), "{reason}");
+    assert!(reason.contains("research, plan, slice or lock"), "{reason}");
+    assert!(routed.sent.is_empty());
+    assert!(routed.waiting.is_empty());
+    assert!(routed.terminal.is_empty());
+    assert!(rig.mail.calls.is_empty(), "no mail calls on rejection");
+    assert!(rig.store.step_payload(&cto.task)?.is_none(), "no payload");
+    assert_eq!(status(&rig.mail, &cto.task)?, TaskStatus::Open);
+    assert_eq!(
+        rig.store
+            .step_by_task(&cto.task)?
+            .expect("predecessor row")
+            .state,
+        StepState::Running
+    );
+    Ok(())
+}
+
+#[test]
+fn cto_rework_with_recorded_branch_still_routes() -> R {
+    let mut rig = rig()?;
+    let cto = rig.step("cto")?;
+    rig.store.upsert_need_branch(&live_branch())?;
+    rig.mail.calls.clear();
+
+    let routed = rig.route(&with_word(cto.clone(), "rework"), "")?;
+    assert!(routed.rejected.is_none());
+    assert!(routed.sent.is_empty());
+    assert_eq!(routed.terminal.len(), 1);
+    assert_eq!(routed.terminal[0].node, "r_rework");
+    assert_eq!(
+        routed.terminal[0].class,
+        NodeClass::Restart("rework".into())
+    );
+    let row = rig.store.step_payload(&cto.task)?.expect("payload row");
+    assert_eq!(row.class, "cto");
+    let closed = rig
+        .mail
+        .position(|c| matches!(c, Call::CloseTask { handle, .. } if handle == &cto.task));
+    assert!(closed.is_some(), "the accepted CTO closes");
+    Ok(())
+}
+
+#[test]
+fn other_cto_words_do_not_require_a_need_branch() -> R {
+    for (word, entry) in [
+        ("research", "research"),
+        ("plan", "plan"),
+        ("slice", "slice"),
+    ] {
+        let mut rig = rig()?;
+        let cto = rig.step("cto")?;
+        let routed = rig.route(&with_word(cto, word), "")?;
+        assert!(routed.rejected.is_none(), "{word}");
+        assert_eq!(routed.terminal.len(), 1, "{word}");
+        assert_eq!(routed.terminal[0].node, format!("r_{entry}"), "{word}");
+        assert_eq!(
+            routed.terminal[0].class,
+            NodeClass::Restart(entry.into()),
+            "{word}"
+        );
+    }
+
+    for word in ["lock", "failed"] {
+        let mut rig = rig()?;
+        let cto = rig.step("cto")?;
+        let routed = rig.route(&with_word(cto, word), "")?;
+        assert!(routed.rejected.is_none(), "{word}");
+        assert_eq!(nodes(&routed), vec!["locked"], "{word}");
+        let row = rig.store.step_by_task(&routed.sent[0].task)?.expect("row");
+        assert_eq!(row.state, StepState::Waiting, "{word}");
+    }
+    Ok(())
 }
 
 #[test]
