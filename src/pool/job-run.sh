@@ -766,7 +766,31 @@ if [ -f "$J/extra-targets.env" ]; then
   EXTRA_TARGETS_EXTRA="extra_count=$EXTRA_COUNT"$'\n'"${EXTRA_TARGETS_EXTRA%$'\n'}"
 fi
 
-mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finish workdir_missing
+# The delivered brief opens with a runner-owned header: the checkout the job
+# was selected into and the head state read from that checkout after the
+# selection above. The head line is what the checkout says, never what the
+# job assigns -- a local `create` job reaches the harness detached and its
+# branch exists only once something is committed -- while the assigned output
+# branch travels on its own line when the job will publish one.
+HEAD_BRANCH=$(as_hand git -C "$RD" symbolic-ref --short -q HEAD) || HEAD_BRANCH=
+HEAD_SHA=$(as_hand git -C "$RD" rev-parse --verify HEAD) || HEAD_SHA=
+[ -n "$HEAD_SHA" ] || finish workdir_missing
+mkdir -p "$AGENT_HOME" || finish workdir_missing
+{
+  printf -- '---\n'
+  printf 'checkout: %s\n' "$RD"
+  if [ -n "$HEAD_BRANCH" ]; then
+    printf 'head: %s at %s\n' "$HEAD_BRANCH" "${HEAD_SHA:0:12}"
+  else
+    printf 'head: detached at %s\n' "${HEAD_SHA:0:12}"
+  fi
+  if [ -z "${READ_ONLY:-}" ] && [ -n "$BRANCH" ]; then
+    printf 'output branch: %s (assigned; the runner commits and publishes there)\n' "$BRANCH"
+  fi
+  printf -- '---\n'
+  cat "$J/brief.md"
+} > "$AGENT_HOME/brief.md" || finish workdir_missing
+cp "$J/rules.md" "$AGENT_HOME/rules.md" || finish workdir_missing
 if [ -n "$EXTRA_NOTE" ]; then
   {
     printf '\n\n## Repositories\n\n'
