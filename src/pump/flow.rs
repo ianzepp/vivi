@@ -10,6 +10,7 @@ pub mod collect_slice;
 pub mod collect_step;
 pub mod cto_step;
 pub mod decide;
+pub mod decision;
 pub mod def;
 pub mod fanout;
 pub mod follow_up;

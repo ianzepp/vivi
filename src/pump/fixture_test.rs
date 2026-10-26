@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::{TempDir, tempdir};
 
-use crate::mailspace::{Mailspace, SendRequest};
+use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 
@@ -55,7 +55,15 @@ pub(crate) fn project() -> Project {
     let dir = tempdir().unwrap();
     let mut mailspace = Mailspace::init(Some(dir.path())).unwrap();
     mailspace.add_identity("operator").unwrap();
-    mailspace.add_identity("mind").unwrap();
+    mailspace
+        .add_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some(String::from("mind"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
     mailspace.add_identity("elsewhere").unwrap();
     let toml = dir.path().join(".vivi").join("mailspace.toml");
     let mut text = fs::read_to_string(&toml).unwrap();
