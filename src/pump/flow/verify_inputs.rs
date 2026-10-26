@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VivariumError;
+use crate::pump::flow::def::FlowKind;
+use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
@@ -18,6 +20,12 @@ const PLANNED: &str = "planned";
 
 /// The class of an audit step.
 const AUDITOR: &str = "auditor";
+
+/// The admitter verdict that approves a plan revision.
+const ADMITTED: &str = "admitted";
+
+/// The step class of a planner.
+const PLANNER: &str = "planner";
 
 /// The need branch of a need and the range an audit reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +168,113 @@ pub(crate) fn admitted_plan(
         }
     }
     Ok(None)
+}
+
+/// An admitted plan read out of an earlier build run of a need, with the
+/// identities of the run and planner step it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PriorPlan {
+    /// The earlier build run holding the plan.
+    pub run: u32,
+    /// The planner node that produced the plan: `plan` or `plan2`.
+    pub node: String,
+    /// The planner step task of the plan.
+    pub task: String,
+    /// The durable plan document.
+    pub body: String,
+}
+
+/// The planner revisions of a build run, newest first, each with the
+/// admission node that rules on it in the same run.
+const REVISIONS: [(&str, &str); 2] = [("plan2", "admit2"), ("plan", "admit1")];
+
+/// The newest plan of an earlier build run whose matching admission ruled
+/// `admitted`, searching build runs below `run` newest first. Revision
+/// `plan2` is ruled by `admit2` and `plan` by `admit1` of the same run, so
+/// the admission of one revision never authorizes another. Rejected,
+/// unfinished, missing-content and non-build candidates are skipped, and a
+/// newer merely planned or unadmitted revision never displaces an earlier
+/// admitted document.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+pub(crate) fn prior_admitted_plan(
+    store: &PumpStore,
+    need: &str,
+    run: u32,
+) -> Result<Option<PriorPlan>, VivariumError> {
+    for source in store.runs_of(need)?.iter().rev() {
+        if source.run >= run || source.kind != FlowKind::Build.name() {
+            continue;
+        }
+        for (node, admission) in REVISIONS {
+            if let Some(found) = admitted_revision(store, source, node, admission)? {
+                return Ok(Some(found));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The plan of one planner revision of `source` when its planner step
+/// answered [`PLANNED`], its admission step answered [`ADMITTED`], and the
+/// durable planner document exists under the planner's task.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+fn admitted_revision(
+    store: &PumpStore,
+    source: &RunRow,
+    node: &str,
+    admission: &str,
+) -> Result<Option<PriorPlan>, VivariumError> {
+    let Some(planner) = newest_step(store, source, node)? else {
+        return Ok(None);
+    };
+    if !answered(Some(&planner), PLANNED)
+        || !answered(newest_step(store, source, admission)?.as_ref(), ADMITTED)
+    {
+        return Ok(None);
+    }
+    let Some(row) = store.step_payload(&planner.task)? else {
+        return Ok(None);
+    };
+    if row.node != node || row.class != PLANNER {
+        return Ok(None);
+    }
+    let Some(body) = row.payload["body"].as_str().filter(|body| !body.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(PriorPlan {
+        run: source.run,
+        node: node.to_owned(),
+        task: planner.task,
+        body: body.to_owned(),
+    }))
+}
+
+/// The newest step row of `node` in the run, of any state.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the step rows cannot be read.
+fn newest_step(
+    store: &PumpStore,
+    run: &RunRow,
+    node: &str,
+) -> Result<Option<StepRow>, VivariumError> {
+    Ok(store
+        .steps_of(&run.need, run.run)?
+        .into_iter()
+        .rev()
+        .find(|row| row.node == node))
+}
+
+/// Whether `step` is a completed step that answered `verdict`.
+#[must_use]
+fn answered(step: Option<&StepRow>, verdict: &str) -> bool {
+    step.is_some_and(|step| {
+        step.state == StepState::Done && step.verdict.as_deref() == Some(verdict)
+    })
 }
 
 /// The need branch row and its current tip.

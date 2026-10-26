@@ -7,10 +7,10 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     admitted_plan, audit_context, branch_range, capped, cto_ruling, latest_of_class, need_thread,
-    requirements, rung_report, whole_message_requirements,
+    prior_admitted_plan, requirements, rung_report, whole_message_requirements,
 };
 use crate::pump::config::PumpConfig;
-use crate::pump::flow::index::{StepRow, StepState};
+use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -348,4 +348,175 @@ fn a_blank_wrapped_prose_message_gets_no_requirement() {
 
     assert_eq!(requirements.len(), 1, "{requirements:?}");
     assert_eq!(requirements[0].id, "need-5-a-r0");
+}
+
+fn run_row(number: u32, kind: &str) -> RunRow {
+    RunRow {
+        need: NEED.into(),
+        run: number,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: kind.into(),
+        entry: "plan".into(),
+        state: "done".into(),
+    }
+}
+
+fn step_row(task: &str, run: u32, node: &str, state: StepState, verdict: Option<&str>) -> StepRow {
+    StepRow {
+        run,
+        node: node.into(),
+        task: task.into(),
+        state,
+        verdict: verdict.map(str::to_string),
+    }
+}
+
+fn admit(f: &Fixture, task: &str, run: u32, node: &str, state: StepState, verdict: Option<&str>) {
+    f.store
+        .insert_step(NEED, &step_row(task, run, node, state, verdict))
+        .unwrap();
+}
+
+/// A planner step that answered `planned` plus its durable document.
+fn record_plan_doc(f: &Fixture, task: &str, run: u32, node: &str, body: serde_json::Value) {
+    f.store
+        .insert_step(
+            NEED,
+            &step_row(task, run, node, StepState::Done, Some("planned")),
+        )
+        .unwrap();
+    f.store
+        .record_step_payload(&StepPayloadRow {
+            need: NEED.into(),
+            run,
+            node: node.into(),
+            class: "planner".into(),
+            task: task.into(),
+            payload: body,
+        })
+        .unwrap();
+}
+
+#[test]
+fn prior_admitted_plan_takes_the_newest_admitted_revision_and_run() {
+    let f = fixture();
+    for run in 1..=3 {
+        f.store.insert_run(&run_row(run, "build")).unwrap();
+    }
+    record_plan_doc(&f, "t1", 1, "plan", json!({ "body": "plan one" }));
+    admit(&f, "a1", 1, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2a", 2, "plan", json!({ "body": "plan two first" }));
+    admit(&f, "a2a", 2, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2b", 2, "plan2", json!({ "body": "plan two second" }));
+    admit(&f, "a2b", 2, "admit2", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t3", 3, "plan", json!({ "body": "plan three" }));
+    admit(&f, "a3", 3, "admit1", StepState::Running, None);
+
+    let found = prior_admitted_plan(&f.store, NEED, 4).unwrap().unwrap();
+    assert_eq!(found.run, 2);
+    assert_eq!(found.node, "plan2");
+    assert_eq!(found.task, "t2b");
+    assert_eq!(found.body, "plan two second");
+    assert_eq!(prior_admitted_plan(&f.store, NEED, 1).unwrap(), None);
+}
+
+#[test]
+fn a_rejected_revision_leaves_the_admitted_earlier_revision_of_its_run() {
+    let f = fixture();
+    for run in 1..=2 {
+        f.store.insert_run(&run_row(run, "build")).unwrap();
+    }
+    record_plan_doc(&f, "t2a", 2, "plan", json!({ "body": "plan two first" }));
+    admit(&f, "a2a", 2, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2b", 2, "plan2", json!({ "body": "plan two second" }));
+    admit(&f, "a2b", 2, "admit2", StepState::Done, Some("revise"));
+
+    let found = prior_admitted_plan(&f.store, NEED, 3).unwrap().unwrap();
+    assert_eq!(
+        (found.run, found.node.as_str(), found.body.as_str()),
+        (2, "plan", "plan two first")
+    );
+}
+
+#[test]
+fn an_unfinished_or_rejected_newest_run_leaves_the_earlier_admitted_plan() {
+    let f = fixture();
+    for run in 1..=2 {
+        f.store.insert_run(&run_row(run, "build")).unwrap();
+    }
+    record_plan_doc(&f, "t1", 1, "plan", json!({ "body": "plan one" }));
+    admit(&f, "a1", 1, "admit1", StepState::Done, Some("admitted"));
+    f.store
+        .insert_step(
+            NEED,
+            &step_row("t2x", 2, "plan", StepState::Failed, Some("revised")),
+        )
+        .unwrap();
+    record_plan_doc(&f, "t2", 2, "plan2", json!({ "body": "plan two" }));
+    admit(&f, "a2", 2, "admit2", StepState::Waiting, None);
+
+    let found = prior_admitted_plan(&f.store, NEED, 3).unwrap().unwrap();
+    assert_eq!((found.run, found.task.as_str()), (1, "t1"));
+}
+
+#[test]
+fn an_admission_never_authorizes_the_other_revision() {
+    let f = fixture();
+    f.store.insert_run(&run_row(1, "build")).unwrap();
+    f.store.insert_run(&run_row(2, "build")).unwrap();
+    record_plan_doc(&f, "t1", 1, "plan2", json!({ "body": "plan two" }));
+    admit(&f, "a1", 1, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2", 2, "plan", json!({ "body": "plan one" }));
+    admit(&f, "a2", 2, "admit2", StepState::Done, Some("admitted"));
+    assert_eq!(prior_admitted_plan(&f.store, NEED, 3).unwrap(), None);
+}
+
+#[test]
+fn an_admission_of_another_run_never_authorizes_a_later_plan() {
+    let f = fixture();
+    for run in 1..=2 {
+        f.store.insert_run(&run_row(run, "build")).unwrap();
+    }
+    admit(&f, "a1", 1, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2", 2, "plan", json!({ "body": "plan two" }));
+    assert_eq!(prior_admitted_plan(&f.store, NEED, 3).unwrap(), None);
+}
+
+#[test]
+fn a_missing_or_empty_document_leaves_the_earlier_admitted_plan() {
+    let f = fixture();
+    for run in 1..=4 {
+        f.store.insert_run(&run_row(run, "build")).unwrap();
+    }
+    record_plan_doc(&f, "t1", 1, "plan", json!({ "body": "plan one" }));
+    admit(&f, "a1", 1, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2", 2, "plan", json!({ "front": {} }));
+    admit(&f, "a2", 2, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t3", 3, "plan", json!({ "body": "" }));
+    admit(&f, "a3", 3, "admit1", StepState::Done, Some("admitted"));
+    f.store
+        .insert_step(
+            NEED,
+            &step_row("t4", 4, "plan", StepState::Done, Some("planned")),
+        )
+        .unwrap();
+    admit(&f, "a4", 4, "admit1", StepState::Done, Some("admitted"));
+
+    let found = prior_admitted_plan(&f.store, NEED, 5).unwrap().unwrap();
+    assert_eq!((found.run, found.body.as_str()), (1, "plan one"));
+}
+
+#[test]
+fn a_non_build_run_is_skipped() {
+    let f = fixture();
+    f.store.insert_run(&run_row(1, "build")).unwrap();
+    f.store.insert_run(&run_row(2, "repair")).unwrap();
+    record_plan_doc(&f, "t1", 1, "plan", json!({ "body": "plan one" }));
+    admit(&f, "a1", 1, "admit1", StepState::Done, Some("admitted"));
+    record_plan_doc(&f, "t2", 2, "plan", json!({ "body": "plan repair" }));
+    admit(&f, "a2", 2, "admit1", StepState::Done, Some("admitted"));
+
+    let found = prior_admitted_plan(&f.store, NEED, 3).unwrap().unwrap();
+    assert_eq!((found.run, found.body.as_str()), (1, "plan one"));
 }
