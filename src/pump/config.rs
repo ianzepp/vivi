@@ -14,6 +14,7 @@ mod migrate;
 mod origins;
 mod planner;
 mod rungs;
+pub mod scope;
 mod show;
 pub mod targets;
 mod validate;
@@ -24,6 +25,7 @@ pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
 pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
+pub use scope::{ScopeDecision, ScopePath, ScopePathError, ScopePolicy, ScopeRejection};
 pub use show::{ShowReport, show};
 pub use validate::{Findings, Missing, valid_target_id};
 
@@ -148,29 +150,29 @@ impl Default for PumpConfig {
 impl PumpConfig {
     /// Effective repository targets. Legacy single-repository fields become
     /// one `default` target; explicit targets inherit only shared merge
-    /// defaults.
+    /// defaults. Scope policy resolves here too: an omitted `scope_allow`
+    /// becomes the whole repository (`["./"]`), an explicit `[]` stays empty,
+    /// and `scope_deny` stays as declared.
     #[must_use]
     pub fn target_configs(&self) -> BTreeMap<String, PumpTarget> {
         if self.targets.is_empty() {
-            return BTreeMap::from([(
-                String::from("default"),
-                PumpTarget {
-                    path: String::from("."),
-                    remote_url: self.remote_url.clone(),
-                    remote: self.remote.clone(),
-                    main: self.main.clone(),
-                    integration_repo: self.repo.clone(),
-                    merge: Some(self.merge.clone()),
-                    ..PumpTarget::default()
-                },
-            )]);
+            let legacy = PumpTarget {
+                path: String::from("."),
+                remote_url: self.remote_url.clone(),
+                remote: self.remote.clone(),
+                main: self.main.clone(),
+                integration_repo: self.repo.clone(),
+                merge: Some(self.merge.clone()),
+                ..PumpTarget::default()
+            };
+            return BTreeMap::from([(String::from("default"), with_scope_defaults(legacy))]);
         }
         self.targets
             .iter()
             .map(|(id, target)| {
                 let mut target = target.clone();
                 target.merge.get_or_insert_with(|| self.merge.clone());
-                (id.clone(), target)
+                (id.clone(), with_scope_defaults(target))
             })
             .collect()
     }
@@ -377,6 +379,15 @@ pub struct PumpTarget {
     /// Target-specific merge behavior. Omitted fields inherit the legacy
     /// workspace-level merge settings when loaded through `target_configs`.
     pub merge: Option<MergeConfig>,
+    /// Scope policy: repository-relative paths units for this target may
+    /// touch. Omitted defaults to the whole repository (`["./"]`) when
+    /// resolved through `target_configs`; an explicit `[]` allows nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_allow: Option<Vec<String>>,
+    /// Scope policy: repository-relative paths this target may not touch,
+    /// even when `scope_allow` covers them. Defaults to empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_deny: Vec<String>,
     /// Target-specific rung commands. A rung set here wins over the
     /// workspace-level `[pump.rungs]` one.
     #[serde(skip_serializing_if = "RungsConfig::is_empty")]
@@ -393,6 +404,8 @@ impl Default for PumpTarget {
             main: String::from("main"),
             integration_repo: None,
             merge: None,
+            scope_allow: None,
+            scope_deny: Vec::new(),
             rungs: RungsConfig::default(),
         }
     }
@@ -647,6 +660,15 @@ pub struct Generated {
     /// Substrings of a failing check's output meaning the generated files are
     /// stale rather than the code broken.
     pub drift: Vec<String>,
+}
+
+/// Scope defaults for a resolved target: an omitted allow is the whole
+/// repository; an explicit `[]` stays empty; deny stays as declared.
+fn with_scope_defaults(mut target: PumpTarget) -> PumpTarget {
+    if target.scope_allow.is_none() {
+        target.scope_allow = Some(vec![String::from(scope::WHOLE_REPOSITORY)]);
+    }
+    target
 }
 
 /// An absolute path stands alone; a relative one joins `project`. `~` is not

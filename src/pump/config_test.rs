@@ -266,6 +266,57 @@ fn named_targets_keep_repository_paths_and_inherit_shared_merge_defaults() {
 }
 
 #[test]
+fn target_scope_defaults_and_explicit_empty_allow() {
+    // The implicit legacy default target: whole repository, nothing denied.
+    let legacy = pump("name = \"t\"\n[pump]\n");
+    let mut configs = legacy.target_configs();
+    let default = configs
+        .remove("default")
+        .expect("legacy config should form the default target");
+    assert_eq!(default.scope_allow, Some(vec![String::from("./")]));
+    assert!(default.scope_deny.is_empty());
+
+    // An omitted allow defaults to the whole repository; an explicit []
+    // allows nothing; deny stays as declared.
+    let mut cfg = PumpConfig::default();
+    cfg.targets = BTreeMap::from([
+        (String::from("app"), PumpTarget::default()),
+        (
+            String::from("docs"),
+            PumpTarget {
+                scope_allow: Some(Vec::new()),
+                scope_deny: vec![String::from("vendor/")],
+                ..PumpTarget::default()
+            },
+        ),
+    ]);
+    let targets = cfg.target_configs();
+    assert_eq!(targets["app"].scope_allow, Some(vec![String::from("./")]));
+    assert!(targets["app"].scope_deny.is_empty());
+    assert_eq!(targets["docs"].scope_allow, Some(Vec::new()));
+    assert_eq!(targets["docs"].scope_deny, vec![String::from("vendor/")]);
+
+    // A declared allow and deny parse from the file and survive resolution
+    // verbatim.
+    let cfg = pump(concat!(
+        "name = \"t\"\n",
+        "[pump.targets.app]\n",
+        "path = \"app\"\n",
+        "scope_allow = [\"src/\", \"docs\"]\n",
+        "scope_deny = [\"src/generated/\"]\n",
+    ));
+    let targets = cfg.target_configs();
+    assert_eq!(
+        targets["app"].scope_allow,
+        Some(vec![String::from("src/"), String::from("docs")])
+    );
+    assert_eq!(
+        targets["app"].scope_deny,
+        vec![String::from("src/generated/")]
+    );
+}
+
+#[test]
 fn an_unknown_key_is_ignored() {
     let cfg = pump(concat!(
         "name = \"t\"\n",
