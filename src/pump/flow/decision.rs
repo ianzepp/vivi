@@ -11,6 +11,10 @@
 //! waiting lock steps, waiting park steps, and waiting steps held with the
 //! `operator-hold` verdict — with the evidence each report was read from and
 //! an explicit statement where evidence is absent.
+//!
+//! [`delivery`] is the write half: the `decision` tick phase posts one
+//! ordinary mail reply per wait on the waiting step's own thread, addressed
+//! only to the decision seat.
 
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -24,6 +28,10 @@ use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::flow::unlock;
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+
+mod delivery;
+
+pub(crate) use delivery::register;
 
 /// The decision seat: the canonical role name flow decisions route to.
 ///

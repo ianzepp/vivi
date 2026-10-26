@@ -1,11 +1,16 @@
-//! Tests for the decision-seat resolver and the wait inventory.
+//! Tests for the decision-seat resolver, the wait inventory, and the
+//! delivery of Mind decision notices from the tick.
 
+use std::sync::Arc;
+
+use super::delivery::{DECISION_UNROUTABLE, REQUEST_MARK, deliver, deliver_to};
 use super::{Wait, WaitKind, inventory, recipient};
 use crate::error::VivariumError;
-use crate::mailspace::RoleUpdate;
+use crate::mailspace::{Mailspace, MailspaceThreadMessage, RoleUpdate, SendRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
+use crate::pump::host::Ctx;
 use crate::pump::store::DB_FILENAME;
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
@@ -544,4 +549,280 @@ fn a_run_without_a_shipped_flow_is_refused() {
     let err = inventory(&rig.store).unwrap_err().to_string();
 
     assert!(err.contains("no shipped flow of kind `mystery`"), "{err}");
+}
+
+/// Send a step task on the fixture mailspace and return the recipient copy's
+/// handle: the thread the pump would reply on.
+fn task_handle(project: &Project, subject: &str) -> String {
+    project
+        .mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["mind".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            body: crate::letter::fixture::task_body("the work"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+/// A pump context over `project` whose config is `cfg`.
+fn ctx_of(project: &Project, cfg: PumpConfig) -> Ctx {
+    let mut ctx = project.pump_ctx();
+    ctx.cfg = Arc::new(cfg);
+    ctx
+}
+
+/// The one notice the pump posted on `task`'s thread.
+fn notice_on(mailspace: &Mailspace, task: &str) -> MailspaceThreadMessage {
+    let thread = mailspace
+        .thread(task, false, usize::MAX, usize::MAX)
+        .unwrap();
+    let notices: Vec<_> = thread.iter().filter(|m| m.handle != task).collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "expected one notice on {task}: {thread:?}"
+    );
+    notices[0].clone()
+}
+
+/// A CTO payload that locks the build.
+fn cto_lock(rig: &Rig, need: &str) {
+    rig.payload(
+        need,
+        1,
+        "t-cto",
+        "cto",
+        "cto",
+        serde_json::json!({ "answer": "lock", "reason": "ship is blocked" }),
+    );
+}
+
+/// A live build run waiting at its lock on `task`, with the CTO answer read.
+fn locked_rig() -> (Rig, String, String) {
+    let rig = Rig::open();
+    let need = rig.need("ship it");
+    let task = task_handle(&rig.project, "lock the build");
+    rig.live(&need, 1, "build");
+    rig.waiting(&need, 1, "locked", &task, None);
+    cto_lock(&rig, &need);
+    (rig, need, task)
+}
+
+#[test]
+fn cto_lock_is_addressed_to_the_mind() {
+    let (rig, need, task) = locked_rig();
+    let ctx = ctx_of(&rig.project, PumpConfig::default());
+    let mind = rig.project.mailspace.address_for("mind");
+    let operator = rig.project.mailspace.address_for("operator");
+
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+
+    let notice = notice_on(&rig.project.mailspace, &task);
+    assert_eq!(notice.from, mind, "the pump posts as its own identity");
+    assert_eq!(notice.to, mind, "addressed to the decision seat only");
+    assert!(notice.cc.is_empty(), "no operator copy: {}", notice.cc);
+    assert!(!notice.to.contains(&operator), "no operator copy");
+    let body = &notice.body;
+    let request = format!("{REQUEST_MARK}lock {need} r1 locked {task} a0");
+    assert!(body.contains(&request), "{body}");
+    assert!(
+        body.contains("the CTO answered `lock`: ship is blocked"),
+        "{body}"
+    );
+    assert!(
+        body.contains("evidence:\n- payload of cto step t-cto"),
+        "{body}"
+    );
+    assert!(body.contains("issue: none raised"), "{body}");
+    assert!(body.contains(&format!("task {task}")), "{body}");
+    assert!(
+        body.contains(&format!("vivi pump unlock {need} [entry]")),
+        "{body}"
+    );
+}
+
+#[test]
+fn park_and_held_step_are_addressed_to_the_mind() {
+    let rig = Rig::open();
+    let need = rig.need("park me");
+    let park_task = task_handle(&rig.project, "parked");
+    let held_task = task_handle(&rig.project, "held slice");
+    rig.live(&need, 1, "build");
+    rig.waiting(&need, 1, "parked", &park_task, None);
+    rig.waiting(&need, 1, "slice:abc", &held_task, Some("operator-hold"));
+    rig.issue(
+        "flow-step-error-held",
+        &held_task,
+        "held after 3 failed ticks",
+    );
+    let ctx = ctx_of(&rig.project, PumpConfig::default());
+    let mind = rig.project.mailspace.address_for("mind");
+    let operator = rig.project.mailspace.address_for("operator");
+
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+
+    let park = notice_on(&rig.project.mailspace, &park_task);
+    let held = notice_on(&rig.project.mailspace, &held_task);
+    for notice in [&park, &held] {
+        assert_eq!(notice.from, mind, "the pump posts as its own identity");
+        assert_eq!(notice.to, mind, "addressed to the decision seat only");
+        assert!(notice.cc.is_empty(), "no operator copy: {}", notice.cc);
+        assert!(!notice.to.contains(&operator), "no operator copy");
+    }
+    let park_request = format!("{REQUEST_MARK}park {need} r1 parked {park_task} a0");
+    assert!(park.body.contains(&park_request), "{}", park.body);
+    assert!(park.body.contains("control choices:"), "{}", park.body);
+    let held_request = format!("{REQUEST_MARK}hold {need} r1 slice:abc {held_task} a0");
+    assert!(held.body.contains(&held_request), "{}", held.body);
+    assert!(
+        held.body.contains("issue: flow-step-error-held"),
+        "{}",
+        held.body
+    );
+    assert!(
+        held.body.contains("raised flow-step-error-held"),
+        "{}",
+        held.body
+    );
+    assert!(
+        held.body.contains(&format!("vivi pump answer {held_task}")),
+        "{}",
+        held.body
+    );
+}
+
+#[test]
+fn decision_delivery_is_retryable_and_restart_safe() {
+    let (rig, need, task) = locked_rig();
+    let ctx = ctx_of(&rig.project, PumpConfig::default());
+
+    // A send that fails is recorded nowhere: an unknown posting identity
+    // refuses the reply outright, and the thread keeps no receipt.
+    let bad = ctx_of(
+        &rig.project,
+        PumpConfig {
+            reply_from: String::from("ghost"),
+            ..PumpConfig::default()
+        },
+    );
+    let error = deliver_to(&rig.project.mailspace, &bad, &rig.store)
+        .expect_err("a failed send must be an error");
+    assert!(error.to_string().contains("ghost"), "{error}");
+    let thread = rig
+        .project
+        .mailspace
+        .thread(&task, false, usize::MAX, usize::MAX)
+        .unwrap();
+    assert_eq!(thread.len(), 1, "a failed send leaves no receipt");
+    assert!(
+        !rig.store
+            .exceptions()
+            .unwrap()
+            .iter()
+            .any(|(_, kind, _, _)| kind == DECISION_UNROUTABLE),
+        "the seat was fine; only the send failed"
+    );
+
+    // The retry delivers exactly once.
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+    assert!(
+        notice_on(&rig.project.mailspace, &task)
+            .body
+            .contains(&format!("{REQUEST_MARK}lock {need} r1 locked {task} a0"))
+    );
+
+    // A repeated tick is a no-op.
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+
+    // A later attempt is a new request and gets its own notice.
+    rig.job(&need, "j1", &task, 1);
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+    let thread = rig
+        .project
+        .mailspace
+        .thread(&task, false, usize::MAX, usize::MAX)
+        .unwrap();
+    let notices: Vec<_> = thread.iter().filter(|m| m.handle != task).collect();
+    assert_eq!(notices.len(), 2, "the later attempt got its own notice");
+    assert!(notices[0].body.contains("a0"), "{}", notices[0].body);
+    assert!(notices[1].body.contains("a1"), "{}", notices[1].body);
+
+    // Reopening the state from disk and ticking again sends nothing: the
+    // receipts live in the mail, not in memory.
+    let store = PumpStore::open(&rig.project.home().join(DB_FILENAME)).unwrap();
+    let mailspace = Mailspace::discover(Some(rig.project.root())).unwrap();
+    deliver_to(&mailspace, &ctx, &store).unwrap();
+    let thread = mailspace
+        .thread(&task, false, usize::MAX, usize::MAX)
+        .unwrap();
+    let notices: Vec<_> = thread.iter().filter(|m| m.handle != task).collect();
+    assert_eq!(notices.len(), 2, "no duplicate after reopen");
+
+    // Nothing else moved: the run still waits, the step is untouched, and
+    // the thread holds notices only, never a close or a reopen.
+    let runs = rig.store.runs_of(&need).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, "live");
+    let steps = rig.store.steps_of(&need, 1).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].state, StepState::Waiting);
+    assert_eq!(steps[0].verdict, None);
+    assert!(thread.iter().all(|m| m.event.is_none()), "{thread:?}");
+}
+
+#[test]
+fn invalid_decision_seat_never_falls_back_to_operator() {
+    let (rig, need, task) = locked_rig();
+    let cfg = PumpConfig {
+        decision_to: String::from("elsewhere"),
+        ..PumpConfig::default()
+    };
+    let ctx = ctx_of(&rig.project, cfg);
+
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+    deliver_to(&rig.project.mailspace, &ctx, &rig.store).unwrap();
+
+    let rows = rig.store.exceptions().unwrap();
+    let unroutable: Vec<_> = rows
+        .iter()
+        .filter(|(_, kind, _, _)| kind == DECISION_UNROUTABLE)
+        .collect();
+    assert_eq!(unroutable.len(), 1, "{rows:?}");
+    assert_eq!(unroutable[0].2, "elsewhere");
+    let text = &unroutable[0].3;
+    assert!(text.contains("elsewhere"), "{text}");
+    assert!(text.contains("keep waiting"), "{text}");
+    let thread = rig
+        .project
+        .mailspace
+        .thread(&task, false, usize::MAX, usize::MAX)
+        .unwrap();
+    assert_eq!(thread.len(), 1, "only the step task is on the thread");
+    assert!(!thread[0].to.contains("operator"), "no operator mail");
+    let steps = rig.store.steps_of(&need, 1).unwrap();
+    assert_eq!(steps[0].state, StepState::Waiting, "the work keeps waiting");
+}
+
+#[test]
+fn the_tick_delivers_through_the_project_mailspace() {
+    let (rig, need, task) = locked_rig();
+    let ctx = ctx_of(&rig.project, PumpConfig::default());
+
+    deliver(&ctx, &rig.store).unwrap();
+
+    let notice = notice_on(&rig.project.mailspace, &task);
+    assert!(
+        notice
+            .body
+            .contains(&format!("{REQUEST_MARK}lock {need} r1 locked {task} a0"))
+    );
 }
