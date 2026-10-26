@@ -12,15 +12,22 @@ use serde::{Deserialize, Serialize};
 use crate::error::VivariumError;
 use crate::pump::host::Ctx;
 
+pub mod admission;
 mod brief;
+pub mod continuation;
 mod dispatcher;
+pub mod evidence;
+pub mod limits;
 pub mod merge_main;
+pub mod ownership;
+mod rate_limit;
 mod receipts;
 mod recovery;
 mod release;
 mod retry;
 pub mod rung;
 pub mod rung_result;
+pub mod runtime;
 mod slots;
 pub use dispatcher::{REFUSAL_LIMIT, dispatch_pending};
 #[cfg(test)]
@@ -28,6 +35,10 @@ use dispatcher::{candidate_pools, command_for, dispatch_order, pool_command, sen
 pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
 pub(in crate::pump) use release::release_held_after_reload;
+pub use runtime::{
+    ArchivedExecution, Continuation, DispatchStore, ExecutionEvidence, ProcessedResult,
+    ProviderLimit, ProviderLimits, RateLimitState, Runtime, ScheduledWait,
+};
 pub(crate) use slots::{parse_created_handle, slots};
 
 /// A request to make one durable role-addressed pool task.
@@ -242,6 +253,12 @@ pub struct PoolJob {
     /// refusals; cleared by `vivi pump requeue <step task>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// Physical execution metadata: the current and archived executions,
+    /// their attribution, typed evidence, rate-limit, scheduled-wait and
+    /// continuation state. Defaults for legacy rows and never affects
+    /// `same_spec` identity.
+    #[serde(default, skip_serializing_if = "Runtime::is_default")]
+    pub runtime: Runtime,
 }
 
 impl From<JobSpec> for PoolJob {
@@ -283,6 +300,7 @@ impl From<JobSpec> for PoolJob {
             applied_at: None,
             dispatch_refusals: 0,
             held: None,
+            runtime: Runtime::default(),
         }
     }
 }
