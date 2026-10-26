@@ -33,13 +33,30 @@ fn fingerprint_changes_with_any_signal() {
     assert_eq!(base.fingerprint(), reasons_only.fingerprint());
 }
 
+#[test]
+fn signals_serialized_without_the_new_fields_still_load() {
+    let legacy = r#"{"root":"/a","verdict":"ok","reasons":[],"locked_needs":1,"held_steps":0,
+        "red_main":false,"repair_alarm":false,"envelope_failures":0,
+        "last_envelope_failure_at":null,"stale_pending_jobs":0,"idle_steps":2,
+        "deferring_jobs":0}"#;
+    let signals: ProjectSignals = serde_json::from_str(legacy).unwrap();
+    assert_eq!(signals.parked_needs, 0);
+    assert!(signals.decisions.is_empty());
+    assert_eq!(signals.locked_needs, 1);
+    assert_eq!(signals.idle_steps, 2);
+}
+
 mod store_reads {
     use tempfile::tempdir;
 
     use super::super::*;
+    use crate::pump::flow::decision::inventory;
+    use crate::pump::flow::def::NodeClass;
     use crate::pump::flow::index::{RunRow, StepRow, StepState, run_state};
+    use crate::pump::flow::tick::OPERATOR_HOLD;
     use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
     use crate::pump::store::PumpStore;
+    use crate::pump::store::step_payload::StepPayloadRow;
 
     fn run(need: &str, kind: &str, entry: &str) -> RunRow {
         RunRow {
@@ -78,13 +95,16 @@ mod store_reads {
             .insert_run_step(&busy, &waiting("plan", "t2"))
             .unwrap();
         let mut signals = ProjectSignals::default();
-        read_lock_waits(&store, &mut signals).unwrap();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
         assert_eq!(signals.locked_needs, 1);
         assert!(!signals.red_main);
-        assert_eq!(
-            signals.reasons,
-            vec!["need 2025e1c1 r1 waits at `locked` (build flow)"]
-        );
+        assert_eq!(signals.decisions.len(), 1);
+        assert_eq!(signals.decisions[0].id, "lock 2025e1c1 r1 locked t1 a0");
+        assert_eq!(signals.decisions[0].need, "2025e1c1");
+        assert_eq!(signals.decisions[0].node, "locked");
+        assert_eq!(signals.decisions[0].task, "t1");
+        assert_eq!(signals.decisions[0].kind, "lock");
+        assert!(signals.reasons[0].starts_with("lock 2025e1c1 r1 locked t1 a0: "));
         assert!(signals.alarming());
     }
 
@@ -98,9 +118,166 @@ mod store_reads {
             .insert_run_step(&repair, &waiting("unrepaired", "t3"))
             .unwrap();
         let mut signals = ProjectSignals::default();
-        read_lock_waits(&store, &mut signals).unwrap();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
         assert_eq!(signals.locked_needs, 0);
+        assert_eq!(signals.parked_needs, 0);
+        assert_eq!(signals.held_steps, 0);
         assert!(signals.red_main && signals.repair_alarm);
+    }
+
+    #[test]
+    fn a_parked_run_counts_as_parked_not_locked() {
+        let dir = tempdir().unwrap();
+        let store = PumpStore::open(&dir.path().join("pump.db")).unwrap();
+        let parked_run = run("aaaa000c", "build", "plan");
+        store.insert_run(&parked_run).unwrap();
+        store
+            .insert_run_step(&parked_run, &waiting("parked", "t-park"))
+            .unwrap();
+        let mut signals = ProjectSignals::default();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert_eq!(signals.parked_needs, 1);
+        assert_eq!(signals.locked_needs, 0);
+        assert_eq!(signals.held_steps, 0);
+        assert_eq!(signals.decisions.len(), 1);
+        assert_eq!(signals.decisions[0].kind, "park");
+        assert_eq!(signals.decisions[0].id, "park aaaa000c r1 parked t-park a0");
+        assert!(signals.alarming());
+    }
+
+    #[test]
+    fn held_steps_count_operator_holds_including_slice_rows() {
+        let dir = tempdir().unwrap();
+        let store = PumpStore::open(&dir.path().join("pump.db")).unwrap();
+        let held_run = run("bbbb000d", "build", "plan");
+        store.insert_run(&held_run).unwrap();
+        for (node, task) in [("slice:abc", "t-slice"), ("audit1", "t-hold")] {
+            let held = StepRow {
+                verdict: Some(OPERATOR_HOLD.into()),
+                ..waiting(node, task)
+            };
+            store.insert_run_step(&held_run, &held).unwrap();
+        }
+        let mut signals = ProjectSignals::default();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert_eq!(signals.held_steps, 2);
+        assert_eq!(signals.locked_needs, 0);
+        assert_eq!(signals.parked_needs, 0);
+        assert!(signals.decisions.iter().all(|d| d.kind == "hold"));
+        assert!(signals.alarming());
+    }
+
+    #[test]
+    fn a_hold_without_a_raised_issue_states_the_absence() {
+        let dir = tempdir().unwrap();
+        let store = PumpStore::open(&dir.path().join("pump.db")).unwrap();
+        let held_run = run("cccc000e", "build", "plan");
+        store.insert_run(&held_run).unwrap();
+        let held = StepRow {
+            verdict: Some(OPERATOR_HOLD.into()),
+            ..waiting("slice:abc", "t-quiet")
+        };
+        store.insert_run_step(&held_run, &held).unwrap();
+        let mut signals = ProjectSignals::default();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        let detail = &signals.decisions[0];
+        assert!(
+            detail
+                .reason
+                .contains("no issue was raised about task t-quiet")
+        );
+        assert!(
+            detail
+                .evidence
+                .iter()
+                .any(|line| line.contains("no raised issue found"))
+        );
+        assert!(signals.reasons[0].contains("no issue was raised"));
+    }
+
+    #[test]
+    fn replacing_a_locked_need_at_equal_count_changes_the_fingerprint() {
+        let dir = tempdir().unwrap();
+        let store = PumpStore::open(&dir.path().join("pump.db")).unwrap();
+        let first = run("dddd000f", "build", "plan");
+        store.insert_run(&first).unwrap();
+        store
+            .insert_run_step(&first, &waiting("locked", "t-a"))
+            .unwrap();
+        let mut signals = ProjectSignals::default();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert_eq!(signals.locked_needs, 1);
+        let before = signals.fingerprint();
+
+        // The need unsticks and another locks in its place: same count.
+        store.set_run_state("dddd000f", 1, run_state::DONE).unwrap();
+        let second = run("eeee0010", "build", "plan");
+        store.insert_run(&second).unwrap();
+        store
+            .insert_run_step(&second, &waiting("locked", "t-b"))
+            .unwrap();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert_eq!(signals.locked_needs, 1);
+        assert_eq!(signals.decisions.len(), 1);
+        assert_eq!(signals.decisions[0].id, "lock eeee0010 r1 locked t-b a0");
+        assert_ne!(before, signals.fingerprint());
+    }
+
+    #[test]
+    fn changing_only_a_wait_reason_keeps_the_fingerprint() {
+        let dir = tempdir().unwrap();
+        let store = PumpStore::open(&dir.path().join("pump.db")).unwrap();
+        let locked = run("ffff0011", "build", "plan");
+        store.insert_run(&locked).unwrap();
+        store
+            .insert_run_step(&locked, &waiting("locked", "t-cto"))
+            .unwrap();
+        let mut signals = ProjectSignals::default();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert!(signals.reasons[0].contains("reached without a CTO answer"));
+        let before = signals.fingerprint();
+
+        store
+            .record_step_payload(&StepPayloadRow {
+                need: "ffff0011".into(),
+                run: 1,
+                node: "cto".into(),
+                class: NodeClass::Cto.name().into(),
+                task: "t-cto".into(),
+                payload: serde_json::json!({
+                    "front": {"answer": "slice", "reason": "waiting on the operator"}
+                }),
+            })
+            .unwrap();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert_eq!(signals.locked_needs, 1);
+        assert_eq!(signals.reasons.len(), 2);
+        assert!(signals.reasons[1].contains("the CTO answered `slice`"));
+        assert_eq!(before, signals.fingerprint());
+    }
+
+    #[test]
+    fn waits_that_disappear_clear_their_counts_and_details() {
+        let dir = tempdir().unwrap();
+        let store = PumpStore::open(&dir.path().join("pump.db")).unwrap();
+        let repair = run("aaaa0012", "repair", "fix1");
+        store.insert_run(&repair).unwrap();
+        store
+            .insert_run_step(&repair, &waiting("unrepaired", "t-fix"))
+            .unwrap();
+        let mut signals = ProjectSignals::default();
+        fold_decisions(&inventory(&store).unwrap(), &mut signals);
+        assert!(signals.red_main && signals.repair_alarm);
+        assert_eq!(signals.decisions.len(), 1);
+
+        fold_decisions(&[], &mut signals);
+        assert_eq!(signals.locked_needs, 0);
+        assert_eq!(signals.parked_needs, 0);
+        assert_eq!(signals.held_steps, 0);
+        assert!(!signals.red_main);
+        assert!(!signals.repair_alarm);
+        assert!(signals.decisions.is_empty());
+        assert!(!signals.alarming());
     }
 
     #[test]

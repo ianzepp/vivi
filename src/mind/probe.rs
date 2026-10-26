@@ -3,11 +3,15 @@
 //! `vivi pump health` alone is not enough: it judges the writer and the
 //! tick, and says `ok` for a pump whose need is locked at an operator gate
 //! or whose plan job has sat pending for hours on zero free slots (seen on
-//! the e2e sandbox). So the real probe adds three reads of `pump.db`, all
+//! the e2e sandbox). So the real probe adds these reads of `pump.db`, all
 //! read-only and never under a lock the pump waits on:
 //!
-//! - live flow runs waiting at a lock-class node (`locked` in the build
-//!   flow, `unrepaired` in the repair flow, which also means main is red);
+//! - the shared decision inventory ([`crate::pump::flow::decision`]): live
+//!   runs sitting where a named control choice moves them — lock waits
+//!   (`locked` in the build flow, `unrepaired` in the repair flow, which
+//!   also means main is red), park waits, and steps held with the
+//!   `operator-hold` verdict — each with its stable identity, reason and
+//!   evidence;
 //! - recent `flow-envelope-failed` exceptions;
 //! - pool jobs still `pending` past [`STALE_PENDING_SECS`];
 //! - steps `running` with no dispatched job while their job has waited past
@@ -17,7 +21,9 @@
 //!   [`DEFERRAL_REPEAT`] times in its tail, while the job is still pending,
 //!   and tick steps (such as `dispatch-jobs`) failing that often, recently.
 //!
-//! Steps held for an operator answer have no reader yet and stay zero.
+//! The wait identities feed the fingerprint (sorted), so replacing one
+//! stopped need with another reads as a new alarm while diagnostic prose
+//! alone does not.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -29,7 +35,8 @@ use serde::{Deserialize, Serialize};
 use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::flow::collect::ENVELOPE_FAILED;
-use crate::pump::flow::def::{FlowKind, NodeClass};
+use crate::pump::flow::decision::{self, Wait, WaitKind};
+use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::index::StepState;
 use crate::pump::health::{self, HealthOptions, Verdict};
 use crate::pump::jobs::{JobStatus, PoolJob};
@@ -66,7 +73,10 @@ pub struct ProjectSignals {
     pub reasons: Vec<String>,
     /// Needs whose live run waits at a lock node.
     pub locked_needs: usize,
-    /// Flow steps held awaiting an answer (no reader yet: always zero).
+    /// Needs whose live run waits at a park node.
+    #[serde(default)]
+    pub parked_needs: usize,
+    /// Flow steps held with the `operator-hold` verdict, awaiting an answer.
     pub held_steps: usize,
     /// Main is red: a repair run waits at `unrepaired`.
     pub red_main: bool,
@@ -85,6 +95,31 @@ pub struct ProjectSignals {
     /// tick steps failing repeatedly and recently.
     #[serde(default)]
     pub deferring_jobs: usize,
+    /// Every decision wait the inventory found, with its stable identity,
+    /// reason and evidence. Prose here never feeds the fingerprint.
+    #[serde(default)]
+    pub decisions: Vec<DecisionDetail>,
+}
+
+/// One decision wait, typed for the mind: where the run waits and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionDetail {
+    /// The wait's classification: `lock`, `park`, or `hold`.
+    pub kind: String,
+    /// Stable identity: classification, need, run, node, task and the
+    /// latest attempt (`a0` when the task has no job row).
+    pub id: String,
+    /// The need whose run waits.
+    pub need: String,
+    /// The node the run waits at.
+    pub node: String,
+    /// The waiting step's task handle.
+    pub task: String,
+    /// Why the run waits, read from the strongest evidence available;
+    /// absent evidence is stated. Untrusted text.
+    pub reason: String,
+    /// Where the reason was read from; states absence where there is none.
+    pub evidence: Vec<String>,
 }
 
 impl ProjectSignals {
@@ -93,6 +128,7 @@ impl ProjectSignals {
     pub fn alarming(&self) -> bool {
         matches!(self.verdict.as_str(), "degraded" | "stalled")
             || self.locked_needs > 0
+            || self.parked_needs > 0
             || self.held_steps > 0
             || self.red_main
             || self.repair_alarm
@@ -105,13 +141,25 @@ impl ProjectSignals {
     /// A stable one-line summary, used to tell a new alarm from one the mind
     /// already woke for. It carries the newest envelope failure's time, not
     /// the windowed count, so an old failure ageing out does not look new.
+    /// The decision waits enter as their sorted stable identities, so
+    /// replacing one stopped need with another at the same count is new
+    /// while changed diagnostic prose is not.
     #[must_use]
     pub fn fingerprint(&self) -> String {
+        let mut ids: Vec<&str> = self.decisions.iter().map(|d| d.id.as_str()).collect();
+        ids.sort_unstable();
+        let decisions = if ids.is_empty() {
+            String::from("none")
+        } else {
+            ids.join(",")
+        };
         format!(
-            "{} verdict={} locked={} held={} red_main={} repair={} envelope_at={} stale_pending={} idle={} deferring={}",
+            "{} verdict={} locked={} parked={} held={} red_main={} repair={} envelope_at={} \
+             stale_pending={} idle={} deferring={} decisions={}",
             self.root.display(),
             self.verdict,
             self.locked_needs,
+            self.parked_needs,
             self.held_steps,
             self.red_main,
             self.repair_alarm,
@@ -120,6 +168,7 @@ impl ProjectSignals {
             self.stale_pending_jobs,
             self.idle_steps,
             self.deferring_jobs,
+            decisions,
         )
     }
 }
@@ -192,7 +241,8 @@ pub fn read_store(
             "pump.db schema {version}, expected {SCHEMA_VERSION}"
         )));
     }
-    read_lock_waits(&store, signals)?;
+    let waits = decision::inventory(&store)?;
+    fold_decisions(&waits, signals);
     let (state, exceptions) = store.load_snapshot()?;
     fold_exceptions(&exceptions, now, signals);
     let jobs: Vec<&PoolJob> = state.jobs.values().collect();
@@ -372,48 +422,56 @@ pub fn log_tail(path: &Path) -> Result<String, VivariumError> {
         .map_or_else(String::new, |(_, whole)| whole.to_string()))
 }
 
-/// Live runs waiting at a lock-class node, judged against the shipped flow
-/// definition the same way `vivi pump unlock` finds the step to release.
-///
-/// # Errors
-/// Fails when the store's runs or steps cannot be read.
-pub fn read_lock_waits(
-    store: &PumpStore,
-    signals: &mut ProjectSignals,
-) -> Result<(), VivariumError> {
-    for run in store.live_runs()? {
-        let Some(kind) = FlowKind::parse(&run.kind) else {
-            continue;
-        };
-        let def = crate::pump::flow::load::load(kind)?;
-        let waiting = store
-            .steps_of(&run.need, run.run)?
-            .into_iter()
-            .find(|step| {
-                step.state == StepState::Waiting
-                    && def
-                        .nodes
-                        .iter()
-                        .any(|node| node.id == step.node && node.class == NodeClass::Lock)
-            });
-        let Some(step) = waiting else {
-            continue;
-        };
-        if kind == FlowKind::Repair {
-            signals.red_main = true;
-            signals.repair_alarm = true;
-        } else {
-            signals.locked_needs += 1;
+/// Fold the shared decision inventory into `signals`: one [`DecisionDetail`]
+/// per wait, the counts per classification, and the repair flow's lock as
+/// the red main alarm. Replaces the previous counts, alarm flags and
+/// details, so waits that disappeared clear.
+pub fn fold_decisions(waits: &[Wait], signals: &mut ProjectSignals) {
+    let mut locked_needs = 0;
+    let mut parked_needs = 0;
+    let mut held_steps = 0;
+    let mut red_main = false;
+    let mut repair_alarm = false;
+    let mut details = Vec::with_capacity(waits.len());
+    for wait in waits {
+        match wait.kind {
+            WaitKind::Lock if repair_flow(wait) => {
+                red_main = true;
+                repair_alarm = true;
+            }
+            WaitKind::Lock => locked_needs += 1,
+            WaitKind::Park => parked_needs += 1,
+            WaitKind::Hold => held_steps += 1,
         }
-        signals.reasons.push(format!(
-            "need {} r{} waits at `{}` ({} flow)",
-            run.need,
-            run.run,
-            step.node,
-            kind.name()
-        ));
+        signals
+            .reasons
+            .push(format!("{}: {}", wait.id, wait.reason));
+        details.push(detail_of(wait));
     }
-    Ok(())
+    signals.locked_needs = locked_needs;
+    signals.parked_needs = parked_needs;
+    signals.held_steps = held_steps;
+    signals.red_main = red_main;
+    signals.repair_alarm = repair_alarm;
+    signals.decisions = details;
+}
+
+/// Whether the wait's run follows the repair flow, whose lock is red main.
+fn repair_flow(wait: &Wait) -> bool {
+    FlowKind::parse(&wait.flow) == Some(FlowKind::Repair)
+}
+
+/// The probe's typed detail for one wait: identity and evidence.
+fn detail_of(wait: &Wait) -> DecisionDetail {
+    DecisionDetail {
+        kind: String::from(wait.kind.name()),
+        id: wait.id.clone(),
+        need: wait.need.clone(),
+        node: wait.node.clone(),
+        task: wait.task.clone(),
+        reason: wait.reason.clone(),
+        evidence: wait.evidence.clone(),
+    }
 }
 
 fn epoch_now() -> u64 {
