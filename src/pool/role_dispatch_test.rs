@@ -398,6 +398,162 @@ root = "~/lanes"
     assert!(err.contains("mystery/model"), "got: {err}");
 }
 
+/// A pool whose P1 list holds two different models: `a/model` first at
+/// `high`, `b/model` later at `low`.
+fn two_model_pool() -> PoolConfig {
+    pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["a/model", "b/model"]
+[[bands.P1]]
+model = "a/model"
+reasoning = "high"
+[[bands.P1]]
+model = "b/model"
+reasoning = "low"
+[local]
+root = "~/lanes"
+"#,
+    )
+}
+
+#[test]
+fn explicit_model_uses_later_entry_reasoning() {
+    let config = two_model_pool();
+    let resolved = resolve(
+        &config,
+        "bridge",
+        &input(None, &band_body("P1"), Some("b/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "b/model");
+    assert_eq!(resolved.reasoning.as_deref(), Some("low"));
+    assert_eq!(resolved.band, Some(1));
+}
+
+#[test]
+fn explicit_model_reasoning_is_deterministic() {
+    let config = two_model_pool();
+    let requested = request(
+        &config,
+        &input(None, &band_body("P1"), Some("b/model"), false),
+    )
+    .unwrap();
+    // Whichever pair the band admits, the pinned model keeps its own
+    // reasoning: the admitted pair never takes it away.
+    let first = requested
+        .clone()
+        .admitted(Some(Choice {
+            band: 1,
+            model: "a/model".into(),
+            reasoning: "high".into(),
+        }))
+        .unwrap();
+    let second = requested
+        .admitted(Some(Choice {
+            band: 1,
+            model: "b/model".into(),
+            reasoning: "low".into(),
+        }))
+        .unwrap();
+    for resolved in [&first, &second] {
+        assert_eq!(resolved.model, "b/model");
+        assert_eq!(resolved.reasoning.as_deref(), Some("low"));
+    }
+    assert_eq!(first, second);
+    // Ordinary resolution agrees, run after run.
+    let once = resolve(
+        &config,
+        "bridge",
+        &input(None, &band_body("P1"), Some("b/model"), false),
+    )
+    .unwrap();
+    let again = resolve(
+        &config,
+        "bridge",
+        &input(None, &band_body("P1"), Some("b/model"), false),
+    )
+    .unwrap();
+    assert_eq!(once, again);
+    assert_eq!(once, first);
+}
+
+#[test]
+fn body_band_preserves_precedence() {
+    let lane = role("lane-3", Some("hand"), Some("P1"));
+    // The body's band wins the band metadata over the role's band, and the
+    // explicit-model lookup runs in the requested (body) band, so the pinned
+    // model takes P2's own reasoning, not the role band's pair.
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&lane), &band_body("P2"), Some("other/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.band, Some(2));
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(resolved.reasoning.as_deref(), Some("low"));
+    // With no body band, the role's band keeps both the metadata and the
+    // reasoning lookup.
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&lane), "build it", Some("zai/glm-5.3-flash"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.band, Some(1));
+    assert_eq!(resolved.reasoning.as_deref(), Some("xhigh"));
+}
+
+#[test]
+fn same_model_reasoning_entries_remain_distinct() {
+    let config = pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["a/model", "b/model"]
+[[bands.P1]]
+model = "b/model"
+reasoning = "low"
+[[bands.P1]]
+model = "a/model"
+reasoning = "high"
+[[bands.P1]]
+model = "a/model"
+reasoning = "xhigh"
+[local]
+root = "~/lanes"
+"#,
+    );
+    // Duplicate-model entries remain band choices: the band selection is
+    // still the first entry of the list, a valid pair from the table.
+    let chosen = resolve(
+        &config,
+        "bridge",
+        &input(None, &band_body("P1"), None, false),
+    )
+    .unwrap();
+    assert_eq!(chosen.model, "b/model");
+    assert_eq!(chosen.reasoning.as_deref(), Some("low"));
+    // The explicit lookup takes the first entry naming the model, never a
+    // later duplicate at another effort.
+    let pinned = resolve(
+        &config,
+        "bridge",
+        &input(None, &band_body("P1"), Some("a/model"), false),
+    )
+    .unwrap();
+    assert_eq!(pinned.model, "a/model");
+    assert_eq!(pinned.reasoning.as_deref(), Some("high"));
+}
+
 const RULES: &str = "Work the brief. Never weaken a test.\n";
 
 #[test]
