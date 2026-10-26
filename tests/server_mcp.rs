@@ -456,6 +456,7 @@ async fn initialize_and_tools_list() {
             "target_add",
             "target_remove",
             "pump_send",
+            "pump_priority",
             "pump_list",
             "pump_show",
             "pump_log",
@@ -520,6 +521,61 @@ async fn initialize_and_tools_list() {
         assert!(schema["properties"].get("project").is_none(), "{name}");
         assert_eq!(schema["additionalProperties"], false, "{name}");
     }
+
+    // The extracted send schema keeps every ordinary field, the required
+    // list and a closed schema, and advertises the hosted dispatch options:
+    // a boolean dispatch and an integer priority bounded 0..=i64::MAX.
+    let send_schema = &tools.iter().find(|tool| tool["name"] == "send").unwrap()["inputSchema"];
+    assert_eq!(
+        send_schema["required"],
+        json!(["project", "kind", "to", "subject", "body"])
+    );
+    assert_eq!(send_schema["additionalProperties"], false);
+    for property in [
+        "kind",
+        "to",
+        "subject",
+        "body",
+        "done_when",
+        "target",
+        "write_scope",
+        "serves",
+        "explores",
+        "question",
+        "depends_on",
+    ] {
+        assert!(
+            send_schema["properties"].get(property).is_some(),
+            "send.{property}"
+        );
+    }
+    assert_eq!(send_schema["properties"]["dispatch"]["type"], "boolean");
+    assert_eq!(send_schema["properties"]["dispatch"]["default"], false);
+    let priority = &send_schema["properties"]["priority"];
+    assert_eq!(priority["type"], "integer");
+    assert_eq!(priority["minimum"], 0);
+    assert_eq!(priority["maximum"], json!(i64::MAX));
+
+    // pump_priority sits between pump_send and pump_list: action required
+    // (set/clear/list), need for set and clear, level for set, closed
+    // schema, and the same integer bounds on level as send's priority.
+    let priority_schema = &tools
+        .iter()
+        .find(|tool| tool["name"] == "pump_priority")
+        .unwrap()["inputSchema"];
+    assert_eq!(priority_schema["required"], json!(["project", "action"]));
+    assert_eq!(priority_schema["additionalProperties"], false);
+    assert_eq!(
+        priority_schema["properties"]["action"]["enum"],
+        json!(["set", "clear", "list"])
+    );
+    assert!(priority_schema["properties"]["need"].is_object());
+    assert_eq!(priority_schema["properties"]["level"]["type"], "integer");
+    assert_eq!(priority_schema["properties"]["level"]["minimum"], 0);
+    assert_eq!(
+        priority_schema["properties"]["level"]["maximum"],
+        json!(i64::MAX)
+    );
 }
 
 #[tokio::test]

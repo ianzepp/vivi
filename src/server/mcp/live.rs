@@ -20,9 +20,11 @@ mod config_write;
 mod pool_bands;
 mod pump;
 mod pump_action;
+mod pump_priority;
 mod pump_record;
 mod read;
 mod role_write;
+mod send_dispatch;
 mod target_git;
 mod views;
 mod write;
@@ -44,8 +46,13 @@ use config_write::{
 use pool_bands::pool_bands;
 use pump::{pump_control, pump_rungs};
 use pump_action::{pump_action, pump_reset};
+use pump_priority::pump_priority;
 use pump_record::{pump_list, pump_send, pump_show};
 use role_write::{charter_set, role_add, role_set};
+
+/// The hosted `send` with `dispatch true`: the operator-authorized pump
+/// shortcut the router reaches before the ordinary hosted dispatch.
+pub(in crate::server::mcp) use send_dispatch::send_dispatch;
 
 /// The one live helper the durable tools share: a string-or-list argument.
 pub(in crate::server::mcp) use read::string_list;
@@ -76,6 +83,7 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_send" => Some(pump_send),
         "pump_list" => Some(pump_list),
         "pump_show" => Some(pump_show),
+        "pump_priority" => Some(pump_priority),
         "pump_log" => Some(views::pump_log),
         "pump_action" => Some(pump_action),
         "pump_reset" => Some(pump_reset),

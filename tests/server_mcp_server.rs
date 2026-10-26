@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
 use vivi::mailspace::{Mailspace, RoleUpdate};
+use vivi::pump::priority;
 use vivi::server::grants::{GrantLevel, GrantRecord};
+use vivi::server::safety::RateLimiter;
 use vivi::server::{AppState, app_state, hosted, router};
 
 fn scratch(name: &str) -> PathBuf {
@@ -460,6 +462,24 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
     for name in ["pump_action", "pump_reset"] {
         assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
     }
+    // The dispatch tools copied from the shared definitions acquire the
+    // required project argument like every other project tool.
+    for name in ["send", "pump_priority"] {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        let schema = &tool["inputSchema"];
+        assert!(
+            schema["properties"]["project"].is_object(),
+            "{name} declares project"
+        );
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            required.contains(&json!("project")),
+            "{name} requires project"
+        );
+    }
     // The lifecycle trio replaced delete_project outright: no alias, exact
     // required arguments, no `project` argument, closed schemas.
     assert!(
@@ -824,6 +844,203 @@ async fn a_hosted_write_is_audited_with_its_project() {
     let lines = audit_lines(&fx.dir);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0]["project_id"], project);
+}
+
+// ------------------------------------------------------- write accounting
+
+/// The library's own view of a dispatched need at `root`: the canonical
+/// need handle, every stored need copy, and the handle of its open pump
+/// record, if one is open.
+fn dispatched_need(root: &PathBuf, token: &str) -> (String, Vec<String>, Option<String>) {
+    let ms = Mailspace::open_root(root.clone()).unwrap();
+    let storage = ms.storage().unwrap();
+    let canonical = storage.resolve_message_token(token).unwrap();
+    let needs: Vec<String> = storage
+        .list_messages()
+        .unwrap()
+        .into_iter()
+        .filter(|view| view.local_role == "needs")
+        .map(|view| storage.resolve_message_token(&view.handle).unwrap())
+        .collect();
+    let record = ms
+        .pump_open_record(&canonical)
+        .unwrap()
+        .map(|record| record.handle);
+    (canonical, needs, record)
+}
+
+/// `pump_priority` list through the server: the (need, level) rows it
+/// answers. A read: it must never cost an allowance or an audit line.
+async fn listed_priorities(app: &Router, key: &str, project: &str) -> Vec<(String, i64)> {
+    let answer = call_ok(
+        app,
+        key,
+        "pump_priority",
+        json!({ "project": project, "action": "list" }),
+    )
+    .await;
+    answer["priorities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["need"].as_str().unwrap().to_owned(),
+                row["level"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// One write allowance per successful call, one audit line per call, and
+/// reads never counted. `project_tool` is the single accounting boundary:
+/// the dispatch send costs exactly one allowance and audits as `send` alone
+/// — never additionally as `pump_send` or `pump_priority`, however many
+/// records and priority rows the dispatch itself files — and
+/// `pump_priority` set and clear each cost one. A quota of three permits
+/// exactly those three writes with lists interleaved; the fourth write is
+/// refused (its one expected refused audit line, no stored change) while a
+/// subsequent list still works.
+#[tokio::test]
+async fn dispatch_and_priority_have_single_call_write_accounting() {
+    // The per-key quota is configured directly on AppState — no environment
+    // variables — and the hosted root carries a `[pump]` table whose home is
+    // a known non-default directory, so every priority row has one address.
+    let fx = hosted_with(
+        "accounting-dispatch",
+        |state| state.limiter = RateLimiter::new(Some(3)),
+        &["app"],
+    );
+    let (project, member) = fx.served[0].clone();
+    let key = server_key(
+        &fx.state,
+        &project,
+        &member,
+        Some("operator"),
+        GrantLevel::Operator,
+    );
+    let root = fx
+        .state
+        .projects
+        .load_meta(&project)
+        .unwrap()
+        .mailspace_root
+        .unwrap();
+    let toml = root.join(".vivi").join("mailspace.toml");
+    let mut text = std::fs::read_to_string(&toml).unwrap();
+    text.push_str("\n[pump]\ntick = 20\nhome = \"pump-home\"\n");
+    std::fs::write(&toml, text).unwrap();
+    let home = root.join("pump-home");
+
+    // Write 1 of 3: the dispatch send with a requested priority.
+    let sent = call_ok(
+        &fx.app,
+        &key,
+        "send",
+        json!({
+            "project": project,
+            "kind": "need",
+            "to": ["mind"],
+            "subject": "fix auth",
+            "body": "please fix login",
+            "done_when": "it works",
+            "dispatch": true,
+            "priority": 7,
+        }),
+    )
+    .await;
+    assert_eq!(sent["priority"], 7, "{sent}");
+    assert_eq!(sent["pump"]["status"], "open", "{sent}");
+    let need = sent["handle"].as_str().unwrap().to_owned();
+    assert_eq!(sent["pump"]["need"], need, "{sent}");
+
+    // The one call really filed all of it: the need, its one open record,
+    // and the priority row at the configured home, all naming that need.
+    let (canonical, needs, record) = dispatched_need(&root, &need);
+    assert_eq!(needs, [canonical.clone()], "exactly one need copy");
+    assert_eq!(record.as_deref(), sent["pump"]["handle"].as_str(), "{sent}");
+    assert_eq!(priority::list(&home).unwrap(), vec![(need.clone(), 7)]);
+
+    // A list between writes is a free read: right answer, no audit line.
+    assert_eq!(
+        listed_priorities(&fx.app, &key, &project).await,
+        vec![(need.clone(), 7)]
+    );
+    assert_eq!(audit_lines(&fx.dir).len(), 1);
+
+    // Write 2 of 3: the priority set.
+    let set = call_ok(
+        &fx.app,
+        &key,
+        "pump_priority",
+        json!({ "project": project, "action": "set", "need": need, "level": 3 }),
+    )
+    .await;
+    assert_eq!(set["level"], 3, "{set}");
+    assert_eq!(
+        listed_priorities(&fx.app, &key, &project).await,
+        vec![(need.clone(), 3)]
+    );
+    assert_eq!(priority::list(&home).unwrap(), vec![(need.clone(), 3)]);
+    assert_eq!(audit_lines(&fx.dir).len(), 2);
+
+    // Write 3 of 3: the clear.
+    call_ok(
+        &fx.app,
+        &key,
+        "pump_priority",
+        json!({ "project": project, "action": "clear", "need": need }),
+    )
+    .await;
+    assert_eq!(listed_priorities(&fx.app, &key, &project).await, vec![]);
+    assert!(priority::list(&home).unwrap().is_empty());
+    assert_eq!(audit_lines(&fx.dir).len(), 3);
+
+    // The quota is spent: a fourth write is refused by the one accounting
+    // boundary. It costs exactly its one refused audit line and changes no
+    // stored state, while a subsequent list still works for free.
+    let err = call_err(
+        &fx.app,
+        &key,
+        "pump_priority",
+        json!({ "project": project, "action": "set", "need": need, "level": 9 }),
+    )
+    .await;
+    assert_eq!(err, "over 3 writes/min for this key", "{err}");
+    assert_eq!(listed_priorities(&fx.app, &key, &project).await, vec![]);
+    assert!(priority::list(&home).unwrap().is_empty());
+    let (again, again_needs, again_record) = dispatched_need(&root, &need);
+    assert_eq!(again, canonical);
+    assert_eq!(again_needs, [canonical.clone()]);
+    assert_eq!(again_record, record);
+
+    // The whole ledger: three ok lines and the refused one, one per call.
+    // The dispatch appears once, as `send`, never as pump_send or
+    // pump_priority; every line names this key, project and principal.
+    let lines = audit_lines(&fx.dir);
+    let tools: Vec<&str> = lines
+        .iter()
+        .map(|line| line["tool"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tools,
+        ["send", "pump_priority", "pump_priority", "pump_priority"],
+        "{lines:?}"
+    );
+    let outcomes: Vec<&str> = lines
+        .iter()
+        .map(|line| line["outcome"].as_str().unwrap())
+        .collect();
+    assert_eq!(outcomes, ["ok", "ok", "ok", "refused"], "{lines:?}");
+    let key_id = lines[0]["key_id"].as_str().unwrap();
+    assert!(key_id.starts_with("key_"), "{key_id}");
+    for line in &lines {
+        assert_eq!(line["key_id"], key_id, "{line}");
+        assert_eq!(line["project_id"], project, "{line}");
+        assert_eq!(line["principal"], format!("{member}@{project}"), "{line}");
+    }
+    assert_eq!(lines[0]["summary"], format!("send {need}"), "{lines:?}");
+    assert_eq!(lines[3]["summary"], "over 3 writes/min for this key");
 }
 
 // ----------------------------------------------------------- host tools

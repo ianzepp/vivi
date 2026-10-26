@@ -2608,8 +2608,9 @@ pump.rungs.pools '["&lt;pool&gt;"]'** names it.
 
 Control, priority, requeue, replan, withdraw, answer and unlock commands accept
 **--project &lt;root&gt;** outside the project. The pump stores live state and
-control mode in **&lt;project&gt;/.vivi/pump/pump.db**. A second writer for the same
-home is refused.
+control mode in **pump.db** under its pump home: **&lt;project&gt;/.vivi/pump/**
+by default, or the configured **[pump] home** (a relative path joins the
+project root). A second writer for the same home is refused.
 
 A **priority level** is a nonnegative i64 integer, under one operator ruling:
 the same levels as `vivi pump priority set`; higher is more urgent, 0 or
@@ -2630,8 +2631,8 @@ run kind is the need's mark (`research`, `release` or `repair`), else `build`.
 A need holds at most one open record; a second send is refused and names it.
 **pump send** also refuses a need that is done and a handle that is not a
 need. It is the record, not the need, that is addressed to the pump: a need
-may sit with any local role — one addressed to a third party dispatches the
-same way. **pump done --note** closes a record with any outcome
+may sit with any local role — one addressed to **hand**, or to a third
+party, dispatches the same way. **pump done --note** closes a record with any outcome
 text; a later dispatch of the same need is a new record, and **pump history**
 lists them oldest first. **pump reopen** is refused while another record of the
 need is open; check and send are one store transaction, so two concurrent sends
@@ -2662,6 +2663,23 @@ marks in place; a failed priority write exits nonzero after reporting the open
 record and leaves need and record in place. Recover from the reported handles
 with the explicit commands — **pump send --need**, **pump priority set** or
 **pump priority clear** — rather than blindly refiling the need.
+
+**Hosted dispatch over the server MCP.** On a hosted project the server's MCP
+carries the same moves: its `send` tool takes **dispatch** (hosted projects,
+kind need only) and **priority**, and files the need and one open pump record
+in one call — the record rides the answer as **pump**, with **priority**
+echoed only when requested, and **pump.need** names the canonical need the
+record and any priority row key on. The need itself may be addressed to
+**hand** or anyone else: it is the record, not the need, that targets the
+pump identity, so the server dispatch needs no recipient rule. Dispatch
+takes the operator's API key, the same authority as **pump send**; a
+requested priority needs the configured **[pump]** table. The
+**pump_priority** tool sets, clears and lists levels exactly as `vivi
+pump priority` does, in the configured pump home. A failure after the
+need is filed comes back as a tool error naming the need (and the
+record): recover with **pump send** / **pump priority** on those
+handles, not by resending. The wire shapes are the server contract's,
+under `docs/server/`.
 
 **A pump record is the pump's intake.** Each tick the pump starts a run for
 each need that has an open record and no run: repair first, then by **pump
