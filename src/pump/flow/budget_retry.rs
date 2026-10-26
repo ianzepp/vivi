@@ -143,3 +143,7 @@ pub(crate) fn mark_retry(payload: &mut serde_json::Value) {
 #[cfg(test)]
 #[path = "budget_retry_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "budget_retry_flow_test.rs"]
+mod budget_retry_flow_test;
