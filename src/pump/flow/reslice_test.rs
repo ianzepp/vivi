@@ -295,7 +295,16 @@ fn planted(id: &str) -> Slice {
 
 /// A rig whose slice A was fanned out, plus the task a split request queued.
 fn phase_rig() -> Result<(Rig, String), VivariumError> {
-    let mut rig = rig()?;
+    phase_rig_with(PumpConfig::default(), Mode::Split, "too big")
+}
+
+/// A rig whose slice A was fanned out, plus the task a `mode` request queued.
+fn phase_rig_with(
+    cfg: PumpConfig,
+    mode: Mode,
+    input: &str,
+) -> Result<(Rig, String), VivariumError> {
+    let mut rig = rig_with(cfg)?;
     let slicer_task = rig.mail.send_step("pump", "pump", "slice", "slicer", &[])?;
     let slicer = step("slice", &slicer_task);
     rig.store.insert_step(NEED, &slicer)?;
@@ -309,7 +318,7 @@ fn phase_rig() -> Result<(Rig, String), VivariumError> {
     )?;
     let task = slice_task_of(&rig, "A")?;
     rig.slice = rig.store.step_by_task(&task)?.expect("slice row");
-    let reslice = ask(&mut rig, Mode::Split, "too big")?;
+    let reslice = ask(&mut rig, mode, input)?;
     Ok((rig, reslice))
 }
 
@@ -323,12 +332,8 @@ fn slice_task_of(rig: &Rig, id: &str) -> Result<String, VivariumError> {
         .ok_or_else(|| VivariumError::Parse(format!("no slice row {id}")))
 }
 
-fn end_job(rig: &mut Rig, task: &str, status: JobStatus, message: &str) {
-    let job = rig
-        .jobs
-        .jobs
-        .get_mut(&format!("reslice-{task}-a1"))
-        .expect("job");
+fn end_id(rig: &mut Rig, id: &str, status: JobStatus, message: &str) {
+    let job = rig.jobs.jobs.get_mut(id).expect("job");
     job.status = status;
     if status == JobStatus::Finished {
         job.outcome = Some(JobOutcome {
@@ -338,6 +343,10 @@ fn end_job(rig: &mut Rig, task: &str, status: JobStatus, message: &str) {
             at: 0,
         });
     }
+}
+
+fn end_job(rig: &mut Rig, task: &str, status: JobStatus, message: &str) {
+    end_id(rig, &format!("reslice-{task}-a1"), status, message);
 }
 
 fn run_phase(rig: &mut Rig) -> R {
@@ -377,11 +386,174 @@ fn a_timed_out_job_exhausts_the_slice_and_closes_failed() -> R {
     let (mut rig, task) = phase_rig()?;
     end_job(&mut rig, &task, JobStatus::Timeout, "");
 
+    // The first kill raises its one retry; the retry's own kill fails.
+    run_phase(&mut rig)?;
+    let copy = format!("reslice-{task}-a2");
+    assert_eq!(rig.jobs.jobs[&copy].status, JobStatus::Pending);
+    end_id(&mut rig, &copy, JobStatus::Timeout, "");
+
     run_phase(&mut rig)?;
 
     let old = rig.store.step_by_task(&rig.slice.task)?.expect("row");
     assert_eq!(old.state, StepState::Failed);
     assert_eq!(verdict(&rig, &task)?.as_deref(), Some("failed"));
+    Ok(())
+}
+
+// ---- budget kills: one raised retry, then the failure ----
+
+/// The two ways the pool reports a budget kill: the terminal Timeout status,
+/// and a finished job whose bounded summary reports agent exit 124.
+#[derive(Debug, Clone, Copy)]
+enum Kill {
+    Status,
+    Exit124,
+}
+
+impl Kill {
+    /// End the job `id` as this kind of budget kill.
+    fn plant(self, rig: &mut Rig, id: &str) {
+        match self {
+            Self::Status => end_id(rig, id, JobStatus::Timeout, ""),
+            Self::Exit124 => end_receipt(rig, id, agent_receipt(124, "", "ran out of time")),
+        }
+    }
+}
+
+fn reply_for(mode: Mode) -> &'static str {
+    if mode == Mode::Split {
+        SPLIT_REPLY
+    } else {
+        REWORK_REPLY
+    }
+}
+
+#[test]
+fn reslice_budget_kill_retries_same_request_once() -> R {
+    for mode in [Mode::Split, Mode::Rework, Mode::FollowUp] {
+        for kill in [Kill::Status, Kill::Exit124] {
+            raised_kill_retries_same_request(mode, kill)?;
+            second_kill_fails(mode, kill)?;
+        }
+    }
+    Ok(())
+}
+
+/// The first kill raises one copy of the same request at the doubled budget;
+/// the raised copy then applies the ordinary way, exactly once.
+fn raised_kill_retries_same_request(mode: Mode, kill: Kill) -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    let (mut rig, task) = phase_rig_with(cfg, mode, "too big")?;
+    let first = format!("reslice-{task}-a1");
+    let id = format!("reslice-{task}-a2");
+    let original = rig.jobs.jobs[&first].clone();
+    let before = sends(&rig);
+    kill.plant(&mut rig, &first);
+
+    run_phase(&mut rig)?;
+    run_phase(&mut rig)?; // a repeated phase queues no second copy
+    assert_retry_raised(&rig, &first, &id, &task, mode, original, before)?;
+
+    end_id(&mut rig, &id, JobStatus::Finished, reply_for(mode));
+    run_phase(&mut rig)?;
+
+    assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    let row = rig.store.step_by_task(&task)?.expect("reslice row");
+    assert_eq!(row.state, StepState::Done);
+    assert_eq!(verdict(&rig, &task)?.as_deref(), Some("sliced"));
+    match mode {
+        Mode::Split => {
+            slice_task_of(&rig, "A.1")?;
+            slice_task_of(&rig, "A.2")?;
+        }
+        Mode::Rework | Mode::FollowUp => {
+            slice_task_of(&rig, "A2")?;
+        }
+    }
+    Ok(())
+}
+
+/// The kill left the request context untouched: applied original, one raised
+/// copy of the same request on the still-Running reslice task, no new task,
+/// no premature downstream slice or closure.
+fn assert_retry_raised(
+    rig: &Rig,
+    first: &str,
+    id: &str,
+    task: &str,
+    mode: Mode,
+    original: PoolJob,
+    sends_before: usize,
+) -> R {
+    assert!(rig.jobs.jobs[first].applied_at.is_some());
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert_eq!(count_of(rig, RESLICE_FAILED), 0, "{}", exceptions(rig));
+    let row = rig.store.step_by_task(task)?.expect("reslice row");
+    assert_eq!(row.state, StepState::Running);
+    assert_eq!(verdict(rig, task)?, None);
+    assert_eq!(sends(rig), sends_before);
+    assert!(slice_task_of(rig, "A.1").is_err());
+    assert!(slice_task_of(rig, "A2").is_err());
+    assert_ne!(
+        rig.store
+            .step_by_task(&rig.slice.task)?
+            .expect("slice row")
+            .state,
+        StepState::Failed
+    );
+    // 222 doubled is 444; every other input is the original's
+    let copy = &rig.jobs.jobs[id];
+    assert_eq!(copy.status, JobStatus::Pending);
+    assert_eq!(copy.budget, 444);
+    let mut expected = original;
+    expected.id = id.to_owned();
+    expected.queued_at = copy.queued_at;
+    expected.budget = 444;
+    expected.payload["budget_retry"] = serde_json::Value::Bool(true);
+    assert_eq!(copy, &expected);
+    assert_eq!(copy.payload["slice"], rig.slice.task);
+    assert_eq!(copy.payload["task"], task);
+    assert_eq!(copy.payload["mode"], mode.name());
+    Ok(())
+}
+
+/// A second kill has no allowance: the existing failed-reslice application
+/// runs even though a valid envelope would parse, and no third job appears.
+fn second_kill_fails(mode: Mode, kill: Kill) -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    let (mut rig, task) = phase_rig_with(cfg, mode, "too big")?;
+    let first = format!("reslice-{task}-a1");
+    let id = format!("reslice-{task}-a2");
+    kill.plant(&mut rig, &first);
+    run_phase(&mut rig)?;
+    kill.plant(&mut rig, &id);
+
+    run_phase(&mut rig)?;
+    run_phase(&mut rig)?;
+
+    assert!(rig.jobs.jobs[&first].applied_at.is_some());
+    assert!(rig.jobs.jobs[&id].applied_at.is_some());
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert_eq!(count_of(&rig, RESLICE_FAILED), 1, "{}", exceptions(&rig));
+    assert!(
+        exceptions(&rig).contains("budget kill"),
+        "{}",
+        exceptions(&rig)
+    );
+    let row = rig.store.step_by_task(&task)?.expect("reslice row");
+    assert_eq!(row.state, StepState::Done);
+    assert_eq!(verdict(&rig, &task)?.as_deref(), Some("failed"));
+    assert!(slice_task_of(&rig, "A.1").is_err());
+    assert!(slice_task_of(&rig, "A2").is_err());
+    let old = rig.store.step_by_task(&rig.slice.task)?.expect("slice row");
+    if mode == Mode::FollowUp {
+        // a failed follow-up escalates instead of exhausting its slice
+        assert_ne!(old.state, StepState::Failed);
+    } else {
+        assert_eq!(old.state, StepState::Failed);
+    }
     Ok(())
 }
 
@@ -496,12 +668,8 @@ fn agent_receipt(exit: i32, message: &str, stderr: &str) -> String {
     )
 }
 
-fn end_job_receipt(rig: &mut Rig, task: &str, receipt: String) {
-    let job = rig
-        .jobs
-        .jobs
-        .get_mut(&format!("reslice-{task}-a1"))
-        .expect("job");
+fn end_receipt(rig: &mut Rig, id: &str, receipt: String) {
+    let job = rig.jobs.jobs.get_mut(id).expect("job");
     job.status = JobStatus::Finished;
     job.outcome = Some(JobOutcome {
         state: "finished".into(),
@@ -509,6 +677,10 @@ fn end_job_receipt(rig: &mut Rig, task: &str, receipt: String) {
         receipt,
         at: 0,
     });
+}
+
+fn end_job_receipt(rig: &mut Rig, task: &str, receipt: String) {
+    end_receipt(rig, &format!("reslice-{task}-a1"), receipt);
 }
 
 fn exceptions(rig: &Rig) -> String {

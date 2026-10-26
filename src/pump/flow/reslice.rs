@@ -6,6 +6,7 @@ use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::envelope::roles::{Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
@@ -428,6 +429,9 @@ fn collect_one<S: JobStore, M: FlowMail>(
     if let Some(env) = runner_env_failure(job) {
         return hold_env(ctx, st, store, job, &row, &env);
     }
+    if retry::raise(ctx, st, job)? {
+        return Ok(());
+    }
     let reply = reply_of(ctx, store, &run, job, mode)?;
     let word = reslice_apply::apply(ctx, store, mail, &run, &row, slice, mode, reply.as_ref())?;
     mail.close_task(&row.task, word, None, None)?;
@@ -452,6 +456,17 @@ fn reply_of(
         raise_once(ctx, RESLICE_FAILED, &job.id, &text);
         Ok(None)
     };
+    if budget_retry::is_budget_kill(job) {
+        let why = if budget_retry::spent(job) {
+            "its one raised-budget retry is spent"
+        } else {
+            "the saved budget has no legal raise"
+        };
+        return fail(format!(
+            "budget kill with {why}; pool job ended {:?}",
+            job.status
+        ));
+    }
     if job.status != JobStatus::Finished {
         return fail(format!("pool job ended {:?}", job.status));
     }
@@ -478,6 +493,9 @@ fn reply_of(
     }
     Ok(Some(slicer))
 }
+
+#[path = "reslice_retry.rs"]
+mod retry;
 
 #[cfg(test)]
 #[path = "reslice_test.rs"]
