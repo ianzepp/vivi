@@ -5,9 +5,16 @@
 //! need), on one target: the row records the target of the need's first
 //! slice, and every later read uses that target.
 //!
-//! A restarted run keeps the need branch for a `rework1` entry; every other
-//! entry moves it to its prior name (publish the prior name, delete the old
-//! name) and cuts a fresh one. [`BranchRestarts`] does that over several ticks.
+//! A restarted build run adopts the live branch at every entry (`plan`,
+//! `research`, `slice`, `rework1`): run ownership alone moves to the new run,
+//! so the branch, its base, target, live status and priors — and with them the
+//! merged slices of the prior run — stay reachable to the new plan, even
+//! before the first merge when only a base exists. A build run that finds the
+//! row mid-move (`renaming`/`deleting`) keeps the row and its recovery
+//! evidence and raises `flow-need-branch-rename-failed` rather than queueing
+//! more destructive work. Other kinds keep the archival rule: the branch moves
+//! to its prior name (publish the prior name, delete the old name) and a fresh
+//! branch is cut. [`BranchRestarts`] does that over several ticks.
 
 use crate::error::VivariumError;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -29,8 +36,8 @@ pub const DELETING: &str = "deleting";
 /// The need landed and its refs were cleaned up.
 pub const PRUNED: &str = "pruned";
 
-/// The restart entry that keeps the need branch.
-const REWORK_ENTRY: &str = "rework1";
+/// The build entries that adopt the prior run's branch at a restart.
+const BUILD_ENTRIES: [&str; 4] = ["plan", "research", "slice", "rework1"];
 /// Exception kind for a need branch move that could not run or failed.
 pub(crate) const RENAME_FAILED: &str = "flow-need-branch-rename-failed";
 
@@ -183,9 +190,9 @@ pub fn tip(ctx: &Ctx, store: &PumpStore, need: &str) -> Result<Option<String>, V
     }
 }
 
-/// The restart rule as a tick phase: for each live run whose need branch row
-/// belongs to an older run, keep the branch (`rework1`) or move it to its
-/// prior name and reset the row.
+/// The restart rule as a tick phase: for each live run, adopt the branch when
+/// the run is a build run, surface a row stranded mid-move, and otherwise move
+/// an older row to its prior name and reset it.
 struct BranchRestarts;
 
 impl<S: JobStore, M: FlowMail> TickPhase<S, M> for BranchRestarts {
@@ -214,7 +221,29 @@ impl<S: JobStore, M: FlowMail> TickPhase<S, M> for BranchRestarts {
     }
 }
 
-/// Restart the need branch of one live run when its row belongs to an older run.
+/// Whether a build run adopts the prior run's branch: every build entry does,
+/// so the merged slices of the prior run stay reachable to the new plan.
+fn adopts(run: &RunRow) -> bool {
+    run.kind == "build" && BUILD_ENTRIES.contains(&run.entry.as_str())
+}
+
+/// Adopt the branch for the new run: move run ownership only. Branch, base,
+/// target, live status and priors stay as they are, even before the first
+/// merge when only a base exists. No merge-role route, remote query or job is
+/// involved, so repeated ticks are idempotent.
+fn adopt(store: &PumpStore, run: &RunRow, row: &NeedBranchRow) -> Result<(), VivariumError> {
+    store.upsert_need_branch(&NeedBranchRow::for_run(
+        run,
+        row.branch.clone(),
+        row.base.clone(),
+        &row.status,
+        &row.target,
+        row.priors.clone(),
+    ))
+}
+
+/// Restart the need branch of one live run when its row belongs to an older
+/// run, or surface a row stranded mid-move.
 fn restart_run<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -224,6 +253,19 @@ fn restart_run<S: JobStore>(
     let Some(row) = store.need_branch(&run.need)? else {
         return Ok(());
     };
+    if (row.status == RENAMING || row.status == DELETING) && adopts(run) {
+        // Stranded mid-move: keep the row and its recovery evidence, raise
+        // once, queue nothing destructive — whatever run owns the row.
+        raise_failed(
+            ctx,
+            &row,
+            &format!(
+                "the need branch of {} is stranded {} from run {}, so run {} cannot adopt it until the move is recovered",
+                row.need, row.status, row.run, run.run
+            ),
+        );
+        return Ok(());
+    }
     if row.run >= run.run {
         return Ok(());
     }
@@ -238,14 +280,7 @@ fn restart<S: JobStore>(
     row: NeedBranchRow,
 ) -> Result<(), VivariumError> {
     match row.status.as_str() {
-        LIVE if run.entry == REWORK_ENTRY => store.upsert_need_branch(&NeedBranchRow::for_run(
-            run,
-            row.branch,
-            row.base,
-            &row.status,
-            &row.target,
-            row.priors,
-        )),
+        LIVE if adopts(run) => adopt(store, run, &row),
         LIVE => begin_rename(ctx, st, store, run, &row),
         RENAMING => continue_rename(ctx, st, store, run, &row),
         DELETING => continue_delete(ctx, st, store, run, &row),
