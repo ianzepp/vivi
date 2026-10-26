@@ -8,6 +8,7 @@ pub mod build_front;
 pub mod collect;
 pub mod collect_slice;
 pub mod collect_step;
+pub mod continuation;
 pub mod cto_step;
 pub mod decide;
 pub mod def;
