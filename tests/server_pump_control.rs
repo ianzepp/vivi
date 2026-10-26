@@ -28,6 +28,8 @@ struct Fx {
     app: Router,
     state: AppState,
     root: PathBuf,
+    /// The server data dir, whose `audit.jsonl` records the write calls.
+    data: PathBuf,
     project: String,
     /// The host's own member, which the operator's key authenticates as.
     member: String,
@@ -61,6 +63,7 @@ fn fixture(name: &str) -> Fx {
     Fx {
         app: router(state.clone()),
         root,
+        data: base.join("data"),
         project: report.served[0].project_id.clone(),
         member: report.served[0].member.clone(),
         state,
@@ -68,6 +71,49 @@ fn fixture(name: &str) -> Fx {
 }
 
 impl Fx {
+    /// Add one role to the hosted mailspace, with `kind` (`None` for a
+    /// kindless role).
+    fn add_role(&self, name: &str, kind: Option<&str>) {
+        let mut ms = Mailspace::open_root(self.root.clone()).unwrap();
+        ms.add_role(
+            name,
+            RoleUpdate {
+                kind: kind.map(str::to_owned).map(Some),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    }
+
+    /// The canonical name of the mailspace's one role of kind `kind`: the
+    /// seat a Mind test acts as, found by kind and never by name.
+    fn seat_of_kind(&self, kind: &str) -> String {
+        let ms = Mailspace::open_root(self.root.clone()).unwrap();
+        let seats: Vec<String> = ms
+            .list_role_views()
+            .unwrap()
+            .into_iter()
+            .filter(|role| {
+                role.kind
+                    .as_deref()
+                    .is_some_and(|held| held.eq_ignore_ascii_case(kind))
+            })
+            .map(|role| role.name)
+            .collect();
+        assert_eq!(seats.len(), 1, "expected one role of kind {kind}");
+        seats[0].clone()
+    }
+
+    /// The audit trail: one JSON value per line of the data dir's log.
+    fn audit_lines(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.data.join("audit.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     fn key_by(&self, member: &str, identity: Option<&str>) -> String {
         server_key(&self.state, &self.project, member, identity)
     }
@@ -245,21 +291,139 @@ async fn a_member_token_is_refused_and_changes_nothing() {
         )
         .unwrap()
         .token;
-    let (status, value) = fx
-        .post(
-            &bearer,
+    // A member token reaches no pump control at all, steering included.
+    for action in ["stop", "pause", "resume"] {
+        let (status, value) = fx
+            .post(
+                &bearer,
+                "tools/call",
+                json!({"name": "pump_control", "arguments": {"action": action}}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("identity tokens are not accepted on /v1/mcp"),
+            "{message}"
+        );
+        assert!(message.contains("server key"), "{message}");
+    }
+    assert_eq!(fx.mode(), PumpMode::Running);
+}
+
+#[tokio::test]
+async fn a_mind_seat_may_pause_and_resume_but_not_stop_or_start() {
+    let fx = fixture("mind");
+    fx.add_role("steward", Some("mind"));
+    // The seat is found by kind, in either case, and its name is never
+    // relied upon: the rule must read the role's kind, not its name.
+    let seat = fx.seat_of_kind("MiNd");
+    let key = fx.key_by(&fx.member, Some(&seat));
+
+    // Pause and resume steer the running pump, and answer as the seat.
+    let answer = fx.control(&key, "pause").await;
+    assert_eq!(answer["mode"], "paused", "{answer}");
+    assert_eq!(answer["by"], seat, "{answer}");
+    assert_eq!(fx.mode(), PumpMode::Paused, "stored state after the pause");
+    let answer = fx.control(&key, "resume").await;
+    assert_eq!(answer["mode"], "running", "{answer}");
+    assert_eq!(answer["by"], seat, "{answer}");
+    assert_eq!(
+        fx.mode(),
+        PumpMode::Running,
+        "stored state after the resume"
+    );
+
+    // The steering calls are this key's audited writes, as the seat.
+    let lines: Vec<Value> = fx
+        .audit_lines()
+        .into_iter()
+        .filter(|line| line["tool"] == "pump_control")
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let principal = format!("{}.{seat}@{}", fx.member, fx.project);
+    for line in &lines {
+        assert_eq!(line["outcome"], "ok", "{line}");
+        assert_eq!(line["principal"], principal, "{line}");
+    }
+
+    // Stop and start stay operator-only, and a refusal changes nothing.
+    set_project_mode(&fx.root, PumpMode::Running).unwrap();
+    let message = fx.refused(&key, "stop").await;
+    assert!(message.contains("kind operator"), "{message}");
+    assert_eq!(
+        fx.mode(),
+        PumpMode::Running,
+        "a refused stop changes nothing"
+    );
+    set_project_mode(&fx.root, PumpMode::Stopped).unwrap();
+    let message = fx.refused(&key, "start").await;
+    assert!(message.contains("kind operator"), "{message}");
+    assert_eq!(
+        fx.mode(),
+        PumpMode::Stopped,
+        "a refused start changes nothing"
+    );
+
+    // Administrative pump tools keep the operator-only rule for a seat too.
+    let value = fx
+        .rpc(
+            &key,
             "tools/call",
-            json!({"name": "pump_control", "arguments": {"action": "stop"}}),
+            json!({"name": "pump_rungs", "arguments": {"action": "show"}}),
         )
         .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
-    let message = value["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("identity tokens are not accepted on /v1/mcp"),
-        "{message}"
+    assert_eq!(value["result"]["isError"], true, "{value}");
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("kind operator"), "{text}");
+}
+
+#[tokio::test]
+async fn a_foreign_members_mind_seat_cannot_steer() {
+    let fx = fixture("foreign-mind");
+    fx.add_role("steward", Some("mind"));
+    fx.state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(11),
+            "0c0c0c0c-1111-4222-8333-444444444444",
+        )
+        .unwrap();
+    set_project_mode(&fx.root, PumpMode::Running).unwrap();
+    // A mind-kind seat only helps when the key's minting member is the
+    // host's own; a key bob minted for itself stays shut out.
+    let key = fx.key_by("bob", Some("steward"));
+    let message = fx.refused(&key, "pause").await;
+    assert!(message.contains("host's own member"), "{message}");
+    assert_eq!(
+        fx.mode(),
+        PumpMode::Running,
+        "a foreign mind changes nothing"
     );
-    assert!(message.contains("server key"), "{message}");
+}
+
+#[tokio::test]
+async fn kindless_and_hand_identities_cannot_steer() {
+    let fx = fixture("kinds");
+    fx.add_role("ghost", None); // an identity with no kind at all
+    set_project_mode(&fx.root, PumpMode::Running).unwrap();
+    let ghost = fx.key_by(&fx.member, Some("ghost"));
+    let message = fx.refused(&ghost, "pause").await;
+    assert!(message.contains("kind mind or operator"), "{message}");
     assert_eq!(fx.mode(), PumpMode::Running);
+
+    let hand = fx.key_by(&fx.member, Some("hand"));
+    for action in ["pause", "resume"] {
+        let message = fx.refused(&hand, action).await;
+        assert!(message.contains("kind mind or operator"), "{message}");
+    }
+    assert_eq!(
+        fx.mode(),
+        PumpMode::Running,
+        "no refused call changed state"
+    );
 }
 
 #[tokio::test]
@@ -270,7 +434,8 @@ async fn a_key_that_is_not_the_operators_is_refused() {
     // A key acting as a role that is not of kind operator.
     let hand = fx.key_by(&fx.member, Some("hand"));
     let message = fx.refused(&hand, "pause").await;
-    assert!(message.contains("kind operator"), "{message}");
+    assert!(message.contains("kind mind or operator"), "{message}");
+    assert!(message.contains("of kind hand"), "{message}");
     // A key another member minted, even one acting as the operator role.
     fx.state
         .identities
@@ -330,7 +495,8 @@ async fn a_project_that_is_not_hosted_is_refused() {
     let fx = Fx {
         app: router(state.clone()),
         state,
-        root: base,
+        root: base.clone(),
+        data: base.join("data"),
         project,
         member: "alice".into(),
     };
