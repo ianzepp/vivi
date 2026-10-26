@@ -10,9 +10,12 @@
 //! observation idles a healthy provider. Nothing here replays events or
 //! performs I/O; a later slice wires the collected-note replay.
 
+use std::collections::BTreeMap;
+
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
+use crate::mailspace::PoolEventRow;
 use crate::pool::collect::{Collected, JobResult, Outcome};
 use crate::pool::record::DispatchRecord;
 
@@ -162,6 +165,57 @@ fn names_http_429(lower: &str) -> bool {
         || ["/1.0 ", "/1.1 ", "/2 ", "/3 "]
             .iter()
             .any(|version| lower.contains(&format!("http{version}429")))
+}
+
+/// The provider cooldown deadlines replayed from `events` (oldest first)
+/// without refreshing them. Every `pool_collected` event recorded against
+/// `pool` — the pool its own note carries, never a configured provider —
+/// whose note stores a [`HealthObservation`] under [`COLLECTED_NOTE_KEY`]
+/// contributes that observation's `provider` and `cooldown_until`, and each
+/// provider keeps the maximum stored deadline. Events for other pools never
+/// contribute. Notes without the metadata (older collections, plain
+/// successes) contribute nothing, and malformed metadata invents no
+/// cooldown. Stored deadlines are replayed verbatim: nothing recomputes
+/// `observed_at` or adds [`COOLDOWN_SECS`] to any clock, and a success
+/// collected after a failure never clears what the failure stored —
+/// expiration is [`super::availability::Availability`]'s call, at the `now`
+/// it is given. Pure: no classifier runs and no clock is read.
+#[must_use]
+pub fn cooldowns(
+    events: &[PoolEventRow],
+    pool: &str,
+) -> BTreeMap<String, chrono::DateTime<chrono::Utc>> {
+    let mut deadlines: BTreeMap<String, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
+    for event in events {
+        if event.event_type != "pool_collected" {
+            continue;
+        }
+        let Ok(note) = serde_json::from_str::<serde_json::Value>(&event.note) else {
+            continue;
+        };
+        if note.get("pool").and_then(serde_json::Value::as_str) != Some(pool) {
+            continue;
+        }
+        let Some(seen) = stored_observation(&note) else {
+            continue;
+        };
+        deadlines
+            .entry(seen.provider)
+            .and_modify(|deadline| *deadline = (*deadline).max(seen.cooldown_until))
+            .or_insert(seen.cooldown_until);
+    }
+    deadlines
+}
+
+/// The observation stored on one collected note under
+/// [`COLLECTED_NOTE_KEY`], or `None` when the note carries none or one that
+/// is not a parsable [`HealthObservation`]. The metadata may be the
+/// observation's JSON object or the same JSON encoded as a string.
+fn stored_observation(note: &serde_json::Value) -> Option<HealthObservation> {
+    match note.get(COLLECTED_NOTE_KEY)? {
+        serde_json::Value::String(text) => serde_json::from_str(text).ok(),
+        value => serde_json::from_value(value.clone()).ok(),
+    }
 }
 
 /// Whether the agent's execution itself failed: `agent_rc` present and
