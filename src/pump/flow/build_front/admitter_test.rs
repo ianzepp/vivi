@@ -13,6 +13,7 @@ use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::need_scope::{RulingDecision, ScopeIssue, ScopeRuling, ruling_note_body};
 use crate::pump::flow::outcome::{StartAction, StartCx};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, test_ctx};
@@ -79,17 +80,33 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
+    let mut mail = FakeMail::new("pump");
+    let body = crate::letter::fixture::need_body(&["build the widget"], "prose");
+    let sent = mail.send_step("pump", "pump", "the need", &body, &[])?;
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         run,
         def: load(FlowKind::Build)?,
     })
 }
 
 impl Rig {
+    /// Rewrites the rig need's letter to delegate `scope` as its write scope.
+    fn delegate(&mut self, scope: &[&str]) {
+        let mut front = crate::letter::work::NeedFront::new(vec![String::from("build the widget")]);
+        front.write_scope = scope.iter().map(|path| (*path).to_string()).collect();
+        let body = crate::letter::fixture::need_body_with(&front, "prose");
+        if let Some(task) = self.mail.tasks.get_mut(NEED) {
+            task.body = body;
+        }
+    }
+
     /// A Done planner step `node` whose task holds one pool result with `plan`.
     fn planned(&mut self, node: &str, plan: &str) -> R {
         let task = self.mail.send_step("pump", "pump", node, "body", &[])?;
@@ -245,5 +262,168 @@ fn admit1_and_admit2_budgets_take_the_admitter_override_not_another_kind() -> R 
     assert!(admit1.read_only);
     assert_eq!(admit1.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
     assert_eq!(admit1.extra_targets, vec![String::from("default")]);
+    Ok(())
+}
+
+/// A grant ruling for `need`.
+fn a_grant(need: &str, target: &str, paths: &[&str]) -> ScopeRuling {
+    ScopeRuling {
+        need: need.to_string(),
+        target: target.to_string(),
+        run: 1,
+        task: "t0009".to_string(),
+        paths: paths.iter().map(|path| (*path).to_string()).collect(),
+        reason: "held by no open slice".to_string(),
+        decision: RulingDecision::Grant,
+        issue: None,
+    }
+}
+
+/// An operator-required ruling for `need`: it grants nothing.
+fn an_operator_ruling(need: &str, target: &str, paths: &[&str]) -> ScopeRuling {
+    ScopeRuling {
+        decision: RulingDecision::OperatorRequired,
+        issue: Some(ScopeIssue::Denied),
+        ..a_grant(need, target, paths)
+    }
+}
+
+/// Post `ruling` on `need` as the pump's reply role (`[pump] reply_from`).
+fn from_reply_role(rig: &mut Rig, need: &str, ruling: &ScopeRuling) -> R {
+    let body = ruling_note_body(ruling, "job-1")?;
+    rig.mail.foreign_reply(need, "mind", &body);
+    Ok(())
+}
+
+/// Post the note body for `ruling` on `need` as a sender other than the
+/// pump's reply role.
+fn from_other_sender(rig: &mut Rig, need: &str, ruling: &ScopeRuling) -> R {
+    let body = ruling_note_body(ruling, "job-2")?;
+    rig.mail.foreign_reply(need, "planner", &body);
+    Ok(())
+}
+
+#[test]
+fn admit_brief_groups_effective_scope_outside_the_thread() -> R {
+    let mut rig = rig()?;
+    rig.delegate(&["src/pump/"]);
+    rig.planned("plan", "PLAN ONE TEXT")?;
+    from_reply_role(
+        &mut rig,
+        NEED,
+        &a_grant(NEED, "default", &["docs/scope.md"]),
+    )?;
+
+    let spec = job(rig.start("admit1")?)?;
+
+    // The stale fixture thread cannot carry the grant; the authoritative
+    // block before the plan carries delegation and grant, grouped.
+    assert!(
+        spec.body
+            .contains("- target default: delegated src/pump/; granted docs/scope.md"),
+        "{}",
+        spec.body
+    );
+    let scope_at = spec
+        .body
+        .find("effective need write scope")
+        .ok_or_else(|| VivariumError::Other(String::from("no scope block")))?;
+    let thread_at = spec
+        .body
+        .find("\nthread:\nthe need thread")
+        .ok_or_else(|| VivariumError::Other(String::from("no thread")))?;
+    assert!(scope_at < thread_at);
+    Ok(())
+}
+
+#[test]
+fn admit_brief_keeps_foreign_and_operator_notes_off_the_scope() -> R {
+    let mut rig = rig()?;
+    rig.delegate(&["src/pump/"]);
+    rig.planned("plan", "PLAN ONE TEXT")?;
+    from_reply_role(
+        &mut rig,
+        NEED,
+        &a_grant(NEED, "default", &["docs/scope.md"]),
+    )?;
+    from_other_sender(
+        &mut rig,
+        NEED,
+        &a_grant(NEED, "default", &["docs/stray.md"]),
+    )?;
+    from_reply_role(
+        &mut rig,
+        NEED,
+        &an_operator_ruling(NEED, "default", &["docs/denied.md"]),
+    )?;
+
+    let spec = job(rig.start("admit1")?)?;
+
+    assert!(
+        spec.body
+            .contains("- target default: delegated src/pump/; granted docs/scope.md"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("docs/stray.md"), "{}", spec.body);
+    assert!(!spec.body.contains("docs/denied.md"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn an_empty_original_scope_is_not_unrestricted_permission_in_the_admit_brief() -> R {
+    let mut rig = rig()?;
+    // Even a reply-role grant cannot widen an empty delegation.
+    from_reply_role(
+        &mut rig,
+        NEED,
+        &a_grant(NEED, "default", &["docs/scope.md"]),
+    )?;
+    rig.planned("plan", "PLAN ONE TEXT")?;
+
+    let spec = job(rig.start("admit1")?)?;
+
+    assert!(
+        spec.body.contains(
+            "- (none): the need delegates no write scope; that is not unrestricted permission"
+        ),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("docs/scope.md"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn admit_brief_states_the_escalate_request_contract() -> R {
+    let mut rig = rig()?;
+    rig.planned("plan", "PLAN ONE TEXT")?;
+
+    let spec = job(rig.start("admit1")?)?;
+
+    assert!(
+        spec.body
+            .contains("scope request contract (independent of installed charters)"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("answers `escalate` with nonblank `scope_target`, nonempty `scope_paths`, and a `reason`"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("a general operator or design question omits the scope fields"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("target policy may grant additions automatically; it never grants concurrent slice ownership"),
+        "{}",
+        spec.body
+    );
     Ok(())
 }

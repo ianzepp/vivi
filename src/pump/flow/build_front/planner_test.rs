@@ -3,6 +3,7 @@
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::work::NeedFront;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
@@ -11,6 +12,7 @@ use crate::pump::flow::handlers::shipped;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::need_scope::{RulingDecision, ScopeIssue, ScopeRuling, ruling_note_body};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, test_ctx};
@@ -93,6 +95,56 @@ fn result(message: &str) -> String {
     format!("{POOL_RESULT_MARKER}j1: finished\npool p  slot 1  model m\n\n--- receipt\n{message}")
 }
 
+/// A grant ruling for `need`.
+fn a_grant(need: &str, target: &str, paths: &[&str]) -> ScopeRuling {
+    ScopeRuling {
+        need: need.to_string(),
+        target: target.to_string(),
+        run: 1,
+        task: "t0009".to_string(),
+        paths: paths.iter().map(|path| (*path).to_string()).collect(),
+        reason: "held by no open slice".to_string(),
+        decision: RulingDecision::Grant,
+        issue: None,
+    }
+}
+
+/// An operator-required ruling for `need`: it grants nothing.
+fn an_operator_ruling(need: &str, target: &str, paths: &[&str]) -> ScopeRuling {
+    ScopeRuling {
+        decision: RulingDecision::OperatorRequired,
+        issue: Some(ScopeIssue::Denied),
+        ..a_grant(need, target, paths)
+    }
+}
+
+/// Post `ruling` on `need` as the pump's reply role (`[pump] reply_from`).
+fn from_reply_role(rig: &mut Rig, need: &str, ruling: &ScopeRuling) -> R {
+    let body = ruling_note_body(ruling, "job-1")?;
+    rig.mail.foreign_reply(need, "mind", &body);
+    Ok(())
+}
+
+/// Post the note body for `ruling` on `need` as a sender other than the
+/// pump's reply role.
+fn from_other_sender(rig: &mut Rig, need: &str, ruling: &ScopeRuling) -> R {
+    let body = ruling_note_body(ruling, "job-2")?;
+    rig.mail.foreign_reply(need, "planner", &body);
+    Ok(())
+}
+
+/// A rig whose need delegates `write_scope` and whose thread is the stale,
+/// truncated fixture text that cannot carry any grant.
+fn rig_with_scope(write_scope: &[&str]) -> Result<(Rig, String), VivariumError> {
+    let mut rig = rig(true, 1)?;
+    let mut front = NeedFront::new(vec![String::from("build the widget")]);
+    front.write_scope = write_scope.iter().map(|path| (*path).to_string()).collect();
+    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.run.need = need.clone();
+    Ok((rig, need))
+}
+
 /// Starts the planner handler on `node` and returns the job's spec.
 fn start(rig: &Rig, node: &str) -> Result<crate::pump::jobs::JobSpec, VivariumError> {
     let def = load(FlowKind::Build)?;
@@ -141,8 +193,14 @@ fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
 
     let spec = start(&rig, "plan")?;
 
-    let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\nthread:";
+    let lines = "done_when: first thing\ndone_when: second thing\ntarget: default\ndepends_on: a1, b2\neffective need write scope";
     assert!(spec.body.contains(lines), "{}", spec.body);
+    assert!(
+        spec.body.contains("scope request contract"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("thread:"), "{}", spec.body);
     Ok(())
 }
 
@@ -298,4 +356,157 @@ fn shipped_registry_has_a_handler_for_plan_and_plan2() {
             "{id}"
         );
     }
+}
+
+#[test]
+fn plan_brief_groups_effective_scope_outside_the_stale_thread() -> R {
+    let (mut rig, need) = rig_with_scope(&["src/pump/"])?;
+    from_reply_role(
+        &mut rig,
+        &need,
+        &a_grant(&need, "default", &["docs/scope.md"]),
+    )?;
+
+    let spec = start(&rig, "plan")?;
+
+    // The stale fixture thread cannot carry the grant; the authoritative
+    // block above it carries both the delegation and the grant, grouped.
+    assert!(!THREAD.contains("docs/scope.md"), "{}", THREAD);
+    assert!(
+        spec.body
+            .contains("effective need write scope (grouped by target; the original letter's delegation plus every later pump grant; authoritative for this job and supersedes the original letter's write_scope):"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("- target default: delegated src/pump/; granted docs/scope.md"),
+        "{}",
+        spec.body
+    );
+    let scope_at = spec
+        .body
+        .find("effective need write scope")
+        .ok_or_else(|| VivariumError::Other(String::from("no scope block")))?;
+    let thread_at = spec
+        .body
+        .find("thread:")
+        .ok_or_else(|| VivariumError::Other(String::from("no thread")))?;
+    assert!(scope_at < thread_at);
+    Ok(())
+}
+
+#[test]
+fn plan_brief_keeps_foreign_and_operator_notes_off_the_scope() -> R {
+    let (mut rig, need) = rig_with_scope(&["src/pump/"])?;
+    from_reply_role(
+        &mut rig,
+        &need,
+        &a_grant(&need, "default", &["docs/scope.md"]),
+    )?;
+    from_other_sender(
+        &mut rig,
+        &need,
+        &a_grant(&need, "default", &["docs/stray.md"]),
+    )?;
+    from_reply_role(
+        &mut rig,
+        &need,
+        &an_operator_ruling(&need, "default", &["docs/denied.md"]),
+    )?;
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(
+        spec.body
+            .contains("- target default: delegated src/pump/; granted docs/scope.md"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("docs/stray.md"), "{}", spec.body);
+    assert!(!spec.body.contains("docs/denied.md"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn plan2_groups_effective_scope_like_plan() -> R {
+    let (mut rig, need) = rig_with_scope(&["src/pump/"])?;
+    from_reply_role(
+        &mut rig,
+        &need,
+        &a_grant(&need, "default", &["docs/scope.md"]),
+    )?;
+
+    let spec = start(&rig, "plan2")?;
+
+    assert!(
+        spec.body
+            .contains("- target default: delegated src/pump/; granted docs/scope.md"),
+        "{}",
+        spec.body
+    );
+    // The revision inputs stay.
+    assert!(spec.body.contains("first plan:\n(none)"), "{}", spec.body);
+    assert!(
+        spec.body.contains("scope request contract"),
+        "{}",
+        spec.body
+    );
+    Ok(())
+}
+
+#[test]
+fn an_empty_original_scope_is_not_unrestricted_permission_in_the_plan() -> R {
+    let mut rig = rig(true, 1)?;
+    // Even a reply-role grant cannot widen an empty delegation.
+    from_reply_role(
+        &mut rig,
+        NEED,
+        &a_grant(NEED, "default", &["docs/scope.md"]),
+    )?;
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(
+        spec.body.contains(
+            "- (none): the need delegates no write scope; that is not unrestricted permission"
+        ),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("docs/scope.md"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn plan_brief_states_the_operator_request_contract() -> R {
+    let rig = rig(true, 1)?;
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(
+        spec.body
+            .contains("scope request contract (independent of installed charters)"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("answers `operator` with nonblank `scope_target`, nonempty `scope_paths`, and a `reason`"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("a general operator or design question omits the scope fields"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body
+            .contains("target policy may grant additions automatically; it never grants concurrent slice ownership"),
+        "{}",
+        spec.body
+    );
+    Ok(())
 }

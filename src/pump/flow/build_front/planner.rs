@@ -7,6 +7,7 @@ use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
+use crate::pump::flow::need_scope::{TargetScope, effective_scopes};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::{
     done_step, need_thread, read_only_job, step_replies, targets,
@@ -52,6 +53,8 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
     )
     .map_err(fmt_err)?;
     text.push_str(&front_lines(cx, need)?);
+    text.push_str(&scope_block(cx, need)?);
+    text.push_str(contract_block());
     writeln!(text, "thread:\n{}", need_thread(cx.ctx, need)?).map_err(fmt_err)?;
     if step.node == SECOND_PLAN {
         writeln!(
@@ -91,6 +94,53 @@ fn front_lines(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
         lines.push(format!("depends_on: {}\n", front.depends_on.join(", ")));
     }
     Ok(lines.concat())
+}
+
+/// The authoritative effective need write scope: the original letter's
+/// delegation plus every later pump grant, grouped by target, kept outside
+/// the truncated need thread. A target left out holds no delegated paths,
+/// and an empty scope is not unrestricted permission.
+fn scope_block(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
+    let groups = effective_scopes(cx.mail, need, &cx.ctx.cfg.reply_from, &targets(cx.ctx))?;
+    let mut text = String::from(
+        "effective need write scope (grouped by target; the original letter's delegation plus every later pump grant; authoritative for this job and supersedes the original letter's write_scope):\n",
+    );
+    if groups.is_empty() {
+        text.push_str(
+            "- (none): the need delegates no write scope; that is not unrestricted permission\n",
+        );
+        return Ok(text);
+    }
+    for group in &groups {
+        text.push_str(&target_line(group));
+    }
+    text.push_str("a target absent above holds no delegated paths\n");
+    Ok(text)
+}
+
+/// One grouped target line: delegated paths first, then later grants.
+fn target_line(group: &TargetScope) -> String {
+    let mut line = format!("- target {}: ", group.target);
+    if !group.original.is_empty() {
+        line.push_str(&format!("delegated {}", group.original.join(", ")));
+    }
+    if !group.granted.is_empty() {
+        if !group.original.is_empty() {
+            line.push_str("; ");
+        }
+        line.push_str(&format!("granted {}", group.granted.join(", ")));
+    }
+    line.push('\n');
+    line
+}
+
+/// The runtime scope-request contract: how this role asks for permission,
+/// independent of any installed charter.
+fn contract_block() -> &'static str {
+    "scope request contract (independent of installed charters):\n\
+     - a permission-only request answers `operator` with nonblank `scope_target`, nonempty `scope_paths`, and a `reason`\n\
+     - a general operator or design question omits the scope fields\n\
+     - target policy may grant additions automatically; it never grants concurrent slice ownership\n"
 }
 
 /// The newest reply of the last Done step of `node`, or `(none)`.
