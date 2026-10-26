@@ -1,9 +1,13 @@
 //! Tests for [`super::scope`].
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use super::{
-    ScopeDecision, ScopePath, ScopePathError, ScopePolicy, ScopeRejection, WHOLE_REPOSITORY,
-    first_overlap, set_covers,
+    ScopeAuthorization, ScopeDecision, ScopePath, ScopePathError, ScopePolicy, ScopeRejection,
+    WHOLE_REPOSITORY, authorize, first_overlap, set_covers,
 };
+use crate::pump::config::{PumpConfig, PumpTarget};
 
 /// Every entry parsed, panicking on a bad literal so tests stay terse.
 fn paths(values: &[&str]) -> Vec<ScopePath> {
@@ -11,6 +15,35 @@ fn paths(values: &[&str]) -> Vec<ScopePath> {
         .iter()
         .map(|value| ScopePath::parse(value).expect("test declaration should parse"))
         .collect()
+}
+
+/// A pump config parsed from mailspace TOML, for configuration findings.
+fn pump_config(text: &str) -> PumpConfig {
+    let mail: crate::mailspace::MailspaceConfig =
+        toml::from_str(text).expect("mailspace text should parse");
+    mail.pump.expect("pump table should be present")
+}
+
+/// Named targets for authorization tests: `app` allows `src/` and denies
+/// `src/generated/`, `web` allows only `web/`.
+fn target_configs() -> BTreeMap<String, PumpTarget> {
+    let mut configs = BTreeMap::new();
+    configs.insert(
+        String::from("app"),
+        PumpTarget {
+            scope_allow: Some(vec![String::from("src/")]),
+            scope_deny: vec![String::from("src/generated/")],
+            ..PumpTarget::default()
+        },
+    );
+    configs.insert(
+        String::from("web"),
+        PumpTarget {
+            scope_allow: Some(vec![String::from("web/")]),
+            ..PumpTarget::default()
+        },
+    );
+    configs
 }
 
 #[test]
@@ -239,4 +272,265 @@ fn rejections_serialize_with_reason_tags_and_display_sentences() {
         assert!(text.contains(&format!("\"reason\":\"{tag}\"")), "{text}");
         assert!(!rejection.to_string().is_empty());
     }
+}
+
+#[test]
+fn scope_policy_uses_component_boundaries() {
+    let policy = ScopePolicy::snapshot("app", &[String::from("src/"), String::from("tests")], &[])
+        .expect("declarations should parse");
+
+    // A file under an allowed directory is eligible, leading `./` drops, and
+    // the grant carries the normalized path. The file need not exist: paths
+    // are declarations, never filesystem lookups.
+    assert_eq!(
+        policy.authorize(&[String::from("./src/helper.rs")]),
+        ScopeAuthorization::Grant(vec![String::from("src/helper.rs")])
+    );
+    assert_eq!(
+        policy.authorize(&[String::from("src/ghost.rs")]),
+        ScopeAuthorization::Grant(vec![String::from("src/ghost.rs")])
+    );
+    // A file outside every allow entry, or across a component boundary, is
+    // OutsideAllow.
+    assert!(matches!(
+        policy.authorize(&[String::from("deploy/service.toml")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    assert!(matches!(
+        policy.authorize(&[String::from("srcx/letter.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    // A file entry covers its exact self only: never a sibling, a parent
+    // directory, or anything beneath it.
+    let file_only = ScopePolicy::snapshot("app", &[String::from("src/lib.rs")], &[])
+        .expect("declarations should parse");
+    assert_eq!(
+        file_only.authorize(&[String::from("src/lib.rs")]),
+        ScopeAuthorization::Grant(vec![String::from("src/lib.rs")])
+    );
+    assert!(matches!(
+        file_only.authorize(&[String::from("src/")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    // The root request needs the root allow entry; an explicit empty allow
+    // allows nothing.
+    assert!(matches!(
+        policy.authorize(&[String::from("./")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    let nothing = ScopePolicy::snapshot("app", &[], &[]).expect("empty declarations parse");
+    assert!(matches!(
+        nothing.authorize(&[String::from("src/lib.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    // A mixed request is never granted as its allowed subset.
+    assert!(matches!(
+        policy.authorize(&[
+            String::from("src/helper.rs"),
+            String::from("deploy/service.toml")
+        ]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    // With the root allow, the root request grants the whole repository.
+    let everything = ScopePolicy::snapshot("app", &[String::from(WHOLE_REPOSITORY)], &[])
+        .expect("declarations should parse");
+    assert_eq!(
+        everything.authorize(&[String::from("./")]),
+        ScopeAuthorization::Grant(vec![String::from(WHOLE_REPOSITORY)])
+    );
+}
+
+#[test]
+fn directory_requests_intersecting_denies_require_operator() {
+    let policy = ScopePolicy::snapshot(
+        "app",
+        &[String::from("src/"), String::from("tests/")],
+        &[String::from("src/private/")],
+    )
+    .expect("declarations should parse");
+
+    // Denying a directory inside a requested directory rejects the request,
+    // even though most of it is allowed: no allowed subset is granted.
+    assert_eq!(
+        policy.authorize(&[String::from("src/")]),
+        ScopeAuthorization::Reject(ScopeRejection::DeniedPath {
+            path: String::from("src/"),
+            deny: String::from("src/private/"),
+        })
+    );
+    // So does denying a file beneath the requested directory.
+    let file_deny = ScopePolicy::snapshot(
+        "app",
+        &[String::from("src/")],
+        &[String::from("src/lib.rs")],
+    )
+    .expect("declarations should parse");
+    assert_eq!(
+        file_deny.authorize(&[String::from("src/")]),
+        ScopeAuthorization::Reject(ScopeRejection::DeniedPath {
+            path: String::from("src/"),
+            deny: String::from("src/lib.rs"),
+        })
+    );
+    // In the other direction, a deny covers a requested file beneath it.
+    assert_eq!(
+        policy.authorize(&[String::from("src/private/keys.toml")]),
+        ScopeAuthorization::Reject(ScopeRejection::DeniedPath {
+            path: String::from("src/private/keys.toml"),
+            deny: String::from("src/private/"),
+        })
+    );
+    // A mixed request intersecting a deny is rejected whole.
+    assert!(matches!(
+        policy.authorize(&[String::from("src/lib.rs"), String::from("src/private/x.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::DeniedPath { .. })
+    ));
+    // Outside the deny, at the component boundary, the request stands.
+    assert_eq!(
+        policy.authorize(&[String::from("srcx/private/x.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow {
+            path: String::from("srcx/private/x.rs"),
+            allow: vec![String::from("src/"), String::from("tests/")],
+        })
+    );
+}
+
+#[test]
+fn invalid_scope_paths_fail_closed() {
+    let policy = ScopePolicy::snapshot("app", &[String::from(WHOLE_REPOSITORY)], &[])
+        .expect("declarations should parse");
+
+    // One unusable declaration rejects the whole request, even beside an
+    // eligible one.
+    assert_eq!(
+        policy.authorize(&[String::from("src/lib.rs"), String::from("../escape")]),
+        ScopeAuthorization::Reject(ScopeRejection::InvalidPath {
+            path: String::from("../escape"),
+            problem: ScopePathError::ParentTraversal.to_string(),
+        })
+    );
+    assert!(matches!(
+        policy.authorize(&[String::from("   ")]),
+        ScopeAuthorization::Reject(ScopeRejection::InvalidPath { .. })
+    ));
+    // Unusable policy entries fail closed at the named-target entry point.
+    let mut configs = BTreeMap::new();
+    configs.insert(
+        String::from("app"),
+        PumpTarget {
+            scope_allow: Some(vec![String::from("/abs")]),
+            ..PumpTarget::default()
+        },
+    );
+    assert!(matches!(
+        authorize(&configs, "app", &[String::from("src/lib.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::InvalidPath { .. })
+    ));
+}
+
+#[test]
+fn scope_policy_is_target_local() {
+    let configs = target_configs();
+
+    assert_eq!(
+        authorize(&configs, "app", &[String::from("src/lib.rs")]),
+        ScopeAuthorization::Grant(vec![String::from("src/lib.rs")])
+    );
+    // Another target's policy never leaks in: `web`'s allow does not cover
+    // `src/`, and `app`'s deny does not fire for `web`.
+    assert!(matches!(
+        authorize(&configs, "web", &[String::from("src/lib.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::OutsideAllow { .. })
+    ));
+    // An unknown name is refused outright, naming the known targets, and
+    // never inherits another target or the legacy default.
+    assert_eq!(
+        authorize(&configs, "missing", &[String::from("src/lib.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::UnknownTarget {
+            target: String::from("missing"),
+            known: vec![String::from("app"), String::from("web")],
+        })
+    );
+    // An omitted allow on a resolved target is the whole repository, its
+    // own deny still wins, and none of that leaks across targets.
+    let mut legacy = target_configs();
+    legacy.insert(
+        String::from("loose"),
+        PumpTarget {
+            scope_deny: vec![String::from("vendor/")],
+            ..PumpTarget::default()
+        },
+    );
+    assert_eq!(
+        authorize(&legacy, "loose", &[String::from("docs/plan.md")]),
+        ScopeAuthorization::Grant(vec![String::from("docs/plan.md")])
+    );
+    assert_eq!(
+        authorize(&legacy, "loose", &[String::from("vendor/bundle/x.rs")]),
+        ScopeAuthorization::Reject(ScopeRejection::DeniedPath {
+            path: String::from("vendor/bundle/x.rs"),
+            deny: String::from("vendor/"),
+        })
+    );
+    assert_eq!(
+        authorize(&legacy, "app", &[String::from("src/lib.rs")]),
+        ScopeAuthorization::Grant(vec![String::from("src/lib.rs")])
+    );
+}
+
+#[test]
+fn configuration_findings_name_invalid_scope_entries() {
+    let config = pump_config(
+        "name = \"t\"\n\
+         [pump]\n\
+         committer_name = \"T\"\n\
+         committer_email = \"t@t\"\n\
+         [pump.targets.app]\n\
+         path = \".\"\n\
+         scope_allow = [\"./\", \"src/\"]\n\
+         scope_deny = [\"vendor/\", \"src/private/\", \"/abs\"]\n",
+    );
+    let found = config.findings_for(Path::new("."), &[]);
+    let scope_errors: Vec<&String> = found
+        .errors
+        .iter()
+        .filter(|error| error.contains("[pump.targets.app] scope_"))
+        .collect();
+    assert_eq!(scope_errors.len(), 3, "{scope_errors:?}");
+    assert!(
+        scope_errors
+            .iter()
+            .any(|error| error.contains("scope_allow entry `src/`")
+                && error.contains("is not an operator decision")),
+        "{scope_errors:?}"
+    );
+    assert!(
+        scope_errors
+            .iter()
+            .any(|error| error.contains("scope_deny entry `src/private/`")
+                && error.contains("is not an operator decision")),
+        "{scope_errors:?}"
+    );
+    assert!(
+        scope_errors
+            .iter()
+            .any(|error| error.contains("scope_deny entry `/abs` is unusable")),
+        "{scope_errors:?}"
+    );
+    // Entries outside the reserved trees normalize cleanly and stay silent.
+    let clean = pump_config(
+        "name = \"t\"\n\
+         [pump]\n\
+         committer_name = \"T\"\n\
+         committer_email = \"t@t\"\n\
+         [pump.targets.app]\n\
+         path = \".\"\n\
+         scope_allow = [\"./deploy/\", \"vendor\"]\n\
+         scope_deny = [\"deploy/credentials.toml\"]\n",
+    );
+    let found = clean.findings_for(Path::new("."), &[]);
+    assert!(
+        !found.errors.iter().any(|error| error.contains("scope_")),
+        "{found:?}"
+    );
 }
