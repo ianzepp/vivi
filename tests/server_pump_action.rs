@@ -663,6 +663,85 @@ async fn replan_answer_and_unlock_match_the_library() {
 }
 
 #[tokio::test]
+async fn unlock_entry_forwarding_matches_the_library_for_omitted_and_rework1() {
+    let fx = fixture("unlock-entries");
+    let key = fx.key_by(&fx.member, None);
+    let need = send(
+        &fx.root,
+        "need",
+        "fix auth",
+        "+++\ndone_when = [\"it works\"]\n+++\n\nmake it work",
+    );
+    let record = open_record(&fx.root, &need);
+    ensure_db(&fx.root);
+
+    // Entry omitted: the tool is the library call with entry `None`; the
+    // posted action carries no entry and the response says so.
+    let twin_root = twin(&fx.root);
+    let lib =
+        vivi::pump::unlock::unlock(&twin_root, &need, None, Some("take it from the top")).unwrap();
+    let got = fx
+        .call(
+            &key,
+            "pump_action",
+            json!({"action": "unlock", "need": need, "note": "take it from the top"}),
+        )
+        .await;
+    assert_eq!(lib.need, need);
+    assert_eq!(lib.record, record);
+    assert!(lib.entry.is_none(), "the library stores no entry");
+    assert_eq!(got["action"], "unlock");
+    assert_eq!(got["need"], need);
+    assert_eq!(got["record"], record);
+    assert!(!got["id"].as_str().unwrap().is_empty());
+    assert!(got["entry"].is_null(), "an omitted entry stays omitted");
+    assert_eq!(pending(&fx.root), pending(&twin_root));
+    let row = &pending(&fx.root)[0];
+    assert_eq!(row["need"], need);
+    assert_eq!(row["record"], record);
+    assert_eq!(row["kind"], "unlock");
+    assert!(row["word"].is_null());
+    assert_eq!(row["reason"], "take it from the top");
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["tool"], "pump_action");
+    assert_eq!(lines[0]["outcome"], "ok");
+    let _ = fs::remove_dir_all(&twin_root);
+
+    // Entry "rework1": the explicit entry survives the response and the
+    // posted action letter.
+    let twin_root = twin(&fx.root);
+    let lib =
+        vivi::pump::unlock::unlock(&twin_root, &need, Some("rework1"), Some("keep what holds"))
+            .unwrap();
+    let got = fx
+        .call(
+            &key,
+            "pump_action",
+            json!({"action": "unlock", "need": need, "entry": "rework1", "note": "keep what holds"}),
+        )
+        .await;
+    assert_eq!(lib.entry.as_deref(), Some("rework1"));
+    assert_eq!(got["action"], "unlock");
+    assert_eq!(got["need"], need);
+    assert_eq!(got["record"], record);
+    assert_eq!(got["entry"], "rework1");
+    assert_eq!(pending(&fx.root), pending(&twin_root));
+    let rows = pending(&fx.root);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[1]["need"], need);
+    assert_eq!(rows[1]["record"], record);
+    assert_eq!(rows[1]["kind"], "unlock");
+    assert_eq!(rows[1]["word"], "rework1");
+    assert_eq!(rows[1]["reason"], "keep what holds");
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["tool"] == "pump_action"));
+    assert!(lines.iter().all(|line| line["outcome"] == "ok"));
+    let _ = fs::remove_dir_all(&twin_root);
+}
+
+#[tokio::test]
 async fn library_refusals_are_the_tool_error_and_one_audit_line() {
     let fx = fixture("refusals");
     let key = fx.key_by(&fx.member, None);
