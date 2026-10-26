@@ -109,6 +109,10 @@ fn finished_local_dispatch_keeps_outcome_and_log_tail() {
     );
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].state, RowState::Finished("pushed".into()));
+    assert_eq!(found[0].finished_at, Some(1060));
+    assert_eq!(found[0].started_at, Some(1000));
+    assert_eq!(found[0].running_secs, Some(60));
+    assert_eq!(found[0].stale_age_secs, None);
     assert_eq!(found[0].need.as_deref(), Some("need1234"));
     assert_eq!(found[0].work_kind.as_deref(), Some("fix"));
     assert!(
@@ -117,4 +121,138 @@ fn finished_local_dispatch_keeps_outcome_and_log_tail() {
             .as_ref()
             .is_some_and(|path| path.ends_with("job/agent.out"))
     );
+}
+
+fn ssh_pools() -> BTreeMap<String, crate::pool::config::PoolConfig> {
+    toml::from_str("[pods]\nprovider='ssh'\nslots=1\n").unwrap()
+}
+
+fn finished(pool: &str, slot: &str, started_at: u64, ended_at: &str) -> FinishedDispatch {
+    FinishedDispatch {
+        task: format!("task{slot}"),
+        subject: "Review".into(),
+        role: "hand".into(),
+        need: Some("need1234".into()),
+        kind: Some("fix".into()),
+        outcome: "pushed".into(),
+        model: "model-x".into(),
+        pool: pool.into(),
+        slot: slot.into(),
+        machine: format!("alpha/{pool}/{slot}"),
+        started_at,
+        budget_secs: 600,
+        read_only: false,
+        ended_at: ended_at.into(),
+    }
+}
+
+fn finished_events(done: Vec<FinishedDispatch>) -> ProjectEvents {
+    ProjectEvents {
+        finished: done,
+        ..ProjectEvents::default()
+    }
+}
+
+#[test]
+fn recent_finish_uses_end_not_start() {
+    let pools = ssh_pools();
+    // Started at epoch 0 but completed one minute before `now`: recency and
+    // runtime come from the recorded completion, not the start.
+    let events = finished_events(vec![finished("pods", "slot-1", 0, "1970-01-01T23:59:00Z")]);
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        86_400,
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].finished_at, Some(86_340));
+    assert_eq!(found[0].started_at, Some(0));
+    assert_eq!(found[0].running_secs, Some(86_340));
+    assert_eq!(found[0].stale_age_secs, None);
+}
+
+#[test]
+fn old_completed_dispatch_is_expired() {
+    let pools = ssh_pools();
+    // Ages at `now` = 90_000: 1000s (expired) vs 60s (kept).
+    let events = finished_events(vec![
+        finished("pods", "slot-old", 0, "1970-01-02T00:43:20Z"),
+        finished("pods", "slot-new", 0, "1970-01-02T00:59:00Z"),
+    ]);
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        90_000,
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].slot, "slot-new");
+    assert_eq!(found[0].finished_at, Some(89_940));
+}
+
+#[test]
+fn unparseable_completion_is_omitted() {
+    let pools = ssh_pools();
+    let events = finished_events(vec![finished("pods", "slot-1", 0, "not-a-timestamp")]);
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        90_000,
+    );
+    assert!(found.is_empty());
+}
+
+#[test]
+fn finish_window_boundary_is_inclusive() {
+    let pools = ssh_pools();
+    // Ages at `now` = 90_000: exactly 300s (kept) vs 301s (dropped).
+    let events = finished_events(vec![
+        finished("pods", "slot-edge", 0, "1970-01-02T00:55:00Z"),
+        finished("pods", "slot-late", 0, "1970-01-02T00:54:59Z"),
+    ]);
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        90_000,
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].slot, "slot-edge");
+    assert_eq!(found[0].finished_at, Some(89_700));
+}
+
+#[test]
+fn old_running_dispatch_stays_visible() {
+    let pools = ssh_pools();
+    let events = ProjectEvents {
+        open: vec![OpenDispatch {
+            task: "abcd1234".into(),
+            record: dispatch("pods"),
+        }],
+        ..ProjectEvents::default()
+    };
+    // Started at epoch 1000, still running 89_000 seconds later.
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        90_000,
+    );
+    assert_eq!(found.len(), 1);
+    assert!(matches!(found[0].state, RowState::Running));
+    assert_eq!(found[0].finished_at, None);
+    assert_eq!(found[0].stale_age_secs, None);
+    assert_eq!(found[0].running_secs, Some(89_000));
 }
