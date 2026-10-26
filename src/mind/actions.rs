@@ -47,6 +47,48 @@ pub struct ActionRequest {
     pub word: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    // Arguments later actions may map onto server calls. No kind shipped so
+    // far requires any of them; the kinds decide which apply.
+    #[serde(default)]
+    pub entry: Option<String>,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub flow: Option<String>,
+    #[serde(default)]
+    pub pool: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub band: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub done_when: Option<Vec<String>>,
+    #[serde(default)]
+    pub write_scope: Option<Vec<String>>,
+    #[serde(default)]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub cap: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub lines: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -63,6 +105,9 @@ pub enum Refusal {
     UnwatchedProject,
     MissingField(&'static str),
     BadHandle(&'static str),
+    BadValue(&'static str),
+    FieldTooLong(&'static str),
+    UnexpectedField(&'static str),
     NoteTooLong,
     TooMany,
 }
@@ -74,6 +119,11 @@ impl std::fmt::Display for Refusal {
             Self::UnwatchedProject => write!(f, "project is not a watched root"),
             Self::MissingField(field) => write!(f, "missing {field}"),
             Self::BadHandle(field) => write!(f, "{field} is not a plain handle"),
+            Self::BadValue(field) => write!(f, "{field} has an unusable value"),
+            Self::FieldTooLong(field) => write!(f, "{field} is longer than its cap"),
+            Self::UnexpectedField(field) => {
+                write!(f, "{field} does not apply to this action")
+            }
             Self::NoteTooLong => write!(f, "note longer than {MAX_NOTE} characters"),
             Self::TooMany => write!(f, "more than {MAX_ACTIONS} actions in one envelope"),
         }
@@ -130,11 +180,26 @@ pub fn parse_envelope(reply: &str) -> Result<Vec<ActionRequest>, String> {
 /// model filled the ones that did not apply with `""`, which the handle
 /// check then refused.
 fn drop_blank_fields(mut request: ActionRequest) -> ActionRequest {
+    // Blank strings become absent ones. Blank clauses inside the string
+    // lists stay exactly as the turn wrote them.
     for field in [
         &mut request.need,
         &mut request.step,
         &mut request.word,
         &mut request.note,
+        &mut request.entry,
+        &mut request.file,
+        &mut request.filter,
+        &mut request.flow,
+        &mut request.pool,
+        &mut request.to,
+        &mut request.subject,
+        &mut request.body,
+        &mut request.target,
+        &mut request.role,
+        &mut request.model,
+        &mut request.band,
+        &mut request.reasoning,
     ] {
         if field
             .as_deref()
