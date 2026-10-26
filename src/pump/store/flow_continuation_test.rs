@@ -1,8 +1,9 @@
-//! Tests for the continuation table in [`super`].
+//! Tests for the continuation tables in [`super`]: the park-task link, the
+//! run's thread-input journal, and pending same-run resume decisions.
 
 use tempfile::{TempDir, tempdir};
 
-use super::ContinuationLink;
+use super::{ContinuationLink, ResumeRequest, ResumeState, ThreadInput};
 use crate::pump::flow::index::{RunRow, StepState, run_state};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -45,6 +46,33 @@ fn link(need: &str, run: u32, park_task: &str, node: &str, source: &str) -> Cont
         node: node.into(),
         source: source.into(),
     }
+}
+
+fn input(id: &str, body: &str) -> ThreadInput {
+    ThreadInput {
+        message_id: format!("<{id}@thread>"),
+        author: "op@example.test".into(),
+        body: body.into(),
+        sent_at: 1_700_000_000,
+    }
+}
+
+fn resume(need: &str, run: u32, task: &str, inputs: Vec<ThreadInput>) -> ResumeRequest {
+    ResumeRequest {
+        need: need.into(),
+        run,
+        node: "plan".into(),
+        task: task.into(),
+        park_task: None,
+        inputs,
+    }
+}
+
+fn ids(inputs: &[ThreadInput]) -> Vec<String> {
+    inputs
+        .iter()
+        .map(|input| input.message_id.clone())
+        .collect()
 }
 
 #[test]
@@ -122,4 +150,309 @@ fn link_needs_the_source_step_in_the_same_need_and_run() {
     let other_need = store.link_continuation(&link("n1", 1, "t-park", "parked", "t-plan-n2"));
     assert!(other_need.is_err(), "source of another need must fail");
     assert_eq!(store.continuation_of("t-park").expect("read"), None);
+}
+
+#[test]
+fn same_timestamp_messages_are_distinct_inputs() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let mut first = input("m1", "first");
+    first.sent_at = 42;
+    let mut second = input("m2", "second");
+    second.sent_at = 42;
+    store
+        .journal_run_inputs("n1", 1, &[first.clone(), second.clone()])
+        .expect("journal");
+    assert_eq!(
+        store.run_inputs("n1", 1).expect("read"),
+        vec![first, second],
+        "two distinct messages may share one timestamp"
+    );
+}
+
+#[test]
+fn ordered_batched_input_keeps_thread_order() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let batch = [input("m1", "one"), input("m2", "two"), input("m3", "three")];
+    store.journal_run_inputs("n1", 1, &batch).expect("journal");
+    store
+        .journal_run_inputs("n1", 1, &[input("m2", "again"), input("m4", "four")])
+        .expect("re-observe");
+    let expected = vec!["<m1@thread>", "<m2@thread>", "<m3@thread>", "<m4@thread>"];
+    assert_eq!(
+        ids(&store.run_inputs("n1", 1).expect("read")),
+        expected,
+        "batches append in order and re-observed identities are a no-op"
+    );
+    store
+        .record_source_inputs(
+            "n1",
+            1,
+            "plan",
+            "t-source",
+            &[input("m3", "three"), input("m4", "four")],
+        )
+        .expect("record source inputs");
+    assert_eq!(
+        ids(&store
+            .source_inputs("n1", 1, "plan", "t-source")
+            .expect("read")),
+        vec!["<m3@thread>", "<m4@thread>"],
+        "the source execution keeps the order it included"
+    );
+}
+
+#[test]
+fn duplicate_observation_returns_the_same_decision() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let batch = vec![input("m1", "one"), input("m2", "two")];
+    let first = store
+        .observe_resume(&resume("n1", 1, "t-source", batch.clone()))
+        .expect("observe");
+    let mut edited = batch.clone();
+    edited[1].body = "rewritten".to_string();
+    let again = store
+        .observe_resume(&resume("n1", 1, "t-source", edited))
+        .expect("observe again");
+    assert_eq!(first, again, "the first snapshot of a batch wins");
+    assert_eq!(first.generation, 1);
+    let fresh = store
+        .observe_resume(&resume("n1", 1, "t-source", vec![input("m3", "three")]))
+        .expect("observe new batch");
+    assert_ne!(fresh.decision, first.decision);
+    assert_eq!(fresh.generation, 2, "a new batch is the next generation");
+    assert_eq!(
+        store
+            .observe_resume(&resume("n1", 1, "t-source", batch))
+            .expect("observe"),
+        first,
+        "the first batch still returns its own decision"
+    );
+    let empty = store.observe_resume(&resume("n1", 1, "t-source", vec![]));
+    assert!(empty.is_err(), "an empty batch resumes nothing");
+}
+
+#[test]
+fn consumption_is_per_source_task() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let batch = vec![input("m1", "the reply")];
+    let a = store
+        .observe_resume(&resume("n1", 1, "t-plan", batch.clone()))
+        .expect("observe a");
+    let b = store
+        .observe_resume(&resume("n1", 1, "t-plan2", batch))
+        .expect("observe b");
+    assert_ne!(a.decision, b.decision, "the source scopes the decision");
+    assert_eq!(b.generation, 1, "each source counts its own decisions");
+    store
+        .complete_resume(&a.decision)
+        .expect("complete a")
+        .expect("decision");
+    assert!(store.input_consumed("t-plan", "<m1@thread>").expect("read"));
+    assert!(
+        !store
+            .input_consumed("t-plan2", "<m1@thread>")
+            .expect("read")
+    );
+    assert_eq!(
+        store.consumed_inputs("t-plan").expect("read"),
+        vec!["<m1@thread>".to_owned()]
+    );
+    assert_eq!(
+        ids(&store.pending_resumes().expect("read")[0].inputs),
+        vec!["<m1@thread>".to_owned()],
+        "the other held step is still pending on the same reply"
+    );
+    store
+        .complete_resume(&b.decision)
+        .expect("complete b")
+        .expect("decision");
+    assert!(
+        store
+            .input_consumed("t-plan2", "<m1@thread>")
+            .expect("read")
+    );
+    assert!(store.pending_resumes().expect("read").is_empty());
+}
+
+#[test]
+fn decisions_survive_a_reload() {
+    let dir = tempdir().expect("tempdir");
+    let decision_id;
+    {
+        let store = open(&dir);
+        store
+            .journal_run_inputs("n1", 1, &[input("m1", "one")])
+            .expect("journal");
+        let mut request = resume(
+            "n1",
+            1,
+            "t-source",
+            vec![input("m1", "one"), input("m2", "two")],
+        );
+        request.park_task = Some("t-park".into());
+        let decision = store.observe_resume(&request).expect("observe");
+        decision_id = decision.decision.clone();
+        let updated = store
+            .set_resume_replacement(&decision_id, "t-replacement", 7)
+            .expect("replacement")
+            .expect("decision");
+        assert_eq!(updated.replacement_id.as_deref(), Some("t-replacement"));
+        assert_eq!(updated.replacement_order, Some(7));
+    }
+    let reopened = open(&dir);
+    let decision = reopened
+        .resume_decision(&decision_id)
+        .expect("read")
+        .expect("decision");
+    assert_eq!(decision.state, ResumeState::Pending);
+    assert_eq!(decision.park_task.as_deref(), Some("t-park"));
+    assert_eq!(decision.generation, 1);
+    assert_eq!(decision.progress, 0);
+    assert_eq!(ids(&decision.inputs), vec!["<m1@thread>", "<m2@thread>"]);
+    assert_eq!(decision.replacement_id.as_deref(), Some("t-replacement"));
+    assert_eq!(reopened.pending_resumes().expect("read").len(), 1);
+    assert_eq!(
+        ids(&reopened.run_inputs("n1", 1).expect("read")),
+        vec!["<m1@thread>"],
+        "the run journal survives too"
+    );
+}
+
+#[test]
+fn partial_progress_stays_recoverable_until_completed() {
+    let dir = tempdir().expect("tempdir");
+    let batch = vec![input("m1", "one"), input("m2", "two")];
+    let decision_id = open(&dir)
+        .observe_resume(&resume("n1", 1, "t-source", batch))
+        .expect("observe")
+        .decision;
+    {
+        let store = open(&dir);
+        store
+            .set_resume_progress(&decision_id, 1)
+            .expect("progress")
+            .expect("decision");
+    }
+    let reopened = open(&dir);
+    let resumed = reopened
+        .resume_decision(&decision_id)
+        .expect("read")
+        .expect("decision");
+    assert_eq!(
+        resumed.state,
+        ResumeState::Pending,
+        "intent is not completion"
+    );
+    assert_eq!(resumed.progress, 1);
+    assert_eq!(reopened.pending_resumes().expect("read").len(), 1);
+    assert!(
+        !reopened
+            .input_consumed("t-source", "<m1@thread>")
+            .expect("read")
+    );
+    assert!(
+        reopened.set_resume_progress(&decision_id, 3).is_err(),
+        "progress cannot pass the batch"
+    );
+    let done = reopened
+        .complete_resume(&decision_id)
+        .expect("complete")
+        .expect("decision");
+    assert_eq!(done.state, ResumeState::Applied);
+    assert!(
+        reopened
+            .input_consumed("t-source", "<m1@thread>")
+            .expect("read")
+    );
+    assert!(
+        reopened
+            .input_consumed("t-source", "<m2@thread>")
+            .expect("read")
+    );
+    assert!(reopened.pending_resumes().expect("read").is_empty());
+    let again = reopened
+        .complete_resume(&decision_id)
+        .expect("complete again")
+        .expect("decision");
+    assert_eq!(again.state, ResumeState::Applied);
+    assert!(
+        reopened.cancel_resume(&decision_id).is_err(),
+        "applied is final"
+    );
+}
+
+#[test]
+fn cancelled_decisions_stay_out_of_pending() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let batch = vec![input("m1", "one")];
+    let decision = store
+        .observe_resume(&resume("n1", 1, "t-source", batch.clone()))
+        .expect("observe");
+    let cancelled = store
+        .cancel_resume(&decision.decision)
+        .expect("cancel")
+        .expect("decision");
+    assert_eq!(cancelled.state, ResumeState::Cancelled);
+    assert!(store.pending_resumes().expect("read").is_empty());
+    let again = store
+        .cancel_resume(&decision.decision)
+        .expect("cancel again")
+        .expect("decision");
+    assert_eq!(again.state, ResumeState::Cancelled);
+    assert!(
+        store.set_resume_progress(&decision.decision, 1).is_err(),
+        "a cancelled decision takes no progress"
+    );
+    let replayed = store
+        .observe_resume(&resume("n1", 1, "t-source", batch))
+        .expect("observe again");
+    assert_eq!(replayed.decision, decision.decision);
+    assert_eq!(replayed.state, ResumeState::Cancelled);
+    assert!(
+        !store
+            .input_consumed("t-source", "<m1@thread>")
+            .expect("read")
+    );
+}
+
+#[test]
+fn decisions_of_other_sources_and_runs_are_not_confused() {
+    let dir = tempdir().expect("tempdir");
+    let store = open(&dir);
+    let batch = vec![input("m1", "one")];
+    let first = store
+        .observe_resume(&resume("n1", 1, "t-source", batch.clone()))
+        .expect("observe");
+    let other_task = store
+        .observe_resume(&resume("n1", 1, "t-source2", batch.clone()))
+        .expect("observe other task");
+    let other_run = store
+        .observe_resume(&resume("n1", 2, "t-source", batch.clone()))
+        .expect("observe other run");
+    let other_need = store
+        .observe_resume(&resume("n2", 1, "t-source", batch))
+        .expect("observe other need");
+    for other in [&other_task, &other_run, &other_need] {
+        assert_ne!(other.decision, first.decision);
+        assert_eq!(other.generation, 1, "each source counts its own decisions");
+    }
+    assert_eq!(store.pending_resumes().expect("read").len(), 4);
+    assert!(
+        store
+            .resume_decision("resume-none")
+            .expect("read")
+            .is_none(),
+        "an unknown decision reads as none"
+    );
+    assert!(
+        store
+            .set_resume_replacement("resume-none", "t-job", 1)
+            .expect("read")
+            .is_none()
+    );
 }
