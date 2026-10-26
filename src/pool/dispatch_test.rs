@@ -1055,6 +1055,51 @@ fn a_command_job_plans_without_a_harness_block_and_gets_no_env() {
 }
 
 #[test]
+fn a_bridge_command_job_reads_the_whole_body_without_model_bootstrap_and_one_suffix() {
+    let mut config = config();
+    config.bridge.enabled = true;
+    let command = DispatchFlags {
+        command: Some("cargo test --quiet".into()),
+        ..flags("")
+    };
+    let p = plan_on(&config, &command).unwrap();
+    // The command job reads the complete task body itself: the bridge pointer
+    // is a model bootstrap a command never needs.
+    assert!(
+        p.brief.starts_with(&format!("{}\n\n", body_text().trim_end())),
+        "{}",
+        p.brief
+    );
+    assert!(p.brief.contains("body text"), "{}", p.brief);
+    assert!(!p.brief.contains("Your task handle is"), "{}", p.brief);
+    assert!(!p.brief.contains("vivi tools"), "{}", p.brief);
+    for tool in ["show", "thread", "reply", "done"] {
+        assert!(!p.brief.contains(tool), "{tool}: {}", p.brief);
+    }
+    // The commit-hygiene suffix lands exactly once.
+    assert_eq!(
+        p.brief
+            .matches(crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE)
+            .count(),
+        1,
+        "{}",
+        p.brief
+    );
+    assert!(p.brief.ends_with("Use this commit subject: S\n"), "{}", p.brief);
+    assert_eq!(p.harness_cmd, "cargo test --quiet");
+    assert!(p.model.is_empty());
+}
+
+#[test]
+fn a_bridge_model_job_still_gets_the_pointer_brief() {
+    let mut config = config();
+    config.bridge.enabled = true;
+    let p = plan_on(&config, &flags("m/ok")).unwrap();
+    assert!(p.brief.contains("Your task handle is"), "{}", p.brief);
+    assert_eq!(p.model, "m/ok");
+}
+
+#[test]
 fn every_owned_cleanup_prefix_takes_one_segment_and_no_more() {
     let mut cleanup = flags("m/ok");
     cleanup.delete_expect = Some("b".repeat(40));

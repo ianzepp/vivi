@@ -179,7 +179,14 @@ fn assemble_job_plan(
         need: flags.need.clone(),
         kind: flags.kind.clone(),
         subject: subject.to_string(),
-        brief: brief_for(config, handle, subject, body, flags.need.as_deref()),
+        brief: brief_for(
+            config,
+            handle,
+            subject,
+            body,
+            flags.need.as_deref(),
+            flags.command.is_some(),
+        ),
         rules,
         refs,
         publish_ref: flags.publish_ref.clone(),
@@ -333,20 +340,30 @@ fn plan_reasoning(
 
 /// The brief the worker reads: with the bridge on, a pointer at the task on
 /// the server (the worker reads it with the vivi tools); without it, the
-/// task body itself. Either way ends with the commit message rule and the commit
-/// subject to use.
+/// task body itself. A command job runs no model, so it always reads the task
+/// body itself: the pointer is a model bootstrap a command never needs.
+/// Either way ends with the commit message rule and the commit subject to use.
 fn brief_for(
     config: &PoolConfig,
     handle: &str,
     subject: &str,
     body: &str,
     need: Option<&str>,
+    command: bool,
 ) -> String {
-    let brief = if config.bridge.enabled {
+    let brief = if !command && config.bridge.enabled {
         bridge_brief(handle, subject)
     } else {
         body.to_string()
     };
+    brief_with_commit_rule(&brief, subject, need)
+}
+
+/// The chosen brief plus the commit-hygiene suffix, applied once. Public so a
+/// caller that replaces the chosen brief (the pump, when it plans the binary
+/// itself) applies the same suffix the same way.
+#[must_use]
+pub fn brief_with_commit_rule(brief: &str, subject: &str, need: Option<&str>) -> String {
     format!(
         "{}\n\n{}\n",
         brief.trim_end(),
