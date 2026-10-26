@@ -15,6 +15,7 @@ use super::tick_with;
 use crate::error::VivariumError;
 use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -50,16 +51,27 @@ impl JobStore for Jobs {
     }
 }
 
-/// Starts every planner and admitter step as a pool job.
+/// Starts every planner and admitter step as a pool job, budgeted by the
+/// node's actual execution kind, not the stub's planner label.
 struct JobStep;
 
 impl StepHandler for JobStep {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        let node = cx
+            .def
+            .nodes
+            .iter()
+            .find(|node| node.id == step.node)
+            .ok_or_else(|| VivariumError::Message(format!("no node {} in the flow", step.node)))?;
+        let execution = RoleKind::from_class(&node.class).ok_or_else(|| {
+            VivariumError::Message(format!("node {} has no role kind", step.node))
+        })?;
         Ok(StartAction::Job(Box::new(role_job(
             cx.ctx,
             cx.run,
             step,
             "planner",
+            execution,
             "planner",
             &format!("stub brief for {}", step.node),
         ))))

@@ -5,6 +5,7 @@
 
 use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowDef, NodeClass};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::outcome::role_job;
@@ -103,10 +104,11 @@ pub fn predecessor_step(
 }
 
 /// A read-only job for a role step: all targets beside the checkout, the main
-/// ref as the start point.
+/// ref as the start point. The budget comes from the node's class.
 ///
 /// # Errors
-/// Returns [`VivariumError::Config`] when `role` is missing or not active.
+/// Returns [`VivariumError::Config`] when `role` is missing or not active, or
+/// when `class` is not a role class.
 pub fn read_only_job(
     ctx: &Ctx,
     run: &RunRow,
@@ -120,7 +122,13 @@ pub fn read_only_job(
         .lookup(role)
         .filter(|found| found.status == "active")
         .ok_or_else(|| VivariumError::Config(format!("role {role} is missing or not active")))?;
-    let mut spec = role_job(ctx, run, step, &class.name(), &found.name, brief);
+    let execution = RoleKind::from_class(class).ok_or_else(|| {
+        VivariumError::Config(format!(
+            "node class {} has no role kind to budget",
+            class.name()
+        ))
+    })?;
+    let mut spec = role_job(ctx, run, step, &class.name(), execution, &found.name, brief);
     make_read_only(ctx, &mut spec);
     Ok(spec)
 }

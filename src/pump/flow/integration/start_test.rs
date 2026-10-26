@@ -172,6 +172,8 @@ fn sync_asks_the_merge_role_to_merge_main_into_the_need_branch() {
     let spec = start(&rig, &SyncStart, "sync1").unwrap();
     assert_eq!(spec.kind, "sync");
     assert_eq!(spec.role, "merge");
+    // Merge has no thinking-step key: the shared budget, whatever the label.
+    assert_eq!(spec.budget, rig.ctx.cfg.dispatch.budget);
     assert!(!spec.body.contains("pump-job-kind"), "{}", spec.body);
     assert!(spec.body.contains(MAIN) && spec.body.contains(BASE));
     assert_eq!(spec.target.as_deref(), Some("default"));

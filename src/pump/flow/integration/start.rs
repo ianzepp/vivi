@@ -5,6 +5,7 @@
 //! missing one is an error the tick reports.
 
 use crate::error::VivariumError;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::FAILED;
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::need_branch;
@@ -109,7 +110,15 @@ impl StepHandler for SyncStart {
             main = tips.main_tip,
             tip = tips.need_tip,
         );
-        let mut spec = role_job(cx.ctx, cx.run, step, "sync", &role.name, &brief);
+        let mut spec = role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "sync",
+            RoleKind::Merge,
+            &role.name,
+            &brief,
+        );
         spec.target = Some(tips.target.clone());
         spec.from_ref = Some(tips.need_tip);
         spec.branch = Some(format!(

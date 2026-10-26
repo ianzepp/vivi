@@ -6,6 +6,7 @@
 
 use crate::error::VivariumError;
 use crate::mailspace::shipped::RESEARCHER_ROLE;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -75,7 +76,15 @@ impl StepHandler for ResearcherStart {
             &thread,
             want_thread.as_deref(),
         );
-        let mut spec = outcome::role_job(cx.ctx, cx.run, step, "researcher", &role.name, &brief);
+        let mut spec = outcome::role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "researcher",
+            RoleKind::Researcher,
+            &role.name,
+            &brief,
+        );
         make_read_only(cx.ctx, &mut spec);
         Ok(StartAction::Job(Box::new(spec)))
     }

@@ -1,7 +1,7 @@
 //! A step's outcome and the contract of the handlers that start each class of step.
 
 use crate::error::VivariumError;
-use crate::pump::envelope::roles::Slice;
+use crate::pump::envelope::roles::{RoleKind, Slice};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::slice_dispatch::SliceMail;
@@ -69,13 +69,16 @@ pub trait StepHandler {
 }
 
 /// The pool job of a role step: id `step-<task>-a1`, bound to the step task,
-/// budget from the dispatch config. The tick adds the payload.
+/// budget resolved from the execution kind (`step_budgets` override for a
+/// thinking step, else the shared budget), never from the durable kind label
+/// or the role seat. The tick adds the payload.
 #[must_use]
 pub fn role_job(
     ctx: &Ctx,
     run: &RunRow,
     step: &StepRow,
     kind: &str,
+    execution: RoleKind,
     role: &str,
     brief: &str,
 ) -> JobSpec {
@@ -87,6 +90,6 @@ pub fn role_job(
         brief,
     );
     spec.task = Some(step.task.clone());
-    spec.budget = ctx.cfg.dispatch.budget;
+    spec.budget = ctx.cfg.dispatch.step_budget(execution);
     spec
 }
