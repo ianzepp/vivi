@@ -2,8 +2,9 @@
 //!
 //! The surface is deliberately narrow: each [`Action`] maps onto a letter or
 //! a pump control the pump already accepts (`vivi pump requeue|replan|
-//! answer|unlock|pause`, a need filed through `vivi pump send`, a letter to
-//! the operator). The mind never edits `.vivi`, git, or config directly.
+//! answer|unlock|pause`, a need filed through `vivi pump send`, an
+//! escalation letter to the operator). The mind never edits `.vivi`, git, or
+//! config directly.
 //!
 //! [`permit`] is a pure function of the configured stage, whether the
 //! operator paused the mind, and the per-need budget ledger, so the gate is
@@ -21,8 +22,6 @@ use super::config::{AuthorityStage, Budgets};
 pub enum Action {
     /// Read pump status, health and logs.
     ReadStatus,
-    /// Write a letter to the operator.
-    LetterToOperator,
     /// Escalate: a letter to the operator flagged as needing a decision.
     Escalate,
     /// `vivi pump pause` on one project.
@@ -51,7 +50,6 @@ impl Action {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReadStatus => "read-status",
-            Self::LetterToOperator => "letter-to-operator",
             Self::Escalate => "escalate",
             Self::PausePump => "pause-pump",
             Self::ResumePump => "resume-pump",
@@ -69,7 +67,7 @@ impl Action {
     #[must_use]
     pub fn required_stage(self) -> AuthorityStage {
         match self {
-            Self::ReadStatus | Self::LetterToOperator | Self::Escalate => AuthorityStage::Observe,
+            Self::ReadStatus | Self::Escalate => AuthorityStage::Observe,
             Self::PausePump
             | Self::ResumePump
             | Self::Requeue
@@ -95,10 +93,7 @@ impl Action {
     /// do not.
     #[must_use]
     pub fn mutates(self) -> bool {
-        !matches!(
-            self,
-            Self::ReadStatus | Self::LetterToOperator | Self::Escalate
-        )
+        !matches!(self, Self::ReadStatus | Self::Escalate)
     }
 }
 

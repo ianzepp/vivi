@@ -17,9 +17,8 @@ const CLOSE: &str = "untrusted>>>";
 const MAX_FIELD: usize = 2000;
 /// Every action a turn may name, in stage order; a wake lists the ones its
 /// stage opens.
-const ACTIONS: [Action; 10] = [
+const ACTIONS: [Action; 9] = [
     Action::ReadStatus,
-    Action::LetterToOperator,
     Action::Escalate,
     Action::PausePump,
     Action::ResumePump,

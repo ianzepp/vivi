@@ -192,7 +192,7 @@ fn calls_for(request: &ActionRequest) -> Result<Vec<Call>, String> {
                 json!({ "project": project, "file": "log", "lines": 40 }),
             ),
         ],
-        Action::LetterToOperator | Action::Escalate => vec![letter(&project, request)],
+        Action::Escalate => vec![letter(&project, request)],
         Action::FileFixNeed | Action::Upgrade | Action::SelfRelease => {
             return Err(format!(
                 "{} is not wired to the server yet",
