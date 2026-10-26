@@ -1,5 +1,7 @@
-//! The `pump_send`, `pump_list` and `pump_show` MCP tools: operator-only pump
-//! records on a hosted project, through the vivi library's record verbs.
+//! The `pump_send`, `pump_list` and `pump_show` MCP tools: pump records on a
+//! hosted project, through the vivi library's record verbs. `pump_send`
+//! stays operator-only; the reads take the operational rule, so the host's
+//! own member's Mind-kind seats read them too.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -70,6 +72,39 @@ fn fixture(name: &str) -> Fx {
 impl Fx {
     fn key_by(&self, member: &str, identity: Option<&str>) -> String {
         server_key(&self.state, &self.project, member, identity)
+    }
+
+    /// Add one role to the hosted mailspace with kind `kind`.
+    fn add_mind_role(&self, name: &str) {
+        Mailspace::open_root(self.root.clone())
+            .unwrap()
+            .add_role(
+                name,
+                RoleUpdate {
+                    kind: Some(Some("mind".into())),
+                    ..RoleUpdate::default()
+                },
+            )
+            .unwrap();
+    }
+
+    /// The canonical name of the one role of kind `kind` (case-insensitive):
+    /// the seat a Mind test acts as, found by kind and never by name.
+    fn seat_of_kind(&self, kind: &str) -> String {
+        let seats: Vec<String> = Mailspace::open_root(self.root.clone())
+            .unwrap()
+            .list_role_views()
+            .unwrap()
+            .into_iter()
+            .filter(|role| {
+                role.kind
+                    .as_deref()
+                    .is_some_and(|held| held.eq_ignore_ascii_case(kind))
+            })
+            .map(|role| role.name)
+            .collect();
+        assert_eq!(seats.len(), 1, "expected one role of kind {kind}");
+        seats[0].clone()
     }
 
     /// A need addressed to the pump identity (`mind`), as the pump reads them.
@@ -386,9 +421,19 @@ async fn a_key_that_is_not_the_operators_is_refused() {
     let fx = fixture("others");
     let need = fx.need("one");
     let hand = fx.key_by(&fx.member, Some("hand"));
-    for tool in TOOLS {
+    // `pump_send` keeps the operator-only rule; the reads take the wider
+    // operational rule and refuse a hand seat on it.
+    let message = fx
+        .refused(&hand, "pump_send", arguments_for("pump_send", &need))
+        .await;
+    assert!(message.contains("kind operator"), "{message}");
+    for tool in ["pump_list", "pump_show"] {
         let message = fx.refused(&hand, tool, arguments_for(tool, &need)).await;
-        assert!(message.contains("kind operator"), "{tool}: {message}");
+        assert!(
+            message.contains("kind mind or operator"),
+            "{tool}: {message}"
+        );
+        assert!(message.contains("of kind hand"), "{tool}: {message}");
     }
     fx.state
         .identities
@@ -405,6 +450,39 @@ async fn a_key_that_is_not_the_operators_is_refused() {
         assert!(message.contains("host's own member"), "{tool}: {message}");
     }
     assert!(fx.records(None).is_empty());
+}
+
+#[tokio::test]
+async fn a_mind_seat_reads_records_but_cannot_send() {
+    let fx = fixture("mind-reads");
+    fx.add_mind_role("steward");
+    let seat = fx.seat_of_kind("MiNd");
+    let key = fx.key_by(&fx.member, Some(&seat));
+    let need = fx.need("diagnose me");
+    let sent = fx
+        .call(
+            &fx.key_by(&fx.member, None),
+            "pump_send",
+            json!({"need": need, "body": "dispatch now"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    // The Mind seat reads what the pump was handed, found either way.
+    let listed = fx.call(&key, "pump_list", json!({})).await;
+    assert_eq!(listed["total"], 1, "{listed}");
+    assert_eq!(listed["records"][0]["handle"], handle.as_str());
+    let shown = fx.call(&key, "pump_show", json!({"handle": handle})).await;
+    assert_eq!(shown["need"], need.as_str());
+    assert!(shown["body"].as_str().unwrap().contains("dispatch now"));
+
+    // Sending stays the operator's: a Mind seat is refused and nothing is
+    // filed for the seat's own attempt.
+    let message = fx
+        .refused(&key, "pump_send", json!({"need": need, "body": "no"}))
+        .await;
+    assert!(message.contains("kind operator"), "{message}");
+    assert_eq!(fx.records(None).len(), 1);
 }
 
 #[tokio::test]

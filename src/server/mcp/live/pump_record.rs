@@ -1,15 +1,18 @@
-//! `pump_send`, `pump_list` and `pump_show`: operator-only pump records on a
-//! hosted project.
+//! `pump_send`, `pump_list` and `pump_show`: pump records on a hosted
+//! project.
 //!
 //! The same library calls the CLI's `vivi pump send|list|show` make
 //! ([`Mailspace::pump_send`], [`Mailspace::pump_list`],
 //! [`Mailspace::pump_show`]). A record is how a need is handed to the pump:
 //! `pump_send` files one open record, which the pump reads on its next tick.
 //!
-//! Authorization is `pump_control`'s (one shared check in `pump.rs`): an API
-//! key minted by the host's own member, acting as a role of kind `operator`.
-//! Unlike the CLI, the body is literal text only: the CLI's `-` (stdin) and
-//! `@path` forms would read the server's own files.
+//! Authorization: `pump_send` keeps `pump_control`'s operator-only rule (one
+//! shared check in `pump.rs`: an API key minted by the host's own member,
+//! acting as a role of kind `operator`). The reads `pump_list` and
+//! `pump_show` take the wider operational rule instead, so a Mind seat can
+//! diagnose an interrupted dispatch too. Unlike the CLI, the body is literal
+//! text only: the CLI's `-` (stdin) and `@path` forms would read the
+//! server's own files.
 
 use std::path::Path;
 
@@ -21,7 +24,7 @@ use crate::server::mcp::tools::{ToolError, opt_str, opt_usize, rate_limit, req_s
 use crate::server::safety::RateLimiter;
 
 use super::lib_error;
-use super::pump::{acting_key, authorize};
+use super::pump::{acting_key, authorize, authorize_operational};
 
 const LIST_DEFAULT: usize = 50;
 const LIST_MAX: usize = 100;
@@ -68,7 +71,8 @@ pub(in crate::server::mcp) fn pump_list(
         }
     };
     let limit = opt_usize(arguments, "limit", LIST_DEFAULT, LIST_MAX)?;
-    let hosted = authorize("pump_list", root, caller, requested)?;
+    // A read: the operational rule lets a Mind seat diagnose dispatches.
+    let hosted = authorize_operational("pump_list", root, caller, requested)?;
     let mut records = hosted.ms.pump_list(need, state).map_err(lib_error)?;
     let total = records.len();
     records.drain(..total.saturating_sub(limit));
@@ -90,7 +94,8 @@ pub(in crate::server::mcp) fn pump_show(
 ) -> Result<Value, ToolError> {
     let requested = acting_key("pump_show", "read pump records", acting)?;
     let handle = req_str(arguments, "handle")?;
-    let hosted = authorize("pump_show", root, caller, requested)?;
+    // A read: the operational rule lets a Mind seat diagnose dispatches.
+    let hosted = authorize_operational("pump_show", root, caller, requested)?;
     let (record, body) = hosted.ms.pump_show(handle).map_err(lib_error)?;
     let mut value = serde_json::to_value(&record).map_err(lib_error)?;
     value["body"] = Value::String(body);
