@@ -122,7 +122,9 @@ fn check_job(ctx: &Ctx, run: &RunRow, job: &PoolJob) {
     if job.held.is_some() {
         return;
     }
-    let waited = ctx.now().saturating_sub(job.queued_at);
+    // The wait starts at the later of queue time and the retry eligibility
+    // deadline, so intentional backoff before dispatch raises no alarm.
+    let waited = ctx.now().saturating_sub(job.queued_at.max(job.not_before));
     let limit = job.budget + GRACE_SECS;
     if waited > limit {
         raise_once(

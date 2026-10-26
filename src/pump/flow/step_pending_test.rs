@@ -190,6 +190,78 @@ fn a_pending_job_of_the_run_raises_past_its_budget_but_a_fresh_one_does_not()
 }
 
 #[test]
+fn a_job_before_its_retry_deadline_raises_nothing_until_eligible_and_ages_from_not_before()
+-> Result<(), VivariumError> {
+    let mut rig = rig("deferred")?;
+    rig.store
+        .set_step_state("P-deferred", StepState::Running, None)?;
+    rig.pending_job("deferred-job", "hand");
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "deferred-job".into(),
+            run: 1,
+            node: "plan".into(),
+            task: "P-deferred".into(),
+            attempt: 1,
+        },
+    )?;
+    // Intentional backoff: eligibility sits a full budget-plus-grace window
+    // past the queue time, so the queue-time age alone would already be over
+    // the limit.
+    let wait = past_limit(&rig);
+    if let Some(job) = rig.jobs.jobs.get_mut("deferred-job") {
+        job.not_before = rig.ctx.now() + wait;
+    }
+    rig.host.advance(wait);
+    rig.tick()?;
+    assert_eq!(rig.raised(), 0, "backoff before eligibility raises nothing");
+    rig.host
+        .advance(rig.ctx.cfg.dispatch.budget + GRACE_SECS + 1);
+    rig.tick()?;
+    assert_eq!(
+        rig.raised(),
+        1,
+        "age is measured from not_before, not queued_at"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_job_alarm_waits_for_budget_plus_grace_after_eligibility() -> Result<(), VivariumError> {
+    let mut rig = rig("deadline")?;
+    rig.store
+        .set_step_state("P-deadline", StepState::Running, None)?;
+    rig.pending_job("deadline-job", "hand");
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "deadline-job".into(),
+            run: 1,
+            node: "plan".into(),
+            task: "P-deadline".into(),
+            attempt: 1,
+        },
+    )?;
+    let wait = rig.ctx.cfg.dispatch.budget + GRACE_SECS;
+    if let Some(job) = rig.jobs.jobs.get_mut("deadline-job") {
+        job.not_before = rig.ctx.now() + wait;
+    }
+    rig.host.advance(wait);
+    rig.host.advance(wait);
+    rig.tick()?;
+    assert_eq!(
+        rig.raised(),
+        0,
+        "waited exactly budget plus grace past eligibility"
+    );
+    rig.host.advance(1);
+    rig.tick()?;
+    assert_eq!(rig.raised(), 1);
+    Ok(())
+}
+
+#[test]
 fn a_held_overdue_job_raises_no_step_pending() -> Result<(), VivariumError> {
     let mut rig = rig("held")?;
     rig.store
