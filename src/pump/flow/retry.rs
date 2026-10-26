@@ -19,6 +19,11 @@ use crate::pump::jobs::{JobOutcome, JobStatus, PoolJob};
 /// classified failure through: persist the intent, enqueue the replacement.
 pub(crate) mod policy;
 
+/// The shared publication safety gate a collector consults before any replay
+/// of a finished step job: whether the work's git side effect already
+/// landed, so no replacement may execute it again.
+pub(crate) mod publication;
+
 /// Provider-side transient failure: a dropped upstream connection, a rate
 /// limit or overload (HTTP 429 included), or a recoverable server/gateway
 /// response.
