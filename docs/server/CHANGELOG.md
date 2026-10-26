@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `vivi-server --help` and `--version` print the usage and the version and
+  exit. Before, every argument was ignored and the binary booted a server, so
+  an unattended `--help` started a second instance. Any other argument now
+  exits 2 with a usage hint instead of booting.
+- The README says `STORE_ENCRYPTION_KEY` is base64 of exactly 32 bytes.
+
 ## 2.3.2
 
 Pairs with vivi 21.3.2. `create_project` works on a host whose base defines

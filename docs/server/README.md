@@ -33,18 +33,22 @@ git clone https://github.com/ianzepp/vivi-server.git
 cd vivi-server
 PORT=8080 \
 DATA_DIR=./data \
-STORE_ENCRYPTION_KEY=<32-byte-key> \
+STORE_ENCRYPTION_KEY=$(openssl rand -base64 32) \
 MODERATION_TOKEN=<secret> \
 cargo run
 curl http://localhost:8080/healthz   # -> ok
 ```
+
+`vivi-server --help` lists the environment variables and `vivi-server
+--version` prints the version. The server takes no other arguments and refuses
+any it does not know.
 
 | Env var | Meaning |
 | --- | --- |
 | `BIND` | Listen address (default `0.0.0.0`); a tailnet-only host sets its tailnet IP |
 | `PORT` | Listen port |
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
-| `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
+| `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies: standard base64 of exactly 32 bytes (`openssl rand -base64 32`); a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
 | `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `delete_project`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
 | `HOST_PROJECTS_ROOT` | Project tools: existing directory that holds project roots (`<root>/<name>`) |

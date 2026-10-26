@@ -82,6 +82,21 @@ async fn healthz() -> Json<serde_json::Value> {
 
 #[tokio::main]
 async fn main() {
+    match vivi_server::cli::parse(std::env::args().skip(1)) {
+        Ok(vivi_server::cli::Invocation::Serve) => {}
+        Ok(vivi_server::cli::Invocation::Help) => {
+            print!("{}", vivi_server::cli::help_text());
+            return;
+        }
+        Ok(vivi_server::cli::Invocation::Version) => {
+            println!("{}", vivi_server::cli::version_line());
+            return;
+        }
+        Err(err) => {
+            eprintln!("vivi-server: {err}\nTry 'vivi-server --help'.");
+            std::process::exit(2);
+        }
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
