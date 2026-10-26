@@ -23,6 +23,7 @@ impl StepHandler for SliceStep {
         let brief = brief(cx)?;
         let spec = step_inputs::read_only_job(
             cx.ctx,
+            cx.store,
             cx.run,
             step,
             &NodeClass::Slicer,

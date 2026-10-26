@@ -30,6 +30,7 @@ impl StepHandler for PlannerStep {
         let brief = brief(cx, step)?;
         let spec = read_only_job(
             cx.ctx,
+            cx.store,
             cx.run,
             step,
             &NodeClass::Planner,

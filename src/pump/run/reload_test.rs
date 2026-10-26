@@ -15,6 +15,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::step_inputs;
 use crate::pump::host::{Ctx, FakeHost};
 use crate::pump::run::actor_string;
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const BASE_TOML: &str = concat!(
     "name = \"pump\"\n\n",
@@ -216,8 +217,11 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
     // The planner job is built through the real read-only role-job path and
     // captures the startup override.
     let (run, step) = run_row();
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).unwrap();
+    store.insert_run(&run).unwrap();
     let queued = step_inputs::read_only_job(
         &ctx,
+        &store,
         &run,
         &step,
         &NodeClass::Planner,
@@ -236,6 +240,7 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
 
     let fresh = step_inputs::read_only_job(
         &ctx,
+        &store,
         &run,
         &step,
         &NodeClass::Planner,
@@ -245,9 +250,16 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
     .unwrap();
     assert_eq!(fresh.budget, 151);
     // An omitted thinking-kind override follows the reloaded fallback.
-    let judge =
-        step_inputs::read_only_job(&ctx, &run, &step, &NodeClass::Judge, "auditor", "brief two")
-            .unwrap();
+    let judge = step_inputs::read_only_job(
+        &ctx,
+        &store,
+        &run,
+        &step,
+        &NodeClass::Judge,
+        "auditor",
+        "brief two",
+    )
+    .unwrap();
     assert_eq!(judge.budget, 233);
     assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 300);
 
