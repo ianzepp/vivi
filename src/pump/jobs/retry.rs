@@ -44,6 +44,7 @@ impl PoolJob {
             source_jobs: self.source_jobs.clone(),
             payload: self.payload.clone(),
             task: self.task.clone(),
+            not_before: self.not_before,
         }
     }
 }

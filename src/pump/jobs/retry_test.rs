@@ -46,6 +46,7 @@ fn dispatched_job(id: &str) -> PoolJob {
     spec.source_jobs = vec!["src-1".into()];
     spec.payload = serde_json::json!({"custom": 7});
     spec.task = Some("task-1".into());
+    spec.not_before = 123;
     let mut job = PoolJob::from(spec);
     job.queued_at = 100;
     job.pool = Some("alpha".into());
@@ -97,6 +98,7 @@ fn rerun_spec_copies_every_execution_input() {
         source_jobs: vec!["src-1".into()],
         payload: serde_json::json!({"custom": 7}),
         task: Some("task-1".into()),
+        not_before: 123,
     };
     assert_eq!(spec, expected);
 }

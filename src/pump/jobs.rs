@@ -99,6 +99,10 @@ pub struct JobSpec {
     /// An existing mailspace task this job runs on; dispatch then skips
     /// `task send` and the pool receives this task as it is.
     pub task: Option<String>,
+    /// Earliest epoch second dispatch may start this job; 0 means now. Retry
+    /// backoff stamps it so a failed job waits out its delay.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub not_before: u64,
 }
 
 impl JobSpec {
@@ -140,6 +144,7 @@ impl JobSpec {
             source_jobs: Vec::new(),
             payload: serde_json::Value::Object(serde_json::Map::new()),
             task: None,
+            not_before: 0,
         }
     }
 }
@@ -185,6 +190,11 @@ pub struct PoolJob {
     /// Creation time for pending/running status and retry diagnostics.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub queued_at: u64,
+    /// Earliest epoch second dispatch may start this job; 0 means now. Retry
+    /// backoff stamps it; jobs saved before the field existed read as 0 and
+    /// stay immediately eligible.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub not_before: u64,
     pub kind: String,
     pub role: String,
     pub subject: String,
@@ -252,6 +262,7 @@ impl From<JobSpec> for PoolJob {
         Self {
             id: spec.id,
             queued_at: unix_now(),
+            not_before: spec.not_before,
             kind: spec.kind,
             role: spec.role,
             subject: spec.subject,
@@ -419,6 +430,7 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.units == spec.units
         && job.source_jobs == spec.source_jobs
         && job.payload == spec.payload
+        && job.not_before == spec.not_before
         // A spec with no task matches a job whose task dispatch assigned later.
         && (spec.task.is_none() || job.task == spec.task)
 }

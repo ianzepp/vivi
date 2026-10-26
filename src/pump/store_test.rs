@@ -1,11 +1,12 @@
 //! Tests for [`crate::pump::store`]: schema, round trip, export, and the
 //! exception row.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 
 use tempfile::tempdir;
 
-use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
@@ -156,6 +157,49 @@ fn a_saved_state_round_trips() {
         back.extra.get("future").unwrap(),
         &serde_json::json!("kept")
     );
+}
+
+#[test]
+fn a_not_before_deadline_survives_save_and_reopen() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut state = State::default();
+    let mut spec = JobSpec::new(
+        String::from("delayed-1"),
+        String::from("reclaim"),
+        String::from("hand"),
+        String::from("reclaim u1"),
+        String::from("cleanup request"),
+    );
+    spec.not_before = 1_700_000_999;
+    crate::pump::jobs::enqueue(&mut state, spec).unwrap();
+    let mut store = PumpStore::open(&path).unwrap();
+    store.save(&state).unwrap();
+    drop(store);
+
+    let back = PumpStore::open(&path).unwrap().load().unwrap();
+    assert_eq!(back.jobs["delayed-1"].not_before, 1_700_000_999);
+    assert_eq!(back.jobs["delayed-1"].status, JobStatus::Pending);
+}
+
+#[test]
+fn a_job_saved_without_a_not_before_reads_as_immediately_eligible() {
+    // Written by a binary before eligibility deadlines existed: the jobs map
+    // carries no not_before key at all.
+    let old = r#"{"old-1":{"id":"old-1","queued_at":100,"kind":"merge","role":"merge","subject":"s","body":"b","pool_candidates":["primary"],"target":null,"from_ref":null,"branch":null,"budget":600,"read_only":false,"units":[],"payload":{},"pool":null,"dispatched_at":null,"status":"pending","outcome":null}}"#;
+    let jobs: BTreeMap<String, PoolJob> = serde_json::from_str(old).unwrap();
+    assert_eq!(jobs["old-1"].not_before, 0);
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut state = State::default();
+    state.jobs = jobs;
+    let mut store = PumpStore::open(&path).unwrap();
+    store.save(&state).unwrap();
+    drop(store);
+
+    let back = PumpStore::open(&path).unwrap().load().unwrap();
+    assert_eq!(back.jobs["old-1"].not_before, 0);
 }
 
 #[test]

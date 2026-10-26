@@ -9,7 +9,7 @@ use super::{
 };
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::fixture::ProbeHost;
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, Host, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
@@ -95,6 +95,7 @@ fn rich_job(id: &str) -> PoolJob {
     spec.source_jobs = vec!["src-1".into()];
     spec.payload = serde_json::json!({"custom": 7});
     spec.task = Some("task-1".into());
+    spec.not_before = 123;
     let mut job = PoolJob::from(spec);
     job.queued_at = 100;
     job.pool = Some("alpha".into());
@@ -146,6 +147,7 @@ fn retry_preserves_complete_dispatch_contract() {
     assert_eq!(replacement.source_jobs, job.source_jobs);
     assert_eq!(replacement.payload, job.payload);
     assert_eq!(replacement.task, job.task);
+    assert_eq!(replacement.not_before, job.not_before);
 
     // Replacement inputs serialize, so a later durable intent can persist one.
     let text = serde_json::to_string(&replacement).unwrap();
@@ -383,6 +385,116 @@ fn durable_merge_without_a_configured_fallback_stays_queued_without_sending_a_ta
             .iter()
             .any(|command| { command.contains("task send") || command.contains("pool dispatch") })
     );
+}
+
+/// Wire the fake host for a merge dispatch that always succeeds: one free
+/// primary slot, a created task, and an accepted dispatch.
+fn merge_replies(host: &Arc<FakeHost>) {
+    host.reply("pool status", 0, "slot primary bridge slot-1 free\n");
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 bridge slot-1 model/default unit/task\n",
+    );
+}
+
+/// A pending merge job eligible `offset` seconds from the fake clock.
+fn delayed_merge(id: &str, offset: i64, host: &FakeHost) -> PoolJob {
+    let mut job = PoolJob::from(JobSpec::new(
+        id,
+        "merge",
+        "merge",
+        "integrate",
+        "merge branches",
+    ));
+    job.not_before = (host.now() as i64 + offset) as u64;
+    job
+}
+
+#[test]
+fn a_job_is_dispatchable_at_its_not_before_second_but_not_one_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    merge_replies(&host);
+    let mut store = Store::default();
+    store
+        .jobs
+        .insert(String::from("b1"), delayed_merge("b1", 1, &host));
+
+    assert!(dispatch_pending(&ctx, &mut store).unwrap().is_empty());
+    assert_eq!(store.jobs["b1"].status, JobStatus::Pending);
+    assert_eq!(store.jobs["b1"].task, None);
+
+    host.advance(1);
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        [String::from("b1")]
+    );
+    assert_eq!(store.jobs["b1"].status, JobStatus::Dispatched);
+}
+
+#[test]
+fn a_deferred_job_takes_no_slot_or_dispatch_in_the_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    merge_replies(&host);
+    let mut store = Store::default();
+    store
+        .jobs
+        .insert(String::from("e1"), delayed_merge("e1", 0, &host));
+    store
+        .jobs
+        .insert(String::from("d1"), delayed_merge("d1", 60, &host));
+
+    // One free slot: the eligible job takes it, the deferred one waits
+    // without touching the pool or sending a task, and nothing sleeps.
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        [String::from("e1")]
+    );
+    assert_eq!(store.jobs["e1"].status, JobStatus::Dispatched);
+    assert_eq!(store.jobs["d1"].status, JobStatus::Pending);
+    assert_eq!(store.jobs["d1"].task, None);
+    assert_eq!(store.jobs["d1"].pool, None);
+    assert_eq!(
+        host.commands()
+            .iter()
+            .filter(|command| command.contains("task send"))
+            .count(),
+        1,
+        "only the eligible job sent a task"
+    );
+    assert_eq!(
+        host.commands()
+            .iter()
+            .filter(|command| command.contains("pool dispatch"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_job_saved_before_eligibility_existed_stays_immediately_eligible() {
+    // Written by a binary before not_before existed; the field reads as 0.
+    let old = r#"{"id":"old-1","queued_at":7,"kind":"merge","role":"merge","subject":"s","body":"b","pool_candidates":["primary"],"target":null,"from_ref":null,"branch":null,"budget":600,"read_only":false,"units":[],"payload":{},"pool":null,"dispatched_at":null,"status":"pending","outcome":null}"#;
+    let job: PoolJob = serde_json::from_str(old).unwrap();
+    assert_eq!(job.not_before, 0);
+
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    merge_replies(&host);
+    let mut store = Store::default();
+    store.jobs.insert(String::from("old-1"), job);
+
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        [String::from("old-1")]
+    );
+    assert_eq!(store.jobs["old-1"].status, JobStatus::Dispatched);
 }
 
 fn merge_routing(fallback: Option<&str>) -> RoleRouting {
