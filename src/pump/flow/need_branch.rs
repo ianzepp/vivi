@@ -125,23 +125,87 @@ pub fn record_base(
 }
 
 /// The tip of the need branch: for a `live` row, the remote tip of
-/// `vivi/need/<need>` on the row's target when the ref exists, else the base.
-/// `None` for no row or any other status.
+/// `vivi/need/<need>` on the row's target when the ref exists, else the
+/// recorded base once the resolution in [`observed_tip`] accepts it. `None`
+/// for no row or any other status.
 ///
 /// # Errors
-/// Returns [`VivariumError`] for an unknown target or a failed ls-remote.
+/// Returns [`VivariumError`] for an unknown target, unresolved accumulated
+/// work, or a failed ls-remote or store read.
 pub fn tip(ctx: &Ctx, store: &PumpStore, need: &str) -> Result<Option<String>, VivariumError> {
-    let Some(row) = store.need_branch(need)? else {
-        return Ok(None);
+    let observed = match store.need_branch(need)? {
+        Some(row) if row.status == LIVE => {
+            let target = target_ctx(ctx, &row.target)?;
+            ls_remote(&target, &format!("refs/heads/{}", row.branch))?
+        }
+        _ => None,
     };
+    observed_tip(ctx, store, need, observed)
+}
+
+/// Resolve the tip of the need branch of `need` from the caller's own remote
+/// observation of the branch ref. Shared by [`tip`] and the merge spec, which
+/// observe the ref themselves.
+///
+/// A published ref is returned unchanged. Fallback to the recorded base is
+/// allowed only for a genuinely unpublished branch with no expected merged
+/// work: the cross-run inventory ([`history::inventory`]) must hold no
+/// `merged` completion in any retained run. A `no-defect` completion is not
+/// published code and never requires publication. A moving row (`renaming`
+/// or `deleting`) is refused: the old branch is still in flight. Merged
+/// history with the ref absent is unresolved accumulated work — it lives in
+/// an archived prior or was lost — and is refused rather than silently
+/// answered with a fresh base/main checkout. A missing row with recorded
+/// merged history is refused too, so recorded work cannot pass for a new
+/// build. A missing row without merged history, a `fresh` row or a `pruned`
+/// row resolves to `None`.
+///
+/// # Errors
+/// Returns [`VivariumError`] for an unknown target, unresolved accumulated
+/// work, or a failed store read.
+pub(crate) fn observed_tip(
+    ctx: &Ctx,
+    store: &PumpStore,
+    need: &str,
+    observed: Option<String>,
+) -> Result<Option<String>, VivariumError> {
+    let Some(row) = store.need_branch(need)? else {
+        return rowless_tip(store, need);
+    };
+    if row.status == RENAMING || row.status == DELETING {
+        return Err(VivariumError::Other(format!(
+            "need branch of {need} is {}: the old branch is still being moved",
+            row.status
+        )));
+    }
     if row.status != LIVE {
         return Ok(None);
     }
-    let target = target_ctx(ctx, &row.target)?;
-    match ls_remote(&target, &format!("refs/heads/{}", row.branch))? {
-        Some(sha) => Ok(Some(sha)),
-        None => Ok(row.base),
+    target_ctx(ctx, &row.target)?;
+    if observed.is_some() {
+        return Ok(observed);
     }
+    let merged = history::inventory(store, need)?.merged();
+    if merged > 0 {
+        return Err(VivariumError::Other(format!(
+            "need branch of {need} is not published but {merged} merged slice(s) are recorded: \
+             the accumulated work is unresolved, not a fresh base"
+        )));
+    }
+    Ok(row.base.clone())
+}
+
+/// The tip of a need with no branch row: `None`, unless merged history is
+/// recorded, which a missing row must not disguise as a new build.
+fn rowless_tip(store: &PumpStore, need: &str) -> Result<Option<String>, VivariumError> {
+    let merged = history::inventory(store, need)?.merged();
+    if merged > 0 {
+        return Err(VivariumError::Other(format!(
+            "need {need} has no need-branch row but {merged} merged slice(s) are recorded: \
+             the accumulated work is unresolved"
+        )));
+    }
+    Ok(None)
 }
 
 /// The restart rule as a tick phase: for each live run whose need branch row

@@ -2,6 +2,7 @@
 //! and its slicer job brief carries the stored findings and failing output.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
@@ -14,7 +15,7 @@ use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -23,6 +24,8 @@ type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
+/// The published tip of the need branch: the merged slice:s1 lives there.
+const NEED_TIP: &str = "fedcba9876543210fedcba9876543210fedcba98";
 
 #[derive(Default)]
 struct Jobs {
@@ -53,6 +56,7 @@ impl StepHandler for Marker {
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    _host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     run: RunRow,
@@ -64,8 +68,18 @@ fn rig() -> Result<Rig, VivariumError> {
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let run = RunRow {
+        need: NEED.into(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "live".into(),
+    };
+    store.insert_run(&run)?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),
         branch: format!("vivi/need/{NEED}"),
@@ -75,20 +89,20 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    // The merged slice below is published code: advertise the branch tip so
+    // the run rows and the branch tell the same story.
+    host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{NEED_TIP}\trefs/heads/vivi/need/{NEED}\n"),
+    );
     Ok(Rig {
         _dir: dir,
         ctx,
+        _host: host,
         store,
         mail: FakeMail::new("mind"),
-        run: RunRow {
-            need: NEED.into(),
-            run: 1,
-            flow: "build".into(),
-            flow_version: 2,
-            kind: "build".into(),
-            entry: "plan".into(),
-            state: "live".into(),
-        },
+        run,
     })
 }
 

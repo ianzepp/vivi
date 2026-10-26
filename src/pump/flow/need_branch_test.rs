@@ -6,13 +6,14 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, branch, prior, record_base, register,
-    tip,
+    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, branch, observed_tip, prior,
+    record_base, register, tip,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT};
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::index::RunRow;
+use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -48,6 +49,47 @@ fn main_tip(host: &FakeHost, sha: &str) {
         0,
         &format!("{sha}\trefs/heads/main\n"),
     );
+}
+
+fn absent_branch(f: &Fixture) {
+    f.host.reply("ls-remote origin refs/heads/vivi/need/", 0, "");
+}
+
+fn branch_at(f: &Fixture, sha: &str) {
+    f.host.reply(
+        "ls-remote origin refs/heads/vivi/need/",
+        0,
+        &format!("{sha}\trefs/heads/vivi/need/{NEED}\n"),
+    );
+}
+
+fn seed_run(f: &Fixture, run: u32) {
+    f.store
+        .insert_run(&RunRow {
+            need: NEED.into(),
+            run,
+            flow: "build".into(),
+            flow_version: 2,
+            kind: "build".into(),
+            entry: "plan".into(),
+            state: "live".into(),
+        })
+        .unwrap();
+}
+
+fn seed_slice(f: &Fixture, run: u32, node: &str, task: &str, verdict: &str) {
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run,
+                node: node.into(),
+                task: task.into(),
+                state: StepState::Done,
+                verdict: Some(verdict.into()),
+            },
+        )
+        .unwrap();
 }
 
 fn row(status: &str, run: u32) -> NeedBranchRow {
@@ -151,11 +193,124 @@ fn tip_is_the_base_until_the_branch_is_pushed() {
 
 #[test]
 fn tip_is_none_unless_the_row_is_live() {
-    let f = fixture();
-    for status in [FRESH, RENAMING, DELETING, PRUNED] {
+    for status in [FRESH, PRUNED] {
+        let f = fixture();
         f.store.upsert_need_branch(&row(status, 1)).unwrap();
         assert_eq!(tip(&f.ctx, &f.store, NEED).unwrap(), None, "{status}");
     }
+    for status in [RENAMING, DELETING] {
+        let f = fixture();
+        f.store.upsert_need_branch(&row(status, 1)).unwrap();
+        let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+        assert!(err.to_string().contains("still being moved"), "{status}: {err}");
+    }
+}
+
+#[test]
+fn a_published_tip_is_returned_over_recorded_merged_history() {
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    start_run(&f, 1, "plan");
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_MERGED);
+    branch_at(&f, NEED_TIP);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(NEED_TIP)
+    );
+}
+
+#[test]
+fn same_run_merged_history_without_a_publication_is_refused() {
+    let f = fixture();
+    start_run(&f, 1, "plan");
+    main_tip(&f.host, MAIN_A);
+    record_base(&f.ctx, &f.store, NEED, 1, "default").unwrap();
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_MERGED);
+    absent_branch(&f);
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains("unresolved"), "{err}");
+    // Publishing the branch resolves the same history.
+    branch_at(&f, NEED_TIP);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(NEED_TIP)
+    );
+}
+
+#[test]
+fn archive_only_merged_history_without_a_publication_is_refused() {
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(2)).unwrap();
+    start_run(&f, 1, "plan");
+    start_run(&f, 2, "plan");
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_MERGED);
+    absent_branch(&f);
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains("unresolved"), "{err}");
+}
+
+#[test]
+fn no_defect_history_never_requires_publication() {
+    let f = fixture();
+    start_run(&f, 1, "plan");
+    start_run(&f, 2, "plan");
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_NO_DEFECT);
+    f.store.upsert_need_branch(&live_row(2)).unwrap();
+    absent_branch(&f);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(MAIN_A)
+    );
+}
+
+#[test]
+fn a_pruned_row_resolves_to_none_even_with_merged_history() {
+    let f = fixture();
+    start_run(&f, 1, "plan");
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_MERGED);
+    f.store.upsert_need_branch(&row(PRUNED, 1)).unwrap();
+    absent_branch(&f);
+    assert_eq!(tip(&f.ctx, &f.store, NEED).unwrap(), None);
+}
+
+#[test]
+fn merged_history_without_a_row_is_refused() {
+    let f = fixture();
+    start_run(&f, 1, "plan");
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_MERGED);
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains("no need-branch row"), "{err}");
+    // No-defect history is not published code: a missing row stays None.
+    let g = fixture();
+    start_run(&g, 1, "plan");
+    seed_slice(&g, 1, "slice:s1", "t-s1", VERDICT_NO_DEFECT);
+    assert_eq!(tip(&g.ctx, &g.store, NEED).unwrap(), None);
+}
+
+#[test]
+fn observed_tip_accepts_the_callers_observation() {
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    start_run(&f, 1, "plan");
+    seed_slice(&f, 1, "slice:s1", "t-s1", VERDICT_MERGED);
+    // The caller's observation is returned as the published tip.
+    assert_eq!(
+        observed_tip(&f.ctx, &f.store, NEED, Some(NEED_TIP.into()))
+            .unwrap()
+            .as_deref(),
+        Some(NEED_TIP)
+    );
+    // An absent observation over the same merged history is refused.
+    let err = observed_tip(&f.ctx, &f.store, NEED, None).unwrap_err();
+    assert!(err.to_string().contains("unresolved"), "{err}");
+    // An unknown target is refused even before the observation matters.
+    let other = NeedBranchRow {
+        target: "other".into(),
+        ..live_row(1)
+    };
+    f.store.upsert_need_branch(&other).unwrap();
+    let err = observed_tip(&f.ctx, &f.store, NEED, Some(NEED_TIP.into())).unwrap_err();
+    assert!(err.to_string().contains("unknown target other"), "{err}");
 }
 
 #[test]
@@ -170,6 +325,28 @@ fn an_ls_remote_failure_propagates() {
 // --- the restart phase ---------------------------------------------------
 
 const OLD_TIP: &str = "4444444444444444444444444444444444444444";
+
+#[test]
+fn a_tip_ls_remote_failure_propagates() {
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    f.host.reply("ls-remote", 128, "fatal: unable to access");
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains("ls-remote exit 128"), "{err}");
+}
+
+#[test]
+fn a_tip_for_an_unknown_target_is_refused() {
+    let f = fixture();
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            target: "other".into(),
+            ..live_row(1)
+        })
+        .unwrap();
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains("unknown target other"), "{err}");
+}
 
 #[derive(Default)]
 struct Jobs(BTreeMap<String, PoolJob>);
@@ -229,14 +406,6 @@ fn tick(f: &Fixture, jobs: &mut Jobs) {
     for phase in registry.phases() {
         phase.run(&f.ctx, jobs, &f.store, &mut mail).unwrap();
     }
-}
-
-fn old_branch_at(f: &Fixture, sha: &str) {
-    f.host.reply(
-        "ls-remote origin refs/heads/vivi/need/",
-        0,
-        &format!("{sha}\trefs/heads/vivi/need/{NEED}\n"),
-    );
 }
 
 fn finish(jobs: &mut Jobs, id: &str, status: JobStatus, receipt: &str) {
@@ -381,7 +550,7 @@ fn a_seeded_renaming_row_finishes_its_move_then_resets() {
     let f = with_merge_role(fixture());
     f.store.upsert_need_branch(&renaming_row(1)).unwrap();
     start_run(&f, 2, "plan");
-    old_branch_at(&f, OLD_TIP);
+    branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
 
     // The move job is missing, so recovery enqueues it again.
@@ -465,7 +634,7 @@ fn a_failed_rename_raises_once_and_leaves_the_row() {
     let f = with_merge_role(fixture());
     f.store.upsert_need_branch(&renaming_row(1)).unwrap();
     start_run(&f, 2, "slice");
-    old_branch_at(&f, OLD_TIP);
+    branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
     finish(
@@ -486,7 +655,7 @@ fn a_restart_without_a_merge_role_raises_and_changes_nothing() {
     let f = fixture();
     f.store.upsert_need_branch(&renaming_row(1)).unwrap();
     start_run(&f, 2, "plan");
-    old_branch_at(&f, OLD_TIP);
+    branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
     tick(&f, &mut jobs);
@@ -514,7 +683,7 @@ fn a_merge_role_without_a_pool_raises_and_enqueues_nothing() {
     };
     f.store.upsert_need_branch(&renaming_row(1)).unwrap();
     start_run(&f, 2, "plan");
-    old_branch_at(&f, OLD_TIP);
+    branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
     tick(&f, &mut jobs);
