@@ -51,10 +51,13 @@ fn read_only_wal_open_refuses_a_missing_shm_without_creating_it() {
     assert!(Storage::read_only_wal_index_missing(temp.path()));
     let before = fs::read(&db).unwrap();
 
-    let error = Storage::open_mailspace_connection_read_only(temp.path())
-        .err()
-        .unwrap()
-        .to_string();
+    let error = Storage::open_mailspace_connection_read_only(
+        temp.path(),
+        read_only::WalSidecarPolicy::ExistingSidecarOnly,
+    )
+    .err()
+    .unwrap()
+    .to_string();
     assert!(error.contains("mail.sqlite-shm"), "{error}");
     assert!(!shm.exists());
 

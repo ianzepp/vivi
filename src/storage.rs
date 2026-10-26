@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -175,16 +174,43 @@ impl Storage {
     }
 
     /// Open an existing mailspace database without creating the database or
-    /// migrating its schema. If a WAL-mode database lacks `-shm`, opening it
-    /// read-only would create that sidecar, so the open refuses it instead.
-    /// Read operations work as usual; any attempted write is rejected by
-    /// SQLite's read-only connection.
+    /// changing its contents or schema in any way. Read operations work as
+    /// usual; any attempted write is rejected by SQLite's read-only
+    /// connection.
+    ///
+    /// This wrapper keeps the historical strict sidecar policy: a WAL-mode
+    /// database whose `-shm` shared-memory index is missing is refused,
+    /// whatever the ownership, because the open itself would create that
+    /// coordination file. Only
+    /// [`Storage::open_mailspace_read_only_with_policy`] may permit it, and
+    /// only under an explicit policy.
     ///
     /// # Errors
-    /// Returns an error when the database is missing, unreadable, or the
-    /// connection cannot be configured.
+    /// Returns an error when the database is missing or unreadable, the
+    /// sidecar policy refuses the open, or the connection cannot be
+    /// configured.
     pub fn open_mailspace_read_only(mailspace_dir: &Path) -> Result<Self, VivariumError> {
-        let conn = Self::open_mailspace_connection_read_only(mailspace_dir)?;
+        Self::open_mailspace_read_only_with_policy(
+            mailspace_dir,
+            read_only::WalSidecarPolicy::ExistingSidecarOnly,
+        )
+    }
+
+    /// [`Storage::open_mailspace_read_only`] under an explicit WAL sidecar
+    /// policy. The database's contents and schema are still never created,
+    /// migrated, or written; a policy that permits a missing `-shm`
+    /// coordination file leaves its creation to SQLite, which then makes a
+    /// correctly owned sidecar.
+    ///
+    /// # Errors
+    /// Returns an error when the database is missing or unreadable, the
+    /// sidecar policy refuses the open, or the connection cannot be
+    /// configured.
+    pub(crate) fn open_mailspace_read_only_with_policy(
+        mailspace_dir: &Path,
+        policy: read_only::WalSidecarPolicy,
+    ) -> Result<Self, VivariumError> {
+        let conn = Self::open_mailspace_connection_read_only(mailspace_dir, policy)?;
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(|e| VivariumError::Other(format!("failed to set SQLite timeout: {e}")))?;
         Ok(Self {
@@ -194,44 +220,37 @@ impl Storage {
         })
     }
 
-    /// Open the database connection read-only after checking that a WAL
-    /// shared-memory sidecar already exists when the database needs one.
-    /// Readers that need custom queries (such as the monitor) use this same
-    /// guard instead of opening SQLite directly.
+    /// Open the database connection read-only after gating it behind the
+    /// caller's WAL sidecar policy. Readers that need custom queries (such
+    /// as the monitor) use this same boundary instead of opening SQLite
+    /// directly.
     ///
     /// # Errors
-    /// Returns an error when the database is missing, unreadable, or would
-    /// require creating the WAL shared-memory sidecar.
+    /// Returns an error when the database is missing or unreadable, when the
+    /// policy refuses the WAL shared-memory sidecar the open would create,
+    /// or when SQLite cannot open the file.
     pub(crate) fn open_mailspace_connection_read_only(
         mailspace_dir: &Path,
+        policy: read_only::WalSidecarPolicy,
     ) -> Result<Connection, VivariumError> {
         let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if Self::read_only_wal_index_missing(mailspace_dir) {
-            return Err(VivariumError::Other(
-                "read-only inspection unavailable: the WAL-mode mail store has no mail.sqlite-shm sidecar; refusing to create it".into(),
-            ));
-        }
+        read_only::guard_wal_sidecar(&db_path, policy)?;
         Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
             VivariumError::Other(format!("failed to open storage database read-only: {e}"))
         })
     }
 
     /// True when a read-only WAL open would need to create the missing
-    /// shared-memory index beside the database.
+    /// shared-memory index beside the database. Ownership-independent and
+    /// purely factual, for Doctor's skip reporting: it says nothing about
+    /// whether an open is permitted, which is the policy guard's decision.
+    ///
+    /// A database that cannot be inspected (missing, short, unreadable) is
+    /// reported as not missing the index; the strict opener refuses those
+    /// through its own error paths.
     #[must_use]
     pub(crate) fn read_only_wal_index_missing(mailspace_dir: &Path) -> bool {
-        let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if mailspace_dir
-            .join(format!("{MAILSPACE_DB_FILENAME}-shm"))
-            .exists()
-        {
-            return false;
-        }
-        let Ok(mut file) = fs::File::open(db_path) else {
-            return false;
-        };
-        let mut header = [0_u8; 20];
-        file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2
+        read_only::wal_index_missing(&mailspace_dir.join(MAILSPACE_DB_FILENAME)).unwrap_or(false)
     }
 
     fn open_with_db(mail_root: &Path, db_path: &Path) -> Result<Self, VivariumError> {
