@@ -38,6 +38,7 @@ fix_prefix  = "pumpfix"
 from        = "operator"
 to          = "hand"
 reply_from  = "mind"
+decision_to = "deputy"
 
 [pump.board]
 from         = ["operator@bd371d96.local"]
@@ -120,6 +121,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.from, "operator");
     assert_eq!(cfg.to, "hand");
     assert_eq!(cfg.reply_from, "mind");
+    assert_eq!(cfg.decision_to, "mind");
     assert_eq!(cfg.home, None);
     assert_eq!(cfg.repo, None);
     assert!(cfg.board.from.is_empty());
@@ -154,6 +156,18 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.merge.remote_limit, 1800);
     assert_eq!(cfg.dispatch_from(), "main");
     assert_eq!(cfg.reply_to(), "operator");
+}
+
+#[test]
+fn decision_to_defaults_to_mind_and_round_trips_an_override() {
+    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(cfg.decision_to, "mind", "an absent seat defaults to mind");
+    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\ndecision_to = \"deputy\"\n");
+    assert_eq!(cfg.decision_to, "deputy");
+    let text = toml::to_string(&cfg).expect("pump config should serialize");
+    assert!(text.contains("decision_to = \"deputy\""), "{text}");
+    let again: PumpConfig = toml::from_str(&text).expect("rewrite should parse");
+    assert_eq!(again.decision_to, "deputy", "a rewrite keeps the seat");
 }
 
 #[test]
@@ -202,6 +216,7 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.dispatch.lanes[1].model, "zai/glm-5.3-flash");
     assert_eq!(cfg.dispatch.lanes[1].cap, 10);
     assert_eq!(cfg.dispatch.default_kind, "plain");
+    assert_eq!(cfg.decision_to, "deputy");
     assert_eq!(cfg.dispatch.kinds["plain"].pools, ["fly4"]);
     assert_eq!(cfg.dispatch.kinds["full"].max, Some(2));
     assert!(cfg.dispatch.kinds["full"].skip_proof);

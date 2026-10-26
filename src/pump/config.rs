@@ -84,6 +84,11 @@ pub struct PumpConfig {
     pub to: String,
     /// Role that replies on need threads.
     pub reply_from: String,
+    /// Seat flow decisions route to: the role asked to judge, raise, or steer
+    /// when a flow reaches its decision point. Independent of `from` and
+    /// `reply_from`. Default `mind`; the seat must resolve to a role of kind
+    /// `mind` when a decision is made.
+    pub decision_to: String,
     /// Board pass settings (the `[pump.board]` table).
     pub board: BoardConfig,
     /// Planner settings (the `[pump.planner]` table).
@@ -131,6 +136,7 @@ impl Default for PumpConfig {
             from: "operator".into(),
             to: "hand".into(),
             reply_from: "mind".into(),
+            decision_to: "mind".into(),
             board: BoardConfig::default(),
             planner: PlannerConfig::default(),
             proof: ProofConfig::default(),
