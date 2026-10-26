@@ -14,14 +14,21 @@
 //!    model in the pool's `harness.models` is a model slug, not a band.
 //! 3. Model: `--model` wins; then the task front matter's `band` key; then the role's slug;
 //!    then the role's band, which must resolve through the pool's bands table
-//!    with [`choose`]. With `--model`, the reasoning is the first entry of
+//!    with [`choose`], or [`choose_eligible`] when eligibility is consulted.
+//!    With `--model`, the reasoning is the first entry of
 //!    the applicable band's list that names the same model, else none. A
 //!    role's slug takes the role's `thinking`, else the reasoning of the
 //!    first band entry (P0 to P5, any position) that names the slug, else
 //!    none.
 //!
-//! There is no failover, no health tracking and no retry on another model:
-//! the pool's first choice for a band is the only choice. [`standing_prompt`]
+//! A band choice is one weighted draw across the band's entries, sized by
+//! their `weight` (see [`crate::pool::bands`]): there is no primary with
+//! spares, no failover and no retry on another model. [`resolve`] is the
+//! eligibility-unaware half the router (`src/routing/pump_models.rs`)
+//! depends on; [`resolve_eligible`] consults the pool's [`Availability`]
+//! view instead: a band whose every entry is blocked waits, and a pinned
+//! model — an explicit `--model` or a role slug — waits when it is blocked
+//! rather than substituting another entry. [`standing_prompt`]
 //! builds the worker's standing prompt: the role's charter above the pool
 //! rules, with a note on how the slot reaches the mailspace.
 
@@ -29,7 +36,11 @@ use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::routing::resolve_read_only;
 
-use super::bands::{self, choose, parse_band};
+use super::bands::{
+    self,
+    availability::{Availability, Unavailable, WaitingReason},
+    choose_eligible, parse_band,
+};
 use super::config::PoolConfig;
 
 /// What the dispatch command knows about the role a task is addressed to,
@@ -98,14 +109,63 @@ pub struct Resolved {
     pub role: Option<String>,
 }
 
+/// What one dispatch decided: run now with the resolved model, or wait for
+/// the pool's models to become available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchResolution {
+    /// The dispatch has a model the pool harness offers and nothing blocks
+    /// it: run it.
+    Ready(Resolved),
+    /// Every model the dispatch could have used is blocked at the instant
+    /// its availability view answers at: wait, with the blocked slugs and
+    /// why.
+    Waiting(Unavailable),
+}
+
 /// Resolve one dispatch: read-only, band and model from the role, the body
-/// and the flags. Pure: no I/O and no CLI.
+/// and the flags. Pure: no I/O and no CLI. Eligibility-unaware: every
+/// configured model counts as available, which is the contract the router
+/// (`src/routing/pump_models.rs`) depends on; availability-aware callers
+/// use [`resolve_eligible`].
 ///
 /// # Errors
 /// Returns an error when the role's band string does not parse, when neither
 /// `--model` nor any band names a model, when the pool has nothing for the
 /// band, or when the chosen model is not one the pool harness offers.
 pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolved, VivariumError> {
+    match resolve_eligible(config, pool, input, &Availability::default())? {
+        DispatchResolution::Ready(resolved) => Ok(resolved),
+        // The default view blocks nothing, so a dispatch never waits on it.
+        DispatchResolution::Waiting(_) => {
+            unreachable!("the default availability view blocks no model")
+        }
+    }
+}
+
+/// Resolve one dispatch with eligibility: the same read-only, band and
+/// model precedence as [`resolve`], with the pool's availability view
+/// consulted wherever a model is actually chosen.
+///
+/// Band dispatch draws only among the band's entries that can take work at
+/// `availability` (see [`choose_eligible`]); when every entry of the band is
+/// blocked the dispatch waits rather than substitutes. A pinned model — an
+/// explicit `--model` or a role slug — stays pinned and waits when it is
+/// blocked; it never draws another entry. Genuine configuration errors stay
+/// errors: an invalid role band, an unserved band, a missing model and a
+/// model outside `harness.models` are refused even when availability is
+/// poor.
+///
+/// # Errors
+/// Returns the same errors [`resolve`] returns: the role's band string does
+/// not parse, neither `--model` nor any band names a model, the pool has
+/// nothing for the band, or the chosen model is not one the pool harness
+/// offers.
+pub fn resolve_eligible(
+    config: &PoolConfig,
+    pool: &str,
+    input: &Input,
+    availability: &Availability,
+) -> Result<DispatchResolution, VivariumError> {
     let band = resolve_band(config, input)?;
     let slug = role_slug(config, input.role);
     let (model, reasoning) = match input.model_flag {
@@ -114,19 +174,37 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
         }
         Some(flag) => (flag.to_string(), matching_reasoning(config, band, flag)),
         None => match (band, slug) {
-            (Some(band), _) => choose_pair(config, pool, band)?,
+            (Some(band), _) => {
+                let Some(choice) = choose_eligible(config, pool, band, availability)? else {
+                    return Ok(DispatchResolution::Waiting(waiting_band(
+                        config,
+                        availability,
+                        band,
+                    )));
+                };
+                (choice.model, Some(choice.reasoning))
+            }
             (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
             (None, None) => return Err(no_model(input.role)),
         },
     };
     check_model(config, &model)?;
-    Ok(Resolved {
+    // A pinned model — the flag, or a role slug with no band of its own —
+    // waits when it is blocked; it never substitutes another entry. A band
+    // draw already waited above when nothing was eligible.
+    if (input.model_flag.is_some() || band.is_none()) && !availability.model_available(&model) {
+        return Ok(DispatchResolution::Waiting(waiting_on(
+            availability,
+            [model.as_str()],
+        )));
+    }
+    Ok(DispatchResolution::Ready(Resolved {
         model,
         reasoning,
         band,
         read_only: is_read_only(input),
         role: input.role.map(|role| role.name.clone()),
-    })
+    }))
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release
@@ -265,14 +343,30 @@ fn slug_reasoning(config: &PoolConfig, slug: Option<(&str, &RoleFacts)>) -> Opti
     })
 }
 
-/// The pool's model and reasoning for `band`.
-fn choose_pair(
-    config: &PoolConfig,
-    pool: &str,
-    band: u8,
-) -> Result<(String, Option<String>), VivariumError> {
-    let choice = choose(config, pool, band)?;
-    Ok((choice.model, Some(choice.reasoning)))
+/// Why a band dispatch waits: every entry of the band's list is blocked at
+/// this instant, so the blocked set is the band's whole list.
+fn waiting_band(config: &PoolConfig, availability: &Availability, band: u8) -> Unavailable {
+    let models = config
+        .bands
+        .entries
+        .get(&format!("P{band}"))
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.model.as_str());
+    waiting_on(availability, models)
+}
+
+/// The [`Unavailable`] for `models`, every one of which the view blocks.
+/// Both callers consult availability first — a waiting band has no eligible
+/// entry and a waiting pinned model failed `model_available` — so the
+/// fallback (no blocker found) answers `ModelsUnavailable` with an empty
+/// set rather than inventing a reason or a deadline.
+fn waiting_on(availability: &Availability, models: impl IntoIterator<Item = &str>) -> Unavailable {
+    availability.unavailable(models).unwrap_or(Unavailable {
+        blocked_models: Vec::new(),
+        reason: WaitingReason::ModelsUnavailable,
+        until: None,
+    })
 }
 
 /// The reasoning of the first entry of the applicable band's list that names
