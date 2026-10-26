@@ -1,9 +1,11 @@
 //! Tests for the shared budget-retry helpers.
 
 use super::{
-    PAYLOAD_KEY, is_budget_kill, is_thinking, mark_retry, raised_budget, rerun_spec, spent,
+    PAYLOAD_KEY, is_budget_kill, is_thinking, mark_retry, raised_budget, rerun_spec, retry_budget,
+    spent,
 };
 use crate::pool::dispatch::BUDGET_RANGE;
+use crate::pump::envelope::correct::KIND;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 
@@ -56,6 +58,27 @@ fn budget_raise_respects_pool_limit() {
     assert_eq!(raised_budget(maximum + 1), None);
     // Doubling saturates and the input is out of range anyway.
     assert_eq!(raised_budget(u64::MAX), None);
+}
+
+#[test]
+fn retry_budget_refuses_corrections_and_spent_markers() {
+    // A missing marker means the retry is unspent: an ordinary killed job
+    // at a raiseable budget retries doubled, without reading configuration.
+    let mut ordinary = finished(KILL_SUMMARY);
+    ordinary.budget = 600;
+    assert_eq!(retry_budget(&ordinary), Some(1_200));
+    // A set marker spends the one retry; there is no second raise.
+    mark_retry(&mut ordinary.payload);
+    assert_eq!(retry_budget(&ordinary), None);
+    // Correction (envelope-fix) jobs keep their own budget policy.
+    let mut correction = finished(KILL_SUMMARY);
+    correction.kind = KIND.to_owned();
+    correction.budget = 600;
+    assert_eq!(retry_budget(&correction), None);
+    // A budget the pool cannot strictly raise leaves nothing to retry.
+    let mut capped = finished(KILL_SUMMARY);
+    capped.budget = *BUDGET_RANGE.end();
+    assert_eq!(retry_budget(&capped), None);
 }
 
 #[test]

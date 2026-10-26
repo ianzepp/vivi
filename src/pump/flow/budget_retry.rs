@@ -3,10 +3,13 @@
 //!
 //! A budget kill is machine evidence only — the pool's terminal timeout
 //! status, or a finished job whose bounded pool summary reports agent exit
-//! 124. Model prose, command output and receipt sections never count.
+//! 124. Model prose, command output and receipt sections never count. A
+//! killed thinking-role job gets one retry at [`retry_budget`] before the
+//! step counts as failed.
 
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::attempt_record;
+use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 
@@ -101,6 +104,20 @@ pub(crate) fn spent(job: &PoolJob) -> bool {
 pub(crate) fn raised_budget(saved_budget: u64) -> Option<u64> {
     let raised = saved_budget.saturating_mul(2).min(*BUDGET_RANGE.end());
     (BUDGET_RANGE.contains(&saved_budget) && raised > saved_budget).then_some(raised)
+}
+
+/// The raised budget a budget-killed `job` may retry with, or `None` when
+/// the retry is refused: correction (`envelope-fix`) jobs have their own
+/// budget policy, a job whose [`PAYLOAD_KEY`] marker is set has already
+/// spent its one retry, and [`raised_budget`] refuses budgets it cannot
+/// strictly raise. Reads no configuration; callers gate eligibility with
+/// the typed role kind.
+#[must_use]
+pub(crate) fn retry_budget(job: &PoolJob) -> Option<u64> {
+    if job.kind == correct::KIND || spent(job) {
+        return None;
+    }
+    raised_budget(job.budget)
 }
 
 /// Mark `payload` so [`spent`] reports the raised-budget retry as spent. A
