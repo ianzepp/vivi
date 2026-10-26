@@ -11,6 +11,13 @@ use super::config::PoolConfig;
 use super::config_bands::PoolBands;
 use crate::error::VivariumError;
 
+pub mod admission;
+pub mod availability;
+pub mod guard;
+pub mod provider_error;
+pub mod runtime;
+pub mod types;
+
 /// The speed suffixes a band string may carry. Parsed and ignored: the S
 /// axis does not yet change which model-and-reasoning pair serves a band.
 const SPEEDS: [&str; 4] = ["S0", "S1", "S2", "S3"];
