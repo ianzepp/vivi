@@ -6,14 +6,14 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, Readiness, branch, prior, readiness,
-    record_base, register, tip,
+    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, Readiness, WORK_UNREACHABLE, branch,
+    prior, readiness, record_base, register, tip,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::index::RunRow;
+use crate::pump::flow::index::{RunRow, StepRow, StepState, run_state};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -235,6 +235,142 @@ fn an_ls_remote_failure_propagates() {
     assert!(f.store.need_branch(NEED).unwrap().is_none());
 }
 
+// --- the checked tip policy ----------------------------------------------
+
+fn absent_branch(f: &Fixture) {
+    f.host
+        .reply("ls-remote origin refs/heads/vivi/need/", 0, "");
+}
+
+fn remote_queries(f: &Fixture) -> usize {
+    f.host
+        .commands()
+        .iter()
+        .filter(|command| command.contains("ls-remote"))
+        .count()
+}
+
+fn seed_run(f: &Fixture, run: u32, state: &str) {
+    f.store
+        .insert_run(&RunRow {
+            need: NEED.into(),
+            run,
+            flow: "build".into(),
+            flow_version: 2,
+            kind: "build".into(),
+            entry: "admit".into(),
+            state: state.into(),
+        })
+        .unwrap();
+}
+
+fn seed_slice(f: &Fixture, run: u32, node: &str, task: &str, verdict: &str) {
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run,
+                node: node.into(),
+                task: task.into(),
+                state: StepState::Done,
+                verdict: Some(verdict.into()),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn need_tip_refuses_missing_retained_work() {
+    // Merged work of a superseded run is active carried work: with the
+    // branch ref absent on the recorded target, the checkout is unreachable
+    // — never the base, never main.
+    let f = fixture();
+    seed_run(&f, 1, run_state::SUPERSEDED);
+    seed_run(&f, 2, run_state::LIVE);
+    seed_slice(&f, 1, "slice:a", "t-a", "merged");
+    let seeded = NeedBranchRow {
+        priors: Vec::new(),
+        ..live_row(2)
+    };
+    f.store.upsert_need_branch(&seeded).unwrap();
+    absent_branch(&f);
+    let outcome = tip(&f.ctx, &f.store, NEED);
+    assert!(
+        matches!(outcome, Err(VivariumError::Other(_))),
+        "{outcome:?}"
+    );
+    assert_eq!(alarms_of(&f, WORK_UNREACHABLE), 1, "the kind raises once");
+    assert_eq!(remote_queries(&f), 1, "one query on the recorded target");
+    // The stored row is untouched and no branch row was created.
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(seeded));
+
+    // A repeated read refuses again without re-raising.
+    let outcome = tip(&f.ctx, &f.store, NEED);
+    assert!(
+        matches!(outcome, Err(VivariumError::Other(_))),
+        "{outcome:?}"
+    );
+    assert_eq!(alarms_of(&f, WORK_UNREACHABLE), 1);
+    assert_eq!(remote_queries(&f), 2);
+
+    // Merged slices at or before the archival boundary are not active work:
+    // the recorded base stands.
+    let f = fixture();
+    seed_run(&f, 1, run_state::DONE);
+    seed_run(&f, 2, run_state::LIVE);
+    seed_slice(&f, 1, "slice:a", "t-a", "merged");
+    f.store.upsert_need_branch(&live_row(2)).unwrap();
+    absent_branch(&f);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(MAIN_A)
+    );
+    assert_eq!(alarms_of(&f, WORK_UNREACHABLE), 0);
+
+    // A query failure is not an absent ref: it propagates unchanged and
+    // raises no unreachable-work diagnostic.
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    f.host.reply("ls-remote", 128, "fatal: unable to access");
+    let outcome = tip(&f.ctx, &f.store, NEED);
+    assert!(
+        matches!(outcome, Err(VivariumError::Other(_))),
+        "{outcome:?}"
+    );
+    assert_eq!(alarms_of(&f, WORK_UNREACHABLE), 0);
+}
+
+#[test]
+fn unpublished_need_tip_uses_recorded_base() {
+    // The branch was never pushed and nothing merged: the base stands.
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    absent_branch(&f);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(MAIN_A)
+    );
+    assert_eq!(alarms_of(&f, WORK_UNREACHABLE), 0);
+
+    // Active no-defect-only history establishes no published merge: still
+    // the base. The row keeps no priors, so the slice is not archived.
+    let unarchived = NeedBranchRow {
+        priors: Vec::new(),
+        ..live_row(1)
+    };
+    f.store.upsert_need_branch(&unarchived).unwrap();
+    seed_run(&f, 1, run_state::LIVE);
+    seed_slice(&f, 1, "slice:a", "t-a", "no-defect");
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(MAIN_A)
+    );
+    assert_eq!(alarms_of(&f, WORK_UNREACHABLE), 0);
+    assert_eq!(remote_queries(&f), 2, "one query per read");
+    // The stored row is untouched.
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(unarchived));
+}
+
 // --- the restart phase ---------------------------------------------------
 
 const OLD_TIP: &str = "4444444444444444444444444444444444444444";
@@ -323,10 +459,14 @@ fn finish(jobs: &mut Jobs, id: &str, status: JobStatus, receipt: &str) {
 }
 
 fn alarms(f: &Fixture) -> usize {
+    alarms_of(f, RENAME_FAILED)
+}
+
+fn alarms_of(f: &Fixture, kind: &str) -> usize {
     std::fs::read_to_string(f.ctx.home.join("exceptions.txt"))
         .unwrap_or_default()
         .lines()
-        .filter(|line| line.contains(RENAME_FAILED))
+        .filter(|line| line.contains(kind))
         .count()
 }
 
