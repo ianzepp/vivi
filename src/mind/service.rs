@@ -34,12 +34,30 @@ pub enum TickOutcome {
     Failed(String),
 }
 
+/// Where a tick reads the time. Read once before the turn and again
+/// after it returns: a turn can run for minutes, and its wake must not
+/// end when it began.
+pub trait Clock: Send + Sync {
+    /// Seconds since the epoch.
+    fn now(&self) -> u64;
+}
+
+/// The wall clock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> u64 {
+        now()
+    }
+}
+
 /// Everything one tick reads besides the session.
 pub struct TickContext<'a, Q: Probe> {
     pub config: &'a MindConfig,
     pub registry: &'a Path,
     pub probe: &'a Q,
-    pub now: u64,
+    pub clock: &'a dyn Clock,
 }
 
 /// Run one wake evaluation and, when due, one autonomous turn.
@@ -51,12 +69,13 @@ pub async fn tick<P: PiSession, Q: Probe>(
     cx: &TickContext<'_, Q>,
     actuator: &mut dyn Actuator,
 ) -> Result<TickOutcome, VivariumError> {
+    let started = cx.clock.now();
     let state_path = &cx.config.paths.state;
     let state = store::load_at(state_path)?;
     let watched = super::projects::watched_at(cx.registry, &state.ignored)?;
     let signals: Vec<ProjectSignals> = watched.iter().map(|root| cx.probe.probe(root)).collect();
     let decision = wake::decide(&WakeInputs {
-        now: cx.now,
+        now: started,
         heartbeat: &cx.config.heartbeat,
         last: state.last_wake.as_ref(),
         recent: &state.recent_wakes,
@@ -72,7 +91,7 @@ pub async fn tick<P: PiSession, Q: Probe>(
             seen,
         } => (reasons, attempt, seen),
     };
-    let record = begin_wake(state_path, cx.now, attempt, seen)?;
+    let record = begin_wake(state_path, started, attempt, seen)?;
     let mut message = prompt::wake_prompt(cx.config.authority, &reasons, &signals);
     if let Some(report) = &state.pending_report {
         message = format!("{report}\n{message}");
@@ -112,11 +131,12 @@ fn finish_wake<Q: Probe>(
     watched: &[PathBuf],
     actuator: &mut dyn Actuator,
 ) -> Result<TickOutcome, VivariumError> {
+    let ended = cx.clock.now();
     let config = cx.config;
     let summary = match turn {
         Ok(summary) => summary,
         Err(error) => {
-            wake::finish(&mut record, false, cx.now);
+            wake::finish(&mut record, false, ended);
             store::update_at(&config.paths.state, |state| {
                 state.last_wake = Some(record);
                 Ok(())
@@ -127,8 +147,8 @@ fn finish_wake<Q: Probe>(
     };
     log_line(&config.paths.log, &format!("wake turn:\n{}", summary.text));
     let planned = store::update_at(&config.paths.state, |state| {
-        let planned = apply_envelope(config, state, &summary.text, watched, cx.now, actuator);
-        wake::finish(&mut record, true, cx.now);
+        let planned = apply_envelope(config, state, &summary.text, watched, ended, actuator);
+        wake::finish(&mut record, true, ended);
         state.last_wake = Some(record);
         state.pending_report = (!planned.is_empty()).then(|| prompt::plan_report(&planned));
         Ok(planned)
@@ -273,6 +293,7 @@ async fn wake_loop(
     shared: &Arc<Shared<ProcessPi>>,
 ) -> Result<(), VivariumError> {
     let registry = crate::registry::path()?;
+    let clock = SystemClock;
     let mut interval = tokio::time::interval(TICK);
     let mut stop = shared.shutdown.subscribe();
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -288,7 +309,7 @@ async fn wake_loop(
             config,
             registry: &registry,
             probe: &HealthProbe,
-            now: now(),
+            clock: &clock,
         };
         match tick(shared, &cx, &mut DryRun::default()).await {
             Ok(outcome) => tracing::debug!(?outcome, "mind tick"),

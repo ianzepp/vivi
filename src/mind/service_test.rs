@@ -2,6 +2,7 @@
 //! dirs, a fake probe, and the fake session.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use tempfile::tempdir;
 
@@ -10,6 +11,24 @@ use crate::mind::config::{AuthorityStage, MindPaths, parse};
 use crate::mind::pi::FakePi;
 
 const NOW: u64 = 5_000_000;
+
+struct TestClock(Mutex<u64>);
+
+impl TestClock {
+    fn fixed(at: u64) -> Self {
+        Self(Mutex::new(at))
+    }
+
+    fn advance(&self, secs: u64) {
+        *self.0.lock().unwrap() += secs;
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> u64 {
+        *self.0.lock().unwrap()
+    }
+}
 
 struct FakeProbe(Vec<ProjectSignals>);
 
@@ -71,11 +90,12 @@ async fn one_tick(
         fx.config.authority.as_str(),
         fx.config.paths.state.clone(),
     );
+    let clock = TestClock::fixed(now);
     let cx = TickContext {
         config: &fx.config,
         registry: &fx.registry,
         probe,
-        now,
+        clock: &clock,
     };
     let mut actuator = DryRun::default();
     let outcome = tick(&shared, &cx, &mut actuator).await.unwrap();
