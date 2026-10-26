@@ -14,13 +14,20 @@
 //!    model in the pool's `harness.models` is a model slug, not a band.
 //! 3. Model: `--model` wins; then the task front matter's `band` key; then the role's slug;
 //!    then the role's band, which must resolve through the pool's bands table
-//!    with [`choose`]. With `--model`, the band's reasoning is taken only
-//!    when the pool's choice for that band names the same model. A role's
-//!    slug takes the role's `thinking`, else the reasoning of the first band
-//!    entry (P0 to P5, any position) that names the slug, else none.
+//!    with [`choose`]. With `--model`, the reasoning is the first entry of
+//!    the requested band (P0 to P5) that names the model: a deterministic
+//!    lookup that never draws the band's choice, so it cannot lose its
+//!    reasoning to the draw. A role's slug takes the role's `thinking`, else
+//!    the reasoning of the first band entry (P0 to P5, any position) that
+//!    names the slug, else none.
 //!
-//! There is no failover, no health tracking and no retry on another model:
-//! the pool's first choice for a band is the only choice. [`standing_prompt`]
+//! Resolution here is configuration selection, not live admission: [`request`]
+//! decides what one dispatch asks for (a band, or a model pinned with its
+//! reasoning), and [`resolve`] admits the pool's current pair for a band
+//! with [`choose`]. There is no failover, no health tracking and no retry
+//! on another model: the pool's first choice for a band is the only choice.
+//! A live admission layer combines one [`Request`] with one admitted pair
+//! through [`Request::admitted`] without drawing again. [`standing_prompt`]
 //! builds the worker's standing prompt: the role's charter above the pool
 //! rules, with a note on how the slot reaches the mailspace.
 
@@ -28,7 +35,7 @@ use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::routing::resolve_read_only;
 
-use super::bands::{self, choose, parse_band};
+use super::bands::{self, Choice, choose, parse_band};
 use super::config::PoolConfig;
 
 /// What the dispatch command knows about the role a task is addressed to,
@@ -97,38 +104,131 @@ pub struct Resolved {
     pub role: Option<String>,
 }
 
+/// What one dispatch asks the pool for, decided from the role, the task
+/// body and the operator's flags before any pair is admitted: a band to
+/// choose from, or a model pinned with its reasoning already settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selection {
+    /// Take the pair the pool admits for this band.
+    Band(u8),
+    /// A model pinned by the operator's `--model` or a role slug, with the
+    /// reasoning already resolved: the role's `thinking`, else the first
+    /// matching band entry, else none.
+    Model {
+        /// Model slug the harness is run with.
+        model: String,
+        /// Reasoning effort the harness is run at, when one was resolved.
+        reasoning: Option<String>,
+    },
+}
+
+/// One dispatch's request: the selection plus the band, read-only mode and
+/// role metadata a [`Resolved`] carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    /// What the dispatch asks for: a band to choose from, or a pinned model.
+    pub selection: Selection,
+    /// The band the job runs at, when one was given. None for a role slug.
+    pub band: Option<u8>,
+    /// Whether the job publishes nothing.
+    pub read_only: bool,
+    /// The role the job serves, when the task has one.
+    pub role: Option<String>,
+}
+
+impl Request {
+    /// Combine this request with the one pair the pool admitted: a band
+    /// request takes the admitted pair as its own -- the draw [`choose`]
+    /// already made, never a second lookup -- and a pinned model keeps the
+    /// pair it was pinned with, so admission cannot take its reasoning
+    /// away. A band request combined with no admitted pair is refused.
+    ///
+    /// # Errors
+    /// Returns an error when a band request arrives with no admitted pair.
+    pub fn admitted(self, admitted: Option<Choice>) -> Result<Resolved, VivariumError> {
+        let (model, reasoning) = match (self.selection, admitted) {
+            (Selection::Band(_), Some(choice)) => (choice.model, Some(choice.reasoning)),
+            (Selection::Band(band), None) => {
+                return Err(VivariumError::Config(format!(
+                    "band P{band} admitted no model-and-reasoning pair"
+                )));
+            }
+            (Selection::Model { model, reasoning }, _) => (model, reasoning),
+        };
+        Ok(Resolved {
+            model,
+            reasoning,
+            band: self.band,
+            read_only: self.read_only,
+            role: self.role,
+        })
+    }
+}
+
+/// The request one dispatch makes, from the role, the body and the flags.
+/// Pure configuration selection: a pinned model is checked against the pool
+/// harness here, and nothing is admitted yet. Combine the result with one
+/// admitted pair through [`Request::admitted`] for the [`Resolved`] the
+/// routing callers see.
+///
+/// # Errors
+/// Returns an error when the role's band string does not parse, when neither
+/// `--model` nor any band names a model, or when a pinned model is not one
+/// the pool harness offers.
+pub fn request(config: &PoolConfig, input: &Input) -> Result<Request, VivariumError> {
+    let band = resolve_band(config, input)?;
+    let slug = role_slug(config, input.role);
+    let selection = match input.model_flag {
+        Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => Selection::Model {
+            model: slug_flag.to_string(),
+            reasoning: slug_reasoning(config, slug),
+        },
+        Some(flag) => Selection::Model {
+            model: flag.to_string(),
+            reasoning: explicit_reasoning(config, band, flag),
+        },
+        None => match (band, slug) {
+            (Some(band), _) => Selection::Band(band),
+            (None, Some(role)) => Selection::Model {
+                model: role.0.to_string(),
+                reasoning: slug_reasoning(config, Some(role)),
+            },
+            (None, None) => return Err(no_model(input.role)),
+        },
+    };
+    if let Selection::Model { model, .. } = &selection {
+        check_model(config, model)?;
+    }
+    Ok(Request {
+        selection,
+        band,
+        read_only: is_read_only(input),
+        role: input.role.map(|role| role.name.clone()),
+    })
+}
+
 /// Resolve one dispatch: read-only, band and model from the role, the body
-/// and the flags. Pure: no I/O and no CLI.
+/// and the flags. Pure: no I/O and no CLI. The [`request`] decides what the
+/// dispatch asks for; a band request draws the pool's pair with [`choose`]
+/// and admits it, a pinned model admits itself. Configuration selection
+/// only: no runtime capacity or health checks, no failover -- the pool's
+/// first choice for a band is the only choice.
 ///
 /// # Errors
 /// Returns an error when the role's band string does not parse, when neither
 /// `--model` nor any band names a model, when the pool has nothing for the
 /// band, or when the chosen model is not one the pool harness offers.
 pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolved, VivariumError> {
-    let band = resolve_band(config, input)?;
-    let slug = role_slug(config, input.role);
-    let (model, reasoning) = match input.model_flag {
-        Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => {
-            (slug_flag.to_string(), slug_reasoning(config, slug))
+    let requested = request(config, input)?;
+    let admitted = match &requested.selection {
+        Selection::Band(band) => {
+            let choice = choose(config, pool, *band)?;
+            check_model(config, &choice.model)?;
+            Some(choice)
         }
-        Some(flag) => (
-            flag.to_string(),
-            matching_reasoning(config, pool, band, flag),
-        ),
-        None => match (band, slug) {
-            (Some(band), _) => choose_pair(config, pool, band)?,
-            (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
-            (None, None) => return Err(no_model(input.role)),
-        },
+        Selection::Model { .. } => None,
     };
-    check_model(config, &model)?;
-    Ok(Resolved {
-        model,
-        reasoning,
-        band,
-        read_only: is_read_only(input),
-        role: input.role.map(|role| role.name.clone()),
-    })
+    requested.admitted(admitted)
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release
@@ -267,29 +367,19 @@ fn slug_reasoning(config: &PoolConfig, slug: Option<(&str, &RoleFacts)>) -> Opti
     })
 }
 
-/// The pool's model and reasoning for `band`.
-fn choose_pair(
-    config: &PoolConfig,
-    pool: &str,
-    band: u8,
-) -> Result<(String, Option<String>), VivariumError> {
-    let choice = choose(config, pool, band)?;
-    Ok((choice.model, Some(choice.reasoning)))
-}
-
-/// The band choice's reasoning when the pool's choice for the band names the
-/// same model as the flag, else none. A band the pool does not serve is not
-/// an error here: `--model` already names a model.
-fn matching_reasoning(
-    config: &PoolConfig,
-    pool: &str,
-    band: Option<u8>,
-    model: &str,
-) -> Option<String> {
-    let Ok(choice) = choose(config, pool, band?) else {
-        return None;
-    };
-    (choice.model == model).then_some(choice.reasoning)
+/// The reasoning of the first entry of the requested band that names
+/// `model`: a deterministic lookup in the band's list, independent of which
+/// entry [`choose`] admits. A band the pool does not serve is not an error
+/// here: `--model` already names a model.
+fn explicit_reasoning(config: &PoolConfig, band: Option<u8>, model: &str) -> Option<String> {
+    let key = band.map(|band| format!("P{band}"))?;
+    config
+        .bands
+        .entries
+        .get(&key)?
+        .iter()
+        .find(|entry| entry.model == model)
+        .map(|entry| entry.reasoning.clone())
 }
 
 /// The chosen model must be one the harness offers. The bands table is
