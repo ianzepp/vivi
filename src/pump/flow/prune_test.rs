@@ -1,4 +1,4 @@
-//! The prune phase: one cleanup job per ref a landed need owns.
+//! The prune phase: one cleanup job per owned ref per landing run.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -153,15 +153,15 @@ fn the_jobs_name_exactly_the_needs_refs() -> Result<(), VivariumError> {
     rig.tick()?;
     let ids: BTreeSet<&str> = rig.jobs.jobs.keys().map(String::as_str).collect();
     let want: BTreeSet<&str> = [
-        "prune-n1-vivi-need-n1",
-        "prune-n1-vivi-need-prior-n1-r1",
-        "prune-n1-vivi-unit-T1-a1",
-        "prune-n1-vivi-unit-T1-a2-s1",
-        "prune-n1-pump-merge-main-default-merge-main-M1-0123456789ab",
+        "prune-n1-r1-vivi-need-n1",
+        "prune-n1-r1-vivi-need-prior-n1-r1",
+        "prune-n1-r1-vivi-unit-T1-a1",
+        "prune-n1-r1-vivi-unit-T1-a2-s1",
+        "prune-n1-r1-pump-merge-main-default-merge-main-M1-0123456789ab",
     ]
     .into();
     assert_eq!(ids, want);
-    let job = &rig.jobs.jobs["prune-n1-vivi-unit-T1-a1"];
+    let job = &rig.jobs.jobs["prune-n1-r1-vivi-unit-T1-a1"];
     assert_eq!(job.command.as_deref(), Some("true"));
     assert_eq!(job.role, "merge");
     assert_eq!(job.from_ref.as_deref(), Some(SHA));
@@ -173,7 +173,7 @@ fn the_jobs_name_exactly_the_needs_refs() -> Result<(), VivariumError> {
     assert_eq!(job.target.as_deref(), Some("default"));
     assert_eq!(
         job.branch.as_deref(),
-        Some("vivi/ref-delete/prune-n1-vivi-unit-T1-a1")
+        Some("vivi/ref-delete/prune-n1-r1-vivi-unit-T1-a1")
     );
     let row = rig.store.need_branch(NEED)?.expect("row");
     assert_eq!(row.status, PRUNED);
@@ -187,7 +187,7 @@ fn a_repair_run_also_prunes_its_repair_branches() -> Result<(), VivariumError> {
     rig.remote_has(&["vivi/repair/n1-r1-a1", "vivi/repair/n2-r1-a1"]);
     rig.tick()?;
     let ids: Vec<&str> = rig.jobs.jobs.keys().map(String::as_str).collect();
-    assert_eq!(ids, ["prune-n1-vivi-repair-n1-r1-a1"]);
+    assert_eq!(ids, ["prune-n1-r1-vivi-repair-n1-r1-a1"]);
     Ok(())
 }
 
@@ -214,13 +214,16 @@ fn a_restarted_repair_need_prunes_the_refs_of_every_run() -> Result<(), Vivarium
     ]);
     rig.tick()?;
     let ids: BTreeSet<&str> = rig.jobs.jobs.keys().map(String::as_str).collect();
+    // The branch row still says run 1 (stale metadata); every identity comes
+    // from the newest done run (2), even for refs minted during run 1.
     let want: BTreeSet<&str> = [
-        "prune-n1-vivi-repair-n1-r1-a1",
-        "prune-n1-vivi-repair-n1-r1-a2",
-        "prune-n1-vivi-repair-n1-r2-a1",
+        "prune-n1-r2-vivi-repair-n1-r1-a1",
+        "prune-n1-r2-vivi-repair-n1-r1-a2",
+        "prune-n1-r2-vivi-repair-n1-r2-a1",
     ]
     .into();
     assert_eq!(ids, want);
+    assert!(ids.iter().all(|id| id.starts_with("prune-n1-r2-")));
     Ok(())
 }
 
@@ -257,6 +260,67 @@ fn a_live_run_or_a_missing_row_is_left_alone() -> Result<(), VivariumError> {
     Ok(())
 }
 
+#[test]
+fn cleanup_enqueue_is_idempotent_within_one_run() -> Result<(), VivariumError> {
+    let mut rig = rig()?;
+    let landing = RunRow {
+        need: NEED.into(),
+        run: 1,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "plan".into(),
+        state: "done".into(),
+    };
+    let relanding = RunRow {
+        run: 2,
+        ..landing.clone()
+    };
+    for _ in 0..2 {
+        super::enqueue_cleanup(
+            &rig.ctx,
+            &mut rig.jobs,
+            &landing,
+            "default",
+            "vivi/need/n1",
+            SHA,
+        )?;
+    }
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    let job = rig.jobs.jobs.values().next().expect("one job");
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.id, "prune-n1-r1-vivi-need-n1");
+    assert_eq!(
+        job.branch.as_deref(),
+        Some("vivi/ref-delete/prune-n1-r1-vivi-need-n1")
+    );
+    assert_eq!(job.delete_ref.as_deref(), Some("refs/heads/vivi/need/n1"));
+    assert_eq!(job.delete_expect.as_deref(), Some(SHA));
+    assert_eq!(job.from_ref.as_deref(), Some(SHA));
+    super::enqueue_cleanup(
+        &rig.ctx,
+        &mut rig.jobs,
+        &relanding,
+        "default",
+        "vivi/need/n1",
+        SHA,
+    )?;
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    let second = &rig.jobs.jobs["prune-n1-r2-vivi-need-n1"];
+    assert_eq!(second.status, JobStatus::Pending);
+    assert_eq!(
+        second.branch.as_deref(),
+        Some("vivi/ref-delete/prune-n1-r2-vivi-need-n1")
+    );
+    assert_eq!(
+        second.delete_ref.as_deref(),
+        Some("refs/heads/vivi/need/n1")
+    );
+    assert_eq!(second.delete_expect.as_deref(), Some(SHA));
+    assert_eq!(second.from_ref.as_deref(), Some(SHA));
+    Ok(())
+}
+
 fn ended(id: &str, status: JobStatus, receipt: &str) -> PoolJob {
     let mut spec = JobSpec::new(id, "prune", "merge", "prune", "body");
     spec.delete_ref = Some(String::from("refs/heads/vivi/unit/T1-a1"));
@@ -282,21 +346,32 @@ fn a_failed_cleanup_raises_the_alarm_once() -> Result<(), VivariumError> {
         ended("prune-n1-timeout", JobStatus::Timeout, ""),
         ended("prune-n1-bad", JobStatus::Finished, &mismatch),
         ended("prune-n1-ok", JobStatus::Finished, &deleted),
+        ended("prune-n1-r1-lost", JobStatus::Lost, ""),
+        ended("prune-n1-r1-timeout", JobStatus::Timeout, ""),
+        ended("prune-n1-r1-bad", JobStatus::Finished, &mismatch),
+        ended("prune-n1-r1-ok", JobStatus::Finished, &deleted),
         ended("other-lost", JobStatus::Lost, ""),
     ] {
         rig.jobs.jobs.insert(job.id.clone(), job);
     }
     rig.tick()?;
     let text = rig.exceptions();
-    assert_eq!(text.matches(PRUNE_FAILED).count(), 3, "{text}");
+    // One alarm per failed cleanup, legacy and run-scoped identities alike.
+    assert_eq!(text.matches(PRUNE_FAILED).count(), 6, "{text}");
     assert!(text.contains("prune-n1-lost") && text.contains("prune-n1-timeout"));
     assert!(text.contains("prune-n1-bad") && !text.contains("prune-n1-ok"));
+    assert!(text.contains("prune-n1-r1-lost") && text.contains("prune-n1-r1-timeout"));
+    assert!(text.contains("prune-n1-r1-bad") && !text.contains("prune-n1-r1-ok"));
     assert!(!text.contains("other-lost"));
     for id in [
         "prune-n1-lost",
         "prune-n1-timeout",
         "prune-n1-bad",
         "prune-n1-ok",
+        "prune-n1-r1-lost",
+        "prune-n1-r1-timeout",
+        "prune-n1-r1-bad",
+        "prune-n1-r1-ok",
     ] {
         assert!(rig.jobs.jobs[id].applied_at.is_some(), "{id}");
     }
@@ -306,6 +381,6 @@ fn a_failed_cleanup_raises_the_alarm_once() -> Result<(), VivariumError> {
         job.applied_at = None;
     }
     rig.tick()?;
-    assert_eq!(rig.exceptions().matches(PRUNE_FAILED).count(), 3);
+    assert_eq!(rig.exceptions().matches(PRUNE_FAILED).count(), 6);
     Ok(())
 }

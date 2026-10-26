@@ -1,11 +1,13 @@
-//! Pruning a landed need's branches, one cleanup job per ref.
+//! Pruning a landed need's branches, one cleanup job per owned ref per
+//! landing run.
 //!
 //! The landing terminal has no job store, so a tick phase over `done` runs
-//! enqueues the cleanup jobs instead: when a need's last run is done and its
+//! enqueues the cleanup jobs instead: when a need's newest run is done and its
 //! branch row is not yet `pruned`, every ref the need owns on the row's target
-//! gets one `prune-<need>-<ref>` job, and the row becomes `pruned`. A cleanup
-//! job that fails raises `flow-prune-failed` once; it is never retried and
-//! never reopens anything.
+//! gets one `prune-<need>-r<run>-<ref>` job, and the row becomes `pruned`.
+//! Scoping the identity to the landing run keeps a re-landing from colliding
+//! with the first landing's jobs. A cleanup job that fails raises
+//! `flow-prune-failed` once; it is never retried and never reopens anything.
 
 use std::collections::BTreeMap;
 
@@ -75,12 +77,15 @@ fn prune_need(
         return Ok(());
     }
     let runs = store.runs_of(need)?;
-    if runs.last().is_none_or(|run| run.state != run_state::DONE) {
+    let Some(landing) = runs.last() else {
+        return Ok(());
+    };
+    if landing.state != run_state::DONE {
         return Ok(());
     }
     let refs = owned_refs(ctx, store, &row, need, &runs)?;
     for (name, sha) in &refs {
-        enqueue_cleanup(ctx, st, need, &row.target, name, sha)?;
+        enqueue_cleanup(ctx, st, landing, &row.target, name, sha)?;
     }
     store.set_need_branch_status(need, PRUNED)
 }
@@ -159,11 +164,12 @@ fn list_remote(ctx: &Ctx, target: &str) -> Result<BTreeMap<String, String>, Viva
     Ok(refs)
 }
 
-/// Queue the delete of one ref as a merge-role command job.
+/// Queue the delete of one ref as a merge-role command job. The identity is
+/// scoped to the landing run, so each landing of a need owns its own jobs.
 fn enqueue_cleanup(
     ctx: &Ctx,
     st: &mut impl JobStore,
-    need: &str,
+    run: &RunRow,
     target: &str,
     name: &str,
     sha: &str,
@@ -177,7 +183,12 @@ fn enqueue_cleanup(
                 "cannot prune {name}: the merge role is missing or has no pool"
             ))
         })?;
-    let id = format!("{JOB_PREFIX}{need}-{}", name.replace('/', "-"));
+    let id = format!(
+        "{JOB_PREFIX}{}-r{}-{}",
+        run.need,
+        run.run,
+        name.replace("/", "-")
+    );
     let mut spec = JobSpec::new(
         id.clone(),
         "prune",
