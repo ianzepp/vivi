@@ -1,7 +1,7 @@
 //! Tests for [`crate::pump::run`]: the status file, the tick order, the
 //! flags, the lock, and the run/status entry points.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -14,8 +14,10 @@ use crate::pump::boardpass::BoardPass;
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
+use crate::pump::lock::PumpLock;
 use crate::pump::run::{
-    actor_string, ensure_repo, refresh_config, run, run_with, tick as run_tick, write_status,
+    actor_string, ensure_repo, lock_is_held, refresh_config, run, run_with, tick as run_tick,
+    write_status,
 };
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
@@ -322,9 +324,50 @@ fn a_second_instance_is_refused_by_the_lock() {
     let home = dir.path().join(".vivi").join("pump");
     fs::create_dir_all(&home).unwrap();
     let first = File::create(home.join("lock")).unwrap();
-    first.try_lock().unwrap();
+    let _owner = PumpLock::try_lock(first).unwrap();
     let err = run(dir.path(), true).unwrap_err();
     assert!(err.to_string().contains("another vivi pump is running"));
+}
+
+/// The lock probe never disturbs a live owner and never holds a free lock:
+/// a missing file stays missing, a held lock stays held, and a free lock
+/// stays free for the next independent acquisition.
+#[test]
+fn the_lock_probe_preserves_ownership_and_leaves_free_locks_free() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    // A missing lock file reports free without creating it.
+    assert!(!lock_is_held(&home).unwrap());
+    assert!(
+        !home.join("lock").exists(),
+        "the probe must not create the lock file"
+    );
+
+    // An active owner reports held; the probe must not release it, so an
+    // independently opened single-shot contender is still refused.
+    let path = home.join("lock");
+    let owner = PumpLock::try_lock(File::create(&path).unwrap()).unwrap();
+    assert!(lock_is_held(&home).unwrap());
+    let contender = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    assert!(
+        matches!(contender.try_lock(), Err(TryLockError::WouldBlock)),
+        "the probe left the held lock free"
+    );
+    drop(owner);
+
+    // A free existing file reports free and acquires immediately afterward.
+    assert!(!lock_is_held(&home).unwrap());
+    let next = File::create(&path).unwrap();
+    assert!(
+        next.try_lock().is_ok(),
+        "a free lock must admit the next contender right away"
+    );
 }
 
 #[test]

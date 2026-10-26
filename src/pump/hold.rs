@@ -6,7 +6,7 @@
 //! once` reports and exits cleanly. Neither exits with an error, so the
 //! service supervisor, which restarts a pump that dies, never loops on it.
 
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::control::{self, PumpControl, PumpMode};
 use crate::pump::host::{Host, RealHost};
+use crate::pump::lock::PumpLock;
 use crate::pump::readiness;
 use crate::routing::{self, Issue, Severity};
 
@@ -41,7 +42,7 @@ pub(crate) fn hold(
     issues: Vec<Issue>,
     control: PumpControl,
     mode: HoldMode,
-    lock: File,
+    lock: PumpLock,
 ) -> Result<(), VivariumError> {
     let host = RealHost::new(home);
     if mode.announce_ready {

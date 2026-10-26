@@ -15,6 +15,7 @@ use crate::pump::boardpass::BoardPass;
 use crate::pump::collect;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, RealHost, shell_quote};
+use crate::pump::lock::PumpLock;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::tick_steps;
@@ -532,16 +533,23 @@ fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
 
 /// Create `<home>/lock` and take the exclusive non-blocking flock.
 ///
+/// The caller owns the returned [`PumpLock`] until it drops it; dropping
+/// releases the lock explicitly, so a spawned child holding a duplicate of
+/// the descriptor cannot keep the pump locked out.
+///
 /// # Errors
 /// Returns an error naming the other pump when the lock is already held,
 /// and whatever creating the file fails with.
-fn take_lock(home: &Path) -> Result<File, VivariumError> {
-    let lock = File::create(home.join("lock"))?;
-    if lock.try_lock().is_err() {
-        return Err(VivariumError::Message(String::from(
-            "another vivi pump is running",
-        )));
-    }
+fn take_lock(home: &Path) -> Result<PumpLock, VivariumError> {
+    let file = File::create(home.join("lock"))?;
+    let lock = match PumpLock::try_lock(file) {
+        Ok(lock) => lock,
+        Err(_) => {
+            return Err(VivariumError::Message(String::from(
+                "another vivi pump is running",
+            )));
+        }
+    };
     Ok(lock)
 }
 
@@ -553,7 +561,13 @@ pub fn lock_is_held(home: &Path) -> Result<bool, VivariumError> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    Ok(lock.try_lock().is_err())
+    if lock.try_lock().is_err() {
+        return Ok(true);
+    }
+    // A successful probe owns the lock; release it explicitly so the file is
+    // free for the next contender instead of relying on the descriptor close.
+    lock.unlock()?;
+    Ok(false)
 }
 
 /// Replace the in-memory state with the contents of `<home>/pump.db`; stop the
