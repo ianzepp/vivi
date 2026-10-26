@@ -13,10 +13,13 @@ use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
+use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::budget_retry::{PAYLOAD_KEY, raised_budget};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::def::FlowKind;
+use crate::pump::flow::def::FlowNode;
+use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
@@ -689,25 +692,53 @@ fn envelope_fix_uses_config_and_defaults_to_300() -> R {
 
 #[test]
 fn raised_retry_preserves_execution_context() -> R {
-    let mut rig = rig()?;
+    // The stored budget (500) is distinct from the current configuration
+    // (333): the raised rerun doubles the stored job's budget, never a
+    // reload's or a configuration value.
+    let mut rig = rig_with(DispatchConfig {
+        budget: 333,
+        ..DispatchConfig::default()
+    })?;
     let step = rig.plan_step()?;
-    let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
+    let mut spec = JobSpec::new(
+        "plan-j1",
+        "planner",
+        "pump-planner",
+        "plan the slice",
+        "body",
+    );
     spec.task = Some(step.task.clone());
-    spec.branch = Some("vivi/repair/x".into());
-    spec.pool_candidates = vec!["alpha".into()];
-    spec.pool_exclude = vec!["refused".into()];
-    spec.extra_targets = vec!["side-repo".into()];
+    spec.target = Some("default".into());
     spec.from_ref = Some("refs/heads/from".into());
     spec.with = vec!["refs/heads/extra".into()];
-    spec.model = Some("model-old".into());
-    spec.command = Some("run.sh".into());
-    spec.builtin_role = Some("tugboat".into());
-    spec.publish_expect = Some("expect-sha".into());
-    spec.budget = 600;
+    spec.extra_targets = vec!["side-repo".into()];
+    spec.pool_candidates = vec!["alpha".into()];
+    spec.pool_exclude = vec!["refused".into()];
+    spec.local_only = true;
     spec.read_only = true;
+    spec.branch = Some("vivi/repair/x".into());
+    spec.allow_default_branch = true;
+    spec.publish_ref = Some("refs/heads/vivi/repair/x".into());
+    spec.publish_expect = Some("expect-sha".into());
+    spec.publish_contains = Some("contain-sha".into());
+    spec.delete_ref = Some("refs/heads/delete".into());
+    spec.delete_expect = Some("delete-sha".into());
+    spec.model = Some("model-q4".into());
+    spec.command = Some("harness.sh".into());
+    spec.builtin_role = Some("tugboat".into());
     spec.units = vec!["unit-1".into()];
+    spec.source_jobs = vec!["src-1".into()];
+    spec.budget = 500;
     spec.payload = serde_json::json!({"plan_file": "plan/one.md"});
     jobs::enqueue(&mut rig.jobs, spec)?;
+    // Runtime ownership on the killed job must not travel: make the
+    // original dirty before the kill collects.
+    let owned = rig.jobs.jobs.get_mut("plan-j1").unwrap();
+    owned.pool = Some("fast".into());
+    owned.dispatched_at = Some(11);
+    owned.dispatch_refusals = 2;
+    owned.held = Some("refused".into());
+    owned.status = JobStatus::Timeout;
     let row = StepJobRow {
         job: "plan-j1".into(),
         run: 1,
@@ -717,41 +748,59 @@ fn raised_retry_preserves_execution_context() -> R {
     };
     rig.store.insert_step_job(NEED, &row)?;
     let job = rig.jobs.jobs["plan-j1"].clone();
-    let raised = raised_budget(job.budget).expect("600 doubles inside the pool range");
-    let run = rig.store.runs_of(NEED)?.remove(0);
-    let decide = |_: &_, _: &_| Err(VivariumError::Message("no decision".into()));
+    let class = class_of(&rig, "plan")?;
     {
-        let mut cx = RunCx {
-            ctx: &rig.ctx,
-            st: &mut rig.jobs,
-            store: &rig.store,
-            mail: &mut rig.mail,
-            registry: &rig.registry,
-            decide: &decide,
-            def: rig.def.clone(),
-            run: run.clone(),
-        };
-        cx.rerun_budget(&job, &row, &step, raised)?;
+        let mut cx = run_cx(&mut rig);
+        RoleCollector.collect(&mut cx, &job, &row, &step, &class)?;
     }
 
     let queued = &rig.jobs.jobs["plan-j1-a2"];
-    // Only the budget rose; the planner's execution context is the copy's.
-    assert_eq!(queued.budget, raised);
-    assert_eq!(queued.model.as_deref(), Some("model-old"));
-    assert_eq!(queued.extra_targets, vec!["side-repo"]);
-    // Routing restrictions survive.
-    assert_eq!(queued.pool_candidates, vec!["alpha"]);
-    assert_eq!(queued.pool_exclude, vec!["refused"]);
-    // Refs survive.
-    assert_eq!(queued.with, vec!["refs/heads/extra"]);
+    assert_eq!(queued.id, "plan-j1-a2");
+    // Only the retry identity, the attempt, the raised budget and the
+    // spent marker differ: the stored 500 doubled, the configuration's
+    // 333 was never consulted.
+    assert_eq!(queued.budget, 1_000);
+    // Fresh pending runtime state: no pool ownership, timestamps, outcome,
+    // applied stamp, refusal count or held reason travels.
+    assert_eq!(queued.status, JobStatus::Pending);
+    assert_eq!(queued.pool, None);
+    assert_eq!(queued.dispatched_at, None);
+    assert_eq!(queued.outcome, None);
+    assert_eq!(queued.applied_at, None);
+    assert_eq!(queued.dispatch_refusals, 0);
+    assert_eq!(queued.held, None);
+    // Every execution input survives the copy.
+    assert_eq!(queued.kind, "planner");
+    assert_eq!(queued.role, "pump-planner");
+    assert_eq!(queued.subject, "plan the slice");
+    assert_eq!(queued.body, "body");
+    assert_eq!(queued.task.as_deref(), Some(step.task.as_str()));
+    assert_eq!(queued.target.as_deref(), Some("default"));
     assert_eq!(queued.from_ref.as_deref(), Some("refs/heads/from"));
-    // The charter, the command and the rest of the spec survive.
-    assert_eq!(queued.builtin_role.as_deref(), Some("tugboat"));
-    assert_eq!(queued.command.as_deref(), Some("run.sh"));
-    assert_eq!(queued.branch.as_deref(), Some("vivi/repair/x"));
-    assert_eq!(queued.publish_expect.as_deref(), Some("expect-sha"));
+    assert_eq!(queued.with, vec!["refs/heads/extra".to_owned()]);
+    assert_eq!(queued.extra_targets, vec!["side-repo".to_owned()]);
+    // Routing restrictions survive.
+    assert_eq!(queued.pool_candidates, vec!["alpha".to_owned()]);
+    assert_eq!(queued.pool_exclude, vec!["refused".to_owned()]);
+    assert!(queued.local_only);
     assert!(queued.read_only);
-    assert_eq!(queued.units, vec!["unit-1"]);
+    assert!(queued.allow_default_branch);
+    // Publication constraints survive.
+    assert_eq!(
+        queued.publish_ref.as_deref(),
+        Some("refs/heads/vivi/repair/x")
+    );
+    assert_eq!(queued.publish_expect.as_deref(), Some("expect-sha"));
+    assert_eq!(queued.publish_contains.as_deref(), Some("contain-sha"));
+    assert_eq!(queued.delete_ref.as_deref(), Some("refs/heads/delete"));
+    assert_eq!(queued.delete_expect.as_deref(), Some("delete-sha"));
+    // The model, the command and the built-in charter survive.
+    assert_eq!(queued.model.as_deref(), Some("model-q4"));
+    assert_eq!(queued.command.as_deref(), Some("harness.sh"));
+    assert_eq!(queued.builtin_role.as_deref(), Some("tugboat"));
+    assert_eq!(queued.branch.as_deref(), Some("vivi/repair/x"));
+    assert_eq!(queued.units, vec!["unit-1".to_owned()]);
+    assert_eq!(queued.source_jobs, vec!["src-1".to_owned()]);
     // The raised retry is marked durably; unrelated payload keys survive.
     assert_eq!(queued.payload[PAYLOAD_KEY], serde_json::json!(true));
     assert_eq!(
@@ -759,25 +808,37 @@ fn raised_retry_preserves_execution_context() -> R {
         serde_json::json!("plan/one.md")
     );
     // Same task and run, one incremented ordinary attempt.
-    assert_eq!(queued.task.as_deref(), Some(step.task.as_str()));
     let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
     assert_eq!(stored.run, row.run);
+    assert_eq!(stored.node, "plan");
     assert_eq!(stored.task, row.task);
     assert_eq!(stored.attempt, row.attempt + 1);
     assert_eq!(queued.payload["task"], serde_json::json!(stored.task));
     assert_eq!(queued.payload["run"], serde_json::json!(stored.run));
     assert_eq!(queued.payload["attempt"], serde_json::json!(stored.attempt));
-    // The step keeps running on the same run; no correction was queued.
+    assert_eq!(queued.payload["node"], serde_json::json!(stored.node));
+    // The step keeps running with no verdict; no correction was queued.
     assert_eq!(rig.plan_step()?.state, StepState::Running);
+    assert_eq!(rig.plan_step()?.verdict, None);
     assert!(!rig.jobs.jobs.contains_key("plan-j1-c1"));
+    // Repeating the collection on the still-killed original queues no
+    // duplicate: the raised attempt is already there.
+    {
+        let job = rig.jobs.jobs["plan-j1"].clone();
+        let mut cx = run_cx(&mut rig);
+        RoleCollector.collect(&mut cx, &job, &row, &step, &class)?;
+    }
+    assert_eq!(rig.jobs.jobs.len(), 2);
 
-    // The auditor's refs survive its raised rerun too.
+    // The auditor's routing restriction survives its raised rerun too.
     let audit_step = step_of(&mut rig, "audit1")?;
     let mut audit_spec = JobSpec::new("aud-j1", "auditor", "pump-auditor", "s", "b");
     audit_spec.task = Some(audit_step.task.clone());
     audit_spec.with = vec!["refs/heads/audit-ref".into()];
-    audit_spec.budget = 600;
+    audit_spec.local_only = true;
+    audit_spec.budget = 500;
     jobs::enqueue(&mut rig.jobs, audit_spec)?;
+    rig.jobs.jobs.get_mut("aud-j1").unwrap().status = JobStatus::Timeout;
     let audit_row = StepJobRow {
         job: "aud-j1".into(),
         run: 1,
@@ -787,26 +848,28 @@ fn raised_retry_preserves_execution_context() -> R {
     };
     rig.store.insert_step_job(NEED, &audit_row)?;
     let audit_job = rig.jobs.jobs["aud-j1"].clone();
-    let mut cx = RunCx {
-        ctx: &rig.ctx,
-        st: &mut rig.jobs,
-        store: &rig.store,
-        mail: &mut rig.mail,
-        registry: &rig.registry,
-        decide: &decide,
-        def: rig.def.clone(),
-        run,
-    };
-    cx.rerun_budget(&audit_job, &audit_row, &audit_step, raised)?;
-
-    // Repeating the same request queues no duplicate work.
-    cx.rerun_budget(&job, &row, &step, raised)?;
-    cx.rerun_budget(&audit_job, &audit_row, &audit_step, raised)?;
-    assert_eq!(rig.jobs.jobs.len(), 4);
+    let audit_class = class_of(&rig, "audit1")?;
+    {
+        let mut cx = run_cx(&mut rig);
+        RoleCollector.collect(&mut cx, &audit_job, &audit_row, &audit_step, &audit_class)?;
+    }
     assert_eq!(
         rig.jobs.jobs["aud-j1-a2"].with,
-        vec!["refs/heads/audit-ref"]
+        vec!["refs/heads/audit-ref".to_owned()]
     );
+    assert!(rig.jobs.jobs["aud-j1-a2"].local_only);
+    assert_eq!(rig.jobs.jobs["aud-j1-a2"].budget, 1_000);
+
+    // A literal replay of the same raised requests queues no duplicate
+    // work: one raised attempt per killed job, nothing more.
+    {
+        let job = rig.jobs.jobs["plan-j1"].clone();
+        let audit_job = rig.jobs.jobs["aud-j1"].clone();
+        let mut cx = run_cx(&mut rig);
+        RoleCollector.collect(&mut cx, &job, &row, &step, &class)?;
+        RoleCollector.collect(&mut cx, &audit_job, &audit_row, &audit_step, &audit_class)?;
+    }
+    assert_eq!(rig.jobs.jobs.len(), 4);
     assert_eq!(rig.store.step_job("plan-j1-a2")?.unwrap().attempt, 2);
     assert_eq!(rig.store.step_job("aud-j1-a2")?.unwrap().attempt, 2);
     Ok(())
@@ -936,5 +999,319 @@ fn correction_budget_kill_does_not_rerun_the_role() -> R {
         assert!(!rig.jobs.jobs.contains_key("plan-j1-c2"), "{name}");
         assert!(rig.exceptions().is_empty(), "{name}");
     }
+    Ok(())
+}
+
+/// A budget kill's two pool representations.
+#[derive(Debug)]
+enum Kill {
+    /// The pool's terminal timeout status.
+    Timeout,
+    /// A finished job whose bounded pool summary reports agent exit 124.
+    /// The receipt also carries a valid partial envelope, so a skipped
+    /// budget-kill classification would parse it and advance the step
+    /// instead of retrying.
+    Finished,
+}
+
+/// Every thinking class of the build flow: the node to collect, its role
+/// as the job names it, and a valid partial envelope for the class (it
+/// parses cleanly, so only the kill decides the collection).
+const THINKING: &[(&str, &str, &str)] = &[
+    ("research", "researcher", "answer = \"READY\""),
+    ("plan", "planner", "answer = \"planned\""),
+    ("admit1", "admitter", "answer = \"admitted\""),
+    (
+        "slice",
+        "slicer",
+        "answer = \"sliced\"\n[[slice]]\nid = \"s1\"\ntitle = \"t\"\nbrief = \"b\"\ntarget = \"default\"",
+    ),
+    ("audit1", "auditor", "answer = \"clean_pass\""),
+    ("judge1", "judge", "answer = \"block\"\nreason = \"r\""),
+    ("cto", "cto", "answer = \"lock\"\nreason = \"r\""),
+];
+
+/// The decision callback of these tests: it refuses, so a stray routing
+/// decision fails the test instead of passing silently.
+fn refuse_decision(_: &FlowNode, _: &[JoinInput]) -> Result<String, VivariumError> {
+    Err(VivariumError::Message("no decision".into()))
+}
+
+/// A fresh [`RunCx`] over `rig`'s run; the decision callback refuses, so a
+/// stray routing decision fails the test instead of passing silently.
+fn run_cx(rig: &mut Rig) -> RunCx<'_, Jobs, FakeMail> {
+    RunCx {
+        ctx: &rig.ctx,
+        st: &mut rig.jobs,
+        store: &rig.store,
+        mail: &mut rig.mail,
+        registry: &rig.registry,
+        decide: &refuse_decision,
+        def: rig.def.clone(),
+        run: rig
+            .store
+            .runs_of(NEED)
+            .expect("the rig stores its run")
+            .remove(0),
+    }
+}
+
+/// The build flow's class of `node`.
+fn class_of(rig: &Rig, node: &str) -> Result<NodeClass, VivariumError> {
+    rig.def
+        .nodes
+        .iter()
+        .find(|n| n.id == node)
+        .map(|n| n.class.clone())
+        .ok_or_else(|| VivariumError::Message(format!("no {node} node in the build flow")))
+}
+
+/// Queue `id` as the first attempt of `node` at `budget`, mark it killed
+/// per `kill`, and collect it through the real [`RoleCollector`] path.
+/// Returns the collected step; everything else is read off `rig`.
+fn collect_killed(
+    rig: &mut Rig,
+    id: &str,
+    node: &str,
+    budget: u64,
+    kill: Kill,
+) -> Result<StepRow, VivariumError> {
+    let step = step_of(rig, node)?;
+    let role = THINKING
+        .iter()
+        .find(|(n, _, _)| *n == node)
+        .map(|(_, role, _)| *role)
+        .ok_or_else(|| VivariumError::Message(format!("{node} is not a thinking node")))?;
+    let mut spec = JobSpec::new(id, role, role, "s", "b");
+    spec.task = Some(step.task.clone());
+    spec.from_ref = Some("main".into());
+    spec.budget = budget;
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    let job = rig.jobs.jobs.get_mut(id).unwrap();
+    match kill {
+        Kill::Timeout => job.status = JobStatus::Timeout,
+        Kill::Finished => {
+            job.status = JobStatus::Finished;
+            let envelope = THINKING
+                .iter()
+                .find(|(n, _, _)| *n == node)
+                .map(|(_, _, envelope)| *envelope)
+                .unwrap_or_default();
+            job.outcome = Some(JobOutcome {
+                state: "finished".into(),
+                detail: String::new(),
+                receipt: format!("{KILL_SUMMARY}\n\n--- receipt\n{envelope}"),
+                at: 0,
+            });
+        }
+    }
+    let row = StepJobRow {
+        job: id.into(),
+        run: 1,
+        node: node.into(),
+        task: step.task.clone(),
+        attempt: 1,
+    };
+    rig.store.insert_step_job(NEED, &row)?;
+    let job = rig.jobs.jobs[id].clone();
+    let class = class_of(rig, node)?;
+    let mut cx = run_cx(rig);
+    RoleCollector.collect(&mut cx, &job, &row, &step, &class)?;
+    rig.store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|s| s.node == node)
+        .ok_or_else(|| VivariumError::Message("step gone".into()))
+}
+
+#[test]
+fn first_budget_kill_retries_once_at_raised_budget() -> R {
+    // Every thinking class, in both kill representations: the stored job
+    // budget (500) is distinct from the current configuration (333), so
+    // the raised rerun can only be the stored budget's double.
+    for &(node, _, _) in THINKING {
+        for kill in [Kill::Timeout, Kill::Finished] {
+            let name = format!("{node} {kill:?}");
+            let mut rig = rig_with(DispatchConfig {
+                budget: 333,
+                ..DispatchConfig::default()
+            })?;
+            let step = collect_killed(&mut rig, "j1", node, 500, kill)?;
+            // The step is neither answered nor routed: it keeps running
+            // with no verdict, no cto route, no new run and no exception.
+            assert_eq!(step.state, StepState::Running, "{name}");
+            assert_eq!(step.verdict, None, "{name}");
+            let mut expected: Vec<String> = vec!["plan".to_owned(), "sentinel".to_owned()];
+            if node != "plan" {
+                expected.push(node.to_owned());
+            }
+            expected.sort();
+            let mut nodes: Vec<String> = rig
+                .store
+                .steps_of(NEED, 1)?
+                .into_iter()
+                .map(|s| s.node)
+                .collect();
+            nodes.sort();
+            assert_eq!(nodes, expected, "{name}");
+            assert_eq!(rig.store.runs_of(NEED)?.len(), 1, "{name}");
+            assert!(rig.exceptions().is_empty(), "{name}");
+            // Exactly one pending rerun, raised to the stored budget's
+            // double (1000, not the configuration's 333 or 600).
+            assert_eq!(rig.jobs.jobs.len(), 2, "{name}");
+            let queued = &rig.jobs.jobs["j1-a2"];
+            assert_eq!(queued.status, JobStatus::Pending, "{name}");
+            assert_eq!(queued.budget, 1_000, "{name}");
+            // The rerun is durably marked as the spent budget retry.
+            assert_eq!(
+                queued.payload[PAYLOAD_KEY],
+                serde_json::json!(true),
+                "{name}"
+            );
+            assert_eq!(queued.task.as_deref(), Some(step.task.as_str()), "{name}");
+            // Next-row accounting: the same task and run at the next
+            // attempt, stamped into the payload.
+            let stored = rig.store.step_job("j1-a2")?.unwrap();
+            assert_eq!(stored.run, 1, "{name}");
+            assert_eq!(stored.node, node, "{name}");
+            assert_eq!(stored.task, step.task, "{name}");
+            assert_eq!(stored.attempt, 2, "{name}");
+            assert_eq!(
+                queued.payload["attempt"],
+                serde_json::json!(stored.attempt),
+                "{name}"
+            );
+            assert_eq!(
+                queued.payload["run"],
+                serde_json::json!(stored.run),
+                "{name}"
+            );
+            assert_eq!(
+                queued.payload["task"],
+                serde_json::json!(stored.task),
+                "{name}"
+            );
+            assert_eq!(
+                queued.payload["node"],
+                serde_json::json!(stored.node),
+                "{name}"
+            );
+            // No correction and no second automatic execution.
+            assert!(!rig.jobs.jobs.contains_key("j1-c1"), "{name}");
+            assert!(!rig.jobs.jobs.contains_key("j1-a3"), "{name}");
+            // Repeating the collection is idempotent: the raised rerun is
+            // already queued, so the repeat queues no duplicate and leaves
+            // the stored attempt alone.
+            {
+                let job = rig.jobs.jobs["j1"].clone();
+                let row = rig.store.step_job("j1")?.unwrap();
+                let class = class_of(&rig, node)?;
+                let mut cx = run_cx(&mut rig);
+                RoleCollector.collect(&mut cx, &job, &row, &step, &class)?;
+            }
+            assert_eq!(rig.jobs.jobs.len(), 2, "{name}");
+            assert_eq!(rig.store.step_job("j1-a2")?.unwrap().attempt, 2, "{name}");
+            let after = rig
+                .store
+                .steps_of(NEED, 1)?
+                .into_iter()
+                .find(|s| s.node == node)
+                .ok_or_else(|| VivariumError::Message("step gone".into()))?;
+            assert_eq!(after.state, StepState::Running, "{name}");
+            assert_eq!(after.verdict, None, "{name}");
+            // Settled like the tick settles a collected job: the killed
+            // original is applied, the raised rerun is not.
+            assert!(jobs::mark_applied(&mut rig.jobs, "j1", 7), "{name}");
+            assert_eq!(rig.jobs.jobs["j1"].applied_at, Some(7), "{name}");
+            assert_eq!(rig.jobs.jobs["j1-a2"].applied_at, None, "{name}");
+        }
+    }
+    // The cap: a stored budget whose double passes the pool ceiling
+    // raises once, to the ceiling itself, never to an invalid budget.
+    let mut rig = rig_with(DispatchConfig {
+        budget: 333,
+        ..DispatchConfig::default()
+    })?;
+    let step = collect_killed(&mut rig, "j1", "plan", 30_000, Kill::Timeout)?;
+    assert_eq!(step.state, StepState::Running);
+    let queued = &rig.jobs.jobs["j1-a2"];
+    assert_eq!(queued.budget, 43_200);
+    assert_eq!(queued.budget, raised_budget(30_000).unwrap());
+    assert_eq!(queued.payload[PAYLOAD_KEY], serde_json::json!(true));
+    Ok(())
+}
+
+#[test]
+fn second_budget_kill_routes_failed() -> R {
+    let mut rig = rig_with(DispatchConfig {
+        budget: 333,
+        ..DispatchConfig::default()
+    })?;
+    let step = rig.plan_step()?;
+    // First kill: the planner job is raised once, at its own double.
+    let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
+    spec.task = Some(step.task.clone());
+    spec.budget = 500;
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    rig.jobs.jobs.get_mut("plan-j1").unwrap().status = JobStatus::Timeout;
+    let row = StepJobRow {
+        job: "plan-j1".into(),
+        run: 1,
+        node: "plan".into(),
+        task: step.task.clone(),
+        attempt: 1,
+    };
+    rig.store.insert_step_job(NEED, &row)?;
+    let job = rig.jobs.jobs["plan-j1"].clone();
+    let class = class_of(&rig, "plan")?;
+    {
+        let mut cx = run_cx(&mut rig);
+        RoleCollector.collect(&mut cx, &job, &row, &step, &class)?;
+    }
+    assert_eq!(rig.jobs.jobs["plan-j1-a2"].budget, 1_000);
+    assert_eq!(
+        rig.jobs.jobs["plan-j1-a2"].payload[PAYLOAD_KEY],
+        serde_json::json!(true)
+    );
+    // The tick settles the collected original before the rerun reports.
+    assert!(jobs::mark_applied(&mut rig.jobs, "plan-j1", 7));
+    // Second kill, in the other representation: the raised job finishes
+    // with agent exit 124 in its summary and a valid envelope in the
+    // receipt — only the spent marker makes this a failure.
+    let raised = rig.jobs.jobs.get_mut("plan-j1-a2").unwrap();
+    raised.status = JobStatus::Finished;
+    raised.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: format!("{KILL_SUMMARY}\n\n--- receipt\n{PLANNED}"),
+        at: 0,
+    });
+    let raised_row = rig.store.step_job("plan-j1-a2")?.unwrap();
+    let raised_job = rig.jobs.jobs["plan-j1-a2"].clone();
+    {
+        let mut cx = run_cx(&mut rig);
+        RoleCollector.collect(&mut cx, &raised_job, &raised_row, &step, &class)?;
+    }
+    // The existing failed transition took over: the shipped build flow
+    // routes a planner `failed` to the cto gate, pending a fresh task.
+    let failed = rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|s| s.node == "plan")
+        .ok_or_else(|| VivariumError::Message("plan step gone".into()))?;
+    assert_eq!(failed.verdict.as_deref(), Some("failed"));
+    let cto = rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|row| row.node == "cto")
+        .ok_or_else(|| VivariumError::Message("no cto step".into()))?;
+    assert_eq!(cto.state, StepState::Pending);
+    // No third automatic execution and no envelope correction.
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-a3"));
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-c1"));
+    assert!(rig.exceptions().is_empty());
     Ok(())
 }
