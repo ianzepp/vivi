@@ -2,8 +2,9 @@
 //!
 //! A band is a model at an effort, never a model alone. The table maps each
 //! band key `P0` to `P5` (`P0` the most capable) to an ordered list of
-//! model-and-reasoning choices; the first choice serves the band and later
-//! entries are reserved. See [`super::bands`] for the pure choice.
+//! model-and-reasoning choices; each choice may carry an integer `weight`
+//! (`1..=u32::MAX`, omitted meaning 1). See [`super::bands`] for the pure
+//! choice.
 
 use std::collections::BTreeMap;
 
@@ -15,9 +16,16 @@ use crate::error::VivariumError;
 /// The band keys a `bands` table may hold, most capable first.
 pub const BAND_KEYS: [&str; 6] = ["P0", "P1", "P2", "P3", "P4", "P5"];
 
-/// The most choices one band's list may hold. The first serves the band and
-/// later entries are reserved, so a longer list is refused by name.
+/// The most choices one band's list may hold; a longer list is refused by
+/// name.
 pub const MAX_CHOICES_PER_BAND: usize = 4;
+
+/// The one recognized weight key of a band choice; every other key under a
+/// choice is an unknown field.
+const WEIGHT_KEY: &str = "weight";
+
+/// The weight a band choice carries when it sets none.
+const DEFAULT_WEIGHT: u32 = 1;
 
 /// One model-and-reasoning choice a pool offers for a band.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -28,6 +36,35 @@ pub struct BandChoice {
     pub reasoning: String,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
+}
+
+impl BandChoice {
+    /// The checked effective weight of this choice in `pool`'s band `band`:
+    /// an omitted `weight` means 1, and an explicit weight must be an integer
+    /// in `1..=u32::MAX`. Validation and band selection both go through this
+    /// accessor, so a programmatically constructed invalid weight fails here
+    /// rather than quietly defaulting.
+    ///
+    /// # Errors
+    /// Returns a configuration error naming the pool and band when a weight
+    /// is present but is not such an integer.
+    pub fn effective_weight(&self, pool: &str, band: &str) -> Result<u32, VivariumError> {
+        let Some(raw) = self.unknown.get(WEIGHT_KEY) else {
+            return Ok(DEFAULT_WEIGHT);
+        };
+        if let Some(n) = raw.as_integer() {
+            if let Ok(weight) = u32::try_from(n) {
+                if weight >= 1 {
+                    return Ok(weight);
+                }
+            }
+        }
+        Err(super::config::bad(format!(
+            "bands.{band} gives weight {raw} in [pools.{pool}]: \
+             use an integer from 1 to {}",
+            u32::MAX
+        )))
+    }
 }
 
 /// The `[pools.<name>.bands]` table: for each band key, the ordered
@@ -48,8 +85,9 @@ impl PoolBands {
 
 impl PoolConfig {
     /// Check the pool's `bands` table: keys are `P0` to `P5`, each band lists
-    /// at most [`MAX_CHOICES_PER_BAND`] choices, every `reasoning` is a short
-    /// effort word, and every `model` is one the harness offers when a
+    /// at most [`MAX_CHOICES_PER_BAND`] choices, every choice's `weight` is an
+    /// integer in `1..=u32::MAX` (omitted meaning 1), every `reasoning` is a
+    /// short effort word, and every `model` is one the harness offers when a
     /// harness is configured. A pool with no `bands` table passes untouched.
     ///
     /// # Errors
@@ -79,15 +117,32 @@ fn check_key(key: &str) -> Result<(), VivariumError> {
 fn check_choices(pool: &str, key: &str, choices: &[BandChoice]) -> Result<(), VivariumError> {
     if choices.len() > MAX_CHOICES_PER_BAND {
         return Err(super::config::bad(format!(
-            "bands.{key} holds {} choices; at most {MAX_CHOICES_PER_BAND} are allowed (the first serves the band, later entries are reserved)",
+            "bands.{key} holds {} choices; at most {MAX_CHOICES_PER_BAND} are allowed",
             choices.len()
         )));
     }
     for choice in choices {
-        super::config::reject_unknown(pool, &format!(".bands.{key}"), &choice.unknown)?;
+        choice.effective_weight(pool, key)?;
+        reject_unknown_but_weight(pool, key, choice)?;
         check_reasoning(key, &choice.reasoning)?;
     }
     Ok(())
+}
+
+/// Refuse a choice's unknown fields, with `weight` the one recognized key
+/// they may hold.
+fn reject_unknown_but_weight(
+    pool: &str,
+    key: &str,
+    choice: &BandChoice,
+) -> Result<(), VivariumError> {
+    let rest: BTreeMap<String, toml::Value> = choice
+        .unknown
+        .iter()
+        .filter(|(name, _)| name.as_str() != WEIGHT_KEY)
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    super::config::reject_unknown(pool, &format!(".bands.{key}"), &rest)
 }
 
 fn check_reasoning(key: &str, reasoning: &str) -> Result<(), VivariumError> {
