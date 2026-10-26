@@ -27,6 +27,7 @@ mod read;
 mod role_write;
 mod send_dispatch;
 mod target_git;
+mod task_evidence;
 mod views;
 mod write;
 
