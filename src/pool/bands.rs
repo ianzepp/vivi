@@ -1,17 +1,24 @@
 //! Intelligence bands: parse a band string, read a task body's `band:` line,
-//! and choose the model-and-reasoning pair a pool offers for a band.
+//! and choose — weighted at random across every entry — the
+//! model-and-reasoning pair a pool offers for a band.
 //!
 //! A band is a model at an effort, never a model alone. A role's `model`
 //! field holds a band string such as `P2-S0`; a task body may carry a
 //! `band:` line that overrides the role's band for one assignment. A pool's
 //! `[pools.<name>.bands]` table (see [`super::config_bands`]) says which
-//! choice serves which band; the `S` speed axis is parsed and ignored.
+//! choices serve which band; the `S` speed axis is parsed and ignored.
+//! Every listed entry takes a share of the work sized by its `weight` —
+//! there is no primary with reserved spares — and [`availability`] is the
+//! view of which entries can take work right now.
 
 pub mod availability;
 pub mod health;
 
+use rand_core::{OsRng, RngCore};
+
+use self::availability::Availability;
 use super::config::PoolConfig;
-use super::config_bands::PoolBands;
+use super::config_bands::{BandChoice, PoolBands};
 use crate::error::VivariumError;
 
 /// The speed suffixes a band string may carry. Parsed and ignored: the S
@@ -43,8 +50,8 @@ fn band_digit(text: &str) -> Option<u8> {
     }
 }
 
-/// The model-and-reasoning pair a pool offers for a band: the first entry of
-/// the band's list.
+/// The model-and-reasoning pair a pool offers for a band: one entry of the
+/// band's list, drawn at random.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     /// The band this choice serves, `0` to `5`.
@@ -55,28 +62,123 @@ pub struct Choice {
     pub reasoning: String,
 }
 
-/// The model-and-reasoning pair `pool` offers for `band`: the first entry of
-/// the band's list in the pool's `[pools.<name>.bands]` table. Later entries
-/// of the list are reserved and never chosen here.
+/// The model-and-reasoning pair `pool` offers for `band`: one entry of the
+/// band's list in the pool's `[pools.<name>.bands]` table, drawn at random
+/// so that every listed entry takes a share of the work sized by its
+/// `weight`. This is not a primary with reserved spares: no entry is held
+/// back, and duplicate entries hold their own shares.
 ///
 /// # Errors
 /// Returns an error naming the band, the pool and the bands the pool does
 /// serve when the pool has nothing for the band: send the job to a pool that
 /// serves it, or pass `--model`.
 pub fn choose(config: &PoolConfig, pool: &str, band: u8) -> Result<Choice, VivariumError> {
-    let Some(entry) = config
+    select(config, pool, band, &Availability::default(), &mut OsDraw)?
+        .ok_or_else(|| not_served(pool, band, &config.bands))
+}
+
+/// The model-and-reasoning pair `pool` offers for `band` among the entries
+/// that can take work at `availability`: the same weighted draw as
+/// [`choose`], with the entries the view blocks removed before the weights
+/// are normalized and summed. [`None`] when a configured band holds no
+/// available entry.
+///
+/// # Errors
+/// Returns the same error [`choose`] returns when the pool has nothing for
+/// the band at all — no bands table, or a missing or empty list.
+pub fn choose_eligible(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+    availability: &Availability,
+) -> Result<Option<Choice>, VivariumError> {
+    select(config, pool, band, availability, &mut OsDraw)
+}
+
+/// One uniform draw in `[0, 1)` from a random source, or the error the
+/// source raised. [`OsDraw`] is the production source; tests inject a
+/// deterministic one.
+trait Draw {
+    fn draw(&mut self) -> Result<f64, VivariumError>;
+}
+
+/// The production draw source: fresh entropy from the operating system.
+struct OsDraw;
+
+impl Draw for OsDraw {
+    fn draw(&mut self) -> Result<f64, VivariumError> {
+        let mut bytes = [0u8; 8];
+        OsRng.try_fill_bytes(&mut bytes).map_err(|_| {
+            VivariumError::Other("entropy unavailable: cannot draw a band choice".into())
+        })?;
+        Ok((u64::from_le_bytes(bytes) >> 11) as f64 / (1u64 << 53) as f64)
+    }
+}
+
+/// The shared core of [`choose`] and [`choose_eligible`]: resolve the
+/// band's list, drop the entries `availability` blocks, and draw one of
+/// what is left. A missing or empty list is a configuration error; a list
+/// whose every entry is blocked has no choice.
+fn select(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+    availability: &Availability,
+    source: &mut dyn Draw,
+) -> Result<Option<Choice>, VivariumError> {
+    let Some(list) = config
         .bands
         .entries
         .get(&format!("P{band}"))
-        .and_then(|list| list.first())
+        .filter(|list| !list.is_empty())
     else {
         return Err(not_served(pool, band, &config.bands));
     };
-    Ok(Choice {
+    let eligible: Vec<&BandChoice> = list
+        .iter()
+        .filter(|entry| availability.model_available(&entry.model))
+        .collect();
+    if eligible.is_empty() {
+        return Ok(None);
+    }
+    weighted(band, &eligible, source).map(Some)
+}
+
+/// Draw one of `eligible` with each entry's share sized by its weight,
+/// normalized before summing. A single entry answers without consulting the
+/// draw source, so one choice consumes no entropy; an entropy failure is an
+/// error, never a fallback to the first entry.
+fn weighted(
+    band: u8,
+    eligible: &[&BandChoice],
+    source: &mut dyn Draw,
+) -> Result<Choice, VivariumError> {
+    if let [only] = eligible {
+        return Ok(choice(band, only));
+    }
+    let weights: Vec<f64> = eligible
+        .iter()
+        .map(|entry| entry.weight())
+        .collect::<Result<_, _>>()?;
+    let total: f64 = weights.iter().sum();
+    let mut taken = source.draw()?;
+    for (entry, weight) in eligible.iter().zip(&weights) {
+        taken -= weight / total;
+        if taken < 0.0 {
+            return Ok(choice(band, entry));
+        }
+    }
+    // The draw lands above every cumulative weight only through float
+    // rounding; the last entry owns the top of the range.
+    Ok(choice(band, eligible[eligible.len() - 1]))
+}
+
+fn choice(band: u8, entry: &BandChoice) -> Choice {
+    Choice {
         band,
         model: entry.model.clone(),
         reasoning: entry.reasoning.clone(),
-    })
+    }
 }
 
 fn not_served(pool: &str, band: u8, bands: &PoolBands) -> VivariumError {
