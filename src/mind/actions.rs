@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::authority::{self, Action, Denial, Gate};
+use super::authority::{self, Action, BudgetClass, Denial, Gate};
 use fields::{drop_blank_fields, validate_fields};
 
 /// Longest free-text note accepted from a turn.
@@ -205,8 +205,9 @@ pub fn parse_envelope(reply: &str) -> Result<Vec<ActionRequest>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Check every request. Need-scoped actions spend the budget as they pass,
-/// so two requeues of one need in one envelope count twice.
+/// Check every request. Permitted actions spend their budget as they pass,
+/// so two requeues of one need — or two filings to one project — in one
+/// envelope count twice.
 #[must_use]
 pub fn plan(
     requests: Vec<ActionRequest>,
@@ -221,11 +222,8 @@ pub fn plan(
         } else {
             check(&request, gate, watched, ledger)
         };
-        if verdict.is_ok()
-            && request.kind.need_scoped()
-            && let Some(need) = request.need.as_deref()
-        {
-            authority::spend(ledger, need, gate.now, gate.budgets.per_need_window_secs);
+        if verdict.is_ok() {
+            charge(&request, gate, ledger);
         }
         out.push(Planned {
             request,
@@ -236,9 +234,30 @@ pub fn plan(
     out
 }
 
+/// Charge one permitted request to its budget bucket before actuation: the
+/// bare need handle for need-scoped moves, the shared project window for
+/// filing and tuning. A server-side refusal later on does not refund it.
+fn charge(request: &ActionRequest, gate: &Gate<'_>, ledger: &mut authority::Ledger) {
+    match request.kind.budget() {
+        BudgetClass::Unbudgeted => {}
+        BudgetClass::PerNeed => {
+            if let Some(need) = request.need.as_deref() {
+                authority::spend(ledger, need, gate.now, gate.budgets.per_need_window_secs);
+            }
+        }
+        BudgetClass::PerProject => {
+            if let Some(project) = request.project.as_deref() {
+                let key = authority::project_key(project);
+                authority::spend(ledger, &key, gate.now, gate.budgets.per_need_window_secs);
+            }
+        }
+    }
+}
+
 /// Check one request: the per-kind field matrix, then the project rule —
 /// every action names a watched root, reads and letters included — then the
-/// authority gate.
+/// authority gate: the stage and pause gates plus the applicable budget
+/// bucket.
 fn check(
     request: &ActionRequest,
     gate: &Gate<'_>,
@@ -256,7 +275,12 @@ fn check(
     if request.kind == Action::FileFixNeed {
         filing_fields::check_fix_policy(request, project)?;
     }
-    authority::permit(gate, ledger, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
+    authority::permit(gate, ledger, request.kind, request.need.as_deref())
+        .map_err(Refusal::Gate)?;
+    if request.kind.budget() == BudgetClass::PerProject {
+        authority::permit_project(gate, ledger, project).map_err(Refusal::Gate)?;
+    }
+    Ok(())
 }
 
 impl ActionRequest {
