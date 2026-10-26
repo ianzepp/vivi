@@ -62,8 +62,8 @@ Options:
 
 Environment:
   PORT                      Listen port (default 8080)
-  BIND                      Listen address (default 0.0.0.0)
-  DATA_DIR                  Data directory (default ./data)
+  BIND                      Listen address (default 127.0.0.1)
+  DATA_DIR                  Data directory: required, an absolute path
   STORE_ENCRYPTION_KEY      Standard base64 of exactly 32 bytes. Must not change
                             for an existing data directory.
   MODERATION_TOKEN          Enables the /v1/_health endpoint
@@ -77,6 +77,10 @@ Environment:
   HOST_GIT_URL_PREFIX       Git URL prefix for lanes
   HOST_DEFAULT_POOL         Pool a new project is given
   RUST_LOG                  Log filter (default vivi_server=info,tower_http=info)
+  CREDENTIALS_DIRECTORY     Set by systemd. STORE_ENCRYPTION_KEY, MODERATION_TOKEN and
+                            HOST_OPERATOR_TOKEN are read from a file of that name here
+                            (LoadCredential=NAME:/path) before the environment, which
+                            keeps them out of the process environment.
 ",
         version = version_line()
     )
@@ -140,6 +144,7 @@ mod tests {
             "HOST_GIT_URL_PREFIX",
             "HOST_DEFAULT_POOL",
             "RUST_LOG",
+            "CREDENTIALS_DIRECTORY",
         ] {
             assert!(help.contains(name), "help is missing {name}");
         }

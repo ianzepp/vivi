@@ -23,6 +23,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 toml_edit = "0.22"
 vivi = { git = "https://github.com/ianzepp/vivi", tag = "v21.3.2" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 flate2 = "1"

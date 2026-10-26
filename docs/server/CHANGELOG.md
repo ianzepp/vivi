@@ -7,6 +7,19 @@
   an unattended `--help` started a second instance. Any other argument now
   exits 2 with a usage hint instead of booting.
 - The README says `STORE_ENCRYPTION_KEY` is base64 of exactly 32 bytes.
+- Startup is stricter. `BIND` defaults to `127.0.0.1` (it was `0.0.0.0`), and
+  `DATA_DIR` is required and must be an absolute path (it defaulted to the
+  relative `data`); either mistake exits 2. The listener binds before the data
+  directory is touched, so a second instance on a taken address exits 1 without
+  writing, and a bind failure is an error exit, not a panic. A host that relied
+  on the old `BIND` default must now set it.
+- On Linux the server makes itself non-dumpable at boot, so another process
+  running as the same user cannot read its `/proc/<pid>/environ` or `mem`, and
+  a crash writes no core dump.
+- `STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN` and `HOST_OPERATOR_TOKEN` are read
+  from `$CREDENTIALS_DIRECTORY/<NAME>` (systemd `LoadCredential=`) before the
+  environment. Secrets taken from the environment are removed from it at boot,
+  so child processes do not inherit them.
 
 ## 2.3.2
 

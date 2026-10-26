@@ -32,7 +32,7 @@ Requires Rust 1.93+ (toolchain pinned in `rust-toolchain.toml`).
 git clone https://github.com/ianzepp/vivi-server.git
 cd vivi-server
 PORT=8080 \
-DATA_DIR=./data \
+DATA_DIR=$PWD/data \
 STORE_ENCRYPTION_KEY=$(openssl rand -base64 32) \
 MODERATION_TOKEN=<secret> \
 cargo run
@@ -45,9 +45,9 @@ any it does not know.
 
 | Env var | Meaning |
 | --- | --- |
-| `BIND` | Listen address (default `0.0.0.0`); a tailnet-only host sets its tailnet IP |
+| `BIND` | Listen address (default `127.0.0.1`); a host that serves other machines names the interface, for example its tailnet IP |
 | `PORT` | Listen port |
-| `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
+| `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/`. Required, and an absolute path; the server exits with status 2 otherwise |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies: standard base64 of exactly 32 bytes (`openssl rand -base64 32`); a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
 | `HOST_OPERATOR_TOKEN` | The built-in host principal (`host`) on `POST /v1/mcp`: the host tools only — `create_project`, `lane_create`, `delete_project`, `project_list`, `server_version`, and key/grant admin. Unset, the principal does not exist and only server keys authenticate. An identity token is never accepted there |
@@ -59,6 +59,23 @@ any it does not know.
 The server writes both roots itself, so they belong to the user it runs as. The three project tools refuse with one error naming every one of the first three that is unset.
 | `SEND_RATE_PER_MINUTE` | Writes per minute per identity (rooms, the projects API, and MCP writes share it). Unset is 30, the public default; a positive integer sets the limit; `0` is unlimited (for a trusted tailnet host). Any other value refuses to boot |
 | `HOSTED_DEFAULT_IDENTITY` | The vivi identity an API key without its own `identity` acts as on a hosted project (default `operator`) |
+
+### Secrets
+
+`STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN` and `HOST_OPERATOR_TOKEN` can come
+from systemd credentials instead of the environment: with
+`LoadCredential=STORE_ENCRYPTION_KEY:/etc/vivi-server/store-key` the server
+reads `$CREDENTIALS_DIRECTORY/STORE_ENCRYPTION_KEY`, and a credential file wins
+over the variable of the same name. A secret read from the environment is
+removed from it at boot, so a child process (`git` for the host project tools)
+does not inherit it.
+
+On Linux the process also makes itself non-dumpable at boot
+(`prctl(PR_SET_DUMPABLE, 0)`). The kernel then keeps `/proc/<pid>/environ`
+and `/proc/<pid>/mem` from other processes running as the same user, and no
+core dump is written. systemd puts `EnvironmentFile=` values in the
+environment block that `/proc/<pid>/environ` shows, so a credential file keeps
+a secret out of that block altogether.
 
 ## Acceptance
 
