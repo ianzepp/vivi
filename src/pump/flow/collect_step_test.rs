@@ -283,7 +283,7 @@ fn rerun_with_preserves_execution_context() -> R {
         registry: &rig.registry,
         decide: &decide,
         def: rig.def.clone(),
-        run,
+        run: run.clone(),
     };
     // Repair-style fresh refs: the edit must survive into the queued attempt.
     let edit = |spec: &mut JobSpec| {
@@ -359,6 +359,28 @@ fn rerun_with_preserves_execution_context() -> R {
     assert_eq!(rig.store.last_attempt(&step.task)?, stored.attempt);
     // The same task and run are running again.
     assert_eq!(rig.plan_step()?.state, StepState::Running);
+
+    // A true budget-retry marker survives subsequent copies: rerunning the
+    // marked attempt copies it onward unchanged — still true — and the
+    // ordinary copy raises no budget of its own.
+    let marked = rig.jobs.jobs["plan-j1-a2"].clone();
+    let marked_row = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(marked_row.attempt, 2);
+    let mut cx = RunCx {
+        ctx: &rig.ctx,
+        st: &mut rig.jobs,
+        store: &rig.store,
+        mail: &mut rig.mail,
+        registry: &rig.registry,
+        decide: &decide,
+        def: rig.def.clone(),
+        run,
+    };
+    cx.rerun_with(&marked, &marked_row, &step, &edit)?;
+    let carried = &rig.jobs.jobs["plan-j1-a2-a3"];
+    assert_eq!(carried.payload[PAYLOAD_KEY], serde_json::json!(true));
+    assert_eq!(carried.budget, 600);
+    assert_eq!(rig.jobs.jobs.len(), 3);
     Ok(())
 }
 
@@ -780,5 +802,49 @@ fn raised_retry_preserves_execution_context() -> R {
     );
     assert_eq!(rig.store.step_job("plan-j1-a2")?.unwrap().attempt, 2);
     assert_eq!(rig.store.step_job("aud-j1-a2")?.unwrap().attempt, 2);
+    Ok(())
+}
+
+#[test]
+fn lost_job_retry_keeps_its_budget() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
+    spec.task = Some(step.task.clone());
+    spec.budget = 600;
+    spec.payload = serde_json::json!({"plan_file": "plan/one.md"});
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    // The pool lost the job: the terminal state only, no agent exit and no
+    // host evidence, so no environment failure and no budget kill applies.
+    let lost = rig.jobs.jobs.get_mut("plan-j1").unwrap();
+    lost.status = JobStatus::Lost;
+    lost.outcome = Some(JobOutcome {
+        state: "lost".to_owned(),
+        detail: "worker vanished".to_owned(),
+        receipt: String::new(),
+        at: 0,
+    });
+    let job = rig.jobs.jobs["plan-j1"].clone();
+    let raised = raised_budget(job.budget).expect("600 doubles inside the pool range");
+    assert_ne!(job.budget, raised);
+    // The RoleCollector retries the lost job as the next ordinary attempt.
+    let collected = collect_role(&mut rig, "plan-j1", "plan")?;
+    assert_eq!(collected.state, StepState::Running);
+    // No budget change and no raised marker: a lost job is not a budget kill.
+    let queued = &rig.jobs.jobs["plan-j1-a2"];
+    assert_eq!(queued.budget, job.budget);
+    assert_eq!(queued.payload.get(PAYLOAD_KEY), None);
+    // The unrelated payload key survives; only the stamp's own keys join it.
+    assert_eq!(
+        queued.payload["plan_file"],
+        serde_json::json!("plan/one.md")
+    );
+    assert_eq!(queued.task.as_deref(), Some(step.task.as_str()));
+    let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(stored.attempt, 2);
+    assert_eq!(queued.payload["attempt"], serde_json::json!(stored.attempt));
+    // No correction was queued alongside the retry.
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert_eq!(rig.plan_step()?.state, StepState::Running);
     Ok(())
 }
