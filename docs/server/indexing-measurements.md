@@ -17,15 +17,22 @@ and compare against it.
 ## Reproducing
 
 ```sh
+# no-write idle window (captured below, 2026-10-26)
 VIVI_MEASURE_MODE=idle cargo test --release --test server_measure_process \
+  process_benchmark_windows_report_cpu_pass_latency_and_candidate_work \
+  -- --ignored --nocapture
+
+# local-write window (captured below, 2026-10-26)
+VIVI_MEASURE_MODE=local cargo test --release --test server_measure_process \
   process_benchmark_windows_report_cpu_pass_latency_and_candidate_work \
   -- --ignored --nocapture
 ```
 
 Environment settings, none of them secret:
 
-- `VIVI_MEASURE_MODE=idle` — this capture runs the no-write idle window
-  only. Unset selects all three modes (`idle,local,mixed`).
+- `VIVI_MEASURE_MODE` — each captured run selects one window: `idle`
+  (no-write) or `local` (continuous local-only writes). Unset selects all
+  three modes (`idle,local,mixed`); `mixed` is not yet captured here.
 - `VIVI_MEASURE_CORPUS` unset — the harness uses its 5,000-sends-per-host
   minimum. `VIVI_MEASURE_SENDS` must stay unset (it is smoke-only and
   refuses values at or above the smoke cap).
@@ -43,10 +50,11 @@ a deployed server or `~/.vivarium/`.
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-10-26 (~21:30 UTC) |
+| Date | 2026-10-26 (~21:30 UTC idle capture, ~21:50 UTC local-write capture) |
 | Host hardware | Apple M5 Max, 18 cores, 36 GiB RAM |
 | OS | macOS 27.0.1 (Build 26A434), arm64 |
 | Source revision | `a52197d5204a1c27dc6186969c2f6c6048832fc5` (clean tree, package `vivi` 22.0.0) |
+| Source revision, local-write capture | `744d706527b5c78810f6ef48723db20eca9fe874` (clean tree; the only change since the idle capture is this document) |
 | Toolchain | rustc/cargo 1.99.1 (58cf8f9c3 2026-10-13, Homebrew) |
 | Build mode | `--release`; `[profile.release]` is `strip = true`, `lto = "thin"`, other settings default (opt-level 3) |
 
@@ -78,8 +86,12 @@ comparable:
   up to 180 s until both transport indexes have served every off-host
   letter from the corpus. Verification reads happen only between
   windows, never inside one.
-- Window: 120 s (`MEASURE_WINDOW`) with no writer threads (idle mode).
-  CPU integrates sysinfo per-refresh `cpu_usage()` over refresh
+- Window: 120 s (`MEASURE_WINDOW`). The idle window runs no writer
+  threads; the local window runs one writer thread per hosted mailspace
+  pumping local-only letters through the normal `Mailspace::send` API
+  flat-out until the deadline (no in-window off-host letters — the
+  two-second periodic schedule belongs to the corpus bootstrap and the
+  mixed window, not the local window). CPU integrates sysinfo per-refresh `cpu_usage()` over refresh
   intervals ≥ `MINIMUM_CPU_UPDATE_INTERVAL`; pass latencies come from
   the server's own `timed_push` debug lines (`elapsed_ms`), parsed
   within the window's wall-clock bounds.
@@ -128,6 +140,57 @@ the settling push immediately after warm-up. This is the honest
 steady-state shape of the no-write baseline: near-zero CPU, and pass
 work only when something actually changed.
 
+## Baseline: local-write window (2026-10-26)
+
+Same fixture, bootstrap, server boot, and warm-up settle as the idle
+baseline above, then one 120 s local window: a writer thread per hosted
+mailspace pumping local-only letters through the normal mailspace API
+until the deadline. Directly measured:
+
+| Quantity | Value |
+| --- | --- |
+| Window wall time | 120.382 s |
+| Server CPU seconds over the window | 19.546 s |
+| Average fraction of one core | 0.1624 |
+| Push passes completed in-window | 40, slowest 0.712 s |
+| Message rows, window start | 19,966 (both mailspaces) |
+| Message rows, window end | 36,998 (both mailspaces) |
+| Writer sends / threads in-window | 8,516 / 2 (one per hosted mailspace) |
+| Writer wall seconds in-window | 240.012 s summed over both threads (≈ 120 s each; the writers ran to the deadline) |
+| Harness total (`test result: ok. 1 passed`) | 189.76 s |
+
+Derived (harness-labeled candidate-work arithmetic and simple cross-checks
+over the measured values, not measured counters):
+
+| Quantity | Value |
+| --- | --- |
+| Candidate selector work | 40 full-listing passes × 19,966 rows = **798,640 row visits** in the window |
+| Storage growth per in-window send | 36,998 − 19,966 = 17,032 new rows = exactly 2 per send (recipient row + sender's sent copy) |
+| Aggregate writer throughput | ≈ 70.7 sends/s across both hosts (≈ 35.4 sends/s per host) |
+| In-window off-host transport additions | **0** — under `send = "addressed"` a local-only letter files its local delivery and sent copy, and nothing else |
+
+Pass cadence: 40 traced passes over 120.382 s is consistent with the
+fixed 5 s indexer cycle firing ~20 times against both hosted mailspaces
+(two pass lines per cycle, ≈ 6 s per cycle of sleep plus pass work). In
+contrast to the idle steady state, no pass could skip silently: every
+cycle found new rows to index, and the slowest pass (0.712 s) ran while
+ingest was continuous.
+
+Server health: the child answered readiness inside the 30 s deadline and
+stayed live at every CPU sample (the sampler fails the window if the pid
+dies); the pre-window settle served every corpus off-host letter; after
+the window the same corpus set was verified served with the expected set
+unchanged — the local-only letters joined nothing to either transport
+index, which is the point of this baseline. Both writers joined clean and
+the run ended `test result: ok. 1 passed`.
+
+Phase durations across the run:
+
+| Phase | Duration | Kind |
+| --- | --- | --- |
+| Fixture + corpus bootstrap (2 × 5,000 sends) + server boot + warm-up settle | ≈ 60 s, plus the post-window verification and teardown in the remainder | derived (189.76 s total − 120.38 s window; the harness does not print per-phase seconds) |
+| Measured local-write window | 120.382 s | measured |
+
 ## Limitations
 
 - Single machine, single run, no repetitions; the machine was otherwise
@@ -136,12 +199,14 @@ work only when something actually changed.
 - macOS task accounting through sysinfo deltas; platforms without
   kernel CPU accounting are an explicit `AccountingError::Unsupported`,
   so these numbers do not transfer to such hosts.
-- This capture selected only the idle mode. The `local` and `mixed`
-  write windows are part of the same harness (`VIVI_MEASURE_MODE`) and
-  are not yet captured here.
+- Only the idle and local windows are captured here; the `mixed` write
+  window is part of the same harness (`VIVI_MEASURE_MODE`) and is not yet
+  captured.
 - Pass-latency evidence under a no-write steady state is sparse by
-  design (skipped passes are silent); a run with in-window writes
-  produces denser pass evidence.
+  design (skipped passes are silent); the local-write window shows the
+  dense shape (40 working passes). The writers were not pinned and the
+  machine was otherwise idle; per-host throughput (≈ 35.4 sends/s) is
+  what the unpumped two-thread writer achieved, not a mailspace ceiling.
 - The fixture lives in a fresh temp directory per run; its absolute
   paths and pid-derived name differ run to run, which is fine — the
   workload contract above is what must stay fixed.
