@@ -27,6 +27,7 @@ mod role_write;
 mod send_dispatch;
 mod target_git;
 mod views;
+mod work_read;
 mod write;
 
 use std::path::Path;
@@ -84,6 +85,7 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_list" => Some(pump_list),
         "pump_show" => Some(pump_show),
         "pump_priority" => Some(pump_priority),
+        "need_show" => Some(work_read::need_show),
         "pump_log" => Some(views::pump_log),
         "pump_action" => Some(pump_action),
         "pump_reset" => Some(pump_reset),

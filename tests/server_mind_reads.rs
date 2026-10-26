@@ -6,6 +6,8 @@
 #[path = "support/mind_server.rs"]
 mod mind_server;
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use vivi::server::safety::RateLimiter;
@@ -168,4 +170,95 @@ async fn fixture_write_limit_bounds_priority_writes() {
         json!([{"need": "n1", "level": 2}]),
         "{listed}"
     );
+}
+
+/// `need_show` refuses an unknown handle and any anchor that is not a need:
+/// a task and a plain letter are refused alike, on the wire as `isError`.
+#[tokio::test]
+async fn need_show_refuses_unknown_and_non_need_anchors() {
+    let fx = mind_server::fixture("mind-need-show-refusals");
+    let key = fx.key_by(&fx.member, Some("operator"));
+    let task = fx.send("mind", "task", "hand", "unit task", "+++\n+++\n\ndo it");
+    let mail = fx.send("mind", "mail", "hand", "plain letter", "hello");
+    for handle in ["no-such-handle", &task, &mail] {
+        let message = fx
+            .refused(&key, "need_show", json!({"handle": handle}))
+            .await;
+        assert!(!message.is_empty(), "{handle}: refused without a message");
+    }
+}
+
+/// `need_show` resolves a handle prefix to the canonical need and answers
+/// the generic show body — item row, rendered text, parsed letter — with an
+/// empty `units` list while nothing is bound to the need.
+#[tokio::test]
+async fn need_show_resolves_the_canonical_need_and_renders_content() {
+    let fx = mind_server::fixture("mind-need-show-canonical");
+    let key = fx.key_by(&fx.member, Some("operator"));
+    let need = fx.send(
+        "mind",
+        "need",
+        "hand",
+        "wire the flux capacitor",
+        "+++\ndone_when = [\"it is wired\"]\n+++\n\nplease wire it",
+    );
+    let answer = fx
+        .call(&key, "need_show", json!({"handle": &need[..8]}))
+        .await;
+    assert_eq!(answer["item"]["handle"], json!(need), "{answer}");
+    assert_eq!(answer["item"]["kind"], "need", "{answer}");
+    assert_eq!(answer["item"]["status"], "open", "{answer}");
+    assert_eq!(answer["item"]["role"], "needs", "{answer}");
+    assert_eq!(
+        answer["item"]["subject"], "wire the flux capacitor",
+        "{answer}"
+    );
+    assert!(
+        answer["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("please wire it"),
+        "{answer}"
+    );
+    assert_eq!(
+        answer["letter"]["subject"], "wire the flux capacitor",
+        "{answer}"
+    );
+    assert_eq!(answer["units"], json!([]), "{answer}");
+}
+
+/// `need_show` lists the units bound to the need with their backlog node
+/// states, keyed by handle regardless of the library's row order.
+#[tokio::test]
+async fn need_show_lists_bound_units_with_states() {
+    let fx = mind_server::fixture("mind-need-show-units");
+    let key = fx.key_by(&fx.member, Some("operator"));
+    let need = fx.send(
+        "mind",
+        "need",
+        "hand",
+        "lowered outcome",
+        "+++\ndone_when = [\"it is lowered\"]\n+++\n\nbind me",
+    );
+    let first = fx.send("mind", "task", "hand", "unit one", "+++\n+++\n\nfirst");
+    let second = fx.send("mind", "task", "hand", "unit two", "+++\n+++\n\nsecond");
+    mind_server::open_root(&fx.root)
+        .backlog_bind_units(&need, &[first.clone(), second.clone()])
+        .unwrap();
+    let answer = fx.call(&key, "need_show", json!({"handle": need})).await;
+    let units = answer["units"]
+        .as_array()
+        .unwrap_or_else(|| panic!("units missing or not a list: {answer}"));
+    let states: BTreeMap<&str, &str> = units
+        .iter()
+        .map(|unit| {
+            (
+                unit["handle"].as_str().unwrap_or_default(),
+                unit["state"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(states.len(), 2, "{answer}");
+    assert_eq!(states.get(first.as_str()), Some(&"open"), "{answer}");
+    assert_eq!(states.get(second.as_str()), Some(&"open"), "{answer}");
 }

@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use crate::mailspace::board::BoardOptions;
 use crate::mailspace::{
-    folded_marks, frontier_from_show, is_foreign_account, is_gate_kind, marks_include,
-    prefix_of_domain, validate_marks_filter,
+    MailspaceThreadMessage, folded_marks, frontier_from_show, is_foreign_account, is_gate_kind,
+    marks_include, prefix_of_domain, validate_marks_filter,
 };
 use crate::message::{render_message, to_json_message};
 use crate::storage::{MailspaceEvent, StoredMessageView};
@@ -333,12 +333,21 @@ pub(super) fn memo_items(h: &Hosted, scope: Option<&str>) -> Result<Vec<Value>, 
 pub(super) fn show(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> {
     let handle = req_str(arguments, "handle")?;
     let storage = h.ms.storage().map_err(lib_error)?;
-    let Located {
+    show_located(h, locate(&storage, handle)?)
+}
+
+/// The generic show body for one located item: the item row, the rendered
+/// text and the parsed letter. [`need_show`](super::work_read::need_show)
+/// answers the same body for a need and adds the bound units.
+pub(in crate::server::mcp) fn show_located(
+    h: &Hosted,
+    Located {
         view,
         raw,
         events,
         kind,
-    } = locate(&storage, handle)?;
+    }: Located,
+) -> Result<Value, ToolError> {
     if kind == "memo" {
         return Ok(memo_json(&view, &raw));
     }
@@ -367,36 +376,38 @@ pub(super) fn thread(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> 
         h.ms.item_event_state(handle)
             .map_err(lib_error)?
             .map(|s| json!({ "state": s.state, "event": s.event, "heads": s.heads }));
-    let rows: Vec<Value> = messages
-        .iter()
-        .map(|m| {
-            let kind = m.kind.as_deref().unwrap_or("mail");
-            let mut item = json!({
-                "handle": m.handle,
-                "message_id": m.message_id,
-                "kind": kind,
-                "from": m.from,
-                "to": m.to,
-                "cc": m.cc,
-                "subject": m.subject,
-                "role": m.role,
-                "date": m.date,
-                "marks": m.marks,
-                "body": m.body.trim(),
-            });
-            if is_work(kind) {
-                item["status"] = json!(status_for_role(&m.role));
-            }
-            if let Some(branch) = &m.close_branch {
-                item["close_branch"] = json!(branch);
-            }
-            if let Some(commit) = &m.close_commit {
-                item["close_commit"] = json!(commit);
-            }
-            item
-        })
-        .collect();
+    let rows: Vec<Value> = messages.iter().map(thread_row).collect();
     Ok(json!({ "handle": handle, "state": state, "event": event, "messages": rows }))
+}
+
+/// One thread letter as `thread` maps it, and as the operator thread tools
+/// (`need_thread`, `task_thread`) reuse it: the letter's row plus `status`
+/// for work kinds and the close branch and commit when present.
+pub(in crate::server::mcp) fn thread_row(m: &MailspaceThreadMessage) -> Value {
+    let kind = m.kind.as_deref().unwrap_or("mail");
+    let mut item = json!({
+        "handle": m.handle,
+        "message_id": m.message_id,
+        "kind": kind,
+        "from": m.from,
+        "to": m.to,
+        "cc": m.cc,
+        "subject": m.subject,
+        "role": m.role,
+        "date": m.date,
+        "marks": m.marks,
+        "body": m.body.trim(),
+    });
+    if is_work(kind) {
+        item["status"] = json!(status_for_role(&m.role));
+    }
+    if let Some(branch) = &m.close_branch {
+        item["close_branch"] = json!(branch);
+    }
+    if let Some(commit) = &m.close_commit {
+        item["close_commit"] = json!(commit);
+    }
+    item
 }
 
 /// The backlog graph, `None` until the mailspace has minted any work.
