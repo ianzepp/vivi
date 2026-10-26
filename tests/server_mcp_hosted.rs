@@ -586,6 +586,94 @@ async fn a_reply_threads_with_its_parent() {
     assert_eq!(inbox.len(), 1);
 }
 
+/// An explicit `to` on a hosted reply redirects it: the operator authors a
+/// need addressed to mind, and mind's reply at its own seat reaches exactly
+/// the addresses it named, never the operator who authored the parent.
+#[tokio::test]
+async fn a_reply_with_explicit_to_reaches_those_addresses_only() {
+    let fx = fixture("reply-to");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "question",
+                   "body": "+++\ndone_when = [\"answered\"]\n+++\n\nwhy?"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    // Mind replies with an explicit `to` (the string form) naming hand.
+    let replied = fx
+        .call(
+            &mind,
+            "reply",
+            json!({"handle": handle, "to": "hand", "body": "hand, please"}),
+        )
+        .await;
+    assert_eq!(replied["in_reply_to"], handle, "{replied}");
+    assert_eq!(replied["from"], "mind", "{replied}");
+    assert_eq!(replied["delivered"][0]["identity"], "hand", "{replied}");
+    let reply_handle = replied["handle"].as_str().unwrap().to_owned();
+
+    // The letter still threads with the need...
+    let ms = fx.ms();
+    let thread = ms.thread(&handle, false, 50, 50).unwrap();
+    assert_eq!(thread.len(), 2, "{thread:?}");
+    // ...addresses hand exactly, from the authenticated mind...
+    let storage = ms.storage().unwrap();
+    let id = storage.resolve_message_token(&reply_handle).unwrap();
+    let raw = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(
+        raw.contains(&format!("To: <{}>", ms.address_for("hand"))),
+        "{raw}"
+    );
+    assert!(
+        raw.contains(&format!("From: <{}>", ms.address_for("mind"))),
+        "{raw}"
+    );
+    assert!(!raw.contains(&ms.address_for("operator")), "{raw}");
+    // ...and the operator, who authored the parent, holds no copy of it.
+    assert!(ms.list("operator", "inbox").unwrap().is_empty());
+    assert_eq!(handles(&ms.list("hand", "inbox").unwrap()).len(), 1);
+
+    // The array form redirects too: hand answers back to mind only.
+    let back = fx
+        .call(
+            &fx.key(Some("hand")),
+            "reply",
+            json!({"handle": reply_handle, "to": ["mind"], "body": "on it"}),
+        )
+        .await;
+    assert_eq!(back["from"], "hand", "{back}");
+    assert_eq!(back["delivered"][0]["identity"], "mind", "{back}");
+    assert!(ms.list("operator", "inbox").unwrap().is_empty());
+    let minds = ms.list("mind", "inbox").unwrap();
+    assert_eq!(handles(&minds).len(), 1, "{minds:?}");
+
+    // An explicitly empty or unusable `to` is refused, never silently
+    // redirected back to the parent's sender.
+    for to in [
+        json!(""),
+        json!(" , "),
+        json!([]),
+        json!(["", "hand"]),
+        json!([3]),
+    ] {
+        let message = fx
+            .call_err(
+                &mind,
+                "reply",
+                json!({"handle": handle, "to": to, "body": "x"}),
+            )
+            .await;
+        assert!(message.contains("to must"), "{to:?}: {message}");
+    }
+    // The rejected calls delivered nothing.
+    assert_eq!(handles(&ms.list("hand", "inbox").unwrap()).len(), 1);
+}
+
 #[tokio::test]
 async fn done_and_reopen_move_the_item_as_the_cli_does() {
     let fx = fixture("lifecycle");

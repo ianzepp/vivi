@@ -24,6 +24,8 @@ use super::letters::{
 };
 use super::live::string_list;
 
+mod reply;
+
 const LIST_DEFAULT: usize = 50;
 const LIST_MAX: usize = 100;
 const THREAD_DEFAULT: usize = 20;
@@ -59,7 +61,7 @@ pub fn dispatch(
         "show" => show(store, project_id, identity, arguments),
         "thread" => thread(store, project_id, identity, arguments),
         "send" => send(store, limiter, project_id, identity, arguments),
-        "reply" => reply(store, limiter, project_id, identity, arguments),
+        "reply" => reply::reply(store, limiter, project_id, identity, arguments),
         "done" => settle(store, limiter, project_id, identity, arguments, "done"),
         "reopen" => settle(store, limiter, project_id, identity, arguments, "reopened"),
         "memo" => memo(store, limiter, project_id, identity, arguments),
@@ -351,30 +353,6 @@ fn send(
         "sequence": outcome.sequence,
         "kind": kind,
         "duplicate": outcome.duplicate,
-    }))
-}
-
-fn reply(
-    store: &ProjectStore,
-    limiter: &RateLimiter,
-    project_id: &str,
-    identity: &IdentityRecord,
-    arguments: &Value,
-) -> Result<Value, ToolError> {
-    rate_limit(limiter, project_id, &identity.name)?;
-    let handle = req_str(arguments, "handle")?;
-    let body = req_str(arguments, "body")?;
-    if body.trim().is_empty() {
-        return Err(ToolError::new("body must be non-empty"));
-    }
-    let parent = lookup_one(store, project_id, identity, handle)?;
-    let composed = compose_reply(identity, &parent, body).map_err(ToolError::new)?;
-    let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
-    Ok(json!({
-        "message_id": outcome.message_id,
-        "handle": handle_of(&outcome.message_id),
-        "in_reply_to": handle,
-        "sequence": outcome.sequence,
     }))
 }
 
