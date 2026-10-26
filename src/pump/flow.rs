@@ -205,5 +205,29 @@ mod e2e_gate_repair_test;
 mod e2e_cross_need_test;
 
 #[cfg(test)]
+#[path = "flow/retained_fixture_test.rs"]
+pub(crate) mod retained_fixture;
+
+#[cfg(test)]
+#[path = "flow/retained_roles_test.rs"]
+mod retained_roles_test;
+
+#[cfg(test)]
+#[path = "flow/retained_rework_checkout_test.rs"]
+mod retained_rework_checkout_test;
+
+#[cfg(test)]
+#[path = "flow/retained_plan_restart_test.rs"]
+mod retained_plan_restart_test;
+
+#[cfg(test)]
+#[path = "flow/retained_slice_restart_test.rs"]
+mod retained_slice_restart_test;
+
+#[cfg(test)]
+#[path = "flow/retained_visibility_test.rs"]
+mod retained_visibility_test;
+
+#[cfg(test)]
 #[path = "flow_test.rs"]
 mod tests;
