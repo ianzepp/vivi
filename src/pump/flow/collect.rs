@@ -12,6 +12,7 @@ use crate::pump::attempt_record::hand_message;
 use crate::pump::envelope::correct::correction_n;
 use crate::pump::envelope::roles::{Parsed, RoleKind, parse_for};
 use crate::pump::envelope::{EnvelopeError, split};
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::flow::mail::MailWriter;
@@ -29,6 +30,8 @@ const NEW_FACT_RUN: u32 = 3;
 pub const ENVELOPE_FAILED: &str = "flow-envelope-failed";
 /// Exception kind: the envelope's answer contradicts the machine receipt.
 pub const ENVELOPE_DISAGREES: &str = "flow-envelope-disagrees";
+/// Exception kind: a budget kill had no legal raised retry left.
+pub const BUDGET_EXHAUSTED: &str = "flow-budget-exhausted";
 
 /// What a finished role-step job amounts to.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +74,12 @@ pub fn collect<M: MailWriter>(
     if kind == RoleKind::Merge {
         return merge(ctx, mail, job, step, expected_ref);
     }
+    // A machine-confirmed budget kill classifies before any envelope is
+    // read: the kill is machine evidence, so a plausible partial envelope
+    // in the killed job's own message cannot win over the timeout.
+    if budget_retry::eligible(kind) && budget_retry::is_budget_kill(job) {
+        return budget_kill(ctx, job, step);
+    }
     if job.status != JobStatus::Finished {
         return lost(step);
     }
@@ -89,6 +98,44 @@ fn lost(step: &StepJobRow) -> Collected {
         Collected::Retry
     } else {
         Collected::Failed
+    }
+}
+
+/// A confirmed budget kill of an eligible role: one retry at a raised
+/// budget, then the step counts as failed. A killed correction never reruns
+/// its role, and a historical budget with no legal raise fails with the
+/// stored budget named instead of queueing an invalid or same-budget rerun.
+fn budget_kill(ctx: &Ctx, job: &PoolJob, step: &StepJobRow) -> Collected {
+    // A correction's budget policy is its own: a killed correction is dead,
+    // never BudgetRetry and never another correction.
+    if correction_n(&job.id) > 0 {
+        return Collected::Failed;
+    }
+    if budget_retry::spent(job) {
+        ctx.exception(
+            BUDGET_EXHAUSTED,
+            &step.task,
+            &format!(
+                "{} job {}: killed by its {}s budget and the raised-budget retry is spent",
+                step.node, job.id, job.budget
+            ),
+        );
+        return Collected::Failed;
+    }
+    match budget_retry::raised_budget(job.budget) {
+        Some(raised) => Collected::BudgetRetry { budget: raised },
+        None => {
+            ctx.exception(
+                BUDGET_EXHAUSTED,
+                &step.task,
+                &format!(
+                    "{} job {}: killed by its stored budget of {}s, which has no legal \
+                     raise (zero, at the pool ceiling or oversized); not rerunning",
+                    step.node, job.id, job.budget
+                ),
+            );
+            Collected::Failed
+        }
     }
 }
 

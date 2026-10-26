@@ -1,7 +1,7 @@
 //! Tests for the step collector helpers: a rejected word holds the step, and
 //! `rerun_with` edits the rerun's spec.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use tempfile::{TempDir, tempdir};
@@ -14,6 +14,7 @@ use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::budget_retry::{PAYLOAD_KEY, raised_budget};
+use crate::pump::flow::collect::{BUDGET_EXHAUSTED, Collected, collect};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -292,6 +293,8 @@ fn step_of(rig: &mut Rig, node: &str) -> Result<StepRow, VivariumError> {
 }
 
 /// Run the role collector over job `id` as the first attempt of `node`.
+/// A stored step-job row (a rerun) keeps its real attempt; a fresh job
+/// inserts an attempt-1 row.
 fn collect_role(rig: &mut Rig, id: &str, node: &str) -> Result<StepRow, VivariumError> {
     let step = step_of(rig, node)?;
     let class = rig
@@ -301,14 +304,20 @@ fn collect_role(rig: &mut Rig, id: &str, node: &str) -> Result<StepRow, Vivarium
         .find(|n| n.id == node)
         .map(|n| n.class.clone())
         .ok_or_else(|| VivariumError::Message("no node".into()))?;
-    let row = StepJobRow {
-        job: id.into(),
-        run: 1,
-        node: node.into(),
-        task: step.task.clone(),
-        attempt: 1,
+    let row = match rig.store.step_job(id)? {
+        Some(stored) => stored,
+        None => {
+            let row = StepJobRow {
+                job: id.into(),
+                run: 1,
+                node: node.into(),
+                task: step.task.clone(),
+                attempt: 1,
+            };
+            rig.store.insert_step_job(NEED, &row)?;
+            row
+        }
     };
-    rig.store.insert_step_job(NEED, &row)?;
     let job = rig.jobs.jobs[id].clone();
     let run = rig.store.runs_of(NEED)?.remove(0);
     let decide = |_: &_, _: &_| Err(VivariumError::Message("no decision".into()));
@@ -632,5 +641,285 @@ fn raised_retry_preserves_execution_context() -> R {
     );
     assert_eq!(rig.store.step_job("plan-j1-a2")?.unwrap().attempt, 2);
     assert_eq!(rig.store.step_job("aud-j1-a2")?.unwrap().attempt, 2);
+    Ok(())
+}
+
+/// The seven thinking kinds as (node, role) pairs of the build flow.
+fn budget_nodes() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("research", "researcher"),
+        ("plan", "planner"),
+        ("admit1", "admitter"),
+        ("slice", "slicer"),
+        ("audit1", "auditor"),
+        ("judge1", "judge"),
+        ("cto", "cto"),
+    ]
+}
+
+/// Queue job `id` of `role` for `task` with stored `budget`, killed by it:
+/// either the pool's terminal timeout status with no exit text at all, or a
+/// finished job whose summary head reports agent exit 124.
+fn killed_job(
+    rig: &mut Rig,
+    id: &str,
+    role: &str,
+    task: &str,
+    budget: u64,
+    summary_kill: bool,
+) -> R {
+    let mut spec = JobSpec::new(id, role, role, "s", "b");
+    spec.task = Some(task.to_owned());
+    spec.budget = budget;
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    kill_queued(rig, id, budget, summary_kill)
+}
+
+/// Turn the already-queued job `id` into a kill of its stored `budget`:
+/// either the pool's terminal timeout status with no exit text at all, or a
+/// finished job whose summary head reports agent exit 124.
+fn kill_queued(rig: &mut Rig, id: &str, budget: u64, summary_kill: bool) -> R {
+    let (status, state, receipt) = if summary_kill {
+        (
+            JobStatus::Finished,
+            "finished",
+            format!("unit a1\nagent exit 124 after {budget}s\n\n--- receipt\n"),
+        )
+    } else {
+        (
+            JobStatus::Timeout,
+            "timeout",
+            format!("agent exit 124 after {budget}s\n"),
+        )
+    };
+    let job = rig
+        .jobs
+        .jobs
+        .get_mut(id)
+        .ok_or_else(|| VivariumError::Message("no job".into()))?;
+    job.status = status;
+    job.outcome = Some(JobOutcome {
+        state: state.to_owned(),
+        detail: String::new(),
+        receipt,
+        at: 0,
+    });
+    Ok(())
+}
+
+/// Queue job `id` of `role` for `task` with stored `budget`, lost with
+/// exit-124 text in its receipt: not machine evidence of a budget kill.
+fn lost_job(rig: &mut Rig, id: &str, role: &str, task: &str, budget: u64) -> R {
+    let mut spec = JobSpec::new(id, role, role, "s", "b");
+    spec.task = Some(task.to_owned());
+    spec.budget = budget;
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    let job = rig
+        .jobs
+        .jobs
+        .get_mut(id)
+        .ok_or_else(|| VivariumError::Message("no job".into()))?;
+    job.status = JobStatus::Lost;
+    job.outcome = Some(JobOutcome {
+        state: "lost".to_owned(),
+        detail: String::new(),
+        receipt: format!("agent exit 124 after {budget}s\n"),
+        at: 0,
+    });
+    Ok(())
+}
+
+/// The task handle [`step_of`] uses for `node`, without inserting the step.
+fn task_of(rig: &mut Rig, node: &str) -> Result<String, VivariumError> {
+    Ok(if node == "plan" {
+        rig.plan_step()?.task
+    } else {
+        format!("task-{node}")
+    })
+}
+
+/// One (node, representation) case of the first-kill table: the kill is
+/// classified before any envelope is read, and the collector queues the
+/// raised retry with no closure, no new run, no CTO routing, no correction.
+fn first_kill_case(node: &str, role: &str, summary_kill: bool) -> R {
+    let mut rig = rig()?;
+    let task = task_of(&mut rig, node)?;
+    let id = format!("{node}-j1");
+    killed_job(&mut rig, &id, role, &task, 600, summary_kill)?;
+
+    // Classification: machine evidence, decided before any envelope.
+    let class = rig
+        .def
+        .nodes
+        .iter()
+        .find(|n| n.id == node)
+        .map(|n| n.class.clone())
+        .ok_or_else(|| VivariumError::Message("no node".into()))?;
+    let row = StepJobRow {
+        job: id.clone(),
+        run: 1,
+        node: node.into(),
+        task: task.clone(),
+        attempt: 1,
+    };
+    let job = rig.jobs.jobs[&id].clone();
+    assert_eq!(
+        collect(&rig.ctx, &mut rig.mail, &job, &row, &class, ""),
+        Collected::BudgetRetry { budget: 1_200 },
+        "{node} summary_kill={summary_kill}"
+    );
+
+    let mut nodes_before: BTreeSet<String> = step_nodes(&rig)?;
+    // The collected node's own step row is inserted by the harness, not by
+    // routing: it never counts as a new step.
+    nodes_before.insert(node.to_owned());
+    let runs_before = rig.store.runs_of(NEED)?.len();
+    let held = collect_role(&mut rig, &id, node)?;
+
+    // No closure, no new run, no CTO routing, no correction.
+    assert_eq!(held.state, StepState::Running, "{node}");
+    assert_eq!(rig.store.runs_of(NEED)?.len(), runs_before, "{node}");
+    assert_eq!(step_nodes(&rig)?, nodes_before, "{node}");
+    assert!(!rig.jobs.jobs.contains_key(&format!("{id}-c1")), "{node}");
+
+    // The raised retry: next ordinary attempt, doubled budget, marked.
+    let raised = &rig.jobs.jobs[&format!("{id}-a2")];
+    assert_eq!(raised.budget, 1_200, "{node}");
+    assert_eq!(
+        raised.payload[PAYLOAD_KEY],
+        serde_json::json!(true),
+        "{node}"
+    );
+    assert_eq!(raised.task.as_deref(), Some(task.as_str()), "{node}");
+    let stored = rig.store.step_job(&format!("{id}-a2"))?.unwrap();
+    assert_eq!(stored.attempt, 2, "{node}");
+    assert_eq!(stored.task, task, "{node}");
+    assert!(env_lines(&rig).is_empty(), "{node}");
+    Ok(())
+}
+
+fn step_nodes(rig: &Rig) -> Result<BTreeSet<String>, VivariumError> {
+    Ok(rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .map(|s| s.node)
+        .collect())
+}
+
+#[test]
+fn first_budget_kill_retries_once_at_raised_budget() -> R {
+    for (node, role) in budget_nodes() {
+        for summary_kill in [false, true] {
+            first_kill_case(node, role, summary_kill)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn second_budget_kill_routes_failed() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    killed_job(&mut rig, "plan-j1", "planner", &step.task, 600, true)?;
+    collect_role(&mut rig, "plan-j1", "plan")?;
+
+    // The raised retry is killed by its own budget: the allowance is spent.
+    kill_queued(&mut rig, "plan-j1-a2", 1_200, false)?;
+    let held = collect_role(&mut rig, "plan-j1-a2", "plan")?;
+
+    // The existing failed transition: the step closes `failed`, the CTO
+    // takes over, and no further rerun or correction is queued.
+    assert_eq!(held.state, StepState::Done);
+    assert_eq!(held.verdict.as_deref(), Some("failed"));
+    let cto = rig
+        .store
+        .steps_of(NEED, 1)?
+        .into_iter()
+        .find(|s| s.node == "cto")
+        .ok_or_else(|| VivariumError::Message("no cto step".into()))?;
+    assert_eq!(cto.state, StepState::Pending);
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-a3"));
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-a2-a3"));
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-c1"));
+    assert!(env_lines(&rig).is_empty());
+    let log = rig.exceptions();
+    assert_eq!(log.matches(BUDGET_EXHAUSTED).count(), 1, "{log}");
+    assert!(log.contains("1200s"), "{log}");
+    Ok(())
+}
+
+#[test]
+fn lost_job_retry_keeps_its_budget() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    lost_job(&mut rig, "plan-j1", "planner", &step.task, 600)?;
+    collect_role(&mut rig, "plan-j1", "plan")?;
+
+    // The ordinary rerun: same budget, no budget-retry marker, next attempt.
+    let rerun = &rig.jobs.jobs["plan-j1-a2"];
+    assert_eq!(rerun.budget, 600);
+    assert_eq!(rerun.payload.get(PAYLOAD_KEY), None);
+    assert_eq!(rerun.task.as_deref(), Some(step.task.as_str()));
+    assert_eq!(rig.store.step_job("plan-j1-a2")?.unwrap().attempt, 2);
+    assert_eq!(rig.plan_step()?.state, StepState::Running);
+    assert!(env_lines(&rig).is_empty());
+    Ok(())
+}
+
+#[test]
+fn lost_then_budget_kill_still_gets_one_raised_retry() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    lost_job(&mut rig, "plan-j1", "planner", &step.task, 600)?;
+    collect_role(&mut rig, "plan-j1", "plan")?;
+
+    // Attempt two is killed by its budget: the prior lost retry consumed no
+    // budget-retry allowance, so the raise is still available.
+    kill_queued(&mut rig, "plan-j1-a2", 600, false)?;
+    let held = collect_role(&mut rig, "plan-j1-a2", "plan")?;
+    assert_eq!(held.state, StepState::Running);
+    let retry = &rig.jobs.jobs["plan-j1-a2-a3"];
+    assert_eq!(retry.budget, 1_200);
+    assert_eq!(retry.payload[PAYLOAD_KEY], serde_json::json!(true));
+    assert_eq!(rig.store.step_job("plan-j1-a2-a3")?.unwrap().attempt, 3);
+    assert!(env_lines(&rig).is_empty());
+    Ok(())
+}
+
+#[test]
+fn correction_budget_kill_does_not_rerun_the_role() -> R {
+    for summary_kill in [false, true] {
+        let mut rig = rig()?;
+        let step = rig.plan_step()?;
+        // The original ran and wrote a broken envelope: it gets a correction.
+        finished_job(
+            &mut rig,
+            "plan-j1",
+            "planner",
+            &step.task,
+            receipt(0, "no envelope", ""),
+        )?;
+        collect_role(&mut rig, "plan-j1", "plan")?;
+        assert!(rig.jobs.jobs.contains_key("plan-j1-c1"));
+
+        // The correction itself is killed by its own budget.
+        kill_queued(&mut rig, "plan-j1-c1", 300, summary_kill)?;
+        let held = collect_role(&mut rig, "plan-j1-c1", "plan")?;
+
+        // Failed through the existing transition, never BudgetRetry and
+        // never another correction or a raised rerun.
+        assert_eq!(held.state, StepState::Done, "summary_kill={summary_kill}");
+        assert_eq!(held.verdict.as_deref(), Some("failed"));
+        assert!(!rig.jobs.jobs.contains_key("plan-j1-c2"));
+        assert!(!rig.jobs.jobs.contains_key("plan-j1-a2"));
+        assert!(env_lines(&rig).is_empty());
+        let cto = rig
+            .store
+            .steps_of(NEED, 1)?
+            .into_iter()
+            .find(|s| s.node == "cto");
+        assert!(cto.is_some(), "summary_kill={summary_kill}");
+    }
     Ok(())
 }

@@ -152,10 +152,18 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
             None
         };
         let facts = original.as_ref().unwrap_or(job);
-        // A sync merge job has no publish to read when its agent cannot run:
-        // it takes merge-main's rule (any environment failure), not the
-        // runner-only rule of the other roles.
-        let env = if *class == NodeClass::Merge {
+        // A machine-confirmed budget kill is the role's own time budget, not
+        // its worker: it classifies in `collect`, never as an environment
+        // hold, however noisy the killed receipt is. Genuine non-budget
+        // environment failures still hold.
+        let budget_kill = RoleKind::from_class(class)
+            .is_some_and(|kind| budget_retry::eligible(kind) && budget_retry::is_budget_kill(job));
+        let env = if budget_kill {
+            None
+        } else if *class == NodeClass::Merge {
+            // A sync merge job has no publish to read when its agent cannot
+            // run: it takes merge-main's rule (any environment failure), not
+            // the runner-only rule of the other roles.
             rung_result::env_failure(facts)
         } else {
             runner_env_failure(facts)

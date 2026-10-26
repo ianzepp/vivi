@@ -4,7 +4,7 @@ use std::fs;
 
 use tempfile::{TempDir, tempdir};
 
-use super::{Collected, collect};
+use super::{BUDGET_EXHAUSTED, Collected, collect};
 use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
@@ -73,6 +73,22 @@ fn run(f: &mut Fixture, job: &PoolJob, attempt: u32, class: &NodeClass) -> Colle
 
 const PLANNED: &str = "+++\nanswer = \"planned\"\n+++\nThe plan.";
 const BROKEN: &str = "+++\nanswer = \"planned\"\nproof = 'x'\n+++\nThe plan.";
+
+/// A pool summary head reporting the timeout exit.
+const KILL_SUMMARY: &str = "unit a1\nagent exit 124 after 600s\npool: local";
+
+/// A finished job the pool reports as agent exit 124, with `message` as the
+/// hand's receipt section: the machine kill and the model's words in one
+/// receipt.
+fn killed_receipt(message: &str) -> String {
+    format!("{KILL_SUMMARY}\n\n--- receipt\n{message}")
+}
+
+/// `job` with a stored time budget.
+fn with_budget(mut job: PoolJob, budget: u64) -> PoolJob {
+    job.budget = budget;
+    job
+}
 
 #[test]
 fn a_valid_envelope_is_the_outcome() {
@@ -157,14 +173,115 @@ fn a_third_broken_output_is_failed_with_an_alarm() {
 }
 
 #[test]
-fn timeout_and_lost_retry_then_fail() {
-    for status in [JobStatus::Timeout, JobStatus::Lost] {
+fn timeout_and_lost_follow_two_separate_retry_policies() {
+    // Lost is not machine evidence of a budget kill, even with exit-124
+    // text in its receipt: it keeps the ordinary attempt<2 allowance and an
+    // unchanged budget.
+    for attempt in [1, 2] {
         let mut f = fixture();
-        let j = job("j1", status, PLANNED);
-        assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Retry);
-        assert_eq!(run(&mut f, &j, 2, &NodeClass::Planner), Collected::Failed);
+        let j = with_budget(
+            job("j1", JobStatus::Lost, "agent exit 124 after 600s\n"),
+            600,
+        );
+        let got = run(&mut f, &j, attempt, &NodeClass::Planner);
+        assert_eq!(
+            got,
+            if attempt == 1 {
+                Collected::Retry
+            } else {
+                Collected::Failed
+            }
+        );
         assert!(exceptions(&f).is_empty());
     }
+    // A timeout is a budget kill: it follows the budget rule instead of the
+    // attempt rule, at any ordinary attempt, once at a raised budget.
+    let mut f = fixture();
+    let j = with_budget(
+        job("j1", JobStatus::Timeout, "agent exit 124 after 600s\n"),
+        600,
+    );
+    assert_eq!(
+        run(&mut f, &j, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert_eq!(
+        run(&mut f, &j, 2, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn budget_kill_beats_a_partial_valid_envelope() {
+    // A full valid envelope in the killed job's hand message does not win
+    // over the machine kill.
+    let mut f = fixture();
+    let j = with_budget(
+        job("j1", JobStatus::Finished, &killed_receipt(PLANNED)),
+        600,
+    );
+    assert_eq!(
+        run(&mut f, &j, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    // A plausible but broken envelope neither wins nor corrects.
+    let mut f = fixture();
+    let j = with_budget(job("j1", JobStatus::Finished, &killed_receipt(BROKEN)), 600);
+    assert_eq!(
+        run(&mut f, &j, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn a_budget_kill_without_a_legal_raise_fails_and_names_the_stored_budget() {
+    // Historical zero, pool-ceiling and oversized budgets have no strict
+    // raise: the step fails with the stored budget named, queueing nothing.
+    for budget in [0u64, 43_200, 50_000] {
+        let mut f = fixture();
+        let j = with_budget(
+            job("j1", JobStatus::Finished, &killed_receipt(PLANNED)),
+            budget,
+        );
+        assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Failed);
+        let text = exceptions(&f);
+        assert!(text.contains(BUDGET_EXHAUSTED), "{text}");
+        assert!(text.contains("j1"), "{text}");
+        assert!(text.contains(&budget.to_string()), "{text}");
+    }
+}
+
+#[test]
+fn machine_negatives_through_collect_do_not_escalate_to_a_budget_retry() {
+    // A successful reply whose receipt section, stderr tail and runner log
+    // tail merely mention agent exit 124: the summary exit decides, so the
+    // envelope is the outcome.
+    let noisy = "unit a1\nagent exit 0 in 8s\n\n--- receipt\n+++\nanswer = \"planned\"\n+++\
+                 \nThe plan mentions agent exit 124 in passing.\n\n--- stderr tail\n\
+                 `cargo test` exited: agent exit 124\n\n--- runner log tail\n\
+                 child command output: agent exit 124 after 30s";
+    let mut f = fixture();
+    let j = with_budget(job("j1", JobStatus::Finished, noisy), 600);
+    let got = run(&mut f, &j, 1, &NodeClass::Planner);
+    assert!(
+        matches!(&got, Collected::Outcome(word, _) if word == "planned"),
+        "{got:?}"
+    );
+    // A legacy receipt whose summary head mentions the exit only after the
+    // hand's own text: the boundary hides it from the kill check.
+    let legacy = "unit a1\nagent exit 0 in 8s\nhand's final message:\n\
+                  I saw agent exit 124 in a log line.\n\n--- receipt\n+++\n\
+                  answer = \"planned\"\n+++\nResolved.";
+    let mut f = fixture();
+    let j = with_budget(job("j1", JobStatus::Finished, legacy), 600);
+    let got = run(&mut f, &j, 1, &NodeClass::Planner);
+    assert!(
+        matches!(&got, Collected::Outcome(word, _) if word == "planned"),
+        "{got:?}"
+    );
+    assert!(exceptions(&f).is_empty());
 }
 
 #[test]
