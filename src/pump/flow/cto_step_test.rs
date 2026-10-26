@@ -374,3 +374,66 @@ fn an_unchanged_fanout_whose_branch_moved_says_the_tips_differ() {
     assert!(spec.body.contains(&line), "{}", spec.body);
     assert!(!spec.body.contains("=="), "{}", spec.body);
 }
+
+#[test]
+fn with_no_need_branch_row_the_brief_says_rework_is_unavailable() {
+    let f = fixture();
+    let run = two_runs(&f, "defects");
+    let spec = start(&f, &run);
+    assert!(
+        spec.body.contains("## Rework availability"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body.contains("No need-branch row exists"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("rework is unavailable"), "{}", spec.body);
+    assert!(
+        spec.body
+            .contains("Research, plan, slice and lock remain the choices"),
+        "{}",
+        spec.body
+    );
+}
+
+#[test]
+fn a_stored_need_branch_row_names_the_branch_and_target_for_rework() {
+    let f = fixture();
+    let run = two_runs(&f, "defects");
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            need: NEED.into(),
+            branch: "vivi/need/need-1-reworkable".into(),
+            base: None,
+            status: "live".into(),
+            run: run.run,
+            target: "gate-distinctive".into(),
+            priors: Vec::new(),
+        })
+        .unwrap();
+    let spec = start(&f, &run);
+    assert!(
+        spec.body.contains("## Rework availability"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        spec.body.contains("vivi/need/need-1-reworkable"),
+        "{}",
+        spec.body
+    );
+    assert!(spec.body.contains("gate-distinctive"), "{}", spec.body);
+    assert!(
+        spec.body.contains("rework restarts the need at rework1"),
+        "{}",
+        spec.body
+    );
+    assert!(
+        !spec.body.contains("rework is unavailable"),
+        "{}",
+        spec.body
+    );
+}
