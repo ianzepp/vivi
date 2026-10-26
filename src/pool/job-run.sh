@@ -767,14 +767,17 @@ if [ -f "$J/extra-targets.env" ]; then
 fi
 
 mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finish workdir_missing
-if [ -n "$EXTRA_NOTE" ]; then
-  {
-    printf '\n\n## Repositories\n\n'
-    printf 'Your working directory is %s. The other configured repositories are checked out\n' "${TARGET:-the default repository}"
-    printf 'beside it, read-only: read them freely; never edit them, nothing in them is kept.\n\n'
-    printf -- '- %s: %s (your working directory)\n%s' "${TARGET:-default}" "$RD" "$EXTRA_NOTE"
-  } >> "$AGENT_HOME/brief.md" || finish workdir_missing
-fi
+# Every brief names the primary checkout path exactly once, whatever the
+# layout; extra repositories, when the job carries any, are described
+# read-only beneath it. Only paths travel here, never URLs or tokens.
+{
+  printf '\n\n## Repositories\n\n'
+  printf -- '- %s: %s (your working directory)\n' "${TARGET:-default}" "$RD"
+  if [ -n "$EXTRA_NOTE" ]; then
+    printf 'The other configured repositories are checked out beside it, read-only:\n'
+    printf 'read them freely; never edit them, nothing in them is kept.\n\n%s' "$EXTRA_NOTE"
+  fi
+} >> "$AGENT_HOME/brief.md" || finish workdir_missing
 [ ! -f "$J/mcp.json" ] || cp "$J/mcp.json" "$AGENT_HOME/" || finish workdir_missing
 HAND_FILES="$AGENT_HOME/brief.md $AGENT_HOME/rules.md"
 [ ! -f "$AGENT_HOME/mcp.json" ] || HAND_FILES="$HAND_FILES $AGENT_HOME/mcp.json"

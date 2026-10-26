@@ -335,6 +335,14 @@ fn extra_targets_are_fetched_read_only_beside_the_job_and_named_in_the_brief() {
         )),
         "{brief}"
     );
+    // The primary checkout path is named exactly once, with the extra
+    // repositories described read-only beneath it.
+    let primary = rig.repo().display().to_string();
+    assert!(
+        brief.contains(&format!("- default: {primary} (your working directory)")),
+        "{brief}"
+    );
+    assert_eq!(brief.matches(&primary).count(), 1, "{brief}");
     // The token file is gone and no credential is left in the extra checkout.
     assert!(!rig.work.path().join("job/extra-targets.env").exists());
     assert!(!checkout.join(".git/FETCH_HEAD").exists());
@@ -377,6 +385,10 @@ fn extra_targets_in_a_worktree_slot_are_the_providers_checkouts_moved_to_their_c
     assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
     assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), first);
     assert_eq!(result.get("extra_0_target"), "inferentia");
+    // The worktree slot's brief also names its own checkout exactly once.
+    let brief = std::fs::read_to_string(rig.work.path().join("home/brief.md")).unwrap();
+    let primary = rig.repo().display().to_string();
+    assert_eq!(brief.matches(&primary).count(), 1, "{brief}");
 }
 
 #[test]

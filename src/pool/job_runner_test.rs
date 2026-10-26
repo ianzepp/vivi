@@ -539,3 +539,49 @@ fn one_slot_reuses_isolated_target_caches_across_a_b_a_jobs() {
     );
     assert_eq!(git(&rig.repo(), &["rev-parse", "HEAD"]), rig.start);
 }
+
+#[test]
+fn the_untargeted_brief_names_the_primary_checkout_path_exactly_once() {
+    let rig = Rig::new();
+    let copy = rig.work.path().join("brief-from-harness.md");
+    let harness = format!("cat \"$HOME/brief.md\" > {}", copy.display());
+
+    let result = rig.run(&harness, "build");
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    let brief = std::fs::read_to_string(&copy).unwrap();
+    assert!(brief.starts_with("review it\n"), "{brief}");
+    let path = rig.repo().display().to_string();
+    assert!(
+        brief.contains(&format!("- default: {path} (your working directory)")),
+        "{brief}"
+    );
+    assert_eq!(brief.matches(&path).count(), 1, "{brief}");
+}
+
+#[test]
+fn the_targeted_brief_names_the_primary_checkout_path_exactly_once() {
+    let rig = Rig::new();
+    let key = "a".repeat(64);
+    let copy = rig.work.path().join("brief-from-harness.md");
+    let harness = format!("cat \"$HOME/brief.md\" > {}", copy.display());
+
+    let result = rig.run_in_context(&harness, "build", &[], &rig.f.repo, Some(("a", &key)));
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    assert_eq!(result.get("target"), "a");
+    let brief = std::fs::read_to_string(&copy).unwrap();
+    let path = rig
+        .work
+        .path()
+        .join("targets")
+        .join(&key)
+        .join("repo")
+        .display()
+        .to_string();
+    assert!(
+        brief.contains(&format!("- a: {path} (your working directory)")),
+        "{brief}"
+    );
+    assert_eq!(brief.matches(&path).count(), 1, "{brief}");
+}
