@@ -5,9 +5,11 @@
 //! need), on one target: the row records the target of the need's first
 //! slice, and every later read uses that target.
 //!
-//! A restarted run keeps the need branch for a `rework1` entry; every other
-//! entry moves it to its prior name (publish the prior name, delete the old
-//! name) and cuts a fresh one. [`BranchRestarts`] does that over several ticks.
+//! A restarted build run adopts the live row into the newer run: the branch,
+//! its target, base and priors stay as they are. A row left `renaming` or
+//! `deleting` by an older binary finishes that move over several ticks
+//! (publish the prior name, delete the old name), then the row is cut fresh.
+//! [`BranchRestarts`] does all of that.
 
 use crate::error::VivariumError;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -29,8 +31,6 @@ pub const DELETING: &str = "deleting";
 /// The need landed and its refs were cleaned up.
 pub const PRUNED: &str = "pruned";
 
-/// The restart entry that keeps the need branch.
-const REWORK_ENTRY: &str = "rework1";
 /// Exception kind for a need branch move that could not run or failed.
 pub(crate) const RENAME_FAILED: &str = "flow-need-branch-rename-failed";
 
@@ -58,14 +58,19 @@ fn ls_remote(target: &Ctx, remote_ref: &str) -> Result<Option<String>, VivariumE
 
 /// Record the base of `need` for run `run`: the target's main tip, read once.
 ///
-/// A `live` row for this run returns its base unchanged. A `renaming` or
-/// `deleting` row is an error: the old branch is still being moved. Any other
-/// row (or none) is written as `live` with the current main tip, keeping its
-/// `priors`.
+/// A `live` row with a base returns that base for its run and for every later
+/// run: the base is the tip the branch was cut from and survives restarts,
+/// independently of the restart bookkeeping that moves the run forward. A
+/// `renaming` or `deleting` row is an error: the old branch is still being
+/// moved. A row from a newer run is refused: ownership moves forward only. A
+/// `live` row whose target differs from `target` is refused too: the stored
+/// base belongs to that target. Any other row (or none) is written as `live`
+/// with the current main tip, keeping its `priors`.
 ///
 /// # Errors
-/// Returns [`VivariumError`] for an unknown target, a moving old branch, a
-/// missing main ref, or a failed ls-remote or store write.
+/// Returns [`VivariumError`] for an unknown target, a moving old branch, a row
+/// from a newer run, a target mismatch, a missing main ref, or a failed
+/// ls-remote or store write.
 pub fn record_base(
     ctx: &Ctx,
     store: &PumpStore,
@@ -81,10 +86,21 @@ pub fn record_base(
                 row.status
             )));
         }
+        if row.run > run {
+            return Err(VivariumError::Other(format!(
+                "need branch of {need} belongs to run {}, which is newer than run {run}",
+                row.run
+            )));
+        }
         if row.status == LIVE
-            && row.run == run
             && let Some(base) = &row.base
         {
+            if row.target != target {
+                return Err(VivariumError::Config(format!(
+                    "need branch of {need} lives on target {} but a base was asked for target {target}",
+                    row.target
+                )));
+            }
             return Ok(base.clone());
         }
     }
@@ -126,8 +142,8 @@ pub fn tip(ctx: &Ctx, store: &PumpStore, need: &str) -> Result<Option<String>, V
 }
 
 /// The restart rule as a tick phase: for each live run whose need branch row
-/// belongs to an older run, keep the branch (`rework1`) or move it to its
-/// prior name and reset the row.
+/// belongs to an older run, adopt the live row into the newer run, or finish
+/// a move to a prior name that an older binary left in flight.
 struct BranchRestarts;
 
 impl<S: JobStore, M: FlowMail> TickPhase<S, M> for BranchRestarts {
@@ -172,6 +188,20 @@ fn restart_run<S: JobStore>(
     restart(ctx, st, store, run, row)
 }
 
+/// Adopt the live row into the newer run: the branch, target, base and priors
+/// stay as they are; only the recorded run moves. Idempotent — a repeated
+/// tick writes the same row — and needs neither a merge role nor a pool.
+fn adopt(store: &PumpStore, run: &RunRow, row: &NeedBranchRow) -> Result<(), VivariumError> {
+    store.upsert_need_branch(&NeedBranchRow::for_run(
+        run,
+        row.branch.clone(),
+        row.base.clone(),
+        &row.status,
+        &row.target,
+        row.priors.clone(),
+    ))
+}
+
 fn restart<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -180,15 +210,7 @@ fn restart<S: JobStore>(
     row: NeedBranchRow,
 ) -> Result<(), VivariumError> {
     match row.status.as_str() {
-        LIVE if run.entry == REWORK_ENTRY => store.upsert_need_branch(&NeedBranchRow::for_run(
-            run,
-            row.branch,
-            row.base,
-            &row.status,
-            &row.target,
-            row.priors,
-        )),
-        LIVE => begin_rename(ctx, st, store, run, &row),
+        LIVE => adopt(store, run, &row),
         RENAMING => continue_rename(ctx, st, store, run, &row),
         DELETING => continue_delete(ctx, st, store, run, &row),
         _ => Ok(()),
@@ -276,8 +298,9 @@ fn old_tip(ctx: &Ctx, row: &NeedBranchRow) -> Result<Option<String>, VivariumErr
     ls_remote(&target, &format!("refs/heads/{}", row.branch))
 }
 
-/// Step 2: publish the old tip under the prior name, or reset when no remote
-/// branch exists.
+/// Recovery: publish the old tip under the prior name, or reset when no
+/// remote branch exists. Reached only for a row already `renaming` that has
+/// lost its job; a normal restart never starts a move.
 fn begin_rename<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -311,7 +334,7 @@ fn finished_with(job: &PoolJob, proof: impl Fn(&JobOutcome) -> bool) -> bool {
     job.status == JobStatus::Finished && job.outcome.as_ref().is_some_and(proof)
 }
 
-/// Step 3: when the publish succeeded, delete the old name.
+/// Recovery: when the publish succeeded, delete the old name.
 fn continue_rename<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
@@ -371,7 +394,7 @@ fn enqueue_cut<S: JobStore>(
     store.set_need_branch_status(&row.need, DELETING)
 }
 
-/// Step 4: when the old name is deleted, the row is free for the new run.
+/// Recovery: when the old name is deleted, the row is free for the new run.
 fn continue_delete<S: JobStore>(
     ctx: &Ctx,
     st: &mut S,
