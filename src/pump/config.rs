@@ -324,15 +324,17 @@ impl PumpConfig {
         self.dispatch.from.as_deref().unwrap_or(&self.main)
     }
 
-    /// `--to` of thread replies: `board.reply_to`, else the first of
-    /// `board.from`, else empty.
+    /// `--to` of the pump's own sends and thread replies: `board.reply_to`,
+    /// else the first of `board.from`, else `operator`. It is never empty: an
+    /// empty value would drop the argument of `need send --to`, and that send
+    /// would fail on every tick.
     #[must_use]
     pub fn reply_to(&self) -> String {
         self.board
             .reply_to
             .clone()
             .or_else(|| self.board.from.first().cloned())
-            .unwrap_or_default()
+            .unwrap_or_else(|| String::from("operator"))
     }
 
     /// The kind a unit's `tools` value selects (`default_kind` when `tools` is

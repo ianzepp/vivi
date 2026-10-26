@@ -151,7 +151,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.merge.format, "");
     assert_eq!(cfg.merge.remote_limit, 1800);
     assert_eq!(cfg.dispatch_from(), "main");
-    assert_eq!(cfg.reply_to(), "");
+    assert_eq!(cfg.reply_to(), "operator");
 }
 
 #[test]
@@ -731,4 +731,14 @@ fn a_pump_table_carrying_keys_validate_refuses_still_parses_and_validates() {
     assert_eq!(cfg.merge.format, "cargo fmt");
     cfg.validate(Path::new("."), &[])
         .expect("the pump's own validation does not read the refused keys");
+}
+
+#[test]
+fn reply_to_prefers_the_board_setting_then_the_first_sender_then_the_operator() {
+    let mut cfg = PumpConfig::default();
+    assert_eq!(cfg.reply_to(), "operator");
+    cfg.board.from = vec!["ian".into(), "mind".into()];
+    assert_eq!(cfg.reply_to(), "ian");
+    cfg.board.reply_to = Some("team".into());
+    assert_eq!(cfg.reply_to(), "team");
 }

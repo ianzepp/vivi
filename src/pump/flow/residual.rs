@@ -196,12 +196,7 @@ pub(crate) fn one_line(text: &str) -> String {
 }
 
 fn ordinary_recipient(ctx: &Ctx) -> String {
-    let configured = ctx.cfg.reply_to();
-    if configured.is_empty() {
-        String::from("operator")
-    } else {
-        configured
-    }
+    ctx.cfg.reply_to()
 }
 
 fn short_hash(value: &str) -> String {

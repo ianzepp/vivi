@@ -358,3 +358,14 @@ fn no_repaired_key_keeps_todays_behavior() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn a_project_with_no_board_recipient_files_the_repair_need_to_the_operator() -> R {
+    let mut rig = rig()?;
+    assert!(rig.ctx.cfg.board.reply_to.is_none() && rig.ctx.cfg.board.from.is_empty());
+    rig.red("default", &["a::t1"])?;
+    let sends = rig.sends();
+    assert!(sends[0].contains(" --to operator "), "{}", sends[0]);
+    assert!(!sends[0].contains("--to --"), "{}", sends[0]);
+    Ok(())
+}
