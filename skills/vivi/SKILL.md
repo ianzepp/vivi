@@ -241,6 +241,13 @@ this keeps the `main` it has.
 
 ### Adding a lane
 
+Every lane vivi makes (`project create`, `lane add`) sets
+`uploadpack.allowReachableSHA1InWant = true`: pool jobs fetch their start
+commit by SHA, and once the pump moves the integration branch past it a lane
+without the setting refuses the commit, so the job fails with `fetch_failed`.
+A lane made before 22.0.0 needs it set by hand, once:
+`git -C <lane>.git config uploadpack.allowReachableSHA1InWant true`.
+
 `vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
 [--seed]` adds one repository target to a project that already exists: the
 group-shared bare repo `L/<project>/<id>.git` (`<project>` is the project
@@ -2569,6 +2576,7 @@ vivi pump target remove <id>
 vivi pump rungs show [--target <id>]
 vivi pump rungs set <task|need|main|release> <command> [--target <id>]
 vivi pump send --need <need> [--from <id>] [--body TEXT]
+vivi need send --from <id> --to <id> --subject <text> --body <text> --done-when <clause> --dispatch [--priority <level>]
 vivi pump list [--need <need>] [--status open|done|all] [--json]
 vivi pump show <record> [--json]
 vivi pump done <record> [--note TEXT]
@@ -2603,6 +2611,13 @@ Control, priority, requeue, replan, withdraw, answer and unlock commands accept
 control mode in **&lt;project&gt;/.vivi/pump/pump.db**. A second writer for the same
 home is refused.
 
+A **priority level** is a nonnegative i64 integer, under one operator ruling:
+the same levels as `vivi pump priority set`; higher is more urgent, 0 or
+absent means none. Writing 0 clears the level (no row is kept for 0); no
+negative level exists. Priority is local scheduling state keyed by the
+record's canonical need in the configured pump home — never need front matter
+and never a field on the record letter.
+
 ### Records and runs
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
@@ -2613,15 +2628,40 @@ the **tested** tip; see
 [the pump record](references/envelope.md#pump-record). Without a **kind** the
 run kind is the need's mark (`research`, `release` or `repair`), else `build`.
 A need holds at most one open record; a second send is refused and names it.
-**pump send** also refuses a need that is done, a handle that is not a need and
-a need that is not addressed to **[pump] reply_from** (or held under another
-mailspace's address). **pump done --note** closes a record with any outcome
+**pump send** also refuses a need that is done and a handle that is not a
+need. It is the record, not the need, that is addressed to the pump: a need
+may sit with any local role — one addressed to a third party dispatches the
+same way. **pump done --note** closes a record with any outcome
 text; a later dispatch of the same need is a new record, and **pump history**
 lists them oldest first. **pump reopen** is refused while another record of the
 need is open; check and send are one store transaction, so two concurrent sends
 cannot both open a record. A record is the pump's own, local to its mailspace:
 it is not backlog work (no graph node, never dispatched by **vivi step**) and
 **vivi sync** does not carry it.
+
+**One-command filing.** `vivi need send` takes **--dispatch**, with an
+optional **--priority &lt;level&gt;**, as a convenience over separate filing and
+pump calls. The sequence: file the need letter and finish any **--mark**
+slugs, open one record with the ordinary pump-send defaults (**[pump]
+reply_from** as recipient, **[pump] from** as sender), then — only when
+**--priority** is present — write the level. It is not a combined transaction,
+a pump start or a tick: the pump still picks the record up at its next tick.
+The two-command workflow and explicit **vivi pump send --need &lt;need&gt;** stay
+the delegated-dispatch path, including needs addressed to third parties.
+Dispatch requires effective **[pump]** configuration and resolves **[pump]
+reply_from** against a delivered copy of the need: **To**, **Cc**, an alias
+and local-address forms all count; the same name under another mailspace does
+not. These checks run after the need is filed and require no runnable pool.
+The level and its ruling are the pump's own (see priority above);
+**--priority 0** still requires **--dispatch** and clears through the
+ordinary priority write, while omitting the flag performs no priority write.
+
+**Recovering a partial dispatch.** The steps publish in sequence and are not
+atomic. A refused dispatch exits nonzero and leaves the filed need and its
+marks in place; a failed priority write exits nonzero after reporting the open
+record and leaves need and record in place. Recover from the reported handles
+with the explicit commands — **pump send --need**, **pump priority set** or
+**pump priority clear** — rather than blindly refiling the need.
 
 **A pump record is the pump's intake.** Each tick the pump starts a run for
 each need that has an open record and no run: repair first, then by **pump
@@ -2649,10 +2689,21 @@ the need's open pump record. Each posts one `mail` reply on the record whose
 front matter is an action (**action**, **need**, and per action **unit**,
 **step**, **word**; see [the pump action](references/envelope.md#pump-action));
 the body is the reason. The pump applies each letter once, at its next tick. A
-need with no open record is refused and nothing is posted, so send a record
-first (**vivi pump send --need**). An action on a closed record is never
-applied, and a refused one raises **flow-action-refused**. The library call is
-**Mailspace::pump_post_action**; it prints nothing.
+need with no open record is refused and nothing is posted. An action on a
+closed record is never applied, and a refused one raises
+**flow-action-refused**. The library call is **Mailspace::pump_post_action**;
+it prints nothing.
+
+**vivi pump withdraw** checks every named need before it posts: one need
+without an open pump record refuses the entire call, names that need, and
+nothing is posted. A blank **--reason** is refused before anything is posted
+too. When the need must never run, close it on the board instead:
+**vivi need done &lt;handle&gt; --for &lt;identity&gt; --note "..."**
+records no need verdict, and **vivi pump send --need** refuses a done need,
+so no run starts. Only when a dispatch should exist, open a record with
+**vivi pump send --need &lt;need&gt;** and withdraw it. Send is intake and the
+next tick starts a run from an open record; it is not the general way to
+stop a need.
 
 - **requeue** queues a step's newest job again at the same attempt. It takes
   the step task's handle (see **vivi step**), and is refused unless that job is
@@ -2661,8 +2712,12 @@ applied, and a refused one raises **flow-action-refused**. The library call is
   **requeue --job &lt;job-id&gt;** releases it.
 - **replan** restarts the live run at **plan** as a new run; the old run and its
   open step tasks close **superseded**.
-- **withdraw** closes the need **withdrawn**; the pump then closes every open
-  step task and the record **withdrawn**.
+- **withdraw** closes the need **withdrawn** as the pump identity, so the close
+  travels; the pump then closes the record **withdrawn**, and a live run closes
+  every open step task **withdrawn**. The need verdict **withdrawn** is written
+  only by **vivi pump withdraw**, and only while a pump record is open. If the
+  need is already closed, the call reports "need already closed" and leaves
+  its verdict alone; **vivi need done** records no verdict.
 - **answer** gives a held step its word (one of the step's words, **failed**
   included); the pump routes the run from it.
 - **unlock** restarts a locked run at the flow's first entry (**plan** for
@@ -2720,9 +2775,27 @@ It may publish only to the target's main, **vivi/need/&lt;x&gt;**,
 
 A red main files a **repair** need for the target (one per target; a repeat
 red with the same failing set does nothing). Its run makes up to two repairer
-attempts, each tested on a repair branch and merged to main. If both fail the
-run ends unrepaired: main stays red and the pump raises an alarm for the
-operator.
+attempts — the **fix1** and **fix2** jobs — each tested on a repair branch
+and merged to main. If both fail the run ends unrepaired: main stays red and
+the pump raises an alarm for the operator.
+
+Each newly constructed repair job carries one hard time cap:
+**[pump] repair_attempt_secs** — seconds, default 1800, accepted range 1
+through 43200 inclusive. The job brief advertises the exact same seconds
+value, and the cap covers everything the repairer does inside that job,
+builds and tests included. The main-rung job the pump runs afterwards on the
+repair branch has its own timeout. **[pump.dispatch] budget** is a different
+control and does not size repair attempts. A valid reload of the key applies
+to newly constructed repair jobs only; already-created pending or dispatched
+jobs keep their saved budget, and an automatic lost-job rerun reruns the
+saved job with its saved budget. The two-attempt policy and the meaning of an
+`overtime` attempt are unchanged. For repairs that need more room the recipe
+is a larger cap, e.g. **repair_attempt_secs = 7200** under **[pump]**; that
+admits longer attempts and does not guarantee that a slow repair finishes. A
+project that copied the shipped repairer charter keeps its own copy — it is
+not overwritten automatically — so remove any old fixed-limit text by hand.
+The flow details are in
+[the pump contract](references/pump-contract.md#repair-flow).
 
 ### Cadence and research
 
@@ -2752,6 +2825,7 @@ main = "main"
 committer_name = "<name>"
 committer_email = "<email>"
 tick = 20
+repair_attempt_secs = 1800   # seconds per new fix1/fix2 repair job; 1..=43200
 from = "operator"
 to = "hand"
 reply_from = "mind"
@@ -2902,6 +2976,28 @@ After merging the delivered branch, the merge role runs `delivery close`. The
 command accepts the delivery need, records `main` and the merge commit as close
 provenance, and `need show` exposes the result. For general task or need closes,
 see [close provenance](#close-provenance).
+
+## Server
+
+The hosted project server (formerly the separate `vivi-server` binary) is part
+of vivi: one release ships both.
+
+```sh
+vivi server run              # foreground, for an OS service manager
+vivi server run --help       # the environment variables it reads
+vivi server run --version
+```
+
+It is configured only by environment variables (`BIND`, `PORT`, `DATA_DIR`,
+`STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN`, `HOST_OPERATOR_TOKEN`, the
+`HOST_*` settings, `RUST_LOG`); the three secrets may instead come from
+systemd credentials (`LoadCredential=`). It starts single-threaded, before
+vivi's own runtime: it makes itself non-dumpable and takes its secrets out of
+the environment first. A link named `vivi-server` to the `vivi` binary runs
+the server too, so a unit or script that called the old binary keeps working.
+Its log target is `vivi::server` (the default filter is
+`vivi::server=info,tower_http=info`). The wire contract, design notes and
+changelog are under `docs/server/`, the smoke scripts under `scripts/server/`.
 
 ## Proxy
 

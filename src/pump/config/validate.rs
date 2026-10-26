@@ -160,6 +160,7 @@ impl PumpConfig {
         }
         self.validate_board(&mut found);
         self.validate_dispatch(&mut found);
+        self.validate_repair_attempt(&mut found);
         validate_rungs("[pump.rungs]", &self.rungs, pools, &mut found);
         if self.targets.is_empty() {
             validate_rung_pools("[pump.rungs]", &self.effective_rungs(None), &mut found);
@@ -254,6 +255,18 @@ impl PumpConfig {
             } else {
                 found.invalid(format!("{key} must be positive and strictly below {max}"));
             }
+        }
+    }
+
+    /// `repair_attempt_secs` is the seconds budget of each newly constructed
+    /// repair fix-job, so it shares the pool dispatch budget range.
+    fn validate_repair_attempt(&self, found: &mut Findings) {
+        if !crate::pool::dispatch::BUDGET_RANGE.contains(&self.repair_attempt_secs) {
+            found.invalid(format!(
+                "pump.repair_attempt_secs must be between {} and {} seconds",
+                crate::pool::dispatch::BUDGET_RANGE.start(),
+                crate::pool::dispatch::BUDGET_RANGE.end()
+            ));
         }
     }
 }

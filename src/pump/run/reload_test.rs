@@ -264,6 +264,62 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
 }
 
 #[test]
+fn the_repair_budget_reloads_live_and_an_invalid_budget_is_refused() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+    write_toml(dir.path(), &toml(2, ""));
+    let (mut ctx, _host) = running(dir.path());
+    let mut fingerprint = None;
+    let mut last_error = None;
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        ctx.cfg.repair_attempt_secs, 1800,
+        "omitted key keeps the default"
+    );
+    assert!(last_error.is_none());
+    assert!(exceptions(&ctx).is_empty());
+
+    let with_budget = |secs: &str| {
+        toml(2, "").replace(
+            "[pump]\n",
+            &format!("[pump]\nrepair_attempt_secs = {secs}\n"),
+        )
+    };
+    write_toml(dir.path(), &with_budget("7200"));
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        ctx.cfg.repair_attempt_secs, 7200,
+        "live reload installs the budget"
+    );
+    assert!(last_error.is_none());
+    assert!(exceptions(&ctx).is_empty());
+
+    for secs in ["43201", "0"] {
+        write_toml(dir.path(), &with_budget(secs));
+        assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+        assert_eq!(
+            ctx.cfg.repair_attempt_secs, 7200,
+            "last valid budget stays live"
+        );
+        let lines = exceptions(&ctx);
+        assert!(
+            !lines.is_empty(),
+            "refusal records the config-reload-refused kind"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("repair_attempt_secs"))
+        );
+    }
+
+    // The refused snapshots never displaced the retained 7200 fingerprint.
+    write_toml(dir.path(), &with_budget("7200"));
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(ctx.cfg.repair_attempt_secs, 7200);
+}
+
+#[test]
 fn a_changed_pump_home_keeps_the_running_home_and_still_applies_the_rest() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".vivi")).unwrap();

@@ -1,0 +1,95 @@
+
+######## R1 no vivi route vouches a member (F1)
+$ vivi mail send --from mind --to postmaster ...
+error: message error: unknown local role 'postmaster'; add it with `vivi role add postmaster`
+$ vivi mail send --from mind --to postmaster@$PA.local ...
+error: message error: unknown local role 'postmaster'; add it with `vivi role add postmaster`
+$ vivi mail send --from mind --to postmaster@deadbeef.local ...
+sent 414592da
+queued for sync: postmaster@deadbeef.local
+sync push: 1 sent, 0 already on server
+sync pull: 2 fetched, 1 new (1 inbox), 1 already present, 0 reply link(s), 0 refused, cursor 2
+$ vivi sync join (carol)
+error: message error: this key has not been vouched for as 'carol' in project tvwv1-m54t1-n1mf2-rq4f4-zzgcc; ask a member to vouch for fingerprint 7c8796c98a337042c3143d6218e7951b635085ac537fde4d75185
+
+######## R2 chat outbox poison blocks every later send, all rooms (F2); chat leave orphans rows (F3)
+created qd7k1-ja2ek-6f0d4-gdcfj-xc0dn
+R=qd7k1-ja2ek-6f0d4-gdcfj-xc0dn
+joined qd7k1-ja2ek-6f0d4-gdcfj-xc0dn seat 2 as bob-seat
+joined 9ejbw-cek8e-3g4e4-ff4qh-0vx44 seat 2 as bob-2
+$ chat send --to nobody
+queued msg_f547c0d444f760c020c26af1 for qd7k1-ja2ek-6f0d4-gdcfj-xc0dn (message error: chat server error (HTTP 400, invalid_request): invalid_request: unknown recipient label: nobody); retries on the next chat command or vivi chat 
+exit=0
+$ chat send (good, same room)
+queued msg_41777b7c183a14616898ab0f for qd7k1-ja2ek-6f0d4-gdcfj-xc0dn (message error: chat server error (HTTP 400, invalid_request): invalid_request: unknown recipient label: nobody); retries on the next chat command or vivi chat 
+$ chat send (good, OTHER room)
+queued msg_1dffef3e15ef2d6c45d92d63 for 9ejbw-cek8e-3g4e4-ff4qh-0vx44 (message error: chat server error (HTTP 400, invalid_request): invalid_request: unknown recipient label: nobody); retries on the next chat command or vivi chat 
+$ chat flush
+flush: 0 sent (0 duplicate), 1 queued
+first failure: message error: chat server error (HTTP 400, invalid_request): invalid_request: unknown recipient label: nobody
+exit=0
+chat outbox depth: 3
+A reads room 2 (is 'other' there?):
+room 9ejbw-cek8e-3g4e4-ff4qh-0vx44: 0 message(s), cursor 0 (not advanced)
+$ chat leave R then flush
+left qd7k1-ja2ek-6f0d4-gdcfj-xc0dn
+flush: 1 sent (0 duplicate), 2 queued
+first failure: room 'qd7k1-ja2ek-6f0d4-gdcfj-xc0dn' is not joined
+exit=0
+chat outbox depth: 2
+
+######## R3 key loss is a dead end (F4)
+chat identity: b332015b83c2f9ac
+$ vivi sync (B, new key)
+error: message error: pull failed: message error: project server refused the bearer mint for 'bob'; this checkout's key is not registered under that name (run vivi sync join)
+$ vivi sync join (B)
+error: message error: this key has not been vouched for as 'bob' in project tvwv1-m54t1-n1mf2-rq4f4-zzgcc; ask a member to vouch for fingerprint 48f07a62a7c2af529f4a6a4ea32cef68f0b87feeeb98b37d74e23ef9b6ce0dfa under that name, the
+$ member vouches the new key under 'bob' (raw PUT, the only way):
+{"error":{"code":"conflict","message":"name bob is already admitted for a different key"}}
+
+######## R4 oversize letter: 'queued for sync', then silently never sent (F6); unknown prefix black hole (F7)
+sent 6744f5ad
+queued for sync: hand@b5d2ff74.local
+sent d1819837
+queued for sync: hand@deadbeef.local
+$ sync status (A)
+sync unsent: 1 letter(s)
+$ sync push (A)
+sync push: 1 sent, 0 already on server, 1 skipped
+skipped 6744f5ad: 73084 bytes, over the 64 KiB cap
+exit=0
+sync push: 0 sent, 0 already on server
+sync pull: 1 fetched, 1 new (1 inbox), 0 already present, 0 reply link(s), 0 refused, cursor 1
+B has big70k/typo-prefix?
+  neither
+
+######## R5 refused record is reported once, then sync is green (F8)
+server PUT -> 201
+$ sync (B) #1
+refused msg_6f6d948713fb0ec42fa4b6b1: From address claims mailspace b5d2ff74 but the sender is registered as aa726e9e
+error: message error: 1 record(s) refused (hash, envelope or From mismatch, id clash, or bad id); see above
+exit=1
+$ sync (B) #2
+sync pull: 0 fetched, 0 new, 0 already present, 0 reply link(s), 0 refused, cursor 4
+exit=0
+
+######## R6 state file: corrupt blocks resync and fetch (F9); cursor ahead silently skips (F10)
+$ vivi sync resync
+error: message error: pull failed: message error: sync state /private/tmp/claude-501/-Users-ianzepp-work-ianzepp-vivi/22
+$ vivi sync fetch 835b735d
+error: message error: sync state /private/tmp/claude-501/-Users-ianzepp-work-ianzepp-vivi/2214cfc8-c994-47ee-8080-9f3236
+$ vivi sync status
+error: message error: sync state /private/tmp/claude-501/-Users-ianzepp-work-ianzepp-vivi/2214cfc8-c994-47ee-8080-9f3236
+$ sync (B) with since=9999
+sync pull: 0 fetched, 0 new, 0 already present, 0 reply link(s), 0 refused, cursor 9999
+  after-ahead NOT delivered
+
+######## R7 fetch of a handle the viewer cannot see: exit 0 (F13)
+$ sync fetch d1819837 (B)
+sync fetch: 1 handle(s), 0 filed, 0 already held, 1 missing (d1819837)
+exit=0
+
+######## R8 chat watch latency across rooms (F11)
+[2] 2026-10-11T22:07:37Z alice-2 <745036ffdc49ec0a> -> all: s
+  second room
+elapsed=25s

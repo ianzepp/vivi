@@ -150,6 +150,14 @@ impl Rig {
             .env("HOME", &home)
             .env("PATH", path)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            // A machine's inherited Git identity: both merge paths -- the
+            // agent's own unconfigured `git merge` and the runner-owned
+            // commit of a prepared merge -- must keep the pool identity,
+            // not this one.
+            .env("GIT_AUTHOR_NAME", "Inherited Author")
+            .env("GIT_AUTHOR_EMAIL", "inherited-author@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Inherited Committer")
+            .env("GIT_COMMITTER_EMAIL", "inherited-committer@example.invalid")
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -276,9 +284,18 @@ fn an_agent_merge_of_an_extra_ref_is_pushed_with_both_parents() {
         git(&rig.repo(), &["rev-parse", "A~1"]),
         "the base is where B branched off"
     );
-    let mut got = parents(&rig.repo(), &rig.pushed());
+    let pushed = rig.pushed();
+    let mut got = parents(&rig.repo(), &pushed);
     got.sort();
     assert_both_parents(got, &a_sha, &b_sha);
+    assert_eq!(
+        git(
+            &rig.repo(),
+            &["log", "-1", "--format=%an <%ae> %cn <%ce>", &pushed,]
+        ),
+        "Bot <bot@localhost> Bot <bot@localhost>",
+        "the agent's unconfigured merge kept the pool identity"
+    );
     let dump = std::fs::read_to_string(&env).unwrap();
     assert!(
         !dump.contains("x-access-token"),
@@ -303,6 +320,14 @@ fn a_merge_left_uncommitted_by_the_agent_is_published_with_both_parents() {
     let mut got = parents(&rig.repo(), &pushed);
     got.sort();
     assert_both_parents(got, &a_sha, &b_sha);
+    assert_eq!(
+        git(
+            &rig.repo(),
+            &["log", "-1", "--format=%an <%ae> %cn <%ce>", &pushed,]
+        ),
+        "Bot <bot@localhost> Bot <bot@localhost>",
+        "the runner's commit of the prepared merge kept the pool identity"
+    );
     rig.assert_no_token();
 }
 
@@ -377,9 +402,18 @@ fn in_worktree_mode_an_agent_merge_of_a_local_branch_is_committed_with_both_pare
     let (a_sha, b_sha) = (rig.a_sha(), rig.b_sha());
     let result = rig.run_in_worktree("git merge --no-edit B", &[]);
     assert_eq!(result.push(), "committed", "{:?}", result.fields);
-    let mut got = parents(&rig.f.repo, result.get("sha"));
+    let sha = result.get("sha");
+    let mut got = parents(&rig.f.repo, sha);
     got.sort();
     assert_both_parents(got, &a_sha, &b_sha);
+    assert_eq!(
+        git(
+            &rig.f.repo,
+            &["log", "-1", "--format=%an <%ae> %cn <%ce>", sha]
+        ),
+        "Bot <bot@localhost> Bot <bot@localhost>",
+        "the agent's unconfigured worktree merge kept the pool identity"
+    );
 }
 
 #[test]

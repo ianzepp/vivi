@@ -56,10 +56,15 @@ struct Rig {
 }
 
 fn rig(role: bool, record: &str) -> Result<Rig, VivariumError> {
-    rig_with(PumpConfig::default(), role, record)
+    rig_cfg(role, record, PumpConfig::default())
 }
 
+/// [`rig_cfg`] with the arguments in the order the budget tests use.
 fn rig_with(cfg: PumpConfig, role: bool, record: &str) -> Result<Rig, VivariumError> {
+    rig_cfg(role, record, cfg)
+}
+
+fn rig_cfg(role: bool, record: &str, cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (mut ctx, host) = test_ctx(dir.path(), cfg);
     if role {
@@ -93,6 +98,13 @@ fn main_tip(host: &FakeHost, sha: &str) {
         0,
         &format!("{sha}\trefs/heads/main\n"),
     );
+}
+
+/// A pump configuration parsed from mailspace-file text.
+fn pump_cfg(text: &str) -> PumpConfig {
+    let ms: crate::mailspace::MailspaceConfig =
+        toml::from_str(text).expect("mailspace file text should parse");
+    ms.pump.expect("pump table should be present")
 }
 
 fn run() -> RunRow {
@@ -225,7 +237,7 @@ fn attempts_keep_the_repair_cap_despite_thinking_overrides() -> R {
 
     // Repairer is not a thinking kind: every attempt keeps the explicit
     // repair cap, whatever the shared fallback and thinking overrides say.
-    assert_eq!(fix1.budget, repair::ATTEMPT_SECS);
+    assert_eq!(fix1.budget, rig.ctx.cfg.repair_attempt_secs);
     assert_ne!(fix1.budget, rig.ctx.cfg.dispatch.budget);
 
     let fix = rig.mail.send_step("mind", "mind", "fix1", "b", &[])?;
@@ -244,7 +256,49 @@ fn attempts_keep_the_repair_cap_despite_thinking_overrides() -> R {
 
     let fix2 = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
 
-    assert_eq!(fix2.budget, repair::ATTEMPT_SECS);
+    assert_eq!(fix2.budget, rig.ctx.cfg.repair_attempt_secs);
+    Ok(())
+}
+
+#[test]
+fn repair_attempt_budget_defaults_to_1800() -> R {
+    let cfg = pump_cfg("name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.dispatch]\nbudget = 600\n");
+    assert_eq!(cfg.repair_attempt_secs, 1800, "the repair key is omitted");
+    assert_eq!(cfg.dispatch.budget, 600, "dispatch budget differs");
+    let rig = rig_cfg(true, &record(), cfg)?;
+    main_tip(&rig.host, MAIN_A);
+    let fix1 = job(start(&rig, &step("fix1", "t1", StepState::Pending, None))?);
+    let fix2 = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
+    for spec in [&fix1, &fix2] {
+        assert_eq!(spec.budget, 1800, "{}", spec.subject);
+        assert!(
+            spec.body
+                .contains("Time cap: 1800 seconds for this attempt; no diff cap."),
+            "{}",
+            spec.body
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn repair_attempt_budget_uses_configuration() -> R {
+    for (seconds, dispatch) in [(7200u64, 600u64), (7201, 900)] {
+        let cfg = pump_cfg(&format!(
+            "name = \"t\"\n[pump]\nbranch = \"next\"\nrepair_attempt_secs = {seconds}\n\
+             [pump.dispatch]\nbudget = {dispatch}\n"
+        ));
+        assert_eq!(cfg.repair_attempt_secs, seconds);
+        let rig = rig_cfg(true, &record(), cfg)?;
+        main_tip(&rig.host, MAIN_A);
+        let fix1 = job(start(&rig, &step("fix1", "t1", StepState::Pending, None))?);
+        let fix2 = job(start(&rig, &step("fix2", "t2", StepState::Pending, None))?);
+        let want = format!("Time cap: {seconds} seconds for this attempt; no diff cap.");
+        for spec in [&fix1, &fix2] {
+            assert_eq!(spec.budget, seconds, "{}", spec.subject);
+            assert!(spec.body.contains(&want), "{}", spec.body);
+        }
+    }
     Ok(())
 }
 

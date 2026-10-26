@@ -392,6 +392,19 @@ pub struct NeedSendCommand {
     /// The want this research need explores; builds the front matter
     #[arg(long)]
     pub explores: Option<String>,
+
+    /// Hand this need to the dispatch pump once it is ready
+    #[arg(long)]
+    pub dispatch: bool,
+
+    /// Dispatch priority level; same levels as `vivi pump priority set`, higher
+    /// is more urgent, 0 or absent means none (requires --dispatch)
+    #[arg(
+        long,
+        requires = "dispatch",
+        value_parser = clap::value_parser!(i64).range(0..)
+    )]
+    pub priority: Option<i64>,
 }
 
 impl NeedSendCommand {

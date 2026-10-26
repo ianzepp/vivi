@@ -1,0 +1,1005 @@
+# Phase 03 — Project mailspace hub
+
+Status: **CORE BUILT 2026-10-10, CLIENT BUILT 2026-10-11, MAILSPACE STORE
+BUILT 2026-10-12 (vivi-server 1.1.0), SERVER MCP BUILT 2026-10-12
+(vivi-server 1.2.0), LIGHTWEIGHT CHAT BUILT 2026-10-12 (vivi-server
+1.3.0).** The server (project store, identity
+registration, admission by introduction, governance mail, visibility
+scoping, directory, letters, mailspace addresses, history windows, lookup by
+handle) and the vivi client (`vivi sync`, including `pull --since`, `fetch`,
+`pull --refs`, `resync`, and `prune`) interoperate end to end; the 84-leg
+`scripts/project-sync-smoke.sh` passes locally. A project is a real vivi
+mailspace on the server (decided items 14 to 16). The wire as built is
+recorded at the end of this document. MCP over the server (item 15) is
+built in 1.2.0 as `POST /v1/projects/{id}/mcp`; `vivi mcp` (the stdio
+bridge) stays in the vivi repo. Transparent mode is superseded by it. The
+postmaster LLM loop remains a future phase. Rooms are lightweight chat
+on a chat-mode project (item 17, 1.3.0); the seat/challenge rooms wire
+is replaced.
+**Correction 2026-10-12.** The Storage section written with the letter wire
+on 2026-10-11 had removed the server-side mailspace ("A project no longer
+uses a vivi mailspace on the server"). That was a misreading of decided
+item 10, which fixes what travels (the raw `.eml`, byte for byte) and says
+nothing about the server dropping its mailspace. Items 14 to 16 reverse it
+and 1.1.0 builds it.
+Recorded 2026-10-10 from a design conversation with the repo owner;
+admission by introduction and the reserved `postmaster` identity were
+decided in a follow-up conversation the same day. Each item is marked
+**Decided**, **Proposed** (an idea the owner has not confirmed), or
+**Open** (deliberately undecided). Build work is tracked as needs and
+wants in the project mailspace (`.vivi/`, roles `mind` and `hand`); this
+document is the design record and the rulings.
+
+## Why this phase exists
+
+Phases 01 and 02 built a chat substrate. A *room* is the tenant: its API is a
+send/poll log with a cursor, it has seats bound to keys, and clients render
+polled records into their own mailspaces. On the server a room is stored as a
+vivi mailspace, but that mailspace is only ever written; polls read a sidecar
+`messages.json`. The README's "rooms are real mailspaces" is true of storage and
+misleading about behavior.
+
+The intended product is different. The Vivi server is the Vivi equivalent of an
+IMAP server and an SMTP server combined, for a **project**:
+
+- Several clients each have a local checkout of a common project, each with its
+  own local mailspace.
+- Client A creates a need locally, with a handle minted locally, and assigns it
+  to a role that lives at client B (`--from` / `--to`).
+- The need is pushed to the server and stored there. The next time B syncs, it
+  pulls a copy into its local mailspace.
+- With ten clients on one project, every client's needs and wants sync up, and
+  every member syncs down the common superset. Vivi handles appear in the text of
+  needs, wants, tasks, and mail, so they must mean the same thing for everyone
+  who reads that text.
+
+The Phase 02 workflow (a need crossing from A to B, closed on B, answered with a
+receipt) already runs end to end. What changes is the architecture beneath it:
+who the tenant is, what travels, and where the truth lives.
+
+## The model
+
+**Decided**
+
+1. **The tenant is the project.** The server holds one mailspace per project.
+   The room, as a tenant, goes away. The room was created to contain chat, and
+   chat is just mail.
+2. **Chat is ordinary mail** (`kind=mail`), threaded with the reply headers vivi
+   already has. A group message is a mail with several recipients. Nothing needs
+   a shared folder.
+3. **Identities are flat names, unique within the project**, such as
+   `mind-on-pharos`. The client chooses the name when it registers. It is bound
+   to the key that registered it and published in the project directory as a
+   member or role. The key, not the name, identifies the client.
+   - ~~The domain part of an email address has no meaning on the wire.~~
+     Superseded by item 11: the domain part of a letter's address is the
+     sender's mailspace prefix, and the server routes on it.
+4. **The server is the source of truth.** Clients are replicas. A new or
+   damaged checkout can resync everything from the server.
+5. **Clients mint every id.** The server never creates a need, a want, a task, a
+   mail, or an id. It ingests items under the id they arrive with (the traveling
+   ids of Phase 02) and refuses an id that already names different bytes.
+6. **The protocol is append-only.** Sync is a union of items, so concurrent
+   writers cannot overwrite each other. The server assigns each appended item a
+   sequence number so a client can ask for everything after N. That number is a
+   transport cursor only and is never part of an item's identity.
+7. **Visibility is by access control, not cryptography.**
+   - Work items (needs, wants, tasks) are visible to every member of the project.
+   - Mail is visible only to the connecting client: the server exposes only the
+     inbox of the client that is authenticated.
+   - The server operator can read everything. Content is encrypted at rest with
+     a server-held key, which protects the disk and does not make anything
+     private from the server. There is no end-to-end encryption.
+   - Handles in a mail resolve for its recipient because every member holds every
+     work item.
+8. **Admission is by introduction.** A public key becomes admissible when a
+   member of the project says so: the member's signed statement carries the
+   candidate key (and, proposed below, the identity name it may register),
+   and the server treats that key as admissible from then on. Knowing the
+   project id grants nothing; access requires a signature from a key a member
+   vouched for. The new developer's key reaches the vouching member out of
+   band first.
+9. **`postmaster` is a reserved identity.** It exists in every project,
+   cannot be registered by a client, and is the administrative addressee of
+   the mailspace. A server-side LLM that interprets mail addressed to it is a
+   future phase (see below); nothing about the loop is needed to build this
+   phase.
+10. **Items travel as letters (decided 2026-10-11, repo owner).** Every
+    vivi type — mail, task, need, want — is an `.eml` file, and the `.eml`
+    is the unit of sync. The origin's file goes to the server byte for byte,
+    is stored there, and is synced down byte for byte to every member. A
+    letter is immutable once created; its hash (`sha256` of the bytes, which
+    is the `content_id` every store already uses) is therefore the same on
+    every machine, and that is the only way immutability can be enforced.
+    The server never parses, renders, or rewrites a letter. See
+    [Letter wire](#letter-wire-decided-2026-10-11).
+11. **Mailspaces are addressed by id (decided 2026-10-11, repo owner).**
+    Every mailspace has a UUID, minted once on the machine where it lives
+    and stored in that mailspace's uncommitted `mailspace.toml` (`id`).
+    The first 8 characters of the UUID are its **prefix**, and the prefix
+    is the domain part of every address the mailspace mints:
+    `mind@3f9a1c7e.local` is the `mind` role of the mailspace whose id begins
+    `3f9a1c7e`. Consequences:
+    - The address is in the letter's bytes, so sender and recipient are part
+      of the hashed, immutable object. Routing no longer depends on a
+      config table outside the letter.
+    - The UUID is the global identity. The prefix only has to be unique
+      among the mailspaces of one project (1,000 mailspaces collide with
+      probability about 0.012%), because a prefix is bound at registration
+      and the first claim wins. A collision is refused at join, before
+      anything is pushed.
+    - One wire identity is one checkout is one mailspace. Roles are the
+      local part of the address, not separate identities.
+    - Same-domain addresses are local delivery and never need the server.
+    - The prefix is a label, never proof: authentication is the key. The
+      UUID is decoupled from the key so an address survives re-key. The
+      server stamps each letter with its authenticated sender's registered
+      prefix, and a receiver refuses a `From` address whose prefix
+      disagrees, so an address inside a letter can be trusted.
+    - `.vivi/` configuration is machine-local, not source. A mailspace is
+      not a repository: one workspace-level `.vivi` has one id, and a
+      developer's separate `.vivi` is a different mailspace with a
+      different address. A committed or copied `mailspace.toml` would
+      duplicate an id; the registration refusal is the backstop.
+    - Letters minted before this change keep their old domain
+      (`name@<mailspace-name>.local`). They are immutable. They travel, but
+      their addresses are not routable, so a reply to one needs an explicit
+      address.
+    See [Mailspace addresses](#mailspace-addresses-decided-2026-10-11).
+12. **Transparent mode (decided 2026-10-11, repo owner).** A mailspace can
+    be configured to keep no local store. Its commands read live from the
+    server and write letters straight to it, so a remote pool slot or
+    auditor reads its tasks and replies with no download step and no
+    handshake. A slot is a virtual extension of the mind's mailspace: it
+    carries the mind's mailspace id, so work addressed to a seat of the
+    mind (`hand-7@<mind prefix>.local`) is already addressed to it, and
+    the mind can create and push that work before any slot exists. Three
+    rulings: the store is always stateless; commands that change only
+    local state are refused; the interim credential is the member's own
+    key. Local-first is unchanged. **Superseded 2026-10-12 by item 15**:
+    pool slots reach the server through MCP, not a stateless local store.
+    See [Transparent mode](#transparent-mode-decided-2026-10-11).
+13. **History is pulled by window, and letters are fetched by handle
+    (decided 2026-10-11, repo owner).** The common case is a hand that
+    pulls a week of history for coverage, not a full clone and not a bulk
+    seed. The server stamps every letter with its append time
+    (`appended_at`, the server clock, monotone with the sequence), so a
+    pull can start at a time instead of a cursor, and the list takes
+    `limit`, `after`, `kind`, and `to`. A mailspace may hold a suffix of
+    history; the pull records a **floor** saying where. Deepening an
+    older range is a later unit; `resync` replays everything. A handle (8
+    hex characters of a message id) is matched by the server against ids,
+    scoped by visibility, so a hand can fetch the letters its content
+    references and does not hold. `vivi sync prune` evicts old bound
+    letters locally under the chat-prune policy, restorable byte for
+    byte. Bulk push (seeding a large existing mailspace at 30 letters per
+    minute) is deferred and is not a current requirement. See
+    [Windows, handles, and prune](#windows-handles-and-prune-decided-2026-10-11).
+
+14. **The project is a mailspace on the server (decided 2026-10-12, repo
+    owner).** The server holds one vivi mailspace per project under
+    `DATA_DIR/projects/<id>/`, and that mailspace is the store and the read
+    path. This restores the original item 1 and reverses the Storage
+    section's 2026-10-11 removal. The wire is unchanged: letters still PUT
+    and GET as raw `.eml`, byte for byte, with the same `content_sha256`
+    check, because a mailspace can hold a letter verbatim (the client
+    already ingests pulled bytes verbatim). The reason is MCP (item 15): a
+    server that answers "list my open needs" or "show the thread for this
+    handle" needs a real store, and a sealed blob plus a JSON index cannot
+    answer either.
+15. **Server MCP, with `vivi mcp` as its stdio bridge (decided 2026-10-12,
+    repo owner).** The server exposes one MCP tool surface over HTTP, for
+    LLMs that have MCP but no vivi binary. It mirrors, to a reasonable
+    extent, the vivi command tree: fetching needs, wants, tasks and mail,
+    threads, reply, send, and reports. `vivi mcp` is a thin stdio bridge to
+    that same endpoint: it holds the member key, signs the challenge,
+    renews the token, and forwards tool calls, so a pool slot needs only
+    the binary, a mailspace id, and a key, and has no local mailspace and
+    no sync. This supersedes transparent mode (item 12), which is not
+    built and is not to be built. Consequences:
+    - Reads are live queries on the server's mailspace; the recipient
+      filter, handle lookup and long-poll prerequisites of item 12 are
+      served by it and are not separate work.
+    - Because the HTTP endpoint serves callers that cannot sign or mint,
+      the server composes the letter and mints its id for an authenticated
+      member. This is a scoped exception to item 5, like `postmaster`
+      replies. The letter's `From` carries that member's registered prefix.
+    - The credential is the member's bearer token. No new pass type.
+      **Built 1.2.0 with a scoped bot path:** a URL-added connector cannot
+      sign, so a member may mint a project-scoped API key (hashed, revocable,
+      same `Authorization: Bearer` header, bound to that member). That is
+      not the deferred slot JWT in Proposed. `vivi mcp` still uses the
+      member token. See [Server MCP](#server-mcp-built-2026-10-12).
+    - Permissions are enforced on the server: a hand may file a report; a
+      close travels only from the mind's identity. A report is not an
+      acceptance.
+16. **Plain text on an encrypted volume; the index database answers
+    queries (decided 2026-10-12, repo owner).** The server mailspace holds
+    letters and indexes in the clear. Protection at rest is the encrypted
+    volume, not per-letter sealing; the server cipher (`STORE_ENCRYPTION_KEY`)
+    is used only by rooms. The design rule: search, listing, and filtering
+    run against the mailspace's indexed database, never by scanning `.eml`
+    files. The `.eml` is kept for byte-exact GET and hash verification and
+    is read only to serve a letter. Sealing bodies later is possible but not
+    free: it needs a blob-codec hook in `vivi`'s Storage (ingest parses
+    metadata from the bytes it is given), it leaves subjects, addresses and
+    timestamps in the index in the clear, and it is incompatible with
+    body full-text search, whose index would itself be plaintext on disk.
+17. **Rooms are lightweight chat on a lightweight project (direction
+    decided 2026-10-12, repo owner; built 1.3.0).** `vivi chat` is gone
+    (vivi 11), and a chat command line was not the useful part. The useful
+    part is a fleeting shared channel, exposed through the server MCP
+    surface (item 15) and a small HTTP create/join/send/read/close API.
+    It is a project with a lighter admission mode and a lifetime, not a
+    second tenant: chat is ordinary mail (item 2) on the same mailspace
+    store, transport index, and letter wire (`DATA_DIR/projects/<id>/`,
+    `mode=chat` in `project.json`). Settled at build:
+    - **Keyless participants — confined to chat projects.** Knowing the
+      room id is the capability. `POST /v1/rooms` `{name, ttl_seconds?}`
+      and `POST /v1/rooms/{id}/join` `{name}` mint a guest identity
+      (server-chosen mailspace UUID so the caller has a From prefix) and a
+      bearer that lasts until the room expires. Durable projects stay
+      key-bound (challenge/sign, admission by introduction). Guests cannot
+      mint API keys.
+    - **Chat visibility — `kind=chat` is member-visible.** Same transport
+      rule as need/task/want (`kind IS NOT NULL`). Room HTTP send always
+      writes `kind=chat`. MCP `send` accepts `kind=chat` (`to` optional;
+      defaults to `chat@<caller-prefix>.local`). Replies to a chat letter
+      stay `kind=chat`. Ordinary `kind=mail` stays sender/recipient-only
+      even on a chat project. An older client files an unknown kind as
+      plain mail.
+    - **Expiry — named exception to item 4.** Default TTL 24 h, min 60 s,
+      max 7 d. Any member may `POST /v1/rooms/{id}/close`. After close or
+      TTL, join/send/MCP are `410 room_closed` / `room_expired`. GET meta
+      still reports the flags until sweep. `/v1/_health` deletes over
+      chat trees. Durable projects are never expired this way. The letters
+      of a chat project are not retained past expiry: the server is the
+      truth only while the channel is live.
+
+## What carries over from phases 01 and 02
+
+| Piece | Why it survives |
+| --- | --- |
+| ED25519 challenge/sign, key-bound identity | Becomes registration of an identity name |
+| Sealed storage at rest and the boot key verifier | Rooms only; projects hold plain letters (item 16) |
+| Traveling ids and presented-id ingest (P2-1, P2-2) | Exactly what "clients mint every id" needs |
+| `kind` headers, filing by kind, backlog nodes | The unit of sync is now the item itself |
+| Idempotent outbox, at-least-once delivery | Reusable for remote `vivi mail send` |
+| `remote_bindings` (mailbox, uid, uidvalidity, stale) | IMAP-shaped table; today only chat uses it |
+| `import_mailspace` (dedupes messages, events, links, blobs) | A primitive for moving items between mailspaces |
+| Staging and production services, deploy pipeline, smoke harness | Same shape, new legs |
+| Per-identity delivery through `Mailspace::send` | The server already writes it; nothing reads it |
+
+## What is replaced
+
+- The seat/challenge `/v1/rooms/*` API, room ids as a second tenant,
+  labels, and per-room cursors. **Replaced in 1.3.0** by lightweight chat
+  on a chat-mode project (item 17). The `/v1/rooms` prefix stays as the
+  easy create/join/send/read/close surface; storage is `projects/<id>/`.
+- The sidecar `messages.json` as the read path. The mailspace becomes the store
+  (the deferred P2-8, now central).
+- Server-minted message ids (`m{cursor}`).
+- The `vivi chat` commands as a separate concept. Remote delivery becomes part of
+  `vivi mail`, which is local-only today ("no external side effects").
+- The client rendering of a polled chat record into an `.eml`. The server holds
+  the real item.
+
+## Client-side questions (resolved 2026-10-11)
+
+- Local addresses were `<identity>@<mailspace-name>.local`, so every
+  checkout of a project shared one `mind@<project>.local`. Resolved by
+  item 11: the domain is the mailspace's own id prefix, and a remote role
+  is addressed directly with no local stand-in.
+- Replying to a remote sender routes through the server. Built: a reply is
+  addressed to the original `From`, which is routable.
+- The local folders are unchanged; chat is plain mail.
+
+## Transparent mode (decided 2026-10-11)
+
+Decided by the repo owner in conversation on 2026-10-11. Not built, and
+**superseded on 2026-10-12 by decided item 15** (server MCP and the `vivi
+mcp` stdio bridge). Kept as the design record and for the reasoning on
+pool kinds and seats; its rulings no longer bind.
+
+**Why.** The mind keeps needs in a priority order and, when it works one,
+writes a task for a hand. That hand is often a remote slot that does not exist
+yet, and may not for a while. The mind should not have to wait for a slot,
+provision it, learn an address, come back, address the task, push it, and send
+the slot back to sync it. A slot, or an auditor handed a set of handles, is an
+execution location of the mind's mailspace, not a mailspace of its own.
+
+**What it is.** A mailspace configuration that keeps no local store. The
+provisional key is `[sync] transparent = true`. Each command is one session:
+
+1. Make a temporary directory and copy the mailspace config and key into it.
+2. Authenticate (challenge, sign, bearer).
+3. Pull what the command needs, with the same verification and additive
+   filing as `vivi sync pull`.
+4. Run the command against that store, unchanged.
+5. Push every letter the command wrote.
+6. Delete the directory.
+
+Letters keep their bytes and ids, so a handle (the first 8 hex of the message
+id) is the mind's handle, and the mind receives the slot's replies the
+ordinary way: filing is by address and additive, so a letter authored by
+another place acting as the mailspace lands in the right role's inbox.
+
+**How the work reaches the slot.** The slot carries the mind's mailspace id.
+Work addressed to a seat of the mind (`hand-7@<mind prefix>.local`) is
+already addressed to it. The mind creates and pushes that work whenever it
+likes, before any slot exists. Parallel slots address distinct seats, since
+two readers of `hand` would see the same task. Dispatch places two files on
+the slot, the mailspace config (id, `[sync]`, the transparent flag, the seat
+role) and the key, and the instruction is the handle or handles to work. An
+auditor is the same: a seat plus handles, no dedicated mailspace.
+
+**Rulings**
+
+- **Stateless always.** A transparent command never reads or keeps a persisted
+  store, even when the host's directory persists. A persisted replica carries
+  local-only state (closed needs, marks, the backlog graph) that never syncs,
+  diverges from the mind's silently, and carries one seat's leftovers into the
+  next. A content-addressed letter cache is safe later, because a letter is
+  immutable and never goes stale; it is an optimization, not part of this
+  decision.
+- **Reads are live, writes are letters.** A command whose only effect is local
+  state is refused with a clear message: closing or reopening a need, marks,
+  graph, role edits, memos, rules, and the mind-side surfaces `board`, `boot`
+  and `step`. `need done --note` sends its note as a letter and closes
+  nothing. A first-class done is the appended-event item under Proposed.
+- **A write is a push.** A command that writes a letter pushes it before it
+  reports success and exits non-zero if the push fails. There is no outbox:
+  an ephemeral host has no disk to queue to.
+- **The interim credential is the member's own key,** provisioned to the slot.
+  The owner's ruling is that the baseline is a mind using ordinary subagents
+  in the same workspace, which already see everything in the mailspace
+  through the vivi tool, so no scoped credential is required. Known costs,
+  accepted: the member's send budget (30 per minute) is shared by every slot
+  and the mind, and the key lingers on a warm host until something removes it.
+
+**Pool kinds**
+
+| Pool | What persists | Behavior |
+| --- | --- | --- |
+| Destroyed on exit (for example a Fly machine) | Nothing | Stateless per command. A write that fails to push fails the command. |
+| Warm directory (for example SSH to a directory) | The directory, possibly the config and key | Same stateless store. The key should be removed at slot end; a crashed slot leaves it. |
+| Local worktree | Everything | No transparency needed. Discovery walks up to the mind's own `.vivi`, so the hand is on the same mailspace. |
+
+**Server prerequisites.** None is needed for correctness. All are needed for
+scale or latency:
+
+- **A recipient filter on the list:** `GET /items?since=N&to=<address or
+  prefix>`. Without it every command pulls everything the member can see,
+  including every work item of the project.
+- **A handle lookup.** The single-letter `GET` takes the full `msg_` id and a
+  handle is the first 8 hex of it, so a thin client needs a route that
+  resolves a handle (for example `?handle=<8 hex>`) without scanning.
+- **Long-poll on the list** (`?wait=`, registering the waiter before reading
+  so an append between read and wait is not missed), so the originating
+  mind's `pool wait` can block on a reply instead of polling.
+
+**Open**
+
+- The send budget: raise the member's bucket, or key it per seat, once
+  parallel slots are real.
+- Seat role provisioning: write the role into the slot's config, or let
+  filing create the account on first use (it files under an unknown role with
+  a warning today).
+- The command set of the first cut: list, show, thread, reply, send, and
+  `done --note` are the intended core.
+
+## Proposed
+
+- Closing a need is an appended event. Every client derives open or closed by
+  folding events in the server's append order, so everyone converges. A receipt
+  carrying evidence can still be a normal mail, but it is not the mechanism.
+  (Built as event letters. The fold is by each event's instant, not the
+  server's append order: see `contract.md`, Item events.)
+- Mail to an unpublished identity is rejected at submit time, with a hard error to
+  the sender. (Not built: the server accepts a recipient prefix that has not
+  registered, so a mailspace can be addressed before it joins. Revisit if
+  typos prove costly.)
+- Identity names use the restricted character set roles use today (letters,
+  digits, `.`, `-`, `_`, with a length cap). Names are immutable once registered;
+  a rename is a new identity.
+- A directory call lists a project's members and roles. (Built:
+  `GET .../directory`, with each member's `mailspace_id`.)
+- A connecting client sees the inboxes of every identity bound to its key.
+- Any admitted member may vouch for a new key, so trust is transitive one hop
+  at a time; the who-admitted-whom chain in the log is the accountability
+  record.
+- The vouch pins the identity name along with the key ("this key is
+  `alice-external`"), so the human judgment at admission covers who the person
+  is.
+- The vouching member verifies the key fingerprint with the new developer
+  through a second channel (voice works), because a key swapped in transit
+  gets the wrong party admitted.
+- The project creator's key is admitted at creation — the first key has no
+  introducer.
+- Revocation and re-keying share the vouching privilege and are themselves
+  append events.
+- The vouch travels on the wire as structured mail to `postmaster`, processed
+  deterministically at submit: a fixed format, a privilege check, the
+  admission appended, and an ack in the submit response. A dedicated CLI
+  verb, if wanted, is client-side sugar that composes and sends the same
+  mail. Free-form prose waits for the postmaster loop.
+- Governance mail (admissions, revocations, re-keys) is visible to every
+  member — a scoped exception to mail's recipient-only visibility — because
+  the vouching chain is the accountability record.
+
+- **A delegated pass for slots (proposed 2026-10-11, deferred).** The member
+  key mints, offline, a short-lived EdDSA-signed JWT that the server
+  accepts directly as a bearer after verifying it against the member's
+  registered key. Claims: `iss` (member name), `aud` (project id), `sub`
+  (seat), `roles` (the roles it may send as and read mail for), an optional
+  `read` list of handles, `exp` (hours), and `jti`. It is single hop and
+  non-renewable, so expiry replaces revocation. A scoped pass also needs
+  the sender role in the envelope, checked by the server against `roles`
+  and by receivers against the letter's `From`. Deferred because transparent
+  mode accepts the member key (decided item 12); the pass adds a per-seat
+  send budget, audit, and least privilege when those are wanted. Pin one
+  algorithm, require `exp` and `aud`, and never log the token.
+
+## Future phase: the postmaster loop
+
+Deferred by the owner on 2026-10-10. When it is built, the guardrails settled
+in the design conversation apply:
+
+- The model extracts a typed operation (`admit key K as name N`, `revoke K`,
+  `re-key N to K'`); authorization and execution stay in deterministic code.
+- Quoted and forwarded content is data. Operation parameters come from the
+  authenticated sender's own words and attachments; a public key found inside
+  a forwarded quote is inert.
+- The structured deterministic path remains the ground truth; CI and the
+  smoke script never depend on an LLM, an API key, or a budget.
+- Postmaster replies mean the server authors mail and mints ids — a scoped,
+  attributed exception to decided item 5. The confirmation gate on
+  irreversible operations is the main reason to allow it.
+- Interpretation runs as an async loop over the append-only inbox: an outage
+  or a budget cap means mail waits, and execution is idempotent per item id.
+- Open when the phase starts: model and provider, in-process versus a sidecar
+  process, cost ceilings, and which operations are confirmation-gated.
+
+## Open
+
+- **The vouch's shape.** Structured mail to `postmaster` versus a dedicated
+  `vivi` command. The recommended layering is recorded in Proposed: mail on
+  the wire, command as sugar.
+- Key lifecycle details: lost keys and re-keying (a new key admitted by
+  another member, and whether the name and history follow it), name release,
+  and name squatting if a vouch ever names nothing. Admission settles the
+  front door; recovery stays open.
+- Retention and deletion on a server that is the source of truth.
+- How an assigned work item is represented to members who are not the assignee
+  (the item plus assignee metadata, or per-recipient delivered copies).
+  (Resolved: the letter's own addresses are the assignee, and a work item
+  for another mailspace's role is held under that address.)
+- What supplies the sequence cursor (for example the per-store event log vivi
+  already keeps) and how concurrent appends are serialized per project.
+  (Resolved: the transport index's sequence under one process-wide append
+  mutex.)
+- Whether the wire stays HTTP or speaks IMAP/SMTP. (The item encoding is
+  decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
+- Migration of pre-1.3.0 seat-bound rooms already on staging/production.
+  Not migrated: `vivi chat` is gone and those rooms had no remaining
+  client. 1.3.0 leaves `DATA_DIR/rooms/` unread.
+- ~~The MCP tool list of the first cut and its role permissions (item 15).~~
+  Built 1.2.0: see [Server MCP](#server-mcp-built-2026-10-12).
+- **Resolved by the 1.1.0 build (2026-10-12).** The server holds a project
+  as a real vivi mailspace through the public `vivi` API alone
+  (`Storage::ingest_if_absent`, `read_blob`, `list_messages_*`); no `vivi`
+  change was needed. The client's filer is not used. The two gaps a spike
+  found (no public cursor or recipient query, and no home for `appended_at`
+  and `from_prefix`) are closed by the server's own `transport.sqlite`
+  beside the mailspace. `ingest_if_absent` opens its own transaction, so the
+  mailspace write and the transport row are two steps, ordered and
+  idempotent, not one transaction.
+
+## Effect on pending work
+
+- **Poll efficiency** is settled by this design: a per-project append-only log
+  read by sequence, with a per-project wake on append. A sandbox measurement on
+  2026-10-09 showed the sidecar scan costing 33 ms per empty poll at 10,000
+  records and a send costing 51 ms; no work happens before this phase.
+- **Room cleanup** (a delete endpoint) is moot.
+- **Direct-message privacy** is resolved by per-client mail scoping.
+- **P2-8** becomes the core of the phase.
+- The vivi client's one-room-per-mailspace and `watch` discussion is moot: a
+  local mailspace maps to one project.
+
+## Wire contract as built (2026-10-10)
+
+> **Superseded in part.** The `POST /v1/projects/{id}/items` body shape and
+> the `GET .../items` record shape below are replaced by the
+> [Letter wire](#letter-wire-decided-2026-10-11). Project creation,
+> challenge, registration, directory, admission, and the vouch rule are
+> unchanged.
+
+Endpoints under `/v1/projects`, additive alongside the frozen rooms
+contract. Authentication is per-identity ED25519 challenge/sign with digest
+bearer tokens, mirroring the rooms flow. All item content is sealed at rest
+with the server key; the project mailspace under `DATA_DIR/projects/<id>/`
+is the store and the read path (P2-8 closed). (As of 1.1.0 the transport
+record is `transport.sqlite`; see Storage.)
+
+- `POST /v1/projects` `{public_key_pem, creator_name}` → 201
+  `{project_id, admission: {name, fingerprint}}`. The creator's key is the
+  founding admission (bootstrap).
+- `POST /v1/projects/{id}/identities/challenge` `{public_key_pem}` →
+  `{challenge_id, challenge, expires_in}`, keyed to the project and key
+  fingerprint.
+- `POST /v1/projects/{id}/identities` `{name, public_key_pem,
+  challenge_id, signature_base64}` → 201 `{name, token,
+  token_expires_at, fingerprint}`. The name must be admitted for exactly
+  the presented key (canonical SPKI match), else 409 `admission_required`.
+- `GET /v1/projects/{id}/directory` (bearer) → `{members: [{name,
+  fingerprint}]}`, sorted by name.
+- `POST /v1/projects/{id}/items` (bearer) with a required `Message-ID`
+  header of `msg_` + 24 lowercase hex — clients mint every id (decided
+  item 5); there is no server-minted form. Body `{to, subject, body,
+  kind, in_reply_to, refs}`; `from` is always the authenticated identity.
+  Kinds `need`/`task`/`want` file by kind; `mail` or absent is plain.
+  Body cap 64 KiB (413); 30 sends/min per project and member (429). → 201
+  `{message_id, sequence}`; a replay of the same id and bytes → 200 with
+  `duplicate: true`. An item addressed `to: postmaster` is a governance
+  vouch with body `{"vouch": {"name", "public_key_pem"}}`, processed
+  deterministically at submit: the admission is written first, then the
+  item ingests; a malformed vouch or unknown voucher is 400 with nothing
+  stored; the same name for a different key is 409.
+- `GET /v1/projects/{id}/items?since=N` (bearer) → `{records:
+  [{sequence, message_id, from, to, kind, in_reply_to, refs, body,
+  raw_eml}], next_cursor}`. Visibility per decided item 7: work items and
+  postmaster governance mail are member-visible; other mail is visible
+  only to its recipient and sender. Sequences are transport cursors and
+  never part of item identity; filtered items do not advance
+  `next_cursor`.
+
+### Carried forward from the build
+
+- ~~Identity tokens have no refresh endpoint~~ Built 2026-10-11:
+  `POST /v1/projects/{id}/auth/token` (see Token renewal below).
+- The append rate limiter folds the identity name into the limiter's u32
+  seat slot (`DefaultHasher`); a theoretical name collision shares one
+  bucket. True string keying wants a `safety.rs` variant. The cap is 30
+  sends per minute per member, so a first push of a large mailspace takes
+  several runs (the client stops cleanly and resumes).
+- Revocation and re-key events share the vouch privilege by design but are
+  not built; the registry admits only.
+- Per-project wake exists in the store (`ProjectWake`) with no long-poll
+  endpoint wired yet; the items read is a plain poll. A long-poll must
+  register its waiter before reading so an append between read and wait is
+  not missed (a miss costs latency, never data: reads are cursored).
+- ~~The smoke script has no project-API legs~~ Built 2026-10-11:
+  `scripts/project-sync-smoke.sh` is the end-to-end acceptance for the
+  letter wire (two checkouts, real server, real binaries).
+- URL project ids are used raw by the challenge and identity paths rather
+  than canonicalized. Harmless on a case-sensitive filesystem and not a
+  signature bypass, but it should be canonicalized.
+- ~~Appends and reads scan the whole `items.json` index linearly.~~ Closed
+  2026-10-12: the transport index is indexed SQLite (see Storage).
+- Bulk append is deferred (decided item 13): seeding a large existing
+  mailspace is one `PUT` per letter at 30 letters per minute per member,
+  about eleven hours for 20,000 letters. A JSON batch action, resumable by
+  id and counted per call, is the shape if it is wanted.
+
+**Shape rule.** A letter itself, PUT or GET, is the raw `.eml` with its
+envelope in HTTP headers. Every action *around* letters (listing now,
+archiving and the like later) is JSON.
+
+### Append
+
+`PUT /v1/projects/{id}/items/{message_id}` (bearer). `{message_id}` is the
+client-minted id, `msg_` + 24 lowercase hex (decided item 5). The request
+body **is the letter**: the exact `.eml` bytes, `Content-Type:
+message/rfc822`, no wrapping and no encoding. The envelope fields the
+sender declares ride as request headers (these are HTTP headers, not
+headers of the letter):
+
+- `X-Vivi-To: <recipients>` (optional): `postmaster`, or a comma-separated
+  list of addresses (grammar under
+  [Mailspace addresses](#mailspace-addresses-decided-2026-10-11)).
+- `X-Vivi-Kind: need|task|want|mail` (optional)
+
+- `from` is always the authenticated identity; it is not client input.
+- The body is capped at 64 KiB (413 `body_too_large`); an empty body is 400.
+- `PUT` is idempotent by id, which is the point: replaying the same request
+  is safe.
+- 201 `{message_id, sequence, content_sha256}` for a fresh letter.
+- 200 with `duplicate: true` for a replay: same id and same bytes, or the
+  same bytes presented under a different id **by the same sender** (the
+  response names the original id and sequence). The second case is
+  sender-scoped so a member who holds the exact bytes of mail they cannot
+  see learns nothing about it; another member presenting those bytes gets
+  an ordinary fresh append under their own id.
+- 409 `conflict`: the id already names different bytes.
+- 400 `invalid_request`: bad id, empty body, bad `X-Vivi-Kind`, or an
+  invalid `X-Vivi-To`.
+- Rate limit and the vouch rule are as built. For `X-Vivi-To: postmaster`
+  the letter's body (the bytes after the first blank line, UTF-8) must be
+  the JSON `{"vouch": {"name", "public_key_pem"}}`; the admission is
+  written first, then the letter is stored.
+- A client verifies that the response's `content_sha256` equals the
+  `sha256` of the bytes it sent.
+
+### Fetch one letter
+
+`GET /v1/projects/{id}/items/{message_id}` (bearer) returns the letter as
+the raw body, the same format `PUT` accepts:
+
+```
+200 OK
+Content-Type: message/rfc822
+X-Vivi-Message-Id: msg_...
+X-Vivi-From: alice
+X-Vivi-To: hand@3f9a1c7e.local  (omitted when none)
+X-Vivi-Kind: need               (omitted when none, meaning mail)
+X-Vivi-Sequence: 7
+X-Vivi-Content-Sha256: <sha256 of the body>
+
+<the exact .eml bytes>
+```
+
+- Visibility is the same scoping as the list. A letter the caller may not
+  see is 404 `item_not_found`, identical to an unknown id, so the route
+  cannot be used to probe for existence.
+- A malformed id is 400 `invalid_request`; an unknown project is 404
+  `project_not_found`; a missing or bad bearer is 401.
+
+### Read (list, JSON)
+
+`GET /v1/projects/{id}/items?since=N` (bearer) →
+
+```json
+{"records": [{"sequence": 7, "message_id": "msg_...", "from": "alice",
+              "to": "hand@3f9a1c7e.local", "kind": "need",
+              "content_sha256": "...",
+              "raw_eml": "<base64, the exact bytes appended>"}],
+ "next_cursor": 7}
+```
+
+- Visibility and cursor behavior are as built: work items and governance
+  mail are member-visible, other mail is visible to its sender and
+  recipient, and filtered items do not advance `next_cursor`.
+- `raw_eml` is byte-identical to what was appended. A client verifies
+  `sha256(raw_eml) == content_sha256` and refuses a record that fails.
+- The list is JSON with base64 letters because it is a batch of envelopes;
+  only the single-letter push is a raw body.
+
+### Mailspace addresses (decided 2026-10-11)
+
+Item 11 made concrete.
+
+**Registration.** `POST /v1/projects/{id}/identities` gains a required
+`mailspace_id`: a canonical UUID, lowercase and hyphenated (36 characters).
+A missing or malformed id is 400 `invalid_request`. The server derives the
+prefix (the first 8 characters). If another registered identity in the
+project already holds that prefix, the registration is refused 409
+`mailspace_prefix_taken` and nothing is registered; the admission stays
+usable for a registration with a different id. An already registered name
+remains 409 `conflict`. The 201 response gains `mailspace_id`. An identity
+registers exactly one mailspace id for life.
+
+**Directory.** `GET /v1/projects/{id}/directory` members are
+`{name, fingerprint, mailspace_id}`. `mailspace_id` is null for an identity
+registered before this change; such a member has no prefix and cannot be
+addressed.
+
+**Envelope recipients.** `X-Vivi-To` is `postmaster` or a comma-separated
+list of 1 to 16 addresses `local@domain`: local part `[A-Za-z0-9._-]{1,64}`,
+domain `[A-Za-z0-9.-]{1,64}`, the whole header at most 1 KiB. The sender's
+client fills it from the letter's own `To` and `Cc` addresses (lowercased,
+deduplicated, sorted); the server never reads the letter. The server checks
+grammar only. A domain of exactly `<8 lowercase hex>.local` names a
+mailspace prefix. Any other domain is accepted and routes to no one. A
+prefix need not be registered when the letter is appended.
+
+**Mail visibility.** Mail (no kind) is visible to the member who sent it and
+to the member whose registered prefix equals the prefix of any recipient
+address. Need, task, and want letters and mail to `postmaster` stay visible
+to every member. Single-letter `GET` follows the same rule and answers 404
+otherwise. The index keeps `to` as the raw header string; no index schema
+change.
+
+**Sender prefix.** When a letter is appended the server records the
+authenticated sender's registered prefix beside it (null for an identity
+registered before this change). The list returns it as `from_prefix` and
+the single-letter `GET` as `X-Vivi-From-Prefix`. It is fixed at append and
+never recomputed. The server still never reads the letter. A receiving
+client refuses any letter whose `From` address domain is exactly
+`<8 hex>.local` with a prefix other than `from_prefix` (a missing
+`from_prefix` counts as a mismatch). Legacy name domains and external
+domains are exempt. This is what makes a `From` inside a letter an
+authenticated claim rather than free text: no member can write another
+mailspace's address.
+
+**Envelope check at the receiver.** On pull, unless the envelope `to` is
+absent or `postmaster`, the client compares the envelope's addresses with
+the letter's own `To` and `Cc` and refuses a record that disagrees. The
+server stays unparsing, and a lying envelope is caught at the edge.
+
+### Windows, handles, and prune (decided 2026-10-11)
+
+Item 13 made concrete. Bulk push is not part of this.
+
+**Append time.** Each letter is stamped at append with `appended_at`, the
+server clock as RFC 3339 UTC to the second. The stamp is monotone with the
+sequence (the server stores `max(previous stamp, now)` under the append
+mutex, so a clock step cannot reorder it) and is fixed when the letter is
+appended. A replay returns the original row with its original stamp. The list
+returns it as `appended_at` and the single-letter `GET` as
+`X-Vivi-Appended-At`. A row written before this field existed has none; the
+index loads without it, and a `after` window excludes such rows.
+
+**List parameters.** `GET /v1/projects/{id}/items` accepts, all optional and
+combined with AND (a filter narrows what visibility allows and never widens
+it):
+
+- `since=N`: sequences after N (as built).
+- `limit=K`: at most K records. Default 500, maximum 1000, and a page also
+  stops adding records once their raw letters exceed 8 MiB (at least one
+  record is always returned).
+- `after=<RFC 3339 time>`: only letters whose `appended_at` is at or after the
+  time.
+- `kind=need,task,want,mail`: a comma list of kinds; `mail` is plain mail
+  (no kind).
+- `to=<address or prefix>`: letters whose envelope recipients include that
+  exact address, or any address whose domain is `<prefix>.local`. Case
+  insensitive.
+
+The response gains `has_more` (true when more records match after
+`next_cursor`). `next_cursor` is the sequence of the last record returned,
+or `since` when none matched; filtered-out and invisible rows never advance
+it. A page is bounded by `limit`, so a client loops until `has_more` is
+false and saves its cursor after each page.
+
+**Lookup by handle.** A handle is the 8 hex characters after `msg_` in a
+message id. `POST /v1/projects/{id}/items/lookup` with
+`{"handles": ["4b8275cc", ...]}` (1 to 100 handles, each 8 hex characters,
+case insensitive; anything else is 400 `invalid_request`) returns
+`{"records": [...], "missing": ["...", ...]}`. Records have exactly the list
+record shape, ordered by sequence, and are scoped by the same visibility
+rule as the list. A handle that names several ids returns all of them. A
+handle that matches nothing the caller may see is in `missing`, identical
+whether the id is unknown or hidden, so the route is not an existence probe.
+Lookup never moves a cursor.
+
+**Compression.** List and lookup responses are gzip-compressed when the
+client sends `Accept-Encoding: gzip`, where an existing dependency's feature
+makes that possible. It is an optimization, not a contract.
+
+**Client.**
+
+- `vivi sync pull --since <age|date>`: on a mailspace with no pull cursor for
+  the project, start at that window (`7d`, `12h`, `90m`, an RFC 3339 time, or
+  a `YYYY-MM-DD` date, midnight UTC) and continue to the head. The state then
+  records the **floor**: the sequence and `appended_at` of the first record
+  received, or the requested time when the window was empty. `vivi sync
+  status` prints `history from <time> (sequence N)` or `full history`. On a
+  mailspace that already has a cursor, `--since` is refused with a message
+  that names the floor and says `vivi sync resync` replays everything.
+  Deepening an older range is a later unit.
+- `vivi sync resync`: reset the cursor and floor to zero and pull, through
+  the same verification and ingest as `pull`. Evicted letters come back
+  byte-identically under the same ids and local state is left as it was.
+  Interrupted, it resumes from the saved cursor.
+- `vivi sync fetch <handle>...`: look the handles up (in chunks of 100) and
+  file what comes back through the same verification and filing as pull.
+  Prints counts of filed, already held, and missing. The cursor and floor are
+  untouched. Library form: a function a later transparent mode can call to
+  resolve a handle it does not hold.
+- `vivi sync pull --refs [--depth N]`: after the pull, scan the letters this
+  invocation filed for references the mailspace does not hold, look those up,
+  and file them. A reference is a value of an `X-Vivi-Depends-On` header or a
+  whole-word 8-hex token in the subject or body. Depth defaults to 1 and is
+  at most 3; each further hop scans only what the previous hop filed. At most
+  500 tokens are looked up per invocation. A token that matches nothing is
+  ignored.
+- `vivi sync prune --older-than <age> [--dry-run]`: evict, from the local
+  store only, letters bound to the server by the same policy as `vivi chat
+  prune`: never open needs, tasks, or wants (however old), never starred or
+  absorbed items, never local-origin letters (anything with no binding), and
+  only letters dated before the cutoff. The row and its local state stay, the
+  blob goes, and re-ingest reports the row as restored. It needs neither the
+  server nor a key and never runs on its own. Restore with `resync`, `fetch`,
+  or `pull --refs`.
+
+**Measurement.** A synthetic 20,000-letter project built at store level
+(letters of about 3 KiB, a mix of kinds, several recipients) times a full
+list, a 7-day `after` window, a `kind` filter, a `to` filter, and a lookup of
+100 handles, before and after paging, and the client's pull of 5,000 letters
+through the in-process fake server. The numbers are reported, not asserted.
+
+### Storage
+
+**As built (1.1.0, decided items 14 and 16).** One real vivi mailspace per
+project under `DATA_DIR/projects/<id>/.vivi/`, created with
+`Mailspace::init` as a room's is, plus `transport.sqlite` beside it.
+
+- **The letter.** Ingested verbatim with `Storage::ingest_if_absent` under
+  its presented id: the exact `.eml` bytes in the mailspace blob store under
+  their `content_sha256`, in the clear (plain text on an encrypted volume,
+  item 16). The server cipher is not used for projects. The mailspace's own
+  index carries from, to, subject, handle and the work folder (`needs`,
+  `tasks`, `wants`, or `inbox`), so the content of a project is queried
+  there, never by scanning `.eml` files.
+- **The transport record.** `transport.sqlite` holds one `items` row per
+  letter (`sequence`, `message_id`, `handle`, `content_sha256`,
+  `byte_size`, the authenticated sender's name, `from_prefix`, the envelope
+  `to`, `kind`, `appended_at`) and one `recipients` row per envelope
+  address (lowercased address and, for `<8 hex>.local`, its prefix). It is
+  indexed by id, handle, sender plus hash, append time, and recipient, so a
+  list, a lookup, a visibility check and a replay check are indexed
+  queries and none scans the log. It is transport state, never content.
+- **Order and crash safety.** The mailspace write comes first, then the
+  transport row, under the process-wide append mutex. Both are idempotent by
+  id, so a crash between them converges on replay. A letter with no
+  transport row is not served.
+- **Reads.** Visibility is a clause of the transport query; a letter the
+  caller may not see is never read. A letter's bytes are read from the
+  mailspace by hash and checked against `content_sha256` before they are
+  served; a missing or mismatched blob is a storage error, never a skip.
+- **No migration.** Nothing on staging or production was worth keeping, so
+  this is a clean break: projects created on the sealed-blob store
+  (1.0.0) are recreated.
+
+**Measured (debug build, 20,000 letters of 3 KiB, 2026-10-12).** Building
+the project through `append` took 159 s; one append at full size 8.8 ms
+(7 ms at 2,000 letters, so append cost does not grow with the log: nothing
+reads or rewrites an index file). The first 500-letter page 74 ms (it reads
+500 letters). Paging all 15,001 visible letters in 31 pages 2.2 s. A `kind`
+filter 711 ms for 5,001 letters, a `to` filter 296 ms for 2,001, an `after`
+window of the last 2% 43 ms, a 100-handle lookup 12 ms. `transport.sqlite`
+is 9.7 MB. Reproduce with `cargo test --test measure_windows -- --ignored
+--nocapture`.
+
+**Filing, for MCP (decided with the 1.2.0 tool list).** Letters stay filed
+under one account (the project id) and a folder by kind. MCP list/show/
+thread read the transport index (visibility) and parse the stored `.eml`;
+they do not query per-role mailspace folders. A later per-role queue would
+need the client's filer placements and is not required for this tool set.
+
+**Hosted projects: the index follows the mailspace (S4) and appends file
+into it (S5).** A hosted project's letters are the host mailspace's own, so
+the transport index is built from it and never copies a letter.
+
+- **What travels is vivi's rule.** An index pass runs vivi's own push
+  (`vivi::sync::push::push`, selection in `sync/select.rs`) through an
+  in-process `Transport` whose append checks the blob store holds the
+  letter's hash and inserts the transport row: the sender is the creator
+  member (name and registered prefix), the recipients are the letter's To
+  and Cc, and `appended_at` is the index time. Push then binds the letter in
+  the mailspace under the project id, so later passes skip it. The
+  mailspace's own `[sync] send` decides what is selected; the server never
+  overrides it. The hub's host config sets `send = "addressed"`, so only
+  letters addressed off the host are indexed (the default, `all`, would
+  index and show every local letter).
+- **When.** On a timer (`hosted::INDEX_INTERVAL`, 5 s) per hosted project,
+  and before a list, items, lookup, or fetch read whose mailspace
+  `Storage::change_watermark()` moved since the last pass. A pass is skipped
+  when another pass for the project is running, when the watermark has not
+  moved, or when the host's CLI holds the mailspace sync lock
+  (`.vivi/sync/sync.lock`, taken without waiting). No rate limit applies to
+  the pass.
+- **Locking.** The pass holds the per-project pass mutex (try-lock) and the
+  sync lock (try-lock) for its whole run, and the append mutex only for the
+  instant of each row insert. The HTTP append path never takes the sync
+  lock.
+- **Cost.** Push selection lists every message row and classifies each
+  letter that is not bound to the project, so a pass costs time in the
+  mailspace's size, not in the number of new letters. Measured in release
+  on a host mailspace of 5,000 sends (about 7,500 message rows): the first
+  pass, indexing 2,500 letters, 0.76 s; a pass with the watermark unmoved
+  0.3 ms; a pass for one new letter 0.13 s.
+  `cargo test --release --test measure_index -- --ignored --nocapture`.
+- **Member appends.** A member's append takes the next sequence under the
+  append mutex and files the letter with `vivi::sync::pull::file_records`
+  (a one-record page built from the append and the sequence), exactly as a
+  client pull files it: verified, filed by address under the roles' folders,
+  bound to the project at that sequence, reply-linked, item events folded
+  (`DATA_DIR/projects/<id>/sync/state.json` is the persistent `SyncState`).
+  The transport row follows. A record the filer refuses (a From that claims
+  another prefix, an envelope that disagrees with the letter's To and Cc, an
+  id that names different content) is an append error and writes nothing
+  to the index. A vouch to `postmaster` is processed as for any project and
+  kept verbatim (filing nothing by role), so the index can serve it.
+
+### Server MCP (built 2026-10-12)
+
+Item 15 made concrete in vivi-server 1.2.0. One Streamable HTTP endpoint
+**per project**, `POST /v1/projects/{id}/mcp`, so a connector added by URL
+does not take a project argument and cannot point the tools at another
+tenant. A single global `/v1/mcp` would force every tool to take `project`
+and would make a leaked key usable as a prompt injection of the id. The
+tool surface is one list either way.
+
+**Why not reuse `Mailspace::send` / `save_memo` / `try_emit_for_move`.**
+Those resolve identities in `mailspace.toml`. The server mailspace has
+none (letters are ingested under the project id). The MCP writes go
+through the public compose helpers (`vivi::message::build_compose_draft`)
+and `ProjectStore::append`, which is the same ingest+transport path as
+`PUT .../items`. Event letters use the same `X-Vivi-Event` /
+`Event-Of` / `Event-Prev` headers the client folds. What the vivi crate
+would need to expose for a tighter bind (out of this repo):
+
+- `add_header` / a traveling-id mint (`opaque_message_id` is private)
+- a compose+emit path that does not require local identities
+- `try_emit_for_move` is `pub(in crate::mailspace)`
+- board types live in the `vivi` binary (`local_board_command`), not the
+  library
+- ingest that attaches backlog nodes, so `graph_show("backlog")` would
+  work on the server mailspace
+
+`vivi mcp` (stdio bridge: hold the key, sign, forward) is still a vivi
+change.
+
+**Tools.** `overview`, `list`, `show`, `thread`, `send`, `reply`, `done`,
+`reopen`, `memo`, `graph`. Identity is the Bearer. A close travels only
+when the caller's registered prefix is the item's From domain (the
+author's mailspace), stamped with `X-Vivi-Event-At` and sent as kind
+`mail` (served to every member by its `X-Vivi-Event` header); a hand's
+`done` is a report reply and does not
+change the owner's state. Memos are stored on the server mailspace under
+the caller's name and do not sync. Graph ready/status is projected from
+work items, `X-Vivi-Depends-On`, and event letters — not from the
+mailspace backlog graph, which ingest does not mint.
+
+**API keys.** Item 15 said the credential is the member bearer and "no
+new pass type" (the deferred slot JWT). A Grok-style connector added by
+URL cannot sign a challenge, so 1.2.0 adds a project-scoped API key a
+member mints with their identity token: hashed at rest, revocable, same
+Bearer header, bound to that member. A key cannot mint or revoke keys.
+Wire: [`contract.md`](contract.md) (Project MCP).
+
+### Token renewal
+
+`POST /v1/projects/{id}/auth/token` `{name, challenge_id, signature_base64}`
+→ 200 `{token, token_expires_at}`. The challenge comes from the existing
+`/identities/challenge` and is keyed to the project and key fingerprint; the
+signature must verify under the key bound to `name`. Any mismatch is 401.
+Tokens last one hour and a registered name cannot re-register, so without
+this endpoint an identity is locked out after an hour.
+
+### Client
+
+- Config is the `[sync]` table in `mailspace.toml`: `server`, `project`
+  (the server-side project id), and `name` (this checkout's registered
+  identity). `recipient` and `[sync.names]` are gone: the address carries
+  both. The mailspace id is the top-level `id` in `mailspace.toml`, minted
+  once when absent and never rewritten.
+- `vivi sync join` registers `name`, the key, and the mailspace id.
+  `vivi sync directory` lists the project's members and their address
+  domains so a remote role can be addressed.
+- `vivi sync` pushes every local letter that has no remote binding for the
+  project, then pulls letters since the stored cursor. Push sends the stored
+  file as-is. Pull verifies the hash and the envelope and ingests the bytes
+  verbatim under the envelope id; an id or content already held is skipped.
+- Envelope derivation on push: `kind` is the letter's work kind (`need`,
+  `task`, `want`) or `mail`; `to` is the letter's own `To` and `Cc`
+  addresses.
+- Compose: a recipient `role@<prefix>.local` whose prefix is not this
+  mailspace's is a remote recipient. The letter gets a sent copy and no
+  delivered copy, and goes on the next push. A reply is addressed to the
+  original `From`, so replying to a remote sender routes with no extra
+  configuration.
+- Pull verification, before anything is filed: the bytes hash to
+  `content_sha256`; the envelope recipients equal the letter's own To/Cc;
+  a prefix-shaped `From` domain equals the record's `from_prefix`.
+- Pull filing, for each record not already held. Filing is by address and
+  additive; it never depends on who authored the letter, because a letter can
+  come back from another place that acts as this mailspace (a restore, a
+  remote slot):
+  1. One row per `To`/`Cc` address whose domain is this mailspace's, under
+     that local role, with the role folder chosen by kind as for any
+     delivered letter. A role this mailspace does not have is filed under
+     the name anyway and reported, so adding the role later shows it.
+  2. If the `From` address's domain is this mailspace's, also one `sent`
+     row under the `From` role, exactly what a local send would have
+     written.
+  3. A letter with neither (a need, task, or want for another mailspace's
+     role) is held under its first `To` address verbatim, so every member
+     holds every work item without it landing in a local role's queue.
+- Not synced: memos, drafts, trash, and local state (closing a need,
+  marks). Closing a need as an appended record is a later unit.
+- Out of this layer, by design: long-poll, and a reply to a letter minted
+  before item 11 (its address is not routable; address the reply
+  explicitly).

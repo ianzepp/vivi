@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap::error::ErrorKind;
 use vivi::cli::{
     Cli, Command, CycleCommand, DeliveryCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
     MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, PoolSubcommand,
     SkillsCommand, TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand,
     WantSendCommand,
 };
+use vivi::letter::sugar::Sugar;
 
 #[test]
 fn parses_mailspace_identity_add() {
@@ -1391,6 +1393,151 @@ fn parses_need_and_want_send_with_depends_on() {
             assert_eq!(depends_on, vec!["abc123", "def456"]);
         }
         other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_need_send_defaults_without_dispatch() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "need",
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "cto",
+        "--subject",
+        "unflagged",
+        "--body",
+        "work",
+    ])
+    .unwrap();
+    match cli.command {
+        Command::Need {
+            command: NeedCommand::Send(cmd),
+        } => {
+            assert_eq!(cmd.send.subject, "unflagged");
+            assert!(!cmd.dispatch);
+            assert_eq!(cmd.priority, None);
+            assert_eq!(cmd.sugar(), Sugar::default());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_need_send_dispatch_alone() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "need",
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "cto",
+        "--subject",
+        "dispatch me",
+        "--body",
+        "work",
+        "--dispatch",
+    ])
+    .unwrap();
+    match cli.command {
+        Command::Need {
+            command: NeedCommand::Send(cmd),
+        } => {
+            assert!(cmd.dispatch);
+            assert_eq!(cmd.priority, None);
+            assert_eq!(cmd.sugar(), Sugar::default());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_need_send_dispatch_with_priority_levels() {
+    let max = i64::MAX.to_string();
+    let levels = ["0", "7", max.as_str()];
+    for level in levels {
+        let args = [
+            "vivi",
+            "need",
+            "send",
+            "--from",
+            "mind",
+            "--to",
+            "cto",
+            "--subject",
+            "prioritized",
+            "--body",
+            "work",
+            "--dispatch",
+            "--depends-on",
+            "abc123",
+        ];
+        let flag = format!("--priority={level}");
+        let cli = Cli::try_parse_from(args.iter().copied().chain([flag.as_str()])).unwrap();
+        match cli.command {
+            Command::Need {
+                command: NeedCommand::Send(cmd),
+            } => {
+                assert!(cmd.dispatch);
+                assert_eq!(cmd.priority, Some(level.parse::<i64>().unwrap()));
+                assert_eq!(
+                    cmd.sugar(),
+                    Sugar {
+                        depends_on: vec!["abc123".to_string()],
+                        ..Default::default()
+                    }
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn priority_requires_dispatch() {
+    for level in ["0", "7"] {
+        let args = [
+            "vivi",
+            "need",
+            "send",
+            "--from",
+            "mind",
+            "--to",
+            "cto",
+            "--subject",
+            "priority without dispatch",
+            "--body",
+            "work",
+        ];
+        let flag = format!("--priority={level}");
+        let err = Cli::try_parse_from(args.iter().copied().chain([flag.as_str()])).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+}
+
+#[test]
+fn priority_rejects_invalid_levels() {
+    for level in ["-1", "1.5", "99999999999999999999"] {
+        let args = [
+            "vivi",
+            "need",
+            "send",
+            "--from",
+            "mind",
+            "--to",
+            "cto",
+            "--subject",
+            "invalid priority",
+            "--body",
+            "work",
+            "--dispatch",
+        ];
+        let flag = format!("--priority={level}");
+        let err = Cli::try_parse_from(args.iter().copied().chain([flag.as_str()])).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
     }
 }
 

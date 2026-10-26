@@ -4,7 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::review::{Admitter, Auditor, Cto, HeadCeo, Judge, Merge, Researcher};
-use super::{EnvelopeError, Validate, parse};
+use super::{Envelope, EnvelopeError, Validate, parse};
+use crate::letter::FENCE;
 use crate::pump::flow::def::NodeClass;
 
 /// Which role wrote a reply.
@@ -120,7 +121,10 @@ fn parsed<T>(text: &str) -> Result<Parsed, EnvelopeError>
 where
     T: serde::de::DeserializeOwned + Serialize + Validate,
 {
-    let envelope = parse::<T>(text)?;
+    let envelope = match parse::<T>(text) {
+        Err(EnvelopeError::NoOpening) => after_preamble::<T>(text)?,
+        other => other?,
+    };
     let front = serde_json::to_value(&envelope.front)
         .map_err(|err| EnvelopeError::Invalid(err.to_string()))?;
     let answer = front
@@ -133,6 +137,35 @@ where
         front,
         body: envelope.body,
     })
+}
+
+/// A reply that opens with prose before its envelope ("All checks pass. Final
+/// receipt:" then `+++`): parse from the first line that is only the fence and
+/// keep the preamble at the head of the body, so no fact is lost. A reply with
+/// no fence line at all stays [`EnvelopeError::NoOpening`]. Letters elsewhere
+/// keep the strict rule; only role replies, which models often introduce, are
+/// read this way.
+fn after_preamble<T>(text: &str) -> Result<Envelope<T>, EnvelopeError>
+where
+    T: serde::de::DeserializeOwned + Validate,
+{
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_end_matches(['\n', '\r']) == FENCE {
+            let preamble = text[..offset].trim();
+            let mut envelope = parse::<T>(&text[offset..])?;
+            if !preamble.is_empty() {
+                envelope.body = if envelope.body.is_empty() {
+                    preamble.to_string()
+                } else {
+                    format!("{preamble}\n\n{}", envelope.body)
+                };
+            }
+            return Ok(envelope);
+        }
+        offset += line.len();
+    }
+    Err(EnvelopeError::NoOpening)
 }
 
 fn blank(text: &str) -> bool {

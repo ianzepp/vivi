@@ -130,6 +130,8 @@ A release run has one waiting step. It answers `ready`, and the run ends, once e
 
 A repair run has two repairer attempts. Each attempt works on a branch cut from the current main tip and gets the repair need, the target, the tested tip, the current main tip, the failing output, and the rule never to weaken, delete or ignore a test. The second attempt also gets the first attempt's steps, facts and rung verdict. A repairer answers `built` or `failed`.
 
+Each newly constructed attempt job (the **fix1** and **fix2** jobs) carries one hard time cap: **[pump] repair_attempt_secs**, in seconds, default 1800, accepted range 1 through 43200 inclusive. The attempt's brief advertises the exact same seconds value, and the cap covers the whole attempt, builds and tests included. The main-rung job that follows on the repair branch has its own timeout; **[pump.dispatch] budget** is a different control and does not size repair attempts. A valid reload applies to newly constructed attempt jobs; already-created pending or dispatched jobs keep their saved budget, and an automatic lost-job rerun reruns the saved job with its saved budget. The two-attempt policy and the meaning of an overtime attempt are unchanged. Example: **repair_attempt_secs = 7200** under **[pump]** gives each new attempt four hours; a larger cap admits longer attempts and does not guarantee that a slow repair finishes.
+
 A built attempt runs the main rung on the repair branch. A pass goes to merge to main and the run ends; a fail, a conflict, an overtime attempt or an unchanged branch goes to the second attempt, and after the second to **unrepaired**. In **unrepaired** main stays red, the pump raises one alarm, and the run waits for a green main rung at a tip that holds the tested tip, or for **vivi pump unlock**.
 
 A repair need is filed by the pump. When the `main` rung of a target goes red on a new main tip, the pump sends one repair-kind need for the target and opens its record with `kind = "repair"`, `target` and `tested`. A repeat red with the same failing ids does nothing; a different failing set replies on the open repair need. A green main rung lands a repair need that waits at unrepaired. A repair run at any other step whose tested tip main now holds ends outside the flow: the need closes and the run is withdrawn. After a repair lands, a non-blocking auditor job reviews it and sends one need for each finding.
@@ -143,10 +145,20 @@ Each control posts one action on the need's open pump record ([envelope](envelop
 | Command | Effect on a flow run |
 | --- | --- |
 | **vivi pump requeue** &lt;step task&gt; | queues the step's newest job again, once that job is terminal and the step is open; a job held after pool refusals is released in place |
-| **vivi pump withdraw** &lt;need&gt;... --reason | closes the need `withdrawn` and the record `withdrawn`; the run closes every open task |
+| **vivi pump withdraw** &lt;need&gt;... --reason | the CLI closes the need `withdrawn` at the call, as the pump identity so the close travels; the pump then closes the record `withdrawn`, and a live run closes every open task `withdrawn` |
 | **vivi pump replan** &lt;need&gt; | restarts the live run at **plan** |
 | **vivi pump answer** &lt;step&gt; &lt;word&gt; | answers a step by hand; the step closes with that word as its verdict and the flow follows its edge |
 | **vivi pump unlock** &lt;need&gt; | restarts a locked run |
+
+**vivi pump withdraw** checks every named need before posting: one need with no open pump record refuses the entire call, names that need, and posts nothing; a blank **--reason** is refused before posting too.
+
+When the need must not run, close it on the board with **vivi need done &lt;handle&gt; --for &lt;identity&gt; --note "..."**. That close records no need verdict, and **vivi pump send --need** refuses a done need, so no run starts. A board close also ends a live run: the next tick withdraws that run, closing its open tasks and its record `withdrawn`.
+
+Only when a dispatch should exist, open a record with **vivi pump send --need &lt;need&gt;** and then withdraw it. Send is intake, and the next tick can start a run from the open record.
+
+**vivi need withdraw** withdraws an assignment, not the need; it is a different command.
+
+The need verdict `withdrawn` comes only from **vivi pump withdraw**, and only while a pump record is open. An already-closed need is reported "need already closed" with its verdict unchanged, and the action is still posted. With no live run, the tick closes only the record `withdrawn`.
 
 Answer a step only with one of its words. A slice task takes `merged`, `no-defect` or `failed`. Closing a step task by hand is a foreign close: the pump reopens it. When git cannot settle whether a step's side effect landed, the step is held for **vivi pump answer**. A step that fails on several ticks in a row is held for the operator, with an exception.
 

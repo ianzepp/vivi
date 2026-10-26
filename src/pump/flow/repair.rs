@@ -6,9 +6,6 @@ use crate::letter::records::NoteWord;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::store::PumpStore;
 
-/// The per-attempt time cap in seconds: 30 minutes.
-pub(crate) const ATTEMPT_SECS: u64 = 1800;
-
 /// The attempt (1 or 2) a repair node belongs to: `fix<N>`, `rung<N>` and
 /// `merge<N>` give N; any other node gives `None`.
 pub(crate) fn attempt_of(node: &str) -> Option<u32> {

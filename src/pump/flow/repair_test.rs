@@ -3,8 +3,8 @@
 use tempfile::tempdir;
 
 use super::{
-    ATTEMPT_SECS, AttemptFacts, attempt_of, branch, facts_text, fix_node, latest_facts,
-    parse_facts, record, rung_node,
+    AttemptFacts, attempt_of, branch, facts_text, fix_node, latest_facts, parse_facts, record,
+    rung_node,
 };
 use crate::error::VivariumError;
 use crate::letter::records::NoteWord;
@@ -44,7 +44,6 @@ fn attempts_come_from_the_node_name() {
     }
     assert_eq!(fix_node(2), "fix2");
     assert_eq!(rung_node(1), "rung1");
-    assert_eq!(ATTEMPT_SECS, 1800);
 }
 
 #[test]
