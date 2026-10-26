@@ -1,7 +1,12 @@
 //! The D4 read tools: hosted-project views through the same vivi library
 //! functions their CLI commands call. Every tool here is read-only — no
-//! config edit, no record, no letter — and operator-only, held to
-//! [`super::pump`]'s authorization like the other pump tools.
+//! config edit, no record, no letter. The eight operational reads
+//! (`pump_log`, `flow_show`, `config_show`, `config_validate`,
+//! `pool_list`, `pool_show`, `role_list`, `role_show`) take the
+//! operational rule ([`super::pump::authorize_operational`]), so a Mind
+//! seat can diagnose an interruption or check the bindings and caps it may
+//! act on; `charter_show` and `target_list` stay held to the operator-only
+//! rule ([`super::pump::authorize`]) like the other administrative tools.
 //!
 //! The JSON envelopes are the CLI's `--json` bodies: `role_list` and
 //! `pool_list` answer the row arrays, `role_show` and `pool_show` the row
@@ -31,7 +36,7 @@ use crate::server::mcp::tools::{ToolError, opt_str, opt_usize, req_str};
 use crate::server::safety::RateLimiter;
 
 use super::lib_error;
-use super::pump::{acting_key, authorize};
+use super::pump::{acting_key, authorize, authorize_operational};
 
 /// The free-slot refusal `resolved: true` answers, on both tools that take it.
 const RESOLVED_REFUSED: &str = "the server cannot resolve live free slots: the probe runs the \
@@ -57,7 +62,7 @@ pub(in crate::server::mcp) fn pump_log(
     };
     let lines = opt_usize(arguments, "lines", 50, 500)?;
     let filter = opt_str(arguments, "filter")?;
-    authorize("pump_log", root, caller, requested)?;
+    authorize_operational("pump_log", root, caller, requested)?;
     let word = if matches!(file, LogFile::Log) {
         "log"
     } else {
@@ -80,7 +85,7 @@ pub(in crate::server::mcp) fn flow_show(
     let kind = FlowKind::parse(req_str(arguments, "kind")?)
         .ok_or_else(|| ToolError::new("kind must be build, research, release, or repair"))?;
     let need = opt_str(arguments, "need")?;
-    authorize("flow_show", root, caller, requested)?;
+    authorize_operational("flow_show", root, caller, requested)?;
     let flow = flow_view(root, kind, need).map_err(lib_error)?;
     let mut out = json!({
         "kind": flow.kind.name(),
@@ -103,7 +108,7 @@ pub(in crate::server::mcp) fn config_show(
 ) -> Result<Value, ToolError> {
     let requested = acting_key("config_show", "show the config", acting)?;
     refuse_resolved(arguments)?;
-    authorize("config_show", root, caller, requested)?;
+    authorize_operational("config_show", root, caller, requested)?;
     let report = config::show(Some(root), false).map_err(lib_error)?;
     // The CLI's `--json` body: the overview, plus `origins` only when some
     // merged value was inherited.
@@ -128,7 +133,7 @@ pub(in crate::server::mcp) fn config_validate(
     _arguments: &Value,
 ) -> Result<Value, ToolError> {
     let requested = acting_key("config_validate", "validate the config", acting)?;
-    authorize("config_validate", root, caller, requested)?;
+    authorize_operational("config_validate", root, caller, requested)?;
     let report = config::validate(Some(root)).map_err(lib_error)?;
     Ok(config::issues_json(&report.issues))
 }
@@ -142,7 +147,7 @@ pub(in crate::server::mcp) fn pool_list(
     _arguments: &Value,
 ) -> Result<Value, ToolError> {
     let requested = acting_key("pool_list", "list the pools", acting)?;
-    authorize("pool_list", root, caller, requested)?;
+    authorize_operational("pool_list", root, caller, requested)?;
     let rows = crate::pool::config::list_view(Some(root)).map_err(lib_error)?;
     serde_json::to_value(&rows)
         .map_err(|error| ToolError::new(format!("cannot encode the pools: {error}")))
@@ -159,7 +164,7 @@ pub(in crate::server::mcp) fn pool_show(
     let requested = acting_key("pool_show", "show a pool", acting)?;
     let name = req_str(arguments, "name")?;
     refuse_resolved(arguments)?;
-    authorize("pool_show", root, caller, requested)?;
+    authorize_operational("pool_show", root, caller, requested)?;
     let view = crate::pool::config::show_view(Some(root), name, false).map_err(lib_error)?;
     serde_json::to_value(&view.row)
         .map_err(|error| ToolError::new(format!("cannot encode the pool: {error}")))
@@ -174,7 +179,7 @@ pub(in crate::server::mcp) fn role_list(
     _arguments: &Value,
 ) -> Result<Value, ToolError> {
     let requested = acting_key("role_list", "list the roles", acting)?;
-    let hosted = authorize("role_list", root, caller, requested)?;
+    let hosted = authorize_operational("role_list", root, caller, requested)?;
     let views = hosted.ms.list_role_views().map_err(lib_error)?;
     serde_json::to_value(&views)
         .map_err(|error| ToolError::new(format!("cannot encode the roles: {error}")))
@@ -190,7 +195,7 @@ pub(in crate::server::mcp) fn role_show(
 ) -> Result<Value, ToolError> {
     let requested = acting_key("role_show", "show a role", acting)?;
     let role = req_str(arguments, "role")?;
-    let hosted = authorize("role_show", root, caller, requested)?;
+    let hosted = authorize_operational("role_show", root, caller, requested)?;
     let view = hosted.ms.role_view(role).map_err(lib_error)?;
     serde_json::to_value(&view)
         .map_err(|error| ToolError::new(format!("cannot encode the role: {error}")))
