@@ -6,13 +6,14 @@
 //! `state.json` shape is kept as the import/export format so a predecessor
 //! pump can still read a converted file.
 
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::error::VivariumError;
+use crate::pump::lock::PumpLock;
 
 mod codec;
 mod flow_index;
@@ -169,8 +170,12 @@ CREATE TABLE IF NOT EXISTS need_priority (
 /// A connection to `pump.db`.
 pub struct PumpStore {
     conn: Connection,
-    // Keep the project pump lock for the full lifetime of a schema migration.
-    _migration_lock: Option<File>,
+    // Keep the migration lock for the full lifetime of a schema migration: a
+    // migrating store owns it until drop. Merely closing the descriptor can
+    // leave the flock alive through a sibling process holding an inherited
+    // descriptor, so the [`PumpLock`] owner unlocks explicitly on drop and
+    // the residual lock is removed without waiting for exec.
+    _migration_lock: Option<PumpLock>,
 }
 
 impl PumpStore {

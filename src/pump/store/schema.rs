@@ -1,11 +1,12 @@
 //! Pump database schema-version and migration-lock helpers.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use crate::error::VivariumError;
+use crate::pump::lock::PumpLock;
 
 use super::SCHEMA_VERSION;
 
@@ -20,20 +21,24 @@ pub(super) fn newer_schema(version: i64) -> VivariumError {
     ))
 }
 
-pub(super) fn take_migration_lock(path: &Path) -> Result<File, VivariumError> {
+/// Take the migration lock for the database at `path`.
+///
+/// The returned owner unlocks explicitly on drop, so a dropped migration
+/// store frees the lock even when a sibling process still holds an inherited
+/// descriptor of the lock file.
+pub(super) fn take_migration_lock(path: &Path) -> Result<PumpLock, VivariumError> {
     let lock_path = path.parent().unwrap_or_else(|| Path::new(".")).join("lock");
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(&lock_path)?;
-    lock.try_lock().map_err(|error| {
+    PumpLock::try_lock(lock).map_err(|error| {
         VivariumError::Message(format!(
             "cannot migrate pump.db while another pump owns {}: {error}",
             lock_path.display()
         ))
-    })?;
-    Ok(lock)
+    })
 }
 
 /// The operator request queues schema 8 retired. Requeue, withdraw and replan

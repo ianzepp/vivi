@@ -1,11 +1,12 @@
 //! Tests for [`crate::pump::store`]: schema, round trip, export, and the
 //! exception row.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 
 use tempfile::tempdir;
 
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus};
+use crate::pump::lock::PumpLock;
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
@@ -321,8 +322,7 @@ fn schema_migration_refuses_to_run_under_an_active_pump_lock() {
         .unwrap();
     drop(conn);
 
-    let lock = File::create(dir.path().join("lock")).unwrap();
-    lock.try_lock().unwrap();
+    let lock = PumpLock::try_lock(File::create(dir.path().join("lock")).unwrap()).unwrap();
     let err = match PumpStore::open(&path) {
         Ok(_) => panic!("schema migration must wait for the active pump"),
         Err(err) => err,
@@ -335,24 +335,67 @@ fn schema_migration_refuses_to_run_under_an_active_pump_lock() {
     assert_eq!(version, SCHEMA_VERSION - 1);
     drop(lock);
 
-    // A sibling test that spawns a process can hold a dup of this lock for
-    // the instant between fork and exec, so allow the release a moment.
-    let store = eventually(|| PumpStore::open(&path).ok());
+    // The owner unlocked explicitly on drop, so both the migration and the
+    // release hold immediately: no retry window for a sibling process that
+    // still holds an inherited descriptor of the lock file.
+    let store = PumpStore::open(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert!(crate::pump::run::lock_is_held(dir.path()).unwrap());
     drop(store);
-    eventually(|| (!crate::pump::run::lock_is_held(dir.path()).unwrap()).then_some(()));
+    assert!(!crate::pump::run::lock_is_held(dir.path()).unwrap());
 }
 
-/// Retry `f` for up to two seconds until it returns `Some`.
-fn eventually<T>(mut f: impl FnMut() -> Option<T>) -> T {
-    for _ in 0..200 {
-        if let Some(value) = f() {
-            return value;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    f().expect("condition did not hold within two seconds")
+/// A live migration store excludes an independently opened contender; a
+/// dropped one frees the lock for the very next acquisition.
+#[test]
+fn a_fresh_store_releases_its_migration_lock_on_drop() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let store = PumpStore::open(&path).unwrap();
+    let contender = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join("lock"))
+        .unwrap();
+    assert!(
+        contender.try_lock().is_err(),
+        "the live store must exclude a migration contender"
+    );
+    drop(store);
+    let next = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join("lock"))
+        .unwrap();
+    next.try_lock()
+        .expect("the dropped store must release the migration lock immediately");
+}
+
+/// An open that fails after the migration lock was taken must not leave the
+/// lock behind: the owner unlocks explicitly on the error path.
+#[test]
+fn a_failed_store_open_releases_the_migration_lock() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE units (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    drop(conn);
+
+    assert!(
+        PumpStore::open(&path).is_err(),
+        "units without a need column must fail the units_need_idx migration"
+    );
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join("lock"))
+        .unwrap();
+    lock.try_lock()
+        .expect("the failed open must release the migration lock immediately");
 }
 
 #[test]
@@ -365,8 +408,7 @@ fn the_locked_pump_can_migrate_its_own_store_at_startup() {
         .unwrap();
     drop(conn);
 
-    let lock = File::create(dir.path().join("lock")).unwrap();
-    lock.try_lock().unwrap();
+    let lock = PumpLock::try_lock(File::create(dir.path().join("lock")).unwrap()).unwrap();
     let store = PumpStore::open_for_run(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
 }
@@ -560,8 +602,7 @@ fn a_schema_6_store_without_withdrawn_gains_the_column_on_open() {
     conn.pragma_update(None, "user_version", 6).unwrap();
     drop(conn);
 
-    let lock = File::create(dir.path().join("lock")).unwrap();
-    lock.try_lock().unwrap();
+    let lock = PumpLock::try_lock(File::create(dir.path().join("lock")).unwrap()).unwrap();
     let store = PumpStore::open_for_run(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     store.load().expect("needs read after migration");
