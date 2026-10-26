@@ -416,6 +416,85 @@ fn in_worktree_mode_an_agent_merge_of_a_local_branch_is_committed_with_both_pare
     );
 }
 
+/// Copy the delivered brief and the harness's own view of the worktree into
+/// `out`, then merge `B`: the capture happens before any publication.
+fn observe_and_merge(out: &Path) -> String {
+    let q = |name: &str| crate::pool::job::sh_quote(&out.join(name).to_string_lossy());
+    format!(
+        "cp \"$HOME/brief.md\" {brief}; pwd > {pwd}; \
+         git rev-parse --abbrev-ref HEAD > {head}; git rev-parse HEAD > {sha}; \
+         git merge --no-edit B",
+        brief = q("brief.txt"),
+        pwd = q("pwd.txt"),
+        head = q("ref.txt"),
+        sha = q("sha.txt"),
+    )
+}
+
+/// A captured harness observation, trimmed.
+fn observed(out: &Path, name: &str) -> String {
+    std::fs::read_to_string(out.join(name))
+        .unwrap_or_else(|e| panic!("no observed {name} ({e})"))
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn the_worktree_header_reports_the_detached_start_and_the_branch_to_be_created() {
+    let rig = Rig::new(1).as_worktree();
+    let out = rig.work.path().join("observed");
+    std::fs::create_dir_all(&out).unwrap();
+    let b_sha = rig.b_sha();
+
+    let result = rig.run_in_worktree(&observe_and_merge(&out), &[&format!("B {b_sha}")]);
+
+    assert_eq!(result.push(), "committed", "{:?}", result.fields);
+    let repo = rig.repo();
+    let brief = std::fs::read_to_string(out.join("brief.txt")).unwrap();
+    assert!(
+        brief.starts_with("---\n"),
+        "the header opens the brief: {brief}"
+    );
+    assert!(
+        brief.contains(&format!("checkout: {}", repo.display())),
+        "{brief}"
+    );
+    assert!(
+        brief.contains(&format!("head: detached at {}", &rig.start[..12])),
+        "the worktree reaches the harness detached: {brief}"
+    );
+    assert!(
+        !brief.contains("head: pool/w"),
+        "the assigned branch is never the head line: {brief}"
+    );
+    assert!(
+        brief.contains("output branch: pool/w (assigned; the runner commits and publishes there)"),
+        "{brief}"
+    );
+    assert_eq!(brief.matches("\n---\n").count(), 1, "one header: {brief}");
+    assert_eq!(brief.matches("checkout: ").count(), 1, "{brief}");
+    assert!(
+        brief.contains("the brief"),
+        "the assignment follows: {brief}"
+    );
+    assert_eq!(
+        std::fs::canonicalize(observed(&out, "pwd.txt")).unwrap(),
+        std::fs::canonicalize(&repo).unwrap(),
+        "the header names the worktree the harness runs in"
+    );
+    assert_eq!(
+        observed(&out, "ref.txt"),
+        "HEAD",
+        "the harness saw a detached HEAD, not the assigned branch"
+    );
+    assert_eq!(observed(&out, "sha.txt"), rig.start);
+    assert_eq!(
+        git(&rig.f.repo, &["rev-parse", "pool/w"]),
+        result.get("sha"),
+        "the assigned branch appeared only after the harness ran"
+    );
+}
+
 #[test]
 fn privileged_runner_publishes_the_exact_clean_candidate_after_agent_exit() {
     let rig = Rig::new(1);
