@@ -77,6 +77,30 @@ core dump is written. systemd puts `EnvironmentFile=` values in the
 environment block that `/proc/<pid>/environ` shows, so a credential file keeps
 a secret out of that block altogether.
 
+## Stopping and restarting
+
+`SIGTERM` (a service-manager stop) and Ctrl-C both stop request acceptance and
+begin a drain for the requests and response streams already in flight. The
+drain is bounded at ten seconds from the first signal. It ends early the
+moment every connection has finished — it is not an unconditional sleep. At
+the deadline any connection still open is closed, which can leave a client
+with an incomplete response or a disconnected stream. Both endings — fully
+drained and deadline-expired — are ordinary shutdowns and exit 0.
+
+The background reconciliation and indexing wrappers are aborted at the first
+signal so they cannot schedule another pass. Blocking work receives no
+separate teardown allowance: a pass already in flight is never joined, and
+the runtime is torn down at once when the serving future ends. The operator
+ruling is **bound**: the stop bounds process lifetime, it does not guarantee
+that every already-running blocking pass finishes or checkpoints cleanly.
+
+A twenty-second systemd `TimeoutStopSec=` therefore remains sufficient; do
+not raise it. A restart should rely on this bounded stop — send the signal,
+let the drain run out (at most ten seconds), then start the replacement.
+The command is `vivi server run`; invoking the binary by name as
+`vivi-server` (a link to the same binary) keeps working as the other entry
+form.
+
 ## Acceptance
 
 `scripts/project-sync-smoke.sh` is the project gate: two synced vivi 11
