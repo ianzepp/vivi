@@ -81,10 +81,10 @@ const POLL: Duration = Duration::from_millis(25);
 /// Per-attempt connect and read timeout for one readiness probe.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How much recent stderr a failure report carries.
+/// How much recent log a failure report carries.
 const STDERR_TAIL: usize = 4_096;
 
-/// Most stderr the harness keeps in memory.
+/// Most of one log pipe the harness keeps in memory.
 const STDERR_KEEP: usize = 64 * 1024;
 
 /// Smallest gap between two CPU refreshes: above sysinfo's
@@ -110,6 +110,11 @@ pub struct ServerSpec {
     pub bind: IpAddr,
     /// `PORT`: a free loopback port at construction time.
     pub port: u16,
+    /// `RUST_LOG` the child is given, when a run needs a specific filter
+    /// (the measurement reads the server's own debug-level pass tracing).
+    /// Never inherited: absent here, the child logs on the server's own
+    /// default, whatever the host's shell asked for.
+    pub rust_log: Option<String>,
 }
 
 impl ServerSpec {
@@ -120,7 +125,15 @@ impl ServerSpec {
             config_dir,
             bind: IpAddr::from([127, 0, 0, 1]),
             port: free_loopback_port(),
+            rust_log: None,
         }
+    }
+
+    /// Request a specific `RUST_LOG` filter for the child (builder style).
+    #[must_use]
+    pub fn with_rust_log(mut self, filter: &str) -> Self {
+        self.rust_log = Some(filter.to_owned());
+        self
     }
 }
 
@@ -187,13 +200,17 @@ pub struct HostedServer {
     /// The server's OS process id: the only PID CPU accounting points at.
     pub pid: u32,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// The server's own log lines land on stdout (tracing-subscriber's
+    /// default writer), drained bounded like stderr.
+    stdout: Arc<Mutex<Vec<u8>>>,
 }
 
 impl HostedServer {
     /// Spawn the real binary as `vivi server run` under `spec`. The child
     /// gets exactly `spec`'s settings, inherits no server secrets, and
-    /// logs to stderr, which the harness drains (bounded) so a chatty
-    /// server cannot wedge on a full pipe.
+    /// logs to stdout (its `tracing` writer) while boot errors go to
+    /// stderr; both pipes are drained (bounded) so a chatty server cannot
+    /// wedge on a full pipe.
     pub fn spawn(spec: ServerSpec) -> Self {
         assert!(
             spec.data_dir.is_absolute(),
@@ -205,7 +222,7 @@ impl HostedServer {
         command
             .args(["server", "run"])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for name in INHERITED_SETTINGS.iter().chain(INHERITED_SECRETS) {
             command.env_remove(name);
@@ -215,6 +232,9 @@ impl HostedServer {
             .env("VIVI_CONFIG_DIR", &spec.config_dir)
             .env("BIND", spec.bind.to_string())
             .env("PORT", spec.port.to_string());
+        if let Some(rust_log) = &spec.rust_log {
+            command.env("RUST_LOG", rust_log);
+        }
         let mut child = command
             .spawn()
             .unwrap_or_else(|err| panic!("spawn {VIVI_BIN} server run: {err}"));
@@ -222,13 +242,19 @@ impl HostedServer {
         let stderr = Arc::new(Mutex::new(Vec::new()));
         if let Some(pipe) = child.stderr.take() {
             let sink = Arc::clone(&stderr);
-            std::thread::spawn(move || drain_stderr(pipe, sink));
+            std::thread::spawn(move || drain_log(pipe, sink));
+        }
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        if let Some(pipe) = child.stdout.take() {
+            let sink = Arc::clone(&stdout);
+            std::thread::spawn(move || drain_log(pipe, sink));
         }
         Self {
             spec,
             child: Some(child),
             pid,
             stderr,
+            stdout,
         }
     }
 
@@ -309,6 +335,16 @@ impl HostedServer {
         String::from_utf8_lossy(&sink[start..]).into_owned()
     }
 
+    /// The last `limit` bytes of the server's own log lines (its stdout),
+    /// lossily decoded — the traced push-pass latencies the measurement
+    /// parses reach the reader through this.
+    #[must_use]
+    pub fn stdout_tail(&self, limit: usize) -> String {
+        let sink = self.stdout.lock().expect("stdout lock");
+        let start = sink.len().saturating_sub(limit);
+        String::from_utf8_lossy(&sink[start..]).into_owned()
+    }
+
     /// Kill and reap the server. Idempotent; also what [`Drop`] runs.
     pub fn shutdown(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -324,9 +360,9 @@ impl Drop for HostedServer {
     }
 }
 
-/// Drain the server's stderr into a bounded buffer, so the child can log
-/// freely while the harness keeps only the recent tail.
-fn drain_stderr(mut pipe: std::process::ChildStderr, sink: Arc<Mutex<Vec<u8>>>) {
+/// Drain one of the server's log pipes into a bounded buffer, so the child
+/// can log freely while the harness keeps only the recent tail.
+fn drain_log<R: std::io::Read>(mut pipe: R, sink: Arc<Mutex<Vec<u8>>>) {
     let mut buf = [0u8; 8_192];
     loop {
         match pipe.read(&mut buf) {

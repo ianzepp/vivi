@@ -108,6 +108,30 @@ pub(super) struct HostedEntry {
 
 pub(super) type HostedMap = Arc<RwLock<HashMap<String, HostedEntry>>>;
 
+/// One push pass, timed for private measurement tracing: the outcome is
+/// exactly [`push::push`]'s, and the debug line decides nothing — selection,
+/// bindings, skip decisions, and public outcomes are untouched. The process
+/// measurement harness (tests/server_measure_process.rs) reads baseline pass
+/// latency from the `elapsed_ms` field of this line, bounded to the window it
+/// timed; keep the marker and field names in step with its `PassLog`.
+fn timed_push(
+    mailspace: &Mailspace,
+    settings: &SyncSettings,
+    transport: &IndexTransport<'_>,
+    id: &str,
+) -> Result<push::PushReport, ProjectError> {
+    let started = std::time::Instant::now();
+    let report = push::push(mailspace, settings, transport)
+        .map_err(storage_err("hosted index pass failed"))?;
+    tracing::debug!(
+        id = %id,
+        sent = report.sent,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "hosted index pass complete"
+    );
+    Ok(report)
+}
+
 impl ProjectStore {
     /// Register (or re-register) a hosted project and the creator member its
     /// indexed letters are attributed to. Pass state survives a re-register.
@@ -203,8 +227,7 @@ impl ProjectStore {
             clock: &self.clock,
             appended: Cell::new(0),
         };
-        let report = push::push(&mailspace, &settings, &transport)
-            .map_err(storage_err("hosted index pass failed"))?;
+        let report = timed_push(&mailspace, &settings, &transport, &id)?;
         let refused: HashSet<String> = report.refused.iter().map(|r| r.handle.clone()).collect();
         for letter in report
             .refused
