@@ -51,6 +51,16 @@ fn ready_project_with(dispatch_block: &str) -> tempfile::TempDir {
     )
 }
 
+/// The ready project without its rung commands: every budget is fine, so
+/// the only findings are missing items and the pump holds (exit 3).
+fn not_ready_project_with(dispatch_block: &str) -> tempfile::TempDir {
+    let stripped = READY_PROJECT.replace(
+        "[pump.rungs]\ntask = \"true\"\nneed = \"true\"\nmain = \"true\"\npools = [\"glm\"]\n",
+        "[pump.rungs]\n",
+    );
+    project_with(&stripped.replace("[pump.rungs]", &format!("{dispatch_block}\n\n[pump.rungs]")))
+}
+
 /// Messages of the error-severity rows `config validate --json` printed.
 /// Warnings and not-ready items are unrelated here and ignored.
 fn error_messages(output: &Output) -> Vec<String> {
@@ -187,6 +197,31 @@ fn a_valid_lower_override_with_a_changed_fallback_validates_clean() {
     let out = vivi(&["config", "validate", "--json", "--project", root]);
     assert_success(&out);
     assert!(error_messages(&out).is_empty(), "{}", stdout(&out));
+}
+
+#[test]
+fn invalid_budgets_exit_1_even_while_the_project_is_also_not_ready() {
+    // Budgets are fine but the rung commands are absent: the pump holds
+    // (not ready, exit 3) instead of failing, with no error rows.
+    let dir = not_ready_project_with("");
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--json", "--project", root]);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    assert!(error_messages(&out).is_empty(), "{}", stdout(&out));
+
+    // The same not-ready project with a wrong budget: the wrong value is an
+    // error (exit 1), distinct from the held items.
+    let dir = not_ready_project_with("[pump.dispatch]\nbudget = 0");
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--json", "--project", root]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    let errors = error_messages(&out);
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("[pump.dispatch] budget")),
+        "{errors:?}"
+    );
 }
 
 const READY_PROJECT: &str = r#"
