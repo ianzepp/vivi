@@ -17,6 +17,7 @@
 //! pump is another process on the same files).
 
 mod config_write;
+mod mind_reads;
 mod pool_bands;
 mod pump;
 mod pump_action;
@@ -101,6 +102,7 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "target_list" => Some(views::target_list),
         "target_log" => Some(target_git::target_log),
         "target_show" => Some(target_git::target_show),
+        "need_units" => Some(mind_reads::need_units),
         _ => None,
     }
 }
