@@ -337,3 +337,85 @@ fn a_changed_pump_home_keeps_the_running_home_and_still_applies_the_rest() {
     assert_eq!(ctx.cfg.home_dir(&ctx.project), home);
     assert_eq!(exceptions(&ctx).len(), 1);
 }
+
+#[test]
+fn a_policy_only_edit_reloads_live_and_an_invalid_policy_is_refused() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+    source(dir.path(), "alpha");
+    let plain = "[pump.targets.alpha]\npath = \"alpha\"\n\n";
+    write_toml(dir.path(), &toml(2, plain));
+    let (mut ctx, host) = running(dir.path());
+    let mut fingerprint = None;
+    let mut last_error = None;
+    refresh_config(&mut ctx, &mut fingerprint, &mut last_error);
+    assert_eq!(
+        ctx.cfg.target_configs()["alpha"].scope_allow,
+        Some(vec![String::from("./")]),
+        "an omitted allow resolves to the whole repository"
+    );
+    let checkout = ctx.cfg.target_repo_dir(&ctx.project, "alpha").unwrap();
+    let clones = || {
+        host.commands()
+            .iter()
+            .filter(|command| command.contains("git clone"))
+            .count()
+    };
+    let clones_before = clones();
+
+    // Editing only the scope policy applies to the next valid snapshot: the
+    // integration checkout stays where it is, nothing is cloned, and
+    // nothing is refused.
+    let scoped = concat!(
+        "[pump.targets.alpha]\npath = \"alpha\"\n",
+        "scope_allow = [\"crates/\", \"lib\"]\n",
+        "scope_deny = [\"crates/vendor/\"]\n\n",
+    );
+    write_toml(dir.path(), &toml(2, scoped));
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        ctx.cfg.target_configs()["alpha"].scope_allow,
+        Some(vec![String::from("crates/"), String::from("lib")])
+    );
+    assert_eq!(
+        ctx.cfg.target_configs()["alpha"].scope_deny,
+        vec![String::from("crates/vendor/")]
+    );
+    assert_eq!(
+        ctx.cfg.target_repo_dir(&ctx.project, "alpha").unwrap(),
+        checkout
+    );
+    assert_eq!(clones(), clones_before, "a policy edit must not clone");
+    assert!(last_error.is_none());
+    assert!(exceptions(&ctx).is_empty());
+
+    // A snapshot with an invalid policy is refused whole: the last valid
+    // policy stays live behind one config-reload-refused exception.
+    let invalid = scoped.replace(
+        "scope_deny = [\"crates/vendor/\"]",
+        "scope_deny = [\"src/generated/\"]",
+    );
+    write_toml(dir.path(), &toml(2, &invalid));
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        ctx.cfg.target_configs()["alpha"].scope_allow,
+        Some(vec![String::from("crates/"), String::from("lib")])
+    );
+    assert_eq!(
+        ctx.cfg.target_configs()["alpha"].scope_deny,
+        vec![String::from("crates/vendor/")]
+    );
+    let lines = exceptions(&ctx);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("src/generated/"), "{lines:?}");
+
+    // Rewriting the last valid file matches the retained fingerprint; the
+    // refused snapshots never displaced it.
+    write_toml(dir.path(), &toml(2, scoped));
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        ctx.cfg.target_configs()["alpha"].scope_deny,
+        vec![String::from("crates/vendor/")]
+    );
+    assert_eq!(exceptions(&ctx).len(), 1);
+}
