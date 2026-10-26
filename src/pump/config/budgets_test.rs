@@ -1,6 +1,10 @@
 //! Tests for [`crate::pump::config::StepBudgets`] and the step budget
 //! accessors.
 
+use std::path::Path;
+
+use crate::VivariumError;
+use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
 use crate::pump::envelope::roles::RoleKind;
 
@@ -153,4 +157,138 @@ fn step_budgets_round_trip_without_materializing_overrides() {
     assert_eq!(cfg.step_budgets.head_cto, Some(99));
     assert_eq!(cfg.step_budget(RoleKind::HeadCeo), 99);
     assert_eq!(cfg.step_budget(RoleKind::Hand), cfg.budget);
+}
+
+/// A `PumpConfig` that validates clean: committer set, default budgets.
+fn valid_pump() -> PumpConfig {
+    PumpConfig {
+        committer_name: "T".into(),
+        committer_email: "t@t".into(),
+        ..PumpConfig::default()
+    }
+}
+
+/// Budget findings are errors (never missing items) and `validate` fails
+/// with [`VivariumError::Config`] naming `needle`.
+fn assert_config_error(cfg: &PumpConfig, needle: &str) {
+    let found = cfg.findings_for(Path::new("."), &[]);
+    assert!(
+        found.missing.is_empty(),
+        "budget problems are errors: {:?}",
+        found.missing
+    );
+    assert!(
+        found.errors.iter().any(|message| message.contains(needle)),
+        "{needle}: {:?}",
+        found.errors
+    );
+    let err = cfg
+        .validate(Path::new("."), &[])
+        .expect_err("invalid budgets must fail validate");
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(err.to_string().contains(needle), "{err}");
+}
+
+/// A fallback at the pool ceiling inherits into all seven thinking steps,
+/// and each finding names that step's canonical key (`head-cto` included).
+fn assert_ceiling_fallback_names_all_steps(cfg: &PumpConfig) {
+    let found = cfg.findings_for(Path::new("."), &[]);
+    assert_eq!(found.errors.len(), 7, "{:?}", found.errors);
+    for step in [
+        "planner",
+        "admitter",
+        "slicer",
+        "auditor",
+        "head-cto",
+        "researcher",
+        "judge",
+    ] {
+        let key = format!("pump.dispatch.step_budgets.{step}");
+        assert!(
+            found.errors.iter().any(|message| message.contains(&key)),
+            "{step}: {:?}",
+            found.errors
+        );
+    }
+}
+
+/// Every thinking step overridden to the same value; correction unset.
+fn all_thinking(secs: u64) -> StepBudgets {
+    StepBudgets {
+        planner: Some(secs),
+        admitter: Some(secs),
+        slicer: Some(secs),
+        auditor: Some(secs),
+        head_cto: Some(secs),
+        researcher: Some(secs),
+        judge: Some(secs),
+        envelope_fix: None,
+    }
+}
+
+#[test]
+fn step_budget_validation_rejects_invalid_and_unraisable_values() {
+    let max = *BUDGET_RANGE.end();
+
+    // Zero and oversized fallbacks sit outside the pool range itself.
+    for budget in [0, max + 1] {
+        let mut cfg = valid_pump();
+        cfg.dispatch.budget = budget;
+        assert_config_error(&cfg, "[pump.dispatch] budget");
+    }
+
+    // A fallback at the ceiling is unraisable on its own: every thinking
+    // step inherits it and is named by its canonical key.
+    let mut cfg = valid_pump();
+    cfg.dispatch.budget = max;
+    assert_ceiling_fallback_names_all_steps(&cfg);
+
+    // All-overrides fallback-at-maximum: a lower override on every thinking
+    // step raises the ceiling fallback, so the config validates.
+    let mut raisable = valid_pump();
+    raisable.dispatch.budget = max;
+    raisable.dispatch.step_budgets = all_thinking(max - 1);
+    raisable
+        .validate(Path::new("."), &[])
+        .expect("seven lower overrides raise the ceiling fallback");
+
+    // Thinking overrides: zero, the ceiling and oversized values are errors
+    // on the named key; maximum-minus-one is the largest valid override.
+    for secs in [0, max, max + 1] {
+        let mut cfg = valid_pump();
+        cfg.dispatch.step_budgets = only(RoleKind::Planner, secs);
+        assert_config_error(&cfg, "pump.dispatch.step_budgets.planner");
+    }
+    let mut cfg = valid_pump();
+    cfg.dispatch.step_budgets = only(RoleKind::Planner, max - 1);
+    cfg.validate(Path::new("."), &[])
+        .expect("maximum-minus-one keeps retry headroom");
+
+    // Correction (envelope-fix) may use the full pool range, ceiling
+    // included; zero and oversized values are errors on its own key.
+    for secs in [0, max + 1] {
+        let mut cfg = valid_pump();
+        cfg.dispatch.step_budgets.envelope_fix = Some(secs);
+        assert_config_error(&cfg, "pump.dispatch.step_budgets.envelope-fix");
+    }
+    let mut cfg = valid_pump();
+    cfg.dispatch.step_budgets.envelope_fix = Some(max);
+    cfg.validate(Path::new("."), &[])
+        .expect("correction may sit at the ceiling");
+
+    // Negatives, fractions and strings never reach validation: the table
+    // refuses to deserialize, so no value silently falls back.
+    for value in ["-1", "1.5", "\"soon\""] {
+        let text = format!("[dispatch.step_budgets]\nplanner = {value}\n");
+        assert!(
+            toml::from_str::<PumpConfig>(&text).is_err(),
+            "`planner = {value}` must not parse"
+        );
+    }
+    // Unknown names are the same deserialization gate, not a finding.
+    for name in ["cto", "planners"] {
+        let text = format!("[dispatch.step_budgets]\n{name} = 30\n");
+        let err = toml::from_str::<PumpConfig>(&text).expect_err("unknown keys must not parse");
+        assert!(err.to_string().contains("unknown field"), "{err}");
+    }
 }
