@@ -413,7 +413,9 @@ fn dump_work_items(
 /// The slugs are validated before anything is sent. The need letter goes
 /// first and the mark letters second, so a mark never travels ahead of its
 /// need. With `--dispatch`, the filed need is chained into a pump record
-/// after the marks; an empty mark list never bypasses the dispatch.
+/// after the marks; an empty mark list never bypasses the dispatch. A
+/// `--priority` level is written only after the record is minted, keyed by
+/// the record's need; a refused dispatch never writes priority.
 fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> {
     vivi::mailspace::validate_marks_filter(&command.marks)?;
     let result = send_local_item_sent(&command.send, "needs", "need", "created", &command.sugar())?;
@@ -430,8 +432,7 @@ fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> 
     };
     write_send_marks(&mailspace, &command.send.from, &result, &command.marks)?;
     if command.dispatch {
-        let record = dispatch_filed_need(&mailspace, &result)?;
-        println!("pump record {} for need {}", record.handle, record.need);
+        dispatch_filed_need(&mailspace, &result, command.priority)?;
     }
     Ok(())
 }
@@ -471,17 +472,22 @@ fn write_send_marks(
 /// have received a delivered copy of the need — by name, alias, local
 /// address or Cc. The pump sender and body keep their `vivi pump send`
 /// defaults, and the duplicate and actionable checks stay with `pump_send`.
+/// After the minted record prints its receipt, `priority` is written to the
+/// configured pump home under the record's own need; a failed priority write
+/// leaves the filed need and the open record untouched.
 fn dispatch_filed_need(
     mailspace: &Mailspace,
     result: &DeliveryResult,
+    priority: Option<i64>,
 ) -> Result<PumpRecord, VivariumError> {
-    dispatch_filed_need_checked(mailspace, result)
+    dispatch_filed_need_checked(mailspace, result, priority)
         .map_err(|error| dispatch_boundary(error, &result.sent))
 }
 
 fn dispatch_filed_need_checked(
     mailspace: &Mailspace,
     result: &DeliveryResult,
+    priority: Option<i64>,
 ) -> Result<PumpRecord, VivariumError> {
     let pump = mailspace.config.pump.as_ref().ok_or_else(|| {
         VivariumError::Config(String::from(
@@ -498,7 +504,33 @@ fn dispatch_filed_need_checked(
             "no delivered copy of the filed need for {reply_from}; the dispatch pump must be a recipient"
         )));
     }
-    mailspace.pump_send(None, &result.sent, None)
+    let record = mailspace.pump_send(None, &result.sent, None)?;
+    println!("pump record {} for need {}", record.handle, record.need);
+    apply_dispatch_priority(&pump.home_dir(&mailspace.root), &record, priority)?;
+    Ok(record)
+}
+
+/// Write the requested dispatch priority for a minted pump record, keyed by
+/// the record's own need — never by the sent handle or the record handle.
+/// `None` writes nothing, so a dispatch without `--priority` never creates
+/// `pump.db`; level 0 keeps the zero-clearing semantics of
+/// `vivi pump priority set`. A failure leaves the filed need and the open
+/// record in place: a concurrent pump may already have observed the record,
+/// so nothing is rolled back or closed.
+fn apply_dispatch_priority(
+    home: &std::path::Path,
+    record: &PumpRecord,
+    priority: Option<i64>,
+) -> Result<(), VivariumError> {
+    let Some(level) = priority else {
+        return Ok(());
+    };
+    vivi::pump::priority::set(home, &record.need, level).map_err(|error| {
+        VivariumError::Other(format!(
+            "priority for dispatched need {} (pump record {}) failed: {error}",
+            record.need, record.handle
+        ))
+    })
 }
 
 /// Wrap a dispatch-boundary failure with the dispatch phase, the filed sent
