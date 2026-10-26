@@ -11,7 +11,9 @@
 //! the shared `budget`, so existing merge and explicit repair-cap rules keep
 //! working unchanged. A forthcoming change retries one timed-out thinking
 //! step once at twice its resolved budget, capped by the pool bound; this
-//! table only fixes the first attempt.
+//! table only fixes the first attempt. These budgets are wall-clock caps per
+//! dispatch step, unrelated to `pump.slice.minutes`, which sizes the work
+//! units the slicer aims for; neither setting feeds the other.
 
 use crate::pump::envelope::roles::RoleKind;
 
