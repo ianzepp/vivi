@@ -10,6 +10,8 @@ use tempfile::tempdir;
 
 use super::refresh_config;
 use crate::mailspace::Mailspace;
+use crate::pump::flow::def::NodeClass;
+use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::step_inputs;
 use crate::pump::host::{Ctx, FakeHost};
 use crate::pump::run::actor_string;
@@ -61,6 +63,41 @@ fn running(project: &Path) -> (Ctx, Arc<FakeHost>) {
     .with_mailspace(mailspace.mailspace_id().to_string())
     .with_pool_sources(pool_sources);
     (ctx, host)
+}
+
+/// The mailspace file with an explicit `[pump.dispatch]` fallback budget and
+/// the given `[pump.dispatch.step_budgets]` lines.
+fn budgeted_toml(cap: u32, budget: u64, step_budgets: &str, targets: &str) -> String {
+    let lanes = format!("lanes = [{{ model = \"m\", cap = {cap} }}]");
+    toml(cap, targets).replacen(
+        &format!("[pump.dispatch]\n{lanes}"),
+        &format!(
+            "[pump.dispatch]\nbudget = {budget}\n{lanes}\n\n[pump.dispatch.step_budgets]\n{step_budgets}",
+        ),
+        1,
+    )
+}
+
+/// A live build run with one planner step to build role jobs from.
+fn run_row() -> (RunRow, StepRow) {
+    (
+        RunRow {
+            need: String::from("n1"),
+            run: 1,
+            flow: String::from("build"),
+            flow_version: crate::pump::flow::index::FLOW_VERSION_NUMBER,
+            kind: String::from("build"),
+            entry: String::from("plan"),
+            state: String::from(crate::pump::flow::index::run_state::LIVE),
+        },
+        StepRow {
+            run: 1,
+            node: String::from("plan"),
+            task: String::from("t1"),
+            state: StepState::Waiting,
+            verdict: None,
+        },
+    )
 }
 
 fn exceptions(ctx: &Ctx) -> Vec<String> {
@@ -163,6 +200,67 @@ fn a_removed_target_stays_running_and_a_failed_clone_drops_only_the_new_target()
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("target alpha was removed"), "{lines:?}");
     assert!(lines[0].contains("target beta clone failed"), "{lines:?}");
+}
+
+#[test]
+fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+    write_toml(dir.path(), &budgeted_toml(2, 421, "planner = 97", ""));
+    let (mut ctx, _host) = running(dir.path());
+    let mut fingerprint = None;
+    let mut last_error = None;
+    refresh_config(&mut ctx, &mut fingerprint, &mut last_error);
+    assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 300);
+
+    // The planner job is built through the real read-only role-job path and
+    // captures the startup override.
+    let (run, step) = run_row();
+    let queued = step_inputs::read_only_job(
+        &ctx,
+        &run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "brief one",
+    )
+    .unwrap();
+    assert_eq!(queued.budget, 97);
+
+    write_toml(dir.path(), &budgeted_toml(2, 233, "planner = 151", ""));
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert!(last_error.is_none());
+    assert!(exceptions(&ctx).is_empty());
+    assert_eq!(ctx.cfg.dispatch.budget, 233);
+    assert_eq!(ctx.cfg.dispatch.step_budgets.planner, Some(151));
+
+    let fresh = step_inputs::read_only_job(
+        &ctx,
+        &run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "brief one",
+    )
+    .unwrap();
+    assert_eq!(fresh.budget, 151);
+    // An omitted thinking-kind override follows the reloaded fallback.
+    let judge =
+        step_inputs::read_only_job(&ctx, &run, &step, &NodeClass::Judge, "auditor", "brief two")
+            .unwrap();
+    assert_eq!(judge.budget, 233);
+    assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 300);
+
+    // The queued job keeps its original budget and execution inputs.
+    assert_eq!(queued.budget, 97);
+    assert_eq!(queued.id, "step-t1-a1");
+    assert_eq!(queued.kind, "planner");
+    assert_eq!(queued.role, "pump-planner");
+    assert_eq!(queued.task.as_deref(), Some("t1"));
+    assert_eq!(queued.body, "brief one");
+    assert!(queued.read_only);
+    assert_eq!(queued.from_ref.as_deref(), Some(ctx.cfg.main.as_str()));
+    assert_eq!(queued.extra_targets, step_inputs::targets(&ctx));
 }
 
 #[test]
