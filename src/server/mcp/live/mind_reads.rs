@@ -11,6 +11,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::mailspace::MailspaceThreadMessage;
 use crate::server::identities::IdentityRecord;
 use crate::server::mcp::tools::{ToolError, opt_usize, req_str};
 use crate::server::safety::RateLimiter;
@@ -18,9 +19,12 @@ use crate::server::safety::RateLimiter;
 use super::Hosted;
 use super::lib_error;
 use super::pump::{acting_key, authorize};
+use super::task_evidence::{self, AttemptRow, MessageRow, TaskEvidence, Window};
 
 const UNITS_DEFAULT: usize = 20;
 const UNITS_MAX: usize = 100;
+const THREAD_DEFAULT: usize = 20;
+const THREAD_MAX: usize = 50;
 
 /// The units bound to a need, paged. Read-only: neither audited nor
 /// write-rate-limited.
@@ -62,17 +66,113 @@ pub(in crate::server::mcp) fn need_units(
 /// below always means a real need with no bound units, and a priority set
 /// always lands on a need, never on another kind.
 pub(super) fn canonical_need(hosted: &Hosted, handle: &str) -> Result<String, ToolError> {
+    canonical_kind(hosted, handle, "need")
+}
+
+/// The canonical handle of the item `handle` names when it is a `kind`. An
+/// unknown handle, and a handle of any other kind, is refused — so a read
+/// of a real item always answers with that item, never with another kind.
+fn canonical_kind(hosted: &Hosted, handle: &str, kind: &str) -> Result<String, ToolError> {
     let located = {
         let storage = hosted.ms.storage().map_err(lib_error)?;
         super::locate(&storage, handle)?
     };
-    if located.kind != "need" {
+    if located.kind != kind {
         return Err(ToolError::new(format!(
-            "'{handle}' is a {}, not a need",
+            "'{handle}' is a {}, not a {kind}",
             located.kind
         )));
     }
     Ok(located.view.handle)
+}
+
+/// One task's diagnostic thread: its complete connected thread cut by the
+/// evidence helpers into the paged messages and the separately paged
+/// newest-first attempts. Read-only: neither audited nor write-rate-limited.
+pub(in crate::server::mcp) fn task_thread(
+    _limiter: &RateLimiter,
+    _project_id: &str,
+    root: &Path,
+    caller: &IdentityRecord,
+    acting: Option<&str>,
+    arguments: &Value,
+) -> Result<Value, ToolError> {
+    let requested = acting_key("task_thread", "read a task's diagnostic thread", acting)?;
+    let step = req_str(arguments, "step")?;
+    let hosted = authorize("task_thread", root, caller, requested)?;
+    let task = canonical_kind(&hosted, &step, "task")?;
+    let window = evidence_window(arguments)?;
+    let thread = complete_thread(&hosted, &task)?;
+    let evidence = task_evidence::task_evidence(&thread, window, window);
+    Ok(task_thread_json(&task, &evidence))
+}
+
+/// The task's complete connected thread, uncapped: selecting and paging is
+/// the evidence helpers' job, not the generic thread read's.
+fn complete_thread(hosted: &Hosted, task: &str) -> Result<Vec<MailspaceThreadMessage>, ToolError> {
+    hosted
+        .ms
+        .thread(task, false, usize::MAX, usize::MAX)
+        .map_err(lib_error)
+}
+
+/// The one window both pages share: `limit` (default 20, at most 50) and
+/// `offset` (default 0), as [`need_units`] names them.
+fn evidence_window(arguments: &Value) -> Result<Window, ToolError> {
+    Ok(Window {
+        offset: opt_offset(arguments)?,
+        limit: opt_usize(arguments, "limit", THREAD_DEFAULT, THREAD_MAX)?,
+    })
+}
+
+/// The answer: the canonical task, the diagnostic attempt evidence with its
+/// receipt first, the verbose paged messages last — so a downstream cap on
+/// the serialized answer cannot conceal the evidence.
+fn task_thread_json(task: &str, evidence: &TaskEvidence) -> Value {
+    json!({
+        "task": task,
+        "attempts": evidence.attempts.iter().map(attempt_json).collect::<Vec<_>>(),
+        "attempts_total": evidence.attempts_total,
+        "attempts_offset": evidence.attempts_offset,
+        "attempts_limit": evidence.attempts_limit,
+        "attempts_next_offset": evidence.attempts_next_offset,
+        "attempts_truncated": evidence.attempts_truncated,
+        "messages": evidence.messages.iter().map(message_json).collect::<Vec<_>>(),
+        "total": evidence.total,
+        "offset": evidence.offset,
+        "limit": evidence.limit,
+        "next_offset": evidence.next_offset,
+        "truncated": evidence.truncated,
+    })
+}
+
+/// One attempt row: its source handles, its parsed record metadata, and the
+/// bounded body that leads with the failure evidence, with what was cut.
+fn attempt_json(row: &AttemptRow) -> Value {
+    json!({
+        "handle": row.handle,
+        "message_id": row.message_id,
+        "date": row.date,
+        "metadata": row.fields,
+        "body": row.body,
+        "body_truncated": row.body_truncated,
+    })
+}
+
+/// One thread message row in thread order: its source handles, the lifecycle
+/// event when it is one, its capped body, and whether it is an attempt note.
+fn message_json(row: &MessageRow) -> Value {
+    json!({
+        "handle": row.handle,
+        "message_id": row.message_id,
+        "date": row.date,
+        "from": row.from,
+        "subject": row.subject,
+        "event": row.event,
+        "body": row.body,
+        "body_truncated": row.body_truncated,
+        "is_attempt": row.is_attempt,
+    })
 }
 
 /// One page over a full result list: the slice bounds plus the paging

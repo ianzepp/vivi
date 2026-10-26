@@ -104,6 +104,7 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "target_log" => Some(target_git::target_log),
         "target_show" => Some(target_git::target_show),
         "need_units" => Some(mind_reads::need_units),
+        "task_thread" => Some(mind_reads::task_thread),
         _ => None,
     }
 }

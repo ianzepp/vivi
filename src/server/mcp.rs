@@ -685,6 +685,7 @@ fn tools_list() -> Value {
             })),
             operator_schema::pump_action_tool(),
             operator_schema::need_units_tool(),
+            operator_schema::task_thread_tool(),
             tool("pump_reset", "Hosted projects only, operator only. Archive the pump home beside itself and start a fresh database, as `vivi pump reset` does (`pump::reset::archive`). Refused while the pump lock is held, running or paused, with the library's message; nothing moves on a refusal. Returns {archive_dir, moved, mode, open_records}: moved is the home-relative names that moved, and mode is the fresh database's control mode. One audit line. Same authorization as pump_control.", json!({
                 "type": "object",
                 "properties": {},

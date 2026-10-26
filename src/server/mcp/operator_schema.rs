@@ -72,3 +72,33 @@ pub(super) fn need_units_tool() -> Value {
         }),
     )
 }
+
+/// The `task_thread` tool: read-only diagnostic thread of one dispatch task
+/// in the hosted mailspace, paged messages plus newest-first attempt rows.
+pub(super) fn task_thread_tool() -> Value {
+    tool(
+        "task_thread",
+        "Hosted projects only, operator only. Read-only diagnostic thread of one dispatch task: \
+         the task's complete connected thread, cut into two pages that share this call's `limit` \
+         and `offset` — the messages in mailspace note order, and separately the newest-first \
+         attempt rows, so older replies cannot hide a recent failure. `step` resolves by handle \
+         or unambiguous prefix and must name a task: an unknown handle or another kind is \
+         refused, and closed tasks stay readable. Attempt rows keep their source handles, parsed \
+         record metadata, and a bounded body that leads with the outcome, failing command and \
+         excerpt tail before any verbose final message; message bodies cap from the head. Both \
+         receipts say where they were cut: {task, attempts, attempts_total, attempts_offset, \
+         attempts_limit, attempts_next_offset, attempts_truncated, messages, total, offset, \
+         limit, next_offset, truncated}. A read: not audited and not rate limited. Same \
+         authorization as pump_control.",
+        json!({
+            "type": "object",
+            "properties": {
+                "step": { "type": "string", "description": "The task handle (or unambiguous prefix) whose diagnostic thread is read" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Rows returned per page, for messages and attempts alike" },
+                "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "First row to return; 0 starts each list" }
+            },
+            "required": ["step"],
+            "additionalProperties": false
+        }),
+    )
+}
