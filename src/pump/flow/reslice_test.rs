@@ -64,8 +64,12 @@ fn step(node: &str, task: &str) -> StepRow {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default())
+}
+
+fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != SLICER_ROLE);
     routing.roles.push(RoutedRole {
@@ -169,6 +173,31 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
 }
 
 #[test]
+fn a_request_budgets_the_slicer_job_at_the_configured_slicer_budget() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.slicer = Some(1234);
+    let mut rig = rig_with(cfg)?;
+
+    let task = ask(&mut rig, Mode::Split, "too big")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.budget, 1234);
+    Ok(())
+}
+
+#[test]
+fn a_request_without_a_slicer_override_falls_back_to_the_shared_budget() -> R {
+    let mut rig = rig()?;
+
+    let task = ask(&mut rig, Mode::Split, "too big")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.budget, rig.ctx.cfg.dispatch.budget);
+    assert_eq!(job.budget, 600);
+    Ok(())
+}
+
+#[test]
 fn the_same_request_again_sends_nothing() -> R {
     let mut rig = rig()?;
     let first = ask(&mut rig, Mode::Rework, "redo it")?;
@@ -218,6 +247,11 @@ fn planted(id: &str) -> Slice {
 
 /// A rig whose slice A was fanned out, plus the task a split request queued.
 fn phase_rig() -> Result<(Rig, String), VivariumError> {
+    phase_rig_mode(Mode::Split)
+}
+
+/// The same rig with the request sent in `mode`.
+fn phase_rig_mode(mode: Mode) -> Result<(Rig, String), VivariumError> {
     let mut rig = rig()?;
     let slicer_task = rig.mail.send_step("pump", "pump", "slice", "slicer", &[])?;
     let slicer = step("slice", &slicer_task);
@@ -232,7 +266,7 @@ fn phase_rig() -> Result<(Rig, String), VivariumError> {
     )?;
     let task = slice_task_of(&rig, "A")?;
     rig.slice = rig.store.step_by_task(&task)?.expect("slice row");
-    let reslice = ask(&mut rig, Mode::Split, "too big")?;
+    let reslice = ask(&mut rig, mode, "too big")?;
     Ok((rig, reslice))
 }
 
@@ -247,20 +281,35 @@ fn slice_task_of(rig: &Rig, id: &str) -> Result<String, VivariumError> {
 }
 
 fn end_job(rig: &mut Rig, task: &str, status: JobStatus, message: &str) {
-    let job = rig
-        .jobs
-        .jobs
-        .get_mut(&format!("reslice-{task}-a1"))
-        .expect("job");
-    job.status = status;
+    end_id(rig, &format!("reslice-{task}-a1"), status, message);
+}
+
+/// End the job named `id`: `status`, and for a finished job a receipt whose
+/// hand message is `message`.
+fn end_id(rig: &mut Rig, id: &str, status: JobStatus, message: &str) {
     if status == JobStatus::Finished {
-        job.outcome = Some(JobOutcome {
-            state: "finished".into(),
-            detail: String::new(),
-            receipt: format!("pool result j1: finished\n\n--- receipt\n{message}"),
-            at: 0,
-        });
+        end_receipt(
+            rig,
+            id,
+            &format!("pool result j1: finished\n\n--- receipt\n{message}"),
+        );
+    } else {
+        let job = rig.jobs.jobs.get_mut(id).expect("job");
+        job.status = status;
     }
+}
+
+/// End the job named `id` as a finished job whose collected receipt is
+/// `receipt` whole, summary head included.
+fn end_receipt(rig: &mut Rig, id: &str, receipt: &str) {
+    let job = rig.jobs.jobs.get_mut(id).expect("job");
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: receipt.to_owned(),
+        at: 0,
+    });
 }
 
 fn run_phase(rig: &mut Rig) -> R {
@@ -296,10 +345,19 @@ fn a_finished_split_job_replaces_the_slice_and_closes_the_reslice_task_sliced() 
 }
 
 #[test]
-fn a_timed_out_job_exhausts_the_slice_and_closes_failed() -> R {
+fn a_timed_out_job_retries_once_then_exhausts_the_slice_and_closes_failed() -> R {
     let (mut rig, task) = phase_rig()?;
     end_job(&mut rig, &task, JobStatus::Timeout, "");
 
+    run_phase(&mut rig)?;
+
+    let a2 = format!("reslice-{task}-a2");
+    assert_eq!(rig.jobs.jobs[&a2].budget, 1200, "one raised retry");
+    let row = rig.store.step_by_task(&task)?.expect("row");
+    assert_eq!(row.state, StepState::Running);
+    assert!(slice_task_of(&rig, "A.1").is_err());
+
+    end_id(&mut rig, &a2, JobStatus::Timeout, "");
     run_phase(&mut rig)?;
 
     let old = rig.store.step_by_task(&rig.slice.task)?.expect("row");
@@ -503,6 +561,99 @@ fn a_store_that_keeps_failing_holds_the_row_after_three_ticks() -> R {
     assert_eq!(row.state, StepState::Waiting);
     assert_eq!(row.verdict.as_deref(), Some(OPERATOR_HOLD));
     assert_eq!(count_of(&rig, STEP_ERROR_HELD), 1, "{}", exceptions(&rig));
+    Ok(())
+}
+
+// ---- budget kills ----
+
+/// The two machine representations of a budget kill.
+#[derive(Debug, Clone, Copy)]
+enum Kill {
+    /// The pool's terminal timeout status.
+    Timeout,
+    /// A finished job whose pool summary reports agent exit 124, with a
+    /// valid slicer envelope in the hand's message.
+    Exit124,
+}
+
+impl Kill {
+    /// End the job named `id` as this kill of a `mode` request.
+    fn end(self, rig: &mut Rig, id: &str, mode: Mode) {
+        match self {
+            Self::Timeout => end_id(rig, id, JobStatus::Timeout, ""),
+            Self::Exit124 => {
+                let reply = if mode == Mode::Split {
+                    SPLIT_REPLY
+                } else {
+                    REWORK_REPLY
+                };
+                end_receipt(rig, id, &agent_receipt(124, reply, ""));
+            }
+        }
+    }
+}
+
+#[test]
+fn reslice_budget_kill_retries_same_request_once() -> R {
+    for mode in [Mode::Split, Mode::Rework, Mode::FollowUp] {
+        for kill in [Kill::Timeout, Kill::Exit124] {
+            a_budget_kill_retries_once_then_fails(mode, kill)?;
+        }
+    }
+    Ok(())
+}
+
+fn a_budget_kill_retries_once_then_fails(mode: Mode, kill: Kill) -> R {
+    let (mut rig, task) = phase_rig_mode(mode)?;
+    let a1 = format!("reslice-{task}-a1");
+    let a2 = format!("reslice-{task}-a2");
+    kill.end(&mut rig, &a1, mode);
+
+    run_phase(&mut rig)?;
+
+    // The first kill queues one deterministic copy at a raised budget; the
+    // request itself stays open and nothing downstream moves.
+    let original = rig.jobs.jobs[&a1].clone();
+    let retry = rig.jobs.jobs.get(&a2).expect("retry job enqueued").clone();
+    assert_eq!(retry.budget, original.budget * 2, "{mode:?} {kill:?}");
+    assert_eq!(retry.kind, KIND);
+    assert_eq!(retry.role, original.role);
+    assert_eq!(retry.body, original.body, "the brief is preserved");
+    assert_eq!(retry.task.as_deref(), Some(task.as_str()));
+    assert_eq!(retry.target, original.target);
+    assert_eq!(retry.from_ref, original.from_ref);
+    assert_eq!(retry.extra_targets, original.extra_targets);
+    assert_eq!(retry.payload["budget_retry"], serde_json::json!(true));
+    assert_eq!(retry.payload["need"], NEED);
+    assert_eq!(retry.payload["run"], 1);
+    assert_eq!(retry.payload["slice"], original.payload["slice"]);
+    assert_eq!(retry.payload["mode"], mode.name());
+    assert!(
+        original.applied_at.is_some(),
+        "the original result is applied"
+    );
+    let row = rig.store.step_by_task(&task)?.expect("reslice row");
+    assert_eq!(row.state, StepState::Running);
+    assert_eq!(verdict(&rig, &task)?, None);
+    assert!(slice_task_of(&rig, "A.1").is_err(), "no downstream fanout");
+    assert_eq!(count_of(&rig, RESLICE_FAILED), 0, "{}", exceptions(&rig));
+
+    // A second kill takes the normal failed-reslice path — even when the
+    // finished receipt carries a valid slicer envelope.
+    kill.end(&mut rig, &a2, mode);
+
+    run_phase(&mut rig)?;
+
+    assert_eq!(count_of(&rig, RESLICE_FAILED), 1, "{}", exceptions(&rig));
+    assert_eq!(verdict(&rig, &task)?.as_deref(), Some("failed"));
+    assert!(rig.jobs.jobs[&a2].applied_at.is_some());
+    let row = rig.store.step_by_task(&task)?.expect("reslice row");
+    assert_eq!(row.state, StepState::Done, "closed with the failed verdict");
+    assert_eq!(row.verdict.as_deref(), Some("failed"));
+    if mode != Mode::FollowUp {
+        let old = rig.store.step_by_task(&rig.slice.task)?.expect("slice row");
+        assert_eq!(old.state, StepState::Failed);
+    }
     Ok(())
 }
 

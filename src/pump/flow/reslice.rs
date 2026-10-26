@@ -4,8 +4,9 @@ use crate::error::VivariumError;
 use crate::letter::render;
 use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
-use crate::pump::envelope::roles::{Slicer, SlicerMode};
+use crate::pump::envelope::roles::{RoleKind, Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
@@ -425,6 +426,17 @@ fn collect_one<S: JobStore, M: FlowMail>(
         jobs::mark_applied(st, &job.id, ctx.now());
         return Ok(());
     }
+    if let Some(spec) = budget_retry_spec(job) {
+        let id = spec.id.clone();
+        let raised = spec.budget;
+        jobs::enqueue(st, spec)?;
+        ctx.log(&format!(
+            "reslice job {}: budget kill; retry {id} queued at budget {raised}",
+            job.id
+        ));
+        jobs::mark_applied(st, &job.id, ctx.now());
+        return Ok(());
+    }
     if let Some(env) = runner_env_failure(job) {
         return hold_env(ctx, st, store, job, &row, &env);
     }
@@ -436,10 +448,44 @@ fn collect_one<S: JobStore, M: FlowMail>(
     Ok(())
 }
 
+/// The raised-budget retry copy of a budget-killed job, or `None` when the
+/// kill must take the failed-reslice path: the durable retry flag is spent,
+/// or the stored budget cannot strictly rise within the pool bound. The copy
+/// is named `reslice-<task>-a2` and carries every execution input and the
+/// whole payload of the original, at twice the stored budget (pool maximum
+/// cap) and with the `budget_retry` flag set.
+fn budget_retry_spec(job: &PoolJob) -> Option<JobSpec> {
+    // A reslice job always budgets as the slicer execution kind, so the
+    // shared eligibility table admits every reslice kill alike.
+    if !budget_retry::eligible(RoleKind::Slicer)
+        || !budget_retry::is_budget_kill(job)
+        || budget_retry::spent(job)
+    {
+        return None;
+    }
+    let mut spec = job.rerun_spec(retry_id(&job.id));
+    spec.budget = budget_retry::raised_budget(job.budget)?;
+    budget_retry::mark_retry(&mut spec.payload);
+    Some(spec)
+}
+
+/// The deterministic id of a raised-budget retry: `reslice-<task>-a1`
+/// retries as `reslice-<task>-a2`.
+fn retry_id(id: &str) -> String {
+    if let Some((head, tail)) = id.rsplit_once("-a")
+        && let Ok(n) = tail.parse::<u32>()
+    {
+        return format!("{head}-a{}", n.saturating_add(1));
+    }
+    format!("{id}-a2")
+}
+
 /// The slicer envelope of a finished job whose mode matches the request; any
 /// other outcome raises [`RESLICE_FAILED`] and gives `None`, and slices that
 /// fail [`check_batch`] raise [`SLICES_INVALID`] and give `None`. A store read
-/// error from [`check_batch`] is an Err.
+/// error from [`check_batch`] is an Err. A budget kill with no retry left
+/// fails here too, before the receipt is read: a valid slicer envelope in a
+/// killed hand's message never applies.
 fn reply_of(
     ctx: &Ctx,
     store: &PumpStore,
@@ -452,6 +498,12 @@ fn reply_of(
         raise_once(ctx, RESLICE_FAILED, &job.id, &text);
         Ok(None)
     };
+    if budget_retry::is_budget_kill(job) && budget_retry_spec(job).is_none() {
+        return fail(format!(
+            "budget kill at budget {} with no raised retry left",
+            job.budget
+        ));
+    }
     if job.status != JobStatus::Finished {
         return fail(format!("pool job ended {:?}", job.status));
     }

@@ -123,5 +123,9 @@ fn a_repeated_request_with_multi_line_input_sends_nothing() -> R {
     assert_eq!(reslices.len(), 1, "{reslices:?}");
     let kinds: Vec<&PoolJob> = jobs.jobs.values().filter(|j| j.kind == KIND).collect();
     assert_eq!(kinds.len(), 1, "{kinds:?}");
+    assert_eq!(
+        kinds[0].budget, ctx.cfg.dispatch.budget,
+        "the slicer budget falls back to the shared budget"
+    );
     Ok(())
 }
