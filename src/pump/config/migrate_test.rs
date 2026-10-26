@@ -25,6 +25,22 @@ fn append(root: &Path, text: &str) {
     fs::write(path, raw).unwrap();
 }
 
+/// A project under a base config, so a migrate can prove it touches only the
+/// selected project file. Returns `(guard, project root, base config path)`.
+fn init_inherited() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = tempdir().unwrap();
+    let base_file = tmp.path().join(".vivi/mailspace.toml");
+    fs::create_dir_all(base_file.parent().unwrap()).unwrap();
+    fs::write(
+        &base_file,
+        "base = true\n\n[pump]\nbranch = \"base-branch\"\n",
+    )
+    .unwrap();
+    let project = tmp.path().join("proj");
+    Mailspace::init_with_defaults(Some(&project)).unwrap();
+    (tmp, project, base_file)
+}
+
 #[test]
 fn dry_run_names_a_retired_key_and_does_not_write() {
     let tmp = init();
@@ -61,6 +77,71 @@ fn write_removes_a_retired_key_and_keeps_the_backup() {
     let name = backup.file_name().unwrap().to_string_lossy();
     assert!(name.starts_with("mailspace.toml.bak."), "{name}");
     assert_eq!(report.wrote.as_deref(), Some(path.as_path()));
+}
+
+/// The pump identity keys are the five sender/recipient knobs the catalogue
+/// schedules for removal. Migration edits only the selected project file:
+/// the retired `branch` key goes, comments and backup survive, the base file
+/// keeps its own occurrence untouched, and a second write changes nothing.
+/// The identity keys themselves are still held (their catalogue severity is
+/// Warning until retirement), while the plan already names each one.
+#[test]
+fn migration_removes_pump_identity_keys_idempotently() {
+    let (tmp, project, base_file) = init_inherited();
+    append(
+        &project,
+        r#"
+[pump]
+# send identity kept until retirement
+from = "dispatcher"
+reply_from = "pump"
+branch = "old"
+[pump.board]
+from = ["operator@x"]
+reply_to = "operator@x"
+[pump.dispatch]
+from = "origin/main"
+"#,
+    );
+    let path = config_path(&project);
+    let before = fs::read_to_string(&path).unwrap();
+    let base_before = fs::read_to_string(&base_file).unwrap();
+
+    let report = migrate(Some(&project), true).unwrap();
+    assert!(!report.dry_run);
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(!after.contains("branch"), "{after}");
+    for kept in [
+        "# send identity kept until retirement",
+        "from = \"dispatcher\"",
+        "reply_from = \"pump\"",
+        "from = [\"operator@x\"]",
+        "reply_to = \"operator@x\"",
+        "from = \"origin/main\"",
+    ] {
+        assert!(after.contains(kept), "{kept} missing from:\n{after}");
+    }
+    for named in [
+        "remove [pump] from",
+        "remove [pump] reply_from",
+        "remove [pump.board] from",
+        "remove [pump.board] reply_to",
+        "remove [pump.dispatch] from",
+    ] {
+        assert!(
+            report.plan.contains(named),
+            "{named} not in:\n{}",
+            report.plan
+        );
+    }
+    let backup = report.config_backup.expect("config backup");
+    assert_eq!(fs::read_to_string(&backup).unwrap(), before);
+    assert_eq!(fs::read_to_string(&base_file).unwrap(), base_before);
+
+    let again = migrate(Some(&project), true).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), after);
+    assert!(!again.diff.contains("@@"), "{}", again.diff);
+    assert_eq!(fs::read_to_string(&base_file).unwrap(), base_before);
 }
 
 #[test]

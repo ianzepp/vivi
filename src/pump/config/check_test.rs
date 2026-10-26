@@ -16,10 +16,27 @@ fn init() -> tempfile::TempDir {
 }
 
 fn append(root: &Path, text: &str) {
-    let path = root.join(".vivi/mailspace.toml");
-    let mut raw = fs::read_to_string(&path).unwrap();
+    append_to(&root.join(".vivi/mailspace.toml"), text);
+}
+
+fn append_to(path: &Path, text: &str) {
+    let mut raw = fs::read_to_string(path).unwrap();
     raw.push_str(text);
     fs::write(path, raw).unwrap();
+}
+
+/// A project under a base config: `(guard, project root, base config path)`.
+/// The base lives at the guard root with `base_toml`; the project is
+/// initialized under it, so the merge takes the base's pump table and the
+/// project file itself stays thin.
+fn init_inherited(base_toml: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = tempdir().unwrap();
+    let base_file = tmp.path().join(".vivi/mailspace.toml");
+    fs::create_dir_all(base_file.parent().unwrap()).unwrap();
+    fs::write(&base_file, base_toml).unwrap();
+    let project = tmp.path().join("proj");
+    Mailspace::init_with_defaults(Some(&project)).unwrap();
+    (tmp, project, base_file)
 }
 
 #[test]
@@ -147,6 +164,63 @@ fn validate_names_a_retired_key_and_the_migrate_fix() {
         .unwrap_or_else(|| panic!("{:?}", report.issues));
     assert!(message.contains("vivi config migrate --write"), "{message}");
     assert!(message.contains("delete the key"), "{message}");
+}
+
+#[test]
+fn inherited_retired_keys_name_their_owning_file() {
+    let (tmp, project, base_file) =
+        init_inherited("base = true\n\n[pump]\nbranch = \"old\"\nfrom = \"dispatcher\"\n");
+    let report = validate(Some(&project)).unwrap();
+    let base = base_file.display().to_string();
+    let branch = report
+        .issues
+        .iter()
+        .find(|issue| issue.severity == Severity::Error && issue.message.contains("[pump] branch"))
+        .unwrap_or_else(|| panic!("{:?}", report.issues));
+    assert!(branch.message.contains(&base), "{:?}", branch);
+    assert!(
+        branch.message.contains("delete the key there"),
+        "{:?}",
+        branch
+    );
+    let from = report
+        .issues
+        .iter()
+        .find(|issue| issue.severity == Severity::Warning && issue.message.contains("[pump] from"))
+        .unwrap_or_else(|| panic!("{:?}", report.issues));
+    assert!(from.message.contains(&base), "{:?}", from);
+    assert_eq!(from.item.as_deref(), Some("pump.from"));
+    assert!(
+        from.message.contains("vivi config migrate` leaves it"),
+        "{:?}",
+        from
+    );
+}
+
+#[test]
+fn overridden_and_empty_inherited_keys_report_each_source() {
+    let (tmp, project, base_file) = init_inherited("base = true\n\n[pump]\nfrom = \"\"\n");
+    append_to(
+        &project.join(".vivi/mailspace.toml"),
+        "[pump]\nfrom = \"project\"\n",
+    );
+    let report = validate(Some(&project)).unwrap();
+    let base = base_file.display().to_string();
+    let occurrences: Vec<&str> = report
+        .issues
+        .iter()
+        .filter(|issue| issue.message.contains("[pump] from"))
+        .map(|issue| issue.message.as_str())
+        .collect();
+    assert_eq!(occurrences.len(), 2, "{:?}", occurrences);
+    assert!(
+        occurrences.iter().any(|text| text.contains(&base)),
+        "{occurrences:?}"
+    );
+    assert!(
+        occurrences.iter().any(|text| !text.contains(&base)),
+        "{occurrences:?}"
+    );
 }
 
 #[test]
