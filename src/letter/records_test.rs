@@ -1,7 +1,6 @@
 use super::*;
 use crate::letter::plain::CloseFront;
 use crate::letter::{LetterError, parse, render};
-
 fn round_trip<T>(front: &T) -> T
 where
     T: Serialize + serde::de::DeserializeOwned + Validate,
@@ -225,6 +224,7 @@ fn mail_round_trips_close_and_pool_tables() {
             repos: [("vivi".to_string(), "sha9".to_string())]
                 .into_iter()
                 .collect(),
+            flow: None,
         }),
         ..MailFront::default()
     };
@@ -260,6 +260,8 @@ fn every_note_word_round_trips() {
         NoteWord::MainRed,
         NoteWord::Abandoned,
         NoteWord::SliceMerge,
+        NoteWord::RunStart,
+        NoteWord::Progress,
     ] {
         let front = MailFront {
             pump: Some(PumpNote {
@@ -272,10 +274,114 @@ fn every_note_word_round_trips() {
                 kind: "build".to_string(),
                 builtin_role: None,
             }),
+            flow: note.is_run_note().then(|| FlowRef::new("n1", "rec-1", 3)),
             ..MailFront::default()
         };
         assert_eq!(round_trip(&front), front);
     }
+}
+
+#[test]
+fn a_run_note_round_trips_its_flow_and_task() {
+    let bare = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::RunStart,
+            t: 7,
+            reference: None,
+        }),
+        flow: Some(FlowRef::new("46e19522", "rec-91b6", 7)),
+        ..MailFront::default()
+    };
+    assert_eq!(round_trip(&bare), bare);
+    let mut tasked = bare.clone();
+    tasked.pump.as_mut().unwrap().note = NoteWord::Progress;
+    tasked.flow.as_mut().unwrap().task = Some("91b691a3".to_string());
+    assert_eq!(round_trip(&tasked), tasked);
+    let text = render(&tasked, "on it").expect("render");
+    assert!(text.contains("[flow]"), "{text}");
+    assert!(text.contains("need = \"46e19522\""), "{text}");
+    assert!(text.contains("record = \"rec-91b6\""), "{text}");
+    assert!(text.contains("run = 7"), "{text}");
+    assert!(text.contains("task = \"91b691a3\""), "{text}");
+    let text = render(&bare, "opened").expect("render");
+    assert!(!text.contains("task"), "an absent task renders: {text}");
+}
+
+#[test]
+fn a_run_note_requires_its_flow_table() {
+    for note in [NoteWord::RunStart, NoteWord::Progress] {
+        invalid_naming::<MailFront>(
+            &format!("+++\n[pump]\nnote = \"{}\"\nt = 1\n+++\n", note.word()),
+            &[note.word(), "[flow]"],
+        );
+    }
+}
+
+#[test]
+fn flow_is_only_read_on_run_notes() {
+    let flow = "[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 1\n";
+    invalid_naming::<MailFront>(
+        &format!("+++\n[pump]\nnote = \"attempt\"\nt = 1\n{flow}+++\n"),
+        &["flow", "run-start"],
+    );
+    invalid_naming::<MailFront>(&format!("+++\n{flow}+++\n"), &["flow", "run-start"]);
+}
+
+#[test]
+fn flow_refusals() {
+    let flow = |fields: &str| format!("+++\n{fields}+++\n\nx");
+    assert!(matches!(
+        refused::<FlowRef>(&flow("record = \"r\"\nrun = 1\n")),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>(&flow("need = \"n\"\nrun = 1\n")),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>(&flow("need = \"n\"\nrecord = \"r\"\n")),
+        LetterError::Toml { .. }
+    ));
+    assert!(matches!(
+        refused::<FlowRef>(&flow("need = \"n\"\nrecord = \"r\"\nrun = 1\nbogus = 2\n")),
+        LetterError::Toml { .. }
+    ));
+    invalid_naming::<FlowRef>(
+        &flow("need = \" \"\nrecord = \"r\"\nrun = 1\n"),
+        &["flow.need"],
+    );
+    invalid_naming::<FlowRef>(
+        &flow("need = \"n\"\nrecord = \"\"\nrun = 1\n"),
+        &["flow.record"],
+    );
+    invalid_naming::<FlowRef>(
+        &flow("need = \"n\"\nrecord = \"r\"\nrun = 0\n"),
+        &["flow.run"],
+    );
+    invalid_naming::<FlowRef>(
+        &flow("need = \"n\"\nrecord = \"r\"\nrun = 2\ntask = \" \"\n"),
+        &["flow.task"],
+    );
+}
+
+#[test]
+fn a_mail_note_without_a_flow_renders_unchanged_bytes() {
+    let noted = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::Attempt,
+            t: 1_700_000_000_000_000,
+            reference: Some("job-1".to_string()),
+        }),
+        ..MailFront::default()
+    };
+    assert_eq!(
+        render(&noted, "working").expect("render"),
+        "+++\n[pump]\nnote = \"attempt\"\nt = 1700000000000000\nref = \"job-1\"\n+++\n\nworking"
+    );
+    assert_eq!(
+        render(&MailFront::default(), "hi").expect("render"),
+        "+++\n+++\n\nhi"
+    );
 }
 
 #[test]

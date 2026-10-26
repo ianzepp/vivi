@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::letter::records::FlowRef;
 use crate::letter::{LetterError, Validate, check_list, check_text};
 
 /// The event verbs (`X-Vivi-Event` values) whose letters take [`CloseFront`].
@@ -70,6 +71,10 @@ pub struct CloseFront {
     /// Repo name to the tip it landed at.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, String>,
+    /// The flow the close settles: the need, the record letter that opened
+    /// the run and the run number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowRef>,
 }
 
 impl Validate for CloseFront {
@@ -90,7 +95,37 @@ impl Validate for CloseFront {
             check_text("repos name", repo)?;
             check_text(&format!("repos.{repo}"), tip)?;
         }
-        Ok(())
+        self.flow.as_ref().map_or(Ok(()), Validate::validate)
+    }
+}
+
+/// Front matter of an event that is not a close: the flow correlation a
+/// run's letters carry, nothing else. A `done` or `reopened` event's front
+/// is a [`CloseFront`], which carries the correlation beside its close
+/// facts.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventFront {
+    /// The flow the event is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowRef>,
+}
+
+impl Validate for EventFront {
+    fn validate(&self) -> Result<(), String> {
+        self.flow.as_ref().map_or(Ok(()), Validate::validate)
+    }
+}
+
+impl EventFront {
+    /// The correlation as an event front with every close fact unset: the
+    /// typed front a parsed non-close event reports.
+    #[must_use]
+    pub fn into_close(self) -> CloseFront {
+        CloseFront {
+            flow: self.flow,
+            ..CloseFront::default()
+        }
     }
 }
 

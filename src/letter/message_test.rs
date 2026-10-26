@@ -175,6 +175,7 @@ fn a_done_event_letter_round_trips_its_close_front_through_the_wire() {
         branch: Some("w3/x".to_string()),
         commit: Some("0123abc".to_string()),
         repos,
+        flow: None,
     };
     let body = plain::render(&front, "closed it").unwrap();
     let headers = "X-Vivi-Format: 1\r\nX-Vivi-Kind: mail\r\nX-Vivi-Event: done\r\n";

@@ -5,7 +5,9 @@
 
 use serde::de::DeserializeOwned;
 
-use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, MemoFront, RuleFront};
+use crate::letter::plain::{
+    CLOSE_EVENTS, CloseFront, EmptyFront, EventFront, MemoFront, RuleFront,
+};
 use crate::letter::records::{ActionFront, MailFront, RecordFront};
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::{NeedFront, TaskFront, WantFront};
@@ -175,15 +177,21 @@ fn parse_event(kind: &LetterKind, verb: &str, text: &str) -> Result<Letter, Lett
     if CLOSE_EVENTS.contains(&verb) {
         return stored_or_plain(kind, text, Front::Event);
     }
-    let prose = if opens_with_fence(text) {
-        parse_letter::<EmptyFront>(text)?.body
-    } else {
-        text.trim().to_string()
-    };
+    // A close event's front carries its close facts; any other event
+    // carries its flow correlation alone. Parsing the `[flow]` table keeps
+    // the correlation instead of discarding it as an empty front would.
+    if !opens_with_fence(text) {
+        return Ok(Letter {
+            kind: kind.clone(),
+            front: Front::Event(CloseFront::default()),
+            prose: text.trim().to_string(),
+        });
+    }
+    let envelope = parse_letter::<EventFront>(text)?;
     Ok(Letter {
         kind: kind.clone(),
-        front: Front::Event(CloseFront::default()),
-        prose,
+        front: Front::Event(envelope.front.into_close()),
+        prose: envelope.body,
     })
 }
 

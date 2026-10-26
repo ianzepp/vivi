@@ -202,6 +202,84 @@ pub enum NoteWord {
     MainRed,
     Abandoned,
     SliceMerge,
+    /// A run opened: the note carries the `[flow]` table it opened with.
+    RunStart,
+    /// Progress inside a run: the note carries the `[flow]` table it
+    /// reports on, with `task` naming the one task it is about.
+    Progress,
+}
+
+impl NoteWord {
+    /// Whether the word marks a note that carries a `[flow]` table.
+    #[must_use]
+    pub fn is_run_note(self) -> bool {
+        matches!(self, Self::RunStart | Self::Progress)
+    }
+
+    /// The word as written in the front matter, for errors.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Attempt => "attempt",
+            Self::Brief => "brief",
+            Self::Deviations => "deviations",
+            Self::FollowUp => "follow-up",
+            Self::SliceEnv => "slice-env",
+            Self::RepairAttempt => "repair-attempt",
+            Self::RepairRung => "repair-rung",
+            Self::MainRed => "main-red",
+            Self::Abandoned => "abandoned",
+            Self::SliceMerge => "slice-merge",
+            Self::RunStart => "run-start",
+            Self::Progress => "progress",
+        }
+    }
+}
+
+/// The flow a note or close is about: the need it serves, the stable
+/// reference of the pump record letter that opened the run, and the run
+/// number. Writers on another mailspace name the same flow with it. `task`
+/// names the one task a task-specific notice is about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowRef {
+    /// Handle of the need the flow serves. Required.
+    pub need: String,
+    /// Stable reference of the pump record letter that opened the run.
+    /// Required.
+    pub record: String,
+    /// The run number. Required.
+    pub run: u32,
+    /// Handle of the one task a task-specific notice is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+impl FlowRef {
+    /// A flow reference with the given need, record and run, no task.
+    #[must_use]
+    pub fn new(need: &str, record: &str, run: u32) -> Self {
+        Self {
+            need: need.to_string(),
+            record: record.to_string(),
+            run,
+            task: None,
+        }
+    }
+}
+
+impl Validate for FlowRef {
+    fn validate(&self) -> Result<(), String> {
+        check_text("flow.need", &self.need)?;
+        check_text("flow.record", &self.record)?;
+        if self.run == 0 {
+            return Err("`flow.run` must be greater than zero".to_string());
+        }
+        match &self.task {
+            Some(task) => check_text("flow.task", task),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The `[pump]` table of a `mail` letter: one pump note.
@@ -242,6 +320,9 @@ pub struct MailFront {
     /// The pool event a pool note carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolNote>,
+    /// The flow a run-start or progress note is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowRef>,
 }
 
 impl Validate for MailFront {
@@ -268,6 +349,23 @@ impl Validate for MailFront {
         if let Some(pool) = &self.pool {
             check_text("pool.event", &pool.event)?;
             check_text("pool.record", &pool.record)?;
+        }
+        let run_word = self
+            .pump
+            .as_ref()
+            .is_some_and(|pump| pump.note.is_run_note());
+        match (&self.flow, run_word) {
+            (Some(_), false) => {
+                return Err("`flow` is only read on a run-start or progress note".to_string());
+            }
+            (None, true) => {
+                let word = self.pump.as_ref().map_or("run", |pump| pump.note.word());
+                return Err(format!("a `{word}` note carries a `[flow]` table"));
+            }
+            (Some(_), true) | (None, false) => {}
+        }
+        if let Some(flow) = &self.flow {
+            flow.validate()?;
         }
         let Some(pump) = &self.pump else {
             return Ok(());

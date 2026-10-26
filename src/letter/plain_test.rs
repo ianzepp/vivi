@@ -69,9 +69,84 @@ fn close_round_trips() -> Res {
         branch: Some("w3/x".to_string()),
         commit: Some("0123abc".to_string()),
         repos,
+        flow: None,
     };
     assert_eq!(round_trip(&full)?, full);
     assert_eq!(round_trip(&CloseFront::default())?, CloseFront::default());
+    Ok(())
+}
+
+#[test]
+fn close_round_trips_its_flow() -> Res {
+    let mut flow = FlowRef::new("46e19522", "rec-91b6", 7);
+    flow.task = Some("91b691a3".to_string());
+    let close = CloseFront {
+        verdict: Some("clean".to_string()),
+        repos: BTreeMap::new(),
+        flow: Some(flow.clone()),
+        ..CloseFront::default()
+    };
+    assert_eq!(round_trip(&close)?, close);
+    let text = fenced(&close, "closed it")?;
+    assert!(text.contains("[flow]"), "{text}");
+    assert!(text.contains("task = \"91b691a3\""), "{text}");
+    let plain = CloseFront {
+        flow: Some(FlowRef::new("n", "r", 1)),
+        ..CloseFront::default()
+    };
+    assert_eq!(round_trip(&plain)?, plain);
+    Ok(())
+}
+
+#[test]
+fn close_without_a_flow_renders_unchanged_bytes() -> Res {
+    let close = CloseFront {
+        verdict: Some("clean".to_string()),
+        branch: Some("w3/x".to_string()),
+        commit: Some("0123abc".to_string()),
+        repos: BTreeMap::new(),
+        flow: None,
+    };
+    assert_eq!(
+        fenced(&close, "closed it")?,
+        "+++\nverdict = \"clean\"\nbranch = \"w3/x\"\ncommit = \"0123abc\"\n+++\n\nclosed it"
+    );
+    assert_eq!(render(&CloseFront::default(), "note")?, "note");
+    Ok(())
+}
+
+#[test]
+fn close_with_a_blank_flow_is_invalid() {
+    let text = "+++\n[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 0\n+++\n\nx";
+    assert!(matches!(
+        parse::<CloseFront>(text),
+        Err(LetterError::Invalid(_))
+    ));
+}
+
+#[test]
+fn event_front_round_trips_and_refuses_unknown_keys() -> Res {
+    let bare = EventFront::default();
+    assert_eq!(round_trip(&bare)?, bare);
+    let mut flow = FlowRef::new("46e19522", "rec-91b6", 7);
+    flow.task = Some("91b691a3".to_string());
+    let full = EventFront { flow: Some(flow) };
+    assert_eq!(round_trip(&full)?, full);
+    assert_eq!(render(&EventFront::default(), "text")?, "text");
+    let close = full.clone().into_close();
+    assert_eq!(close.flow, full.flow);
+    assert_eq!(close.verdict, None);
+    assert_eq!(
+        full.clone().into_close(),
+        CloseFront {
+            flow: full.flow.clone(),
+            ..CloseFront::default()
+        }
+    );
+    assert!(matches!(
+        parse::<EventFront>("+++\n[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 1\nbogus = 1\n+++\n"),
+        Err(LetterError::Toml { .. })
+    ));
     Ok(())
 }
 
@@ -84,6 +159,7 @@ fn close_repos_table_is_last_and_open() -> Res {
         branch: None,
         commit: None,
         repos,
+        flow: None,
     };
     let text = render(&front, "x")?;
     assert!(text.find("verdict").unwrap_or(usize::MAX) < text.find("[repos]").unwrap_or(0));
@@ -186,6 +262,7 @@ fn a_plain_front_with_facts_renders_between_the_fences() -> Res {
         branch: Some("w3/x".to_string()),
         commit: Some("0123abc".to_string()),
         repos,
+        flow: None,
     };
     let text = render(&close, "closed it")?;
     assert_eq!(parse::<CloseFront>(&text)?.front, close);
@@ -203,6 +280,7 @@ fn plain_render_refuses_a_front_that_fails_its_own_rules() {
         branch: Some("w3/x".to_string()),
         commit: None,
         repos: BTreeMap::new(),
+        flow: None,
     };
     assert!(matches!(render(&half, "x"), Err(LetterError::Invalid(_))));
 }

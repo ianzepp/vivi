@@ -3,8 +3,7 @@
 //! `crate::message::build_compose_draft` and append as the authenticated
 //! caller — the server mints the traveling id (decided item 15).
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
 use crate::letter::plain::{CloseFront, MemoFront, render as render_front};
@@ -1032,6 +1031,7 @@ pub(super) fn close_arguments(arguments: &Value) -> Result<Option<CloseFront>, T
         branch: opt_str(arguments, "branch")?.map(str::to_owned),
         commit: opt_str(arguments, "commit")?.map(str::to_owned),
         repos,
+        flow: None,
     }))
 }
 

@@ -6,7 +6,8 @@
 //! out strictly increasing microsecond stamps.
 
 use crate::error::VivariumError;
-use crate::letter::records::{MailFront, NoteWord, PumpNote};
+use crate::letter::Validate;
+use crate::letter::records::{FlowRef, MailFront, NoteWord, PumpNote};
 use crate::letter::work::JobFront;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -18,6 +19,8 @@ static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
 pub struct Note {
     pub pump: PumpNote,
     pub job: Option<JobFront>,
+    /// The flow a run-start or progress note is about.
+    pub flow: Option<FlowRef>,
     pub prose: String,
 }
 
@@ -80,6 +83,51 @@ pub fn brief_body(job: JobFront, prose: &str) -> Result<String, VivariumError> {
         .map_err(|err| VivariumError::Message(format!("pump brief: {err}")))
 }
 
+/// The body of a run-start note: the `[flow]` table of `flow`, a fresh
+/// stamp and `prose` below the front matter. The flow rides front matter,
+/// never a prose prefix or a transport header.
+///
+/// # Errors
+/// Returns [`VivariumError`] when `flow` fails its own rules or the letter
+/// does not render.
+pub fn run_start_body(flow: FlowRef, prose: &str) -> Result<String, VivariumError> {
+    run_note_body(NoteWord::RunStart, flow, prose)
+}
+
+/// The body of a progress note: the `[flow]` table of `flow` (`task` names
+/// the one task the notice is about), a fresh stamp and `prose` below the
+/// front matter.
+///
+/// # Errors
+/// Returns [`VivariumError`] when `flow` fails its own rules or the letter
+/// does not render.
+pub fn progress_body(flow: FlowRef, prose: &str) -> Result<String, VivariumError> {
+    run_note_body(NoteWord::Progress, flow, prose)
+}
+
+/// The body of a run note, the one constructor the two run words share.
+fn run_note_body(word: NoteWord, flow: FlowRef, prose: &str) -> Result<String, VivariumError> {
+    if !word.is_run_note() {
+        return Err(VivariumError::Message(format!(
+            "a `{}` note carries no `[flow]` table: only run-start and progress notes do",
+            word.word()
+        )));
+    }
+    flow.validate()
+        .map_err(|reason| VivariumError::Message(format!("pump note flow: {reason}")))?;
+    let front = MailFront {
+        pump: Some(PumpNote {
+            note: word,
+            t: next_stamp(),
+            reference: None,
+        }),
+        flow: Some(flow),
+        ..MailFront::default()
+    };
+    crate::letter::render(&front, prose)
+        .map_err(|err| VivariumError::Message(format!("pump note: {err}")))
+}
+
 /// The pump note `body` is, or `None` for plain mail, an invalid letter or a
 /// letter with no `[pump]` table.
 #[must_use]
@@ -92,6 +140,7 @@ pub fn note_of(body: &str) -> Option<Note> {
     Some(Note {
         pump,
         job: letter.front.job,
+        flow: letter.front.flow,
         prose: letter.body,
     })
 }

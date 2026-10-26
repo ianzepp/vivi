@@ -1,5 +1,5 @@
 use super::*;
-use crate::letter::records::{ActionWord, MailFront};
+use crate::letter::records::{ActionWord, FlowRef, MailFront};
 
 fn letter(front: &str, prose: &str) -> String {
     format!("+++\n{front}+++\n\n{prose}\n")
@@ -350,6 +350,49 @@ fn a_fenceless_event_body_is_an_empty_front_for_every_verb() {
         assert_eq!(parsed.kind, LetterKind::Event(verb.to_string()), "{verb}");
         assert_eq!(parsed.front, Front::Event(CloseFront::default()), "{verb}");
         assert_eq!(parsed.prose, "the note", "{verb}");
+    }
+}
+
+#[test]
+fn a_non_close_event_keeps_its_flow_correlation() {
+    let flow = FlowRef::new("46e19522", "rec-91b6", 7);
+    let mut tasked = flow.clone();
+    tasked.task = Some("91b691a3".to_string());
+    for (verb, flow) in [("marked", &flow), ("bound", &tasked), ("absorbed", &flow)] {
+        let text = format!(
+            "+++\n[flow]\nneed = \"{}\"\nrecord = \"{}\"\nrun = {}\n{task}+++\n\nthe note\n",
+            flow.need,
+            flow.record,
+            flow.run,
+            task = flow
+                .task
+                .as_ref()
+                .map_or(String::new(), |task| format!("task = \"{task}\"\n")),
+        );
+        let parsed = parse_kind(&LetterKind::Event(verb.to_string()), &text)
+            .unwrap_or_else(|err| panic!("{verb}: {err}"));
+        assert_eq!(parsed.kind, LetterKind::Event(verb.to_string()), "{verb}");
+        let Front::Event(close) = parsed.front else {
+            panic!("expected an event front for {verb}");
+        };
+        assert_eq!(close.flow.as_ref(), Some(flow), "{verb}");
+        assert_eq!(close.verdict, None, "{verb}");
+        assert_eq!(parsed.prose, "the note", "{verb}");
+    }
+}
+
+#[test]
+fn a_non_close_event_refuses_an_invalid_flow() {
+    for front in [
+        "[flow]\nbogus = 1\n",
+        "[flow]\nrecord = \"r\"\nrun = 1\n",
+        "[flow]\nneed = \"n\"\nrecord = \"r\"\nrun = 0\n",
+    ] {
+        let text = format!("+++\n{front}+++\n\nthe note\n");
+        assert!(
+            parse_kind(&LetterKind::Event("marked".to_string()), &text).is_err(),
+            "{front}"
+        );
     }
 }
 
