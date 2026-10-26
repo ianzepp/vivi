@@ -6,6 +6,7 @@ use crate::error::VivariumError;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::bands::parse_band;
 use crate::pool::config::PoolConfig;
+use crate::pool::slot::PoolId;
 use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
@@ -67,6 +68,7 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     let mut issues = Vec::new();
     check_role_pools(&routing, &mut issues);
     check_pool_fallbacks(&routing, &mut issues);
+    check_pool_tables(config, &mut issues);
     check_bands(&routing, &mut issues);
     check_models(config, &routing, &mut issues);
     check_read_only(&routing, &mut issues);
@@ -140,6 +142,21 @@ fn check_role_pools(routing: &RoleRouting, issues: &mut Vec<Issue>) {
                 "role {} names unknown pool `{pool}`",
                 role.name
             )));
+        }
+    }
+}
+
+/// Run each pool table's own checks, the ones every `vivi pool` command runs
+/// when it starts. Without this a table such as one holding an empty model
+/// slug passes validation and then silently stalls dispatch.
+fn check_pool_tables(config: &MailspaceConfig, issues: &mut Vec<Issue>) {
+    let mailspace_id = config.id.as_deref().unwrap_or_default();
+    for (name, pool) in &config.pools {
+        if let Err(error) = pool.validate(&PoolId::new(&config.name, mailspace_id, name)) {
+            issues.push(Issue::error(match error {
+                VivariumError::Config(message) => message,
+                other => other.to_string(),
+            }));
         }
     }
 }

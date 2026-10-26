@@ -169,6 +169,44 @@ to = "hand"
 }
 
 #[test]
+fn config_validate_fails_on_a_pool_every_pool_command_refuses() {
+    for models in ["[\"\"]", "[\"~deepseek/flash\"]"] {
+        let dir = project_with(&format!(
+            r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "p"
+[pools.p]
+provider = "local"
+slots = 1
+[pools.p.local]
+worktree_of = "/tmp/t"
+[pools.p.harness]
+name = "fake"
+run = "fake --model {{model}} @{{brief}}"
+models = {models}
+[pump]
+to = "hand"
+"#
+        ));
+        let root = dir.path().to_str().unwrap();
+        let out = vivi(&["config", "validate", "--project", root]);
+        assert!(!out.status.success(), "{models}: {}", stdout(&out));
+        let text = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(
+            text.contains("[pools.p] harness.models holds an empty slug"),
+            "{models}: {text}"
+        );
+        // The same table the pool commands refuse.
+        let status = vivi(&["pool", "status", "--project", root]);
+        assert!(!status.status.success(), "{models}");
+    }
+}
+
+#[test]
 fn role_and_pool_writers_keep_comments() {
     let dir = project_with(
         r#"

@@ -33,6 +33,10 @@ mod migrate_tests;
 #[path = "routing/migrate_charters_test.rs"]
 mod migrate_charters_tests;
 
+#[cfg(test)]
+#[path = "routing/validate_pools_test.rs"]
+mod validate_pools_tests;
+
 pub use defaults::{WRITE_KINDS, default_read_only, is_band_model, resolve_read_only};
 pub use diff::unified_diff;
 pub use migrate::{
