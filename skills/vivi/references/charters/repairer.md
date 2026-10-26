@@ -24,7 +24,7 @@ Each request carries one red main of one target: the failing rung, the failing t
 
 ## Time and attempts
 
-- You have a 30-minute time cap per attempt. A job past it ends the attempt as `overtime`; the pump records that, and your work is thrown away. Work in the order above and commit early.
+- Your only time cap is the one your job brief states for this attempt. A job past it ends the attempt as `overtime`; the pump records that, and your work is thrown away. Work in the order above and commit early.
 - There is no escalation. After two failed attempts main stays red for a person to fix. Do your best on this attempt.
 
 ## Reply format
