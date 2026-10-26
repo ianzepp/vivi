@@ -33,14 +33,14 @@ pub(super) fn call_for(request: &ActionRequest) -> Result<Call, String> {
         ),
         Action::ReadStatus => read_status_call(&project, request),
         Action::ReadLog => read_log_call(&project, request)?,
+        Action::ReadNeed => need_show_call(&project, request)?,
+        Action::ReadNeedThread => thread_call(&project, "need_thread", need_of(request)?, request),
+        Action::ReadTaskThread => thread_call(&project, "task_thread", step_of(request)?, request),
+        Action::ReadFlow => flow_show_call(&project, request)?,
+        Action::ReadConfig => config_show_call(&project),
+        Action::ReadPool => pool_show_call(&project, request)?,
         Action::LetterToOperator | Action::Escalate => letter(&project, request),
-        Action::ReadNeed
-        | Action::ReadNeedThread
-        | Action::ReadTaskThread
-        | Action::ReadFlow
-        | Action::ReadConfig
-        | Action::ReadPool
-        | Action::ReplyNeed
+        Action::ReplyNeed
         | Action::SetPriority
         | Action::WithdrawNeed
         | Action::SetRoleModel
@@ -130,6 +130,68 @@ fn read_log_call(project: &str, request: &ActionRequest) -> Result<Call, String>
             "filter": request.filter,
         })),
     ))
+}
+
+/// The one-need read: `need_show` names the handle alone.
+fn need_show_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "need_show",
+        json!({ "project": project, "handle": need_of(request)? }),
+    ))
+}
+
+/// A thread read (`need_thread` or `task_thread`): the newest page of one
+/// work item's thread, with the page size and `before` cursor left out
+/// when absent, so the server's own defaults hold.
+fn thread_call(project: &str, tool: &'static str, handle: &str, request: &ActionRequest) -> Call {
+    (
+        tool,
+        without_unset(json!({
+            "project": project,
+            "handle": handle,
+            "limit": request.limit,
+            "before": request.before,
+        })),
+    )
+}
+
+/// The flow read: `flow_show` for the flow the action names, with a
+/// need's runs when the action names one.
+fn flow_show_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    let flow = request
+        .flow
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no flow"))?;
+    Ok((
+        "flow_show",
+        without_unset(json!({
+            "project": project,
+            "kind": flow,
+            "need": request.need,
+        })),
+    ))
+}
+
+/// The config read: `config_show`'s merged overview. `resolved` is never
+/// sent, so the live free-slot probe stays unanswered.
+fn config_show_call(project: &str) -> Call {
+    ("config_show", json!({ "project": project }))
+}
+
+/// The pool read: `pool_show` names the pool alone; `resolved` is never
+/// sent, so `free` stays the server's null.
+fn pool_show_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "pool_show",
+        json!({ "project": project, "name": pool_of(request)? }),
+    ))
+}
+
+fn pool_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .pool
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no pool"))
 }
 
 fn control(project: &str, action: &str) -> Call {
