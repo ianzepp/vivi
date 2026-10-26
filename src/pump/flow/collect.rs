@@ -9,7 +9,7 @@
 use serde_json::json;
 
 use crate::pump::attempt_record::hand_message;
-use crate::pump::envelope::correct::{self, correction_n};
+use crate::pump::envelope::correct::{self, ordinal};
 use crate::pump::envelope::roles::{Parsed, RoleKind, parse_for};
 use crate::pump::envelope::{EnvelopeError, split};
 use crate::pump::flow::budget_retry;
@@ -165,9 +165,10 @@ fn has_new_fact(front: &serde_json::Value) -> bool {
         .is_some_and(|fact| !fact.trim().is_empty())
 }
 
-/// A broken envelope: a correction while some remain, then `failed`.
+/// A broken envelope: a correction while some remain, then `failed`. The
+/// ordinal rides a transport replacement's stamp, not its id suffix.
 fn broken(ctx: &Ctx, job: &PoolJob, step: &StepJobRow, error: EnvelopeError) -> Collected {
-    if correction_n(&job.id) < MAX_CORRECTIONS {
+    if ordinal(job) < MAX_CORRECTIONS {
         return Collected::Correct { error };
     }
     ctx.exception(

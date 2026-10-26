@@ -146,11 +146,10 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
         step: &StepRow,
         class: &NodeClass,
     ) -> Result<(), VivariumError> {
-        let original = if correct::correction_n(&job.id) > 0 {
-            cx.st.jobs().get(correct::base_id(&job.id)).cloned()
-        } else {
-            None
-        };
+        // A correction reads the substantive job's facts; the stamped
+        // ancestry follows a transport replacement whose id suffix would
+        // hide the `-cN` shape.
+        let original = correct::corrects(job).and_then(|id| cx.st.jobs().get(&id).cloned());
         let facts = original.as_ref().unwrap_or(job);
         // A sync merge job has no publish to read when its agent cannot run:
         // it takes merge-main's rule (any environment failure), not the
@@ -273,7 +272,7 @@ where
         kind: RoleKind,
         error: &crate::pump::envelope::EnvelopeError,
     ) -> Result<(), VivariumError> {
-        let n = correct::correction_n(&job.id) + 1;
+        let n = correct::ordinal(job) + 1;
         let budget = self.ctx.cfg.dispatch.envelope_fix_budget();
         let spec = correct::spec(&self.run.need, row, &job.role, kind, job, error, n, budget);
         correct::enqueue(self.st, self.store, &self.run.need, row, spec)
