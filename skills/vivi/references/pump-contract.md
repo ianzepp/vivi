@@ -143,10 +143,14 @@ Each control posts one action on the need's open pump record ([envelope](envelop
 | Command | Effect on a flow run |
 | --- | --- |
 | **vivi pump requeue** &lt;step task&gt; | queues the step's newest job again, once that job is terminal and the step is open; a job held after pool refusals is released in place |
-| **vivi pump withdraw** &lt;need&gt;... --reason | closes the need `withdrawn` and the record `withdrawn`; the run closes every open task |
+| **vivi pump withdraw** &lt;need&gt;... --reason | when the need is otherwise open and its record open, closes the need `withdrawn` and the record `withdrawn`; the run closes every open task, including the sentinel |
 | **vivi pump replan** &lt;need&gt; | restarts the live run at **plan** |
 | **vivi pump answer** &lt;step&gt; &lt;word&gt; | answers a step by hand; the step closes with that word as its verdict and the flow follows its edge |
 | **vivi pump unlock** &lt;need&gt; | restarts a locked run |
+
+Withdraw needs a nonblank `--reason` and checks every named need before it closes needs or posts actions. If any named need has no open pump record — one that was never dispatched, say — the whole call is refused and nothing is posted, and the valid needs in the same batch stay open; a batch of one dispatched need and one never-dispatched need withdraws neither. This guarantee covers the missing-record preflight only, not a failure later in storage.
+
+To stop a never-dispatched need, close it on the board with an identity authorized to close it: **vivi need done &lt;handle&gt; --for &lt;identity&gt; --note "No longer needed; do not dispatch."** That records the close and the note but no verdict. Only when a pump dispatch should exist, **vivi pump send --need &lt;need&gt;** first and withdraw after — sending is intake, and the next tick can start a run before the withdrawal is applied, so it is not a harmless prerequisite for cancellation. The withdraw writes the need verdict `withdrawn` when it closes an otherwise-open need whose record is open (**vivi need done** records no verdict; an already-closed need is not closed again), then the pump applies the action and closes the record `withdrawn` and every open run task, including the sentinel. An open record is required, not a prior live run.
 
 Answer a step only with one of its words. A slice task takes `merged`, `no-defect` or `failed`. Closing a step task by hand is a foreign close: the pump reopens it. When git cannot settle whether a step's side effect landed, the step is held for **vivi pump answer**. A step that fails on several ticks in a row is held for the operator, with an exception.
 
