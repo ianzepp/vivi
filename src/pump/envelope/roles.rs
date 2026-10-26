@@ -172,6 +172,41 @@ fn blank(text: &str) -> bool {
     text.trim().is_empty()
 }
 
+/// Validate an optional scope request: `scope_target` plus `scope_paths`,
+/// carried together and only on the one answer word that may ask the operator
+/// for permission. Presence is preserved by the caller (`Option` fields), so
+/// an explicitly empty list is a request with bad values, not an omission.
+pub(crate) fn validate_scope_request(
+    scope_target: Option<&str>,
+    scope_paths: Option<&[String]>,
+    allowed_answer: &str,
+    on_allowed_answer: bool,
+) -> Result<(), String> {
+    if scope_target.is_none() && scope_paths.is_none() {
+        return Ok(());
+    }
+    if !on_allowed_answer {
+        return Err(format!(
+            "scope_target and scope_paths are only allowed on answer \"{allowed_answer}\""
+        ));
+    }
+    if scope_target.is_none() || scope_paths.is_none() {
+        return Err("a scope request requires both `scope_target` and `scope_paths`".to_string());
+    }
+    let target = scope_target.unwrap_or_default();
+    let paths = scope_paths.unwrap_or_default();
+    if blank(target) {
+        return Err("a scope request requires a non-blank `scope_target`".to_string());
+    }
+    if paths.is_empty() {
+        return Err("a scope request requires a non-empty `scope_paths`".to_string());
+    }
+    if paths.iter().any(|p| blank(p)) {
+        return Err("a scope request requires non-blank `scope_paths` entries".to_string());
+    }
+    Ok(())
+}
+
 // ---- hand ----------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +340,14 @@ pub struct Planner {
     pub answer: PlannerAnswer,
     #[serde(default)]
     pub reason: Option<String>,
+    /// With `scope_paths`, a scope request: the answer is blocked only on
+    /// permission for exactly the named paths. Both fields must be present
+    /// together; `Option` keeps an explicit empty list from reading as an
+    /// omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_paths: Option<Vec<String>>,
 }
 
 impl Validate for Planner {
@@ -312,7 +355,12 @@ impl Validate for Planner {
         if self.answer != PlannerAnswer::Planned && self.reason.as_deref().is_none_or(blank) {
             return Err("every planner answer except \"planned\" requires a `reason`".to_string());
         }
-        Ok(())
+        validate_scope_request(
+            self.scope_target.as_deref(),
+            self.scope_paths.as_deref(),
+            "operator",
+            self.answer == PlannerAnswer::Operator,
+        )
     }
 }
 

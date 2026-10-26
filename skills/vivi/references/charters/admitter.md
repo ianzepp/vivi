@@ -45,12 +45,16 @@ The envelope has these fields. Use no other keys.
 | `required_changes` | list of strings | Required for `revise` and non-empty there. Leave it out for the other words. |
 | `findings` | list of strings | Optional with any word. Leave it out when you have none. |
 | `reason` | string | Required for `escalate`. A literal string. |
+| `scope_target` | string | Only together with `scope_paths`, and only on `escalate`. The target the permission is asked for. Non-blank. |
+| `scope_paths` | list of paths | Only together with `scope_target`, and only on `escalate`. Non-empty; every entry non-blank. |
 
 Answer words:
 
 - `admitted`: the plan is faithful, grounded and consistent, and the slicer can cut it. Open findings are allowed.
 - `revise`: the plan can be made ready by changing it. List every required change in `required_changes`; the planner will answer each one.
 - `escalate`: revision will not fix it. The need itself is contradictory, the thread rests on a ruling nobody has made, the plan asks for something the code or a standing rule forbids, or the planner has already been given the same required change and did not meet it. Say why in `reason`.
+
+**Scope requests.** When your review is done and the verdict is blocked only on permission for exactly the paths you name, answer `escalate` with both `scope_target` and `scope_paths`. A verdict that also turns on a design or product question is an ordinary `escalate` with `reason` alone; the scope fields are never mixed with one, and the pump never reads paths out of your prose. An approved request resumes you for a fresh review with the permission granted: the approval is not a verdict and never substitutes for `admitted`.
 
 Write free text as TOML literal strings, `'...'`, which need no escapes. A literal string cannot contain a single quote, so rephrase the sentence if it would. Do not use `"..."` for free text.
 
@@ -68,6 +72,20 @@ findings = ['The second phase repeats a test the first phase already adds.']
 ## Fidelity
 
 ...
+```
+
+A scope request rides on `escalate` when permission is the only blocker:
+
+```
++++
+answer = "escalate"
+reason = 'The plan is faithful and grounded, but its fix must rewrite the generated client, which no slice may write.'
+scope_target = "vivi"
+scope_paths = ["crates/client/src/generated.rs"]
++++
+## Verdict
+
+Permission for that one path is the only thing holding the verdict back.
 ```
 
 Below the envelope, write the review as a short Markdown document with these headings, in order:

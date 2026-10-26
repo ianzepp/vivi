@@ -301,6 +301,14 @@ Prose report.
 - The word `failed` belongs to the pump. A hand and the repairer may write
   `answer = "failed"` themselves. Every other role either gives one of its own
   words or ends without an envelope, and the pump records the failure.
+- `scope_target` and `scope_paths` together are a scope request: the answer is
+  blocked only on permission for exactly those paths. Only the planner's
+  `operator` and the admitter's `escalate` may carry them, always both fields,
+  with one non-blank target and a non-empty list of non-blank paths. A question
+  that mixes design or product decisions with the permission is an ordinary
+  `operator` or `escalate` without the scope fields; paths are never read out
+  of the prose. An approved request resumes the role to finish its work with
+  the permission granted; it never stands in for `planned` or `admitted`.
 - Do not repeat the front matter in the prose, and do not wrap the envelope in a
   code fence in your real reply. The examples below are fenced only so you can
   read them here.
@@ -317,8 +325,8 @@ The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 | Role | `answer` | Other fields | Prose body |
 | --- | --- | --- | --- |
 | researcher | `READY`, `NOT READY`, `NEEDS FURTHER REVIEW` | `open_questions` (list) | the analysis |
-| planner | `planned`, `delivered`, `operator`, `hold`, `design` | `reason` (string; required unless `planned`) | the plan document |
-| admitter | `admitted`, `revise`, `escalate` | `required_changes` (list; non-empty for `revise`), `findings` (list), `reason` (string; required for `escalate`) | the review |
+| planner | `planned`, `delivered`, `operator`, `hold`, `design` | `reason` (string; required unless `planned`); `scope_target` (string) and `scope_paths` (list of paths; together, `operator` only, the scope-request rule above) | the plan document |
+| admitter | `admitted`, `revise`, `escalate` | `required_changes` (list; non-empty for `revise`), `findings` (list), `reason` (string; required for `escalate`), `scope_target` (string) and `scope_paths` (list of paths; together, `escalate` only, the scope-request rule above) | the review |
 | slicer | `sliced`, `escalate` | `mode` = `slice`, `rework` or `split`; `[[slice]]` tables {`id`, `title`, `brief`, `target`, `write_scope` (list), `deps` (list)}, at least one for `sliced` and none for `escalate`; split ids are `<old id>.<n>`, two to four of them; `reason` (string; required for `escalate`) | notes |
 | auditor (verify) | `clean_pass`, `residual`, `block_range`, `block_ship` | `raise_rung` (`need`, `main` or `release`; optional); `[[requirement]]` tables {`id`, `text`, `status` = `SATISFIED`, `PARTIAL`, `MISSING`, `UNVERIFIED` or `NOT_APPLICABLE`, `evidence` (list)}; `[[finding]]` tables {`id`, `content`, `paths` (list), `recheck_trigger`} | the report |
 | judge (auditor, short mode) | `block`, `residual` | `reason` (string; required) | the reasons |
@@ -365,6 +373,18 @@ reason = 'Commit 3f9a2c1 already adds the command and its test; nothing is left.
 Evidence for the claim above.
 ```
 
+A planner blocked only on permission asks for it and nothing else:
+
+```
++++
+answer = "operator"
+reason = 'The only fix rewrites the generated client, which the run may not touch.'
+scope_target = "vivi"
+scope_paths = ["src/generated/client.rs"]
++++
+The plan below is complete. The request above is its only blocker.
+```
+
 ### Admitter
 
 ```
@@ -377,6 +397,18 @@ required_changes = [
 findings = ['The second phase repeats work the first phase already delivers.']
 +++
 The review follows.
+```
+
+An admitter blocked only on permission rides the request on `escalate`:
+
+```
++++
+answer = "escalate"
+reason = 'The plan is faithful and grounded, but its fix must rewrite the generated client, which no slice may write.'
+scope_target = "vivi"
+scope_paths = ["crates/client/src/generated.rs"]
++++
+The review follows; permission for that one path is the only blocker.
 ```
 
 ### Slicer
@@ -599,7 +631,9 @@ The pump checks the envelope before it acts on the reply. Refusals are:
 - an unknown key;
 - an `answer` word that is not one of the role's words;
 - a missing or mistyped field for that answer (a `slice` table with no `brief`,
-  `blocked-scope` with no `scope_paths`, and so on).
+  `blocked-scope` with no `scope_paths`, a scope request with one field missing,
+  an empty or blank `scope_paths`, or the scope fields on any other answer, and
+  so on).
 
 The pump then sends one correction that quotes the problem and asks for the
 same reply again, corrected. A correction does not use an attempt. If the next

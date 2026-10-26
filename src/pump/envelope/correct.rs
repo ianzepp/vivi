@@ -143,10 +143,16 @@ fn fields(kind: RoleKind) -> &'static str {
             "researcher: answer = \"READY\" | \"NOT READY\" | \"NEEDS FURTHER REVIEW\"; open_questions (list)"
         }
         RoleKind::Planner => {
-            "planner: answer = \"planned\" | \"delivered\" | \"operator\" | \"hold\" | \"design\"; reason (string, required unless planned)"
+            "planner: answer = \"planned\" | \"delivered\" | \"operator\" | \"hold\" | \"design\"; \
+             reason (string, required unless planned); scope_target (string) + scope_paths (list of paths), \
+             only together on operator: the answer is blocked only on permission for exactly those paths; \
+             an approved request resumes this role and never counts as planned"
         }
         RoleKind::Admitter => {
-            "admitter: answer = \"admitted\" | \"revise\" | \"escalate\"; required_changes (list, non-empty for revise); findings (list); reason (string, required for escalate)"
+            "admitter: answer = \"admitted\" | \"revise\" | \"escalate\"; required_changes (list, non-empty for revise); \
+             findings (list); reason (string, required for escalate); scope_target (string) + scope_paths (list of paths), \
+             only together on escalate: the answer is blocked only on permission for exactly those paths; \
+             an approved request resumes this role and never counts as admitted"
         }
         RoleKind::Slicer => {
             "slicer: answer = \"sliced\" | \"escalate\"; mode = \"slice\" | \"rework\" | \"split\"; [[slice]] {id, title, brief, target, write_scope (list), deps (list)}, at least one for sliced and none for escalate; reason (string, required for escalate)"

@@ -72,6 +72,99 @@ fn admitter_conditional_rules() {
     );
 }
 
+const ESCALATE_REQUEST: &str = "answer = \"escalate\"\n\
+     reason = 'the plan is ready but its fix must edit a path no slice may write'\n\
+     scope_target = \"vivi\"\nscope_paths = [\"src/generated.rs\"]\n";
+
+#[test]
+fn an_admitter_scope_request_parses_and_is_escalate_only() {
+    let parsed = parse_for(RoleKind::Admitter, &env(ESCALATE_REQUEST)).unwrap();
+    assert_eq!(parsed.answer, "escalate");
+    assert_eq!(parsed.front["scope_target"], "vivi");
+    assert_eq!(parsed.front["scope_paths"][0], "src/generated.rs");
+
+    for word in ["admitted", "revise"] {
+        let extra = if word == "revise" {
+            "required_changes = ['c']\n"
+        } else {
+            ""
+        };
+        let front = ESCALATE_REQUEST
+            .replace("answer = \"escalate\"", &format!("answer = \"{word}\""))
+            + extra;
+        let err = parse_for(RoleKind::Admitter, &env(&front)).unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::Invalid(ref m) if m.contains("only allowed")),
+            "{word}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn an_admitter_scope_request_needs_both_fields_and_real_values() {
+    let base = "answer = \"escalate\"\nreason = 'needs a write grant'\n";
+    let both = |extra: &str| parse_for(RoleKind::Admitter, &env(&format!("{base}{extra}")));
+
+    let err = both("scope_target = \"vivi\"\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("both")),
+        "{err:?}"
+    );
+    let err = both("scope_paths = [\"src/a.rs\"]\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("both")),
+        "{err:?}"
+    );
+
+    let err = both("scope_target = '  '\nscope_paths = [\"src/a.rs\"]\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_target")),
+        "{err:?}"
+    );
+
+    // An explicit empty list is a request with bad values, not an omission.
+    let err = both("scope_target = \"vivi\"\nscope_paths = []\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("non-empty `scope_paths`")),
+        "{err:?}"
+    );
+
+    let err = both("scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\", ' ']\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("non-blank `scope_paths`")),
+        "{err:?}"
+    );
+
+    // The request still needs the reason escalate already requires.
+    let err = parse_for(
+        RoleKind::Admitter,
+        &env("answer = \"escalate\"\nscope_target = \"vivi\"\nscope_paths = [\"src/a.rs\"]\n"),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("reason")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn an_admitter_without_scope_fields_keeps_its_old_shape() {
+    let revise = parse_for(
+        RoleKind::Admitter,
+        &env("answer = \"revise\"\nrequired_changes = ['name the file']\n"),
+    )
+    .unwrap();
+    assert_eq!(revise.front.get("scope_target"), None);
+    assert_eq!(revise.front.get("scope_paths"), None);
+    let escalated = parse_for(
+        RoleKind::Admitter,
+        &env("answer = \"escalate\"\nreason = 'needs a design'\n"),
+    )
+    .unwrap();
+    assert_eq!(escalated.front.get("scope_target"), None);
+    assert_eq!(escalated.front.get("scope_paths"), None);
+}
+
 const AUDIT: &str = "answer = \"residual\"\nraise_rung = \"main\"\n\n\
     [[requirement]]\nid = \"R1\"\ntext = 'A closed run stops.'\nstatus = \"NOT_APPLICABLE\"\n\
     evidence = [\"src/run.rs:210\"]\n\n\

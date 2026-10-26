@@ -123,6 +123,88 @@ fn a_valid_planner_parses_and_reason_is_conditional() {
     assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
 }
 
+const OPERATOR_REQUEST: &str = "answer = \"operator\"\nreason = 'needs a write grant for the re-export'\n\
+     scope_target = \"vivi\"\nscope_paths = [\"src/store.rs\", \"src/store_test.rs\"]\n";
+
+#[test]
+fn a_planner_scope_request_parses_and_is_operator_only() {
+    let parsed = parse_for(RoleKind::Planner, &hand(OPERATOR_REQUEST)).unwrap();
+    assert_eq!(parsed.answer, "operator");
+    assert_eq!(parsed.front["scope_target"], "vivi");
+    assert_eq!(parsed.front["scope_paths"][1], "src/store_test.rs");
+
+    for word in ["planned", "delivered", "hold", "design"] {
+        let front =
+            OPERATOR_REQUEST.replace("answer = \"operator\"", &format!("answer = \"{word}\""));
+        let err = parse_for(RoleKind::Planner, &hand(&front)).unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::Invalid(ref m) if m.contains("only allowed")),
+            "{word}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn a_planner_scope_request_needs_both_fields_and_real_values() {
+    let base = "answer = \"operator\"\nreason = 'needs a write grant'\n";
+    let both = |extra: &str| parse_for(RoleKind::Planner, &hand(&format!("{base}{extra}")));
+
+    let err = both("scope_target = \"vivi\"\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("both")),
+        "{err:?}"
+    );
+    let err = both("scope_paths = [\"src/a.rs\"]\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("both")),
+        "{err:?}"
+    );
+
+    let err = both("scope_target = '  '\nscope_paths = [\"src/a.rs\"]\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_target")),
+        "{err:?}"
+    );
+
+    // An explicit empty list is a request with bad values, not an omission.
+    let err = both("scope_target = \"vivi\"\nscope_paths = []\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("non-empty `scope_paths`")),
+        "{err:?}"
+    );
+
+    let err = both("scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\", ' ']\n").unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("non-blank `scope_paths`")),
+        "{err:?}"
+    );
+
+    // The request still needs the reason the answer word already requires.
+    let err = parse_for(
+        RoleKind::Planner,
+        &hand("answer = \"operator\"\nscope_target = \"vivi\"\nscope_paths = [\"src/a.rs\"]\n"),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("reason")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_planner_without_scope_fields_keeps_its_old_shape() {
+    let planned = parse_for(RoleKind::Planner, &hand("answer = \"planned\"\n")).unwrap();
+    assert_eq!(planned.front.get("scope_target"), None);
+    assert_eq!(planned.front.get("scope_paths"), None);
+    let held = parse_for(
+        RoleKind::Planner,
+        &hand("answer = \"hold\"\nreason = 'waiting'\n"),
+    )
+    .unwrap();
+    assert_eq!(held.front.get("scope_target"), None);
+    assert_eq!(held.front.get("scope_paths"), None);
+}
+
 const SLICE: &str = "[[slice]]\nid = \"S1\"\ntitle = \"t\"\nbrief = 'b'\ntarget = \"src\"\n\
                      write_scope = [\"src/a.rs\"]\ndeps = []\n";
 
