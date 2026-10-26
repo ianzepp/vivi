@@ -28,13 +28,36 @@ impl ToolCaller for Recorder {
 }
 
 fn request(kind: Action) -> ActionRequest {
+    // Fields only where the action actually reads them.
+    let uses_step = matches!(kind, Action::Requeue | Action::Answer);
+    let uses_word = kind == Action::Answer;
     ActionRequest {
         kind,
         project: Some(PathBuf::from("/srv/projects/app")),
         need: Some("3f9a1c2e".into()),
-        step: Some("a1b2c3d4".into()),
-        word: Some("yes".into()),
+        step: uses_step.then(|| "a1b2c3d4".into()),
+        word: uses_word.then(|| "yes".into()),
         note: None,
+        entry: None,
+        file: None,
+        filter: None,
+        flow: None,
+        pool: None,
+        to: None,
+        subject: None,
+        body: None,
+        target: None,
+        role: None,
+        model: None,
+        band: None,
+        reasoning: None,
+        done_when: None,
+        write_scope: None,
+        priority: None,
+        cap: None,
+        limit: None,
+        lines: None,
+        offset: None,
     }
 }
 

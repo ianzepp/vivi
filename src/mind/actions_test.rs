@@ -152,6 +152,26 @@ fn argv_maps_onto_existing_pump_commands() {
         step: Some("s1".into()),
         word: Some("failed".into()),
         note: None,
+        entry: None,
+        file: None,
+        filter: None,
+        flow: None,
+        pool: None,
+        to: None,
+        subject: None,
+        body: None,
+        target: None,
+        role: None,
+        model: None,
+        band: None,
+        reasoning: None,
+        done_when: None,
+        write_scope: None,
+        priority: None,
+        cap: None,
+        limit: None,
+        lines: None,
+        offset: None,
     };
     assert_eq!(
         answer.argv().unwrap(),
@@ -182,10 +202,163 @@ fn a_dry_run_letter_names_its_project_need_and_note() {
         step: None,
         word: None,
         note: Some("locked at the operator gate".into()),
+        entry: None,
+        file: None,
+        filter: None,
+        flow: None,
+        pool: None,
+        to: None,
+        subject: None,
+        body: None,
+        target: None,
+        role: None,
+        model: None,
+        band: None,
+        reasoning: None,
+        done_when: None,
+        write_scope: None,
+        priority: None,
+        cap: None,
+        limit: None,
+        lines: None,
+        offset: None,
     };
     let line = DryRun::default().apply(&request).unwrap();
     assert_eq!(
         line,
         "would send Escalate (letter or stub) project=/w/app need=3f9a1c2e note=\"locked at the operator gate\""
     );
+}
+
+const TYPED_REQUEST: &str = "+++\n[[action]]\nkind = \"read-status\"\n\
+    entry = \"entry-1\"\nfile = \"log\"\nfilter = \"open\"\nflow = \"main\"\n\
+    pool = \"runpod\"\nto = \"operator\"\nsubject = \"status\"\n\
+    body = \"all clear\"\ntarget = \"main\"\nrole = \"tugboat\"\n\
+    model = \"m1\"\nband = \"cheap\"\nreasoning = \"because\"\n\
+    priority = -3\ncap = 5\nlimit = 20\nlines = 40\noffset = 10\n\
+    done_when = [\"green\", \"\"]\nwrite_scope = [\"src/\"]\n+++\n";
+
+const BLANK_REQUEST: &str = "+++\n[[action]]\nkind = \"read-status\"\n\
+    need = \"\"\nstep = \" \"\nword = \"\"\nnote = \"  \"\n\
+    entry = \"\"\nfile = \" \"\nfilter = \"\"\nflow = \" \"\n\
+    pool = \"\"\nto = \" \"\nsubject = \"\"\nbody = \" \"\n\
+    target = \"\"\nrole = \" \"\nmodel = \"\"\nband = \" \"\n\
+    reasoning = \"\"\ndone_when = [\"\", \"green\"]\n\
+    write_scope = [\" \"]\n+++\n";
+
+#[test]
+fn request_argument_types_and_blank_normalization() {
+    let typed = parse_envelope(TYPED_REQUEST).unwrap();
+    assert_eq!(typed.len(), 1);
+    assert_typed_fields(&typed[0]);
+
+    let blank = parse_envelope(BLANK_REQUEST).unwrap();
+    assert_eq!(blank.len(), 1);
+    assert_blank_strings_normalize(&blank[0]);
+
+    // Unknown fields are refused by the parser.
+    let unknown = "+++\n[[action]]\nkind = \"read-status\"\nshell = \"ls\"\n+++";
+    assert!(parse_envelope(unknown).is_err());
+
+    assert_wrong_types_and_ranges_are_refused();
+}
+
+fn assert_typed_fields(request: &ActionRequest) {
+    let strings = [
+        ("entry", &request.entry),
+        ("file", &request.file),
+        ("filter", &request.filter),
+        ("flow", &request.flow),
+        ("pool", &request.pool),
+        ("to", &request.to),
+        ("subject", &request.subject),
+        ("body", &request.body),
+        ("target", &request.target),
+        ("role", &request.role),
+        ("model", &request.model),
+        ("band", &request.band),
+        ("reasoning", &request.reasoning),
+    ];
+    let expected = [
+        "entry-1",
+        "log",
+        "open",
+        "main",
+        "runpod",
+        "operator",
+        "status",
+        "all clear",
+        "main",
+        "tugboat",
+        "m1",
+        "cheap",
+        "because",
+    ];
+    for ((name, value), want) in strings.iter().zip(expected) {
+        assert_eq!(value.as_deref(), Some(want), "field {name}");
+    }
+    assert_eq!(request.priority, Some(-3));
+    assert_eq!(request.cap, Some(5));
+    assert_eq!(request.limit, Some(20));
+    assert_eq!(request.lines, Some(40));
+    assert_eq!(request.offset, Some(10));
+    assert_eq!(
+        request.done_when,
+        Some(vec![String::from("green"), String::new()])
+    );
+    assert_eq!(request.write_scope, Some(vec![String::from("src/")]));
+}
+
+fn assert_blank_strings_normalize(request: &ActionRequest) {
+    for (name, value) in [
+        ("need", &request.need),
+        ("step", &request.step),
+        ("word", &request.word),
+        ("note", &request.note),
+        ("entry", &request.entry),
+        ("file", &request.file),
+        ("filter", &request.filter),
+        ("flow", &request.flow),
+        ("pool", &request.pool),
+        ("to", &request.to),
+        ("subject", &request.subject),
+        ("body", &request.body),
+        ("target", &request.target),
+        ("role", &request.role),
+        ("model", &request.model),
+        ("band", &request.band),
+        ("reasoning", &request.reasoning),
+    ] {
+        assert_eq!(*value, None, "blank {name} normalizes to None");
+    }
+    // Blank clauses inside the lists stay as written.
+    assert_eq!(
+        request.done_when,
+        Some(vec![String::new(), String::from("green")])
+    );
+    assert_eq!(request.write_scope, Some(vec![String::from(" ")]));
+}
+
+fn assert_wrong_types_and_ranges_are_refused() {
+    for field in [
+        "priority = \"high\"",
+        "priority = 9223372036854775808",
+        "cap = \"ten\"",
+        "cap = -1",
+        "cap = 4294967296",
+        "limit = -1",
+        "limit = 4294967296",
+        "lines = \"40\"",
+        "lines = 4294967296",
+        "offset = -1",
+        "offset = 4294967296",
+        "done_when = \"green\"",
+        "write_scope = 3",
+        "note = 7",
+    ] {
+        let reply = format!("+++\n[[action]]\nkind = \"read-status\"\n{field}\n+++");
+        assert!(parse_envelope(&reply).is_err(), "{field} should not parse");
+    }
+    let max = "+++\n[[action]]\nkind = \"read-status\"\npriority = 9223372036854775807\n+++";
+    assert_eq!(parse_envelope(max).unwrap()[0].priority, Some(i64::MAX));
 }
