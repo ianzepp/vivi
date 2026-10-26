@@ -1,0 +1,34 @@
+# EXAMPLE `mind.toml` for the `vivi mind` spike. It lives beside the host
+# registry: <config_dir>/vivi/mind.toml (VIVI_CONFIG_DIR overrides
+# <config_dir>). Every key is optional; no file at all is `observe` with the
+# defaults below. Unknown keys are refused.
+
+# What the mind may do: observe | unstick | file-fixes. The spike's actuator
+# is dry-run at every stage: permitted actions are only logged to mind.log.
+authority = "observe"
+
+# Wake at least this often with nobody attached (role_schedule durations).
+heartbeat = "30m"
+
+# The hub's vivi proxy. Must be loopback; the mind holds no model keys.
+proxy_url = "http://127.0.0.1:18180"
+
+# The pi executable (pi 0.73.1 verified). The mind adds
+# `--mode rpc --no-tools --session-dir <home>/sessions [--session <id>]`.
+pi_command = "pi"
+
+# Passed to pi as --model. It is pi's `<provider>/<id>`, where the provider
+# is defined in <mind home>/.pi/agent/models.json: the mind starts pi with
+# HOME set to the mind home, so that file is the one pi reads. A `~` in the
+# id (OpenRouter's latest aliases) is fine here.
+# model = "proxy/~deepseek/deepseek-flash-latest"
+
+# Defaults are under the mind home (VIVI_MIND_HOME, else
+# <state_dir>/vivi/mind): mind.sock and sessions/.
+# socket = "/var/lib/vivi/mind/mind.sock"
+# session_dir = "/var/lib/vivi/mind/sessions"
+
+[budgets]
+per_need_actions = 3       # unstick actions per need per window
+per_need_window = "24h"
+max_wakes_per_hour = 6

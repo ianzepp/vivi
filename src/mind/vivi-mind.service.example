@@ -1,0 +1,55 @@
+# EXAMPLE ONLY. `vivi mind service unit` prints this file; nothing installs it.
+# Review every path before use. Assumes the hub runs vivi-server and the proxy
+# as the `vivi` user, and that project roots live under /srv/vivi/projects.
+[Unit]
+Description=Vivi mind: hub-wide supervisor for registered pumps
+After=network.target vivi-proxy.service
+Wants=vivi-proxy.service
+
+[Service]
+Type=simple
+User=vivi
+Group=vivi
+ExecStart=/usr/local/bin/vivi mind service run
+Restart=on-failure
+RestartSec=15
+# One home for state, socket, sessions and log; owner-only.
+Environment=VIVI_MIND_HOME=/var/lib/vivi/mind
+StateDirectory=vivi/mind
+StateDirectoryMode=0700
+UMask=0077
+
+# Filesystem: read-only everywhere except the mind home and the project
+# mailspaces it posts letters into (see the design doc on .vivi ownership).
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vivi/mind /srv/vivi/projects
+PrivateTmp=yes
+PrivateDevices=yes
+
+# Network: loopback only, so the proxy at 127.0.0.1:18180 is the one way out.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+# Privilege and kernel surface.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# pi runs on a JIT runtime, which needs writable+executable memory.
+MemoryDenyWriteExecute=no
+
+[Install]
+WantedBy=multi-user.target
