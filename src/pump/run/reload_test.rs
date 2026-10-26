@@ -251,6 +251,30 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
     assert_eq!(judge.budget, 233);
     assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 300);
 
+    // An envelope-fix change resolves on its own: neither the planner
+    // override nor the reloaded fallback moves with it.
+    write_toml(
+        dir.path(),
+        &budgeted_toml(2, 233, "planner = 151\nenvelope-fix = 279", ""),
+    );
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert!(last_error.is_none());
+    assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 279);
+    let planner = step_inputs::read_only_job(
+        &ctx,
+        &run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "brief one",
+    )
+    .unwrap();
+    assert_eq!(planner.budget, 151);
+    let judge =
+        step_inputs::read_only_job(&ctx, &run, &step, &NodeClass::Judge, "auditor", "brief two")
+            .unwrap();
+    assert_eq!(judge.budget, 233);
+
     // The queued job keeps its original budget and execution inputs.
     assert_eq!(queued.budget, 97);
     assert_eq!(queued.id, "step-t1-a1");
