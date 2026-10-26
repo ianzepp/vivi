@@ -23,6 +23,7 @@ pub mod projects_api;
 pub mod pump_health;
 pub mod rooms;
 pub mod safety;
+mod shutdown;
 
 use std::path::PathBuf;
 use std::sync::Arc;
