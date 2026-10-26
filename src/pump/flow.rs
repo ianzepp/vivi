@@ -49,6 +49,7 @@ pub mod slice_merge;
 pub mod step_error;
 pub mod step_inputs;
 pub mod step_pending;
+pub mod step_retry;
 pub mod thread_change;
 pub mod tick;
 pub mod unlock;
