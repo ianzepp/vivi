@@ -4,7 +4,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use super::model::{MonitorRow, RowKind, RowState};
+use super::model::{MonitorRow, RowKind, RowState, is_finished, recently_finished};
 use crate::storage::read_only::{WalSidecarPolicy, guard_wal_sidecar};
 
 /// Service status plus recent actual tick rows from the bounded cycle log.
@@ -19,7 +19,7 @@ pub fn rows(project: &str, home: &Path, now: u64) -> (Vec<MonitorRow>, Vec<Strin
         Ok(cycles) => rows.extend(
             cycles
                 .into_iter()
-                .map(|cycle| cycle_row(project, home, now, cycle)),
+                .filter_map(|cycle| cycle_row(project, home, now, cycle)),
         ),
         Err(error) => warnings.push(format!("pump cycles: {error}")),
     }
@@ -31,13 +31,13 @@ fn cycle_row(
     home: &Path,
     now: u64,
     cycle: crate::pump::cycle::TickRecord,
-) -> MonitorRow {
+) -> Option<MonitorRow> {
     let state = if cycle.is_finished() {
         RowState::Finished(cycle.outcome.clone().unwrap_or_else(|| "finished".into()))
     } else {
         RowState::Running
     };
-    MonitorRow {
+    let row = MonitorRow {
         project: project.to_owned(),
         kind: RowKind::Pump,
         pool: "pump".into(),
@@ -50,7 +50,7 @@ fn cycle_row(
         subject: None,
         model: String::new(),
         state,
-        finished_at: None,
+        finished_at: cycle.ended_at,
         stale_age_secs: None,
         started_at: Some(cycle.started_at),
         running_secs: Some(
@@ -62,7 +62,15 @@ fn cycle_row(
         read_only: None,
         remote: false,
         tail: existing(home.join("log.txt")),
+    };
+    // The recorded end is authoritative: a completed cycle outside the shared
+    // recent-finished window leaves the snapshot, while an unfinished cycle
+    // stays visible whatever its start age. Survivors are always fresh, so
+    // they carry no stale age.
+    if is_finished(&row) && !recently_finished(&row, now) {
+        return None;
     }
+    Some(row)
 }
 
 pub fn row(project: &str, home: &Path, _now: u64) -> Result<MonitorRow, crate::VivariumError> {
