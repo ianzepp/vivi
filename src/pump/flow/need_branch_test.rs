@@ -6,9 +6,10 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, branch, prior, record_base, register,
-    tip,
+    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, Readiness, branch, prior, readiness,
+    record_base, register, tip,
 };
+use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -123,6 +124,73 @@ fn record_base_errors_while_the_old_branch_is_moving() {
         assert_eq!(stored.status, status);
         assert_eq!(stored.base, None);
     }
+}
+
+#[test]
+fn record_base_does_not_replace_unadopted_work() {
+    let f = fixture();
+    start_run(&f, 2, "plan");
+    let seeded = live_row(1);
+    f.store.upsert_need_branch(&seeded).unwrap();
+    main_tip(&f.host, MAIN_B);
+    let err = record_base(&f.ctx, &f.store, NEED, 2, "default").unwrap_err();
+    assert!(err.to_string().contains("awaits adoption"), "{err}");
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(seeded));
+    // An adoption wait is not a preparation error: the predicate says so.
+    let stored = f.store.need_branch(NEED).unwrap();
+    assert_eq!(
+        readiness(stored.as_ref(), 2, "default"),
+        Readiness::AwaitsAdoption
+    );
+}
+
+#[test]
+fn record_base_refuses_target_mismatch() {
+    let f = fixture();
+    start_run(&f, 1, "plan");
+    // Even a current-run base does not excuse another target.
+    let seeded = NeedBranchRow {
+        target: "other".into(),
+        ..live_row(1)
+    };
+    f.store.upsert_need_branch(&seeded).unwrap();
+    main_tip(&f.host, MAIN_B);
+    let err = record_base(&f.ctx, &f.store, NEED, 1, "default").unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("other") && text.contains("default"), "{text}");
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(seeded));
+    // A row that has not recorded a base yet refuses all the same.
+    let fresh = NeedBranchRow {
+        target: "other".into(),
+        ..row(FRESH, 1)
+    };
+    f.store.upsert_need_branch(&fresh).unwrap();
+    let err = record_base(&f.ctx, &f.store, NEED, 1, "default").unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(fresh));
+}
+
+#[test]
+fn readiness_separates_ready_work_from_waits_and_blocks() {
+    let f = fixture();
+    start_run(&f, 2, "plan");
+    let read = |run: u32, target: &str| {
+        readiness(f.store.need_branch(NEED).unwrap().as_ref(), run, target)
+    };
+    assert_eq!(read(2, "default"), Readiness::Ready, "no row is ready");
+    for status in [FRESH, LIVE, PRUNED] {
+        f.store.upsert_need_branch(&row(status, 2)).unwrap();
+        assert_eq!(read(2, "default"), Readiness::Ready, "{status}");
+    }
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    assert_eq!(read(2, "default"), Readiness::AwaitsAdoption);
+    for status in [RENAMING, DELETING] {
+        f.store.upsert_need_branch(&row(status, 1)).unwrap();
+        assert_eq!(read(2, "default"), Readiness::Moving, "{status}");
+    }
+    f.store.upsert_need_branch(&live_row(2)).unwrap();
+    assert_eq!(read(2, "other"), Readiness::WrongTarget);
 }
 
 #[test]
