@@ -246,3 +246,12 @@ fn the_run_start_post_follows_the_bind_and_precedes_any_close() {
         }]
     );
 }
+
+#[test]
+fn a_start_without_a_thread_starts_with_no_baseline() {
+    let (_project, ctx, store, mut mail) = setup();
+    // NEED has no mailspace thread: nothing to snapshot, no identity invented.
+    let row = start(&ctx, &store, &mut mail, NEED, None).unwrap();
+    assert_eq!(row.state, "live");
+    assert!(store.run_inputs(NEED, row.run).unwrap().is_empty());
+}
