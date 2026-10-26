@@ -6,11 +6,13 @@
 #[path = "support/mind_server.rs"]
 mod mind_server;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
+use vivi::letter::records::NoteWord;
 use vivi::mailspace::SendRequest;
+use vivi::mailspace::pump_note::note_body;
 use vivi::server::safety::RateLimiter;
 
 /// The registered tool entry named `name` on an operator key's tools/list.
@@ -586,5 +588,211 @@ async fn task_thread_answers_the_full_thread_and_folds_the_lifecycle_state() {
         &subjects(&answer)[..3],
         &["solder the board", "first note", "second note"],
         "{answer}"
+    );
+}
+
+/// The prose of a genuine failed-attempt record: the outcome, the failing
+/// command and a rate-limit excerpt, as the pump writes them.
+fn failed_attempt_prose() -> &'static str {
+    "pump: attempt record\n\
+     attempt: capped-a3\n\
+     outcome: agent failed: proof-failed\n\
+     \n\
+     failing command:\n\
+       cargo test --test server_mind_reads --quiet\n\
+     excerpt:\n\
+       error: build failed: 429 rate limit exceeded, retries remaining 0\n\
+     hand's final message:\n\
+       the newest page must still carry this evidence\n"
+}
+
+/// Seed the newest letter of `task` as a genuine `pump.note = "attempt"`
+/// record built with the mailspace helpers, and return the thread the
+/// library itself assembles: complete, oldest first, ordered by stored
+/// time and content id once `Date` seconds tie.
+fn thread_with_newest_failed_attempt(
+    fx: &mind_server::Fx,
+    task: &str,
+) -> Vec<vivi::mailspace::MailspaceThreadMessage> {
+    for n in 1..=60 {
+        letter(
+            fx,
+            Some(task),
+            &format!("filler {n:02}"),
+            &format!("filler body {n:02}"),
+        );
+    }
+    letter(
+        fx,
+        Some(task),
+        "attempt-agent-failed-proof-failed",
+        &note_body(
+            NoteWord::Attempt,
+            Some("agent failed: proof-failed"),
+            failed_attempt_prose(),
+        )
+        .unwrap(),
+    );
+    mind_server::open_root(&fx.root)
+        .thread(task, false, usize::MAX, usize::MAX)
+        .unwrap()
+}
+
+/// The failure to prevent: a traversal-capped prefix that omits the newest
+/// failed hand attempt. The thread is longer than the old generic
+/// 50-message traversal cap and ends with a genuine `pump.note =
+/// "attempt"` record carrying the outcome, the failing command and the
+/// rate-limit excerpt; the default newest page must end at that record
+/// with its evidence whole, and `total` must count the whole thread. The
+/// root is large and carries no attempt evidence, so it can never be
+/// mistaken for the record on the wire. Every letter is seeded back to
+/// back, so `Date` seconds tie and the order checked against is the
+/// library's own stored-time and content-id order — never Date alone.
+#[tokio::test]
+async fn task_thread_answers_the_newest_attempt_of_a_thread_beyond_the_old_traversal_cap() {
+    let fx = mind_server::fixture("mind-task-thread-attempt-cap");
+    let key = fx.key_by(&fx.member, Some("operator"));
+    let mut root_body = String::from("root manifest of the capped thread\n");
+    for n in 0..120 {
+        root_body.push_str(&format!("manifest line {n:03}: no attempt evidence here\n"));
+    }
+    let task = fx.send(
+        "mind",
+        "task",
+        "hand",
+        "capped thread anchor",
+        &format!("+++\n+++\n\n{root_body}"),
+    );
+    let reference = thread_with_newest_failed_attempt(&fx, &task);
+    assert_eq!(reference.len(), 62, "the seed must pass the old 50 cap");
+    let attempt = reference.last().unwrap();
+    assert_eq!(attempt.subject, "attempt-agent-failed-proof-failed");
+    let answer = fx.call(&key, "task_thread", json!({"handle": task})).await;
+    assert_eq!(answer["handle"], json!(task), "{answer}");
+    assert_eq!(answer["state"], "open", "{answer}");
+    assert!(answer["event"].is_null(), "{answer}");
+    assert_eq!(answer["total"], 62, "{answer}");
+    assert_eq!(answer["truncated"], true, "{answer}");
+    let rows = answer["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 20, "{answer}");
+    // The newest row is the attempt record itself — the handle the thread
+    // answers for it, whichever stored copy that is — with the full
+    // evidence on the wire.
+    let newest = rows.last().unwrap();
+    assert_eq!(newest["handle"], json!(attempt.handle), "{answer}");
+    assert_eq!(newest["message_id"], json!(attempt.message_id), "{answer}");
+    assert_eq!(newest["kind"], "mail", "{answer}");
+    assert_eq!(
+        newest["subject"], "attempt-agent-failed-proof-failed",
+        "{answer}"
+    );
+    let body = newest["body"].as_str().unwrap_or_default();
+    assert!(
+        body.contains("outcome: agent failed: proof-failed"),
+        "{body}"
+    );
+    assert!(
+        body.contains("cargo test --test server_mind_reads"),
+        "{body}"
+    );
+    assert!(body.contains("429 rate limit exceeded"), "{body}");
+    // The default page is exactly the reference's newest 20, in the
+    // library's own order — same-date ties included — and the large root
+    // with its manifest lines is not among them.
+    for (row, message) in rows.iter().zip(&reference[42..]) {
+        assert_eq!(row["message_id"], json!(message.message_id), "{row}");
+        assert_eq!(row["date"], json!(message.date), "{row}");
+    }
+    assert!(
+        !rows.iter().any(|row| row["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("manifest line 000")),
+        "{answer}"
+    );
+}
+
+/// Cursor paging over the same-date long thread walks exactly the
+/// library's complete ordering: every letter once, none missing, each
+/// `next_before` the page's oldest handle, the walk ending at the large
+/// root rather than at the attempt record. The expected order is
+/// `Mailspace::thread`'s own — `Date` first, then stored time and content
+/// id for same-second letters — never a Date- or sleep-derived order.
+#[tokio::test]
+async fn task_thread_pages_walk_the_whole_library_order_without_duplication_or_omission() {
+    let fx = mind_server::fixture("mind-task-thread-attempt-walk");
+    let key = fx.key_by(&fx.member, Some("operator"));
+    let mut root_body = String::from("root manifest of the walked thread\n");
+    for n in 0..120 {
+        root_body.push_str(&format!("manifest line {n:03}: no attempt evidence here\n"));
+    }
+    let task = fx.send(
+        "mind",
+        "task",
+        "hand",
+        "walked thread anchor",
+        &format!("+++\n+++\n\n{root_body}"),
+    );
+    let reference = thread_with_newest_failed_attempt(&fx, &task);
+    let total = reference.len();
+    assert_eq!(total, 62, "the seed must pass the old 50 cap");
+    // Newest page first, then each cursor backwards, nine letters a page.
+    let mut walked: Vec<Value> = Vec::new();
+    let mut before: Option<String> = None;
+    loop {
+        let mut arguments = json!({"handle": task, "limit": 9});
+        if let Some(cursor) = &before {
+            arguments["before"] = json!(cursor);
+        }
+        let page = fx.call(&key, "task_thread", arguments).await;
+        assert_eq!(page["total"], json!(total), "{page}");
+        let rows = page["messages"].as_array().cloned().unwrap();
+        assert!(!rows.is_empty() && rows.len() <= 9, "{page}");
+        let cursor = page["next_before"].as_str().map(str::to_owned);
+        assert_eq!(cursor.is_some(), page["truncated"] == json!(true), "{page}");
+        // While an older page remains, its cursor is the page's oldest
+        // handle; on the last page there is none.
+        if let Some(cursor) = &cursor {
+            assert_eq!(json!(cursor), rows[0]["handle"], "{page}");
+        }
+        let mut prefix = rows;
+        prefix.extend(walked);
+        walked = prefix;
+        match cursor {
+            Some(cursor) => before = Some(cursor),
+            None => break,
+        }
+    }
+    // Every letter exactly once, in the library's own order.
+    assert_eq!(walked.len(), total);
+    let ids: BTreeSet<&str> = walked
+        .iter()
+        .map(|row| row["message_id"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(ids.len(), total, "a letter walked twice: {walked:?}");
+    for (row, message) in walked.iter().zip(&reference) {
+        assert_eq!(row["message_id"], json!(message.message_id), "{row}");
+        assert_eq!(row["date"], json!(message.date), "{row}");
+    }
+    // The walk ends at the root, not at the record: the oldest row is the
+    // anchor with its manifest body and no attempt evidence, the newest
+    // the failed attempt with its evidence whole.
+    let oldest = walked.first().unwrap();
+    assert_eq!(oldest["handle"], json!(task), "{oldest}");
+    assert_eq!(oldest["subject"], "walked thread anchor", "{oldest}");
+    assert!(
+        !oldest["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("429 rate limit exceeded"),
+        "{oldest}"
+    );
+    let newest = walked.last().unwrap();
+    assert!(
+        newest["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("429 rate limit exceeded"),
+        "{newest}"
     );
 }
