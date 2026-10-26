@@ -16,6 +16,7 @@ use crate::error::VivariumError;
 use crate::mailspace::{POOL_EVENT_TYPES, PoolEventRow};
 use crate::pool::record::{DispatchRecord, OpenDispatch, fold_open};
 use crate::storage::Storage;
+use crate::storage::read_only::WalSidecarPolicy;
 
 /// Subject and addressee role of a task seen in the pool event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -95,7 +96,12 @@ fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
             db.display()
         ))
     })?;
-    let conn = Storage::open_mailspace_connection_read_only(dir)?;
+    let conn = Storage::open_mailspace_connection_read_only(
+        dir,
+        // Strict until this reader gets its own owner-policy slice; the
+        // monitor must never create the sidecar it reports against.
+        WalSidecarPolicy::ExistingSidecarOnly,
+    )?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
     conn.execute_batch("PRAGMA query_only = true")

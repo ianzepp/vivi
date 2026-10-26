@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use super::{
     WalSidecarPolicy, guard_wal_sidecar, guard_wal_sidecar_with, shm_path, wal_index_missing,
 };
+#[cfg(unix)]
+use super::{effective_uid, file_owner_uid};
 use crate::error::VivariumError;
+use crate::storage::Storage;
 
 /// Every database filename the shared guard must cover.
 const DATABASE_FILENAMES: [&str; 2] = ["mail.sqlite", "pump.db"];
@@ -327,4 +330,86 @@ fn filesystem_errors_propagate_from_the_guard() {
         wal_index_missing(&directory),
         Err(VivariumError::Io(_))
     ));
+}
+
+/// The owner takes the normal read-only open through the policy-bearing
+/// storage boundary: the WAL-only committed value is visible, writes are
+/// rejected by SQLite itself, the database bytes stay untouched, and the
+/// sidecars held open by the connection belong to this process.
+#[test]
+#[cfg(unix)]
+fn owner_reads_wal_without_shm() {
+    let fixture = wal_fixture("mail.sqlite");
+    let before = fs::read(&fixture.db).unwrap();
+
+    let storage = Storage::open_mailspace_read_only_with_policy(
+        fixture.dir(),
+        WalSidecarPolicy::AllowOwnedSidecar,
+    )
+    .unwrap();
+    let conn = storage.conn.borrow();
+
+    // The committed value lives only in the WAL, and the boundary shows it.
+    let value: String = conn
+        .query_row("SELECT value FROM probe LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(value, WAL_ONLY_MARKER);
+
+    // Writes are refused with SQLite's read-only error code.
+    let error = conn
+        .execute("INSERT INTO probe (value) VALUES (?1)", ["rejected"])
+        .unwrap_err();
+    match error {
+        rusqlite::Error::SqliteFailure(failure, _) => {
+            assert_eq!(failure.code, rusqlite::ErrorCode::ReadOnly, "{error}");
+        }
+        other => panic!("expected a read-only SQLite failure, got {other}"),
+    }
+
+    // Sidecars exist while the connection is open and are owned by this
+    // process — including the -shm index SQLite just recreated.
+    assert!(shm_path(&fixture.db).exists(), "recreated -shm must exist");
+    assert_eq!(
+        file_owner_uid(&shm_path(&fixture.db)).unwrap(),
+        effective_uid(),
+        "the recreated -shm sidecar must belong to this process"
+    );
+    assert_eq!(
+        file_owner_uid(&fixture.wal).unwrap(),
+        effective_uid(),
+        "the WAL sidecar must belong to this process"
+    );
+
+    // Contents, schema, and schema version are unchanged: recreating the
+    // coordination files touched no database byte.
+    drop(conn);
+    drop(storage);
+    assert_eq!(fs::read(&fixture.db).unwrap(), before);
+}
+
+/// The strict policy refuses the missing sidecar even when this process owns
+/// the database: both the crate-private connection boundary and the public
+/// [`Storage::open_mailspace_read_only`] wrapper pin `ExistingSidecarOnly`.
+#[test]
+#[cfg(unix)]
+fn strict_policy_refuses_owner_missing_shm() {
+    let fixture = wal_fixture("mail.sqlite");
+    let before = snapshot(fixture.dir());
+
+    let error = Storage::open_mailspace_connection_read_only(
+        fixture.dir(),
+        WalSidecarPolicy::ExistingSidecarOnly,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("mail.sqlite-shm"), "{error}");
+
+    let error = Storage::open_mailspace_read_only(fixture.dir())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("mail.sqlite-shm"), "{error}");
+
+    assert_unchanged(&fixture, &before);
 }
