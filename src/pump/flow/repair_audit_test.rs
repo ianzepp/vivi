@@ -486,6 +486,23 @@ fn a_lost_job_raises_one_alarm_and_files_nothing() -> R {
 }
 
 #[test]
+fn a_budget_killed_audit_job_is_never_retried_and_settles_the_run() -> R {
+    let mut rig = rig(true)?;
+    rig.land("repair", true)?;
+    rig.tick()?;
+    rig.end_audit(JobStatus::Timeout, "");
+    rig.tick()?;
+    rig.tick()?;
+    // The audit job stands outside the thinking-step retry chain: its kind is
+    // `auditor`, but a budget kill (`Timeout`) is terminal — the queued job
+    // is never rerun at a raised budget, and the run still settles.
+    assert_eq!(rig.jobs.jobs.len(), 1);
+    assert_eq!(rig.alarms(), 1);
+    assert!(rig.store.applied_action_ids()?.contains(&run_key(NEED, 1)));
+    Ok(())
+}
+
+#[test]
 fn an_unparseable_reply_raises_one_alarm_and_marks_the_key() -> R {
     let mut rig = rig(true)?;
     rig.audited("no envelope here")?;
