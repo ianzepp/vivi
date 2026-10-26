@@ -44,6 +44,62 @@ fn split_id(job_id: &str) -> (&str, u32) {
     (job_id, 0)
 }
 
+/// The payload key naming the substantive job a correction rewrites; absent
+/// on historical corrections, which fall back to their `-cN` id suffix.
+const ORIGINAL: &str = "correction_original_job";
+/// The payload key holding a correction's ordinal (1-based); absent on
+/// historical corrections, which fall back to their `-cN` id suffix.
+const ORDINAL: &str = "correction_ordinal";
+
+/// The corrections a job carries: `0` for an original job, `n` for the n-th
+/// correction of a chain. The stamped ordinal of a correction wins over its
+/// id; a transport replacement of a correction (a retry suffix after `-cN`,
+/// such as an operator requeue's `-q1`) keeps the stamp, so the suffix never
+/// resets the count or presents the replacement as fresh work.
+#[must_use]
+pub fn ordinal(job: &PoolJob) -> u32 {
+    job.payload
+        .get(ORDINAL)
+        .and_then(serde_json::Value::as_u64)
+        .map_or_else(
+            || correction_n(&job.id),
+            |n| u32::try_from(n).unwrap_or(u32::MAX),
+        )
+}
+
+/// The id of the substantive job whose output `job` corrects, when `job` is
+/// a correction: the stamped original-substantive-job id first, then the
+/// historical `-cN` id suffix. `None` for a job that corrects nothing.
+#[must_use]
+pub fn corrects(job: &PoolJob) -> Option<String> {
+    job.payload
+        .get(ORIGINAL)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| (correction_n(&job.id) > 0).then(|| base_id(&job.id).to_owned()))
+}
+
+/// Like [`corrects`], but always an id: `job`'s own id when it corrects
+/// nothing, so an original job looks up itself.
+#[must_use]
+pub fn original_id(job: &PoolJob) -> String {
+    corrects(job).unwrap_or_else(|| job.id.clone())
+}
+
+/// Stamp `payload` with the correction's ancestry: the substantive job id
+/// whose output it rewrites and its 1-based ordinal. A transport replacement
+/// of the correction copies the stamp along, where a retry suffix in its id
+/// would hide the `-cN` shape.
+fn stamp(payload: &mut serde_json::Value, base: &str, n: u32) {
+    if !payload.is_object() {
+        *payload = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(map) = payload.as_object_mut() {
+        map.insert(ORIGINAL.into(), base.into());
+        map.insert(ORDINAL.into(), n.into());
+    }
+}
+
 /// The correction job number `n` for the broken output of `original`.
 ///
 /// `need` and the step's run and node are named in the body's first prose
@@ -63,7 +119,10 @@ pub fn spec(
     n: u32,
     budget: u64,
 ) -> JobSpec {
-    let id = format!("{}-c{n}", base_id(&original.id));
+    // The chain stays anchored on the substantive job even when `original`
+    // is a transport replacement of a correction: the next id is the base's
+    // `-c<n>`, not the replacement's, and the stamp rides any further copy.
+    let base = original_id(original);
     let body = format!(
         "Correction for pump step {need} r{} {}.\n\n\
          Your last reply did not parse as a reply envelope.\n\
@@ -77,7 +136,13 @@ pub fn spec(
         role_row(kind),
         capped(&final_text(original)),
     );
-    let mut spec = JobSpec::new(id, KIND, role, format!("envelope fix: {}", row.node), body);
+    let mut spec = JobSpec::new(
+        format!("{base}-c{n}"),
+        KIND,
+        role,
+        format!("envelope fix: {}", row.node),
+        body,
+    );
     spec.target.clone_from(&original.target);
     spec.pool_candidates.clone_from(&original.pool_candidates);
     spec.local_only = original.local_only;
@@ -88,6 +153,7 @@ pub fn spec(
     spec.model.clone_from(&original.model);
     spec.read_only = true;
     spec.budget = budget;
+    stamp(&mut spec.payload, &base, n);
     spec
 }
 

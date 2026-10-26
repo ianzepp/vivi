@@ -138,11 +138,9 @@ where
         row: &StepJobRow,
         step: &StepRow,
     ) -> Result<(), VivariumError> {
-        let hand = if correct::correction_n(&job.id) > 0 {
-            self.st.jobs().get(correct::base_id(&job.id)).cloned()
-        } else {
-            None
-        };
+        // A correction reads the substantive hand job; the stamped ancestry
+        // follows a transport replacement whose id suffix would hide `-cN`.
+        let hand = correct::corrects(job).and_then(|id| self.st.jobs().get(&id).cloned());
         let hand = hand.as_ref().unwrap_or(job);
         if let Some(env) = runner_env_failure(hand) {
             return self.environment(step, row, hand, &env);

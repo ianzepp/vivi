@@ -22,7 +22,7 @@ use crate::mailspace::{MailspaceThreadMessage, order_notes};
 use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
 use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
-use crate::pump::envelope::correct::correction_n;
+use crate::pump::envelope::correct::ordinal;
 use crate::pump::envelope::parse;
 use crate::pump::envelope::roles::{CheckResult, Hand, HandAnswer};
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
@@ -685,6 +685,7 @@ fn blocked(
 
 /// A reply that did not parse: a correction while some remain and the agent
 /// exited 0, `failed` otherwise. A crashed agent is a plain failed attempt.
+/// The ordinal rides a transport replacement's stamp, not its id suffix.
 fn broken(
     ctx: &Ctx,
     reply: &PoolJob,
@@ -695,7 +696,7 @@ fn broken(
     if !agent_ok {
         return AttemptResult::Failed;
     }
-    if correction_n(&reply.id) < MAX_CORRECTIONS {
+    if ordinal(reply) < MAX_CORRECTIONS {
         return AttemptResult::Correct { error };
     }
     ctx.exception(

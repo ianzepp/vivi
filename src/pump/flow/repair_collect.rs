@@ -90,13 +90,10 @@ fn built<S: JobStore, M: FlowMail>(
     step: &StepRow,
     mut payload: serde_json::Value,
 ) -> Result<(), VivariumError> {
-    // A correction job carries no receipt: the machine facts are the original's.
-    let original = cx
-        .st
-        .jobs()
-        .get(correct::base_id(&job.id))
-        .unwrap_or(job)
-        .clone();
+    // A correction job carries no receipt: the machine facts are the
+    // original's, by stamp so a replaced correction still finds it.
+    let base = correct::original_id(job);
+    let original = cx.st.jobs().get(&base).unwrap_or(job).clone();
     let Some(facts) = published(&original) else {
         let (word, reason) = unpublished(&original);
         return cx.advance_word(step, word, json!({"job": job.id, "reason": reason}));
