@@ -2,7 +2,12 @@
 //! Disposable hosted-process measurement fixtures: two isolated hosted
 //! mailspaces registered with an isolated server data directory, plus
 //! normal-API writer helpers whose traffic is classifiable (local-only,
-//! and predominantly local with periodic off-host letters).
+//! and predominantly local with periodic off-host letters), the separately
+//! selectable measurement write modes over those writers, and the window
+//! summary the process benchmark reports: measured counters (server CPU,
+//! wall, pass latency, rows, writer work) kept distinct from the candidate
+//! selector work, which is derived from actual row counts and the verified
+//! full-listing selection, never measured.
 //!
 //! Everything lives under a fresh temp directory: the server data
 //! directory, the identity registry, and each mailspace's own sync key
@@ -14,7 +19,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use rusqlite::Connection;
 use vivi::mailspace::{Mailspace, SendRequest};
@@ -31,6 +36,50 @@ pub const OFF_HOST: &str = "mind@0badc0de.local";
 /// Cadence of the periodic off-host letters in the mixed writer: one off
 /// the host when the pass starts, then one every two seconds.
 pub const OFF_HOST_EVERY: Duration = Duration::from_secs(2);
+
+/// The measurement window a real run collects: long enough that the
+/// server's own five-second indexing cadence (its unchanged default) fires
+/// many times, whatever the mode writes.
+pub const MEASURE_WINDOW: Duration = Duration::from_secs(120);
+
+/// Which writes a measurement window carries. The modes are separately
+/// selectable (`WindowMode::parse`): the idle window baselines a settled
+/// mailspace, the local window loads delivery only, and the mixed window
+/// loads the corpus shape the off-host selector work scales with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowMode {
+    /// No writes at all: the server idles on a settled mailspace.
+    Idle,
+    /// Local-only letters to each host's own hand; nothing leaves a host.
+    Local,
+    /// Predominantly local letters with periodic off-host letters on the
+    /// corpus's own [`OFF_HOST_EVERY`] schedule.
+    Mixed,
+}
+
+impl WindowMode {
+    /// The mode's name, as `WindowMode::parse` and `VIVI_MEASURE_MODE`
+    /// spell it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            WindowMode::Idle => "idle",
+            WindowMode::Local => "local",
+            WindowMode::Mixed => "mixed",
+        }
+    }
+
+    /// The mode a name selects, or nothing for an unknown name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "idle" => Some(WindowMode::Idle),
+            "local" => Some(WindowMode::Local),
+            "mixed" => Some(WindowMode::Mixed),
+            _ => None,
+        }
+    }
+}
 
 /// The smallest corpus a real measurement run accepts. Smoke fixtures may
 /// shrink the corpus they build by calling the writer helpers directly;
@@ -137,6 +186,24 @@ fn send_one(ms: &Mailspace, to: &str, need: bool, n: usize) -> String {
     result.sent
 }
 
+/// When the writer stops: after a letter count (a bootstrap corpus), or at
+/// a deadline (a measurement window).
+#[derive(Clone, Copy, Debug)]
+enum Stop {
+    After(usize),
+    At(Instant),
+}
+
+impl Stop {
+    /// Whether the writer has reached this stop yet.
+    fn reached(self, sent: usize) -> bool {
+        match self {
+            Stop::After(count) => sent >= count,
+            Stop::At(deadline) => Instant::now() >= deadline,
+        }
+    }
+}
+
 /// The shared writer loop: `sends` letters through the normal API, local
 /// traffic to `to`, and — when a schedule is given — an off-host letter
 /// when the pass starts and again each time the schedule comes due. The
@@ -145,14 +212,14 @@ fn send_one(ms: &Mailspace, to: &str, need: bool, n: usize) -> String {
 fn write_traffic(
     ms: &Mailspace,
     to: &str,
-    sends: usize,
     off_host_every: Option<Duration>,
+    stop: Stop,
 ) -> Traffic {
     let start = Instant::now();
     let mut local = Vec::new();
     let mut off_host = Vec::new();
     let mut due = off_host_every.map(|_| Instant::now());
-    while local.len() + off_host.len() < sends {
+    while !stop.reached(local.len() + off_host.len()) {
         let fire = due.is_some_and(|due| Instant::now() >= due);
         if fire {
             let need = off_host.len() % 2 == 0;
@@ -183,7 +250,7 @@ fn write_traffic(
 /// mailspace), so under the `addressed` send policy nothing leaves the
 /// machine. Returns the sent-copy handles.
 pub fn write_local_only(ms: &Mailspace, to: &str, sends: usize) -> Traffic {
-    write_traffic(ms, to, sends, None)
+    write_traffic(ms, to, None, Stop::After(sends))
 }
 
 /// Predominantly local traffic with periodic off-host letters: one off the
@@ -196,7 +263,25 @@ pub fn write_local_with_periodic_off_host(
     sends: usize,
     off_host_every: Duration,
 ) -> Traffic {
-    write_traffic(ms, to, sends, Some(off_host_every))
+    write_traffic(ms, to, Some(off_host_every), Stop::After(sends))
+}
+
+/// One measurement window's writes for `mode`, until `until`: nothing for
+/// the idle mode, local-only letters for the local mode, and predominantly
+/// local letters with periodic off-host letters on the corpus's own
+/// schedule for the mixed mode. The traffic classifies as it goes, so the
+/// caller can verify the off-host part after the window.
+pub fn write_window(ms: &Mailspace, to: &str, mode: WindowMode, until: Instant) -> Traffic {
+    match mode {
+        WindowMode::Idle => Traffic {
+            sends: 0,
+            local: Vec::new(),
+            off_host: Vec::new(),
+            seconds: 0.0,
+        },
+        WindowMode::Local => write_traffic(ms, to, None, Stop::At(until)),
+        WindowMode::Mixed => write_traffic(ms, to, Some(OFF_HOST_EVERY), Stop::At(until)),
+    }
 }
 
 /// Actual rows in the mailspace's `messages` table: what the storage layer
@@ -233,6 +318,194 @@ pub fn read_all_records(
             return all;
         }
     }
+}
+
+/// Corpus-enumeration work the old selector performs per window: every
+/// push pass lists the mailspace's whole `messages` table through the
+/// verified full-listing selection (`sync::push` over `sync::select`), so
+/// its work scales with actual row counts. That makes the total
+/// enumeration **derived evidence** — row counts times passes — never a
+/// directly measured counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CandidateWork {
+    /// Push passes that completed inside the window; each is one full
+    /// listing.
+    pub passes: u64,
+    /// Actual message rows the mailspace held when the window started
+    /// (measured directly, then used only as this derivation's input).
+    pub rows_per_pass: usize,
+    /// `passes × rows_per_pass`: the derived row visits a window's passes
+    /// enumerated.
+    pub enumerated_rows: u128,
+}
+
+/// What one measurement window measured. The directly measured counters
+/// come first; [`WindowSummary::candidate`] is deliberately separate, so a
+/// reader can tell evidence from arithmetic.
+#[derive(Clone, Debug)]
+pub struct WindowSummary {
+    /// The write mode the window carried.
+    pub mode: WindowMode,
+    /// Wall seconds the window spanned, first to last CPU sample.
+    pub seconds: f64,
+    /// Server CPU seconds integrated over the window's samples.
+    pub cpu_seconds: f64,
+    /// Average fraction of one core the server kept busy.
+    pub average_cores: f64,
+    /// Latencies, in seconds, of the push passes that completed inside the
+    /// window: the server's own traced elapsed time per pass.
+    pub pass_seconds: Vec<f64>,
+    /// Actual message rows across both hosted mailspaces, at window start.
+    pub rows_before: usize,
+    /// Actual message rows across both hosted mailspaces, at window end.
+    pub rows_after: usize,
+    /// Letters the window's writers sent.
+    pub writer_sends: usize,
+    /// Wall seconds the writer threads spent sending.
+    pub writer_seconds: f64,
+    /// Writer threads the mode ran (zero for the idle mode).
+    pub writer_threads: usize,
+    /// Candidate selector work, derived — see [`CandidateWork`].
+    pub candidate: CandidateWork,
+}
+
+impl WindowSummary {
+    /// Summarize one window. `wall_seconds` must be positive and finite —
+    /// the sampler's advancing window guarantees it — so `average_cores`
+    /// and the candidate derivation are always defined.
+    pub fn new(
+        mode: WindowMode,
+        cpu_seconds: f64,
+        wall_seconds: f64,
+        writer_sends: usize,
+        writer_seconds: f64,
+        writer_threads: usize,
+        pass_seconds: Vec<f64>,
+        rows_before: usize,
+        rows_after: usize,
+    ) -> Self {
+        assert!(
+            wall_seconds.is_finite() && wall_seconds > 0.0,
+            "a window spans positive wall time, got {wall_seconds}"
+        );
+        let passes = u64::try_from(pass_seconds.len()).unwrap_or(u64::MAX);
+        let candidate = CandidateWork {
+            passes,
+            rows_per_pass: rows_before,
+            enumerated_rows: u128::from(passes) * u128::try_from(rows_before).unwrap_or(u128::MAX),
+        };
+        Self {
+            mode,
+            seconds: wall_seconds,
+            cpu_seconds,
+            average_cores: cpu_seconds / wall_seconds,
+            pass_seconds,
+            rows_before,
+            rows_after,
+            writer_sends,
+            writer_seconds,
+            writer_threads,
+            candidate,
+        }
+    }
+
+    /// Report lines: the measured counters first, then the candidate
+    /// selector work, labeled as derivation so it is never mistaken for a
+    /// measured counter.
+    pub fn lines(&self) -> Vec<String> {
+        let passes = self.pass_seconds.len();
+        let slowest = self.pass_seconds.iter().cloned().fold(0.0, f64::max);
+        vec![
+            format!(
+                "window {}: {:.3} s wall, {:.3} s server cpu, {:.4} core average",
+                self.mode.name(),
+                self.seconds,
+                self.cpu_seconds,
+                self.average_cores
+            ),
+            format!("passes: {passes} completed in-window, slowest {slowest:.3} s"),
+            format!(
+                "rows: {} before, {} after (both hosted mailspaces)",
+                self.rows_before, self.rows_after
+            ),
+            format!(
+                "writer: {} sends in {:.3} s across {} thread(s)",
+                self.writer_sends, self.writer_seconds, self.writer_threads
+            ),
+            format!(
+                "candidate (derived, not measured): {} full-listing passes x {} rows = {} row visits",
+                self.candidate.passes, self.candidate.rows_per_pass, self.candidate.enumerated_rows
+            ),
+        ]
+    }
+}
+
+/// The server's own push-pass latency log, parsed into window-bounded
+/// latencies. `timed_push` in `src/server/projects/hosted_index.rs` emits
+/// one debug line per pass; keep the marker and the `elapsed_ms` field in
+/// step with it. The harness sees these lines only because the child's
+/// stderr is drained into a bounded buffer, so a chatty server can never
+/// wedge on a full pipe.
+pub struct PassLog;
+
+impl PassLog {
+    /// The debug line `timed_push` emits per push pass.
+    const MARKER: &str = "hosted index pass complete";
+
+    /// The elapsed-time field of that line.
+    const ELAPSED: &str = "elapsed_ms=";
+
+    /// Latencies, in seconds, of the passes whose log line carries a
+    /// timestamp inside `[start, end]` — the wall-clock window the runner
+    /// recorded around its CPU samples, so warm-up and verification passes
+    /// never count as measured latency. The server's subscriber styles its
+    /// output with ANSI escapes; they are stripped before parsing, so a
+    /// line reads the same however it was styled. A marker line that does
+    /// not parse is a format drift, and drift fails loudly instead of
+    /// silently dropping a pass from the report.
+    pub fn in_window(log: &str, start: SystemTime, end: SystemTime) -> Vec<f64> {
+        let start = chrono::DateTime::<chrono::Utc>::from(start);
+        let end = chrono::DateTime::<chrono::Utc>::from(end);
+        log.lines()
+            .map(strip_ansi)
+            .filter(|line| line.contains(Self::MARKER))
+            .filter_map(|line| {
+                let at = line.split_whitespace().next()?;
+                let at = chrono::DateTime::parse_from_rfc3339(at)
+                    .unwrap_or_else(|err| panic!("pass log timestamp {at:?}: {err}"))
+                    .with_timezone(&chrono::Utc);
+                let elapsed = line
+                    .split(Self::ELAPSED)
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("pass log line without elapsed_ms: {line}"));
+                let digits: String = elapsed.chars().take_while(char::is_ascii_digit).collect();
+                let ms: u64 = digits
+                    .parse()
+                    .unwrap_or_else(|err| panic!("pass log elapsed_ms {digits:?}: {err}"));
+                (at >= start && at <= end).then(|| ms as f64 / 1_000.0)
+            })
+            .collect()
+    }
+}
+
+/// Strip ANSI escape sequences (the CSI `ESC [ ... letter` form the
+/// tracing subscriber styles its output with) so log parsing sees plain
+/// text.
+fn strip_ansi(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 impl HostedMeasure {
