@@ -192,6 +192,147 @@ fn read_log_names_a_required_file_and_leaves_unset_options_out() {
 }
 
 #[test]
+fn read_need_is_one_need_show_call_naming_the_handle() {
+    let (result, calls) = run(&request(Action::ReadNeed));
+    assert_eq!(result, Ok("need_show: need_show ok".into()));
+    assert_eq!(
+        calls,
+        vec![(
+            "need_show".to_string(),
+            json!({ "project": "app", "handle": "3f9a1c2e" })
+        )]
+    );
+    let mut no_need = request(Action::ReadNeed);
+    no_need.need = None;
+    let (result, calls) = run(&no_need);
+    assert_eq!(result, Err("the action names no need".into()));
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn thread_reads_take_the_server_defaults_until_a_page_is_named() {
+    // Each thread read is exactly one call: the need's thread by the
+    // need's handle, the task's by the step's, with no limit or before
+    // sent so the server's defaults hold.
+    let (result, calls) = run(&request(Action::ReadNeedThread));
+    assert_eq!(result, Ok("need_thread: need_thread ok".into()));
+    assert_eq!(
+        calls,
+        vec![(
+            "need_thread".to_string(),
+            json!({ "project": "app", "handle": "3f9a1c2e" })
+        )]
+    );
+    let (result, calls) = run(&request(Action::ReadTaskThread));
+    assert_eq!(result, Ok("task_thread: task_thread ok".into()));
+    assert_eq!(
+        calls,
+        vec![(
+            "task_thread".to_string(),
+            json!({ "project": "app", "handle": "a1b2c3d4" })
+        )]
+    );
+}
+
+#[test]
+fn thread_reads_forward_an_explicit_page_and_cursor() {
+    let mut paged = request(Action::ReadNeedThread);
+    paged.limit = Some(5);
+    paged.before = Some("f0e1d2c3".into());
+    let (_, calls) = run(&paged);
+    assert_eq!(
+        calls,
+        vec![(
+            "need_thread".to_string(),
+            json!({
+                "project": "app",
+                "handle": "3f9a1c2e",
+                "limit": 5,
+                "before": "f0e1d2c3"
+            })
+        )]
+    );
+    let mut task_page = request(Action::ReadTaskThread);
+    task_page.limit = Some(100);
+    let (_, calls) = run(&task_page);
+    assert_eq!(
+        calls,
+        vec![(
+            "task_thread".to_string(),
+            json!({ "project": "app", "handle": "a1b2c3d4", "limit": 100 })
+        )]
+    );
+}
+
+#[test]
+fn read_flow_names_the_flow_and_asks_runs_only_for_a_need() {
+    let mut flow = request(Action::ReadFlow);
+    flow.flow = Some("build".into());
+    let (result, calls) = run(&flow);
+    assert_eq!(result, Ok("flow_show: flow_show ok".into()));
+    assert_eq!(
+        calls,
+        vec![(
+            "flow_show".to_string(),
+            json!({ "project": "app", "kind": "build", "need": "3f9a1c2e" })
+        )]
+    );
+    // No need named: the flow's source alone is asked for.
+    flow.need = None;
+    let (_, calls) = run(&flow);
+    assert_eq!(
+        calls,
+        vec![(
+            "flow_show".to_string(),
+            json!({ "project": "app", "kind": "build" })
+        )]
+    );
+    // The flow is required: nothing is called without one.
+    flow.flow = None;
+    let (result, calls) = run(&flow);
+    assert_eq!(result, Err("the action names no flow".into()));
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn read_config_and_read_pool_stay_unresolved_with_one_call_each() {
+    let (result, calls) = run(&request(Action::ReadConfig));
+    assert_eq!(result, Ok("config_show: config_show ok".into()));
+    assert_eq!(
+        calls,
+        vec![("config_show".to_string(), json!({ "project": "app" }))]
+    );
+    let mut pool = request(Action::ReadPool);
+    pool.pool = Some("build".into());
+    let (result, calls) = run(&pool);
+    assert_eq!(result, Ok("pool_show: pool_show ok".into()));
+    assert_eq!(
+        calls,
+        vec![(
+            "pool_show".to_string(),
+            json!({ "project": "app", "name": "build" })
+        )]
+    );
+    // Neither read ever asks for the live free-slot probe, and a pool
+    // read without a pool calls nothing.
+    let (result, calls) = run(&request(Action::ReadPool));
+    assert_eq!(result, Err("the action names no pool".into()));
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn a_server_refusal_on_a_read_is_the_failure_text() {
+    let mut actuator = McpActuator::new(Recorder {
+        fail_with: Some("not a need: 3f9a1c2e".into()),
+        ..Recorder::default()
+    });
+    let error = actuator
+        .apply(&request(Action::ReadNeedThread))
+        .unwrap_err();
+    assert_eq!(error, "need_thread: not a need: 3f9a1c2e");
+}
+
+#[test]
 fn a_letter_to_the_operator_is_a_mail_send() {
     let mut escalation = request(Action::Escalate);
     escalation.note = Some("needs a decision".into());
