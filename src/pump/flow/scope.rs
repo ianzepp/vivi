@@ -2,6 +2,8 @@
 //! paths outside its slice's write scope against the scopes of the run's
 //! other open slices. No model is involved.
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::VivariumError;
 use crate::pump::flow::fanout::{self, SliceEdges};
 use crate::pump::store::PumpStore;
@@ -59,7 +61,8 @@ pub struct BlockedScope {
 }
 
 /// How the request was settled.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Resolution {
     /// No slice holds the paths: they were added to the slice's scope.
     Widen(Vec<String>),
@@ -71,7 +74,7 @@ pub enum Resolution {
 
 /// Marks a requested-but-held path in the stored wait record (the
 /// `slice_scope.holders` list); holder task handles never start with it.
-const HELD_PATH_PREFIX: &str = "path:";
+pub const HELD_PATH_PREFIX: &str = "path:";
 
 /// The slice tasks a waiting slice is waiting on.
 ///
