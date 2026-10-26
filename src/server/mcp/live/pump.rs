@@ -21,6 +21,11 @@
 //!    mailspace's own sync key, as `vivi sync api-key mint` does), so a key
 //!    another member minted for itself cannot steer the pump, and
 //! 3. acting as a role of kind `operator`.
+//!
+//! One narrow exception: `pump_control`'s pause and resume only steer the
+//! pump's running state, so they also accept a role of kind `mind`
+//! ([`authorize_operational`]). Stop, start and every other pump tool keep
+//! the operator-only rule ([`authorize`], [`require_operator`]).
 
 use std::path::Path;
 
@@ -57,7 +62,14 @@ pub(in crate::server::mcp) fn pump_control(
             )));
         }
     };
-    let hosted = authorize("pump_control", root, caller, requested)?;
+    // A Mind seat may steer a running pump: only pause and resume take the
+    // operational guard. Stop, start and every administrative pump control
+    // keep the operator-only rule.
+    let hosted = if matches!(action, "pause" | "resume") {
+        authorize_operational("pump_control", root, caller, requested)?
+    } else {
+        authorize("pump_control", root, caller, requested)?
+    };
     rate_limit(limiter, project_id, &hosted.actor)?;
     set_project_mode(root, mode).map_err(lib_error)?;
     let home = project_home(root).map_err(lib_error)?;
@@ -147,6 +159,76 @@ pub(super) fn authorize(
     let hosted = Hosted::open(root, requested)?;
     require_operator(tool, &hosted, caller)?;
     Ok(hosted)
+}
+
+/// How much operational authority a hosted role's kind carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OperationalKind {
+    /// Kind `mind`: a Mind seat, which may steer a running pump.
+    Mind,
+    /// Kind `operator`, which may steer the pump fully.
+    Operator,
+    /// Any other kind, or none: no operational authority.
+    Other,
+}
+
+/// The operational kind of a role's `kind` header, case-insensitive. The
+/// classification the operational rule and the later argument-restricted
+/// role and config writes share.
+pub(super) fn operational_kind(kind: Option<&str>) -> OperationalKind {
+    match kind {
+        Some(kind) if kind.eq_ignore_ascii_case("mind") => OperationalKind::Mind,
+        Some(kind) if kind.eq_ignore_ascii_case("operator") => OperationalKind::Operator,
+        _ => OperationalKind::Other,
+    }
+}
+
+/// Open the hosted mailspace and require the operational rule for `tool`:
+/// an API key minted by the host's own member acting as a role of kind
+/// `mind` or `operator`. The narrow guard the pump's steering actions
+/// take: a Mind seat may drive the running state without the operator's
+/// wider powers. Administrative actions keep [`authorize`].
+pub(super) fn authorize_operational(
+    tool: &str,
+    root: &Path,
+    caller: &IdentityRecord,
+    requested: &str,
+) -> Result<Hosted, ToolError> {
+    let hosted = Hosted::open(root, requested)?;
+    require_operational(tool, &hosted, caller)?;
+    Ok(hosted)
+}
+
+/// The operational rule [`authorize_operational`] opens for: the same
+/// own-member API-key shape [`require_operator`] wants, with a Mind-kind
+/// seat accepted beside the operator.
+pub(super) fn require_operational(
+    tool: &str,
+    hosted: &Hosted,
+    caller: &IdentityRecord,
+) -> Result<(), ToolError> {
+    if !super::is_own_member(&hosted.ms, caller) {
+        return Err(ToolError::new(format!(
+            "{tool} needs an API key minted by the host's own member; this key was \
+             minted by another member"
+        )));
+    }
+    let kind = hosted.ms.role_view(&hosted.actor).map_err(lib_error)?.kind;
+    if !matches!(
+        operational_kind(kind.as_deref()),
+        OperationalKind::Mind | OperationalKind::Operator
+    ) {
+        let held = kind
+            .as_deref()
+            .map(|kind| format!(" of kind {kind}"))
+            .unwrap_or_default();
+        return Err(ToolError::new(format!(
+            "{tool} needs a key acting as a role of kind mind or operator; this key acts as \
+             '{}'{held}",
+            hosted.actor
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn require_operator(
