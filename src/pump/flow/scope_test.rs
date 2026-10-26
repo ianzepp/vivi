@@ -11,9 +11,10 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 struct Fixture {
-    _dir: TempDir,
+    dir: TempDir,
     store: PumpStore,
     mail: FakeMail,
+    requests: u32,
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -24,9 +25,10 @@ fn fixture() -> Fixture {
     let dir = tempdir().expect("tempdir");
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
     Fixture {
-        _dir: dir,
+        dir,
         store,
         mail: FakeMail::new("mind"),
+        requests: 0,
     }
 }
 
@@ -55,13 +57,33 @@ impl Fixture {
         task
     }
 
+    /// Drop and reopen the store, as a restarted pump would.
+    fn reopen(&mut self) {
+        self.store = PumpStore::open(&self.dir.path().join(DB_FILENAME)).expect("reopen");
+    }
+
+    /// A genuine request: every call carries its own originating source job.
     fn resolve(&mut self, run: u32, task: &str, paths: &[&str], design: bool) -> Resolution {
+        self.requests += 1;
+        let source = format!("{task}-scope-{}", self.requests);
+        self.resolve_as(&source, run, task, paths, design)
+    }
+
+    /// Resolve under an explicit source job, so a test can replay one.
+    fn resolve_as(
+        &mut self,
+        source: &str,
+        run: u32,
+        task: &str,
+        paths: &[&str],
+        design: bool,
+    ) -> Resolution {
         let req = BlockedScope {
             paths: strings(paths),
             reason: "needs it".into(),
             design,
         };
-        resolve(&self.store, &mut self.mail, run, task, &req).expect("resolve")
+        resolve(&self.store, &mut self.mail, run, task, source, &req).expect("resolve")
     }
 }
 
@@ -337,4 +359,72 @@ fn one_holder_with_several_held_paths_appears_once() {
         Resolution::WaitOn(vec![b.clone()])
     );
     assert_eq!(wait_holders(&f.store, &a).expect("holders"), vec![b]);
+}
+
+#[test]
+fn replayed_hand_request_does_not_increment_request_count() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/pump/"], StepState::Running);
+    // The request encloses the held directory entry: src/ covers src/pump/.
+    let source = format!("{a}-scope-1");
+    let first = f.resolve_as(&source, 1, &a, &["src/", "docs/x.md"], false);
+    assert_eq!(first, Resolution::WaitOn(vec![b.clone()]));
+    assert_eq!(f.store.scope_requests(&a).expect("count"), Some(1));
+
+    // The world moves on: the holder closes, so a recomputation would widen.
+    f.store
+        .set_step_state(&b, StepState::Done, None)
+        .expect("close holder");
+
+    // The same hand request again: the stored resolution returns untouched.
+    let again = f.resolve_as(&source, 1, &a, &["src/", "docs/x.md"], false);
+    assert_eq!(again, Resolution::WaitOn(vec![b.clone()]));
+    assert_eq!(f.store.scope_requests(&a).expect("count"), Some(1));
+    assert_eq!(
+        f.store.scope_state(&a).expect("state"),
+        Some(ScopeState::Wait)
+    );
+    assert_eq!(
+        f.store.slice_scope(&a).expect("scope"),
+        Some(strings(&["src/a.rs", "docs/x.md"]))
+    );
+    assert_eq!(wait_holders(&f.store, &a).expect("holders"), vec![b]);
+}
+
+#[test]
+fn a_replayed_request_survives_a_store_reopen() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/b.rs"], StepState::Running);
+    let source = format!("{a}-scope-1");
+    let first = f.resolve_as(&source, 1, &a, &["src/b.rs"], false);
+    assert_eq!(first, Resolution::WaitOn(vec![b.clone()]));
+    let count = f.store.scope_requests(&a).expect("count");
+
+    f.reopen();
+    let again = f.resolve_as(&source, 1, &a, &["src/b.rs"], false);
+    assert_eq!(again, Resolution::WaitOn(vec![b]));
+    assert_eq!(f.store.scope_requests(&a).expect("count"), count);
+    assert_eq!(
+        f.store.scope_state(&a).expect("state"),
+        Some(ScopeState::Wait)
+    );
+}
+
+#[test]
+fn a_replayed_wait_rewrites_each_holder_edge_once() {
+    let mut f = fixture();
+    let a = f.slice("n1", 1, &["src/a.rs"], StepState::Running);
+    let b = f.slice("n1", 1, &["src/b.rs"], StepState::Running);
+    let c = f.slice("n1", 1, &["docs/"], StepState::Running);
+    let source = format!("{a}-scope-1");
+    let first = f.resolve_as(&source, 1, &a, &["src/b.rs", "docs/x.md"], false);
+    assert_eq!(first, Resolution::WaitOn(vec![b.clone(), c.clone()]));
+
+    // The dependency-write retry of a replay leaves every edge unique.
+    f.resolve_as(&source, 1, &a, &["src/b.rs", "docs/x.md"], false);
+    f.resolve_as(&source, 1, &a, &["src/b.rs", "docs/x.md"], false);
+    assert_eq!(f.mail.tasks[&a].depends_on, vec![b, c]);
+    assert_eq!(f.store.scope_requests(&a).expect("count"), Some(1));
 }
