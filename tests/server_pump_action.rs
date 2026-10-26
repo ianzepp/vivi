@@ -18,6 +18,7 @@ use vivi::mailspace::{ItemEventState, Mailspace, RoleUpdate, SendRequest, WantSt
 use vivi::pump::control::{self, PumpMode};
 use vivi::pump::flow::index::{RunRow, StepState};
 use vivi::pump::jobs::{JobSpec, JobStatus, enqueue};
+use vivi::pump::priority;
 use vivi::pump::requeue::{RequeueResult, RequeueTarget};
 use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, PumpStore};
@@ -403,10 +404,15 @@ async fn the_tools_are_listed_with_their_arguments() {
     assert_eq!(action["required"], json!(["project", "action"]));
     assert_eq!(
         action["properties"]["action"]["enum"],
-        json!(["withdraw", "requeue", "replan", "answer", "unlock"])
+        json!([
+            "withdraw", "requeue", "replan", "answer", "unlock", "priority"
+        ])
     );
+    assert_eq!(action["properties"]["priority"]["minimum"], 0);
+    assert_eq!(action["properties"]["priority"]["maximum"], json!(i64::MAX));
     for name in [
         "need", "needs", "steps", "job", "step", "word", "entry", "reason", "note", "dry_run",
+        "priority",
     ] {
         assert!(
             action["properties"][name].is_object(),
@@ -974,5 +980,194 @@ async fn a_project_that_is_not_hosted_is_refused() {
     }
     let lines = audit_lines(&fx.data);
     assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["outcome"] == "refused"));
+}
+
+fn a_need(root: &Path, subject: &str) -> String {
+    send(
+        root,
+        "need",
+        subject,
+        "+++\ndone_when = [\"it works\"]\n+++\n\nmake it work",
+    )
+}
+
+#[tokio::test]
+async fn priority_sets_and_zero_clears() {
+    let fx = fixture("priority");
+    let key = fx.key_by(&fx.member, None);
+    let need = a_need(&fx.root, "fix auth");
+    let home = control::project_home(&fx.root).unwrap();
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    // A prefix resolves to the canonical need before anything is stored.
+    let prefix = format!("msg_{}", &need[..4]);
+    let got = fx
+        .call(
+            &key,
+            "pump_action",
+            json!({"action": "priority", "need": prefix, "priority": 5}),
+        )
+        .await;
+    assert_eq!(
+        got,
+        json!({"action": "priority", "need": need, "priority": 5}),
+        "{got}"
+    );
+    assert_eq!(priority::list(&home).unwrap(), vec![(need.clone(), 5)]);
+
+    // A replacement keeps one row at the new level; i64::MAX stores too.
+    let got = fx
+        .call(
+            &key,
+            "pump_action",
+            json!({"action": "priority", "need": need, "priority": i64::MAX}),
+        )
+        .await;
+    assert_eq!(got["priority"], json!(i64::MAX));
+    assert_eq!(
+        priority::list(&home).unwrap(),
+        vec![(need.clone(), i64::MAX)]
+    );
+
+    // Zero clears: the row is gone, and the answer still says priority 0.
+    let got = fx
+        .call(
+            &key,
+            "pump_action",
+            json!({"action": "priority", "need": need, "priority": 0}),
+        )
+        .await;
+    assert_eq!(
+        got,
+        json!({"action": "priority", "need": need, "priority": 0}),
+        "{got}"
+    );
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    // Nothing was posted for the next tick: storage moved, not the letters.
+    assert!(pending(&fx.root).is_empty());
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .all(|line| line["tool"] == "pump_action" && line["outcome"] == "ok"),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn priority_rejects_invalid_arguments() {
+    let fx = fixture("priority-refusals");
+    let key = fx.key_by(&fx.member, None);
+    let need = a_need(&fx.root, "fix auth");
+    let task = send(
+        &fx.root,
+        "task",
+        "plain",
+        "+++\ndone_when = [\"done\"]\n+++\n\nplain task",
+    );
+    let home = control::project_home(&fx.root).unwrap();
+    priority::set(&home, &need, 3).unwrap();
+    let stored = vec![(need.clone(), 3)];
+
+    let bad: Vec<Value> = vec![
+        json!({"action": "priority", "need": &need, "priority": -1}),
+        json!({"action": "priority", "need": &need, "priority": -1.5}),
+        json!({"action": "priority", "need": &need, "priority": 1.5}),
+        json!({"action": "priority", "need": &need, "priority": "5"}),
+        json!({"action": "priority", "need": &need, "priority": true}),
+        json!({"action": "priority", "need": &need, "priority": null}),
+        json!({"action": "priority", "need": &need}),
+        json!({"action": "priority", "need": &need, "priority": 9223372036854775808u64}),
+        json!({"action": "priority", "priority": 2}),
+    ];
+    let mut expect = 0usize;
+    for arguments in &bad {
+        let message = fx.refused(&key, "pump_action", arguments.clone()).await;
+        assert!(
+            message.contains("must be a whole number of 0 or more")
+                || message.contains("priority is required")
+                || message.contains("need is required"),
+            "{arguments}: {message}"
+        );
+        expect += 1;
+        let lines = audit_lines(&fx.data);
+        assert_eq!(lines.len(), expect, "{lines:?}");
+        assert_eq!(lines.last().unwrap()["outcome"], "refused");
+    }
+
+    // An unknown handle, and a handle for a kind that is not a need.
+    let message = fx
+        .refused(
+            &key,
+            "pump_action",
+            json!({"action": "priority", "need": "zzzzzzzz", "priority": 2}),
+        )
+        .await;
+    assert!(message.contains("zzzzzzzz"), "{message}");
+    expect += 1;
+    let message = fx
+        .refused(
+            &key,
+            "pump_action",
+            json!({"action": "priority", "need": &task, "priority": 2}),
+        )
+        .await;
+    assert!(message.contains("not a need"), "{message}");
+    expect += 1;
+
+    // Every refusal above left the stored level alone.
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), expect, "{lines:?}");
+    assert!(lines.iter().all(|line| line["tool"] == "pump_action"));
+    assert_eq!(priority::list(&home).unwrap(), stored);
+}
+
+#[tokio::test]
+async fn priority_requires_operator() {
+    let fx = fixture("priority-operator");
+    let hand = fx.key_by(&fx.member, Some("hand"));
+    let need = a_need(&fx.root, "fix auth");
+    let home = control::project_home(&fx.root).unwrap();
+
+    let message = fx
+        .refused(
+            &hand,
+            "pump_action",
+            json!({"action": "priority", "need": &need, "priority": 5}),
+        )
+        .await;
+    assert!(message.contains("kind operator"), "{message}");
+    assert!(
+        priority::list(&home).unwrap().is_empty(),
+        "nothing was stored"
+    );
+
+    // A key another member minted for itself is refused the same way.
+    fx.state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(9),
+            "0b0b0b0b-1111-4222-8333-444444444444",
+        )
+        .unwrap();
+    let bobs = fx.key_by("bob", Some("operator"));
+    let message = fx
+        .refused(
+            &bobs,
+            "pump_action",
+            json!({"action": "priority", "need": &need, "priority": 5}),
+        )
+        .await;
+    assert!(message.contains("host's own member"), "{message}");
+    assert!(priority::list(&home).unwrap().is_empty());
+
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["tool"] == "pump_action"));
     assert!(lines.iter().all(|line| line["outcome"] == "refused"));
 }

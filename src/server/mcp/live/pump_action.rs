@@ -1,25 +1,31 @@
 //! `pump_action` and `pump_reset`: operator pump actions on a hosted project.
 //!
-//! Each call is the library function the CLI uses. `pump_action` posts for
-//! the next tick and does not look at the pump lock. `pump_reset` is
+//! Each call is the library function the CLI uses. The posting `pump_action`
+//! words (withdraw, requeue, replan, answer, unlock) post for the next tick
+//! and do not look at the pump lock; `priority` instead writes the stored
+//! per-need level the running pump already reads each tick. `pump_reset` is
 //! [`crate::pump::reset::archive`], which refuses while that lock is held
 //! (a paused pump holds it too).
 
 use std::path::Path;
 
+use crate::pump::control::project_home;
 use crate::pump::requeue::{RequeueResult, RequeueTarget};
 use crate::pump::withdraw::WithdrawClose;
 use serde_json::{Value, json};
 
 use crate::server::identities::IdentityRecord;
+use crate::server::mcp::send_options::non_negative_integer;
 use crate::server::mcp::tools::{ToolError, rate_limit, req_str};
 use crate::server::safety::RateLimiter;
 
+use super::Hosted;
 use super::lib_error;
+use super::mind_reads::canonical_need;
 use super::pump::{acting_key, authorize};
 
-/// Withdraw, requeue, replan, answer, or unlock. Rate limited as a write,
-/// including a requeue dry run.
+/// Withdraw, requeue, replan, answer, unlock, or set a stored priority. Rate
+/// limited as a write, including a requeue dry run.
 pub(in crate::server::mcp) fn pump_action(
     limiter: &RateLimiter,
     project_id: &str,
@@ -32,21 +38,21 @@ pub(in crate::server::mcp) fn pump_action(
     let action = req_str(arguments, "action")?;
     if !matches!(
         action,
-        "withdraw" | "requeue" | "replan" | "answer" | "unlock"
+        "withdraw" | "requeue" | "replan" | "answer" | "unlock" | "priority"
     ) {
         return Err(ToolError::new(format!(
-            "action must be withdraw, requeue, replan, answer, or unlock; got '{action}'"
+            "action must be withdraw, requeue, replan, answer, unlock, or priority; got '{action}'"
         )));
     }
     let hosted = authorize("pump_action", root, caller, requested)?;
     rate_limit(limiter, project_id, &hosted.actor)?;
-    drop(hosted);
     match action {
         "withdraw" => withdraw(root, arguments),
         "requeue" => requeue(root, arguments),
         "replan" => replan(root, arguments),
         "answer" => answer(root, arguments),
         "unlock" => unlock(root, arguments),
+        "priority" => priority(&hosted, root, arguments),
         _ => unreachable!("action was checked above"),
     }
 }
@@ -156,6 +162,28 @@ fn unlock(root: &Path, arguments: &Value) -> Result<Value, ToolError> {
         "record": posted.record,
         "id": posted.id,
         "entry": posted.entry,
+    }))
+}
+
+/// Store one need's dispatch priority, or clear it at 0. Unlike the other
+/// action words nothing is posted for the pump's next tick:
+/// `pump::priority::set` writes the `need_priority` row the running pump
+/// reads each tick, so a running pump picks the level up on its own. `need`
+/// must resolve to a `need` in the hosted mailspace; the answer names the
+/// canonical handle, not the argument as given.
+fn priority(hosted: &Hosted, root: &Path, arguments: &Value) -> Result<Value, ToolError> {
+    let need = required_raw(arguments, "need")?;
+    let level = match arguments.get("priority") {
+        Some(value) => non_negative_integer(value, "priority")?,
+        None => return Err(ToolError::new("priority is required")),
+    };
+    let canonical = canonical_need(hosted, need)?;
+    let home = project_home(root).map_err(lib_error)?;
+    crate::pump::priority::set(&home, &canonical, level).map_err(lib_error)?;
+    Ok(json!({
+        "action": "priority",
+        "need": canonical,
+        "priority": level,
     }))
 }
 
