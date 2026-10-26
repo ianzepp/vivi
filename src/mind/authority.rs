@@ -1,13 +1,14 @@
 //! The mind's action surface and the gate every action passes.
 //!
-//! The surface is deliberately narrow: each [`Action`] maps onto a letter or
-//! a pump control the pump already accepts (`vivi pump requeue|replan|
-//! answer|unlock|pause`, a need filed through `vivi pump send`, a letter to
-//! the operator). The mind never edits `.vivi`, git, or config directly.
+//! The surface is deliberately narrow: each [`Action`] maps onto one
+//! server-backed move — a read of project state, a letter, a pump control,
+//! a tuning change or a filed need — that the mind carries out through the
+//! mail server's tools, the way any client does. The mind runs no CLI
+//! command and never edits `.vivi`, git, or config directly.
 //!
 //! [`permit`] is a pure function of the configured stage, whether the
 //! operator paused the mind, and the per-need budget ledger, so the gate is
-//! unit-testable without a pump.
+//! unit-testable without a server.
 
 use std::collections::BTreeMap;
 
@@ -19,27 +20,57 @@ use super::config::{AuthorityStage, Budgets};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
-    /// Read pump status, health and logs.
+    /// Read pump status, health and open steps.
     ReadStatus,
+    /// Read a project's pump log tail.
+    ReadLog,
+    /// Read one need's record and state.
+    ReadNeed,
+    /// Read a need's mail thread.
+    ReadNeedThread,
+    /// Read a task's mail thread and attempt evidence.
+    ReadTaskThread,
+    /// Read a project's work-graph flow.
+    ReadFlow,
+    /// Read the project's mailspace configuration.
+    ReadConfig,
+    /// Read a work pool's state.
+    ReadPool,
     /// Write a letter to the operator.
     LetterToOperator,
     /// Escalate: a letter to the operator flagged as needing a decision.
     Escalate,
-    /// `vivi pump pause` on one project.
+    /// Pause one project's pump through the server.
     PausePump,
-    /// `vivi pump resume` on a pump the mind itself paused.
+    /// Resume a pump the mind itself paused.
     ResumePump,
-    /// `vivi pump requeue <step>`.
+    /// Requeue one step through the server's pump action.
     Requeue,
-    /// `vivi pump replan <need>`.
+    /// Ask for a replan of one need.
     Replan,
-    /// `vivi pump answer <step> <word>`.
+    /// Answer an operator question on one step.
     Answer,
-    /// `vivi pump unlock <need>`.
+    /// Unlock a stuck need.
     Unlock,
-    /// File a fix need to the vivi project through the normal pump.
+    /// Post a reply letter on a need's thread.
+    ReplyNeed,
+    /// Set a need's priority.
+    SetPriority,
+    /// Withdraw a need from the backlog.
+    WithdrawNeed,
+    /// Retune a role's model assignment.
+    SetRoleModel,
+    /// Retune a pool's capacity.
+    SetPoolCap,
+    /// Retune a pool's model band.
+    SetPoolBand,
+    /// File a new need to the project through the server.
+    FileNeed,
+    /// File a fix need to the vivi project through the server.
     FileFixNeed,
-    /// `vivi update --version <v>` after an operator-cut release. Stub.
+    /// Dispatch an existing need to the pump.
+    DispatchNeed,
+    /// Take a release the operator cut. Stub.
     Upgrade,
     /// Cut a release. Stub.
     SelfRelease,
@@ -51,6 +82,13 @@ impl Action {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReadStatus => "read-status",
+            Self::ReadLog => "read-log",
+            Self::ReadNeed => "read-need",
+            Self::ReadNeedThread => "read-need-thread",
+            Self::ReadTaskThread => "read-task-thread",
+            Self::ReadFlow => "read-flow",
+            Self::ReadConfig => "read-config",
+            Self::ReadPool => "read-pool",
             Self::LetterToOperator => "letter-to-operator",
             Self::Escalate => "escalate",
             Self::PausePump => "pause-pump",
@@ -59,7 +97,15 @@ impl Action {
             Self::Replan => "replan",
             Self::Answer => "answer",
             Self::Unlock => "unlock",
+            Self::ReplyNeed => "reply-need",
+            Self::SetPriority => "set-priority",
+            Self::WithdrawNeed => "withdraw-need",
+            Self::SetRoleModel => "set-role-model",
+            Self::SetPoolCap => "set-pool-cap",
+            Self::SetPoolBand => "set-pool-band",
+            Self::FileNeed => "file-need",
             Self::FileFixNeed => "file-fix-need",
+            Self::DispatchNeed => "dispatch-need",
             Self::Upgrade => "upgrade",
             Self::SelfRelease => "self-release",
         }
@@ -69,14 +115,29 @@ impl Action {
     #[must_use]
     pub fn required_stage(self) -> AuthorityStage {
         match self {
-            Self::ReadStatus | Self::LetterToOperator | Self::Escalate => AuthorityStage::Observe,
+            Self::ReadStatus
+            | Self::ReadLog
+            | Self::ReadNeed
+            | Self::ReadNeedThread
+            | Self::ReadTaskThread
+            | Self::ReadFlow
+            | Self::ReadConfig
+            | Self::ReadPool
+            | Self::LetterToOperator
+            | Self::Escalate => AuthorityStage::Observe,
             Self::PausePump
             | Self::ResumePump
             | Self::Requeue
             | Self::Replan
             | Self::Answer
-            | Self::Unlock => AuthorityStage::Unstick,
-            Self::FileFixNeed => AuthorityStage::FileFixes,
+            | Self::Unlock
+            | Self::ReplyNeed
+            | Self::SetPriority
+            | Self::WithdrawNeed
+            | Self::SetRoleModel
+            | Self::SetPoolCap
+            | Self::SetPoolBand => AuthorityStage::Unstick,
+            Self::FileNeed | Self::FileFixNeed | Self::DispatchNeed => AuthorityStage::FileFixes,
             Self::Upgrade => AuthorityStage::UpgradeOnApproval,
             Self::SelfRelease => AuthorityStage::SelfRelease,
         }
@@ -87,19 +148,81 @@ impl Action {
     pub fn need_scoped(self) -> bool {
         matches!(
             self,
-            Self::Requeue | Self::Replan | Self::Answer | Self::Unlock
+            Self::Requeue
+                | Self::Replan
+                | Self::Answer
+                | Self::Unlock
+                | Self::ReplyNeed
+                | Self::SetPriority
+                | Self::WithdrawNeed
+                | Self::DispatchNeed
         )
     }
 
-    /// Whether the action changes pump or project state. Reads and letters
-    /// do not.
+    /// Which budget the action draws down. Filing and the role/pool tuning
+    /// changes count against the project, not one need.
+    #[must_use]
+    pub fn budget(self) -> BudgetClass {
+        match self {
+            Self::FileNeed
+            | Self::FileFixNeed
+            | Self::SetRoleModel
+            | Self::SetPoolCap
+            | Self::SetPoolBand => BudgetClass::PerProject,
+            Self::Requeue
+            | Self::Replan
+            | Self::Answer
+            | Self::Unlock
+            | Self::ReplyNeed
+            | Self::SetPriority
+            | Self::WithdrawNeed
+            | Self::DispatchNeed => BudgetClass::PerNeed,
+            Self::ReadStatus
+            | Self::ReadLog
+            | Self::ReadNeed
+            | Self::ReadNeedThread
+            | Self::ReadTaskThread
+            | Self::ReadFlow
+            | Self::ReadConfig
+            | Self::ReadPool
+            | Self::LetterToOperator
+            | Self::Escalate
+            | Self::PausePump
+            | Self::ResumePump
+            | Self::Upgrade
+            | Self::SelfRelease => BudgetClass::Unbudgeted,
+        }
+    }
+
+    /// Whether the action changes server or project state. Reads and the
+    /// operator letters do not.
     #[must_use]
     pub fn mutates(self) -> bool {
         !matches!(
             self,
-            Self::ReadStatus | Self::LetterToOperator | Self::Escalate
+            Self::ReadStatus
+                | Self::ReadLog
+                | Self::ReadNeed
+                | Self::ReadNeedThread
+                | Self::ReadTaskThread
+                | Self::ReadFlow
+                | Self::ReadConfig
+                | Self::ReadPool
+                | Self::LetterToOperator
+                | Self::Escalate
         )
     }
+}
+
+/// Which budget an action draws down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetClass {
+    /// No budget applies: reads, letters, pause and resume.
+    Unbudgeted,
+    /// Counts against the named need's per-need budget.
+    PerNeed,
+    /// Counts against the project's filing-and-tuning budget.
+    PerProject,
 }
 
 /// Why an action was refused.

@@ -154,6 +154,12 @@ fn step_of(request: &ActionRequest) -> Result<&str, String> {
         .ok_or_else(|| String::from("the action names no step"))
 }
 
+/// The failure text for an action the mapping slices have not wired to the
+/// server's tools yet.
+fn not_wired(kind: Action) -> String {
+    format!("{} is not wired to the server yet", kind.as_str())
+}
+
 /// The tool calls one action makes.
 fn calls_for(request: &ActionRequest) -> Result<Vec<Call>, String> {
     let project = project_name(request)?;
@@ -169,38 +175,60 @@ fn calls_for(request: &ActionRequest) -> Result<Vec<Call>, String> {
             &project,
             json!({ "action": "replan", "need": need_of(request)? }),
         )],
-        Action::Answer => vec![pump_action(
-            &project,
-            json!({
-                "action": "answer",
-                "step": step_of(request)?,
-                "word": request.word.as_deref().ok_or("the action names no word")?,
-                "note": note,
-            }),
-        )],
+        Action::Answer => vec![answer_call(&project, request)?],
         Action::Unlock => vec![pump_action(
             &project,
             json!({ "action": "unlock", "need": need_of(request)?, "note": note }),
         )],
-        Action::ReadStatus => vec![
-            (
-                "pump_list",
-                json!({ "project": project, "status": "open", "limit": 20 }),
-            ),
-            (
-                "pump_log",
-                json!({ "project": project, "file": "log", "lines": 40 }),
-            ),
-        ],
+        Action::ReadStatus => read_status_calls(&project),
         Action::LetterToOperator | Action::Escalate => vec![letter(&project, request)],
-        Action::FileFixNeed | Action::Upgrade | Action::SelfRelease => {
-            return Err(format!(
-                "{} is not wired to the server yet",
-                request.kind.as_str()
-            ));
-        }
+        Action::ReadLog
+        | Action::ReadNeed
+        | Action::ReadNeedThread
+        | Action::ReadTaskThread
+        | Action::ReadFlow
+        | Action::ReadConfig
+        | Action::ReadPool
+        | Action::ReplyNeed
+        | Action::SetPriority
+        | Action::WithdrawNeed
+        | Action::SetRoleModel
+        | Action::SetPoolCap
+        | Action::SetPoolBand
+        | Action::FileNeed
+        | Action::FileFixNeed
+        | Action::DispatchNeed
+        | Action::Upgrade
+        | Action::SelfRelease => return Err(not_wired(request.kind)),
     };
     Ok(calls)
+}
+
+/// The `pump_action` answer call for one step.
+fn answer_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok(pump_action(
+        project,
+        json!({
+            "action": "answer",
+            "step": step_of(request)?,
+            "word": request.word.as_deref().ok_or("the action names no word")?,
+            "note": request.note.as_deref(),
+        }),
+    ))
+}
+
+/// The status read: open steps plus the log tail.
+fn read_status_calls(project: &str) -> Vec<Call> {
+    vec![
+        (
+            "pump_list",
+            json!({ "project": project, "status": "open", "limit": 20 }),
+        ),
+        (
+            "pump_log",
+            json!({ "project": project, "file": "log", "lines": 40 }),
+        ),
+    ]
 }
 
 fn control(project: &str, action: &str) -> Call {
