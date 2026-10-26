@@ -10,6 +10,7 @@
 pub mod host;
 pub mod letters;
 mod live;
+mod send_options;
 pub mod server;
 mod tools;
 
