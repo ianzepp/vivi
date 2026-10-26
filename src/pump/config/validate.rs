@@ -348,3 +348,7 @@ pub fn valid_target_id(id: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
+
+#[cfg(test)]
+#[path = "budget_validation_test.rs"]
+mod tests;
