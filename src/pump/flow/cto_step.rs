@@ -2,10 +2,13 @@
 //! block-ship context; the CTO word is mapped to a flow word elsewhere.
 
 use crate::error::VivariumError;
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::Note;
 use crate::mailspace::shipped::HEAD_CTO_ROLE;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
+use crate::pump::flow::fanout::is_slice_row;
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::need_branch;
@@ -30,6 +33,8 @@ const FACT_RUN: usize = 3;
 
 /// Largest rung failure report the brief carries per rung row.
 const RUNG_CAP: usize = 4_000;
+/// Largest prose of one slice attempt record the brief carries.
+const ATTEMPT_CAP: usize = 12_000;
 /// The fanout answer that merged no slice.
 const UNCHANGED: &str = "unchanged";
 /// The nodes of the second verify pass.
@@ -114,6 +119,7 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     out.push_str("## Failing rung output\n\n");
     out.push_str(&failing_rungs(&payloads));
     out.push_str(&block_ship(&payloads));
+    out.push_str(&slice_attempt_records(cx)?);
     out.push_str(&branch_availability(cx)?);
     out.push_str(WORDS);
     Ok(out)
@@ -251,6 +257,41 @@ fn block_ship(payloads: &[StepPayloadRow]) -> String {
         "## Block-ship audit\n\nThe newest audit ({}) answered block_ship. Its full report:\n\n{}\n\n",
         row.node,
         capped(body, BLOCK_CAP)
+    )
+}
+
+/// Every attempt record on the need's slice tasks: the need's runs oldest
+/// first, each run's slice steps in insertion order, each task's notes in
+/// thread order, whatever the slices' current state.
+fn slice_attempt_records(cx: &StartCx<'_>) -> Result<String, VivariumError> {
+    let mut out = String::from("\n## Slice attempt records\n\n");
+    let mut any = false;
+    for run in cx.store.runs_of(&cx.run.need)? {
+        for row in cx.store.steps_of(&cx.run.need, run.run)? {
+            if !is_slice_row(&row) {
+                continue;
+            }
+            for (_, note) in cx.mail.notes(&row.task, NoteWord::Attempt)? {
+                any = true;
+                out.push_str(&attempt_record_text(run.run, &row, &note));
+            }
+        }
+    }
+    if !any {
+        out.push_str("(none recorded)\n\n");
+    }
+    Ok(out)
+}
+
+/// One attempt record: a source label with run, slice node, task and typed
+/// outcome, then the note's own prose under the per-record cap.
+fn attempt_record_text(run: u32, row: &StepRow, note: &Note) -> String {
+    let outcome = note.pump.reference.as_deref().unwrap_or("none");
+    format!(
+        "run {run} {} (task {}, outcome {outcome}):\n{}\n\n",
+        row.node,
+        row.task,
+        capped(&note.prose, ATTEMPT_CAP)
     )
 }
 
