@@ -302,3 +302,7 @@ pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
 #[cfg(test)]
 #[path = "cto_step_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cto_step_attempt_mailspace_test.rs"]
+mod attempt_mailspace_tests;
