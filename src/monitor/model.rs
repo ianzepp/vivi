@@ -48,6 +48,14 @@ pub struct MonitorRow {
     pub started_at: Option<u64>,
     pub running_secs: Option<u64>,
     pub budget_secs: Option<u64>,
+    /// Epoch seconds the activity completed, when known. Running activity and
+    /// pump status headers have no completion time; a finished row whose
+    /// completion timestamp failed to parse carries `None` rather than a
+    /// fabricated one.
+    pub finished_at: Option<u64>,
+    /// Seconds between the retained row's completion and the snapshot, for
+    /// rows kept past their freshness window. Fresh rows have no stale age.
+    pub stale_age_secs: Option<u64>,
     pub read_only: Option<bool>,
     pub remote: bool,
     /// Path of the lane's live log tail, when one exists.

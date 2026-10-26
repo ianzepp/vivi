@@ -9,6 +9,8 @@ fn pump_header_points_to_log_when_present_and_is_idle_without_a_lock() {
     let row = row("alpha", home, 1000).unwrap();
     assert_eq!(row.kind, super::super::model::RowKind::Pump);
     assert_eq!(row.state, RowState::Finished("idle".into()));
+    assert_eq!(row.finished_at, None);
+    assert_eq!(row.stale_age_secs, None);
     assert_eq!(row.tail.as_deref(), Some(home.join("log.txt").as_path()));
 }
 
@@ -26,6 +28,8 @@ fn pump_tick_rows_show_timing_and_keep_finished_cycles_gray() {
     assert_eq!(active_tick.state, RowState::Running);
     assert_eq!(active_tick.started_at, Some(900));
     assert_eq!(active_tick.running_secs, Some(10));
+    assert_eq!(active_tick.finished_at, None);
+    assert_eq!(active_tick.stale_age_secs, None);
     assert_eq!(active_tick.work_kind.as_deref(), Some("tick"));
 
     crate::pump::cycle::finish(home, "tick-1", 916, 16, "ok").unwrap();
@@ -38,6 +42,8 @@ fn pump_tick_rows_show_timing_and_keep_finished_cycles_gray() {
     assert_eq!(finished_tick.state, RowState::Finished("ok".into()));
     assert_eq!(finished_tick.started_at, Some(900));
     assert_eq!(finished_tick.running_secs, Some(16));
+    assert_eq!(finished_tick.finished_at, Some(916));
+    assert_eq!(finished_tick.stale_age_secs, None);
 
     let mut history = super::super::history::SessionHistory::default();
     history.refresh(finished, |_| None);

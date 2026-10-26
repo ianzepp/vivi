@@ -63,6 +63,8 @@ fn remote_open_dispatch_is_visible_and_has_no_tail() {
     assert!(found[0].remote);
     assert_eq!(found[0].provider, "ssh");
     assert_eq!(found[0].running_secs, Some(60));
+    assert_eq!(found[0].finished_at, None);
+    assert_eq!(found[0].stale_age_secs, None);
     assert_eq!(found[0].role, "auditor");
     assert_eq!(found[0].need.as_deref(), Some("need1234"));
     assert_eq!(found[0].work_kind.as_deref(), Some("fix"));
@@ -109,6 +111,8 @@ fn finished_local_dispatch_keeps_outcome_and_log_tail() {
     );
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].state, RowState::Finished("pushed".into()));
+    assert_eq!(found[0].finished_at, Some(1060));
+    assert_eq!(found[0].stale_age_secs, None);
     assert_eq!(found[0].need.as_deref(), Some("need1234"));
     assert_eq!(found[0].work_kind.as_deref(), Some("fix"));
     assert!(

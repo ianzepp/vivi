@@ -34,6 +34,8 @@ fn claimed_stopped_local_slot_is_retained_as_uncollected_with_a_tail() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].task.as_deref(), Some("hand-12345678"));
     assert_eq!(found[0].state, RowState::Finished("uncollected".into()));
+    assert_eq!(found[0].finished_at, None);
+    assert_eq!(found[0].stale_age_secs, None);
     assert_eq!(found[0].running_secs, Some(60));
     assert!(
         found[0]
