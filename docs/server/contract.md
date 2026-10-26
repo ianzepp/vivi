@@ -342,6 +342,10 @@ sugar arguments and renders them into the front matter: `done_when`,
 (strings or lists of strings). A body that opens with `+++` is the whole
 letter: the sugar arguments are refused beside it — name those keys in
 the front matter instead. `mail` and `chat` take no sugar arguments.
+The optional `dispatch` and `priority` are not sugar: they route the
+send, they never touch the letter, and a dispatched need files exactly
+the ordinary send's bytes
+([Hosted dispatch and priority](#hosted-dispatch-and-priority)).
 
 A letter that carries `X-Vivi-Format: 1` must parse as a v1 letter. A
 letter that claims format 1 and fails to parse, or names an unknown
@@ -435,8 +439,9 @@ The project tools are the 1.2.0 list plus the hosted additions
 (`depend`, `pump`, `pump_control`, `pump_rungs`, `pool_bands`,
 `config_migrate`, `config_set`, `config_unset`, `pool_allow_set`,
 `target_add`, `target_remove`, `role_add`, `role_set`, `charter_set`,
-`pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`, and
-the reads `pump_log`, `flow_show`, `config_show`, `config_validate`,
+`pump_action`, `pump_reset`, `pump_send`, `pump_list`, `pump_show`,
+`pump_priority`, and the reads `pump_log`, `flow_show`,
+`config_show`, `config_validate`,
 `pool_list`, `pool_show`, `role_list`, `role_show`, `charter_show`,
 `target_list`, `target_log`, `target_show`); each also takes the required `project` argument on top
 of the arguments shown.
@@ -447,7 +452,7 @@ of the arguments shown.
 | `list` | `kind?` need\|task\|want\|mail\|memo, `status?` open\|done\|all, `limit?` | Summaries. Default: open work |
 | `show` | `handle` | One letter or memo |
 | `thread` | `handle`, `limit?` | Reply thread |
-| `send` | `kind`, `to`, `subject`, `body`, vivi sugar arguments | Server composes and mints the id; `From` is the caller (see [Letter format](#letter-format-v1)) |
+| `send` | `kind`, `to`, `subject`, `body`, vivi sugar arguments, `dispatch?`, `priority?` | Server composes and mints the id; `From` is the caller (see [Letter format](#letter-format-v1)). On a hosted project `dispatch: true` also files one open pump record for a need (see [Hosted dispatch and priority](#hosted-dispatch-and-priority)) |
 | `reply` | `handle`, `body` | Reply as the caller |
 | `done` | `handle`, `note?`, close metadata `verdict?`, `branch?`+`commit?`, `repos?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report. Close metadata rides the event letter's front matter |
 | `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
@@ -509,6 +514,84 @@ paused, with the library's message, and nothing moves on a refusal.
 | --- | --- | --- |
 | `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
 | `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
+
+#### Hosted dispatch and priority
+
+`send` with `dispatch: true` is one authorized shortcut on a hosted
+project: file the need and hand it to the pump. The send itself is the
+ordinary hosted send — composition, sugar, validation, delivery, the
+response fields and the one write allowance are unchanged — and the
+dispatch adds exactly one open pump record, the same call `pump_send`
+makes. The answer is the ordinary send fields plus `pump`, the new record
+serialized as `pump_show` reports it (`handle`, `need`, `status`, `kind`,
+`from`, `to`, `date`, `subject`), and `priority` only when a priority was
+requested. Dispatch is need-only — `kind` must be `need` — and takes the
+exact `pump_send` authority: an API key minted by the host's own member,
+acting as a role of kind `operator`. A member token, a key minted by
+another member, or a durable or chat project is refused before anything
+files. Omitted or null `dispatch` means false; any other value is
+refused. `priority` must be a JSON integer in 0..=i64::MAX — null,
+strings, booleans, floats, negatives and overflow are refused — and a
+supplied priority, 0 included, requires `dispatch: true`. Every
+malformed combination is refused before routing, so a refused dispatch
+files no letter.
+
+The letter never changes: the filed need is byte-for-byte the ordinary
+send's, whatever the options.
+
+A requested priority resolves the configured pump home (`[pump] home`,
+else the default `<project>/.vivi/pump`) **before** anything files, so a
+project with no `[pump]` table refuses untouched, a 0 level included; a
+dispatch without a priority needs no `[pump]` table and creates no
+database. Level 0 files the record and echoes `priority: 0` but keeps no
+row: 0 is no priority. A larger level is more urgent.
+
+The three handles of a dispatch: `handle` is the send's own need handle
+(on a multi-recipient send, the first delivered copy's), `pump.handle`
+the new record's handle, and `pump.need` the record's canonical need —
+the lowest message id among the content's copies, which can differ from
+`handle`. The record and any priority row key on that canonical need, so
+key later `pump_priority` calls on `pump.need`.
+
+The steps run in order — send, record, priority — and a failure leaves
+the earlier ones in place, answered as an ordinary `isError` result: a
+failed record names the filed need (`need <handle> was filed, but its
+pump record failed: …`), a failed priority names the need and the record
+(`need <handle> was filed with pump record <record>, but setting
+priority <level> on <canonical need> failed: …`). Recover with
+`pump_send` or `pump_priority` on the named handles; never resend the
+whole send. There is no rollback across the two stores (the mailspace
+and the pump home's `pump.db`), and no guarantee that the pump's intake
+has not already observed the record before its priority write.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `pump_priority` | `action` set\|clear\|list; `need?` (set, clear), `level?` (set) | The per-need dispatch priority the running pump reads each tick — the same rows `vivi pump priority` writes, in the configured pump home's `pump.db`. Live operator state, not a config edit: no write guard applies, and a running pump is fine. `set` stores `need` at `level` and returns `{action, need, level}`; `clear` removes the row, `{action, need, level: 0}` (a clear of a key without a row still succeeds); `list` returns `{priorities: [{need, level}…]}`, highest level first, then by need handle. Contradictions are refused before any write: `set` without `level`, a `level` beside `clear`, `need` or `level` beside `list`, an unknown `action`, and a `level` that is not a non-negative JSON integer. `need` stays literal — never looked up, canonicalized or required to exist — so a priority can be pre-seeded for a need that is only sent later; because a dispatch send keys its priority on the record's canonical need, prefer `pump.need` as the key. A project with no `[pump]` table refuses every action; every action, `list` included, needs the `pump_control` authorization |
+
+Accounting: a dispatched `send` is one write — one audit line, one
+rate-limit token — and the nested record adds no second line;
+`pump_priority` `set` and `clear` are each one audited, rate-limited
+write, and `list` is a read: no audit line and no quota, though the
+library may initialize or migrate the store it reads.
+
+Example — dispatch a need at a priority on a hosted project:
+
+```json
+{"name": "send", "arguments": {"project": "<project_id>", "kind": "need",
+ "to": "hand", "subject": "fix billing", "body": "…",
+ "done_when": "the smoke passes", "dispatch": true, "priority": 7}}
+```
+
+The answer carries the ordinary send fields plus `"pump": {"handle":
+"…", "need": "…", "status": "open", …}` and `"priority": 7`; without a
+requested priority the `priority` field is absent. Then the priority
+operations, one `pump_priority` call each:
+
+```
+{"name": "pump_priority", "arguments": {"project": "<project_id>", "action": "set", "need": "<pump.need>", "level": 9}}
+{"name": "pump_priority", "arguments": {"project": "<project_id>", "action": "clear", "need": "<pump.need>"}}
+{"name": "pump_priority", "arguments": {"project": "<project_id>", "action": "list"}}
+```
 
 #### Reads
 
@@ -585,7 +668,11 @@ is not granted on.
 
 One audit line is appended per **write** tool call, whatever came of it
 (`ok`, `refused`, `error`), and per key/grant change; reads are not
-logged. The self-service key routes write the same shape themselves:
+logged. The action-gated tools write only on their write actions (`memo`
+`save`, `pump_rungs` `set`, `pool_bands` `set`/`unset`, `config_migrate`
+with `write: true`, and `pump_priority` `set`/`clear` — `list` is a
+read), and a dispatched `send` stays one write: the nested pump record
+is no second line. The self-service key routes write the same shape themselves:
 `self_service_mint` on a successful `POST /v1/projects/{id}/keys` and
 `self_service_revoke` on a successful `DELETE /v1/projects/{id}/keys/
 {key_id}`, exactly one line each. The log is `DATA_DIR/audit.jsonl`: one
