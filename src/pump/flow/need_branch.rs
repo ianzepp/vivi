@@ -19,6 +19,7 @@
 use crate::error::VivariumError;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::RunRow;
+use crate::pump::flow::retained_work;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify::remote_tip;
 use crate::pump::host::Ctx;
@@ -40,6 +41,9 @@ pub const PRUNED: &str = "pruned";
 const BUILD_ENTRIES: [&str; 4] = ["plan", "research", "slice", "rework1"];
 /// Exception kind for a need branch move that could not run or failed.
 pub(crate) const RENAME_FAILED: &str = "flow-need-branch-rename-failed";
+/// Exception kind for an absent need branch that carried active merged work:
+/// the merged work is unreachable and the base is no fallback.
+pub(crate) const WORK_UNREACHABLE: &str = "flow-need-work-unreachable";
 
 /// The need branch of `need`.
 #[must_use]
@@ -170,12 +174,90 @@ pub fn record_base(
     Ok(base)
 }
 
-/// The tip of the need branch: for a `live` row, the remote tip of
-/// `vivi/need/<need>` on the row's target when the ref exists, else the base.
-/// `None` for no row or any other status.
+/// The checked tip resolution of one `live` need branch row: what the remote
+/// holds and the checkout SHA that follows, with the recorded branch and
+/// target the one query ran against.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NeedTip {
+    /// The recorded branch name the resolution queried.
+    pub branch: String,
+    /// The recorded target the resolution queried.
+    pub target: String,
+    /// Whether the remote branch exists.
+    pub remote_present: bool,
+    /// The selected checkout SHA: the remote tip when the branch exists,
+    /// else the recorded base.
+    pub checkout: Option<String>,
+}
+
+/// Resolve the tip of a `live` branch row with one remote query on the
+/// recorded target.
+///
+/// The remote tip wins when the branch exists. An absent branch falls back
+/// to the recorded base only while no active retained merged work exists
+/// ([`retained_work`]): once slices have merged, the merged work lives on
+/// the branch, so its absence raises [`WORK_UNREACHABLE`] and never falls
+/// back to the base. No-defect-only history establishes no published merge,
+/// and slices behind the archival boundary are not active work. A failed
+/// remote query propagates and is never read as an absent ref.
 ///
 /// # Errors
-/// Returns [`VivariumError`] for an unknown target or a failed ls-remote.
+/// Returns [`VivariumError`] for an unknown target, a failed ls-remote or
+/// store read, or unreachable merged work.
+pub(crate) fn checked_tip(
+    ctx: &Ctx,
+    store: &PumpStore,
+    row: &NeedBranchRow,
+) -> Result<NeedTip, VivariumError> {
+    let target = target_ctx(ctx, &row.target)?;
+    let remote = ls_remote(&target, &format!("refs/heads/{}", row.branch))?;
+    let Some(sha) = remote else {
+        return absent_tip(ctx, store, row);
+    };
+    Ok(NeedTip {
+        branch: row.branch.clone(),
+        target: row.target.clone(),
+        remote_present: true,
+        checkout: Some(sha),
+    })
+}
+
+/// The tip of a `live` row whose branch is absent: the recorded base while
+/// no active retained merged work exists, else [`WORK_UNREACHABLE`].
+fn absent_tip(ctx: &Ctx, store: &PumpStore, row: &NeedBranchRow) -> Result<NeedTip, VivariumError> {
+    let active_merged = retained_work::retained(store, row)?.active_merged().count();
+    if active_merged > 0 {
+        let text = format!(
+            "{WORK_UNREACHABLE}: need {} r{} holds {active_merged} active merged \
+             slice(s) on branch {} of target {}, but the branch is absent; the \
+             merged work is unreachable and the base is no fallback",
+            row.need, row.run, row.branch, row.target
+        );
+        raise_once(
+            ctx,
+            WORK_UNREACHABLE,
+            &format!("{} r{}", row.need, row.run),
+            &text,
+        );
+        return Err(VivariumError::Other(text));
+    }
+    Ok(NeedTip {
+        branch: row.branch.clone(),
+        target: row.target.clone(),
+        remote_present: false,
+        checkout: row.base.clone(),
+    })
+}
+
+/// The tip of the need branch: for a `live` row, the checkout of the checked
+/// resolution ([`checked_tip`]) — the remote tip of `vivi/need/<need>` on the
+/// row's target when the ref exists, else the recorded base while no active
+/// retained merged work exists. `None` for no row or any other status.
+///
+/// # Errors
+/// Returns [`VivariumError`] for an unknown target, a failed ls-remote or
+/// store read, or unreachable merged work.
 pub fn tip(ctx: &Ctx, store: &PumpStore, need: &str) -> Result<Option<String>, VivariumError> {
     let Some(row) = store.need_branch(need)? else {
         return Ok(None);
@@ -183,11 +265,7 @@ pub fn tip(ctx: &Ctx, store: &PumpStore, need: &str) -> Result<Option<String>, V
     if row.status != LIVE {
         return Ok(None);
     }
-    let target = target_ctx(ctx, &row.target)?;
-    match ls_remote(&target, &format!("refs/heads/{}", row.branch))? {
-        Some(sha) => Ok(Some(sha)),
-        None => Ok(row.base),
-    }
+    Ok(checked_tip(ctx, store, &row)?.checkout)
 }
 
 /// The restart rule as a tick phase: for each live run, adopt the branch when

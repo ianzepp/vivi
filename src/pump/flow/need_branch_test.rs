@@ -6,14 +6,14 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, Readiness, branch, prior, readiness,
-    record_base, register, tip,
+    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, Readiness, WORK_UNREACHABLE, branch,
+    checked_tip, prior, readiness, record_base, register, tip,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::index::RunRow;
+use crate::pump::flow::index::{RunRow, StepRow, StepState, run_state};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -233,6 +233,160 @@ fn an_ls_remote_failure_propagates() {
     let err = record_base(&f.ctx, &f.store, NEED, 1, "default").unwrap_err();
     assert!(err.to_string().contains("ls-remote exit 128"), "{err}");
     assert!(f.store.need_branch(NEED).unwrap().is_none());
+}
+
+// --- the checked tip resolution ------------------------------------------
+
+fn run_row(n: u32, state: &str) -> RunRow {
+    RunRow {
+        need: NEED.into(),
+        run: n,
+        flow: "build".into(),
+        flow_version: 2,
+        kind: "build".into(),
+        entry: "slice".into(),
+        state: state.into(),
+    }
+}
+
+fn done_slice(run: u32, node: &str, task: &str, verdict: &str) -> StepRow {
+    StepRow {
+        run,
+        node: node.into(),
+        task: task.into(),
+        state: StepState::Done,
+        verdict: Some(verdict.into()),
+    }
+}
+
+fn branch_absent(host: &FakeHost) {
+    host.reply("ls-remote origin refs/heads/vivi/need/", 0, "");
+}
+
+fn work_alarms(f: &Fixture) -> usize {
+    std::fs::read_to_string(f.ctx.home.join("exceptions.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(WORK_UNREACHABLE))
+        .count()
+}
+
+#[test]
+fn need_tip_refuses_missing_retained_work() {
+    // A merged slice of a carried superseded run is active work.
+    let f = fixture();
+    for (n, state) in [(1, run_state::SUPERSEDED), (2, run_state::LIVE)] {
+        f.store.insert_run(&run_row(n, state)).unwrap();
+    }
+    f.store
+        .insert_step(NEED, &done_slice(1, "slice:a", "t-a", "merged"))
+        .unwrap();
+    let carried = NeedBranchRow {
+        priors: Vec::new(),
+        ..live_row(2)
+    };
+    f.store.upsert_need_branch(&carried).unwrap();
+    branch_absent(&f.host);
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains(WORK_UNREACHABLE), "{err}");
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(carried));
+    assert_eq!(work_alarms(&f), 1);
+    tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert_eq!(work_alarms(&f), 1, "unreachable work raises once");
+
+    // The run's own merged slice refuses too, even with earlier slices
+    // behind the archival boundary: only active work counts, and this is it.
+    let f = fixture();
+    for (n, state) in [(1, run_state::DONE), (2, run_state::LIVE)] {
+        f.store.insert_run(&run_row(n, state)).unwrap();
+    }
+    f.store
+        .insert_step(NEED, &done_slice(1, "slice:a", "t-a", "merged"))
+        .unwrap();
+    f.store
+        .insert_step(NEED, &done_slice(2, "slice:b", "t-b", "merged"))
+        .unwrap();
+    let seeded = NeedBranchRow {
+        priors: vec![prior(NEED, 1)],
+        ..live_row(2)
+    };
+    f.store.upsert_need_branch(&seeded).unwrap();
+    branch_absent(&f.host);
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains(WORK_UNREACHABLE), "{err}");
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(seeded));
+    assert_eq!(work_alarms(&f), 1);
+
+    // A failed remote query propagates and is never read as an absent ref.
+    let f = fixture();
+    for (n, state) in [(1, run_state::SUPERSEDED), (2, run_state::LIVE)] {
+        f.store.insert_run(&run_row(n, state)).unwrap();
+    }
+    f.store
+        .insert_step(NEED, &done_slice(1, "slice:a", "t-a", "merged"))
+        .unwrap();
+    let carried = NeedBranchRow {
+        priors: Vec::new(),
+        ..live_row(2)
+    };
+    f.store.upsert_need_branch(&carried).unwrap();
+    f.host.reply("ls-remote", 128, "fatal: unable to access");
+    let err = tip(&f.ctx, &f.store, NEED).unwrap_err();
+    assert!(err.to_string().contains("ls-remote exit 128"), "{err}");
+    assert!(!err.to_string().contains(WORK_UNREACHABLE), "{err}");
+    assert_eq!(f.store.need_branch(NEED).unwrap(), Some(carried));
+    assert_eq!(work_alarms(&f), 0);
+}
+
+#[test]
+fn unpublished_need_tip_uses_recorded_base() {
+    // No-defect-only history establishes no published merge: the base stands.
+    let f = fixture();
+    for (n, state) in [(1, run_state::SUPERSEDED), (2, run_state::LIVE)] {
+        f.store.insert_run(&run_row(n, state)).unwrap();
+    }
+    f.store
+        .insert_step(NEED, &done_slice(2, "slice:n", "t-n", "no-defect"))
+        .unwrap();
+    let open = NeedBranchRow {
+        priors: Vec::new(),
+        ..live_row(2)
+    };
+    f.store.upsert_need_branch(&open).unwrap();
+    branch_absent(&f.host);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(MAIN_A)
+    );
+    let checked = checked_tip(&f.ctx, &f.store, &open).unwrap();
+    assert_eq!(
+        (
+            checked.branch.as_str(),
+            checked.target.as_str(),
+            checked.remote_present
+        ),
+        (branch(NEED).as_str(), "default", false)
+    );
+    assert_eq!(checked.checkout.as_deref(), Some(MAIN_A));
+    assert_eq!(work_alarms(&f), 0);
+
+    // Merged work wholly behind the archival boundary is not active either.
+    let f = fixture();
+    f.store.insert_run(&run_row(1, run_state::DONE)).unwrap();
+    f.store
+        .insert_step(NEED, &done_slice(1, "slice:a", "t-a", "merged"))
+        .unwrap();
+    let archived = NeedBranchRow {
+        priors: vec![prior(NEED, 1)],
+        ..live_row(1)
+    };
+    f.store.upsert_need_branch(&archived).unwrap();
+    branch_absent(&f.host);
+    assert_eq!(
+        tip(&f.ctx, &f.store, NEED).unwrap().as_deref(),
+        Some(MAIN_A)
+    );
+    assert_eq!(work_alarms(&f), 0);
 }
 
 // --- the restart phase ---------------------------------------------------
