@@ -193,14 +193,33 @@ fn calls_for(request: &ActionRequest) -> Result<Vec<Call>, String> {
             ),
         ],
         Action::LetterToOperator | Action::Escalate => vec![letter(&project, request)],
-        Action::FileFixNeed | Action::Upgrade | Action::SelfRelease => {
-            return Err(format!(
-                "{} is not wired to the server yet",
-                request.kind.as_str()
-            ));
-        }
+        Action::ReadPumpLog
+        | Action::ReadPumpHistory
+        | Action::ReadNeed
+        | Action::ReadNeedThread
+        | Action::ReadNeedUnits
+        | Action::ReadTaskThread
+        | Action::ReadConfig
+        | Action::ReadPool
+        | Action::ReplyNeed
+        | Action::FileNeed
+        | Action::DispatchNeed
+        | Action::SetPriority
+        | Action::WithdrawNeed
+        | Action::SetRoleModel
+        | Action::SetPoolCap
+        | Action::SetPoolBand
+        | Action::FileFixNeed
+        | Action::Upgrade
+        | Action::SelfRelease => return Err(unwired(request.kind)),
     };
     Ok(calls)
+}
+
+/// The local refusal for kinds whose tool mapping has not landed yet; later
+/// mapping slices replace these.
+fn unwired(kind: Action) -> String {
+    format!("{} is not wired to the server yet", kind.as_str())
 }
 
 fn control(project: &str, action: &str) -> Call {
