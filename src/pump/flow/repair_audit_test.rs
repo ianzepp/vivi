@@ -12,6 +12,7 @@ use crate::letter::records::{NoteWord, RecordFront, RecordKind};
 use crate::letter::render;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -68,8 +69,13 @@ fn with_auditor_route(ctx: Ctx) -> Ctx {
 }
 
 fn rig(with_auditor: bool) -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default(), with_auditor)
+}
+
+/// A rig over `cfg`, so tests can shape the dispatch budgets.
+fn rig_with(cfg: PumpConfig, with_auditor: bool) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut registry = Registry::new();
     register(&mut registry);
@@ -232,7 +238,10 @@ fn a_done_repair_run_with_fix_facts_enqueues_one_auditor_job() -> R {
     assert_eq!(job.target.as_deref(), Some("vivi"));
     assert_eq!(job.from_ref.as_deref(), Some(COMMIT));
     assert!(job.read_only);
-    assert_eq!(job.budget, rig.ctx.cfg.dispatch.budget);
+    assert_eq!(
+        job.budget,
+        rig.ctx.cfg.dispatch.step_budget(RoleKind::Auditor)
+    );
     assert_eq!(job.payload["need"], NEED);
     assert_eq!(job.payload["run"], 1);
     assert_eq!(job.payload["commit"], COMMIT);
@@ -243,6 +252,30 @@ fn a_done_repair_run_with_fix_facts_enqueues_one_auditor_job() -> R {
         "{}",
         job.body
     );
+    Ok(())
+}
+
+#[test]
+fn an_auditor_step_budget_override_reaches_the_audit_job() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.auditor = Some(777);
+    let mut rig = rig_with(cfg, true)?;
+    rig.land("repair", true)?;
+    rig.tick()?;
+    let job = &rig.jobs.jobs[&job_id(NEED, 1)];
+    assert_eq!(job.budget, 777);
+    Ok(())
+}
+
+#[test]
+fn an_absent_auditor_override_uses_the_dispatch_fallback() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 4242;
+    let mut rig = rig_with(cfg, true)?;
+    rig.land("repair", true)?;
+    rig.tick()?;
+    let job = &rig.jobs.jobs[&job_id(NEED, 1)];
+    assert_eq!(job.budget, 4242);
     Ok(())
 }
 

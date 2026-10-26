@@ -158,7 +158,7 @@ fn enqueue<S: JobStore, M: FlowMail>(
     spec.target = target;
     spec.from_ref = Some(facts.commit.clone());
     spec.read_only = true;
-    spec.budget = ctx.cfg.dispatch.budget;
+    spec.budget = ctx.cfg.dispatch.step_budget(RoleKind::Auditor);
     spec.payload = json!({
         "need": run.need,
         "run": run.run,
