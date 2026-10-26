@@ -138,6 +138,20 @@ impl Fx {
             .to_owned()
     }
 
+    /// Add one role to the hosted mailspace with a kind, the way the
+    /// pump-control fixture does.
+    fn add_seat(&self, name: &str, kind: &str) {
+        let mut ms = Mailspace::open_root(self.root.clone()).unwrap();
+        ms.add_role(
+            name,
+            RoleUpdate {
+                kind: Some(Some(kind.to_owned())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    }
+
     async fn rpc(&self, token: &str, name: &str, mut arguments: Value) -> Value {
         arguments
             .as_object_mut()
@@ -249,6 +263,25 @@ fn hold_pump_lock(root: &Path) -> std::fs::File {
         .unwrap();
     lock.try_lock().unwrap();
     lock
+}
+
+/// A stand-in public key for a second registered member, as the
+/// pump-control tests use.
+fn spki_pem(seed: u8) -> String {
+    use base64::Engine;
+    const PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut der = PREFIX.to_vec();
+    der.extend_from_slice(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes(),
+    );
+    format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        base64::engine::general_purpose::STANDARD.encode(der)
+    )
 }
 
 #[tokio::test]
@@ -587,4 +620,202 @@ async fn a_key_that_is_not_the_operators_is_refused() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0]["tool"], "config_set");
     assert_eq!(lines[0]["outcome"], "refused");
+}
+
+#[tokio::test]
+async fn a_mind_seat_may_rebind_an_existing_role_within_the_hosts_offer() {
+    let fx = fixture("mind-bind");
+    fx.add_seat("steward", "mind");
+    fx.add_seat("helper", "hand");
+    let mind = fx.key_by(&fx.member, Some("steward"));
+
+    // Binding writes land: provider and pool first, then a model validated
+    // against the role's now-current pool.
+    let got = fx
+        .call(
+            &mind,
+            "role_set",
+            json!({"role": "hand", "provider": "local", "pool": "glm"}),
+        )
+        .await;
+    assert_eq!(got["name"], "hand");
+    assert_eq!(got["provider"], "local");
+    assert_eq!(got["pool"], "glm");
+    let got = fx
+        .call(&mind, "role_set", json!({"role": "hand", "model": "old/m"}))
+        .await;
+    assert_eq!(got["model"], "old/m");
+    let ms = Mailspace::open_root(fx.root.clone()).unwrap();
+    let view = ms.role_view("hand").unwrap();
+    assert_eq!(view.pool.as_deref(), Some("glm"));
+    assert_eq!(view.model.as_deref(), Some("old/m"));
+    assert_eq!(view.provider.as_deref(), Some("local"));
+    // Audit attribution stays the seat's own.
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["tool"] == "role_set"));
+    assert!(lines.iter().all(|line| line["outcome"] == "ok"));
+    let principal = format!("{}.steward@{}", fx.member, fx.project);
+    assert!(lines.iter().all(|line| line["principal"] == principal));
+
+    // The allow list is the host's: a model off it is refused, and the
+    // file stays exactly as it was.
+    let before = fx.config_text();
+    let message = fx
+        .refused(&mind, "role_set", json!({"role": "hand", "model": "new/m"}))
+        .await;
+    assert!(
+        message.contains("not in pool 'glm' harness.models"),
+        "{message}"
+    );
+    assert_eq!(fx.config_text(), before);
+    for (arguments, needle) in [
+        (json!({"role": "hand", "pool": "nope"}), "unknown pool"),
+        (
+            json!({"role": "hand", "provider": "cloudy"}),
+            "not a configured provider",
+        ),
+        (json!({"role": "ghost", "pool": "glm"}), "existing role"),
+        (json!({"role": "helper", "model": "old/m"}), "needs a pool"),
+    ] {
+        let message = fx.refused(&mind, "role_set", arguments).await;
+        assert!(message.contains(needle), "{message}");
+        assert_eq!(fx.config_text(), before, "{message}");
+    }
+
+    // The operator's field set is unchanged: non-binding fields still pass.
+    let operator = fx.key_by(&fx.member, None);
+    let got = fx
+        .call(
+            &operator,
+            "role_set",
+            json!({"role": "helper", "status": "active"}),
+        )
+        .await;
+    assert_eq!(got["status"], "active");
+}
+
+#[tokio::test]
+async fn a_mind_seat_cannot_touch_anything_but_bindings() {
+    let fx = fixture("mind-refuse");
+    fx.add_seat("steward", "mind");
+    let mind = fx.key_by(&fx.member, Some("steward"));
+    let before = fx.config_text();
+    let refusals = [
+        (json!({"role": "hand", "kind": "head"}), "kind"),
+        (json!({"role": "hand", "harness": "tmux"}), "harness"),
+        (json!({"role": "hand", "status": "parked"}), "status"),
+        (json!({"role": "hand", "thinking": "high"}), "thinking"),
+        (json!({"role": "hand", "cadence": "15m"}), "cadence"),
+        (json!({"role": "hand", "read_only": true}), "read_only"),
+        (json!({"role": "hand", "models": ["old/m"]}), "models"),
+        (json!({"role": "hand", "labels": ["fast"]}), "labels"),
+        (
+            json!({"role": "hand", "clear_labels": ["fast"]}),
+            "clear_labels",
+        ),
+        (json!({"role": "hand", "clear_pool": true}), "clear_pool"),
+        (
+            json!({"role": "hand", "clear_provider": true}),
+            "clear_provider",
+        ),
+        (json!({"role": "hand", "clear_model": true}), "clear_model"),
+        // Mixed requests are refused whole, never partly applied.
+        (
+            json!({"role": "hand", "pool": "glm", "kind": "head"}),
+            "kind",
+        ),
+        (
+            json!({"role": "hand", "provider": "local", "clear_model": true}),
+            "clear_model",
+        ),
+    ];
+    for (arguments, needle) in &refusals {
+        let message = fx.refused(&mind, "role_set", arguments.clone()).await;
+        assert!(
+            message.contains("may only set provider, pool and model"),
+            "{message}"
+        );
+        assert!(message.contains(needle), "{message}");
+        assert_eq!(fx.config_text(), before, "{message}");
+    }
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), refusals.len(), "{lines:?}");
+    assert!(lines.iter().all(|line| line["tool"] == "role_set"));
+    assert!(lines.iter().all(|line| line["outcome"] == "refused"));
+
+    // Role creation and charters keep the operator-only rule for a seat too.
+    for name in ["role_add", "charter_set"] {
+        let (arguments, needle) = match name {
+            "role_add" => (json!({"role": "scout", "kind": "hand"}), "kind operator"),
+            _ => (json!({"role": "hand", "charter": "body"}), "kind operator"),
+        };
+        let message = fx.refused(&mind, name, arguments).await;
+        assert!(message.contains(needle), "{name}: {message}");
+        assert_eq!(fx.config_text(), before);
+    }
+}
+
+#[tokio::test]
+async fn a_mind_seat_binding_write_follows_the_pump_lock() {
+    let fx = fixture("mind-lock");
+    fx.add_seat("steward", "mind");
+    let mind = fx.key_by(&fx.member, Some("steward"));
+    let before = fx.config_text();
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Running)
+        .unwrap();
+    let lock = hold_pump_lock(&fx.root);
+    let message = fx
+        .refused(&mind, "role_set", json!({"role": "hand", "pool": "glm"}))
+        .await;
+    assert!(message.contains("the pump is running"), "{message}");
+    assert_eq!(fx.config_text(), before);
+    drop(lock);
+
+    // A paused pump still accepts the same binding write.
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Paused).unwrap();
+    let _lock = hold_pump_lock(&fx.root);
+    let got = fx
+        .call(&mind, "role_set", json!({"role": "hand", "pool": "glm"}))
+        .await;
+    assert_eq!(got["pool"], "glm");
+    assert!(fx.config_text().contains("pool = \"glm\""));
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["outcome"], "refused");
+    assert_eq!(lines[1]["outcome"], "ok");
+}
+
+#[tokio::test]
+async fn hand_and_foreign_member_keys_cannot_set_roles() {
+    let fx = fixture("mind-gate");
+    fx.add_seat("steward", "mind");
+    let before = fx.config_text();
+    // A hand-kind seat of the host's own member fails the operational guard.
+    let hand = fx.key_by(&fx.member, Some("hand"));
+    let message = fx
+        .refused(&hand, "role_set", json!({"role": "hand", "pool": "glm"}))
+        .await;
+    assert!(message.contains("kind mind or operator"), "{message}");
+    assert!(message.contains("of kind hand"), "{message}");
+    assert_eq!(fx.config_text(), before);
+    // A foreign member's mind-kind seat is not host-owned.
+    fx.state
+        .identities
+        .register(
+            &fx.project,
+            "bob",
+            &spki_pem(7),
+            "0c0c0c0c-1111-4222-8333-444444444444",
+        )
+        .unwrap();
+    let foreign = fx.key_by("bob", Some("steward"));
+    let message = fx
+        .refused(&foreign, "role_set", json!({"role": "hand", "pool": "glm"}))
+        .await;
+    assert!(message.contains("host's own member"), "{message}");
+    assert_eq!(fx.config_text(), before);
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["outcome"] == "refused"));
 }
