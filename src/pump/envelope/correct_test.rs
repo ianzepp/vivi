@@ -153,6 +153,34 @@ fn the_original_message_is_capped_at_16_kib() {
 }
 
 #[test]
+fn the_correction_guidance_lists_the_scope_request_fields() {
+    let job = original("j1", "x");
+    for (kind, role) in [
+        (RoleKind::Planner, "planner"),
+        (RoleKind::Admitter, "admitter"),
+    ] {
+        let got = spec(
+            "n1",
+            &row("j1", 1),
+            role,
+            kind,
+            &job,
+            &EnvelopeError::NoOpening,
+            1,
+            300,
+        );
+        assert!(got.body.contains("scope_target"), "{}", got.body);
+        assert!(got.body.contains("scope_paths"), "{}", got.body);
+        assert!(
+            got.body.contains("permission for exactly those paths"),
+            "{}",
+            got.body
+        );
+        assert!(got.body.contains("resumes this role"), "{}", got.body);
+    }
+}
+
+#[test]
 fn enqueue_records_the_job_under_the_steps_own_task_and_attempt() {
     let dir = tempdir().unwrap();
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).unwrap();

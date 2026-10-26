@@ -45,6 +45,8 @@ Front matter for the planner:
 | --- | --- | --- |
 | `answer` | string | First key. Exactly one of the words below. |
 | `reason` | string | Required unless `answer` is `planned`. A literal string, `'...'`. |
+| `scope_target` | string | Only together with `scope_paths`, and only on `operator`. The target the permission is asked for. Non-blank. |
+| `scope_paths` | list of paths | Only together with `scope_target`, and only on `operator`. Non-empty; every entry non-blank. |
 
 No other keys are allowed. An unknown key is refused.
 
@@ -55,6 +57,8 @@ Answer words:
 - `operator`: a decision is missing that belongs to the operator and cannot be answered or defaulted from the code, the thread or the rules. The document quotes the open question. A need that only records a ruling whose work is carried by another need is `delivered`, with that pointer. Give `reason`.
 - `hold`: it cannot be done here: it needs hardware or access this checkout lacks, belongs to a repository that is not an available target, or the thread says it is deferred. The document says which. Give `reason`.
 - `design`: the work is real but not settled enough to plan; the document says what is unsettled. Use this sparingly: if the ruling is clear and the work is merely large, answer `planned`. Size is the slicer's concern, not yours. Give `reason`.
+
+**Scope requests.** When the plan is otherwise complete and your answer is blocked only on permission for exactly the paths you name, answer `operator` with both `scope_target` and `scope_paths`. A request that also carries a design or product question is an ordinary `operator` with `reason` alone; the scope fields are never mixed with one, and the pump never reads paths out of your prose. An approved request resumes you to finish the plan with the permission granted: the approval is not a plan and never substitutes for `planned`.
 
 A need may mix: answer `planned` for the settled part and put what was left out, and why, under "Open questions".
 
@@ -85,6 +89,18 @@ answer = "delivered"
 reason = 'Commit 3f9a2c1 already adds the command and its test; nothing is left.'
 +++
 Evidence for the claim above.
+```
+
+Example of a scope request: the plan is complete and permission is the only blocker.
+
+```
++++
+answer = "operator"
+reason = 'The only fix rewrites the generated client, which the run may not touch.'
+scope_target = "vivi"
+scope_paths = ["src/generated/client.rs"]
++++
+The plan below is complete. The request above is its only blocker.
 ```
 
 ## Finish

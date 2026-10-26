@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::Validate;
-use super::roles::Check;
+use super::roles::{Check, validate_scope_request};
 
 fn missing(text: &Option<String>) -> bool {
     text.as_deref().is_none_or(|t| t.trim().is_empty())
@@ -77,19 +77,33 @@ pub struct Admitter {
     pub findings: Vec<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// With `scope_paths`, a scope request on `escalate`: the answer is
+    /// blocked only on permission for exactly the named paths. Both fields
+    /// must be present together; `Option` keeps an explicit empty list from
+    /// reading as an omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_paths: Option<Vec<String>>,
 }
 
 impl Validate for Admitter {
     fn validate(&self) -> Result<(), String> {
         match self.answer {
             AdmitterAnswer::Revise if self.required_changes.is_empty() => {
-                Err("answer \"revise\" requires a non-empty `required_changes`".to_string())
+                return Err("answer \"revise\" requires a non-empty `required_changes`".to_string());
             }
             AdmitterAnswer::Escalate if missing(&self.reason) => {
-                Err("answer \"escalate\" requires a `reason`".to_string())
+                return Err("answer \"escalate\" requires a `reason`".to_string());
             }
-            _ => Ok(()),
+            _ => {}
         }
+        validate_scope_request(
+            self.scope_target.as_deref(),
+            self.scope_paths.as_deref(),
+            "escalate",
+            self.answer == AdmitterAnswer::Escalate,
+        )
     }
 }
 
