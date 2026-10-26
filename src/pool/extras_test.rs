@@ -32,15 +32,15 @@ fn pump_for(radix: &Path, gradus: &Path, inferentia: &Path) -> PumpConfig {
 [targets.radix]
 path = "radix"
 remote_url = "file://{}"
-branch = "main"
+main = "main"
 [targets.gradus]
 path = "gradus"
 remote_url = "file://{}"
-branch = "main"
+main = "main"
 [targets.inferentia]
 path = "inferentia"
 remote_url = "file://{}"
-branch = "main"
+main = "main"
 "#,
         radix.display(),
         gradus.display(),

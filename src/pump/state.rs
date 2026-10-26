@@ -295,8 +295,8 @@ pub struct Unit {
     /// the unit's `extra_json` column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repairs: Option<String>,
-    /// Branch to dispatch this unit from instead of `dispatch.from`; a repair
-    /// unit starts on its `vivi/quarantine/<id>` branch.
+    /// Branch to dispatch this unit from instead of the target's main; a
+    /// repair unit starts on its `vivi/quarantine/<id>` branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     /// Merge this unit in a batch of its own: set on a repair unit, and on

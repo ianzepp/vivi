@@ -325,12 +325,6 @@ impl PumpConfig {
         resolve(&self.home_dir(project), &self.reserved_file)
     }
 
-    /// `--from` of a unit dispatch: `dispatch.from`, else `main`.
-    #[must_use]
-    pub fn dispatch_from(&self) -> &str {
-        self.dispatch.from.as_deref().unwrap_or(&self.main)
-    }
-
     /// `--to` of the pump's own sends and thread replies: `board.reply_to`,
     /// else the first of `board.from`, else `operator`. It is never empty: an
     /// empty value would drop the argument of `need send --to`, and that send
@@ -551,8 +545,6 @@ pub struct DispatchConfig {
     /// tick, for both unit starts and durable role jobs. 1 starts them one
     /// after another.
     pub parallel: u32,
-    /// `--from` of a unit dispatch; absent means `main`.
-    pub from: Option<String>,
     /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
     /// names its kind. Without an assigned hand-role pool, the kind names the
     /// pools the unit goes to; `max` and `skip_proof` also apply to role routes.
@@ -592,7 +584,6 @@ impl Default for DispatchConfig {
             overdue_grace: 900,
             per_tick: 6,
             parallel: 6,
-            from: None,
             kinds: BTreeMap::new(),
             default_kind: String::new(),
         }

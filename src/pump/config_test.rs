@@ -60,7 +60,6 @@ max_attempts = 3
 budget       = 600
 overdue_grace = 900
 per_tick     = 6
-from         = "next"
 default_kind = "plain"
 
 [pump.dispatch.kinds.plain]
@@ -147,13 +146,18 @@ fn a_minimal_pump_table_takes_every_default() {
         cfg.dispatch.transient_backoff, 120,
         "default transient backoff seconds"
     );
-    assert_eq!(cfg.dispatch.from, None);
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");
     assert_eq!(cfg.merge.format, "");
     assert_eq!(cfg.merge.remote_limit, 1800);
-    assert_eq!(cfg.dispatch_from(), "main");
     assert_eq!(cfg.reply_to(), "operator");
+}
+
+#[test]
+fn an_obsolete_dispatch_from_override_is_ignored_and_main_stands() {
+    let cfg =
+        pump("name = \"t\"\n[pump]\nmain = \"trunk\"\n\n[pump.dispatch]\nfrom = \"ancient\"\n");
+    assert_eq!(cfg.main, "trunk");
 }
 
 #[test]
@@ -194,8 +198,6 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.tick, 20);
     assert_eq!(cfg.board.retired_mark, None);
     assert_eq!(cfg.board.planners_max, 3);
-    assert_eq!(cfg.dispatch.from, Some("next".to_string()));
-    assert_eq!(cfg.dispatch_from(), "next");
     assert_eq!(cfg.dispatch.lanes.len(), 2);
     assert_eq!(cfg.dispatch.lanes[0].model, "deepseek/deepseek-flash");
     assert_eq!(cfg.dispatch.lanes[0].cap, 30);

@@ -327,6 +327,137 @@ fn a_planner_reads_every_configured_target_and_not_only_the_default_checkout() {
 }
 
 #[test]
+fn planner_and_extra_targets_start_at_their_own_main() {
+    use crate::pool::extras::resolve;
+    use crate::pool::local_fixture::{fixture, git};
+    use crate::pool::progress::Progress;
+    use std::path::Path;
+
+    let radix = fixture();
+    let gradus = fixture();
+    // Gradus plans from an older cut: a branch of its own, one commit back.
+    git(&gradus.repo, &["branch", "next", "main~1"]);
+    // The obsolete `[pump.dispatch] from` override is retired raw input: it
+    // must become neither a planner start ref nor an extra checkout commit.
+    let cfg: PumpConfig = toml::from_str(&format!(
+        r#"
+main = "trunk"
+
+[pump.dispatch]
+from = "ancient"
+
+[targets.radix]
+path = "radix"
+remote_url = "file://{}"
+main = "main"
+
+[targets.gradus]
+path = "gradus"
+remote_url = "file://{}"
+main = "next"
+"#,
+        radix.repo.display(),
+        gradus.repo.display(),
+    ))
+    .unwrap();
+
+    // Extra checkouts resolve each target's own main to a commit.
+    let pool: crate::pool::config::PoolConfig = toml::from_str(&format!(
+        r#"
+remote_url = "file://{}"
+slots = 1
+image = "debian:12"
+build_dir = "target"
+[harness]
+name = "fake"
+run = "fake --model {{{{model}}}} @{{{{brief}}}}"
+models = ["m/ok"]
+[committer]
+name = "bot"
+email = "bot@example.com"
+"#,
+        radix.dir.path().display(),
+    ))
+    .unwrap();
+    let extras = resolve(
+        "plan",
+        &pool,
+        &cfg,
+        Path::new("/workspace"),
+        None,
+        &[String::from("radix"), String::from("gradus")],
+        &Progress::silent(),
+    )
+    .unwrap();
+    assert_eq!(extras[0].from, git(&radix.repo, &["rev-parse", "main"]));
+    assert_eq!(extras[1].from, git(&gradus.repo, &["rev-parse", "next"]));
+
+    // Planner jobs start at the selected target's own main; the legacy pump
+    // main only serves a job without a target.
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let ctx = ctx.with_routing(planner_routing(&[("pump-planner", "apool")]));
+    host.reply(
+        "pool status --porcelain",
+        0,
+        "slot apool bridge slot-1 free\nslot apool bridge slot-2 free\nslot apool bridge slot-3 free",
+    );
+    host.reply("task send", 0, "created 1234abcd");
+    host.reply("pool dispatch", 0, "dispatched 1234abcd to apool");
+    let mut st = State::default();
+
+    let board = enqueue_one(&ctx, &mut st).unwrap();
+    assert_eq!(st.jobs()[&board].from_ref.as_deref(), Some("trunk"));
+    let on_radix = enqueue(
+        &ctx,
+        &mut st,
+        "split",
+        "r1",
+        100,
+        "plan",
+        60,
+        "board/r1.out",
+        "plans/r1.json",
+        Some("radix"),
+    )
+    .unwrap();
+    assert_eq!(st.jobs()[&on_radix].from_ref.as_deref(), Some("main"));
+    let on_gradus = enqueue(
+        &ctx,
+        &mut st,
+        "split",
+        "r2",
+        101,
+        "plan",
+        60,
+        "board/r2.out",
+        "plans/r2.json",
+        Some("gradus"),
+    )
+    .unwrap();
+    assert_eq!(st.jobs()[&on_gradus].from_ref.as_deref(), Some("next"));
+
+    // Explicit job bases ride through dispatch unchanged.
+    jobs::dispatch_pending(&ctx, &mut st).unwrap();
+    let commands = host.commands();
+    let board_from = commands
+        .iter()
+        .find(|cmd| cmd.contains("pool dispatch") && !cmd.contains("--target"))
+        .and_then(|cmd| from_flag(cmd));
+    assert_eq!(board_from.as_deref(), Some("trunk"));
+    let radix_from = commands
+        .iter()
+        .find(|cmd| cmd.contains("--target radix"))
+        .and_then(|cmd| from_flag(cmd));
+    assert_eq!(radix_from.as_deref(), Some("main"));
+    let gradus_from = commands
+        .iter()
+        .find(|cmd| cmd.contains("--target gradus"))
+        .and_then(|cmd| from_flag(cmd));
+    assert_eq!(gradus_from.as_deref(), Some("next"));
+}
+
+#[test]
 fn a_single_repository_pump_gives_a_planner_no_extra_checkouts() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());

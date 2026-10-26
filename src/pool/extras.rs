@@ -53,7 +53,7 @@ pub fn resolve(
         }
         let from = pump
             .for_target(id)
-            .map(|config| config.dispatch_from().to_owned())
+            .map(|config| config.main.clone())
             .ok_or_else(|| VivariumError::Config(format!("unknown repository target {id:?}")))?;
         progress.say(&format!("resolving {from} of extra target {id}"));
         let (commit, token) = start_of(pool_name, &resolved, &from)?;

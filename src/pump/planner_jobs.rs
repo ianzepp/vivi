@@ -74,13 +74,13 @@ fn other_targets(ctx: &Ctx, own: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// The ref a planner checks out: the target's dispatch start, else the
-/// pump's own. `pool dispatch` refuses a job with no `--from`.
+/// The ref a planner checks out: the selected target's own main, else the
+/// pump's main for a job without a target. `pool dispatch` refuses a job
+/// with no `--from`.
 fn start_ref(ctx: &Ctx, target: Option<&str>) -> String {
-    target.and_then(|id| ctx.cfg.for_target(id)).map_or_else(
-        || ctx.cfg.dispatch_from().to_owned(),
-        |cfg| cfg.dispatch_from().to_owned(),
-    )
+    target
+        .and_then(|id| ctx.cfg.for_target(id))
+        .map_or_else(|| ctx.cfg.main.clone(), |cfg| cfg.main.clone())
 }
 
 /// Stable job ID for one owner and enqueue time.
