@@ -19,13 +19,18 @@
 //! request maps to. Nothing in the envelope is trusted: fields are length
 //! capped, handles must be plain hex-ish tokens, projects must be watched
 //! roots, and every refusal is reported back to the turn and the operator.
-//! The spike executes nothing; [`Actuator`] has only a dry-run impl.
+//! Permitted requests are carried out by an [`Actuator`]: [`DryRun`] records
+//! what would run and runs nothing, and the MCP actuator turns permitted
+//! actions into server tool calls.
+
+mod fields;
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use super::authority::{self, Action, Denial, Gate};
+use fields::{drop_blank_fields, validate_fields};
 
 /// Longest free-text note accepted from a turn.
 pub const MAX_NOTE: usize = 500;
@@ -47,6 +52,69 @@ pub struct ActionRequest {
     pub word: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Dispatch entry to restart a flow at.
+    #[serde(default)]
+    pub entry: Option<String>,
+    /// Status filter for reads.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Most records a read may return.
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Which file a read names (the log, say).
+    #[serde(default)]
+    pub file: Option<String>,
+    /// How many lines of a file to read.
+    #[serde(default)]
+    pub lines: Option<i64>,
+    /// Free-text filter for reads.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// The flow a read or action names.
+    #[serde(default)]
+    pub flow: Option<String>,
+    /// The pool a read or action names.
+    #[serde(default)]
+    pub pool: Option<String>,
+    /// Read cursor: records before this one.
+    #[serde(default)]
+    pub before: Option<String>,
+    /// Priority to file or set.
+    #[serde(default)]
+    pub priority: Option<i64>,
+    /// The role a set-role action names.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// The model a set-role action names.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The pool cap to set.
+    #[serde(default)]
+    pub cap: Option<i64>,
+    /// The compute band to set.
+    #[serde(default)]
+    pub band: Option<String>,
+    /// The reasoning effort to set.
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    /// Who a letter goes to.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// The letter's subject.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// The letter's body.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Done-when clauses for a filed need.
+    #[serde(default)]
+    pub done_when: Vec<String>,
+    /// The file or path an action targets.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Paths an action may write.
+    #[serde(default)]
+    pub write_scope: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -65,6 +133,13 @@ pub enum Refusal {
     BadHandle(&'static str),
     NoteTooLong,
     TooMany,
+    /// A field's value is malformed for what it names (a negative count,
+    /// say). Typed so the turn can fix the one field.
+    InvalidField(&'static str),
+    /// A field this kind of action never reads.
+    UnexpectedField(&'static str),
+    /// A filing field exceeds what may be filed.
+    FilingTooLarge(&'static str),
 }
 
 impl std::fmt::Display for Refusal {
@@ -76,6 +151,9 @@ impl std::fmt::Display for Refusal {
             Self::BadHandle(field) => write!(f, "{field} is not a plain handle"),
             Self::NoteTooLong => write!(f, "note longer than {MAX_NOTE} characters"),
             Self::TooMany => write!(f, "more than {MAX_ACTIONS} actions in one envelope"),
+            Self::InvalidField(field) => write!(f, "{field} has an invalid value"),
+            Self::UnexpectedField(field) => write!(f, "{field} does not apply to this action"),
+            Self::FilingTooLarge(field) => write!(f, "{field} is too large to file"),
         }
     }
 }
@@ -126,33 +204,6 @@ pub fn parse_envelope(reply: &str) -> Result<Vec<ActionRequest>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// A blank field is an absent one. The prompt lists every field, and a live
-/// model filled the ones that did not apply with `""`, which the handle
-/// check then refused.
-fn drop_blank_fields(mut request: ActionRequest) -> ActionRequest {
-    for field in [
-        &mut request.need,
-        &mut request.step,
-        &mut request.word,
-        &mut request.note,
-    ] {
-        if field
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-        {
-            *field = None;
-        }
-    }
-    if request
-        .project
-        .as_deref()
-        .is_some_and(|project| project.as_os_str().is_empty())
-    {
-        request.project = None;
-    }
-    request
-}
-
 /// Check every request. Need-scoped actions spend the budget as they pass,
 /// so two requeues of one need in one envelope count twice.
 #[must_use]
@@ -201,44 +252,6 @@ fn check(
         }
     }
     authority::permit(gate, ledger, request.kind, request.need.as_deref()).map_err(Refusal::Gate)
-}
-
-fn validate_fields(request: &ActionRequest) -> Result<(), Refusal> {
-    if request
-        .note
-        .as_deref()
-        .is_some_and(|note| note.chars().count() > MAX_NOTE)
-    {
-        return Err(Refusal::NoteTooLong);
-    }
-    for (field, value) in [
-        ("need", request.need.as_deref()),
-        ("step", request.step.as_deref()),
-        ("word", request.word.as_deref()),
-    ] {
-        if value.is_some_and(|value| !plain_handle(value)) {
-            return Err(Refusal::BadHandle(field));
-        }
-    }
-    let needs_step = matches!(request.kind, Action::Requeue | Action::Answer);
-    if needs_step && request.step.is_none() {
-        return Err(Refusal::MissingField("step"));
-    }
-    if request.kind == Action::Answer && request.word.is_none() {
-        return Err(Refusal::MissingField("word"));
-    }
-    Ok(())
-}
-
-/// Handles and answer words are short ASCII tokens; anything else (spaces,
-/// shell metacharacters, flags) is refused before it nears a command line.
-fn plain_handle(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 64
-        && !value.starts_with('-')
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 impl ActionRequest {
