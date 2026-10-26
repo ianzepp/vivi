@@ -625,6 +625,100 @@ async fn set_and_unset_write_through_the_guard() {
     assert_eq!(lines[2]["outcome"], "ok");
 }
 
+/// A `set` that replaces an already-existing, editor-created array-of-tables
+/// band is refused while the pump runs — config and choice untouched, exactly
+/// one refused audit line — and once the pump is paused, the same single
+/// request replaces the band in place: one new choice, still stored as an
+/// array of tables, a backup, and exactly one more, successful audit line.
+#[tokio::test]
+async fn set_replaces_an_existing_band_only_while_the_pump_is_paused() {
+    let fx = fixture_with("guard-replace", "\n[pump]\ntick = 20\n");
+    let key = fx.key_by(&fx.member, None);
+    // The band replaced below is written first by the guarded editor, as a
+    // host's editor would leave it: an array of tables holding one choice.
+    config_edit::guarded(&fx.root, |doc| {
+        config_edit::set_band(doc, "main", "P1", "zai/glm-5.3-flash", "low")
+    })
+    .unwrap();
+    let starting: DocumentMut = fx.config_text().parse().unwrap();
+    assert!(matches!(
+        starting["pools"]["main"]["bands"]["P1"],
+        Item::ArrayOfTables(_)
+    ));
+
+    let before_text = fx.config_text();
+    let before = fx.without_main_bands();
+    let backups_before = backup_names(&fx.root).len();
+
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Running)
+        .unwrap();
+    let lock = hold_pump_lock(&fx.root);
+    let arguments = json!({
+        "action": "set",
+        "pool": "main",
+        "band": "P1",
+        "model": "other/model",
+        "reasoning": "high",
+    });
+    fx.refused(&key, arguments.clone()).await;
+    assert_eq!(fx.config_text(), before_text, "the refusal changed nothing");
+    let kept: DocumentMut = fx.config_text().parse().unwrap();
+    assert!(matches!(
+        kept["pools"]["main"]["bands"]["P1"],
+        Item::ArrayOfTables(_)
+    ));
+    let reloaded = Mailspace::open_root(fx.root.clone()).unwrap();
+    let entries = &reloaded.config.pools["main"].bands.entries;
+    assert_eq!(entries["P1"].len(), 1);
+    assert_eq!(entries["P1"][0].model, "zai/glm-5.3-flash");
+    assert_eq!(entries["P1"][0].reasoning, "low");
+    assert_eq!(fx.without_main_bands(), before);
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["tool"], "pool_bands");
+    assert_eq!(lines[0]["outcome"], "refused");
+
+    // Pause through the control library, then retake the real pump lock.
+    drop(lock);
+    vivi::pump::control::set_project_mode(&fx.root, vivi::pump::control::PumpMode::Paused).unwrap();
+    let _lock = hold_pump_lock(&fx.root);
+
+    let set = fx.bands(&key, arguments).await;
+    assert_eq!(
+        set["bands"]["P1"],
+        json!([{"model": "other/model", "reasoning": "high"}])
+    );
+
+    // Freshly reopened, the stored leaf is still an array of tables holding
+    // exactly the new choice; nothing but pools.main.bands changed.
+    let text = fx.config_text();
+    let doc: DocumentMut = text.parse().unwrap();
+    let rows = doc["pools"]["main"]["bands"]["P1"]
+        .as_array_of_tables()
+        .expect("P1 stays an array of tables");
+    assert_eq!(rows.len(), 1, "one choice: {text}");
+    let row = rows.iter().next().unwrap();
+    assert_eq!(row["model"].as_str(), Some("other/model"));
+    assert_eq!(row["reasoning"].as_str(), Some("high"));
+    let reloaded = Mailspace::open_root(fx.root.clone()).unwrap();
+    let entries = &reloaded.config.pools["main"].bands.entries;
+    assert_eq!(entries["P1"].len(), 1);
+    assert_eq!(entries["P1"][0].model, "other/model");
+    assert_eq!(entries["P1"][0].reasoning, "high");
+    assert_eq!(fx.without_main_bands(), before, "nothing else changed");
+    assert_ne!(text, before_text);
+    assert!(
+        backup_names(&fx.root).len() > backups_before,
+        "the guarded write keeps a backup"
+    );
+
+    // Exactly one additional audit line, successful and pool_bands.
+    let lines = audit_lines(&fx.data);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1]["tool"], "pool_bands");
+    assert_eq!(lines[1]["outcome"], "ok");
+}
+
 #[tokio::test]
 async fn a_member_token_is_refused_and_changes_nothing() {
     let fx = fixture("token");
