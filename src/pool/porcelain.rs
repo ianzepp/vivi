@@ -30,6 +30,13 @@
 //!                                                                  works because they did not answer on SSH in time (0 on
 //!                                                                  every other host); COST: their approximate total charge
 //!                                                                  in dollars, `0.12`, or - when none or no price known
+//!                deferred TASK POOL KIND UNTIL                     temporary: admission refused the
+//!                                                                  dispatch for now, nothing was
+//!                                                                  recorded and no slot was started;
+//!                                                                  KIND: model-cap|provider-cooldown|
+//!                                                                  band-unavailable|dispatch-busy;
+//!                                                                  UNTIL: absolute epoch second the
+//!                                                                  deferral expires, - when unknown
 //! pool wait      collected TASK POOL SLOT STATE DETAIL             STATE: finished|timeout|lost
 //!                nothing-open
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED     KIND: poll-error
@@ -52,10 +59,16 @@
 //! tree was as checked out) or `read_only_discarded COUNT` (changes were
 //! discarded, COUNT paths; the paths are on the task's result record).
 //!
+//! A `deferred` line is temporary and non-submitted: admission refused the
+//! dispatch for now, nothing was recorded, and no slot was started — the
+//! task stays open and may be retried once UNTIL has passed (at once when
+//! UNTIL is `-`). It is evidence about one attempt, never a durable result.
+//!
 //! A `POOL` of `-` appears only where the pool is not known: a dispatch
 //! recorded without one (made before pools were named), or an issue that is
 //! not about one pool.
 
+use super::bands::types::{DeferKind, Deferred};
 use super::collect::RoundLine;
 use super::doctor::{Check, Counts};
 use super::progress::Issue;
@@ -149,6 +162,72 @@ pub fn refused_reason(output: &str) -> Option<String> {
         .find_map(|rest| {
             let (_task, rest) = next_token(rest)?;
             next_token(rest).map(|(reason, _)| reason)
+        })
+}
+
+/// `deferred TASK POOL KIND UNTIL`: admission refused the dispatch for now —
+/// temporary and non-submitted: nothing was recorded and no slot was
+/// started. KIND is a stable [`DeferKind`] word; UNTIL is the absolute epoch
+/// second the deferral expires, `-` when unknown.
+#[must_use]
+pub fn deferred(task: &str, pool: &str, deferred: &Deferred) -> String {
+    line(
+        "deferred",
+        &[
+            quote(task),
+            quote(pool),
+            deferred.kind.word().to_string(),
+            deferred
+                .until
+                .map_or_else(|| "-".to_string(), |u| u.to_string()),
+        ],
+    )
+}
+
+/// A parsed `deferred TASK POOL KIND UNTIL` line: which attempted dispatch it
+/// answers (TASK and POOL) and the deferral itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredLine {
+    /// The task whose dispatch was deferred.
+    pub task: String,
+    /// The pool the dispatch asked.
+    pub pool: String,
+    /// Why the dispatch was deferred and, when known, when it expires.
+    pub deferred: Deferred,
+}
+
+/// The first complete `deferred TASK POOL KIND UNTIL` line in command output,
+/// or `None` when there is none. A line counts only when it parses in full —
+/// exactly four fields, a stable [`DeferKind`] word, an integer or `-` expiry,
+/// nothing trailing — so a malformed line is never read as a deferral.
+#[must_use]
+pub fn deferred_line(output: &str) -> Option<DeferredLine> {
+    output
+        .lines()
+        .filter_map(|l| l.strip_prefix("deferred "))
+        .find_map(|rest| {
+            let (task, rest) = next_token(rest)?;
+            let (pool, rest) = next_token(rest)?;
+            let (kind, rest) = next_token(rest)?;
+            let (until, rest) = next_token(rest)?;
+            if !rest.trim().is_empty() {
+                return None;
+            }
+            let until = match until.as_str() {
+                "-" => None,
+                secs => match secs.parse::<i64>() {
+                    Ok(expiry) => Some(expiry),
+                    Err(_) => return None,
+                },
+            };
+            Some(DeferredLine {
+                task,
+                pool,
+                deferred: Deferred {
+                    kind: DeferKind::parse(&kind)?,
+                    until,
+                },
+            })
         })
 }
 

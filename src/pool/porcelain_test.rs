@@ -443,3 +443,149 @@ fn output_without_a_refused_line_gives_none() {
     );
     assert_eq!(refused_reason("not refused here"), None);
 }
+
+#[test]
+fn deferred_lines_roundtrip_all_kinds() {
+    let kinds = [
+        (DeferKind::ModelCap, 1_760_000_000),
+        (DeferKind::ProviderCooldown, 1_760_000_060),
+        (DeferKind::BandUnavailable, 1_760_001_200),
+        (DeferKind::DispatchBusy, 90),
+    ];
+    for (kind, until) in kinds {
+        let said = deferred(
+            "3f2a",
+            "p",
+            &Deferred {
+                kind,
+                until: Some(until),
+            },
+        );
+        assert_eq!(said, format!("deferred 3f2a p {} {until}", kind.word()));
+        let want = DeferredLine {
+            task: "3f2a".into(),
+            pool: "p".into(),
+            deferred: Deferred {
+                kind,
+                until: Some(until),
+            },
+        };
+        assert_eq!(deferred_line(&said), Some(want));
+        let open = deferred("3f2a", "p", &Deferred { kind, until: None });
+        assert_eq!(open, format!("deferred 3f2a p {} -", kind.word()));
+        assert_eq!(
+            deferred_line(&open).map(|l| l.deferred),
+            Some(Deferred { kind, until: None })
+        );
+    }
+    let mixed = format!(
+        "dispatched 3f2a p p-slot-1 j m main x b 1 write 0 -\n{}\nnothing-open\n",
+        deferred(
+            "hand-9",
+            "ms",
+            &Deferred {
+                kind: DeferKind::ProviderCooldown,
+                until: Some(1_760_000_060),
+            },
+        ),
+    );
+    let read = deferred_line(&mixed).expect("the one deferred line of combined output");
+    assert_eq!(read.task, "hand-9");
+    assert_eq!(read.pool, "ms");
+    assert_eq!(read.deferred.kind, DeferKind::ProviderCooldown);
+    assert_eq!(read.deferred.until, Some(1_760_000_060));
+    assert_eq!(
+        deferred_line("deferred  3f2a  p  model-cap  5").map(|l| l.task),
+        Some("3f2a".into()),
+        "spaces between fields are token boundaries"
+    );
+}
+
+#[test]
+fn deferred_lines_preserve_quoted_fields() {
+    let cases = [
+        ("two words", "p"),
+        ("hand \"quoted\"", "pool \"two\""),
+        (r"back\slash", r"pool\path"),
+        ("tab\there", "line\nbreak"),
+        ("", "p"),
+        ("-", "p"),
+        ("t", "-"),
+    ];
+    for (task, pool) in cases {
+        let said = deferred(
+            task,
+            pool,
+            &Deferred {
+                kind: DeferKind::ModelCap,
+                until: Some(7),
+            },
+        );
+        let read = deferred_line(&said).unwrap_or_else(|| panic!("not read back: {said}"));
+        assert_eq!(read.task, task, "{said}");
+        assert_eq!(read.pool, pool, "{said}");
+        assert_eq!(read.deferred.until, Some(7), "{said}");
+    }
+    let dashes = deferred(
+        "-",
+        "-",
+        &Deferred {
+            kind: DeferKind::DispatchBusy,
+            until: None,
+        },
+    );
+    assert!(
+        dashes.starts_with(r#"deferred "-" "-" dispatch-busy -"#),
+        "a literal dash is quoted, not an absent field: {dashes}"
+    );
+    assert_eq!(
+        deferred_line(&dashes).map(|l| (l.task, l.pool)),
+        Some(("-".into(), "-".into()))
+    );
+}
+
+#[test]
+fn malformed_deferred_lines_are_rejected() {
+    let bad = [
+        "deferred 3f2a p no-such-kind 5",
+        "deferred 3f2a p MODEL-CAP 5",
+        "deferred 3f2a p model-cap",
+        "deferred 3f2a p",
+        "deferred 3f2a",
+        "deferred 3f2a p model-cap 5 extra",
+        "deferred 3f2a p model-cap 5 \"unclosed",
+        "deferred 3f2a p model-cap soon",
+        "deferred 3f2a p model-cap 1.5",
+        "deferred 3f2a p model-cap 5x",
+        "deferred 3f2a p model-cap 0x10",
+        "deferred \"3f2a p model-cap 5",
+    ];
+    for line in bad {
+        assert_eq!(deferred_line(line), None, "{line}");
+        let in_output = format!("dispatched t p s j m main x - 1 write 0 -\n{line}\n");
+        assert_eq!(deferred_line(&in_output), None, "{line}");
+    }
+    assert_eq!(deferred_line(""), None);
+    assert_eq!(deferred_line("nothing here"), None);
+    assert_eq!(
+        deferred_line("a deferred 3f2a p model-cap 5"),
+        None,
+        "a deferral is a whole line, never a substring"
+    );
+    let good = deferred(
+        "3f2a",
+        "p",
+        &Deferred {
+            kind: DeferKind::BandUnavailable,
+            until: Some(30),
+        },
+    );
+    let among_bad = format!(
+        "deferred a b wrong-kind 1\ndeferred c d model-cap\ndispatched t p s j m\n{good}\n"
+    );
+    assert_eq!(
+        deferred_line(&among_bad).map(|l| (l.task, l.deferred.kind, l.deferred.until)),
+        Some(("3f2a".into(), DeferKind::BandUnavailable, Some(30))),
+        "only the complete valid line is the deferral"
+    );
+}
