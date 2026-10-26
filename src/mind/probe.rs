@@ -111,15 +111,25 @@ pub struct DecisionDetail {
     pub id: String,
     /// The need whose run waits.
     pub need: String,
+    /// The number of the run that waits.
+    #[serde(default)]
+    pub run: u32,
     /// The node the run waits at.
     pub node: String,
     /// The waiting step's task handle.
     pub task: String,
+    /// The issue kind of the newest open issue raised about the wait, when
+    /// the store has one.
+    #[serde(default)]
+    pub issue: Option<String>,
     /// Why the run waits, read from the strongest evidence available;
     /// absent evidence is stated. Untrusted text.
     pub reason: String,
     /// Where the reason was read from; states absence where there is none.
     pub evidence: Vec<String>,
+    /// The control choices permitted at this wait.
+    #[serde(default)]
+    pub controls: Vec<String>,
 }
 
 impl ProjectSignals {
@@ -467,10 +477,13 @@ fn detail_of(wait: &Wait) -> DecisionDetail {
         kind: String::from(wait.kind.name()),
         id: wait.id.clone(),
         need: wait.need.clone(),
+        run: wait.run,
         node: wait.node.clone(),
         task: wait.task.clone(),
+        issue: wait.issue.clone(),
         reason: wait.reason.clone(),
         evidence: wait.evidence.clone(),
+        controls: wait.controls.clone(),
     }
 }
 

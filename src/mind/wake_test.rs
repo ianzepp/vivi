@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use super::super::probe::DecisionDetail;
 use super::*;
 
 const NOW: u64 = 2_000_000;
@@ -41,6 +42,41 @@ fn ok(root: &str) -> ProjectSignals {
     ProjectSignals {
         root: PathBuf::from(root),
         verdict: "ok".into(),
+        ..ProjectSignals::default()
+    }
+}
+
+fn decision(kind: &str, id: &str) -> DecisionDetail {
+    DecisionDetail {
+        kind: kind.into(),
+        id: id.into(),
+        need: "n1".into(),
+        run: 1,
+        node: "parked".into(),
+        task: "t1".into(),
+        issue: None,
+        reason: "waiting on a named choice".into(),
+        evidence: vec!["no raised issue found".into()],
+        controls: vec!["vivi pump answer t1".into()],
+    }
+}
+
+/// A pump whose only alarm is one parked run, carrying the decision.
+fn parked(root: &str, id: &str) -> ProjectSignals {
+    ProjectSignals {
+        root: PathBuf::from(root),
+        parked_needs: 1,
+        decisions: vec![decision("park", id)],
+        ..ProjectSignals::default()
+    }
+}
+
+/// A pump whose only alarm is one held step, carrying the decision.
+fn held(root: &str, id: &str) -> ProjectSignals {
+    ProjectSignals {
+        root: PathBuf::from(root),
+        held_steps: 1,
+        decisions: vec![decision("hold", id)],
         ..ProjectSignals::default()
     }
 }
@@ -201,6 +237,101 @@ fn success_resets_attempts() {
     assert_eq!(record.attempt, 0);
     assert_eq!(record.retry_at, None);
     assert_eq!(record.ended_at, Some(NOW));
+}
+
+#[test]
+fn a_park_only_or_hold_only_pump_wakes() {
+    let last = finished(NOW - 60, &[]);
+    for signals in [
+        vec![parked("/a", "park n1 r1 parked t1 a0")],
+        vec![held("/a", "hold n1 r1 slice:x t2 a0")],
+    ] {
+        assert!(signals[0].alarming(), "{signals:?}");
+        let id = signals[0].decisions[0].id.as_str();
+        let fingerprint = signals[0].fingerprint();
+        assert!(fingerprint.contains(id), "{fingerprint}");
+        assert_eq!(
+            reasons(&decide(&inputs(Some(&last), &signals))),
+            vec![WakeReason::Signal { fingerprint }]
+        );
+    }
+}
+
+#[test]
+fn an_unchanged_decision_waits_for_the_heartbeat() {
+    let signals = [parked("/a", "park n1 r1 parked t1 a0")];
+    let print = signals[0].fingerprint();
+    let last = finished(NOW - 60, &[&print]);
+    assert_eq!(
+        decide(&inputs(Some(&last), &signals)),
+        WakeDecision::Sleep("nothing due")
+    );
+}
+
+#[test]
+fn replacing_a_decision_identity_at_equal_counts_wakes() {
+    let before = [parked("/a", "park n1 r1 parked t1 a0")];
+    let print = before[0].fingerprint();
+    let last = finished(NOW - 60, &[&print]);
+    // One parked need is replaced by another: same count, new identity.
+    let after = [parked("/a", "park n2 r1 parked t2 a0")];
+    assert_eq!(after[0].parked_needs, before[0].parked_needs);
+    assert_eq!(
+        reasons(&decide(&inputs(Some(&last), &after))),
+        vec![WakeReason::Signal {
+            fingerprint: after[0].fingerprint()
+        }]
+    );
+}
+
+#[test]
+fn cleared_waits_stop_alarms_while_the_protections_hold() {
+    let waiting = [parked("/a", "park n1 r1 parked t1 a0")];
+    let print = waiting[0].fingerprint();
+    let last = finished(NOW - 60, &[&print]);
+    let cleared = [ok("/a")];
+    assert!(!cleared[0].alarming());
+    assert_eq!(
+        decide(&inputs(Some(&last), &cleared)),
+        WakeDecision::Sleep("nothing due")
+    );
+    // The heartbeat keeps its own schedule with nothing alarming.
+    let old = finished(NOW - 2000, &[]);
+    assert_eq!(
+        reasons(&decide(&inputs(Some(&old), &cleared))),
+        vec![WakeReason::Heartbeat {
+            state: "due".into()
+        }]
+    );
+    // In-flight protection, backoff, pause and the rolling cap all hold.
+    let mut flying = last.clone();
+    flying.ended_at = None;
+    assert_eq!(
+        decide(&inputs(Some(&flying), &cleared)),
+        WakeDecision::Sleep("wake in flight")
+    );
+    let mut failed = WakeRecord {
+        started_at: NOW - 100,
+        attempt: 1,
+        ..WakeRecord::default()
+    };
+    finish(&mut failed, false, NOW - 5);
+    assert_eq!(
+        decide(&inputs(Some(&failed), &waiting)),
+        WakeDecision::Sleep("backing off after a failed wake")
+    );
+    let paused = WakeInputs {
+        paused: true,
+        ..inputs(None, &waiting)
+    };
+    assert_eq!(decide(&paused), WakeDecision::Sleep("paused"));
+    let recent = [NOW - 10, NOW - 20];
+    let capped = WakeInputs {
+        recent: &recent,
+        max_wakes_per_hour: 2,
+        ..inputs(None, &waiting)
+    };
+    assert_eq!(decide(&capped), WakeDecision::Sleep("wake cap reached"));
 }
 
 #[test]

@@ -13,7 +13,7 @@ use crate::VivariumError;
 use crate::cli::{MindCommand, MindServiceCommand, MindSubcommand};
 
 use super::config::{self, MindConfig};
-use super::probe::{HealthProbe, Probe, ProjectSignals};
+use super::probe::{DecisionDetail, HealthProbe, Probe, ProjectSignals};
 use super::projects;
 use super::socket::{Client, Reply, Request};
 use super::store;
@@ -222,9 +222,37 @@ fn probe(config: &MindConfig, json: bool) -> Result<(), VivariumError> {
         for reason in &signal.reasons {
             println!("  {reason}");
         }
+        for detail in &signal.decisions {
+            for line in decision_lines(detail) {
+                println!("{line}");
+            }
+        }
     }
     println!("wake {wake} {}", serde_json::Value::Array(reasons));
     Ok(())
+}
+
+/// The lines one decision wait prints in the probe report: its stable
+/// identity, issue kind, need/run/task references, evidence, and the
+/// control choices that move the run. The JSON report carries the same
+/// [`DecisionDetail`] fields verbatim.
+fn decision_lines(detail: &DecisionDetail) -> Vec<String> {
+    let mut lines = vec![format!(
+        "  decision {} kind {} need {} r{} task {} issue {}",
+        detail.id,
+        detail.kind,
+        detail.need,
+        detail.run,
+        detail.task,
+        detail.issue.as_deref().unwrap_or("none"),
+    )];
+    for evidence in &detail.evidence {
+        lines.push(format!("    evidence {evidence}"));
+    }
+    for control in &detail.controls {
+        lines.push(format!("    choice {control}"));
+    }
+    lines
 }
 
 fn log(path: &Path, lines: usize) -> Result<(), VivariumError> {
