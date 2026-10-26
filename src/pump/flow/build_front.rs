@@ -5,7 +5,8 @@
 
 mod admitter;
 mod fanout_start;
-mod park;
+/// Reachable so the wait inventory can read the park step's own report.
+pub(crate) mod park;
 mod planner;
 mod slicer;
 

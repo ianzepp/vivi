@@ -8,13 +8,14 @@
 //! answer on the step routes it.
 
 use crate::error::VivariumError;
-use crate::pump::flow::def::{FlowKind, NodeClass};
+use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
-use crate::pump::flow::index::StepRow;
+use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::jobs::JobStore;
+use crate::pump::store::PumpStore;
 
 /// Exception kind raised once when a run parks.
 pub const NEED_PARKED: &str = "flow-need-parked";
@@ -28,7 +29,7 @@ impl StepHandler for ParkStep {
     }
 
     fn poll(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<Option<String>, VivariumError> {
-        let actual = actual_text(cx, step)?;
+        let actual = actual_text(cx.def, cx.store, cx.run, step)?;
         let text = format!(
             "need {} r{} parked at {}: expected the planner to answer planned; actual: {actual}; \
              a reply on the need thread restarts it at plan, or answer with `vivi pump answer {}`",
@@ -39,15 +40,22 @@ impl StepHandler for ParkStep {
     }
 }
 
-/// The planner word and reason that routed the run here.
-fn actual_text(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
+/// The planner word and reason that routed the run here. Read-only over the
+/// flow and store so the wait inventory reports the same words the alarm
+/// does.
+pub(crate) fn actual_text(
+    def: &FlowDef,
+    store: &PumpStore,
+    run: &RunRow,
+    step: &StepRow,
+) -> Result<String, VivariumError> {
     let Some(planner) =
-        step_inputs::predecessor_step(cx.def, cx.store, cx.run, &step.node, &NodeClass::Planner)?
+        step_inputs::predecessor_step(def, store, run, &step.node, &NodeClass::Planner)?
     else {
         return Ok("no planner step found".into());
     };
     let word = planner.verdict.as_deref().unwrap_or("none");
-    let reason = match cx.store.step_payload(&planner.task)? {
+    let reason = match store.step_payload(&planner.task)? {
         Some(row) => row.payload["front"]["reason"]
             .as_str()
             .filter(|text| !text.is_empty())
