@@ -9,7 +9,7 @@ use crate::mind::config::{AuthorityStage, Budgets};
 const NOW: u64 = 1_000;
 
 fn watched() -> Vec<PathBuf> {
-    vec![PathBuf::from("/w/app")]
+    vec![PathBuf::from("/w/app"), PathBuf::from("/w/vivi")]
 }
 
 /// An action request with every optional field absent.
@@ -353,6 +353,15 @@ const FILED: &[(&str, &str)] = &[
     ("target", "target = \"build-log\""),
 ];
 
+/// The fix policy pins file-fix-need's target to the vivi project.
+const FILED_FIX: &[(&str, &str)] = &[
+    ("to", "to = \"operator\""),
+    ("subject", "subject = \"status\""),
+    ("body", "body = \"all quiet\""),
+    ("done_when", "done_when = [\"gate green\"]"),
+    ("target", "target = \"vivi\""),
+];
+
 fn matrix() -> Vec<Row> {
     vec![
         Row {
@@ -454,7 +463,7 @@ fn matrix() -> Vec<Row> {
         },
         Row {
             kind: Action::FileFixNeed,
-            required: FILED,
+            required: FILED_FIX,
         },
         Row {
             kind: Action::DispatchNeed,
@@ -486,10 +495,20 @@ fn envelope(kind: Action, project: Option<&str>, lines: &[&str]) -> String {
     format!("+++\n{body}+++")
 }
 
-/// Plan one envelope at the stage that opens its kind.
+/// Plan one envelope at the stage that opens its kind, against the
+/// watched root the kind's policy names: the fix policy pins file-fix-need
+/// to a watched root named vivi, every other kind plans at /w/app.
 fn plan_at(kind: Action, project: Option<&str>, lines: &[&str]) -> Planned {
     let (mut planned, _) = run(kind.required_stage(), &envelope(kind, project, lines));
     planned.remove(0)
+}
+
+/// The watched root a kind plans its required fields against.
+fn project_for(kind: Action) -> Option<&'static str> {
+    match kind {
+        Action::FileFixNeed => Some("/w/vivi"),
+        _ => Some("/w/app"),
+    }
 }
 
 fn as_lines(lines: &[String]) -> Vec<&str> {
@@ -597,7 +616,7 @@ fn every_kind_accepts_its_required_fields_and_watched_project() {
         }
         let fields = required_lines(row.kind);
         let lines = as_lines(&fields);
-        let planned = plan_at(row.kind, Some("/w/app"), &lines);
+        let planned = plan_at(row.kind, project_for(row.kind), &lines);
         assert_eq!(planned.verdict, Ok(()), "{}", row.kind.as_str());
     }
 }
@@ -724,8 +743,10 @@ fn all_actions_require_watched_projects() {
             "{}",
             row.kind.as_str()
         );
-        // With a watched root the project layer passes: what is left is the
-        // gate's business (Ok, or the stub denial for upgrade/self-release).
+        // With a watched root the project layer passes: what is left is
+        // the gate's business (Ok, or the stub denial for upgrade/
+        // self-release), save that the vivi-only fix policy may still
+        // refuse file-fix-need's project or target.
         let watched = plan_at(row.kind, Some("/w/app"), &lines);
         assert!(
             !matches!(
@@ -757,4 +778,149 @@ fn model_slugs_are_not_handles() {
         &["need = \"vendor/model.v1\"", "step = \"b71d04aa\""],
     );
     assert_eq!(planned.verdict, Err(Refusal::BadHandle("need")));
+}
+
+/// Plan one filing request: the kind's required lines with `line` swapped
+/// in (appended when the field is only optional), at the kind's root.
+fn plan_filed(kind: Action, line: &str) -> Planned {
+    let name = line.split('=').next().unwrap_or_default().trim();
+    let fields = with_field(kind, name, line);
+    plan_at(kind, project_for(kind), &as_lines(&fields))
+}
+
+/// A TOML list line of quoted strings.
+fn quoted_list(name: &str, items: &[String]) -> String {
+    let joined = items
+        .iter()
+        .map(|item| format!("\"{item}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{name} = [{joined}]")
+}
+
+#[test]
+fn filing_prose_limits_are_bounded() {
+    let subject = format!(
+        "subject = \"{}\"",
+        "s".repeat(super::filing_fields::MAX_SUBJECT)
+    );
+    assert_eq!(plan_filed(Action::FileNeed, &subject).verdict, Ok(()));
+    let subject = format!(
+        "subject = \"{}\"",
+        "s".repeat(super::filing_fields::MAX_SUBJECT + 1)
+    );
+    assert_eq!(
+        plan_filed(Action::FileNeed, &subject).verdict,
+        Err(Refusal::FilingTooLarge("subject"))
+    );
+    let body = format!("body = \"{}\"", "b".repeat(super::filing_fields::MAX_BODY));
+    assert_eq!(plan_filed(Action::FileNeed, &body).verdict, Ok(()));
+    let body = format!(
+        "body = \"{}\"",
+        "b".repeat(super::filing_fields::MAX_BODY + 1)
+    );
+    assert_eq!(
+        plan_filed(Action::FileNeed, &body).verdict,
+        Err(Refusal::FilingTooLarge("body"))
+    );
+}
+
+#[test]
+fn done_when_clauses_are_bounded_and_nonblank() {
+    use super::filing_fields::{MAX_CLAUSE, MAX_CLAUSES};
+    let clauses =
+        |count: usize, len: usize| quoted_list("done_when", &vec!["x".repeat(len); count]);
+    assert_eq!(
+        plan_filed(Action::FileNeed, &clauses(MAX_CLAUSES, MAX_CLAUSE)).verdict,
+        Ok(())
+    );
+    assert_eq!(
+        plan_filed(Action::FileNeed, &clauses(MAX_CLAUSES + 1, 1)).verdict,
+        Err(Refusal::FilingTooLarge("done_when"))
+    );
+    assert_eq!(
+        plan_filed(Action::FileNeed, &clauses(1, MAX_CLAUSE + 1)).verdict,
+        Err(Refusal::FilingTooLarge("done_when"))
+    );
+    // A whitespace-only clause is invalid content, not merely short.
+    assert_eq!(
+        plan_filed(Action::FileNeed, "done_when = [\"gate green\", \" \"]").verdict,
+        Err(Refusal::InvalidField("done_when"))
+    );
+    // An empty required list is an absent one.
+    assert_eq!(
+        plan_filed(Action::FileNeed, "done_when = []").verdict,
+        Err(Refusal::MissingField("done_when"))
+    );
+}
+
+#[test]
+fn write_scope_paths_are_bounded_and_relative() {
+    use super::filing_fields::{MAX_WRITE_PATH, MAX_WRITE_PATHS};
+    let scope = |count: usize| quoted_list("write_scope", &vec![String::from("src/lib.rs"); count]);
+    assert_eq!(
+        plan_filed(Action::FileNeed, &scope(MAX_WRITE_PATHS)).verdict,
+        Ok(())
+    );
+    assert_eq!(
+        plan_filed(Action::FileNeed, &scope(MAX_WRITE_PATHS + 1)).verdict,
+        Err(Refusal::FilingTooLarge("write_scope"))
+    );
+    let longest = format!("write_scope = [\"{}\"]", "a".repeat(MAX_WRITE_PATH));
+    assert_eq!(plan_filed(Action::FileNeed, &longest).verdict, Ok(()));
+    let overlong = format!("write_scope = [\"{}\"]", "a".repeat(MAX_WRITE_PATH + 1));
+    assert_eq!(
+        plan_filed(Action::FileNeed, &overlong).verdict,
+        Err(Refusal::FilingTooLarge("write_scope"))
+    );
+    for bad in ["\" \"", "\"/etc/passwd\"", "\"src/../lib.rs\"", "\"..\""] {
+        let line = format!("write_scope = [{bad}]");
+        assert_eq!(
+            plan_filed(Action::FileNeed, &line).verdict,
+            Err(Refusal::InvalidField("write_scope")),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn filing_bodies_are_prose_not_front_matter() {
+    let letter = "body = \"+++\\n[[letter]]\\nto = \\\"operator\\\"\\n+++\"";
+    assert_eq!(
+        plan_filed(Action::FileNeed, letter).verdict,
+        Err(Refusal::InvalidField("body"))
+    );
+    assert_eq!(
+        plan_filed(Action::FileNeed, "body = \"  +++ first\"").verdict,
+        Err(Refusal::InvalidField("body"))
+    );
+    // Plain prose files clean, scope and all.
+    let mut fields = with_field(
+        Action::FileNeed,
+        "body",
+        "body = \"The retry loop flakes when the gate times out.\"",
+    );
+    fields.push(String::from("write_scope = [\"src/lib.rs\"]"));
+    let planned = plan_at(Action::FileNeed, Some("/w/app"), &as_lines(&fields));
+    assert_eq!(planned.verdict, Ok(()));
+}
+
+#[test]
+fn file_fix_need_requires_watched_vivi() {
+    // A watched root that is not named vivi refuses as project.
+    let fields = required_lines(Action::FileFixNeed);
+    let planned = plan_at(Action::FileFixNeed, Some("/w/app"), &as_lines(&fields));
+    assert_eq!(planned.verdict, Err(Refusal::InvalidField("project")));
+    // Even at the vivi root the target must say vivi.
+    let fields = with_field(Action::FileFixNeed, "target", "target = \"build-log\"");
+    let planned = plan_at(Action::FileFixNeed, Some("/w/vivi"), &as_lines(&fields));
+    assert_eq!(planned.verdict, Err(Refusal::InvalidField("target")));
+    // The vivi root with a vivi target files.
+    let fields = required_lines(Action::FileFixNeed);
+    let planned = plan_at(Action::FileFixNeed, Some("/w/vivi"), &as_lines(&fields));
+    assert_eq!(planned.verdict, Ok(()));
+    // General file-need may still file to the vivi root with another target.
+    let fields = required_lines(Action::FileNeed);
+    let planned = plan_at(Action::FileNeed, Some("/w/vivi"), &as_lines(&fields));
+    assert_eq!(planned.verdict, Ok(()));
 }
