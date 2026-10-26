@@ -419,7 +419,7 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && (spec.task.is_none() || job.task == spec.task)
 }
 
-fn validate_id(id: &str) -> Result<(), VivariumError> {
+pub(crate) fn validate_id(id: &str) -> Result<(), VivariumError> {
     let valid = !id.is_empty()
         && id != "."
         && id != ".."
