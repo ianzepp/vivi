@@ -284,6 +284,10 @@ fn capped(text: &str) -> String {
     out
 }
 
+/// Durable same-step retry scheduling and materialization over the
+/// execution and retry-intent stores.
+pub mod runtime;
+
 #[cfg(test)]
 #[path = "step_retry_test.rs"]
 mod tests;
