@@ -574,16 +574,74 @@ async fn a_reply_threads_with_its_parent() {
     assert_eq!(thread.len(), 2, "{thread:?}");
     assert!(thread.iter().any(|m| m.body.contains("because")));
 
-    // So does the tool, from either end.
+    // So does the tool, from either end. Two messages under the default
+    // bound is a complete read, not a truncated one.
     for from in [&handle, &reply_handle.to_owned()] {
         let shown = fx.call(&mind, "thread", json!({"handle": from})).await;
         let messages = shown["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2, "{shown}");
         assert!(messages.iter().any(|m| m["body"] == "because"), "{shown}");
+        assert_eq!(shown["handle"], from.as_str(), "{shown}");
+        assert_eq!(shown["total_messages"], 2, "{shown}");
+        assert_eq!(shown["returned_messages"], 2, "{shown}");
+        assert_eq!(shown["truncated"], false, "{shown}");
     }
     // The reply went to the operator's inbox.
     let inbox = fx.ms().list("operator", "inbox").unwrap();
     assert_eq!(inbox.len(), 1);
+}
+
+/// A thread larger than the requested `limit` is reported as truncated,
+/// with the whole inventory sized by the library's outline; an uncut small
+/// thread reports complete even though a larger cap was available.
+#[tokio::test]
+async fn thread_reports_when_a_message_bound_cuts_the_inventory() {
+    let fx = fixture("thread-bound");
+    let operator = fx.key(None);
+    let mind = fx.key(Some("mind"));
+    let sent = fx
+        .call(
+            &operator,
+            "send",
+            json!({"kind": "need", "to": "mind", "subject": "long thread", "body": "+++\ndone_when = [\"y\"]\n+++\n\nx"}),
+        )
+        .await;
+    let handle = sent["handle"].as_str().unwrap().to_owned();
+
+    // Five replies on one thread: six messages in the linked inventory.
+    for round in 1..=5 {
+        let replied = fx
+            .call(
+                &mind,
+                "reply",
+                json!({"handle": handle, "body": format!("reply {round}")}),
+            )
+            .await;
+        assert_eq!(replied["in_reply_to"], handle, "{replied}");
+    }
+    assert_eq!(fx.ms().thread_outline(&handle).unwrap().len(), 6);
+
+    // A small `limit` bounds the messages and flags the cut; the requested
+    // handle stays in the envelope.
+    let bounded = fx
+        .call(&mind, "thread", json!({"handle": handle, "limit": 3}))
+        .await;
+    assert_eq!(bounded["handle"], handle, "{bounded}");
+    assert_eq!(
+        bounded["messages"].as_array().unwrap().len(),
+        3,
+        "{bounded}"
+    );
+    assert_eq!(bounded["returned_messages"], 3, "{bounded}");
+    assert_eq!(bounded["total_messages"], 6, "{bounded}");
+    assert_eq!(bounded["truncated"], true, "{bounded}");
+
+    // The whole thread under the default bound is complete.
+    let whole = fx.call(&mind, "thread", json!({"handle": handle})).await;
+    assert_eq!(whole["messages"].as_array().unwrap().len(), 6, "{whole}");
+    assert_eq!(whole["returned_messages"], 6, "{whole}");
+    assert_eq!(whole["total_messages"], 6, "{whole}");
+    assert_eq!(whole["truncated"], false, "{whole}");
 }
 
 #[tokio::test]
