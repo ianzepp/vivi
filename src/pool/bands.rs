@@ -4,8 +4,11 @@
 //! A band is a model at an effort, never a model alone. A role's `model`
 //! field holds a band string such as `P2-S0`; a task body may carry a
 //! `band:` line that overrides the role's band for one assignment. A pool's
-//! `[pools.<name>.bands]` table (see [`super::config_bands`]) says which
-//! choice serves which band; the `S` speed axis is parsed and ignored.
+//! `[pools.<name>.bands]` table (see [`super::config_bands`]) lists the
+//! choices that serve a band, and every listed entry takes a share of the
+//! work by its checked `weight`; the `S` speed axis is parsed and ignored.
+
+use std::io;
 
 use super::config::PoolConfig;
 use super::config_bands::PoolBands;
@@ -47,8 +50,8 @@ fn band_digit(text: &str) -> Option<u8> {
     }
 }
 
-/// The model-and-reasoning pair a pool offers for a band: the first entry of
-/// the band's list.
+/// The model-and-reasoning pair a pool offers for a band: one entry of the
+/// band's list, drawn by checked weight.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     /// The band this choice serves, `0` to `5`.
@@ -59,28 +62,99 @@ pub struct Choice {
     pub reasoning: String,
 }
 
-/// The model-and-reasoning pair `pool` offers for `band`: the first entry of
-/// the band's list in the pool's `[pools.<name>.bands]` table. Later entries
-/// of the list are reserved and never chosen here.
+/// The model-and-reasoning pair `pool` offers for `band`: one entry of the
+/// band's list in the pool's `[pools.<name>.bands]`, drawn fresh on every
+/// call. It is not a primary with reserved spares and not first-then-fallback:
+/// every listed entry takes a share of the work, the share of its checked
+/// weight. The draw is fresh OS-backed randomness, never seeded from time,
+/// process or job identifiers; a band listing exactly one entry is returned
+/// directly, without drawing randomness.
 ///
 /// # Errors
 /// Returns an error naming the band, the pool and the bands the pool does
 /// serve when the pool has nothing for the band: send the job to a pool that
-/// serves it, or pass `--model`.
+/// serves it, or pass `--model`. Returns the checked-weight error when an
+/// entry carries an invalid `weight` even though it was built without
+/// validation, and an I/O error when the operating system will not hand over
+/// entropy; an entropy failure never falls back to a fixed entry.
 pub fn choose(config: &PoolConfig, pool: &str, band: u8) -> Result<Choice, VivariumError> {
-    let Some(entry) = config
+    choose_with(config, pool, band, &mut Os)
+}
+
+/// [`choose`] over an injected draw source, the deterministic seam tests
+/// drive with canned values instead of real entropy.
+fn choose_with(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+    draw: &mut dyn Draw,
+) -> Result<Choice, VivariumError> {
+    let key = format!("P{band}");
+    let Some(list) = config
         .bands
         .entries
-        .get(&format!("P{band}"))
-        .and_then(|list| list.first())
+        .get(&key)
+        .filter(|list| !list.is_empty())
     else {
         return Err(not_served(pool, band, &config.bands));
     };
+    let mut cumulative = Vec::with_capacity(list.len());
+    let mut total: u64 = 0;
+    for entry in list {
+        total += u64::from(entry.effective_weight(pool, &key)?);
+        cumulative.push(total);
+    }
+    let index = if list.len() == 1 {
+        0
+    } else {
+        let target = draw.select(total)?;
+        cumulative.partition_point(|&reached| reached <= target)
+    };
+    let entry = &list[index];
     Ok(Choice {
         band,
         model: entry.model.clone(),
         reasoning: entry.reasoning.clone(),
     })
+}
+
+/// The draw boundary of a band selection: where the drawn value comes from.
+/// Production draws fresh OS entropy; tests inject canned values to stay
+/// repeatable.
+trait Draw {
+    /// A uniform value in `0..below`, or an error when entropy fails. No
+    /// value of the range may be more likely than another.
+    fn select(&mut self, below: u64) -> Result<u64, VivariumError>;
+}
+
+/// The production draw: fresh OS-backed randomness.
+struct Os;
+
+impl Draw for Os {
+    fn select(&mut self, below: u64) -> Result<u64, VivariumError> {
+        if below <= 1 {
+            return Ok(0);
+        }
+        loop {
+            let mut word = [0u8; 8];
+            getrandom::fill(&mut word).map_err(|error| {
+                VivariumError::Io(io::Error::other(format!(
+                    "the band draw cannot read OS entropy: {error}"
+                )))
+            })?;
+            if let Some(value) = bounded(u64::from_le_bytes(word), below) {
+                return Ok(value);
+            }
+        }
+    }
+}
+
+/// The unbiased bounded reduction of one fresh word to `0..below`: mask the
+/// word to the power of two covering the range and reject anything still at
+/// or above `below`, so every value of the range is equally likely.
+fn bounded(word: u64, below: u64) -> Option<u64> {
+    let value = word & (below.next_power_of_two() - 1);
+    (value < below).then_some(value)
 }
 
 fn not_served(pool: &str, band: u8, bands: &PoolBands) -> VivariumError {
