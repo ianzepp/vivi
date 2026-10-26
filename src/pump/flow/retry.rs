@@ -15,6 +15,10 @@ use crate::pump::attempt_record;
 use crate::pump::envfail;
 use crate::pump::jobs::{JobOutcome, JobStatus, PoolJob};
 
+/// The durable bounded-retry decision and application a collector drives a
+/// classified failure through: persist the intent, enqueue the replacement.
+pub(crate) mod policy;
+
 /// Provider-side transient failure: a dropped upstream connection, a rate
 /// limit or overload (HTTP 429 included), or a recoverable server/gateway
 /// response.
