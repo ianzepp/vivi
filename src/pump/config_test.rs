@@ -1,11 +1,16 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::VivariumError;
+use crate::mailspace::Mailspace;
 use crate::mailspace::MailspaceConfig;
+use crate::mailspace::config_edit;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget, StepBudgets};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tempfile::{TempDir, tempdir};
+use toml_edit::{Array, value};
 
 /// A kind dispatching to `pool`.
 fn kind(pool: &str) -> Kind {
@@ -314,6 +319,108 @@ fn target_scope_defaults_and_explicit_empty_allow() {
         targets["app"].scope_deny,
         vec![String::from("src/generated/")]
     );
+}
+
+/// A project whose mailspace file declares two scope-policy targets, with
+/// their checkout directories on disk. The starter `[pump]` table stays.
+fn project_with_scope_targets() -> (TempDir, PathBuf) {
+    let tmp = tempdir().expect("temp project");
+    Mailspace::init_with_defaults(Some(tmp.path())).expect("project mailspace");
+    fs::create_dir_all(tmp.path().join("app")).expect("app checkout");
+    fs::create_dir_all(tmp.path().join("locked")).expect("locked checkout");
+    let config = tmp.path().join(".vivi/mailspace.toml");
+    let raw = fs::read_to_string(&config).expect("starter config");
+    let targets = concat!(
+        "\n[pump.targets.app]\n",
+        "path = \"app\"\n",
+        "scope_allow = [\"crates/\", \"lib\"]\n",
+        "scope_deny = [\"crates/vendor/\"]\n\n",
+        "[pump.targets.locked]\n",
+        "path = \"locked\"\n",
+        "scope_allow = []\n",
+    );
+    fs::write(&config, format!("{raw}{targets}")).expect("targets appended");
+    (tmp, config)
+}
+
+#[test]
+fn target_scope_policy_round_trips() {
+    let (tmp, config) = project_with_scope_targets();
+    let cfg = pump(&fs::read_to_string(&config).expect("config text"));
+    let declared = cfg.target_configs();
+    assert_eq!(
+        declared["app"].scope_allow,
+        Some(vec![String::from("crates/"), String::from("lib")])
+    );
+    assert_eq!(
+        declared["app"].scope_deny,
+        vec![String::from("crates/vendor/")]
+    );
+    assert_eq!(declared["locked"].scope_allow, Some(Vec::new()));
+
+    // Serde: a rewrite of the parsed config keeps every policy value, and
+    // the explicit empty allow stays a present empty list.
+    let mut file = toml::value::Table::new();
+    file.insert("name".into(), toml::Value::from("t"));
+    file.insert(
+        "pump".into(),
+        toml::Value::try_from(&cfg).expect("pump config should serialize"),
+    );
+    let text = toml::to_string(&file).expect("table should serialize");
+    assert!(text.contains("scope_allow = []"), "{text}");
+    let rewritten = pump(&text).target_configs();
+    assert_eq!(rewritten["app"].scope_allow, declared["app"].scope_allow);
+    assert_eq!(rewritten["app"].scope_deny, declared["app"].scope_deny);
+    assert_eq!(rewritten["locked"].scope_allow, Some(Vec::new()));
+
+    // A guarded edit annotating the policy keeps the comment and the policy.
+    config_edit::guarded(tmp.path(), |doc| {
+        let app = doc["pump"]["targets"]["app"]
+            .as_table_mut()
+            .expect("app target");
+        app.key_decor_mut("scope_allow")
+            .expect("scope_allow key")
+            .set_prefix("# operator scope: units may not widen this\n");
+        Ok(())
+    })
+    .expect("the annotation edit is kept");
+    let annotated = fs::read_to_string(&config).expect("config text");
+    assert!(
+        annotated.contains("# operator scope: units may not widen this\nscope_allow"),
+        "{annotated}"
+    );
+    assert_eq!(
+        pump(&annotated).target_configs()["app"].scope_allow,
+        declared["app"].scope_allow
+    );
+
+    // An unrelated guarded edit preserves every target's policy too.
+    config_edit::guarded(tmp.path(), |doc| {
+        doc["pump"]["tick"] = value(42);
+        Ok(())
+    })
+    .expect("the unrelated edit is kept");
+    let edited = pump(&fs::read_to_string(&config).expect("config text"));
+    assert_eq!(edited.tick, 42);
+    let kept = edited.target_configs();
+    assert_eq!(kept["app"].scope_allow, declared["app"].scope_allow);
+    assert_eq!(kept["app"].scope_deny, declared["app"].scope_deny);
+    assert_eq!(kept["locked"].scope_allow, Some(Vec::new()));
+
+    // A policy edit that decides scope inside a reserved tree is rolled
+    // back: the file and the effective policy are exactly what they were.
+    let before = fs::read(&config).expect("config bytes");
+    let denied = config_edit::guarded(tmp.path(), |doc| {
+        let mut deny = Array::new();
+        deny.push("src/generated/");
+        doc["pump"]["targets"]["locked"]["scope_deny"] = value(deny);
+        Ok(())
+    });
+    assert!(denied.is_err(), "a reserved-tree deny must not be kept");
+    assert_eq!(fs::read(&config).expect("config bytes"), before);
+    let rolled_back = pump(&fs::read_to_string(&config).expect("config text")).target_configs();
+    assert_eq!(rolled_back["locked"].scope_allow, Some(Vec::new()));
+    assert_eq!(rolled_back["locked"].scope_deny, Vec::<String>::new());
 }
 
 #[test]
