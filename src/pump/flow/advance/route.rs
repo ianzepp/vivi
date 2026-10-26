@@ -11,7 +11,7 @@ use crate::error::VivariumError;
 use crate::letter::read::step_of;
 use crate::letter::render;
 use crate::letter::work::TaskFront;
-use crate::pump::flow::def::{FlowDef, FlowEdge, FlowNode, NodeClass};
+use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
@@ -47,7 +47,9 @@ pub(crate) struct Terminal {
 /// What routing did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Routed {
-    /// Set when the word is outside the step's word set; nothing was changed.
+    /// Set when the word is outside the step's word set or a routing
+    /// prerequisite is unmet (a build-flow CTO rework with no recorded
+    /// need-branch row); nothing was changed.
     pub rejected: Option<String>,
     /// Tasks sent, in send order.
     pub sent: Vec<Sent>,
@@ -92,6 +94,12 @@ pub(crate) fn route<M: MailWriter + MailReader>(
             ..Routed::default()
         });
     }
+    if let Some(reason) = preflight(store, def, node, outcome)? {
+        return Ok(Routed {
+            rejected: Some(reason),
+            ..Routed::default()
+        });
+    }
     // Recorded before expansion: a join fed by this step decides inside this
     // call and must already see the payload.
     if node.class.is_step() {
@@ -129,6 +137,30 @@ pub(crate) fn route<M: MailWriter + MailReader>(
     walk.bind()?;
     walk.close_predecessor()?;
     Ok(walk.routed)
+}
+
+/// Routing prerequisites checked before any effect. Only a build-flow CTO
+/// answering `rework` has one: a recorded need-branch row must exist, or the
+/// restarted run would have no branch to rework. Row existence is the whole
+/// check; no remote ref, merge state or ownership is consulted. Read or
+/// decode failures propagate as errors, never as a missing row.
+fn preflight(
+    store: &PumpStore,
+    def: &FlowDef,
+    node: &FlowNode,
+    outcome: &Outcome,
+) -> Result<Option<String>, VivariumError> {
+    if def.kind != FlowKind::Build || node.class != NodeClass::Cto || outcome.word != "rework" {
+        return Ok(None);
+    }
+    if store.need_branch(&outcome.need)?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "need `{}`: rework refused: an existing need-branch row is required; \
+         record the branch first, or answer research, plan, slice or lock instead",
+        outcome.need
+    )))
 }
 
 fn find_node<'d>(def: &'d FlowDef, id: &str) -> Result<&'d FlowNode, VivariumError> {
