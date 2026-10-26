@@ -1,5 +1,7 @@
 //! Tests for the planner step handler.
 
+use std::sync::Arc;
+
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
@@ -13,7 +15,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
@@ -21,11 +23,21 @@ use crate::routing::RoutedRole;
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
-const THREAD: &str = "need thread: build the widget";
+const THREAD_BODY: &str = "need thread: build the widget";
+
+/// The canned `need show --json` reply of the rig: the need root only.
+fn thread_json(handle: &str) -> String {
+    serde_json::to_string(&serde_json::json!([
+        {"handle": handle, "message_id": "m1", "from": "operator@local",
+         "date": "2026-01-01T00:00:00Z", "subject": "Need", "body": THREAD_BODY}
+    ]))
+    .expect("thread json")
+}
 
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     run: RunRow,
@@ -52,7 +64,7 @@ fn rig_with(cfg: PumpConfig, with_role: bool, run_no: u32) -> Result<Rig, Vivari
         });
     }
     ctx = ctx.with_routing(routing);
-    host.reply("need show", 0, THREAD);
+    host.reply("need show", 0, &thread_json(NEED));
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let run = RunRow {
         need: NEED.into(),
@@ -73,6 +85,7 @@ fn rig_with(cfg: PumpConfig, with_role: bool, run_no: u32) -> Result<Rig, Vivari
     Ok(Rig {
         _dir: dir,
         ctx,
+        host,
         store,
         mail,
         run,
@@ -120,9 +133,48 @@ fn plan_is_a_read_only_planner_job_with_the_thread() -> R {
     assert!(spec.read_only);
     assert!(spec.body.contains("need: n1\nrun: r1\n"), "{}", spec.body);
     assert!(spec.body.contains("targets: default"), "{}", spec.body);
-    assert!(spec.body.contains(THREAD), "{}", spec.body);
+    assert!(
+        spec.body.contains(&format!("{NEED}: {THREAD_BODY}")),
+        "{}",
+        spec.body
+    );
     assert!(!spec.body.contains("first plan:"), "{}", spec.body);
     assert!(!spec.body.contains("prior need branch"), "{}", spec.body);
+    // The request records exactly the thread identities the brief carried.
+    assert_eq!(
+        crate::pump::flow::step_inputs::input_identities(&spec.payload),
+        vec!["m1".to_owned()]
+    );
+    Ok(())
+}
+
+#[test]
+fn plan_stamps_every_reply_the_thread_already_carried() -> R {
+    let mut rig = rig(true, 1)?;
+    // Two replies landed in the same second before the planner read the
+    // thread: both are already included, and both stay distinct.
+    rig.host.reply(
+        "need show",
+        0,
+        &serde_json::to_string(&serde_json::json!([
+            {"handle": NEED, "message_id": "m1", "date": "2026-01-01T00:00:00Z",
+             "body": THREAD_BODY},
+            {"handle": "reply-1", "message_id": "m2", "date": "2026-01-01T00:00:00Z",
+             "body": "first"},
+            {"handle": "reply-2", "message_id": "m3", "date": "2026-01-01T00:00:00Z",
+             "body": "second"}
+        ]))
+        .expect("thread json"),
+    );
+
+    let spec = start(&rig, "plan")?;
+
+    assert!(spec.body.contains("reply-1: first"), "{}", spec.body);
+    assert!(spec.body.contains("reply-2: second"), "{}", spec.body);
+    assert_eq!(
+        crate::pump::flow::step_inputs::input_identities(&spec.payload),
+        vec!["m1".to_owned(), "m2".to_owned(), "m3".to_owned()]
+    );
     Ok(())
 }
 
@@ -137,7 +189,8 @@ fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
     front.depends_on = vec![String::from("a1"), String::from("b2")];
     let body = crate::letter::fixture::need_body_with(&front, "prose");
     let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
-    rig.run.need = need;
+    rig.run.need = need.clone();
+    rig.host.reply("need show", 0, &thread_json(&need));
 
     let spec = start(&rig, "plan")?;
 
@@ -153,6 +206,7 @@ fn a_need_root_without_front_matter_fails_the_brief_naming_the_handle() -> R {
         .mail
         .send_step("pump", "pump", "the need", "Build the widget", &[])?;
     rig.run.need = need.clone();
+    rig.host.reply("need show", 0, &thread_json(&need));
 
     let Err(err) = start(&rig, "plan") else {
         return Err(VivariumError::Other(String::from("brief did not fail")));

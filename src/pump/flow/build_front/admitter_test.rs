@@ -25,6 +25,15 @@ type Reg = Registry<Jobs, FakeMail>;
 
 const NEED: &str = "n1";
 
+/// The canned `need show --json` reply of the rig: the need root only.
+fn thread_json() -> String {
+    serde_json::to_string(&serde_json::json!([
+        {"handle": NEED, "message_id": "m1", "from": "operator@local",
+         "date": "2026-01-01T00:00:00Z", "subject": "Need", "body": "the need thread"}
+    ]))
+    .expect("thread json")
+}
+
 #[derive(Default)]
 struct Jobs {
     jobs: BTreeMap<String, PoolJob>,
@@ -56,7 +65,7 @@ fn rig() -> Result<Rig, VivariumError> {
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), cfg);
-    host.reply("need show", 0, "the need thread");
+    host.reply("need show", 0, &thread_json());
     let mut routing = (*ctx.routing).clone();
     routing.roles.push(RoutedRole {
         name: String::from(ADMITTER_ROLE),
@@ -164,6 +173,11 @@ fn admit1_is_a_read_only_admitter_job_carrying_the_plan_and_thread() -> R {
     assert!(spec.body.contains("the need thread"), "{}", spec.body);
     assert!(spec.body.contains("need: n1"), "{}", spec.body);
     assert!(spec.body.contains("run: 1"), "{}", spec.body);
+    // The request records exactly the thread identities the brief carried.
+    assert_eq!(
+        crate::pump::flow::step_inputs::input_identities(&spec.payload),
+        vec!["m1".to_owned()]
+    );
     Ok(())
 }
 

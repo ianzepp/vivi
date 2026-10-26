@@ -9,7 +9,8 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::{
-    done_step, need_thread, read_only_job, step_replies, targets,
+    NeedThread, done_step, need_thread, read_only_job, stamp_input_identities, step_replies,
+    targets,
 };
 use crate::pump::jobs::JobStore;
 
@@ -27,8 +28,9 @@ struct PlannerStep;
 
 impl StepHandler for PlannerStep {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
-        let brief = brief(cx, step)?;
-        let spec = read_only_job(
+        let thread = need_thread(cx.ctx, &cx.run.need)?;
+        let brief = brief(cx, step, &thread)?;
+        let mut spec = read_only_job(
             cx.ctx,
             cx.run,
             step,
@@ -36,12 +38,14 @@ impl StepHandler for PlannerStep {
             PUMP_PLANNER_ROLE,
             &brief,
         )?;
+        stamp_input_identities(&mut spec.payload, &thread.included);
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
 
-/// The planner's brief for `step`.
-fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
+/// The planner's brief for `step`. The thread came from the same read whose
+/// message identities `start` stamps into the job payload.
+fn brief(cx: &StartCx<'_>, step: &StepRow, thread: &NeedThread) -> Result<String, VivariumError> {
     let need = &cx.run.need;
     let mut text = format!("need: {need}\nrun: r{}\n", cx.run.run);
     let fmt_err = |e: std::fmt::Error| VivariumError::Other(e.to_string());
@@ -52,7 +56,7 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
     )
     .map_err(fmt_err)?;
     text.push_str(&front_lines(cx, need)?);
-    writeln!(text, "thread:\n{}", need_thread(cx.ctx, need)?).map_err(fmt_err)?;
+    writeln!(text, "thread:\n{}", thread.text).map_err(fmt_err)?;
     if step.node == SECOND_PLAN {
         writeln!(
             text,

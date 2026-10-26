@@ -13,6 +13,7 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::step_inputs::input_identities;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::JobSpec;
 use crate::pump::store::step_payload::StepPayloadRow;
@@ -193,6 +194,46 @@ fn a_first_pass_is_a_read_only_auditor_job_with_range_and_plan() {
     assert!(spec.body.contains("reply-1-r0"));
     assert!(spec.body.contains("in parallel"));
     assert!(!spec.body.contains("Second pass"));
+    // The reply was already in the thread at read time: it is named, next
+    // to the need root, from the same read the brief was built from.
+    assert_eq!(
+        input_identities(&spec.payload),
+        vec!["m1".to_owned(), "m2".to_owned()]
+    );
+}
+
+#[test]
+fn a_thread_message_the_cap_only_partly_shows_is_not_named() {
+    let f = fixture();
+    with_branch(&f);
+    plan(&f);
+    // The root's prose pushes the rendered thread over the cap, so the
+    // kept tail shows only part of the root's line.
+    f.host.reply(
+        "need show",
+        0,
+        &serde_json::to_string(&json!([
+            {"handle": NEED, "message_id": "m1", "from": "operator@local",
+             "subject": "Need",
+             "body": crate::letter::fixture::need_body(&["Build the thing"], &"x".repeat(60_000))},
+            {"handle": "reply-1", "message_id": "m2", "from": "operator@local",
+             "subject": "Need amendment", "body": "keep two"},
+            {"handle": "reply-2", "message_id": "m3", "from": "operator@local",
+             "subject": "Need amendment", "body": "keep three"}
+        ]))
+        .unwrap(),
+    );
+
+    let spec = start(&f, "audit1").unwrap();
+
+    assert!(spec.body.contains("[...]"), "{}", spec.body);
+    assert!(spec.body.contains("reply-1: keep two"), "{}", spec.body);
+    assert!(spec.body.contains("reply-2: keep three"), "{}", spec.body);
+    // The partly shown root is not claimed as delivered input.
+    assert_eq!(
+        input_identities(&spec.payload),
+        vec!["m2".to_owned(), "m3".to_owned()]
+    );
 }
 
 #[test]

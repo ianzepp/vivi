@@ -3,6 +3,8 @@
 //! The planner, admitter, slicer, fanout and reslice handlers build their
 //! briefs from the same few inputs; they live here once.
 
+use serde_json::Value;
+
 use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
 use crate::pump::envelope::roles::RoleKind;
@@ -10,14 +12,14 @@ use crate::pump::flow::def::{FlowDef, NodeClass};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::outcome::role_job;
 use crate::pump::flow::slice_dispatch::SliceMail;
-use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::host::Ctx;
 use crate::pump::jobs::JobSpec;
 use crate::pump::store::PumpStore;
 
 /// A pool worker's result reply starts with this text.
 pub const POOL_RESULT_MARKER: &str = "pool result ";
 
-/// The longest need thread kept, in characters.
+/// The longest need thread kept, in bytes.
 const THREAD_CAP: usize = 40_000;
 
 /// The agent's final message of every pool result reply on `task`, newest first.
@@ -33,22 +35,116 @@ pub fn step_replies(mail: &dyn SliceMail, task: &str) -> Result<Vec<String>, Viv
         .collect())
 }
 
-/// The thread of `need` (`need show`), cut at 40 000 characters.
+/// A need thread read once: the rendered brief text and the identities of
+/// the messages that text actually carries. Nothing later that grows the
+/// thread can retroactively join this record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeedThread {
+    /// The `handle: body` lines of the thread, cut between messages at
+    /// [`THREAD_CAP`] bytes with a `[thread cut]` marker.
+    pub text: String,
+    /// The identity of every message whose line is in `text`, in thread
+    /// order. A message the cut leaves out is never named here.
+    pub included: Vec<String>,
+}
+
+/// The thread of `need` and the message identities it includes, from one
+/// `need show --json` read, so the rendered text and the record of what it
+/// supplied can never drift apart. A message's identity is its
+/// `message_id`, or its mailspace handle when it has no Message-ID.
 ///
 /// # Errors
-/// Returns [`VivariumError`] when `need show` fails.
-pub fn need_thread(ctx: &Ctx, need: &str) -> Result<String, VivariumError> {
-    let out = ctx.vivi(&format!("need show {}", shell_quote(need)), 60);
-    if out.code != 0 {
-        return Err(VivariumError::Message(format!(
-            "need show {need} failed (exit {})",
-            out.code
-        )));
+/// Returns [`VivariumError`] when the thread cannot be read as messages.
+pub fn need_thread(ctx: &Ctx, need: &str) -> Result<NeedThread, VivariumError> {
+    let messages = crate::pump::flow::verify_inputs::need_thread(ctx, need)?;
+    Ok(render_thread(&messages))
+}
+
+/// The thread as `handle: body` lines, each paired with the identity of the
+/// message the line carries. Messages without a handle render nothing.
+#[must_use]
+pub(crate) fn thread_lines(messages: &[Value]) -> Vec<(String, String)> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let handle = message["handle"].as_str()?;
+            let identity = message["message_id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .unwrap_or(handle);
+            Some((
+                identity.to_owned(),
+                format!(
+                    "{handle}: {}",
+                    message["body"].as_str().unwrap_or("").trim()
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Render the thread lines, cut between messages at [`THREAD_CAP`] bytes,
+/// naming only the messages whose whole line the text keeps.
+#[must_use]
+pub(crate) fn render_thread(messages: &[Value]) -> NeedThread {
+    let mut text = String::new();
+    let mut included = Vec::new();
+    for (identity, line) in thread_lines(messages) {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        if text.len() + line.len() > THREAD_CAP {
+            text.push_str("[thread cut]");
+            break;
+        }
+        text.push_str(&line);
+        included.push(identity);
     }
-    match out.text.char_indices().nth(THREAD_CAP) {
-        Some((at, _)) => Ok(format!("{}\n[thread cut]", &out.text[..at])),
-        None => Ok(out.text),
+    NeedThread { text, included }
+}
+
+/// The job payload key holding the message identities a role request's
+/// brief actually carried; absent on historical jobs.
+pub const INPUT_IDENTITIES: &str = "input_identities";
+
+/// Stamp `identities` into `payload` as the message identities the request's
+/// brief carried. Rerun, budget-retry and correction copies keep the stamp
+/// because they copy the payload. Nothing is stamped for an empty list, so
+/// an absent key always reads as "no record", never as "no inputs".
+pub fn stamp_input_identities(payload: &mut serde_json::Value, identities: &[String]) {
+    if identities.is_empty() {
+        return;
     }
+    if !payload.is_object() {
+        *payload = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(map) = payload.as_object_mut() {
+        map.insert(
+            INPUT_IDENTITIES.to_owned(),
+            serde_json::Value::Array(
+                identities
+                    .iter()
+                    .map(|identity| serde_json::Value::String(identity.clone()))
+                    .collect(),
+            ),
+        );
+    }
+}
+
+/// The message identities `payload` says its brief carried; empty when the
+/// job predates the stamp.
+#[must_use]
+pub fn input_identities(payload: &serde_json::Value) -> Vec<String> {
+    payload
+        .get(INPUT_IDENTITIES)
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The ids of every configured target.

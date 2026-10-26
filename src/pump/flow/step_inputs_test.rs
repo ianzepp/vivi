@@ -1,10 +1,11 @@
 //! Tests for the shared step-brief readers.
 
+use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
-    role_job, step_replies, targets,
+    POOL_RESULT_MARKER, done_step, input_identities, make_read_only, need_thread, predecessor_step,
+    read_only_job, role_job, stamp_input_identities, step_replies, targets,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
@@ -84,6 +85,11 @@ fn step_replies_are_newest_first_and_reduced_to_the_agent_message() -> R {
     Ok(())
 }
 
+/// A canned `need show --json` reply carrying `messages`.
+fn thread_json(messages: serde_json::Value) -> String {
+    serde_json::to_string(&messages).expect("thread json")
+}
+
 #[test]
 fn need_thread_fails_on_a_nonzero_exit_naming_the_need() -> R {
     let rig = rig()?;
@@ -96,14 +102,122 @@ fn need_thread_fails_on_a_nonzero_exit_naming_the_need() -> R {
 }
 
 #[test]
-fn need_thread_keeps_a_short_thread_and_cuts_a_long_one() -> R {
+fn need_thread_renders_lines_and_names_the_messages_it_carried() -> R {
     let rig = rig()?;
-    rig.host.reply("need show", 0, "short thread");
-    assert_eq!(need_thread(&rig.ctx, NEED)?, "short thread");
+    rig.host.reply(
+        "need show",
+        0,
+        &thread_json(json!([
+            {"handle": NEED, "message_id": "m1", "date": "2026-01-01T00:00:00Z",
+             "body": "the need letter"},
+            {"handle": "reply-1", "message_id": "m2", "date": "2026-01-01T00:00:00Z",
+             "body": "a reply\n"}
+        ])),
+    );
 
-    rig.host.reply("need show", 0, &"x".repeat(40_001));
-    let cut = need_thread(&rig.ctx, NEED)?;
-    assert_eq!(cut, format!("{}\n[thread cut]", "x".repeat(40_000)));
+    let thread = need_thread(&rig.ctx, NEED)?;
+
+    assert_eq!(
+        thread.text,
+        format!("{NEED}: the need letter\nreply-1: a reply")
+    );
+    assert_eq!(thread.included, vec!["m1".to_owned(), "m2".to_owned()]);
+    Ok(())
+}
+
+#[test]
+fn need_thread_cuts_between_messages_and_leaves_the_cut_one_out() -> R {
+    let rig = rig()?;
+    rig.host.reply(
+        "need show",
+        0,
+        &thread_json(json!([
+            {"handle": NEED, "message_id": "m1", "body": "short"},
+            {"handle": "reply-1", "message_id": "m2", "body": "x".repeat(40_001)}
+        ])),
+    );
+
+    let thread = need_thread(&rig.ctx, NEED)?;
+
+    assert_eq!(thread.text, format!("{NEED}: short\n[thread cut]"));
+    // The oversized reply is only partly representable, so it is never
+    // recorded as an input of this read.
+    assert_eq!(thread.included, vec!["m1".to_owned()]);
+    Ok(())
+}
+
+#[test]
+fn two_replies_in_the_same_second_stay_distinct_identities() -> R {
+    let rig = rig()?;
+    rig.host.reply(
+        "need show",
+        0,
+        &thread_json(json!([
+            {"handle": NEED, "message_id": "m1", "date": "2026-01-01T00:00:00Z",
+             "body": "the need letter"},
+            {"handle": "reply-1", "message_id": "m2", "date": "2026-01-01T00:00:00Z",
+             "body": "first"},
+            {"handle": "reply-2", "message_id": "m3", "date": "2026-01-01T00:00:00Z",
+             "body": "second"}
+        ])),
+    );
+
+    let thread = need_thread(&rig.ctx, NEED)?;
+
+    // The timestamp is shared; the identities still name each reply once.
+    assert_eq!(
+        thread.included,
+        vec!["m1".to_owned(), "m2".to_owned(), "m3".to_owned()]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reply_after_the_read_never_joins_the_recorded_identities() -> R {
+    let rig = rig()?;
+    rig.host.reply(
+        "need show",
+        0,
+        &thread_json(json!([
+            {"handle": NEED, "message_id": "m1", "body": "the need letter"}
+        ])),
+    );
+    let first = need_thread(&rig.ctx, NEED)?;
+    let mut payload = serde_json::Value::Null;
+    stamp_input_identities(&mut payload, &first.included);
+
+    // The reply arrives only after the snapshot: a later read carries it,
+    // but the record already made from the earlier read keeps naming just
+    // what that read actually supplied.
+    rig.host.reply(
+        "need show",
+        0,
+        &thread_json(json!([
+            {"handle": NEED, "message_id": "m1", "body": "the need letter"},
+            {"handle": "reply-1", "message_id": "m2", "body": "late"}
+        ])),
+    );
+    assert_eq!(
+        need_thread(&rig.ctx, NEED)?.included,
+        vec!["m1".to_owned(), "m2".to_owned()]
+    );
+
+    assert_eq!(input_identities(&payload), vec!["m1".to_owned()]);
+    Ok(())
+}
+
+#[test]
+fn input_identity_stamps_round_trip_and_an_empty_list_stamps_nothing() -> R {
+    let mut payload = serde_json::Value::Null;
+
+    stamp_input_identities(&mut payload, &[]);
+    assert!(payload.get(super::INPUT_IDENTITIES).is_none());
+
+    stamp_input_identities(&mut payload, &["m1".to_owned(), "m2".to_owned()]);
+    assert_eq!(
+        input_identities(&payload),
+        vec!["m1".to_owned(), "m2".to_owned()]
+    );
     Ok(())
 }
 

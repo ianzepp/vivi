@@ -8,6 +8,7 @@ use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
+use crate::pump::flow::step_inputs::{stamp_input_identities, thread_lines};
 use crate::pump::flow::verify_inputs::{
     admitted_plan, audit_context, branch_range, capped, latest_of_class, need_thread, requirements,
 };
@@ -44,7 +45,7 @@ impl StepHandler for AuditStart {
             "flow-audit",
             RoleKind::Auditor,
             "auditor",
-            &brief,
+            &brief.0,
         );
         spec.read_only = true;
         spec.builtin_role = Some("auditor".into());
@@ -53,9 +54,14 @@ impl StepHandler for AuditStart {
         if base != tip {
             spec.with = vec![base];
         }
+        stamp_input_identities(&mut spec.payload, &brief.1);
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
+
+/// The brief and the message identities its need thread carried, from the
+/// one thread read `brief` already makes.
+type Brief = (String, Vec<String>);
 
 fn brief(
     cx: &StartCx<'_>,
@@ -64,7 +70,7 @@ fn brief(
     target: &str,
     base: &str,
     tip: &str,
-) -> Result<String, VivariumError> {
+) -> Result<Brief, VivariumError> {
     let need = &cx.run.need;
     let messages = need_thread(cx.ctx, need)?;
     let mut out = format!(
@@ -77,28 +83,43 @@ fn brief(
         None => out.push_str("(no admitted plan recorded)"),
     }
     out.push_str("\n\n## Need thread\n\n");
-    out.push_str(&capped(&thread_lines(&messages), THREAD_CAP));
+    let (thread, identities) = thread_block(&messages);
+    out.push_str(&thread);
     out.push_str("\n\n## Requirements to account for\n\n");
     for requirement in requirements(cx.ctx, need, &messages)? {
         out.push_str(&format!("- {}: {}\n", requirement.id, requirement.text));
     }
     out.push_str(&second_pass(cx, step)?);
-    Ok(out)
+    Ok((out, identities))
 }
 
-/// The thread as `handle: body` lines.
-fn thread_lines(messages: &[Value]) -> String {
-    messages
+/// The capped thread block, and the identities of the messages it actually
+/// carries: `capped` keeps the tail, so a message whose line the cut only
+/// partly shows is not named — omitted text is never claimed as delivered.
+fn thread_block(messages: &[Value]) -> (String, Vec<String>) {
+    let lines = thread_lines(messages);
+    let rendered = lines
         .iter()
-        .filter_map(|message| {
-            let handle = message["handle"].as_str()?;
-            Some(format!(
-                "{handle}: {}",
-                message["body"].as_str().unwrap_or("").trim()
-            ))
-        })
+        .map(|(_, line)| line.as_str())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    let kept = capped(&rendered, THREAD_CAP);
+    // The byte offset in `rendered` where the kept tail begins; 0 when
+    // nothing was cut.
+    let start = if kept == rendered {
+        0
+    } else {
+        rendered.len() - (kept.len() - "[...]\n".len())
+    };
+    let mut identities = Vec::new();
+    let mut offset = 0;
+    for (identity, line) in &lines {
+        if offset >= start {
+            identities.push(identity.clone());
+        }
+        offset += line.len() + 1;
+    }
+    (kept, identities)
 }
 
 /// The node of the second audit pass, the only one that reaches into an earlier run.

@@ -15,13 +15,12 @@ struct AdmitterStep;
 impl StepHandler for AdmitterStep {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let plan = plan_of(cx, step)?;
+        let thread = step_inputs::need_thread(cx.ctx, &cx.run.need)?;
         let brief = format!(
             "need: {}\nrun: {}\n\nplan:\n{plan}\n\nthread:\n{}",
-            cx.run.need,
-            cx.run.run,
-            step_inputs::need_thread(cx.ctx, &cx.run.need)?,
+            cx.run.need, cx.run.run, thread.text,
         );
-        let spec = step_inputs::read_only_job(
+        let mut spec = step_inputs::read_only_job(
             cx.ctx,
             cx.run,
             step,
@@ -29,6 +28,7 @@ impl StepHandler for AdmitterStep {
             ADMITTER_ROLE,
             &brief,
         )?;
+        step_inputs::stamp_input_identities(&mut spec.payload, &thread.included);
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
