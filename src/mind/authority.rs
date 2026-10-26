@@ -21,6 +21,22 @@ use super::config::{AuthorityStage, Budgets};
 pub enum Action {
     /// Read pump status, health and logs.
     ReadStatus,
+    /// Read the pump's live log tail.
+    ReadPumpLog,
+    /// Read the pump's past runs.
+    ReadPumpHistory,
+    /// Read one need's current state.
+    ReadNeed,
+    /// Read one need's letter thread.
+    ReadNeedThread,
+    /// Read one need's unit tasks.
+    ReadNeedUnits,
+    /// Read one task's letter thread.
+    ReadTaskThread,
+    /// Read the mailspace configuration.
+    ReadConfig,
+    /// Read the work pool and its bands.
+    ReadPool,
     /// Write a letter to the operator.
     LetterToOperator,
     /// Escalate: a letter to the operator flagged as needing a decision.
@@ -37,6 +53,22 @@ pub enum Action {
     Answer,
     /// `vivi pump unlock <need>`.
     Unlock,
+    /// Reply into an existing need's thread.
+    ReplyNeed,
+    /// File a new need against an existing causal need.
+    FileNeed,
+    /// Dispatch one of an existing need's unit tasks.
+    DispatchNeed,
+    /// Change an existing need's priority.
+    SetPriority,
+    /// Withdraw an existing need.
+    WithdrawNeed,
+    /// Change the model behind a role.
+    SetRoleModel,
+    /// Change the work pool's capacity.
+    SetPoolCap,
+    /// Change the work pool's band.
+    SetPoolBand,
     /// File a fix need to the vivi project through the normal pump.
     FileFixNeed,
     /// `vivi update --version <v>` after an operator-cut release. Stub.
@@ -51,6 +83,14 @@ impl Action {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReadStatus => "read-status",
+            Self::ReadPumpLog => "read-pump-log",
+            Self::ReadPumpHistory => "read-pump-history",
+            Self::ReadNeed => "read-need",
+            Self::ReadNeedThread => "read-need-thread",
+            Self::ReadNeedUnits => "read-need-units",
+            Self::ReadTaskThread => "read-task-thread",
+            Self::ReadConfig => "read-config",
+            Self::ReadPool => "read-pool",
             Self::LetterToOperator => "letter-to-operator",
             Self::Escalate => "escalate",
             Self::PausePump => "pause-pump",
@@ -59,6 +99,14 @@ impl Action {
             Self::Replan => "replan",
             Self::Answer => "answer",
             Self::Unlock => "unlock",
+            Self::ReplyNeed => "reply-need",
+            Self::FileNeed => "file-need",
+            Self::DispatchNeed => "dispatch-need",
+            Self::SetPriority => "set-priority",
+            Self::WithdrawNeed => "withdraw-need",
+            Self::SetRoleModel => "set-role-model",
+            Self::SetPoolCap => "set-pool-cap",
+            Self::SetPoolBand => "set-pool-band",
             Self::FileFixNeed => "file-fix-need",
             Self::Upgrade => "upgrade",
             Self::SelfRelease => "self-release",
@@ -69,25 +117,55 @@ impl Action {
     #[must_use]
     pub fn required_stage(self) -> AuthorityStage {
         match self {
-            Self::ReadStatus | Self::LetterToOperator | Self::Escalate => AuthorityStage::Observe,
+            Self::ReadStatus
+            | Self::ReadPumpLog
+            | Self::ReadPumpHistory
+            | Self::ReadNeed
+            | Self::ReadNeedThread
+            | Self::ReadNeedUnits
+            | Self::ReadTaskThread
+            | Self::ReadConfig
+            | Self::ReadPool
+            | Self::LetterToOperator
+            | Self::Escalate => AuthorityStage::Observe,
             Self::PausePump
             | Self::ResumePump
             | Self::Requeue
             | Self::Replan
             | Self::Answer
-            | Self::Unlock => AuthorityStage::Unstick,
-            Self::FileFixNeed => AuthorityStage::FileFixes,
+            | Self::Unlock
+            | Self::ReplyNeed
+            | Self::DispatchNeed
+            | Self::SetPriority
+            | Self::WithdrawNeed
+            | Self::SetRoleModel
+            | Self::SetPoolCap
+            | Self::SetPoolBand => AuthorityStage::Unstick,
+            Self::FileNeed | Self::FileFixNeed => AuthorityStage::FileFixes,
             Self::Upgrade => AuthorityStage::UpgradeOnApproval,
             Self::SelfRelease => AuthorityStage::SelfRelease,
         }
     }
 
-    /// Whether the action spends the per-need budget.
+    /// Whether the action spends the per-need budget. Filing and tuning
+    /// spend the budget of the existing causal need they name.
     #[must_use]
     pub fn need_scoped(self) -> bool {
         matches!(
             self,
-            Self::Requeue | Self::Replan | Self::Answer | Self::Unlock
+            Self::Requeue
+                | Self::Replan
+                | Self::Answer
+                | Self::Unlock
+                | Self::ReplyNeed
+                | Self::FileNeed
+                | Self::DispatchNeed
+                | Self::SetPriority
+                | Self::WithdrawNeed
+                | Self::SetRoleModel
+                | Self::SetPoolCap
+                | Self::SetPoolBand
+                | Self::FileFixNeed
         )
     }
 
@@ -97,7 +175,17 @@ impl Action {
     pub fn mutates(self) -> bool {
         !matches!(
             self,
-            Self::ReadStatus | Self::LetterToOperator | Self::Escalate
+            Self::ReadStatus
+                | Self::ReadPumpLog
+                | Self::ReadPumpHistory
+                | Self::ReadNeed
+                | Self::ReadNeedThread
+                | Self::ReadNeedUnits
+                | Self::ReadTaskThread
+                | Self::ReadConfig
+                | Self::ReadPool
+                | Self::LetterToOperator
+                | Self::Escalate
         )
     }
 }
