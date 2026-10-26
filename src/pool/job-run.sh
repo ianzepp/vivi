@@ -937,9 +937,16 @@ if [ "${AGENT_RC:-0}" != 0 ]; then
   COMMIT_ALLOW=(--allow-empty)
 fi
 if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
+  # Git identity environment variables take precedence over user
+  # configuration, so `-c user.*` would lose to inherited GIT_AUTHOR_* /
+  # GIT_COMMITTER_*; assign the pool identity command-locally instead.
   as_hand git add -A && { [ -z "${BUILD_DIR:-}" ] || as_hand git reset -q -- "$BUILD_DIR"; } \
-    && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
-         commit -q -m "$COMMIT_SUBJECT" "${COMMIT_ALLOW[@]}" || finish commit_failed
+    && as_hand env \
+         "GIT_AUTHOR_NAME=$COMMIT_NAME" \
+         "GIT_AUTHOR_EMAIL=$COMMIT_EMAIL" \
+         "GIT_COMMITTER_NAME=$COMMIT_NAME" \
+         "GIT_COMMITTER_EMAIL=$COMMIT_EMAIL" \
+         git commit -q -m "$COMMIT_SUBJECT" "${COMMIT_ALLOW[@]}" || finish commit_failed
 fi
 RUNNER_SHA=$(hand_git rev-parse --verify 'HEAD^{commit}') || finish commit_failed
 valid_git_oid "$RUNNER_SHA" || finish commit_failed
