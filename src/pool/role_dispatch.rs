@@ -14,10 +14,11 @@
 //!    model in the pool's `harness.models` is a model slug, not a band.
 //! 3. Model: `--model` wins; then the task front matter's `band` key; then the role's slug;
 //!    then the role's band, which must resolve through the pool's bands table
-//!    with [`choose`]. With `--model`, the band's reasoning is taken only
-//!    when the pool's choice for that band names the same model. A role's
-//!    slug takes the role's `thinking`, else the reasoning of the first band
-//!    entry (P0 to P5, any position) that names the slug, else none.
+//!    with [`choose`]. With `--model`, the reasoning is the first entry of
+//!    the applicable band's list that names the same model, else none. A
+//!    role's slug takes the role's `thinking`, else the reasoning of the
+//!    first band entry (P0 to P5, any position) that names the slug, else
+//!    none.
 //!
 //! There is no failover, no health tracking and no retry on another model:
 //! the pool's first choice for a band is the only choice. [`standing_prompt`]
@@ -111,10 +112,7 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
         Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => {
             (slug_flag.to_string(), slug_reasoning(config, slug))
         }
-        Some(flag) => (
-            flag.to_string(),
-            matching_reasoning(config, pool, band, flag),
-        ),
+        Some(flag) => (flag.to_string(), matching_reasoning(config, band, flag)),
         None => match (band, slug) {
             (Some(band), _) => choose_pair(config, pool, band)?,
             (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
@@ -277,19 +275,19 @@ fn choose_pair(
     Ok((choice.model, Some(choice.reasoning)))
 }
 
-/// The band choice's reasoning when the pool's choice for the band names the
-/// same model as the flag, else none. A band the pool does not serve is not
-/// an error here: `--model` already names a model.
-fn matching_reasoning(
-    config: &PoolConfig,
-    pool: &str,
-    band: Option<u8>,
-    model: &str,
-) -> Option<String> {
-    let Ok(choice) = choose(config, pool, band?) else {
-        return None;
-    };
-    (choice.model == model).then_some(choice.reasoning)
+/// The reasoning of the first entry of the applicable band's list that names
+/// the same model as the flag, else none. The lookup is deterministic: it
+/// never depends on which entry serves the band. A band the pool does not
+/// serve gives no inferred reasoning: `--model` already names a model.
+fn matching_reasoning(config: &PoolConfig, band: Option<u8>, model: &str) -> Option<String> {
+    let band = band?;
+    config
+        .bands
+        .entries
+        .get(&format!("P{band}"))?
+        .iter()
+        .find(|entry| entry.model == model)
+        .map(|entry| entry.reasoning.clone())
 }
 
 /// The chosen model must be one the harness offers. The bands table is

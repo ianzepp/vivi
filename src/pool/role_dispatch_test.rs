@@ -356,6 +356,82 @@ fn a_model_override_needs_no_band_and_ignores_a_band_the_pool_does_not_serve() {
     assert_eq!(resolved.reasoning, None);
 }
 
+/// A pool whose P1 list names `zai/glm-5.3-flash` only behind a different
+/// first model, then again with a second reasoning: the reasoning for an
+/// explicit `--model` must come from a deterministic lookup of the flag's
+/// model, not from whichever entry the band draws.
+fn override_pool() -> PoolConfig {
+    pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["first/model", "zai/glm-5.3-flash", "other/model"]
+[[bands.P1]]
+model = "first/model"
+reasoning = "low"
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "xhigh"
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "high"
+[[bands.P2]]
+model = "other/model"
+reasoning = "medium"
+[local]
+root = "~/lanes"
+"#,
+    )
+}
+
+#[test]
+fn model_override_reasoning_is_not_random() {
+    // `zai/glm-5.3-flash` sits second and third in P1, behind a different
+    // first model: the reasoning is the first entry naming the flag's model,
+    // never the band's drawn choice and never a later duplicate.
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    let resolved = resolve(
+        &override_pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("zai/glm-5.3-flash"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "zai/glm-5.3-flash");
+    assert_eq!(resolved.band, Some(1));
+    assert_eq!(resolved.reasoning.as_deref(), Some("xhigh"));
+
+    // A model the applicable band never names gets no inferred reasoning.
+    let resolved = resolve(
+        &override_pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("other/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "other/model");
+    assert_eq!(resolved.reasoning, None);
+
+    // When the flag equals the role's slug, the role's thinking wins over
+    // every band entry naming the slug.
+    let worker = slug_role("zai/glm-5.3-flash", Some("focused"));
+    let resolved = resolve(
+        &override_pool(),
+        "bridge",
+        &input(
+            Some(&worker),
+            &band_body("P1"),
+            Some("zai/glm-5.3-flash"),
+            false,
+        ),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "zai/glm-5.3-flash");
+    assert_eq!(resolved.band, Some(1));
+    assert_eq!(resolved.reasoning.as_deref(), Some("focused"));
+}
+
 #[test]
 fn a_model_the_harness_does_not_offer_is_refused_naming_the_model() {
     let hand = role("lane-3", Some("hand"), Some("P1"));
