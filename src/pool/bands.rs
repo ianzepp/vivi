@@ -7,6 +7,23 @@
 //! `[pools.<name>.bands]` table (see [`super::config_bands`]) says which
 //! choice serves which band; the `S` speed axis is parsed and ignored.
 
+/// Shared availability contracts: what a pool answers when asked whether it
+/// can serve a band now, why it may decline, and the occupancy snapshot the
+/// answer folds.
+pub mod eligibility;
+
+/// Provider failure classification: which failures cool a provider down,
+/// for how long, and the cooldown receipt that records one.
+pub mod provider_failure;
+
+/// Slot reservations: one row per in-flight claim a job holds on a pool's
+/// model.
+pub mod reservations;
+
+/// Admission control: the in-flight gate a pool applies before handing out
+/// a slot to a job. Shell only; the gate arrives with a later slice.
+pub mod admission;
+
 use super::config::PoolConfig;
 use super::config_bands::PoolBands;
 use crate::error::VivariumError;
