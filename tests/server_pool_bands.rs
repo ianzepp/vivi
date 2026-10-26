@@ -9,8 +9,9 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use toml_edit::{DocumentMut, Item};
 use tower::util::ServiceExt;
-use vivi::mailspace::{Mailspace, RoleUpdate};
+use vivi::mailspace::{Mailspace, RoleUpdate, config_edit};
 use vivi::server::grants::{GrantLevel, GrantRecord};
 use vivi::server::{AppState, app_state, hosted, router};
 
@@ -324,6 +325,109 @@ async fn set_writes_only_the_bands_table_of_that_pool() {
         .bands(&key, json!({"action": "show", "pool": "second"}))
         .await;
     assert_eq!(second["bands"], json!({}));
+}
+
+/// One `set` call replaces a band the guarded editor itself wrote: the leaf
+/// it stores over stays an array of tables holding exactly the new choice,
+/// the old choice is gone, and every other band, pool and role stands.
+#[tokio::test]
+async fn set_replaces_editor_created_array_of_tables_in_one_call() {
+    let fx = fixture("replace-array");
+    let key = fx.key_by(&fx.member, None);
+    // The fixture text already carries a band array; the band replaced below
+    // is written first by the guarded editor, as a host's editor would leave
+    // it, so the request replaces an editor-created array of tables.
+    config_edit::guarded(&fx.root, |doc| {
+        config_edit::set_band(doc, "main", "P1", "zai/glm-5.3-flash", "low")
+    })
+    .unwrap();
+    // A second band that the one call must leave alone.
+    config_edit::guarded(&fx.root, |doc| {
+        config_edit::set_band(doc, "main", "P2", "zai/glm-5.3-flash", "xhigh")
+    })
+    .unwrap();
+    let starting: DocumentMut = fx.config_text().parse().unwrap();
+    assert!(
+        matches!(
+            starting["pools"]["main"]["bands"]["P1"],
+            Item::ArrayOfTables(_)
+        ),
+        "{:?}",
+        starting["pools"]["main"]["bands"]["P1"]
+    );
+
+    let before_text = fx.config_text();
+    let before = fx.without_main_bands();
+    let audits_before = audit_lines(&fx.data).len();
+    let backups_before = backup_names(&fx.root).len();
+
+    // The one actual request: the mind's band P1 moves to the other model.
+    let set = fx
+        .bands(
+            &key,
+            json!({
+                "project": fx.project.clone(),
+                "action": "set",
+                "pool": "main",
+                "band": "P1",
+                "model": "other/model",
+                "reasoning": "high",
+            }),
+        )
+        .await;
+    assert_eq!(
+        set["bands"],
+        json!({
+            "P1": [{"model": "other/model", "reasoning": "high"}],
+            "P2": [{"model": "zai/glm-5.3-flash", "reasoning": "xhigh"}],
+        })
+    );
+    assert_eq!(
+        set["harness_models"],
+        json!(["zai/glm-5.3-flash", "other/model"])
+    );
+
+    // Freshly reopened, the stored leaf is still an array of tables holding
+    // exactly the new choice; the old one is gone.
+    let text = fx.config_text();
+    assert!(text.contains("# the host's pools"), "comments kept: {text}");
+    let doc: DocumentMut = text.parse().unwrap();
+    let rows = doc["pools"]["main"]["bands"]["P1"]
+        .as_array_of_tables()
+        .expect("P1 stays an array of tables");
+    assert_eq!(rows.len(), 1, "one choice: {text}");
+    let row = rows.iter().next().unwrap();
+    assert_eq!(row["model"].as_str(), Some("other/model"));
+    assert_eq!(row["reasoning"].as_str(), Some("high"));
+    let reloaded = Mailspace::open_root(fx.root.clone()).unwrap();
+    let entries = &reloaded.config.pools["main"].bands.entries;
+    assert_eq!(entries["P1"].len(), 1);
+    assert_eq!(entries["P1"][0].model, "other/model");
+    assert_eq!(entries["P1"][0].reasoning, "high");
+
+    // The other band, the second pool, the harness and the roles all stand.
+    let p2 = doc["pools"]["main"]["bands"]["P2"]
+        .as_array_of_tables()
+        .expect("P2 stays an array of tables");
+    assert_eq!(p2.len(), 1);
+    let p2_row = p2.iter().next().unwrap();
+    assert_eq!(p2_row["model"].as_str(), Some("zai/glm-5.3-flash"));
+    assert_eq!(p2_row["reasoning"].as_str(), Some("xhigh"));
+    assert_eq!(fx.without_main_bands(), before, "nothing else changed");
+    assert_ne!(text, before_text);
+    assert!(
+        backup_names(&fx.root).len() > backups_before,
+        "the guarded write keeps a backup"
+    );
+
+    // Exactly one additional audit line, successful and pool_bands: the
+    // editor did the write, not a config_set, config_unset or pump-control
+    // call.
+    let lines = audit_lines(&fx.data);
+    let around = &lines[audits_before..];
+    assert_eq!(around.len(), 1, "one audited call: {around:?}");
+    assert_eq!(around[0]["tool"], "pool_bands");
+    assert_eq!(around[0]["outcome"], "ok");
 }
 
 #[tokio::test]
