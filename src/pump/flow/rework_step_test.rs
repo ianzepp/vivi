@@ -298,10 +298,7 @@ fn an_unlock_restart_names_the_missing_cto_ruling() -> R {
     rig.run.entry = "rework1".into();
     let body = rework_brief(&rig)?;
     assert!(body.contains("context: run 1"), "{body}");
-    assert!(
-        body.contains("(no CTO ruling; an operator unlock"),
-        "{body}"
-    );
+    assert!(body.contains("(no CTO ruling; an unlock"), "{body}");
     Ok(())
 }
 

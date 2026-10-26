@@ -167,6 +167,7 @@ fn a_reply_in_a_locked_run_raises_once_and_starts_nothing() -> R {
     let raised = rig.exceptions();
     assert_eq!(raised.matches(THREAD_CHANGED).count(), 1, "{raised}");
     assert!(raised.contains(&rig.need), "{raised}");
+    assert!(raised.contains("Routed to the mind"), "{raised}");
     Ok(())
 }
 

@@ -1,10 +1,10 @@
-//! Park handling for the build flow: the step that holds a run for the operator.
+//! Park handling for the build flow: the step that holds a run for Mind triage.
 //!
 //! The router opens a park row already Waiting, so the tick never calls
 //! `start` for it; the alarm is raised from `poll`, which runs for waiting
 //! rows (as the lock step does). The step raises one alarm naming the need and
 //! why the planner parked it, and keeps waiting: a reply on the need's thread
-//! restarts a parked run at `plan` (the `thread-change` phase), and an operator
+//! restarts a parked run at `plan` (the `thread-change` phase), and a mind
 //! answer on the step routes it.
 
 use crate::error::VivariumError;
@@ -32,7 +32,8 @@ impl StepHandler for ParkStep {
         let actual = actual_text(cx.def, cx.store, cx.run, step)?;
         let text = format!(
             "need {} r{} parked at {}: expected the planner to answer planned; actual: {actual}; \
-             a reply on the need thread restarts it at plan, or answer with `vivi pump answer {}`",
+             held for Mind triage: a reply on the need thread restarts it at plan, or triage \
+             with `vivi pump answer {}`",
             cx.run.need, cx.run.run, step.node, step.task
         );
         raise_once(cx.ctx, NEED_PARKED, &step.task, &text);

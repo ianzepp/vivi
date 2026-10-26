@@ -1,11 +1,11 @@
 //! Thread change: a reply on a need's thread while a build run is live.
 //!
 //! A reply from anyone but the pump identity, newer than the run's start post,
-//! is the operator changing the question. In a live or parked run that has not
+//! is the requester changing the question. In a live or parked run that has not
 //! started `merge-main` or a merge, the run restarts at `plan` (the prior
 //! branch stays readable). In a locked run, or once a merge-main or merge step
 //! has started, the pump raises `flow-thread-changed` once and restarts
-//! nothing: the merge is under way and the operator decides. No path holds a
+//! nothing: the merge is under way and the mind triages. No path holds a
 //! change in silence.
 //!
 //! Assumption: a thread date has one-second resolution, so a reply in the same
@@ -110,7 +110,8 @@ fn check_run<M: FlowMail>(
         let unit = format!("{} r{} {}", run.need, run.run, change.message_id);
         let text = format!(
             "need {} run r{}: a reply from {} arrived on the thread ({}) while the run holds \
-             a lock or has started a merge; no restart. Operator: replan or answer the step",
+             a lock or has started a merge; no restart. Routed to the mind: replan or answer \
+             the step",
             run.need, run.run, change.from, change.message_id
         );
         raise_once(ctx, THREAD_CHANGED, &unit, &text);

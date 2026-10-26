@@ -84,7 +84,7 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
         text.push_str("\n\n## CTO ruling\n\n");
         match cto_ruling(cx.store, need, cx.run.run)? {
             Some(ruling) => text.push_str(&ruling),
-            None => text.push_str("(no CTO ruling; an operator unlock restarted the run)"),
+            None => text.push_str("(no CTO ruling; an unlock restarted the run)"),
         }
     }
     Ok(text)

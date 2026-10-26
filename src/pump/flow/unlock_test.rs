@@ -215,6 +215,8 @@ fn an_unlock_still_releases_the_lock_after_the_alarm_was_raised() -> R {
     assert_eq!(log.matches(NEED_LOCKED).count(), 1, "{log}");
     assert!(log.contains("reached without a CTO answer"), "{log}");
     assert!(log.contains(&rig.need), "{log}");
+    assert!(log.contains("routed to the mind for triage"), "{log}");
+    assert!(log.contains("vivi pump unlock"), "{log}");
 
     rig.post(None)?;
     apply_pending(&rig.ctx, &rig.store, &mut rig.mail)?;

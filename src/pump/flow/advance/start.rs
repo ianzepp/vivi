@@ -153,7 +153,7 @@ fn run4_text(store: &PumpStore, need: &str, number: u32) -> Result<String, Vivar
         })
         .collect();
     Ok(format!(
-        "need {need} is on run {number} (expected at most 3 runs before an operator looks; actual: {number}); earlier CTO answers: {}",
+        "need {need} is on run {number} (expected at most 3 runs before the mind triages; actual: {number}); earlier CTO answers: {}",
         earlier.join("; ")
     ))
 }
