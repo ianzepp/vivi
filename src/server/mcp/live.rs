@@ -57,8 +57,11 @@ pub(in crate::server::mcp) use send_dispatch::send_dispatch;
 /// The one live helper the durable tools share: a string-or-list argument.
 pub(in crate::server::mcp) use read::string_list;
 
-/// An operator-only tool: it takes the key's minting member and the identity
-/// the key acts as (`None` for a member token) and authorizes them itself.
+/// A guard-checked hosted tool: it takes the key's minting member and the
+/// identity the key acts as (`None` for a member token) and authorizes them
+/// itself. Most tools require the operator rule; individual tools may
+/// choose a narrower one (`pump_control`'s pause and resume admit an
+/// active mind of the host's own member alongside the operator).
 pub(super) type OperatorTool = fn(
     &RateLimiter,
     &str,
@@ -68,7 +71,8 @@ pub(super) type OperatorTool = fn(
     &Value,
 ) -> Result<Value, ToolError>;
 
-/// The operator-only pump tool `name` names, if it is one.
+/// The guard-checked hosted tool `name` names, if it is one; the guard is
+/// the tool's own choice, not the dispatcher's.
 pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
     match name {
         "pump_control" => Some(pump_control),
@@ -135,7 +139,9 @@ pub(super) fn hosted_root(store: &ProjectStore, project_id: &str) -> Option<std:
 /// Whether today's operator rule (the host's own member, acting as a role
 /// of kind operator) holds for `caller` acting as `requested` on the
 /// hosted mailspace at `root`. The self-service key mint uses it to set a
-/// grant's level; the tools re-check the same rule per call.
+/// grant's level; the operator-only tools re-check the same rule per call
+/// (`pump_control`'s pause and resume check a narrower operational rule
+/// instead).
 pub(super) fn operator_rule_holds(
     root: &Path,
     caller: &crate::server::identities::IdentityRecord,

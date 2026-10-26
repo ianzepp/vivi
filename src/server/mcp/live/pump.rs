@@ -1,6 +1,9 @@
 //! `pump_control` and `pump_rungs` (and the authorization the pump record
-//! tools in `pump_record.rs` share): operator-only pump tools for a hosted
-//! project.
+//! tools in `pump_record.rs` share): pump tools for a hosted project.
+//! Each tool chooses its guard: every tool but `pump_control`'s pause and
+//! resume is operator-only ([`require_operator`]); pause and resume take
+//! the narrower operational path ([`require_operational`]) so the project's
+//! active mind can steer the pump's cadence without being able to stop it.
 //!
 //! The same library call the CLI's `vivi pump pause|resume|stop|start`
 //! makes ([`crate::pump::control::set_project_mode`]); the control state
@@ -14,17 +17,19 @@
 //! stay with the host, because a member who could repoint a pool's
 //! `remote_url` could send code elsewhere.
 //!
-//! The caller of either tool must be the operator:
+//! Both guards require the caller to be:
 //!
 //! 1. an API key (a member token never reaches a hosted mailspace),
 //! 2. minted by the host's own member (the creator registered for the
 //!    mailspace's own sync key, as `vivi sync api-key mint` does), so a key
 //!    another member minted for itself cannot steer the pump, and
-//! 3. acting as a role of kind `operator`.
+//! 3. acting as a role of kind `operator` — or, for pause and resume only,
+//!    an active role of kind `mind` (a parked or retired mind is refused,
+//!    as is a hand role).
 
 use std::path::Path;
 
-use crate::mailspace::Mailspace;
+use crate::mailspace::{Mailspace, ROLE_STATUS_ACTIVE};
 use crate::pump::config::RungsConfig;
 use crate::pump::control::{PumpMode, inspect, project_home, set_project_mode};
 use serde_json::{Value, json};
@@ -57,7 +62,15 @@ pub(in crate::server::mcp) fn pump_control(
             )));
         }
     };
-    let hosted = authorize("pump_control", root, caller, requested)?;
+    // Pause and resume take the operational path: the operator, or the
+    // host's own member acting as an active mind. Stop and start stay
+    // operator-only: a mind may hold the pump's cadence but not stop it.
+    let hosted = match action {
+        "pause" | "resume" => {
+            authorize_operational("pump_control", root, caller, requested)?
+        }
+        _ => authorize("pump_control", root, caller, requested)?,
+    };
     rate_limit(limiter, project_id, &hosted.actor)?;
     set_project_mode(root, mode).map_err(lib_error)?;
     let home = project_home(root).map_err(lib_error)?;
@@ -168,6 +181,52 @@ pub(super) fn require_operator(
         return Err(ToolError::new(format!(
             "{tool} needs a key acting as a role of kind operator; this key acts as '{}'",
             hosted.actor
+        )));
+    }
+    Ok(())
+}
+
+/// Open the hosted mailspace and require the operational rule for `tool`:
+/// the operator, or the host's own member acting as an active mind.
+pub(super) fn authorize_operational(
+    tool: &str,
+    root: &Path,
+    caller: &IdentityRecord,
+    requested: &str,
+) -> Result<Hosted, ToolError> {
+    let hosted = Hosted::open(root, requested)?;
+    require_operational(tool, &hosted, caller)?;
+    Ok(hosted)
+}
+
+/// The operational rule: [`require_operator`] narrowed only in the acting
+/// seat, which an active role of kind `mind` also satisfies. The key must
+/// still be minted by the host's own member, so a foreign member is
+/// refused whatever it acts as, and a hand role or an inactive (parked or
+/// retired) mind is refused too.
+pub(super) fn require_operational(
+    tool: &str,
+    hosted: &Hosted,
+    caller: &IdentityRecord,
+) -> Result<(), ToolError> {
+    if !super::is_own_member(&hosted.ms, caller) {
+        return Err(ToolError::new(format!(
+            "{tool} needs an API key minted by the host's own member; this key was \
+             minted by another member"
+        )));
+    }
+    let view = hosted.ms.role_view(&hosted.actor).map_err(lib_error)?;
+    let kind = view.kind.as_deref().unwrap_or_default();
+    let operator = kind.eq_ignore_ascii_case("operator");
+    let active_mind =
+        kind.eq_ignore_ascii_case("mind") && view.status.eq_ignore_ascii_case(ROLE_STATUS_ACTIVE);
+    if !(operator || active_mind) {
+        return Err(ToolError::new(format!(
+            "{tool} needs a key acting as a role of kind operator, or as an active role \
+             of kind mind; this key acts as '{}' (kind {}, status {})",
+            hosted.actor,
+            view.kind.as_deref().unwrap_or("none"),
+            view.status
         )));
     }
     Ok(())
