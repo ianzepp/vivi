@@ -14,7 +14,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{ContinuationLink, DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
 
@@ -117,12 +117,17 @@ fn park_after_a_hold_alarms_once_with_the_word_and_reason() -> R {
     assert_eq!(count(&text), 1, "{text}");
     for needle in [
         "need n1 r1 parked at parked",
-        "expected the planner to answer planned",
-        "actual: hold: waiting on the schema decision",
+        "actual: t-plan answered hold: waiting on the schema decision",
+        "supplies new input to that same step",
         "vivi pump answer t-park",
     ] {
         assert!(text.contains(needle), "missing {needle}: {text}");
     }
+    assert!(!text.contains("restart"), "no restart claim: {text}");
+    assert!(
+        !text.contains("at plan"),
+        "no restart-at-plan claim: {text}"
+    );
     Ok(())
 }
 
@@ -135,7 +140,10 @@ fn park_without_a_reason_says_none_given() -> R {
     )?;
     assert_eq!(poll(&rig)?, None);
     let text = exceptions(&rig);
-    assert!(text.contains("actual: operator: none given"), "{text}");
+    assert!(
+        text.contains("actual: t-plan answered operator: none given"),
+        "{text}"
+    );
     Ok(())
 }
 
@@ -162,11 +170,72 @@ fn start_opens_the_row_and_waits_without_an_alarm() -> R {
 }
 
 #[test]
-fn park_without_a_planner_step_still_parks_and_says_so() -> R {
+fn park_without_resolvable_evidence_still_parks_and_says_so() -> R {
     let rig = rig()?;
     assert_eq!(poll(&rig)?, None);
     let text = exceptions(&rig);
     assert_eq!(count(&text), 1, "{text}");
-    assert!(text.contains("actual: no planner step found"), "{text}");
+    assert!(
+        text.contains("actual: the stopped step is unresolved"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recorded_link_names_its_source_and_wins_over_inference() -> R {
+    let rig = rig()?;
+    // Two completed planners with the same verdict: inference alone cannot
+    // decide, so this link must be the origin the alarm names.
+    rig.store
+        .insert_step(NEED, &row("plan", "t-plan", StepState::Done, Some("hold")))?;
+    rig.store.insert_step(
+        NEED,
+        &row("plan2", "t-plan2", StepState::Done, Some("hold")),
+    )?;
+    rig.store
+        .insert_step(NEED, &row("parked", "t-park", StepState::Waiting, None))?;
+    rig.store.link_continuation(&ContinuationLink {
+        task: "t-park".into(),
+        need: NEED.into(),
+        run: 1,
+        node: "parked".into(),
+        source: "t-plan".into(),
+    })?;
+    rig.store.record_step_payload(&payload(
+        "t-plan",
+        "plan",
+        serde_json::json!({ "reason": "waiting on the schema decision" }),
+    ))?;
+
+    assert_eq!(poll(&rig)?, None);
+    let text = exceptions(&rig);
+    assert_eq!(count(&text), 1, "{text}");
+    assert!(text.contains("actual: t-plan answered hold"), "{text}");
+    assert!(!text.contains("t-plan2"), "{text}");
+    assert!(!text.contains("unresolved"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn ambiguous_evidence_is_reported_and_the_park_keeps_waiting() -> R {
+    let rig = rig()?;
+    rig.store
+        .insert_step(NEED, &row("plan", "t-plan", StepState::Done, Some("hold")))?;
+    rig.store.insert_step(
+        NEED,
+        &row("plan2", "t-plan2", StepState::Done, Some("hold")),
+    )?;
+    rig.store
+        .insert_step(NEED, &row("parked", "t-park", StepState::Waiting, None))?;
+
+    assert_eq!(poll(&rig)?, None);
+    let text = exceptions(&rig);
+    assert_eq!(count(&text), 1, "{text}");
+    assert!(
+        text.contains("actual: the stopped step is unresolved"),
+        "{text}"
+    );
+    assert!(text.contains("ambiguous"), "{text}");
     Ok(())
 }
