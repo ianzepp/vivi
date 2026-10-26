@@ -7,12 +7,13 @@ use crate::pool::bands::parse_band;
 pub const WRITE_KINDS: [&str; 3] = ["hand", "merge", "lint"];
 
 /// Kinds that default to read-only. Compared case-insensitively.
-const READ_ONLY_KINDS: [&str; 9] = [
+const READ_ONLY_KINDS: [&str; 10] = [
     "auditor",
     "triage",
     "cadence",
     "steward",
     "head",
+    "head-cto",
     "digest",
     "researcher",
     "admitter",
