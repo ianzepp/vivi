@@ -93,7 +93,7 @@ pub use graph::{
 pub use graph_mutate::{GraphApplyReceipt, print_apply_report};
 pub use holding::is_foreign_account;
 pub use identity::{
-    LocalIdentity, ROLE_HARNESS_SUBAGENT, ROLE_STATUS_ACTIVE, ROLE_STATUS_PARKED,
+    LocalIdentity, PUMP_ROLE, ROLE_HARNESS_SUBAGENT, ROLE_STATUS_ACTIVE, ROLE_STATUS_PARKED,
     ROLE_STATUS_RETIRED, RoleUpdate, RoleView,
 };
 pub(crate) use item_events::EVENT_HEADER;

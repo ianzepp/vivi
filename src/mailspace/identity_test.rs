@@ -1,4 +1,5 @@
-use crate::mailspace::{Mailspace, RoleUpdate, config_edit, config_edit::PoolAdd};
+use crate::error::VivariumError;
+use crate::mailspace::{Mailspace, PUMP_ROLE, RoleUpdate, config_edit, config_edit::PoolAdd};
 
 #[test]
 fn ensure_merge_role_binds_the_first_local_pool() {
@@ -205,4 +206,169 @@ fn role_named_matches_name_and_alias_ignoring_case() {
         );
     }
     assert!(config.role_named("unknown").is_none());
+}
+
+fn fresh_mailspace() -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    (tmp, mailspace)
+}
+
+#[test]
+fn pump_resolves_without_a_roster_row_on_an_empty_roster() {
+    let (tmp, mailspace) = fresh_mailspace();
+    assert!(mailspace.config.identities.is_empty());
+    let prefix = mailspace.address_prefix().to_string();
+    let legacy = mailspace.legacy_domain();
+    for value in [
+        "pump".to_string(),
+        "PUMP".to_string(),
+        " Pump ".to_string(),
+        "pump@local".to_string(),
+        format!("pump@{prefix}.local"),
+        format!("PUMP@{prefix}.LOCAL"),
+        format!("pump@{legacy}"),
+    ] {
+        assert_eq!(
+            mailspace.resolve_identity(&value).unwrap(),
+            PUMP_ROLE,
+            "{value}"
+        );
+    }
+    let error = mailspace
+        .resolve_identity("pump@example.com")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("external"), "{error}");
+    // Resolution rewrote nothing: the roster stays empty and a reopened
+    // mailspace resolves the same built-in.
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    assert!(reopened.config.identities.is_empty());
+    assert_eq!(reopened.resolve_identity("Pump").unwrap(), PUMP_ROLE);
+    let raw = std::fs::read_to_string(tmp.path().join(".vivi/mailspace.toml")).unwrap();
+    assert!(!raw.contains("[[identities]]"), "{raw}");
+}
+
+#[test]
+fn pump_is_owned_locally_but_never_mind_operator_or_hand() {
+    let (_tmp, mailspace) = fresh_mailspace();
+    assert_eq!(
+        mailspace.identity_owning_account("pump").as_deref(),
+        Some(PUMP_ROLE)
+    );
+    assert_eq!(
+        mailspace.identity_owning_account("Pump").as_deref(),
+        Some(PUMP_ROLE)
+    );
+    assert!(mailspace.is_local_account("pump"));
+    assert!(!mailspace.is_unowned_account("pump"));
+    assert!(!mailspace.identity_is_mind("pump"));
+    assert!(!mailspace.identity_is_operator("pump"));
+    assert!(!mailspace.identity_is_hand("pump"));
+    assert!(!mailspace.identity_may_close_for_all("pump"));
+}
+
+#[test]
+fn the_builtin_pump_wins_over_a_configured_collision_without_rewriting_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = Mailspace::init(Some(tmp.path())).unwrap();
+    let path = tmp.path().join(".vivi/mailspace.toml");
+    let raw = std::fs::read_to_string(&path).unwrap().replace(
+        "identities = []\n",
+        "[[identities]]\nname = \"pump\"\nkind = \"mind\"\n",
+    );
+    std::fs::write(&path, &raw).unwrap();
+
+    let mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+
+    assert_eq!(mailspace.resolve_identity("pump").unwrap(), PUMP_ROLE);
+    assert!(!mailspace.identity_is_mind("pump"));
+    assert!(!mailspace.identity_is_operator("pump"));
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        raw.contains("kind = \"mind\""),
+        "the row is left as found: {raw}"
+    );
+}
+
+#[test]
+fn reserved_pump_refuses_creation_rename_metadata_and_charter() {
+    let (tmp, mut mailspace) = fresh_mailspace();
+    mailspace.add_role("mind", RoleUpdate::default()).unwrap();
+    let refused = |error: VivariumError| {
+        assert!(
+            matches!(error, VivariumError::ReservedIdentity(_)),
+            "{error}"
+        );
+    };
+
+    refused(mailspace.add_identity("pump").unwrap_err());
+    refused(
+        mailspace
+            .add_role(
+                "PUMP",
+                RoleUpdate {
+                    kind: Some(Some(String::from("hand"))),
+                    ..RoleUpdate::default()
+                },
+            )
+            .unwrap_err(),
+    );
+    refused(mailspace.rename_identity("mind", "pump").unwrap_err());
+    refused(mailspace.rename_identity("pump", "runner").unwrap_err());
+    refused(
+        mailspace
+            .set_role("pump", RoleUpdate::default())
+            .unwrap_err(),
+    );
+    refused(mailspace.set_charter("pump", "own rules\n").unwrap_err());
+    refused(
+        mailspace
+            .set_charter("PUMP@local", "own rules\n")
+            .unwrap_err(),
+    );
+
+    assert!(!tmp.path().join(".vivi/charters/pump.md").exists());
+    let raw = std::fs::read_to_string(tmp.path().join(".vivi/mailspace.toml")).unwrap();
+    assert!(!raw.contains("name = \"pump\""), "{raw}");
+}
+
+#[test]
+fn ordinary_roles_and_operator_provisioning_are_unchanged_by_the_reserved_pump() {
+    let (tmp, mut mailspace) = fresh_mailspace();
+    mailspace
+        .add_role(
+            "hand",
+            RoleUpdate {
+                kind: Some(Some(String::from("hand"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    mailspace.ensure_operator_role().unwrap();
+
+    assert_eq!(
+        mailspace.role_view("operator").unwrap().kind.as_deref(),
+        Some("operator")
+    );
+    assert!(mailspace.identity_is_operator("operator"));
+    assert_eq!(mailspace.resolve_identity("hand").unwrap(), "hand");
+    assert!(mailspace.identity_is_hand("hand"));
+    assert_eq!(
+        mailspace.address_for("pump"),
+        format!("pump@{}", mailspace.address_domain())
+    );
+    // The built-in has no seat: it is not a configurable role.
+    assert!(mailspace.role_view("pump").is_err());
+    assert!(
+        mailspace
+            .config
+            .identities
+            .iter()
+            .all(|role| role.name != PUMP_ROLE)
+    );
+    let reopened = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    assert_eq!(reopened.resolve_identity("pump").unwrap(), PUMP_ROLE);
+    assert!(reopened.identity_is_operator("operator"));
+    assert!(!reopened.identity_is_operator("pump"));
 }

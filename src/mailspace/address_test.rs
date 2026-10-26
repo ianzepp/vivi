@@ -564,3 +564,58 @@ fn a_malformed_sidecar_is_a_config_error_naming_the_file() {
         }
     }
 }
+
+#[test]
+fn the_reserved_pump_identity_resolves_in_every_own_address_form() {
+    let (_tmp, mailspace) = space(&["mind"]);
+    let prefix = mailspace.address_prefix().to_string();
+    let legacy = mailspace.legacy_domain();
+    for value in [
+        "pump".to_string(),
+        "Pump".to_string(),
+        "pump@local".to_string(),
+        format!("pump@{prefix}.local"),
+        format!("pump@{legacy}"),
+        format!("pump@{}", legacy.to_ascii_uppercase()),
+    ] {
+        assert_eq!(
+            mailspace.resolve_identity(&value).unwrap(),
+            "pump",
+            "{value}"
+        );
+        assert_eq!(
+            mailspace.classify_recipient(&value).unwrap(),
+            Recipient::Local("pump".into()),
+            "{value}"
+        );
+    }
+    assert_eq!(
+        mailspace.header_address("PUMP").unwrap(),
+        mailspace.address_for("pump")
+    );
+    // Foreign domains stay rejected; a real remote address stays remote.
+    let external = mailspace
+        .classify_recipient("pump@example.com")
+        .unwrap_err();
+    assert!(external.to_string().contains("external"), "{external}");
+    assert_eq!(
+        mailspace.classify_recipient(REMOTE).unwrap(),
+        Recipient::Remote(REMOTE.into())
+    );
+}
+
+#[test]
+fn a_letter_to_the_pump_delivers_under_the_reserved_identity() {
+    let (_tmp, mailspace) = space(&["mind", "hand"]);
+
+    let result = mailspace
+        .send(send(&mailspace, &["pump"], "inbox", Some("mail")))
+        .unwrap();
+
+    assert!(result.remote.is_empty(), "{:?}", result.remote);
+    assert_eq!(result.delivered.len(), 1);
+    assert_eq!(result.delivered[0].identity, "pump");
+    assert!(mailspace.is_local_account("pump"));
+    assert!(!mailspace.is_unowned_account("pump"));
+    assert_eq!(mailspace.list("pump", "inbox").unwrap().len(), 1);
+}

@@ -21,6 +21,20 @@ pub const ROLE_STATUS_RETIRED: &str = "retired";
 /// Preferred harness value for parent-TUI / spawned child execution.
 pub const ROLE_HARNESS_SUBAGENT: &str = "subagent";
 
+/// The reserved built-in pump identity. Every mailspace resolves it — bare,
+/// in any case, or as an own-domain address — without a roster row, and it
+/// always wins over a manually configured collision. It is never a
+/// configurable role: creation, rename in either direction, metadata edits,
+/// and charter assignment are refused, and it is never a mind, operator, or
+/// executable role.
+pub const PUMP_ROLE: &str = "pump";
+
+/// Whether `name` denotes the reserved built-in pump identity, ignoring case.
+#[must_use]
+pub fn is_pump_identity(name: &str) -> bool {
+    name.eq_ignore_ascii_case(PUMP_ROLE)
+}
+
 /// A mailspace seat: mailbox name plus durable role metadata.
 ///
 /// Stored under `[[identities]]` in `mailspace.toml` for backward compatibility
@@ -176,6 +190,9 @@ impl Mailspace {
     /// field value is invalid, or config persistence fails.
     pub fn add_role(&mut self, name: &str, update: RoleUpdate) -> Result<String, VivariumError> {
         let name = sanitize_identity(name)?;
+        if is_pump_identity(&name) {
+            return Err(VivariumError::ReservedIdentity(name));
+        }
         if self.find_role_index(&name).is_some() {
             return Err(VivariumError::Message(format!(
                 "local role '{name}' already exists; update it with `vivi role set {name} <fields>`"
@@ -198,6 +215,9 @@ impl Mailspace {
     /// or config persistence fails.
     pub fn set_role(&mut self, name: &str, update: RoleUpdate) -> Result<RoleView, VivariumError> {
         let name = sanitize_identity(name)?;
+        if is_pump_identity(&name) {
+            return Err(VivariumError::ReservedIdentity(name));
+        }
         let index = self.require_role_index(&name)?;
         apply_role_update(&mut self.config.identities[index], update.clone())?;
         let role = self.config.identities[index].clone();
@@ -353,6 +373,12 @@ impl Mailspace {
     pub fn rename_identity(&mut self, old: &str, new: &str) -> Result<String, VivariumError> {
         let old = sanitize_identity(old)?;
         let new = sanitize_identity(new)?;
+        if is_pump_identity(&old) {
+            return Err(VivariumError::ReservedIdentity(old));
+        }
+        if is_pump_identity(&new) {
+            return Err(VivariumError::ReservedIdentity(new));
+        }
         let index = self.require_role_index(&old)?;
         if self.config.identities[index].name == new {
             return Err(VivariumError::Message(format!(
@@ -404,10 +430,11 @@ impl Mailspace {
         names
     }
 
-    /// Whether `account` is a role name or alias of this mailspace.
+    /// Whether `account` is a role name, alias, or the reserved pump identity
+    /// of this mailspace.
     #[must_use]
     pub(super) fn is_role_account(&self, account: &str) -> bool {
-        self.find_role_index(account).is_some()
+        is_pump_identity(account) || self.find_role_index(account).is_some()
     }
 
     /// Whether the role named `name` (or an alias of it) is retired.
@@ -421,6 +448,9 @@ impl Mailspace {
     /// Messages keep the account they were ingested under, so a renamed
     /// identity still owns its old name's rows.
     pub(super) fn identity_owning_account(&self, account: &str) -> Option<String> {
+        if is_pump_identity(account) {
+            return Some(PUMP_ROLE.to_string());
+        }
         self.config.identities.iter().find_map(|identity| {
             self.identity_names(&identity.name)
                 .contains(account)
@@ -430,31 +460,39 @@ impl Mailspace {
 
     /// Whether a role is of kind `mind`.
     pub(super) fn identity_is_mind(&self, identity: &str) -> bool {
-        self.find_role_by_name_or_alias(identity)
-            .and_then(|role| role.kind.as_deref())
-            .is_some_and(|kind| kind.eq_ignore_ascii_case("mind"))
+        !is_pump_identity(identity)
+            && self
+                .find_role_by_name_or_alias(identity)
+                .and_then(|role| role.kind.as_deref())
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("mind"))
     }
 
     pub(super) fn identity_is_operator(&self, identity: &str) -> bool {
-        self.find_role_by_name_or_alias(identity)
-            .and_then(|role| role.kind.as_deref())
-            .is_some_and(|kind| kind.eq_ignore_ascii_case("operator"))
+        !is_pump_identity(identity)
+            && self
+                .find_role_by_name_or_alias(identity)
+                .and_then(|role| role.kind.as_deref())
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("operator"))
     }
 
     pub(super) fn identity_is_hand(&self, identity: &str) -> bool {
-        self.find_role_by_name_or_alias(identity)
-            .and_then(|role| role.kind.as_deref())
-            .is_some_and(|kind| kind.eq_ignore_ascii_case("hand"))
+        !is_pump_identity(identity)
+            && self
+                .find_role_by_name_or_alias(identity)
+                .and_then(|role| role.kind.as_deref())
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("hand"))
     }
 
     /// Whether a role may close and reopen work it did not author: kind
     /// `mind` or kind `operator`.
     pub(super) fn identity_may_close_for_all(&self, identity: &str) -> bool {
-        self.find_role_by_name_or_alias(identity)
-            .and_then(|role| role.kind.as_deref())
-            .is_some_and(|kind| {
-                kind.eq_ignore_ascii_case("mind") || kind.eq_ignore_ascii_case("operator")
-            })
+        !is_pump_identity(identity)
+            && self
+                .find_role_by_name_or_alias(identity)
+                .and_then(|role| role.kind.as_deref())
+                .is_some_and(|kind| {
+                    kind.eq_ignore_ascii_case("mind") || kind.eq_ignore_ascii_case("operator")
+                })
     }
 
     /// Resolve a string to a canonical identity name. Accepts `name`, aliases,
@@ -483,6 +521,12 @@ impl Mailspace {
             trimmed
         };
         let identity = sanitize_identity(identity)?;
+        // The built-in pump identity resolves without a roster row and wins
+        // over a manually configured collision; nothing here rewrites the
+        // config or history.
+        if is_pump_identity(&identity) {
+            return Ok(PUMP_ROLE.to_string());
+        }
         if let Some(known) = self.find_role_by_name_or_alias(&identity) {
             Ok(known.name.clone())
         } else {
@@ -595,6 +639,9 @@ impl Mailspace {
     /// created, or the file cannot be written.
     pub fn set_charter(&mut self, name: &str, body: &str) -> Result<(), VivariumError> {
         let canonical = self.resolve_identity(name)?;
+        if is_pump_identity(&canonical) {
+            return Err(VivariumError::ReservedIdentity(canonical));
+        }
         let path = self.charter_path(&canonical);
         if let Some(parent) = path.parent() {
             crate::store::secure_create_dir_all(parent)?;
