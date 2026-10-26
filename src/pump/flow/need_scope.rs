@@ -18,6 +18,13 @@
 //! policy; the original signed need is never rewritten. An empty original
 //! write scope grants nothing: grants widen an existing delegation, they are
 //! not one.
+//!
+//! Adding to a scope goes through [`ScopeRequest`] and [`classify`]: the
+//! request's target is resolved against the configured targets, the need's
+//! explicit target and its branch row, and the paths the request does not
+//! already hold are classified atomically against the target's live policy
+//! and its own checkout. [`effective_scopes`] renders the reader's facts
+//! grouped per target for runtime briefs.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +38,13 @@ use crate::mailspace::pump_note::note_body;
 use crate::pump::config::ScopePath;
 use crate::pump::envelope::correct;
 use crate::pump::flow::slice_dispatch::SliceMail;
+
+mod request;
+
+pub use request::{
+    RequestTarget, ScopeClassification, ScopeContext, ScopeRequest, TargetScope, classify,
+    effective_scopes,
+};
 
 /// What a scope ruling decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
