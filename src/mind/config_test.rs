@@ -196,3 +196,44 @@ fn a_bad_mcp_table_is_refused() {
         assert!(said.contains(want), "{text:?}: {said}");
     }
 }
+
+#[test]
+fn human_only_defaults_and_override() {
+    let as_list = |config: &MindConfig| -> Vec<&str> {
+        config
+            .human_only
+            .iter()
+            .map(HumanOnlyCategory::as_str)
+            .collect()
+    };
+    // An empty file and a missing file both take the defaults, in order.
+    assert_eq!(as_list(&parse("", paths()).unwrap()), DEFAULT_HUMAN_ONLY);
+    let dir = tempdir().unwrap();
+    let missing =
+        load_at(&dir.path().join("absent.toml"), Path::new("/home/mind")).unwrap();
+    assert_eq!(as_list(&missing), DEFAULT_HUMAN_ONLY);
+    // An explicit list replaces the defaults; [] is no human escalation.
+    let replaced = parse("human_only = [\"credentials\", \"host-root\"]", paths()).unwrap();
+    assert_eq!(as_list(&replaced), ["credentials", "host-root"]);
+    assert_eq!(
+        as_list(&parse("human_only = []", paths()).unwrap()),
+        [] as [&str; 0]
+    );
+    // Blank, malformed, and duplicate tokens are refused, and unknown keys
+    // stay refused alongside a human_only list.
+    for bad in [
+        "human_only = [\"\"]",
+        "human_only = [\"Spending\"]",
+        "human_only = [\"host root\"]",
+        "human_only = [\"-lead\"]",
+        "human_only = [\"trail-\"]",
+        "human_only = [\"a--b\"]",
+        "human_only = []\nbogus = 1",
+    ] {
+        assert!(parse(bad, paths()).is_err(), "{bad}");
+    }
+    let said = parse("human_only = [\"credentials\", \"credentials\"]", paths())
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("credentials more than once"), "{said}");
+}

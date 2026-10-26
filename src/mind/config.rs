@@ -10,6 +10,8 @@
 //! heartbeat = "30m"
 //! proxy_url = "http://127.0.0.1:18180"
 //! pi_command = "pi"
+//! human_only = ["spending-accounts", "credentials", "host-root",
+//!               "releases", "product-intent"]
 //! # model = "kimi/kimi-k2"       # passed to pi; resolved through the proxy
 //! # socket = "/run/vivi/mind.sock"
 //! # session_dir = "/var/lib/vivi/mind/sessions"
@@ -23,6 +25,7 @@
 //! The mind holds no model keys: models are reached only through the hub's
 //! loopback proxy, and a non-loopback `proxy_url` is refused.
 
+use std::collections::HashSet;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -42,6 +45,15 @@ pub const DEFAULT_PROXY_URL: &str = "http://127.0.0.1:18180";
 pub const DEFAULT_PI_COMMAND: &str = "pi";
 /// Environment override for the mind home (state, socket, sessions, log).
 pub const ENV_MIND_HOME: &str = "VIVI_MIND_HOME";
+/// Categories the mind hands to a human before acting on them, in default
+/// order. An explicit `human_only` list replaces these wholesale.
+pub const DEFAULT_HUMAN_ONLY: [&str; 5] = [
+    "spending-accounts",
+    "credentials",
+    "host-root",
+    "releases",
+    "product-intent",
+];
 
 /// How much the mind may do. Each stage is opened deliberately by the
 /// operator in `mind.toml`; a stage includes every power below it.
@@ -105,6 +117,88 @@ impl Default for Budgets {
     }
 }
 
+/// One `human_only` category: a trusted policy token from `mind.toml`,
+/// never inferred from need text. A lowercase kebab-case word such as
+/// `spending-accounts`; anything else is refused at parse time.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[serde(try_from = "String")]
+pub struct HumanOnlyCategory(String);
+
+impl HumanOnlyCategory {
+    /// The token as written in `mind.toml`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HumanOnlyCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for HumanOnlyCategory {
+    type Error = VivariumError;
+
+    fn try_from(token: String) -> Result<Self, VivariumError> {
+        if valid_category(&token) {
+            Ok(Self(token))
+        } else {
+            Err(VivariumError::Config(format!(
+                "human_only category {token:?} must be a lowercase kebab-case token"
+            )))
+        }
+    }
+}
+
+/// Accept lowercase kebab-case: an ASCII lowercase letter, then lowercase
+/// letters or digits joined by single interior hyphens. Refuses blank,
+/// uppercase, spaced, and bare-hyphen tokens.
+fn valid_category(token: &str) -> bool {
+    let mut chars = token.chars();
+    if !matches!(chars.next(), Some(first) if first.is_ascii_lowercase()) {
+        return false;
+    }
+    let mut after_hyphen = false;
+    for c in chars {
+        match c {
+            '-' if !after_hyphen => after_hyphen = true,
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() => after_hyphen = false,
+            _ => return false,
+        }
+    }
+    !after_hyphen
+}
+
+/// The default human-only categories, in policy order.
+#[must_use]
+pub fn human_only_defaults() -> Vec<HumanOnlyCategory> {
+    DEFAULT_HUMAN_ONLY
+        .iter()
+        .map(|token| HumanOnlyCategory((*token).to_string()))
+        .collect()
+}
+
+/// Resolve the human-only policy: the written list when present, else the
+/// defaults. An explicit empty list means no human escalation. Duplicates
+/// are refused so each category appears once.
+fn human_only_policy(
+    written: Option<Vec<HumanOnlyCategory>>,
+) -> Result<Vec<HumanOnlyCategory>, VivariumError> {
+    let list = written.unwrap_or_else(human_only_defaults);
+    let mut seen = HashSet::new();
+    for category in &list {
+        if !seen.insert(category.as_str()) {
+            return Err(VivariumError::Config(format!(
+                "human_only lists {} more than once",
+                category.as_str()
+            )));
+        }
+    }
+    Ok(list)
+}
+
 /// The resolved mind config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MindConfig {
@@ -116,6 +210,9 @@ pub struct MindConfig {
     pub pi_command: String,
     pub model: Option<String>,
     pub budgets: Budgets,
+    /// Categories to hand to a human before acting on them: the written
+    /// `human_only` list, or the defaults when absent; empty means none.
+    pub human_only: Vec<HumanOnlyCategory>,
     /// The vivi-server the mind acts through; `None` leaves every permitted
     /// action a dry run.
     pub mcp: Option<McpConfig>,
@@ -177,6 +274,7 @@ struct FileFormat {
     proxy_url: Option<String>,
     pi_command: Option<String>,
     model: Option<String>,
+    human_only: Option<Vec<HumanOnlyCategory>>,
     socket: Option<PathBuf>,
     session_dir: Option<PathBuf>,
     #[serde(default)]
@@ -255,7 +353,8 @@ pub fn load_at(path: &Path, home: &Path) -> Result<MindConfig, VivariumError> {
 ///
 /// # Errors
 /// Fails on invalid TOML, an unknown key, a bad duration, a non-loopback
-/// proxy, or an authority stage this build does not implement.
+/// proxy, a malformed or duplicated `human_only` token, or an authority
+/// stage this build does not implement.
 pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumError> {
     let file: FileFormat = toml::from_str(text)
         .map_err(|error| VivariumError::Config(format!("invalid mind.toml: {error}")))?;
@@ -290,6 +389,7 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
             .unwrap_or_else(|| DEFAULT_PI_COMMAND.to_string()),
         model: file.model,
         budgets: budgets(file.budgets)?,
+        human_only: human_only_policy(file.human_only)?,
         mcp: mcp(file.mcp, &paths)?,
         paths,
     })

@@ -29,6 +29,14 @@ pi_command = "pi"
 # socket = "/var/lib/vivi/mind/mind.sock"
 # session_dir = "/var/lib/vivi/mind/sessions"
 
+# Every category the mind must hand to a human instead of acting on by
+# itself. Trusted policy, written here; never inferred from need text.
+# Tokens are lowercase kebab-case: blank, malformed, or duplicate tokens
+# are refused. These are the defaults, in order; writing a list replaces
+# them wholesale, and [] enables no human escalation at all, e.g.
+# human_only = ["credentials", "host-root"]
+human_only = ["spending-accounts", "credentials", "host-root", "releases", "product-intent"]
+
 [budgets]
 per_need_actions = 3       # unstick actions per need per window
 per_need_window = "24h"
