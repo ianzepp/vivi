@@ -1,4 +1,4 @@
-//! Turning permitted actions into server tool calls.
+//! Turning each permitted action into its one server tool call.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -59,6 +59,13 @@ fn request(kind: Action) -> ActionRequest {
     }
 }
 
+/// A read-status request with no filters at all.
+fn bare_status() -> ActionRequest {
+    let mut bare = request(Action::ReadStatus);
+    bare.need = None;
+    bare
+}
+
 fn run(request: &ActionRequest) -> (Result<String, String>, Vec<(String, Value)>) {
     let mut actuator = McpActuator::new(Recorder::default());
     let result = actuator.apply(request);
@@ -111,15 +118,77 @@ fn pump_actions_carry_their_fields_and_leave_unset_ones_out() {
 }
 
 #[test]
-fn read_status_reads_the_open_records_and_the_log_tail() {
+fn read_status_is_one_pump_list_call_with_absent_values_left_out() {
+    // The request's need travels; the absent status and limit are omitted
+    // rather than sent as nulls, so open steps stay the server's default.
     let (result, calls) = run(&request(Action::ReadStatus));
-    let tools: Vec<&str> = calls.iter().map(|(tool, _)| tool.as_str()).collect();
-    assert_eq!(tools, ["pump_list", "pump_log"]);
-    assert_eq!(calls[0].1["project"], "app");
-    assert_eq!(calls[1].1["file"], "log");
-    let receipt = result.unwrap();
-    assert!(receipt.contains("pump_list: pump_list ok"), "{receipt}");
-    assert!(receipt.contains("pump_log: pump_log ok"), "{receipt}");
+    assert_eq!(result, Ok("pump_list: pump_list ok".into()));
+    assert_eq!(
+        calls,
+        vec![(
+            "pump_list".to_string(),
+            json!({ "project": "app", "need": "3f9a1c2e" })
+        )]
+    );
+    let (_, calls) = run(&bare_status());
+    assert_eq!(
+        calls,
+        vec![("pump_list".to_string(), json!({ "project": "app" }))]
+    );
+}
+
+#[test]
+fn read_status_forwards_the_history_need_and_limit_filters_in_one_call() {
+    let mut filtered = request(Action::ReadStatus);
+    filtered.status = Some("done".into());
+    filtered.limit = Some(5);
+    let (_, calls) = run(&filtered);
+    assert_eq!(
+        calls,
+        vec![(
+            "pump_list".to_string(),
+            json!({
+                "project": "app",
+                "need": "3f9a1c2e",
+                "status": "done",
+                "limit": 5
+            })
+        )]
+    );
+}
+
+#[test]
+fn read_log_names_a_required_file_and_leaves_unset_options_out() {
+    let (result, calls) = run(&request(Action::ReadLog));
+    assert_eq!(result, Err("the action names no file".into()));
+    assert!(calls.is_empty());
+
+    let mut tail = request(Action::ReadLog);
+    tail.file = Some("log".into());
+    let (_, calls) = run(&tail);
+    assert_eq!(
+        calls,
+        vec![(
+            "pump_log".to_string(),
+            json!({ "project": "app", "file": "log" })
+        )]
+    );
+
+    tail.lines = Some(40);
+    tail.filter = Some("requeue".into());
+    let (_, calls) = run(&tail);
+    assert_eq!(
+        calls,
+        vec![(
+            "pump_log".to_string(),
+            json!({
+                "project": "app",
+                "file": "log",
+                "lines": 40,
+                "filter": "requeue"
+            })
+        )]
+    );
 }
 
 #[test]
