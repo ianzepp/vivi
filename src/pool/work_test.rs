@@ -1,9 +1,11 @@
 use super::*;
 use crate::mailspace::SendRequest;
+use crate::pool::bands::health;
 use crate::pool::collect::ErrorWatch;
 use crate::pool::fake_provider::{Fake, claimed, pid};
 use crate::pool::pools::PoolSet;
 use crate::pool::slot::PoolId;
+use chrono::TimeZone;
 
 fn space_with_task() -> (tempfile::TempDir, Mailspace, String) {
     let tmp = tempfile::tempdir().unwrap();
@@ -27,8 +29,8 @@ fn space_with_task() -> (tempfile::TempDir, Mailspace, String) {
     (tmp, space, handle)
 }
 
-fn dispatched(space: &Mailspace, task: &str, machine: &str) {
-    let record = record::DispatchRecord {
+fn dispatched_record(machine: &str) -> record::DispatchRecord {
+    record::DispatchRecord {
         target: None,
         repository: None,
         pool: "p".into(),
@@ -48,7 +50,11 @@ fn dispatched(space: &Mailspace, task: &str, machine: &str) {
         hardware: String::new(),
         abandoned: 0,
         abandoned_cost_micros: 0,
-    };
+    }
+}
+
+fn dispatched(space: &Mailspace, task: &str, machine: &str) {
+    let record = dispatched_record(machine);
     space
         .record_pool_note(
             task,
@@ -566,4 +572,106 @@ fn a_dispatch_made_before_pools_were_named_reads_as_a_gone_pool() {
         report.items
     );
     assert!(open_dispatches(&space).unwrap().is_empty());
+}
+
+/// A finished job whose receipt carries the provider's rate-limit payload,
+/// so the run genuinely qualifies for a health observation.
+fn rate_limited(job: &str) -> String {
+    format!(
+        "@@vivi-pool result\njob={job}\nstate=done\npush=pushed\nbranch=factory/a\n\
+         sha=0123456789abcdef0123456789abcdef01234567\nstart=fedcba9876543210\nagent_rc=1\n\
+         agent_s=1\njob_s=2\n@@vivi-pool receipt\n\
+         429: {{\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}}\n\
+         @@vivi-pool stderr\n\n@@vivi-pool log\n\n"
+    )
+}
+
+#[test]
+fn the_closing_note_carries_the_health_observation_before_the_slot_is_freed() {
+    let (_tmp, space, task) = space_with_task();
+    dispatched(&space, &task, "m1");
+    let fake = running_fake(&task);
+    fake.exec_out
+        .borrow_mut()
+        .insert("m1".into(), rate_limited("j1"));
+    let before = epoch_secs();
+    let waited = wait(
+        &space,
+        &PoolSet::single(&pid("p"), &fake),
+        &[],
+        &options(),
+        &mut ErrorWatch::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let after = epoch_secs();
+    let Waited::Settled(lines) = waited else {
+        panic!("expected settled lines");
+    };
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].state, "finished");
+    // The dispatch is closed by exactly the note that carries the health:
+    // there is one pool_collected event and it holds the observation.
+    assert!(open_dispatches(&space).unwrap().is_empty());
+    let events = space.pool_events().unwrap();
+    let collected: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "pool_collected")
+        .collect();
+    assert_eq!(collected.len(), 1);
+    let note: serde_json::Value = serde_json::from_str(&collected[0].note).unwrap();
+    assert_eq!(note["outcome"], "finished");
+    assert_eq!(note["agent_rc"], "1", "the failed receipt stays truthful");
+    let seen: health::HealthObservation =
+        serde_json::from_value(note["pool.health"].clone()).unwrap();
+    assert_eq!(
+        seen.provider, "m",
+        "the trusted model m/x keys the provider"
+    );
+    assert_eq!(seen.classification, health::Classification::RateLimit);
+    let at = |secs: u64| chrono::Utc.timestamp_opt(secs as i64, 0).single().unwrap();
+    assert!(
+        seen.observed_at >= at(before) && seen.observed_at <= at(after),
+        "{seen:?}"
+    );
+    assert_eq!(
+        seen.cooldown_until - seen.observed_at,
+        chrono::Duration::seconds(health::COOLDOWN_SECS as i64)
+    );
+    // Recording came first; the slot release followed it.
+    assert_eq!(fake.state_of("m1"), "stopped");
+    assert!(fake.meta("m1", crate::pool::slot::META_TASK).is_none());
+}
+
+#[test]
+fn a_second_collection_of_a_closed_dispatch_suppresses_the_duplicate() {
+    let (_tmp, space, task) = space_with_task();
+    dispatched(&space, &task, "m1");
+    let fake = running_fake(&task);
+    fake.exec_out
+        .borrow_mut()
+        .insert("m1".into(), rate_limited("j1"));
+    wait(
+        &space,
+        &PoolSet::single(&pid("p"), &fake),
+        &[],
+        &options(),
+        &mut ErrorWatch::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let count = space.pool_events().unwrap().len();
+    // A racing process re-collecting the closed dispatch writes nothing.
+    let closed = record::OpenDispatch {
+        task,
+        record: dispatched_record("m1"),
+    };
+    let mut human = |_: &str| {};
+    let mut second = recorder(&space, &mut human);
+    assert_eq!(second(&closed, &Outcome::Lost).unwrap(), false);
+    assert_eq!(
+        space.pool_events().unwrap().len(),
+        count,
+        "no duplicate note"
+    );
 }

@@ -28,6 +28,13 @@ pub fn epoch_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The current instant, at the same second precision as [`epoch_secs`].
+#[must_use]
+pub fn now_utc() -> chrono::DateTime<chrono::Utc> {
+    let secs = i64::try_from(epoch_secs()).unwrap_or(i64::MAX);
+    chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default()
+}
+
 /// The mailspace's open dispatches.
 ///
 /// # Errors
@@ -96,7 +103,7 @@ pub fn recorder<'a>(
         space.record_pool_note(
             &dispatch.task,
             "pool_collected",
-            &record::collected_note(dispatch, outcome),
+            &record::collected_note(dispatch, outcome, now_utc()),
             &record::collected_text(dispatch, outcome),
         )?;
         revoke_bridge_key_of(space, dispatch, outcome, human);

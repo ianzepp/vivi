@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::bands::health;
 use super::collect::{Collected, DISCARDED_PATH_PREFIX, JobResult, Outcome, RESTORED_PATH_PREFIX};
 use super::facts;
 use super::job::WITH_LIMIT;
@@ -190,22 +191,31 @@ pub fn fold_open(events: &[PoolEventRow]) -> Vec<OpenDispatch> {
     open
 }
 
-/// The JSON note of a `pool_collected` event.
+/// The JSON note of a `pool_collected` event. `collected_at` is the instant
+/// the collector observed the outcome; when the run qualifies, the
+/// classifier's observation (see [`health::HealthObservation`]) rides under
+/// the reserved [`health::COLLECTED_NOTE_KEY`].
 #[must_use]
-pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
+pub fn collected_note(
+    dispatch: &OpenDispatch,
+    outcome: &Outcome,
+    collected_at: chrono::DateTime<chrono::Utc>,
+) -> String {
     let record = &dispatch.record;
     let mut note = serde_json::json!({
         "job": record.job,
         "pool": record.pool,
         "slot": record.slot,
         "outcome": outcome.word(),
+        "collected_at": collected_at,
     });
     if record.read_only {
         note["read_only"] = serde_json::Value::Bool(true);
     }
     if let Outcome::Finished(done) = outcome {
         for (key, value) in &done.result.fields {
-            if !key.starts_with(DISCARDED_PATH_PREFIX)
+            if !collector_owned(key)
+                && !key.starts_with(DISCARDED_PATH_PREFIX)
                 && !key.starts_with(RESTORED_PATH_PREFIX)
                 && !key.starts_with(facts::KEY_PREFIX)
             {
@@ -225,7 +235,30 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
             note["restored"] = serde_json::json!(restored);
         }
     }
+    // The classifier owns the reserved health key, and it writes last: a
+    // qualifying run's genuine observation overwrites anything the runner
+    // put there, and a run that does not qualify leaves none behind. Its
+    // provider identity comes from the trusted dispatch record's model, its
+    // pool context from the trusted `pool` above — never from runner fields.
+    match health::observation(record, outcome, collected_at) {
+        Some(seen) => note[health::COLLECTED_NOTE_KEY] = serde_json::json!(seen),
+        None => {
+            if let Some(fields) = note.as_object_mut() {
+                fields.remove(health::COLLECTED_NOTE_KEY);
+            }
+        }
+    }
     note.to_string()
+}
+
+/// The note keys the collector owns: identity from the trusted dispatch
+/// record and outcome, the collection instant, and the classifier's health
+/// key. Runner result fields never write to any of them.
+fn collector_owned(key: &str) -> bool {
+    matches!(
+        key,
+        "job" | "pool" | "slot" | "outcome" | "read_only" | "collected_at"
+    ) || key == health::COLLECTED_NOTE_KEY
 }
 
 /// The reply text of a result: the facts, then the agent's receipt.

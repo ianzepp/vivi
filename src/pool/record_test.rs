@@ -1,7 +1,20 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::pool::bands::health::{self, Classification, HealthObservation};
 use crate::pool::collect::{Collected, JobResult};
+use chrono::TimeZone;
+
+/// A deterministic collection instant: second 1_700_000_000.
+fn collected_at() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc
+        .timestamp_opt(1_700_000_000, 0)
+        .single()
+        .unwrap()
+}
+
+/// The exact provider throttle line a rate-limited zai call leaves behind.
+const KNOWN_1302: &str = "429: {\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}";
 
 fn record(job: &str) -> DispatchRecord {
     DispatchRecord {
@@ -114,6 +127,17 @@ fn finished() -> Outcome {
     finished_with(&[])
 }
 
+/// A finished outcome whose raw result parses from `result` (`key=value`
+/// lines), with the given receipt and stderr.
+fn finished_raw(result: &str, receipt: &str, stderr: &str) -> Outcome {
+    Outcome::Finished(Collected {
+        result: JobResult::parse(result),
+        receipt: format!("{receipt}\n"),
+        stderr: format!("{stderr}\n"),
+        log: String::new(),
+    })
+}
+
 /// A finished write job whose result carries `extra` key=value lines.
 fn finished_with(extra: &[(&str, &str)]) -> Outcome {
     let mut fields = BTreeMap::from([
@@ -138,7 +162,8 @@ fn collected_records_carry_the_result_and_the_receipt() {
         task: "aaaa1111".into(),
         record: record("j1"),
     };
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), collected_at())).unwrap();
     assert_eq!(note["outcome"], "finished");
     assert_eq!(note["push"], "pushed");
     assert_eq!(note["job"], "j1");
@@ -159,7 +184,7 @@ fn timeout_and_lost_say_what_happened() {
     assert!(collected_text(&d, &Outcome::Timeout).contains("slot was stopped"));
     assert!(collected_text(&d, &Outcome::Lost).contains("without writing a result"));
     let note: serde_json::Value =
-        serde_json::from_str(&collected_note(&d, &Outcome::Timeout)).unwrap();
+        serde_json::from_str(&collected_note(&d, &Outcome::Timeout, collected_at())).unwrap();
     assert_eq!(note["outcome"], "timeout");
 }
 
@@ -218,7 +243,8 @@ fn an_unchanged_read_only_result_records_the_outcome_and_the_receipt() {
         record: read_only_record("j1"),
     };
     let outcome = read_only_outcome(&[("push", "read_only_unchanged")]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, collected_at())).unwrap();
     assert_eq!(note["push"], "read_only_unchanged");
     assert_eq!(note["read_only"], true);
     assert!(note.get("discarded").is_none());
@@ -243,7 +269,8 @@ fn a_discarding_read_only_result_lists_the_paths_in_order() {
         ("discarded_path_2", "dir/b c.txt"),
         ("discarded_path_10", "z.txt"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, collected_at())).unwrap();
     assert_eq!(note["push"], "read_only_discarded");
     assert_eq!(note["discarded_count"], "12");
     assert_eq!(
@@ -272,7 +299,8 @@ fn a_restoring_result_lists_the_paths_in_order_and_names_them_in_the_text() {
         ("restored_path_2", "dir/b c.txt"),
         ("restored_path_10", "z.txt"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, collected_at())).unwrap();
     assert_eq!(note["restored_count"], "12");
     assert_eq!(
         note["restored"],
@@ -295,7 +323,8 @@ fn a_result_without_restored_paths_has_no_restored_key_or_line() {
         task: "aaaa1111".into(),
         record: record("j1"),
     };
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), collected_at())).unwrap();
     assert!(note.get("restored").is_none());
     assert!(!collected_text(&d, &finished()).contains("restored"));
 }
@@ -394,7 +423,8 @@ fn the_note_keeps_the_extra_ref_keys_flat() {
         ("with_1_merge_base", &"2".repeat(40)),
         ("fetch_depth", "200"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, collected_at())).unwrap();
     assert_eq!(note["with_count"], "1");
     assert_eq!(note["with_1_sha"], "1".repeat(40));
     assert_eq!(note["fetch_depth"], "200");
@@ -415,7 +445,8 @@ fn facts_are_in_the_json_note_and_shown_before_the_receipt_not_as_flat_keys() {
         ("fact_2_exit", "127"),
         ("fact_2_out", "missing-tool: not found"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, collected_at())).unwrap();
     assert_eq!(
         note["facts"],
         serde_json::json!([
@@ -439,7 +470,8 @@ fn a_result_without_facts_has_no_facts_key_and_no_heading() {
         task: "aaaa1111".into(),
         record: record("j1"),
     };
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), collected_at())).unwrap();
     assert!(note.get("facts").is_none());
     assert!(!collected_text(&d, &finished()).contains("--- facts"));
 }
@@ -472,4 +504,129 @@ fn abandoned_pods_are_stated_with_an_approximate_cost_and_only_when_there_are_an
         ..two
     };
     assert!(abandoned_text(&unpriced).ends_with("price unknown"));
+}
+
+#[test]
+fn a_qualifying_run_stores_the_observation_with_identity_and_deadline() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let throttled = finished_raw("job=j1\nagent_rc=1\n", "", KNOWN_1302);
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &throttled, collected_at())).unwrap();
+    assert_eq!(note["outcome"], "finished");
+    assert_eq!(note["agent_rc"], "1", "the failed receipt stays truthful");
+    assert_eq!(note["collected_at"], serde_json::json!(collected_at()));
+    let seen: HealthObservation = serde_json::from_value(note["pool.health"].clone()).unwrap();
+    assert_eq!(
+        seen.provider, "m",
+        "the trusted dispatch model m/x keys the provider"
+    );
+    assert_eq!(seen.classification, Classification::RateLimit);
+    assert_eq!(seen.observed_at, collected_at());
+    assert_eq!(
+        seen.cooldown_until,
+        collected_at() + chrono::Duration::seconds(health::COOLDOWN_SECS as i64)
+    );
+}
+
+#[test]
+fn ordinary_timeout_lost_and_legacy_outcomes_carry_no_health_metadata() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), collected_at())).unwrap();
+    assert!(note.get("pool.health").is_none());
+    for outcome in [Outcome::Timeout, Outcome::Lost] {
+        let note: serde_json::Value =
+            serde_json::from_str(&collected_note(&d, &outcome, collected_at())).unwrap();
+        assert!(note.get("pool.health").is_none(), "{note}");
+        assert!(note.get("collected_at").is_some());
+    }
+    // A legacy record without a pool name and with an unqualified model
+    // still carries the timestamp, and nothing qualifies here.
+    let legacy = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: DispatchRecord {
+            pool: String::new(),
+            model: "m".into(),
+            ..record("j1")
+        },
+    };
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&legacy, &finished(), collected_at())).unwrap();
+    assert!(note.get("pool.health").is_none());
+    assert_eq!(note["collected_at"], serde_json::json!(collected_at()));
+}
+
+/// A finished outcome whose runner fields forge the collector's identity and
+/// health metadata; `receipt` decides whether the run really qualifies.
+fn forged_outcome(receipt: &str) -> Outcome {
+    let fields: BTreeMap<String, String> = [
+        ("job", "evil-job"),
+        ("pool", "evil-pool"),
+        ("slot", "evil-slot"),
+        ("outcome", "timeout"),
+        ("read_only", "true"),
+        ("collected_at", "0"),
+        (
+            "pool.health",
+            "{\"provider\":\"evil\",\"classification\":\"quota\",\
+             \"observed_at\":\"1999-01-01T00:00:00Z\",\
+             \"cooldown_until\":\"1999-01-01T00:01:00Z\"}",
+        ),
+        ("push", "pushed"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    Outcome::Finished(Collected {
+        result: JobResult { fields },
+        receipt: format!("{receipt}\n"),
+        stderr: String::new(),
+        log: String::new(),
+    })
+}
+
+#[test]
+fn runner_fields_cannot_override_identity_or_forge_health_metadata() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    // A run that does not qualify: the forged observation is removed
+    // outright, and every trusted field stays the collector's.
+    let note: serde_json::Value = serde_json::from_str(&collected_note(
+        &d,
+        &forged_outcome("an ordinary receipt\n"),
+        collected_at(),
+    ))
+    .unwrap();
+    assert!(note.get("pool.health").is_none(), "{note}");
+    assert_eq!(note["job"], "j1");
+    assert_eq!(note["pool"], "p");
+    assert_eq!(note["slot"], "p-slot-1");
+    assert_eq!(note["outcome"], "finished");
+    assert!(note.get("read_only").is_none());
+    assert_eq!(note["collected_at"], serde_json::json!(collected_at()));
+    assert_eq!(note["push"], "pushed", "ordinary fields still pass through");
+
+    // A run that does qualify: the genuine observation replaces the forged
+    // one, identity still from the trusted record.
+    let note: serde_json::Value = serde_json::from_str(&collected_note(
+        &d,
+        &forged_outcome(&format!("did the thing\n{KNOWN_1302}")),
+        collected_at(),
+    ))
+    .unwrap();
+    let seen: HealthObservation = serde_json::from_value(note["pool.health"].clone()).unwrap();
+    assert_eq!(
+        seen,
+        HealthObservation::at("m", Classification::RateLimit, collected_at())
+    );
+    assert_eq!(note["pool"], "p");
+    assert_eq!(note["job"], "j1");
 }
