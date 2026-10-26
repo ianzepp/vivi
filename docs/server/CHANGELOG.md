@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 2.4.0
 
+Pairs with vivi 21.4.1, which the server now builds against (see its release
+notes for the pump and mind changes).
+
+- A project made by `create_project` or `lane_create` lands its work on
+  `vivi/main`; the lane's own branch (`branch`, default `main`) is the
+  upstream the pump never writes. `target_log` and `target_show` read
+  `vivi/main`, which a new lane has from the start (vivi 21.4.1), so
+  `target_log` reports `branch: "vivi/main"` where it reported `main`. A
+  project made before this keeps its target main.
 - `vivi-server --help` and `--version` print the usage and the version and
   exit. Before, every argument was ignored and the binary booted a server, so
   an unattended `--help` started a second instance. Any other argument now
