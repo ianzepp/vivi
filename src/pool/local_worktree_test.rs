@@ -380,6 +380,10 @@ fn a_new_branch_gets_a_commit_in_the_local_repository_and_the_slot_is_detached_a
         git(&rig.f.repo, &["log", "-1", "--format=%an <%ae>", "topic"]),
         "Pool Test <pool-test@localhost>"
     );
+    assert_eq!(
+        git(&rig.f.repo, &["log", "-1", "--format=%cn <%ce>", "topic"]),
+        "Pool Test <pool-test@localhost>"
+    );
     assert!(!git(&rig.f.repo, &["log", "-1", "--format=%B", "topic"]).contains("Pool-Run"));
     assert_eq!(
         git(&rig.f.repo, &["show", "--stat", "--format=", "topic"])
@@ -408,6 +412,47 @@ fn a_new_branch_gets_a_commit_in_the_local_repository_and_the_slot_is_detached_a
         !git(&rig.f.repo, &["ls-tree", "-r", "--name-only", "topic"]).contains("build/"),
         "and never committed"
     );
+}
+
+/// The commit identity regression runs the original identity test as a child
+/// of this test executable, with and without conflicting inherited Git
+/// identity variables: the runner commit must carry the pool's configured
+/// identity in both cases, so the child must pass both ways.
+#[test]
+fn a_local_job_uses_configured_identity_with_and_without_inherited_git_identity() {
+    const ORIGINAL: &str = "pool::local::worktree_tests::a_new_branch_gets_a_commit_in_the_local_repository_and_the_slot_is_detached_again";
+    fn run(case: &str, adjust: impl FnOnce(&mut std::process::Command)) {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", ORIGINAL, "--test-threads=1"]);
+        adjust(&mut command);
+        let output = command.output().unwrap_or_else(|e| panic!("{case}: {e}"));
+        assert!(
+            output.status.success(),
+            "{case}: status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let clean = |command: &mut std::process::Command| {
+        for name in [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ] {
+            command.env_remove(name);
+        }
+    };
+    let inherited = |command: &mut std::process::Command| {
+        command
+            .env("GIT_AUTHOR_NAME", "Inherited Author")
+            .env("GIT_AUTHOR_EMAIL", "inherited-author@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Inherited Committer")
+            .env("GIT_COMMITTER_EMAIL", "inherited-committer@example.invalid");
+    };
+    run("without inherited git identity", clean);
+    run("with inherited git identity", inherited);
 }
 
 #[test]
