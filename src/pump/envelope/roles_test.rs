@@ -123,6 +123,85 @@ fn a_valid_planner_parses_and_reason_is_conditional() {
     assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
 }
 
+#[test]
+fn planner_scope_request_requires_operator_answer() {
+    let scoped = "answer = \"operator\"\nreason = 'paths are blocked'\n\
+                  scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\", \"src/b.rs\"]\n";
+    let parsed = parse_for(RoleKind::Planner, &hand(scoped)).unwrap();
+    assert_eq!(parsed.answer, "operator");
+    assert_eq!(parsed.front["scope_target"], "vivi");
+    assert_eq!(parsed.front["scope_paths"][1], "src/b.rs");
+
+    // Any other answer refuses the metadata, including explicitly empty
+    // metadata: it must not disappear through defaults.
+    for word in ["planned", "delivered", "hold", "design"] {
+        let reason = if word == "planned" {
+            ""
+        } else {
+            "reason = 'r'\n"
+        };
+        let front = format!(
+            "answer = \"{word}\"\n{reason}scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\"]\n"
+        );
+        let err = parse_for(RoleKind::Planner, &hand(&front)).unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::Invalid(ref m) if m.contains("operator")),
+            "{word}: {err:?}"
+        );
+        let empty = format!("answer = \"{word}\"\n{reason}scope_paths = []\n");
+        assert!(
+            matches!(
+                parse_for(RoleKind::Planner, &hand(&empty)),
+                Err(EnvelopeError::Invalid(ref m)) if m.contains("operator")
+            ),
+            "{word}: empty metadata must not disappear"
+        );
+    }
+}
+
+#[test]
+fn scope_request_requires_target_paths_and_reason() {
+    let base = "answer = \"operator\"\nreason = 'paths are blocked'\n";
+
+    let target_only = format!("{base}scope_target = \"vivi\"\n");
+    let err = parse_for(RoleKind::Planner, &hand(&target_only)).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("together")),
+        "{err:?}"
+    );
+    let paths_only = format!("{base}scope_paths = [\"src/a.rs\"]\n");
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &hand(&paths_only)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("together")
+    ));
+
+    let blank_target = format!("{base}scope_target = \"  \"\nscope_paths = [\"src/a.rs\"]\n");
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &hand(&blank_target)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("scope_target") && m.contains("nonblank")
+    ));
+
+    let empty_paths = format!("{base}scope_target = \"vivi\"\nscope_paths = []\n");
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &hand(&empty_paths)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("nonempty")
+    ));
+
+    let blank_path =
+        format!("{base}scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\", \" \"]\n");
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &hand(&blank_path)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("entries must be nonblank")
+    ));
+
+    let blank_reason = "answer = \"operator\"\nreason = ' '\n\
+                        scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\"]\n";
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &hand(blank_reason)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("reason")
+    ));
+}
+
 const SLICE: &str = "[[slice]]\nid = \"S1\"\ntitle = \"t\"\nbrief = 'b'\ntarget = \"src\"\n\
                      write_scope = [\"src/a.rs\"]\ndeps = []\n";
 

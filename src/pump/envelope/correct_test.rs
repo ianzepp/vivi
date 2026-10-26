@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use tempfile::tempdir;
 
-use super::{KIND, base_id, correction_n, enqueue, resumable, spec};
+use super::{KIND, base_id, correction_n, enqueue, fields, resumable, spec};
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::index::StepJobRow;
@@ -187,4 +187,44 @@ fn enqueue_records_the_job_under_the_steps_own_task_and_attempt() {
 #[test]
 fn a_job_is_never_resumable() {
     assert!(!resumable(&original("j1", "x")));
+}
+
+#[test]
+fn correction_contract_preserves_scope_request_fields() {
+    let planner = fields(RoleKind::Planner);
+    assert!(
+        planner
+            .contains("scope_target (string) and scope_paths (list) only together on \"operator\""),
+        "{planner}"
+    );
+    assert!(planner.contains("target nonblank"), "{planner}");
+    assert!(
+        planner.contains("paths nonempty with no blank entries"),
+        "{planner}"
+    );
+
+    let admitter = fields(RoleKind::Admitter);
+    assert!(
+        admitter
+            .contains("scope_target (string) and scope_paths (list) only together on \"escalate\""),
+        "{admitter}"
+    );
+    assert!(admitter.contains("target nonblank"), "{admitter}");
+    assert!(
+        admitter.contains("paths nonempty with no blank entries"),
+        "{admitter}"
+    );
+
+    // The hand contract is unchanged: no scope_target, its own scope keys.
+    let hand = fields(RoleKind::Hand);
+    assert!(!hand.contains("scope_target"), "{hand}");
+    assert!(
+        hand.contains("scope_paths (list, required for blocked-scope)"),
+        "{hand}"
+    );
+    assert!(
+        hand.contains("scope_reason (string, required for blocked-scope)"),
+        "{hand}"
+    );
+    assert!(hand.contains("scope_design (bool)"), "{hand}");
 }

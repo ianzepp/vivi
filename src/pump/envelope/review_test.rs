@@ -72,6 +72,102 @@ fn admitter_conditional_rules() {
     );
 }
 
+#[test]
+fn admitter_scope_request_requires_escalate_answer() {
+    let scoped = "answer = \"escalate\"\nreason = 'paths are blocked'\n\
+                  scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\", \"src/b.rs\"]\n";
+    let parsed = parse_for(RoleKind::Admitter, &env(scoped)).unwrap();
+    assert_eq!(parsed.answer, "escalate");
+    assert_eq!(parsed.front["scope_target"], "vivi");
+    assert_eq!(parsed.front["scope_paths"][1], "src/b.rs");
+
+    // Any other answer refuses the metadata, including explicitly empty
+    // metadata: it must not disappear through defaults.
+    for (word, extra) in [("admitted", ""), ("revise", "required_changes = ['c']\n")] {
+        let front = format!(
+            "answer = \"{word}\"\n{extra}scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\"]\n"
+        );
+        assert!(
+            matches!(
+                parse_for(RoleKind::Admitter, &env(&front)),
+                Err(EnvelopeError::Invalid(ref m)) if m.contains("escalate")
+            ),
+            "{word}"
+        );
+        let empty = format!("answer = \"{word}\"\n{extra}scope_paths = []\n");
+        assert!(
+            matches!(
+                parse_for(RoleKind::Admitter, &env(&empty)),
+                Err(EnvelopeError::Invalid(ref m)) if m.contains("escalate")
+            ),
+            "{word}: empty metadata must not disappear"
+        );
+    }
+}
+
+#[test]
+fn scope_request_requires_target_paths_and_reason() {
+    let base = "answer = \"escalate\"\nreason = 'paths are blocked'\n";
+
+    let target_only = format!("{base}scope_target = \"vivi\"\n");
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &env(&target_only)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("together")
+    ));
+    let paths_only = format!("{base}scope_paths = [\"src/a.rs\"]\n");
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &env(&paths_only)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("together")
+    ));
+
+    let blank_target = format!("{base}scope_target = \"  \"\nscope_paths = [\"src/a.rs\"]\n");
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &env(&blank_target)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("scope_target") && m.contains("nonblank")
+    ));
+
+    let empty_paths = format!("{base}scope_target = \"vivi\"\nscope_paths = []\n");
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &env(&empty_paths)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("nonempty")
+    ));
+
+    let blank_path =
+        format!("{base}scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\", \" \"]\n");
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &env(&blank_path)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("entries must be nonblank")
+    ));
+
+    let blank_reason = "answer = \"escalate\"\nreason = ' '\n\
+                        scope_target = \"vivi\"\nscope_paths = [\"src/a.rs\"]\n";
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &env(blank_reason)),
+        Err(EnvelopeError::Invalid(ref m)) if m.contains("reason")
+    ));
+}
+
+#[test]
+fn ordinary_operator_and_escalate_answers_remain_valid() {
+    let operator = parse_for(
+        RoleKind::Planner,
+        &env("answer = \"operator\"\nreason = 'blocked'\n"),
+    )
+    .unwrap();
+    assert_eq!(operator.answer, "operator");
+    assert_eq!(operator.front["scope_target"], serde_json::Value::Null);
+    assert_eq!(operator.front["scope_paths"], serde_json::Value::Null);
+
+    let escalate = parse_for(
+        RoleKind::Admitter,
+        &env("answer = \"escalate\"\nreason = 'blocked'\n"),
+    )
+    .unwrap();
+    assert_eq!(escalate.answer, "escalate");
+    assert_eq!(escalate.front["scope_target"], serde_json::Value::Null);
+    assert_eq!(escalate.front["scope_paths"], serde_json::Value::Null);
+}
+
 const AUDIT: &str = "answer = \"residual\"\nraise_rung = \"main\"\n\n\
     [[requirement]]\nid = \"R1\"\ntext = 'A closed run stops.'\nstatus = \"NOT_APPLICABLE\"\n\
     evidence = [\"src/run.rs:210\"]\n\n\
