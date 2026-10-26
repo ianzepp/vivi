@@ -13,6 +13,9 @@ use crate::pool::local_fixture::{Fixture, fixture, git};
 struct Rig {
     f: Fixture,
     work: tempfile::TempDir,
+    /// The runner's WORK: the tempdir itself, or a directory inside it whose
+    /// name carries spaces, the way a pool root on a real worker can.
+    worker: PathBuf,
     start: String,
 }
 
@@ -20,16 +23,36 @@ impl Rig {
     fn new() -> Self {
         let f = fixture();
         let work = tempfile::tempdir().unwrap();
+        let root = work.path().to_path_buf();
+        Self::laid_on(work, f, root)
+    }
+
+    /// A rig whose worker root -- WORK, hence the checkout, the target
+    /// caches and the header's `checkout:` line -- contains spaces.
+    fn new_with_spaced_worker() -> Self {
+        let f = fixture();
+        let work = tempfile::tempdir().unwrap();
+        let worker = work.path().join("worker pool 1");
+        Self::laid_on(work, f, worker)
+    }
+
+    fn laid_on(work: tempfile::TempDir, f: Fixture, worker: PathBuf) -> Self {
+        std::fs::create_dir_all(&worker).unwrap();
         git(
-            work.path(),
+            &worker,
             &["clone", "-q", &f.repo.display().to_string(), "repo"],
         );
         let start = git(&f.repo, &["rev-parse", "main"]);
-        Self { f, work, start }
+        Self {
+            f,
+            work,
+            worker,
+            start,
+        }
     }
 
     fn repo(&self) -> PathBuf {
-        self.work.path().join("repo")
+        self.worker.join("repo")
     }
 
     fn origin_refs(&self) -> String {
@@ -104,7 +127,7 @@ impl Rig {
         extra_params: &str,
         extras_env: &str,
     ) -> (JobResult, String) {
-        let job = self.work.path().join("job");
+        let job = self.worker.join("job");
         if job.exists() {
             std::fs::remove_dir_all(&job).unwrap();
         }
@@ -136,13 +159,13 @@ impl Rig {
         if !extras_env.is_empty() {
             std::fs::write(job.join("extra-targets.env"), extras_env).unwrap();
         }
-        let home = self.work.path().join("home");
+        let home = self.worker.join("home");
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
         let path = format!("{}:{}", shims.display(), std::env::var("PATH").unwrap());
         let out = Command::new("bash")
             .arg("-c")
             .arg(RUNNER)
-            .env("WORK", self.work.path())
+            .env("WORK", &self.worker)
             .env("UNPRIVILEGED", "1")
             .env("BUILD_DIR", build_dir)
             .env("BUILD_PERSISTS", "1")
@@ -732,4 +755,76 @@ fn a_written_job_names_both_the_current_branch_and_the_assigned_output_branch() 
     );
     assert_eq!(observed(&out, "ref.txt"), "work");
     assert!(brief.contains("review it"), "{brief}");
+}
+
+#[test]
+fn a_worker_path_with_spaces_survives_the_header_the_cache_and_the_extra_note() {
+    let rig = Rig::new_with_spaced_worker();
+    let other = fixture();
+    let other_sha = git(&other.repo, &["rev-parse", "main"]);
+    let key = "a".repeat(64);
+    let extra_key = "b".repeat(64);
+    // The capture directory sits under the spaced worker root too, so the
+    // harness command must quote every path it names.
+    let out = rig.worker.join("observed dir");
+    std::fs::create_dir_all(&out).unwrap();
+    let q = |name: &str| crate::pool::job::sh_quote(&out.join(name).to_string_lossy());
+    let harness = format!(
+        "cp \"$HOME/brief.md\" {brief}; pwd > {pwd}; \
+         git rev-parse --abbrev-ref HEAD > {head}; cat a.txt",
+        brief = q("brief.txt"),
+        pwd = q("pwd.txt"),
+        head = q("ref.txt"),
+    );
+    let extras = format!(
+        "EXTRA_COUNT='1'\nEXTRA_0_ID='gradus'\nEXTRA_0_KEY='{extra_key}'\n\
+         EXTRA_0_REPOSITORY='file://{}'\nEXTRA_0_FROM='{other_sha}'\n\
+         EXTRA_0_LOCAL_SOURCE=''\nEXTRA_0_TOKEN=''\n",
+        other.repo.display()
+    );
+
+    let result = rig
+        .run_in_context_logged(
+            &harness,
+            "build",
+            &[],
+            &rig.f.repo,
+            Some(("a", &key)),
+            "",
+            &extras,
+        )
+        .0;
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    let cache = rig.worker.join("targets").join(&key).join("repo");
+    let extra_checkout = rig.worker.join("targets").join(&extra_key).join("repo");
+    let brief = std::fs::read_to_string(out.join("brief.txt")).unwrap();
+    assert!(
+        brief.contains(&format!("checkout: {}", cache.display())),
+        "the spaced cache path reached the header: {brief}"
+    );
+    assert!(
+        brief.contains(&format!("head: detached at {}", &rig.start[..12])),
+        "{brief}"
+    );
+    assert!(!brief.contains("output branch:"), "read-only: {brief}");
+    assert_eq!(brief.matches("\n---\n").count(), 1, "one header: {brief}");
+    assert_eq!(brief.matches("checkout: ").count(), 1, "{brief}");
+    assert!(brief.contains("## Repositories"), "{brief}");
+    assert!(brief.contains("(your working directory)"), "{brief}");
+    assert!(
+        brief.contains(&format!(
+            "- gradus: {} (at {})",
+            extra_checkout.display(),
+            &other_sha[..12]
+        )),
+        "{brief}"
+    );
+    assert!(brief.contains("review it"), "{brief}");
+    assert_eq!(
+        std::fs::canonicalize(observed(&out, "pwd.txt")).unwrap(),
+        std::fs::canonicalize(&cache).unwrap(),
+        "the harness ran in the spaced target-cache checkout"
+    );
+    assert_eq!(observed(&out, "ref.txt"), "HEAD");
 }
