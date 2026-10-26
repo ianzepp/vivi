@@ -504,15 +504,19 @@ The same operator rule and the same guard as the config writes above.
 #### Pump actions and reset
 
 Hosted projects only, operator only, same rule as `pump_control`. Each
-call is one audit line. `pump_action` posts for the pump's next tick
-through the library function the CLI calls, and is not refused while the
-pump runs (those functions do not check the lock). `pump_reset` is
+call is one audit line. The posting `pump_action` words (withdraw,
+requeue, replan, answer, unlock) post for the pump's next tick through
+the library function the CLI calls, and are not refused while the pump
+runs (those functions do not check the lock); `priority` instead writes
+the stored dispatch level the running pump reads each tick, through
+`pump::priority::set` — the row `vivi pump priority` sets, so nothing is
+posted. `pump_reset` is
 `pump::reset::archive`: refused while the pump lock is held, running or
 paused, with the library's message, and nothing moves on a refusal.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
-| `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
+| `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock\|priority; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock, priority), `step?`+`word?` (answer), `entry?`, `reason?`, `note?`, `priority?` (priority only; a whole number 0 to 2^63−1) | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. `priority` resolves `need` to the canonical need (handle or unambiguous prefix; another kind is refused) and stores its dispatch level, 0 clears; the answer names the canonical need and the resulting level. A library refusal is the tool error |
 | `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
 
 #### Hosted dispatch and priority

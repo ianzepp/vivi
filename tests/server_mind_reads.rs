@@ -247,12 +247,14 @@ async fn the_tool_is_listed_with_its_arguments() {
             "{name} is an argument"
         );
     }
-    // The moved pump_action row is unchanged beside it.
+    // The moved pump_action row is unchanged beside it, plus the new word.
     let action = schema("pump_action");
     assert_eq!(action["required"], json!(["project", "action"]));
     assert_eq!(
         action["properties"]["action"]["enum"],
-        json!(["withdraw", "requeue", "replan", "answer", "unlock"])
+        json!([
+            "withdraw", "requeue", "replan", "answer", "unlock", "priority"
+        ])
     );
 }
 

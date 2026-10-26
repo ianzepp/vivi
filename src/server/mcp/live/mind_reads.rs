@@ -59,8 +59,9 @@ pub(in crate::server::mcp) fn need_units(
 
 /// The canonical handle of the need `handle` names. An unknown handle, and a
 /// handle for any other kind, is refused here — so an empty `units` answer
-/// below always means a real need with no bound units.
-fn canonical_need(hosted: &Hosted, handle: &str) -> Result<String, ToolError> {
+/// below always means a real need with no bound units, and a priority set
+/// always lands on a need, never on another kind.
+pub(super) fn canonical_need(hosted: &Hosted, handle: &str) -> Result<String, ToolError> {
     let located = {
         let storage = hosted.ms.storage().map_err(lib_error)?;
         super::locate(&storage, handle)?
