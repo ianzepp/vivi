@@ -8,7 +8,7 @@
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::attempt_record;
 use crate::pump::envelope::roles::RoleKind;
-use crate::pump::jobs::{JobStatus, PoolJob};
+use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 
 /// The durable boolean payload key marking the raised-budget retry as spent;
 /// missing means false.
@@ -17,13 +17,17 @@ pub(crate) const PAYLOAD_KEY: &str = "budget_retry";
 /// The agent exit code the process runner uses for a timeout.
 const TIMEOUT_EXIT: i32 = 124;
 
+/// The leading marker of a pool receipt section (`--- receipt`, ...).
+const SECTION_MARKER: &str = "--- ";
+
 /// The legacy receipt boundary after which only the hand's own text follows.
 const HAND_MESSAGE_BOUNDARY: &str = "hand's final message:";
 
-/// Whether `role` may retry a budget kill at a raised budget: only the seven
-/// thinking kinds — never merge, repairer, hand or head-ceo.
+/// Whether `role` thinks: one of Researcher, Planner, Admitter, Slicer,
+/// Auditor, Judge or Cto — and so may retry a budget kill at a raised
+/// budget. Never merge, repairer, hand or head-ceo.
 #[must_use]
-pub(crate) fn eligible(role: RoleKind) -> bool {
+pub(crate) fn is_thinking(role: RoleKind) -> bool {
     matches!(
         role,
         RoleKind::Researcher
@@ -54,14 +58,30 @@ pub(crate) fn is_budget_kill(job: &PoolJob) -> bool {
 }
 
 /// The agent exit code in a receipt's bounded pool summary: only the lines
-/// before the first section and before the hand's own text count.
+/// before the first section and before the hand's own text count. Section
+/// headings are matched at line starts, so a fixture with a single newline
+/// before its first section is bounded like any other.
 fn summary_exit(receipt: &str) -> Option<i32> {
     let summary = receipt
-        .split("\n\n--- ")
-        .next()
-        .and_then(|head| head.split(HAND_MESSAGE_BOUNDARY).next())
-        .unwrap_or_default();
-    attempt_record::agent_exit(summary)
+        .lines()
+        .take_while(|line| {
+            !line.starts_with(SECTION_MARKER) && !line.starts_with(HAND_MESSAGE_BOUNDARY)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    attempt_record::agent_exit(&summary)
+}
+
+/// Copy every execution input and the payload of `job` into a fresh
+/// [`JobSpec`] named `new_id`: task, routing restrictions, checkout,
+/// publish and delete refs, extra targets, model, command, built-in
+/// charter, units, source jobs and unrelated payload all survive. Runtime
+/// ownership and result fields — pool, timestamps, status, outcome,
+/// applied-at, refusal counters and held state — have no spec identity and
+/// are left behind.
+#[must_use]
+pub(crate) fn rerun_spec(job: &PoolJob, new_id: &str) -> JobSpec {
+    job.rerun_spec(new_id)
 }
 
 /// Whether `job`'s durable payload marks its raised-budget retry as spent.
