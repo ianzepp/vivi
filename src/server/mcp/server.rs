@@ -46,6 +46,8 @@ use crate::server::safety::RateLimiter;
 use super::tools::{ToolError, opt_str, req_str};
 use super::{Surface, respond, tool, tool_result};
 
+mod write_classification;
+
 /// The built-in principal behind `HOST_OPERATOR_TOKEN`.
 pub(crate) const HOST_PRINCIPAL: &str = "host";
 
@@ -311,7 +313,7 @@ async fn project_tool(
     name: &str,
     arguments: Value,
 ) -> Result<Value, Response> {
-    let write = is_write(name, &arguments);
+    let write = write_classification::is_write(name, &arguments);
     // (b) the project argument. A non-string counts as missing, as the
     // wire contract pins it.
     let Some(named) = arguments
@@ -859,27 +861,6 @@ fn parse_grants(value: Option<&Value>) -> Result<Vec<GrantRecord>, ToolError> {
 }
 
 // -------------------------------------------------------- audit and limits
-
-/// Whether one tool call writes (so it is audited and rate limited). The
-/// action-gated tools write only on their write actions.
-fn is_write(name: &str, arguments: &Value) -> bool {
-    let action = arguments.get("action").and_then(Value::as_str);
-    match name {
-        "send" | "reply" | "done" | "reopen" | "mark" | "unmark" | "depend" | "pump_control"
-        | "pump_send" | "pump_action" | "pump_reset" => true,
-        "memo" => action == Some("save"),
-        "pump_rungs" => action == Some("set"),
-        "pool_bands" => matches!(action, Some("set" | "unset")),
-        "config_set" | "config_unset" | "pool_allow_set" | "target_add" | "target_remove"
-        | "role_add" | "role_set" | "charter_set" => true,
-        "config_migrate" => match arguments.get("write") {
-            Some(Value::Bool(flag)) => *flag,
-            None | Some(Value::Null) => false,
-            Some(_) => true,
-        },
-        _ => false,
-    }
-}
 
 /// Count one write against (project-or-`host`, key).
 fn allow_write(state: &AppState, bucket: &str, auth: &ServerPrincipal) -> Result<(), String> {
