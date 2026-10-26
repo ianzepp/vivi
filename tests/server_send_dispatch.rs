@@ -4,6 +4,11 @@
 //!
 //! Fixture pattern borrowed from `server_pump_records.rs`: one served host
 //! root with `operator` and `hand` roles and a configured pump home.
+//!
+//! The ordinary sends are covered too: a non-operator hosted key with the
+//! dispatch options absent or false keeps the pre-dispatch contract, and a
+//! dispatch-true send on a project the server owns end to end (durable or
+//! chat) is refused instead of falling through to the transport send.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -16,6 +21,8 @@ use tower::util::ServiceExt;
 use vivi::mailspace::{Mailspace, PumpState, RoleUpdate};
 use vivi::pump::priority;
 use vivi::server::grants::{GrantLevel, GrantRecord};
+use vivi::server::identities::IdentityRecord;
+use vivi::server::projects::{Scan, Viewer};
 use vivi::server::{AppState, app_state, hosted, router};
 use vivi::storage::StoredMessageView;
 
@@ -279,6 +286,222 @@ fn spki_pem(seed: u8) -> String {
         "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
         base64::engine::general_purpose::STANDARD.encode(der)
     )
+}
+
+/// One app state with two server-owned projects — a durable one and a live
+/// chat — each with the member `alice` registered. This is the transport
+/// half of the send surface: `/v1/mcp` with a server key, and the legacy
+/// `/v1/rooms/{id}/mcp` route with the member's identity token.
+struct Transport {
+    app: Router,
+    state: AppState,
+    durable: String,
+    chat: String,
+    /// The member's identity token on each project.
+    durable_token: String,
+    chat_token: String,
+    /// A server key with an operator grant on each project.
+    durable_key: String,
+    chat_key: String,
+}
+
+fn transport(name: &str) -> Transport {
+    let base = scratch(name);
+    let state = app_state(base.join("data"), None, None).expect("app state");
+    let durable = state
+        .projects
+        .create_project_with_creator(&spki_pem(11), "alice")
+        .unwrap()
+        .project_id;
+    let durable_token = state
+        .identities
+        .register(
+            &durable,
+            "alice",
+            &spki_pem(11),
+            "0a0a0a0a-1111-4222-8333-444444444444",
+        )
+        .unwrap()
+        .token;
+    let chat = state
+        .projects
+        .create_chat_project(3_600)
+        .unwrap()
+        .project_id;
+    let chat_token = state
+        .identities
+        .register(
+            &chat,
+            "alice",
+            &spki_pem(12),
+            "0b0b0b0b-1111-4222-8333-444444444444",
+        )
+        .unwrap()
+        .token;
+    Transport {
+        app: router(state.clone()),
+        durable_key: server_key(&state, &durable, "alice", Some("operator")),
+        chat_key: server_key(&state, &chat, "alice", Some("operator")),
+        state,
+        durable,
+        chat,
+        durable_token,
+        chat_token,
+    }
+}
+
+impl Transport {
+    /// The registered member of `project`.
+    fn member(&self, project: &str) -> IdentityRecord {
+        self.state.identities.by_name(project, "alice").unwrap()
+    }
+
+    /// Every letter in `project`'s transport index the member may see: the
+    /// whole local record a fall-through would have to grow.
+    fn letters(&self, project: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        self.state
+            .projects
+            .scan_visible(
+                project,
+                &Viewer::of(&self.member(project)),
+                Scan::All,
+                |record| {
+                    ids.push(record.message_id);
+                },
+            )
+            .unwrap();
+        ids
+    }
+
+    /// One `tools/call` POST to `uri` with a Bearer token.
+    async fn post(
+        &self,
+        uri: &str,
+        token: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> (StatusCode, Value) {
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        });
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// A successful server-key tool call on `/v1/mcp`.
+    async fn server_call(&self, key: &str, project: &str, tool: &str, arguments: Value) -> Value {
+        let mut arguments = arguments;
+        arguments["project"] = json!(project);
+        let (status, value) = self.post("/v1/mcp", key, tool, arguments).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        assert_ne!(value["result"]["isError"], true, "{tool}: {text}");
+        serde_json::from_str(text).unwrap()
+    }
+
+    /// A refused server-key tool call on `/v1/mcp`: HTTP 200 with isError
+    /// and the decoded error text.
+    async fn server_refused(
+        &self,
+        key: &str,
+        project: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> String {
+        let mut arguments = arguments;
+        arguments["project"] = json!(project);
+        let (status, value) = self.post("/v1/mcp", key, tool, arguments).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        assert_eq!(value["result"]["isError"], true, "{value}");
+        let decoded: Value =
+            serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        decoded["error"].as_str().unwrap().to_owned()
+    }
+
+    /// A successful member-token tool call on the legacy rooms route.
+    async fn rooms_call(&self, project: &str, token: &str, tool: &str, arguments: Value) -> Value {
+        let uri = format!("/v1/rooms/{project}/mcp");
+        let (status, value) = self.post(&uri, token, tool, arguments).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        assert_ne!(value["result"]["isError"], true, "{tool}: {text}");
+        serde_json::from_str(text).unwrap()
+    }
+
+    /// A refused member-token tool call on the legacy rooms route.
+    async fn rooms_refused(
+        &self,
+        project: &str,
+        token: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> String {
+        let uri = format!("/v1/rooms/{project}/mcp");
+        let (status, value) = self.post(&uri, token, tool, arguments).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        assert_eq!(value["result"]["isError"], true, "{value}");
+        let decoded: Value =
+            serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        decoded["error"].as_str().unwrap().to_owned()
+    }
+}
+
+/// A valid transport need whose dispatch-true variant is under test: the
+/// ordinary control drops `dispatch` alone.
+fn transport_need() -> Value {
+    json!({
+        "kind": "need",
+        "to": ["alice@0a0a0a0a.local"],
+        "subject": "fix the login",
+        "body": "please fix login",
+        "done_when": "it works",
+    })
+}
+
+/// The dispatch arguments for `project`: the same need, addressed to the
+/// member's own prefix address, with dispatch on.
+fn transport_dispatch_need(t: &Transport, project: &str) -> Value {
+    let mailspace_id = t.member(project).mailspace_id.unwrap();
+    let mut arguments = transport_need();
+    arguments["to"] = json!([format!("alice@{}.local", &mailspace_id[..8])]);
+    arguments["dispatch"] = json!(true);
+    arguments
+}
+
+/// No pump database was created anywhere under `project`'s directory: a
+/// refused dispatch leaves no pump record and no priority entry behind.
+fn assert_no_pump_state(state: &AppState, project: &str) {
+    let mut stack = vec![state.projects.project_dir(project).unwrap()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            assert!(!name.starts_with("pump.db"), "{path:?}");
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
 }
 
 /// The persisted state a refusal must preserve: every stored message copy
@@ -748,4 +971,251 @@ fn option_refusal_cases() -> Vec<Value> {
         cases.push(Fx::need_arguments(arguments));
     }
     cases
+}
+
+/// The exact response of an ordinary hosted send: the pre-dispatch fields
+/// only, delivered as the acting role, with no pump or priority anywhere.
+fn assert_hosted_plain_shape(sent: &Value) {
+    let keys: BTreeSet<String> = sent.as_object().unwrap().keys().cloned().collect();
+    let expected: BTreeSet<String> = [
+        "delivered",
+        "from",
+        "handle",
+        "kind",
+        "message_id",
+        "remote",
+        "sent",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(keys, expected, "{sent}");
+    assert_eq!(sent["kind"], "need", "{sent}");
+    assert_eq!(sent["from"], "hand", "{sent}");
+    assert_eq!(sent["delivered"][0]["identity"], "mind", "{sent}");
+    assert_eq!(sent["delivered"][0]["handle"], sent["handle"], "{sent}");
+    assert!(sent["sent"].is_string(), "{sent}");
+    assert!(!sent["message_id"].is_null(), "{sent}");
+}
+
+/// An ordinary send from a non-operator hosted key keeps the pre-dispatch
+/// contract: dispatch omitted or false changes nothing — permission,
+/// composition, validation, delivery and the response fields stay the
+/// ordinary send's, and nothing reaches the pump. The durable-project
+/// transport send keeps its own established response shape.
+#[tokio::test]
+async fn plain_send_preserves_permissions_delivery_and_response() {
+    let fx = fixture("plain", true);
+    let hand = fx.key_by(&fx.member, Some("hand"));
+    plain_hosted_sends(&fx, &hand).await;
+    plain_hosted_rules(&fx, &hand).await;
+    durable_transport_shape().await;
+}
+
+/// The omitted and false dispatch sends of the hand role: identical
+/// ordinary needs carrying the hosted fields only, and no pump state at
+/// either home.
+async fn plain_hosted_sends(fx: &Fx, hand: &str) {
+    let plain = fx.call(hand, "send", Fx::need_arguments(json!({}))).await;
+    assert_hosted_plain_shape(&plain);
+    let explicit = fx
+        .call(hand, "send", Fx::need_arguments(json!({"dispatch": false})))
+        .await;
+    assert_hosted_plain_shape(&explicit);
+    assert_ne!(plain["handle"], explicit["handle"], "{plain}");
+    // Neither touched the pump: no record, no priority row, no database at
+    // the configured or the default home (checked before the first
+    // priority listing, which would create one).
+    assert!(fx.records(None).is_empty(), "{plain}");
+    assert!(!fx.home().join("pump.db").exists());
+    assert!(!fx.default_home_db().exists());
+    assert!(fx.priorities().is_empty());
+}
+
+/// The ordinary rules are unchanged for the non-operator key: dispatch
+/// stays operator-only and the option parser still guards plain sends;
+/// the need letter gate refuses a missing done_when; the composer refuses
+/// sugar beside a whole letter; a dependency named at send rides in the
+/// front matter. Every refusal files nothing.
+async fn plain_hosted_rules(fx: &Fx, hand: &str) {
+    let need = fx.call(hand, "send", Fx::need_arguments(json!({}))).await;
+    let need_handle = need["handle"].as_str().unwrap().to_owned();
+    let before = snapshot(fx);
+
+    let message = fx
+        .refused(hand, "send", Fx::need_arguments(json!({"dispatch": true})))
+        .await;
+    assert!(message.contains("kind operator"), "{message}");
+    let message = fx
+        .refused(hand, "send", Fx::need_arguments(json!({"priority": 1})))
+        .await;
+    assert!(message.contains("priority requires dispatch"), "{message}");
+    let message = fx
+        .refused(
+            hand,
+            "send",
+            json!({"kind": "need", "to": ["mind"], "subject": "s", "body": "just do it"}),
+        )
+        .await;
+    assert!(message.contains("need has no done_when"), "{message}");
+    let message = fx
+        .refused(
+            hand,
+            "send",
+            json!({
+                "kind": "need", "to": ["mind"], "subject": "s",
+                "body": "+++\ndone_when = [\"y\"]\n+++\n\nx",
+                "target": "repo",
+            }),
+        )
+        .await;
+    assert!(message.contains("whole letter"), "{message}");
+    assert!(
+        message.contains("put target in its front matter"),
+        "{message}"
+    );
+    assert_eq!(snapshot(fx), before, "every refusal filed nothing");
+
+    // A dependent task files as an ordinary task, its front matter naming
+    // the filed need.
+    let dependent = fx
+        .call(
+            hand,
+            "send",
+            json!({
+                "kind": "task", "to": ["mind"], "subject": "after",
+                "body": "once it works", "depends_on": need_handle,
+            }),
+        )
+        .await;
+    assert_eq!(dependent["kind"], "task", "{dependent}");
+    let ms = fx.ms();
+    let storage = ms.storage().unwrap();
+    let id = storage
+        .resolve_message_token(dependent["handle"].as_str().unwrap())
+        .unwrap();
+    let raw = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(
+        raw.contains(&format!(r#"depends_on = ["{need_handle}"]"#)),
+        "{raw}"
+    );
+    assert!(fx.records(None).is_empty());
+    assert!(fx.priorities().is_empty());
+}
+
+/// The transport send of a durable project keeps its established shape:
+/// message_id, handle, sequence, kind, duplicate — no hosted delivery
+/// fields are imposed on it, and the letter is filed.
+async fn durable_transport_shape() {
+    let t = transport("plain-transport");
+    let sent = t
+        .server_call(&t.durable_key, &t.durable, "send", transport_need())
+        .await;
+    let keys: BTreeSet<String> = sent.as_object().unwrap().keys().cloned().collect();
+    let expected: BTreeSet<String> = ["duplicate", "handle", "kind", "message_id", "sequence"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(keys, expected, "{sent}");
+    assert_eq!(sent["kind"], "need", "{sent}");
+    assert_eq!(sent["duplicate"], false, "{sent}");
+    assert!(sent.get("delivered").is_none(), "{sent}");
+    assert!(sent.get("sent").is_none(), "{sent}");
+    assert_eq!(t.letters(&t.durable).len(), 1, "{sent}");
+}
+
+/// A dispatch-true send on a project the server owns end to end — durable
+/// or chat — is refused as a tool error at HTTP 200 and never falls
+/// through to the transport send. On the legacy rooms route, which accepts
+/// the member's token and would transport-send the very same call without
+/// dispatch, the refusal is the dispatch guard itself. Nothing is filed:
+/// no transport letter, no local copy, no pump record, no priority entry.
+#[tokio::test]
+async fn unsupported_dispatch_does_not_fall_through_to_transport_send() {
+    let t = transport("unsupported");
+    ordinary_transport_controls(&t).await;
+    server_keys_refuse_dispatch(&t).await;
+    member_tokens_refuse_dispatch_on_rooms(&t).await;
+    identity_tokens_refused_on_v1_mcp(&t).await;
+}
+
+/// Controls: with dispatch absent, both fixtures file letters — the server
+/// key on `/v1/mcp` for the durable project, the member token on the
+/// legacy rooms route for the chat — so the refusals below are the
+/// dispatch guard, not a broken fixture.
+async fn ordinary_transport_controls(t: &Transport) {
+    let sent = t
+        .server_call(&t.durable_key, &t.durable, "send", transport_need())
+        .await;
+    assert_eq!(sent["kind"], "need", "{sent}");
+    assert!(sent["message_id"].is_string(), "{sent}");
+    assert_eq!(t.letters(&t.durable).len(), 1, "{sent}");
+    let chat_sent = t
+        .rooms_call(
+            &t.chat,
+            &t.chat_token,
+            "send",
+            json!({"kind": "chat", "subject": "hi", "body": "from the room"}),
+        )
+        .await;
+    assert_eq!(chat_sent["kind"], "chat", "{chat_sent}");
+    assert_eq!(t.letters(&t.chat).len(), 1, "{chat_sent}");
+}
+
+/// Server keys holding operator grants on both server-owned projects: a
+/// dispatch-true need is refused at HTTP 200 with isError, and no
+/// transport item, local copy, pump record or priority entry appears.
+async fn server_keys_refuse_dispatch(t: &Transport) {
+    for (project, key) in [(&t.durable, &t.durable_key), (&t.chat, &t.chat_key)] {
+        let before = t.letters(project);
+        let message = t
+            .server_refused(key, project, "send", transport_dispatch_need(t, project))
+            .await;
+        assert!(message.contains("hosted project"), "{message}");
+        assert_eq!(t.letters(project), before, "{project}");
+        assert_no_pump_state(&t.state, project);
+    }
+}
+
+/// The legacy rooms route accepts each member token — the controls file
+/// letters through it — so a dispatch-true call there that answers as a
+/// tool error is the legacy dispatch guard itself, and it files nothing.
+async fn member_tokens_refuse_dispatch_on_rooms(t: &Transport) {
+    for (project, token) in [(&t.durable, &t.durable_token), (&t.chat, &t.chat_token)] {
+        let before = t.letters(project);
+        let message = t
+            .rooms_refused(project, token, "send", transport_dispatch_need(t, project))
+            .await;
+        assert!(message.contains("hosted project"), "{message}");
+        assert_eq!(t.letters(project), before, "{project}");
+        assert_no_pump_state(&t.state, project);
+    }
+}
+
+/// `/v1/mcp` refuses an identity token at the door with its own status: a
+/// 401 naming the server key. That is authentication, not the dispatch
+/// guard — the guard is proven above on routes that accept the caller —
+/// and it files nothing either.
+async fn identity_tokens_refused_on_v1_mcp(t: &Transport) {
+    for (project, token) in [(&t.durable, &t.durable_token), (&t.chat, &t.chat_token)] {
+        let before = t.letters(project);
+        let (status, value) = t
+            .post(
+                "/v1/mcp",
+                token,
+                "send",
+                transport_dispatch_need(t, project),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+        assert_eq!(value["error"]["code"], "unauthorized", "{value}");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("server key"),
+            "{value}"
+        );
+        assert_eq!(t.letters(project), before, "{project}");
+    }
 }
