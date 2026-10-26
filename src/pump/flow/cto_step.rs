@@ -39,7 +39,7 @@ const WORDS: &str = "## Your words\n\n\
 - research: restart the need at the research entry\n\
 - plan: restart the need at the plan entry\n\
 - slice: restart the need at the slice entry\n\
-- rework: restart the need at the rework entry\n\
+- rework: restart the need at the rework1 entry on the existing need branch\n\
 - lock: lock the need for the operator\n";
 
 /// Starts a cto step as a head-cto job.
@@ -105,7 +105,25 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     out.push_str("## Failing rung output\n\n");
     out.push_str(&failing_rungs(&payloads));
     out.push_str(&block_ship(&payloads));
+    out.push_str(&branch_availability(cx)?);
     out.push_str(WORDS);
+    Ok(out)
+}
+
+/// The availability of rework, judged only by the stored need-branch row.
+fn branch_availability(cx: &StartCx<'_>) -> Result<String, VivariumError> {
+    let mut out = String::from("\n## Rework availability\n\n");
+    match cx.store.need_branch(&cx.run.need)? {
+        Some(row) => out.push_str(&format!(
+            "A need-branch row is stored: rework restarts the need at rework1 on the existing \
+             branch {} for target {}. The row itself is not evidence that any slice merged.\n",
+            row.branch, row.target
+        )),
+        None => out.push_str(
+            "No need-branch row exists, so rework is unavailable for this need. Research, \
+             plan, slice and lock remain the choices.\n",
+        ),
+    }
     Ok(out)
 }
 
