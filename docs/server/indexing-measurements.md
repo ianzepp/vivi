@@ -26,13 +26,19 @@ VIVI_MEASURE_MODE=idle cargo test --release --test server_measure_process \
 VIVI_MEASURE_MODE=local cargo test --release --test server_measure_process \
   process_benchmark_windows_report_cpu_pass_latency_and_candidate_work \
   -- --ignored --nocapture
+
+# mixed off-host-write window (captured below, 2026-10-26)
+VIVI_MEASURE_MODE=mixed cargo test --release --test server_measure_process \
+  process_benchmark_windows_report_cpu_pass_latency_and_candidate_work \
+  -- --ignored --nocapture
 ```
 
 Environment settings, none of them secret:
 
 - `VIVI_MEASURE_MODE` — each captured run selects one window: `idle`
-  (no-write) or `local` (continuous local-only writes). Unset selects all
-  three modes (`idle,local,mixed`); `mixed` is not yet captured here.
+  (no-write), `local` (continuous local-only writes), or `mixed`
+  (local writes plus the two-second off-host schedule). Unset selects all
+  three modes (`idle,local,mixed`) in one process.
 - `VIVI_MEASURE_CORPUS` unset — the harness uses its 5,000-sends-per-host
   minimum. `VIVI_MEASURE_SENDS` must stay unset (it is smoke-only and
   refuses values at or above the smoke cap).
@@ -50,11 +56,12 @@ a deployed server or `~/.vivarium/`.
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-10-26 (~21:30 UTC idle capture, ~21:50 UTC local-write capture) |
+| Date | 2026-10-26 (~21:30 UTC idle capture, ~21:50 UTC local-write capture, ~22:13 UTC mixed capture) |
 | Host hardware | Apple M5 Max, 18 cores, 36 GiB RAM |
 | OS | macOS 27.0.1 (Build 26A434), arm64 |
 | Source revision | `a52197d5204a1c27dc6186969c2f6c6048832fc5` (clean tree, package `vivi` 22.0.0) |
 | Source revision, local-write capture | `744d706527b5c78810f6ef48723db20eca9fe874` (clean tree; the only change since the idle capture is this document) |
+| Source revision, mixed capture | `fe45427cc34bb566f46fc9e3880d74531c68e3a7` (clean tree; only this document changed since the local-write capture) |
 | Toolchain | rustc/cargo 1.99.1 (58cf8f9c3 2026-10-13, Homebrew) |
 | Build mode | `--release`; `[profile.release]` is `strip = true`, `lto = "thin"`, other settings default (opt-level 3) |
 
@@ -191,6 +198,65 @@ Phase durations across the run:
 | Fixture + corpus bootstrap (2 × 5,000 sends) + server boot + warm-up settle | ≈ 60 s, plus the post-window verification and teardown in the remainder | derived (189.76 s total − 120.38 s window; the harness does not print per-phase seconds) |
 | Measured local-write window | 120.382 s | measured |
 
+## Baseline: mixed off-host-write window (2026-10-26)
+
+Same fixture, bootstrap, server boot, and warm-up settle as the two
+baselines above, then one 120 s mixed window: a writer thread per hosted
+mailspace pumping predominantly local letters through the normal
+mailspace API until the deadline, plus the harness's fixed off-host
+schedule — one off-host letter when the writer starts, then one every 2 s
+to `mind@0badc0de.local`, alternating need/mail. Directly measured:
+
+| Quantity | Value |
+| --- | --- |
+| Window wall time | 120.471 s |
+| Server CPU seconds over the window | 19.236 s |
+| Average fraction of one core | 0.1597 |
+| Push passes completed in-window | 40, slowest 0.667 s |
+| Message rows, window start | 19,962 (both mailspaces) |
+| Message rows, window end | 38,476 (both mailspaces) |
+| Writer sends / threads in-window | 9,316 / 2 (one per hosted mailspace) |
+| Writer wall seconds in-window | 240.004 s summed over both threads (≈ 120 s each; the writers ran to the deadline) |
+| Harness total (`test result: ok. 1 passed`) | 197.85 s |
+
+Derived (harness-labeled candidate-work arithmetic and simple cross-checks
+over the measured values, not measured counters):
+
+| Quantity | Value |
+| --- | --- |
+| Candidate selector work | 40 full-listing passes × 19,962 rows = **798,480 row visits** in the window |
+| Storage growth cross-check | 38,476 − 19,962 = 18,514 new rows = 2 per local send + 1 per off-host sent copy, consistent with ≈ 9,198 local + 118 off-host sends (≈ 59 off-host per host on the 2 s schedule) |
+| Aggregate writer throughput | ≈ 77.3 sends/s across both hosts (≈ 38.8 sends/s per host) |
+| In-window off-host transport additions | **118** — verified served: after the window the index was checked against the corpus set **plus** every in-window off-host identity, by to/kind, for both hosts, and matched exactly |
+
+Pass cadence and load match the local-write baseline: 40 traced passes
+over 120.471 s (the fixed 5 s indexer cycle firing ~20 times against both
+hosts), no silent skips, and essentially the same server CPU (19.236 s /
+0.1597 cores here vs 19.546 s / 0.1624 local). At this harness cadence
+the two-second off-host schedule adds ~118 indexed letters per window and
+does not change the CPU shape; the cost scales with the local write rate,
+not with the off-host tail.
+
+Capture note: the first capture attempt under the identical command
+failed the post-window identity check two letters short (92 of 94 served
+for host `before`); an immediate re-run passed completely and is the
+baseline above. The harness's post-window assert reads the index once,
+and the server's pre-read pass is deliberately not waited for while
+another pass is in flight (`refresh_hosted` skips on `WouldBlock`), so a
+read landing in that gap can see an index one pass stale; the letters
+were demonstrably written (the expected set comes from the writers' own
+classification), only their indexing pass had not landed at the moment
+of the read. A later run should
+verify against a settle poll (see `wait_index_settled`), which the
+warm-up phase already uses.
+
+Phase durations across the run:
+
+| Phase | Duration | Kind |
+| --- | --- | --- |
+| Fixture + corpus bootstrap (2 × 5,000 sends) + server boot + warm-up settle | ≈ 77 s, plus the post-window verification and teardown in the remainder | derived (197.85 s total − 120.471 s window; the harness does not print per-phase seconds) |
+| Measured mixed window | 120.471 s | measured |
+
 ## Limitations
 
 - Single machine, single run, no repetitions; the machine was otherwise
@@ -199,14 +265,16 @@ Phase durations across the run:
 - macOS task accounting through sysinfo deltas; platforms without
   kernel CPU accounting are an explicit `AccountingError::Unsupported`,
   so these numbers do not transfer to such hosts.
-- Only the idle and local windows are captured here; the `mixed` write
-  window is part of the same harness (`VIVI_MEASURE_MODE`) and is not yet
-  captured.
+- Only the idle, local, and mixed windows are captured here, one run
+  each; all three come from the same harness (`VIVI_MEASURE_MODE`).
 - Pass-latency evidence under a no-write steady state is sparse by
   design (skipped passes are silent); the local-write window shows the
   dense shape (40 working passes). The writers were not pinned and the
   machine was otherwise idle; per-host throughput (≈ 35.4 sends/s) is
   what the unpumped two-thread writer achieved, not a mailspace ceiling.
+- The mixed window's post-window verification asserts immediately and
+  can race an in-flight pass (see the capture note in the mixed baseline
+  above); the recorded baseline is the run whose verification passed.
 - The fixture lives in a fresh temp directory per run; its absolute
   paths and pid-derived name differ run to run, which is fine — the
   workload contract above is what must stay fixed.
