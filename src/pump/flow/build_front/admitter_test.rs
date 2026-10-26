@@ -50,8 +50,12 @@ struct Rig {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default())
+}
+
+fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     host.reply("need show", 0, "the need thread");
     let mut routing = (*ctx.routing).clone();
     routing.roles.push(RoutedRole {
@@ -195,5 +199,51 @@ fn no_finished_planner_step_is_an_error() -> R {
     let err = rig.start("admit1").unwrap_err();
 
     assert!(err.to_string().contains("admit1"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn admit1_and_admit2_budgets_follow_a_nondefault_dispatch_fallback() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    let mut rig = rig_with(cfg)?;
+    rig.planned("plan", "PLAN ONE TEXT")?;
+    rig.planned("plan2", "PLAN TWO TEXT")?;
+
+    let admit1 = job(rig.start("admit1")?)?;
+    let admit2 = job(rig.start("admit2")?)?;
+
+    // No `[pump.dispatch.step_budgets]` key: both admitter nodes take the
+    // changed shared fallback, exactly.
+    assert_eq!(admit1.budget, 222);
+    assert_eq!(admit2.budget, 222);
+    for spec in [&admit1, &admit2] {
+        assert!(spec.read_only);
+        assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+        assert_eq!(spec.extra_targets, vec![String::from("default")]);
+    }
+    assert!(admit1.body.contains("need: n1"), "{}", admit1.body);
+    Ok(())
+}
+
+#[test]
+fn admit1_and_admit2_budgets_take_the_admitter_override_not_another_kind() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.admitter = Some(333);
+    // Another kind configured: it must not reach the admitter nodes.
+    cfg.dispatch.step_budgets.planner = Some(444);
+    let mut rig = rig_with(cfg)?;
+    rig.planned("plan", "PLAN ONE TEXT")?;
+    rig.planned("plan2", "PLAN TWO TEXT")?;
+
+    let admit1 = job(rig.start("admit1")?)?;
+    let admit2 = job(rig.start("admit2")?)?;
+
+    assert_eq!(admit1.budget, 333);
+    assert_eq!(admit2.budget, 333);
+    assert!(admit1.read_only);
+    assert_eq!(admit1.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(admit1.extra_targets, vec![String::from("default")]);
     Ok(())
 }

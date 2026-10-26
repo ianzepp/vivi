@@ -32,8 +32,12 @@ struct Rig {
 }
 
 fn rig(with_role: bool, run_no: u32) -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default(), with_role, run_no)
+}
+
+fn rig_with(cfg: PumpConfig, with_role: bool, run_no: u32) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (mut ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (mut ctx, host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != PUMP_PLANNER_ROLE);
     if with_role {
@@ -233,6 +237,48 @@ fn a_missing_planner_role_is_an_error() -> R {
     let err = start(&rig, "plan").unwrap_err();
 
     assert!(err.to_string().contains(PUMP_PLANNER_ROLE), "{err}");
+    Ok(())
+}
+
+#[test]
+fn plan_and_plan2_budgets_follow_a_nondefault_dispatch_fallback() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    let rig = rig_with(cfg, true, 1)?;
+
+    let plan = start(&rig, "plan")?;
+    let plan2 = start(&rig, "plan2")?;
+
+    // No `[pump.dispatch.step_budgets]` key: both planner nodes take the
+    // changed shared fallback, exactly.
+    assert_eq!(plan.budget, 222);
+    assert_eq!(plan2.budget, 222);
+    for spec in [&plan, &plan2] {
+        assert!(spec.read_only);
+        assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+        assert_eq!(spec.extra_targets, vec![String::from("default")]);
+    }
+    assert!(plan.body.contains("need: n1\nrun: r1\n"), "{}", plan.body);
+    Ok(())
+}
+
+#[test]
+fn plan_and_plan2_budgets_take_the_planner_override_not_another_kind() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 222;
+    cfg.dispatch.step_budgets.planner = Some(333);
+    // Another kind configured: it must not reach the planner nodes.
+    cfg.dispatch.step_budgets.judge = Some(444);
+    let rig = rig_with(cfg, true, 1)?;
+
+    let plan = start(&rig, "plan")?;
+    let plan2 = start(&rig, "plan2")?;
+
+    assert_eq!(plan.budget, 333);
+    assert_eq!(plan2.budget, 333);
+    assert!(plan.read_only);
+    assert_eq!(plan.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(plan.extra_targets, vec![String::from("default")]);
     Ok(())
 }
 
