@@ -289,7 +289,10 @@ where
         self.rerun_with(job, row, step, |_| {})
     }
 
-    /// [`Self::rerun`], with `edit` applied to the new job's spec before it is queued.
+    /// [`Self::rerun`], with `edit` applied to the new job's spec before it
+    /// is queued. The copy goes through [`budget_retry::rerun_spec`], so
+    /// every execution input survives; only the identity, the stamped
+    /// attempt and `edit` may differ.
     pub(crate) fn rerun_with(
         &mut self,
         job: &PoolJob,
@@ -299,7 +302,7 @@ where
     ) -> Result<(), VivariumError> {
         let attempt = row.attempt + 1;
         let id = format!("{}-a{attempt}", correct::base_id(&job.id));
-        let mut spec = job.rerun_spec(id.clone());
+        let mut spec = budget_retry::rerun_spec(job, &id);
         edit(&mut spec);
         let new_row = row.next(&id);
         new_row.stamp(&self.run.need, &mut spec.payload);
