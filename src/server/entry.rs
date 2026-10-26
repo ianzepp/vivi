@@ -25,9 +25,9 @@ fn die(code: i32, message: &str) -> ! {
     std::process::exit(code)
 }
 
-// The runtime is built by hand, after the configuration is read: reading
-// removes the secrets from the environment, which is only safe while this
-// is the one thread.
+// The runtime is built inside the shutdown helper, after the
+// configuration is read: reading removes the secrets from the
+// environment, which is only safe while this is the one thread.
 pub fn run(args: Vec<String>) {
     // Before anything is read: no same-user process may read this one's
     // memory or environment.
@@ -60,11 +60,9 @@ pub fn run(args: Vec<String>) {
         Ok(c) => c,
         Err(err) => die(2, &err),
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap_or_else(|err| die(1, &format!("cannot start the async runtime: {err}")));
-    runtime.block_on(serve(config));
+    if let Err(err) = crate::server::shutdown::run(serve(config)) {
+        die(1, &format!("cannot start the async runtime: {err}"));
+    }
 }
 
 async fn serve(config: ServerConfig) {
