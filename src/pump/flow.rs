@@ -29,6 +29,7 @@ pub mod outcome;
 pub mod prune;
 pub mod rank;
 pub mod ready_slices;
+pub(crate) mod recovery_inputs;
 pub mod registry;
 pub mod repair;
 pub mod repair_audit;

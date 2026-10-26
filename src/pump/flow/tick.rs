@@ -34,10 +34,12 @@ use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::recovery_inputs;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::validate::validate;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::store::step_execution::ExecutionKey;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// Verdict a step carries while it waits for `vivi pump answer`.
@@ -72,6 +74,12 @@ pub const FLOW_VERSION_STALE: &str = "flow-version-stale";
 pub const FANOUT_UNBOUND: &str = "flow-fanout-unbound";
 /// Exception kind: a step row names a node the loaded flow does not have.
 pub const NODE_UNKNOWN: &str = "flow-node-unknown";
+/// Exception kind: a finished job's execution is no longer the task's current
+/// one: a retry or correction superseded it, or the task moved owning phase.
+pub const STALE_EXECUTION: &str = "flow-stale-execution";
+
+/// The owning phase of every handler job's execution.
+pub(crate) const HAND_PHASE: &str = "hand";
 
 /// Seconds a run may stay `finishing` before the alarm.
 const FINISHING_STUCK_SECS: u64 = 600;
@@ -431,18 +439,7 @@ where
         let Some(job) = self.st.jobs().get(id).cloned() else {
             return Ok(());
         };
-        let newest = self.store.last_attempt(&row.task)?;
-        if row.attempt < newest {
-            jobs::mark_applied(self.st, id, self.ctx.now());
-            raise_once(
-                self.ctx,
-                STALE_ATTEMPT,
-                id,
-                &format!(
-                    "job {id} step {}: expected attempt {newest}; actual: attempt {}; result ignored",
-                    row.task, row.attempt
-                ),
-            );
+        if self.reject_stale(id, row)? {
             return Ok(());
         }
         let step = self.store.step_by_task(&row.task)?;
@@ -483,6 +480,75 @@ where
             self.def.kind.name(),
             self.run.flow_version
         )
+    }
+
+    /// Whether `id`'s result is stale, and was therefore rejected: marked
+    /// applied with one alarm, without routing or changing the step.
+    fn reject_stale(&mut self, id: &str, row: &StepJobRow) -> Result<bool, VivariumError> {
+        let Some((kind, text)) = self.stale_result(id, row)? else {
+            return Ok(false);
+        };
+        jobs::mark_applied(self.st, id, self.ctx.now());
+        raise_once(self.ctx, kind, id, &text);
+        Ok(true)
+    }
+
+    /// Why `id`'s result may not apply: an attempt older than the task's
+    /// newest is `STALE_ATTEMPT`; a result whose execution a retry or
+    /// correction superseded, or whose task now belongs to another owning
+    /// phase, is `STALE_EXECUTION` even at the newest attempt.
+    fn stale_result(
+        &self,
+        id: &str,
+        row: &StepJobRow,
+    ) -> Result<Option<(&'static str, String)>, VivariumError> {
+        let newest = self.store.last_attempt(&row.task)?;
+        if row.attempt < newest {
+            return Ok(Some((
+                STALE_ATTEMPT,
+                format!(
+                    "job {id} step {}: expected attempt {newest}; actual: attempt {}; result ignored",
+                    row.task, row.attempt
+                ),
+            )));
+        }
+        Ok(self.stale_execution(id, row)?.map(|execution| {
+            (
+                STALE_EXECUTION,
+                format!(
+                    "job {id} step {} execution {execution}: no longer the task's current \
+                     execution; result ignored",
+                    row.task
+                ),
+            )
+        }))
+    }
+
+    /// The execution identity when `id`'s result is stale, `None` when it may
+    /// apply. A job activated on an execution applies only while that
+    /// execution is still its task's active one and its phase still owns the
+    /// task. A job recorded before executions existed is adopted first:
+    /// registered on its task's active execution and activated, unless the
+    /// task has already moved to another owning phase.
+    fn stale_execution(&self, id: &str, row: &StepJobRow) -> Result<Option<String>, VivariumError> {
+        let Some(execution) = self.store.execution_by_job(id)? else {
+            let key = ExecutionKey::new(&self.run.need, self.run.run, &row.task, HAND_PHASE);
+            let registered = self.store.register_execution(&key)?;
+            if self
+                .store
+                .current_phase(&row.task)?
+                .is_some_and(|phase| phase.phase != HAND_PHASE)
+            {
+                return Ok(Some(registered.execution));
+            }
+            self.store
+                .activate_job(&registered.execution, id, row.attempt)?;
+            return Ok(None);
+        };
+        if self.store.execution_is_current(&execution.execution)? {
+            return Ok(None);
+        }
+        Ok(Some(execution.execution))
     }
 
     // ---- fanouts, new steps, alarms ---------------------------------------
@@ -659,7 +725,22 @@ where
             spec.task = Some(step.task.clone());
         }
         let id = spec.id.clone();
-        let row = step.job(&id, self.store.next_attempt(&step.task)?);
+        let attempt = self.store.next_attempt(&step.task)?;
+        let row = step.job(&id, attempt);
+        // The execution checkpoint lands before the job exists, so no result
+        // of it can apply without the current execution it is activated on,
+        // and the checkpoint holds the need replies its input was built from.
+        let execution = self.store.register_execution(&ExecutionKey::new(
+            &self.run.need,
+            self.run.run,
+            &step.task,
+            HAND_PHASE,
+        ))?;
+        self.store
+            .activate_job(&execution.execution, &id, attempt)?;
+        let input = recovery_inputs::checkpoint(self.ctx, &self.run.need)?;
+        self.store
+            .set_input_checkpoint(&execution.execution, &input)?;
         row.stamp(&self.run.need, &mut spec.payload);
         if let Some(map) = spec.payload.as_object_mut() {
             map.insert("kind".to_owned(), serde_json::json!(self.run.kind));
