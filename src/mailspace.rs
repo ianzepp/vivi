@@ -39,6 +39,7 @@ mod identity;
 pub mod inherit;
 mod item_events;
 mod item_facts;
+pub mod job_brief;
 mod kind;
 mod lifecycle;
 mod marks;
