@@ -1,10 +1,16 @@
-//! Shared readers for role-step briefs: pool replies, the need thread, targets.
+//! Shared readers for role-step briefs: pool replies, the need thread, the
+//! authoritative scope and policy section, targets.
 //!
 //! The planner, admitter, slicer, fanout and reslice handlers build their
 //! briefs from the same few inputs; they live here once.
 
+use std::collections::BTreeMap;
+
 use crate::error::VivariumError;
+use crate::letter::read::need_of;
 use crate::pump::attempt_record::hand_message;
+use crate::pump::config::PumpTarget;
+use crate::pump::config::scope::{ScopePolicy, WHOLE_REPOSITORY};
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowDef, NodeClass};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -49,6 +55,154 @@ pub fn need_thread(ctx: &Ctx, need: &str) -> Result<String, VivariumError> {
         Some((at, _)) => Ok(format!("{}\n[thread cut]", &out.text[..at])),
         None => Ok(out.text),
     }
+}
+
+/// Head of the authoritative scope and policy section: where the facts come
+/// from, so no reader mistakes thread prose for authority.
+const SCOPE_BRIEF_HEAD: &str = "AUTHORITATIVE SCOPE AND POLICY (from the immutable need root letter \
+                              and the pump store, never from thread text)";
+
+/// The authoritative scope and policy section of `need`'s brief: the need root
+/// letter's own write scope, then one labeled, target-qualified block per
+/// relevant target (the target the need names when it names one, else every
+/// configured target) with that target's approved ruling additions, the
+/// effective scope, and the target's current policy. An allow entry is
+/// eligibility for automatic approval of a blocked-scope request, never
+/// permission already granted; an unspecified original scope is not a
+/// deny-all; a ruling grants only its own target, never another's.
+///
+/// The section is assembled from structured reads only: the need root letter
+/// through `mail` and the store's effective-scope reader. Thread prose is
+/// never scraped, so a capped thread cannot hide a ruling.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the need root letter cannot be read or does
+/// not parse, or when the store cannot be read.
+pub fn scope_brief(
+    ctx: &Ctx,
+    store: &PumpStore,
+    mail: &dyn SliceMail,
+    need: &str,
+) -> Result<String, VivariumError> {
+    let body = mail.task_body(need)?;
+    let root = need_of(need, &body)
+        .map_err(|error| VivariumError::Message(format!("need {need}: {error}")))?;
+    let original = root.front.write_scope;
+    let configs = ctx.cfg.target_configs();
+    let mut out = vec![String::from(SCOPE_BRIEF_HEAD), original_section(&original)];
+    for target in relevant_targets(&configs, root.front.target.as_deref()) {
+        out.push(target_block(store, &configs, need, &original, &target)?);
+    }
+    Ok(out.join("\n\n"))
+}
+
+/// The need's own write scope, exactly as the immutable root letter declares
+/// it. An absent list is described as unspecified: it is not a deny-all.
+fn original_section(original: &[String]) -> String {
+    if original.is_empty() {
+        return String::from(
+            "ORIGINAL NEED SCOPE: unspecified (the need root names no write_scope; \
+             this is not a deny-all)",
+        );
+    }
+    format!(
+        "ORIGINAL NEED SCOPE (write_scope of the immutable need root letter):\n{}",
+        path_lines(original)
+    )
+}
+
+/// The targets the brief covers: the target the need root names when it names
+/// one, else every configured target. Grants and policy stay inside their
+/// target's own block either way.
+fn relevant_targets(configs: &BTreeMap<String, PumpTarget>, named: Option<&str>) -> Vec<String> {
+    named.map_or_else(
+        || configs.keys().cloned().collect(),
+        |target| vec![target.to_owned()],
+    )
+}
+
+/// One target's labeled block: the rulings approved for exactly this need on
+/// this target, the effective scope they combine into, and the target's
+/// current policy.
+fn target_block(
+    store: &PumpStore,
+    configs: &BTreeMap<String, PumpTarget>,
+    need: &str,
+    original: &[String],
+    target: &str,
+) -> Result<String, VivariumError> {
+    let effective = store.effective_need_scope(need, target, original)?;
+    let additions = or_none(&effective.additions, "(none approved for this target)");
+    let whole = or_none(
+        &effective.effective,
+        "(empty: unspecified original scope and no approved additions)",
+    );
+    Ok(format!(
+        "TARGET {target} (grants and policy are per target; no other target's grants apply here)\n\
+         APPROVED ADDITIONS on {target} (store rulings; each listed path is permission already granted):\n\
+         {additions}\n\
+         EFFECTIVE SCOPE on {target} (original scope plus this target's approved additions):\n\
+         {whole}\n\
+         {}",
+        policy_section(configs, target)
+    ))
+}
+
+/// The current policy of one target, as `PumpConfig::target_configs` resolves
+/// it. An allow entry means a blocked-scope request naming the path is
+/// eligible for automatic approval; it is not permission already granted. An
+/// unknown target inherits nothing; unusable policy entries fail closed.
+fn policy_section(configs: &BTreeMap<String, PumpTarget>, target: &str) -> String {
+    let Some(config) = configs.get(target) else {
+        let known = configs.keys().cloned().collect::<Vec<_>>().join(", ");
+        return format!(
+            "CURRENT POLICY of {target}: this pump does not configure it \
+             (known targets: {known}); a request naming it is refused as an unknown target"
+        );
+    };
+    let allow = config
+        .scope_allow
+        .clone()
+        .unwrap_or_else(|| vec![String::from(WHOLE_REPOSITORY)]);
+    match ScopePolicy::snapshot(target, &allow, &config.scope_deny) {
+        Ok(policy) => format!(
+            "CURRENT POLICY of {target} (an allow entry is eligibility for automatic approval of a \
+             blocked-scope request, not permission already granted):\nallow: {}\ndeny: {}",
+            plain_list(
+                &policy.allow,
+                "(nothing: an explicit empty allow list allows nothing)"
+            ),
+            plain_list(&policy.deny, "(none)"),
+        ),
+        Err(rejection) => {
+            format!("CURRENT POLICY of {target}: unusable ({rejection}); requests fail closed")
+        }
+    }
+}
+
+/// `paths` as list lines, or `none` when the list is empty.
+fn or_none(paths: &[String], none: &str) -> String {
+    if paths.is_empty() {
+        return String::from(none);
+    }
+    path_lines(paths)
+}
+
+/// `paths` comma-joined inline, or `none` when the list is empty.
+fn plain_list(paths: &[String], none: &str) -> String {
+    if paths.is_empty() {
+        return String::from(none);
+    }
+    paths.join(", ")
+}
+
+/// `paths` as list lines.
+fn path_lines(paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|path| format!("- {path}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The ids of every configured target.

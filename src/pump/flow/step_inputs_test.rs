@@ -4,17 +4,22 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
-    role_job, step_replies, targets,
+    role_job, scope_brief, step_replies, targets,
 };
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::pump::config::PumpConfig;
+use crate::pump::config::PumpTarget;
+use crate::pump::config::scope::ScopePolicy;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::store::scope_ruling::{RulingDecision, ScopeRulingRequest};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -329,5 +334,287 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
     )
     .unwrap_err();
     assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    Ok(())
+}
+
+/// Store the need root letter `body` under the need handle, so `task_body`
+/// reads it back like the mailspace port reads a thread's root message.
+fn seed_need(mail: &mut FakeMail, body: &str) {
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: String::from("mind"),
+            to: String::from("pump"),
+            subject: format!("need {NEED}"),
+            body: body.to_string(),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
+/// A need root letter with the given write scope and optional named target.
+fn need_letter(write_scope: &[&str], target: Option<&str>) -> String {
+    let mut front = NeedFront::new(vec![String::from("the brief reads as authoritative")]);
+    front.write_scope = write_scope.iter().map(|path| (*path).to_string()).collect();
+    front.target = target.map(str::to_string);
+    need_body_with(&front, "the need prose")
+}
+
+/// Store one scope ruling for `NEED` on `target`.
+fn ruling(store: &PumpStore, job: &str, target: &str, paths: &[&str], decision: RulingDecision) {
+    store
+        .insert_scope_ruling(&ScopeRulingRequest {
+            job: job.into(),
+            job_kind: "hand".into(),
+            need: NEED.into(),
+            run: 1,
+            node: "slice:n1-1".into(),
+            task: format!("task-{job}"),
+            role: "hand".into(),
+            target: target.into(),
+            paths: paths.iter().map(|path| (*path).to_string()).collect(),
+            reason: "the slice needs the path to land".into(),
+            decision,
+            policy_reason: None,
+            policy: ScopePolicy::snapshot(target, &["./".into()], &[]).expect("policy snapshot"),
+        })
+        .expect("ruling stored");
+}
+
+/// A rig whose pump configures the targets `web` and `mail` beside `default`.
+fn rig_with_web_and_mail() -> Result<Rig, VivariumError> {
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("web"), PumpTarget::default());
+    cfg.targets
+        .insert(String::from("mail"), PumpTarget::default());
+    rig_with(cfg)
+}
+
+#[test]
+fn scope_brief_describes_original_scope_and_a_narrow_approved_addition() -> R {
+    let rig = rig()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&["src/pump/flow/"], None));
+    ruling(
+        &rig.store,
+        "j1",
+        "default",
+        &["src/pump/flow/step_inputs.rs"],
+        RulingDecision::Approved,
+    );
+
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    assert!(brief.contains("AUTHORITATIVE SCOPE AND POLICY"), "{brief}");
+    assert!(brief.contains("ORIGINAL NEED SCOPE"), "{brief}");
+    assert!(brief.contains("- src/pump/flow/"), "{brief}");
+    assert!(brief.contains("APPROVED ADDITIONS on default"), "{brief}");
+    assert!(brief.contains("- src/pump/flow/step_inputs.rs"), "{brief}");
+    assert!(brief.contains("EFFECTIVE SCOPE on default"), "{brief}");
+    // Policy eligibility is named as eligibility, never as granted permission.
+    assert!(brief.contains("CURRENT POLICY of default"), "{brief}");
+    assert!(
+        brief.contains("eligibility for automatic approval"),
+        "{brief}"
+    );
+    assert!(brief.contains("not permission already granted"), "{brief}");
+    assert!(brief.contains("allow: ./"), "{brief}");
+    assert!(brief.contains("deny: (none)"), "{brief}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_excludes_denied_rulings_from_grants() -> R {
+    let rig = rig()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&["src/"], None));
+    ruling(
+        &rig.store,
+        "j1",
+        "default",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+    ruling(
+        &rig.store,
+        "j2",
+        "default",
+        &["secrets/"],
+        RulingDecision::Denied,
+    );
+    ruling(
+        &rig.store,
+        "j3",
+        "default",
+        &["vendor/"],
+        RulingDecision::OperatorDenied,
+    );
+
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    // The approved grant is listed; denied and operator-denied rows never are.
+    assert!(brief.contains("- docs/"), "{brief}");
+    assert!(!brief.contains("secrets/"), "{brief}");
+    assert!(!brief.contains("vendor/"), "{brief}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_respects_the_named_need_target_and_never_projects_other_grants() -> R {
+    let rig = rig_with_web_and_mail()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&["src/"], Some("web")));
+    ruling(
+        &rig.store,
+        "j1",
+        "web",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+    ruling(
+        &rig.store,
+        "j2",
+        "mail",
+        &["skills/"],
+        RulingDecision::Approved,
+    );
+
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    // The need names web: only web's block appears, with only web's grants.
+    assert!(brief.contains("TARGET web"), "{brief}");
+    assert!(!brief.contains("TARGET mail"), "{brief}");
+    assert!(brief.contains("- docs/"), "{brief}");
+    assert!(!brief.contains("skills/"), "{brief}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_qualifies_each_configured_target_when_the_need_names_none() -> R {
+    let rig = rig_with_web_and_mail()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&["src/"], None));
+    ruling(
+        &rig.store,
+        "j1",
+        "web",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+    ruling(
+        &rig.store,
+        "j2",
+        "mail",
+        &["skills/"],
+        RulingDecision::Approved,
+    );
+
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    let at_web = brief.find("TARGET web").expect("web block");
+    // Targets sort alphabetically in the brief, so the mail block comes first.
+    let (mail_block, web) = (&brief[..at_web], &brief[at_web..]);
+    assert!(web.contains("APPROVED ADDITIONS on web"), "{web}");
+    assert!(web.contains("- docs/"), "{web}");
+    assert!(!web.contains("- skills/"), "{web}");
+    assert!(
+        mail_block.contains("APPROVED ADDITIONS on mail"),
+        "{mail_block}"
+    );
+    assert!(mail_block.contains("- skills/"), "{mail_block}");
+    assert!(!mail_block.contains("- docs/"), "{mail_block}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_reports_an_unconfigured_named_target_without_inheriting_policy() -> R {
+    let rig = rig()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&["src/"], Some("ghost")));
+    ruling(
+        &rig.store,
+        "j1",
+        "default",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    assert!(brief.contains("TARGET ghost"), "{brief}");
+    assert!(brief.contains("unknown target"), "{brief}");
+    // The default target's grant is never projected into ghost's block.
+    assert!(!brief.contains("TARGET default"), "{brief}");
+    assert!(!brief.contains("- docs/"), "{brief}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_describes_an_empty_original_scope_as_unspecified() -> R {
+    let rig = rig()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&[], None));
+
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    assert!(
+        brief.contains("ORIGINAL NEED SCOPE: unspecified"),
+        "{brief}"
+    );
+    assert!(brief.contains("not a deny-all"), "{brief}");
+    assert!(brief.contains("(none approved for this target)"), "{brief}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_exposes_the_grant_beyond_a_capped_thread() -> R {
+    let rig = rig()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, &need_letter(&["src/"], None));
+    ruling(
+        &rig.store,
+        "j1",
+        "default",
+        &["docs/"],
+        RulingDecision::Approved,
+    );
+    // A thread so large the capped `need_thread` text drops everything past
+    // the cap, ruling included.
+    rig.host.reply(
+        "need show",
+        0,
+        &format!("{}\nruling: approved docs/", "x".repeat(40_001)),
+    );
+
+    let thread = need_thread(&rig.ctx, NEED)?;
+    let brief = scope_brief(&rig.ctx, &rig.store, &mail, NEED)?;
+
+    assert!(
+        !thread.contains("docs/"),
+        "the capped thread must omit the ruling"
+    );
+    assert!(brief.contains("APPROVED ADDITIONS on default"), "{brief}");
+    assert!(brief.contains("- docs/"), "{brief}");
+    Ok(())
+}
+
+#[test]
+fn scope_brief_propagates_a_root_letter_error() -> R {
+    let rig = rig()?;
+    let mut mail = FakeMail::new("pump");
+    seed_need(&mut mail, "plain prose with no front matter");
+
+    let err = scope_brief(&rig.ctx, &rig.store, &mail, NEED).unwrap_err();
+
+    assert!(err.to_string().contains(NEED), "{err}");
     Ok(())
 }
