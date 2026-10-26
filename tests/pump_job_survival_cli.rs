@@ -10,10 +10,12 @@ use std::time::{Duration, Instant};
 
 use vivi::letter::render;
 use vivi::letter::work::{NeedFront, TaskFront};
-use vivi::mailspace::{Mailspace, SendRequest};
+use vivi::mailspace::{Mailspace, PumpState, SendRequest};
 use vivi::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepState, run_state};
 use vivi::pump::flow::mail::{MailWriter, MailspacePort};
 use vivi::pump::flow::need_branch;
+use vivi::pump::flow::prune::PRUNE_FAILED;
+use vivi::pump::flow::tick::RUN_ERROR;
 use vivi::pump::jobs::{self, JobSpec, JobStatus};
 use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -179,7 +181,7 @@ fn local_pool_jobs_survive_sigkill_and_apply_once() {
 #[test]
 fn flow_merge_main_job_survives_sigkill_and_applies_once() {
     let rig = scaffold(MERGE_SLOTS);
-    let seeded = seed_merge_run(&rig);
+    let seeded = seed_merge_run(&rig, None, 1);
     let main_before = git_output(&rig.seed, &["rev-parse", "main"]);
 
     let mut first = pump_child(&rig);
@@ -286,6 +288,179 @@ fn flow_merge_main_job_survives_sigkill_and_applies_once() {
     );
 }
 
+/// A reopened need lands twice over the same reused need branch: run 1 and
+/// run 2 each publish, close `landed`, and enqueue their own scoped cleanup
+/// job, and each applied cleanup really deletes the branch from the bare
+/// remote before the pump is stopped and restarted between the landings.
+#[test]
+fn a_reopened_need_lands_and_prunes_its_branch_twice() {
+    let rig = scaffold(MERGE_SLOTS);
+    let run1 = seed_merge_run(&rig, None, 1);
+    let need = run1.need.clone();
+    let delete_ref = format!("refs/heads/{}", need_branch::branch(&need));
+    assert_eq!(
+        remote_tip(&rig, &delete_ref).as_deref(),
+        Some(run1.need_tip.as_str()),
+        "the seeded need branch is missing from the bare remote"
+    );
+
+    // Run 1 lands and its cleanup job is finished, applied and receipted.
+    let mut first = pump_child(&rig);
+    let landed1 = wait_until(Duration::from_secs(90), || {
+        run_done(&rig, &need, 1) && cleanup_jobs(&rig, &delete_ref).iter().any(cleanup_deleted)
+    });
+    if !landed1 {
+        let details = startup_diagnostics(&rig);
+        let _ = first.kill();
+        let _ = first.wait();
+        let saved = rig._dir.keep();
+        panic!(
+            "run 1 did not land and clean up; fixture={}\n{details}",
+            saved.display()
+        );
+    }
+    assert!(
+        remote_tip(&rig, &delete_ref).is_none(),
+        "run 1 left {delete_ref} on the bare remote"
+    );
+    stop_pump(&rig, &mut first);
+
+    // The real lifecycle reopens the same need; run 2 reuses the branch name.
+    assert_success(&vivi([
+        "need",
+        "reopen",
+        &need,
+        "--for",
+        "operator",
+        "--project",
+        path(&rig.project),
+    ]));
+    let run2 = seed_merge_run(&rig, Some(&need), 2);
+    assert_eq!(run2.need, need, "run 2 seeded a replacement need");
+    assert_ne!(run2.need_tip, run1.need_tip, "run 2 reused the run-1 tip");
+    assert_eq!(
+        remote_tip(&rig, &delete_ref).as_deref(),
+        Some(run2.need_tip.as_str()),
+        "the reused branch does not hold the run-2 candidate"
+    );
+
+    // The clean stop left the durable control mode stopped; the real
+    // lifecycle re-enables the pump before the service child runs again.
+    assert_success(&vivi(["pump", "start", "--project", path(&rig.project)]));
+
+    // Run 2 lands and its own cleanup job deletes the reused branch again.
+    let mut second = pump_child(&rig);
+    let landed2 = wait_until(Duration::from_secs(90), || {
+        let cleanups = cleanup_jobs(&rig, &delete_ref);
+        run_done(&rig, &need, 2) && cleanups.len() == 2 && cleanups.iter().all(cleanup_deleted)
+    });
+    if !landed2 {
+        let details = startup_diagnostics(&rig);
+        let _ = second.kill();
+        let _ = second.wait();
+        let saved = rig._dir.keep();
+        panic!(
+            "run 2 did not land and clean up; fixture={}\n{details}",
+            saved.display()
+        );
+    }
+    assert!(
+        remote_tip(&rig, &delete_ref).is_none(),
+        "run 2 left {delete_ref} on the bare remote"
+    );
+
+    // Further production ticks run after the second cleanup without adding
+    // to or disturbing the settled need-branch cleanup identity set.
+    let settled_at_cleanup = cleanup_jobs(&rig, &delete_ref);
+    let cycles_at_cleanup = completed_cycles(&rig.home);
+    assert!(
+        wait_until(Duration::from_secs(30), || completed_cycles(&rig.home)
+            .iter()
+            .filter(|id| !cycles_at_cleanup.contains(*id))
+            .count()
+            >= 2),
+        "no additional pump tick followed the run-2 cleanup"
+    );
+    stop_pump(&rig, &mut second);
+
+    let settled = cleanup_jobs(&rig, &delete_ref);
+    let namespaced = [
+        format!(
+            "prune-{need}-r1-{}",
+            need_branch::branch(&need).replace('/', "-")
+        ),
+        format!(
+            "prune-{need}-r2-{}",
+            need_branch::branch(&need).replace('/', "-")
+        ),
+    ];
+    assert_eq!(
+        settled
+            .iter()
+            .map(|job| job.id.as_str())
+            .collect::<Vec<_>>(),
+        namespaced.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the need-branch cleanup identity set is not one job per landing run"
+    );
+
+    // Both runs are done and the history is two distinct closed records.
+    let store = open_store(&rig);
+    for run in 1..=2 {
+        assert_eq!(store.run_row(&need, run).unwrap().state, run_state::DONE);
+    }
+    let history = Mailspace::discover(Some(&rig.project))
+        .unwrap()
+        .pump_history(&need)
+        .unwrap();
+    assert_eq!(history.len(), 2, "{history:?}");
+    let distinct: std::collections::BTreeSet<_> =
+        history.iter().map(|record| &record.handle).collect();
+    assert_eq!(distinct.len(), 2, "records are not distinct: {history:?}");
+    for record in &history {
+        assert_eq!(record.status, PumpState::Done, "{}", record.handle);
+        assert_eq!(
+            record.outcome.as_deref(),
+            Some("landed"),
+            "{}",
+            record.handle
+        );
+    }
+
+    // Each cleanup keeps its own identity and receipt, the run-1 job across
+    // the restart, with every delete matching its own seeded tip.
+    for (job, seeded_tip) in settled.iter().zip([&run1.need_tip, &run2.need_tip]) {
+        let tip = seeded_tip.as_str();
+        assert_eq!(job.status, JobStatus::Finished, "{}", job.id);
+        assert!(job.applied_at.is_some(), "{} was never applied", job.id);
+        assert_eq!(job.from_ref.as_deref(), Some(tip), "{}", job.id);
+        assert_eq!(job.delete_expect.as_deref(), Some(tip), "{}", job.id);
+        let receipt = job
+            .outcome
+            .as_ref()
+            .unwrap()
+            .runner_delete()
+            .unwrap_or_else(|| panic!("{} has no runner delete receipt", job.id));
+        assert_eq!(receipt.reference, delete_ref, "{}", job.id);
+        assert_eq!(receipt.expected, tip, "{}", job.id);
+        assert_eq!(receipt.after, "absent", "{}", job.id);
+        assert!(receipt.succeeded(), "{}: {receipt:?}", job.id);
+    }
+
+    // Neither landing raised a run or cleanup failure diagnostic.
+    let raised: Vec<_> = store
+        .exceptions()
+        .unwrap()
+        .into_iter()
+        .map(|(_, kind, _, _)| kind)
+        .collect();
+    assert!(
+        !raised
+            .iter()
+            .any(|kind| kind == RUN_ERROR || kind == PRUNE_FAILED),
+        "failure diagnostics were raised: {raised:?}"
+    );
+}
+
 struct SeededMerge {
     need: String,
     step_task: String,
@@ -293,25 +468,34 @@ struct SeededMerge {
 }
 
 /// A need with an open pump record and a live build run whose `merge` step
-/// is pending, over a need branch one commit ahead of main on the remote.
-fn seed_merge_run(rig: &Rig) -> SeededMerge {
+/// is pending, over a need branch one commit ahead of the bare remote's
+/// current main. With `existing_need`, reuse that exact need (the caller has
+/// reopened it through the real lifecycle); with `None`, send a fresh need.
+/// Each seeded run opens a fresh pump record and numbers its sentinel, merge
+/// step, run rows and branch row with `run`.
+fn seed_merge_run(rig: &Rig, existing_need: Option<&str>, run: u32) -> SeededMerge {
     let mailspace = Mailspace::discover(Some(&rig.project)).unwrap();
-    let need = mailspace
-        .send(SendRequest {
-            from: "operator".into(),
-            to: vec!["mind".into()],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: "merge survival".into(),
-            body: render(&NeedFront::new(vec!["it works".into()]), "").unwrap(),
-            role: "needs".into(),
-            kind: Some("need".into()),
-            reply_to: None,
-        })
-        .unwrap()
-        .delivered
-        .remove(0)
-        .handle;
+    let need = match existing_need {
+        Some(need) => String::from(need),
+        None => {
+            mailspace
+                .send(SendRequest {
+                    from: "operator".into(),
+                    to: vec!["mind".into()],
+                    cc: Vec::new(),
+                    bcc: Vec::new(),
+                    subject: "merge survival".into(),
+                    body: render(&NeedFront::new(vec!["it works".into()]), "").unwrap(),
+                    role: "needs".into(),
+                    kind: Some("need".into()),
+                    reply_to: None,
+                })
+                .unwrap()
+                .delivered
+                .remove(0)
+                .handle
+        }
+    };
     let mut port = MailspacePort {
         mailspace,
         pump_identity: String::from("mind"),
@@ -319,17 +503,45 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
     MailWriter::open_record(&mut port, &need, "").unwrap();
 
     let branch = need_branch::branch(&need);
-    git(&rig.seed, &["checkout", "-q", "-B", "need-work", "main"]);
-    let base = git_output(&rig.seed, &["rev-parse", "HEAD"]);
-    fs::write(rig.seed.join("need.txt"), "the finished work\n").unwrap();
+    // Base the candidate on the bare remote's current main, not on stale
+    // local main: an earlier run may have landed merges there.
+    git(
+        &rig.seed,
+        &[
+            "fetch",
+            "-q",
+            path(&rig.bare),
+            "main:refs/remotes/bare/main",
+        ],
+    );
+    git(
+        &rig.seed,
+        &[
+            "checkout",
+            "-q",
+            "-B",
+            "need-work",
+            "refs/remotes/bare/main",
+        ],
+    );
+    let base = git_output(&rig.seed, &["rev-parse", "refs/remotes/bare/main"]);
+    fs::write(
+        rig.seed.join("need.txt"),
+        format!("the finished work, run {run}\n"),
+    )
+    .unwrap();
     git(&rig.seed, &["add", "need.txt"]);
-    git(&rig.seed, &["commit", "-q", "-m", "finished work"]);
+    git(
+        &rig.seed,
+        &["commit", "-q", "-m", &format!("finished work r{run}")],
+    );
     let need_tip = git_output(&rig.seed, &["rev-parse", "HEAD"]);
     git(
         &rig.seed,
         &[
             "push",
             "-q",
+            "--force",
             path(&rig.bare),
             &format!("HEAD:refs/heads/{branch}"),
         ],
@@ -341,49 +553,55 @@ fn seed_merge_run(rig: &Rig) -> SeededMerge {
     let store = PumpStore::open(&rig.home.join(DB_FILENAME)).unwrap();
     // A live build run: the sentinel, and the pending `merge` step where the
     // verified build would have routed. (Run start is crate-private.)
-    let run = RunRow {
+    let run_row = RunRow {
         need: need.clone(),
-        run: 1,
+        run,
         flow: String::from("build"),
         flow_version: FLOW_VERSION_NUMBER,
         kind: String::from("build"),
         entry: String::from("rework1"),
         state: String::from(run_state::STARTING),
     };
-    store.insert_run(&run).unwrap();
+    store.insert_run(&run_row).unwrap();
     let sentinel = port
         .send_step(
             "mind",
             "mind",
-            &format!("{need} r1 sentinel"),
-            &render(&TaskFront::sentinel(&need, 1), "").unwrap(),
+            &format!("{need} r{run} sentinel"),
+            &render(&TaskFront::sentinel(&need, run), "").unwrap(),
             &[],
         )
         .unwrap();
     store
-        .insert_run_step(&run, &run.step("sentinel", &sentinel, StepState::Running))
+        .insert_run_step(
+            &run_row,
+            &run_row.step("sentinel", &sentinel, StepState::Running),
+        )
         .unwrap();
     let step_task = port
         .send_step(
             "mind",
             "mind",
-            &format!("{need} r1 merge"),
-            &render(&TaskFront::step(&need, 1, "merge"), "").unwrap(),
+            &format!("{need} r{run} merge"),
+            &render(&TaskFront::step(&need, run, "merge"), "").unwrap(),
             &[],
         )
         .unwrap();
     store
-        .insert_run_step(&run, &run.step("merge", &step_task, StepState::Pending))
+        .insert_run_step(
+            &run_row,
+            &run_row.step("merge", &step_task, StepState::Pending),
+        )
         .unwrap();
     port.bind(&need, &[sentinel, step_task.clone()]).unwrap();
-    store.set_run_state(&need, 1, run_state::LIVE).unwrap();
+    store.set_run_state(&need, run, run_state::LIVE).unwrap();
     store
         .upsert_need_branch(&NeedBranchRow {
             need: need.clone(),
             branch,
             base: Some(base),
             status: String::from("live"),
-            run: 1,
+            run,
             target: String::from("default"),
             priors: Vec::new(),
         })
@@ -410,6 +628,58 @@ fn merge_job(rig: &Rig) -> Option<jobs::PoolJob> {
 
 fn step_state(rig: &Rig, task: &str) -> StepState {
     open_store(rig).step_by_task(task).unwrap().unwrap().state
+}
+
+/// The tip of one reference on the bare remote, or `None` when it is absent.
+fn remote_tip(rig: &Rig, reference: &str) -> Option<String> {
+    let listed = git_output(&rig.seed, &["ls-remote", path(&rig.bare), reference]);
+    listed.split_whitespace().next().map(str::to_owned)
+}
+
+/// Whether one flow run row of `need` reached the done state.
+fn run_done(rig: &Rig, need: &str, run: u32) -> bool {
+    open_store(rig)
+        .run_row(need, run)
+        .is_ok_and(|row| row.state == run_state::DONE)
+}
+
+/// Every durable job deleting exactly `reference`, sorted by identity, so a
+/// merge-artifact cleanup for another ref never masquerades as this one.
+fn cleanup_jobs(rig: &Rig, reference: &str) -> Vec<jobs::PoolJob> {
+    let mut found: Vec<_> = load_state(rig)
+        .jobs
+        .into_values()
+        .filter(|job| job.delete_ref.as_deref() == Some(reference))
+        .collect();
+    found.sort_by(|a, b| a.id.cmp(&b.id));
+    found
+}
+
+/// Whether a cleanup job finished, was applied, and receipted the deletion.
+fn cleanup_deleted(job: &jobs::PoolJob) -> bool {
+    job.status == JobStatus::Finished
+        && job.applied_at.is_some()
+        && job
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.runner_delete())
+            .is_some_and(|receipt| receipt.succeeded())
+}
+
+/// Completed tick ids from the pump home's monitor-cycles.jsonl.
+fn completed_cycles(home: &Path) -> Vec<String> {
+    let text = fs::read_to_string(home.join("monitor-cycles.jsonl")).unwrap_or_default();
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|cycle| cycle.get("ended_at").is_some_and(serde_json::Value::is_u64))
+        .filter_map(|cycle| {
+            cycle
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 fn scaffold(slots: usize) -> Rig {
