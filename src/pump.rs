@@ -20,6 +20,7 @@ pub mod hold;
 pub mod host;
 pub(crate) mod integration_branch;
 pub mod jobs;
+pub(crate) mod lock;
 pub mod logview;
 pub mod need;
 pub(crate) mod par;
