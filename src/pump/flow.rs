@@ -3,6 +3,7 @@
 pub mod advance;
 pub mod answer;
 pub mod audit_step;
+pub(crate) mod budget_retry;
 pub mod build_front;
 pub mod collect;
 pub mod collect_slice;
