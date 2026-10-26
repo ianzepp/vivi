@@ -192,6 +192,22 @@ pub fn continuation_id(job: &str) -> String {
     )
 }
 
+/// The effective write scope of one need on one target: the need's original
+/// write scope plus every grant recorded for exactly that need and target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveNeedScope {
+    /// The original need write scope, exactly as supplied. An empty scope
+    /// keeps its existing unspecified meaning: this reader adds no deny-all
+    /// or whole-repository default of its own.
+    pub original: Vec<String>,
+    /// Approved additions granted to exactly this need and target:
+    /// deduplicated, oldest ruling first, request order within a ruling.
+    pub additions: Vec<String>,
+    /// `original` then the additions not already present: the effective
+    /// scope.
+    pub effective: Vec<String>,
+}
+
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS scope_rulings (
     job TEXT PRIMARY KEY,
@@ -312,6 +328,129 @@ impl PumpStore {
             Err(error) => Err(db_err("read scope rulings")(error)),
         })
         .collect()
+    }
+
+    /// The authoritative effective write scope of `need` on `target`.
+    ///
+    /// `original` is the need's own write scope as parsed from the immutable
+    /// need root; the reader adds every grant recorded in `scope_rulings`
+    /// for exactly this need and target. Grants are keyed by (need, target)
+    /// and never by run, so they survive later runs of the same need while
+    /// another need or target never inherits them. Recorded decisions are
+    /// replayed as stored: a live policy change neither re-evaluates nor
+    /// overwrites a grant.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the rulings cannot be read or decoded.
+    pub fn effective_need_scope(
+        &self,
+        need: &str,
+        target: &str,
+        original: &[String],
+    ) -> Result<EffectiveNeedScope, VivariumError> {
+        let mut additions: Vec<String> = Vec::new();
+        let sql = format!(
+            "SELECT {COLUMNS} FROM scope_rulings \
+             WHERE need = ?1 AND target = ?2 ORDER BY created_at, job"
+        );
+        for ruling in self.rulings(&sql, [need, target])? {
+            if !ruling.decision.is_grant() {
+                continue;
+            }
+            for path in ruling.paths {
+                if !additions.contains(&path) {
+                    additions.push(path);
+                }
+            }
+        }
+        let mut effective = original.to_vec();
+        for path in &additions {
+            if !effective.contains(path) {
+                effective.push(path.clone());
+            }
+        }
+        Ok(EffectiveNeedScope {
+            original: original.to_vec(),
+            additions,
+            effective,
+        })
+    }
+
+    /// Persist a decision letter body for `job`'s ruling before the letter
+    /// is posted to the thread, so a crash between save and post leaves the
+    /// identity recoverable by a later collector. Writing again overwrites.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when no ruling for `job` exists or the
+    /// update fails.
+    pub fn set_ruling_reply(&self, job: &str, body: &str) -> Result<(), VivariumError> {
+        self.update_ruling(job, "reply_body = ?2", params![job, body], "set reply body")
+    }
+
+    /// Mark `job`'s ruling letter as successfully posted to the thread.
+    /// Idempotent and overwriting: a replay or collector repair may mark
+    /// again, also after an earlier completion flag or the posted thread
+    /// record went missing.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when no ruling for `job` exists or the
+    /// update fails.
+    pub fn mark_ruling_posted(&self, job: &str, at: i64) -> Result<(), VivariumError> {
+        self.update_ruling(job, "posted_at = ?2", params![job, at], "mark posted")
+    }
+
+    /// Persist the continuation identity for `job`'s ruling before the
+    /// correction job is enqueued, so a later collector can repair a
+    /// partially completed continuation. Writing again overwrites.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when no ruling for `job` exists or the
+    /// update fails.
+    pub fn set_ruling_continuation(&self, job: &str, id: &str) -> Result<(), VivariumError> {
+        self.update_ruling(
+            job,
+            "continuation_id = ?2",
+            params![job, id],
+            "set continuation identity",
+        )
+    }
+
+    /// Mark `job`'s ruling continuation as completed. Idempotent and
+    /// overwriting: a collector repair may mark again even though a
+    /// completion flag is already set.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when no ruling for `job` exists or the
+    /// update fails.
+    pub fn mark_ruling_continuation_posted(&self, job: &str, at: i64) -> Result<(), VivariumError> {
+        self.update_ruling(
+            job,
+            "continuation_posted_at = ?2",
+            params![job, at],
+            "mark continuation posted",
+        )
+    }
+
+    fn update_ruling(
+        &self,
+        job: &str,
+        assignment: &str,
+        args: impl rusqlite::Params,
+        what: &'static str,
+    ) -> Result<(), VivariumError> {
+        let changed = self
+            .conn
+            .execute(
+                &format!("UPDATE scope_rulings SET {assignment} WHERE job = ?1"),
+                args,
+            )
+            .map_err(db_err(what))?;
+        if changed == 0 {
+            return Err(VivariumError::Other(format!(
+                "pump.db scope_rulings: no ruling for job {job:?} to {what}"
+            )));
+        }
+        Ok(())
     }
 }
 
