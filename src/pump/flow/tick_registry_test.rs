@@ -10,6 +10,7 @@ use super::{OPERATOR_HOLD, tick_with};
 use crate::error::VivariumError;
 use crate::letter::fixture::{record_body, step_body};
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -145,7 +146,13 @@ impl StepHandler for Planning {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         note(&self.log, "start")?;
         Ok(StartAction::Job(Box::new(role_job(
-            cx.ctx, cx.run, step, "planner", "planner", "brief",
+            cx.ctx,
+            cx.run,
+            step,
+            "planner",
+            RoleKind::Planner,
+            "planner",
+            "brief",
         ))))
     }
 }

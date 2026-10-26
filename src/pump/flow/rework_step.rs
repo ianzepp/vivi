@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -33,7 +34,15 @@ struct ReworkStart;
 impl StepHandler for ReworkStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let brief = brief(cx)?;
-        let mut spec = outcome::role_job(cx.ctx, cx.run, step, JOB_KIND, SLICER_ROLE, &brief);
+        let mut spec = outcome::role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            JOB_KIND,
+            RoleKind::Slicer,
+            SLICER_ROLE,
+            &brief,
+        );
         make_read_only(cx.ctx, &mut spec);
         Ok(StartAction::Job(Box::new(spec)))
     }

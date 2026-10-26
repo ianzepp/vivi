@@ -3,6 +3,7 @@
 
 use crate::error::VivariumError;
 use crate::mailspace::shipped::HEAD_CTO_ROLE;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -48,7 +49,15 @@ struct CtoStart;
 impl StepHandler for CtoStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let brief = brief(cx)?;
-        let mut spec = role_job(cx.ctx, cx.run, step, "flow-cto", HEAD_CTO_ROLE, &brief);
+        let mut spec = role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "flow-cto",
+            RoleKind::Cto,
+            HEAD_CTO_ROLE,
+            &brief,
+        );
         make_read_only(cx.ctx, &mut spec);
         Ok(StartAction::Job(Box::new(spec)))
     }

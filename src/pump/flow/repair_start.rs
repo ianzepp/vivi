@@ -4,6 +4,7 @@
 use crate::error::VivariumError;
 use crate::letter::records::NoteWord;
 use crate::mailspace::shipped::REPAIRER_ROLE;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -37,7 +38,15 @@ impl StepHandler for RepairerStart {
             .ok_or_else(|| VivariumError::Config("no repairer role".to_owned()))?;
         let name = repair::branch(need, cx.run.run, attempt);
         let brief = brief(cx, &rec, &main_tip, &name, attempt)?;
-        let mut spec = role_job(cx.ctx, cx.run, step, "repairer", &role.name, &brief);
+        let mut spec = role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "repairer",
+            RoleKind::Repairer,
+            &role.name,
+            &brief,
+        );
         spec.target = Some(rec.target);
         spec.from_ref = Some(main_tip);
         spec.publish_ref = Some(format!("refs/heads/{name}"));

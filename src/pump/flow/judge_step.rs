@@ -2,6 +2,7 @@
 //! reads the audit and the need rung report and rules `block` or `residual`.
 
 use crate::error::VivariumError;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -43,7 +44,16 @@ impl StepHandler for JudgeStart {
             capped(&audit_text, AUDIT_CAP),
             rung_report(rung)
         );
-        let mut spec = role_job(cx.ctx, cx.run, step, "flow-judge", AUDITOR_ROLE, &brief);
+        // The judge is seated in the auditor role but budgets as a judge step.
+        let mut spec = role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "flow-judge",
+            RoleKind::Judge,
+            AUDITOR_ROLE,
+            &brief,
+        );
         make_read_only(cx.ctx, &mut spec);
         spec.builtin_role = Some(AUDITOR_ROLE.to_owned());
         Ok(StartAction::Job(Box::new(spec)))

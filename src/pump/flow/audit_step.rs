@@ -3,6 +3,7 @@
 use serde_json::Value;
 
 use crate::error::VivariumError;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -36,7 +37,15 @@ impl StepHandler for AuditStart {
             )));
         };
         let brief = brief(cx, step, &range.branch, &range.target, &base, &tip)?;
-        let mut spec = role_job(cx.ctx, cx.run, step, "flow-audit", "auditor", &brief);
+        let mut spec = role_job(
+            cx.ctx,
+            cx.run,
+            step,
+            "flow-audit",
+            RoleKind::Auditor,
+            "auditor",
+            &brief,
+        );
         spec.read_only = true;
         spec.builtin_role = Some("auditor".into());
         spec.target = Some(range.target);

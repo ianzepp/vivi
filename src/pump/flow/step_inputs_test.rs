@@ -4,10 +4,11 @@ use tempfile::{TempDir, tempdir};
 
 use super::{
     POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
-    step_replies, targets,
+    role_job, step_replies, targets,
 };
 use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -29,8 +30,12 @@ struct Rig {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default())
+}
+
+fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let run = RunRow {
         need: NEED.into(),
@@ -192,11 +197,12 @@ fn read_only_job_sets_read_only_from_ref_and_all_targets() -> R {
 fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     let rig = rig()?;
     let step = row("plan", "t1", StepState::Running);
-    let mut spec = crate::pump::flow::outcome::role_job(
+    let mut spec = role_job(
         &rig.ctx,
         &rig.run,
         &step,
         "flow-x",
+        RoleKind::Planner,
         "pump-planner",
         "the brief",
     );
@@ -208,5 +214,113 @@ fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     assert!(spec.read_only);
     assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
     assert_eq!(spec.extra_targets, targets(&rig.ctx));
+    Ok(())
+}
+
+#[test]
+fn role_job_resolves_the_budget_from_the_execution_kind_not_the_label() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.planner = Some(90);
+    cfg.dispatch.step_budgets.judge = Some(45);
+    let rig = rig_with(cfg)?;
+    let step = row("plan", "t1", StepState::Running);
+
+    // A configured thinking-step override applies under any durable label.
+    let planner = role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "custom",
+        RoleKind::Planner,
+        "planner",
+        "b",
+    );
+    assert_eq!(planner.budget, 90);
+    let relabeled = role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "other",
+        RoleKind::Planner,
+        "planner",
+        "b",
+    );
+    assert_eq!(relabeled.budget, 90);
+
+    // The judge budgets as a judge even though its seat is the auditor role.
+    let judge = role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "flow-judge",
+        RoleKind::Judge,
+        "auditor",
+        "b",
+    );
+    assert_eq!(judge.budget, 45);
+
+    // A kind with no step key falls back to the shared budget; the label and
+    // seat never change that.
+    let auditor = role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "custom",
+        RoleKind::Auditor,
+        "auditor",
+        "b",
+    );
+    assert_eq!(auditor.budget, rig.ctx.cfg.dispatch.budget);
+    let fallback = role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "flow-judge",
+        RoleKind::Merge,
+        "merge",
+        "b",
+    );
+    assert_eq!(fallback.budget, rig.ctx.cfg.dispatch.budget);
+    Ok(())
+}
+
+#[test]
+fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.planner = Some(90);
+    let rig = rig_with(cfg)?;
+    let step = row("admit1", "t1", StepState::Running);
+
+    let planner = read_only_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "b",
+    )?;
+    assert_eq!(planner.budget, 90);
+    // A role class with no thinking key falls back to the shared budget.
+    let merge = read_only_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        &NodeClass::Merge,
+        "pump-planner",
+        "b",
+    )?;
+    assert_eq!(merge.budget, rig.ctx.cfg.dispatch.budget);
+
+    // A class that is not a role class is refused, not defaulted.
+    let err = read_only_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        &NodeClass::Decision,
+        "pump-planner",
+        "b",
+    )
+    .unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
     Ok(())
 }
