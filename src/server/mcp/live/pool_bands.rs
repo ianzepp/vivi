@@ -131,6 +131,9 @@ fn check_set(
         vec![BandChoice {
             model: model.to_owned(),
             reasoning: reasoning.to_owned(),
+            // `set` takes no weight, so the new entry carries the default
+            // share of the band's work.
+            weight: 1,
             unknown: Default::default(),
         }],
     );

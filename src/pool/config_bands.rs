@@ -1,9 +1,10 @@
 //! The intelligence bands a pool serves: the `[pools.<name>.bands]` table.
 //!
 //! A band is a model at an effort, never a model alone. The table maps each
-//! band key `P0` to `P5` (`P0` the most capable) to an ordered list of
-//! model-and-reasoning choices; the first choice serves the band and later
-//! entries are reserved. See [`super::bands`] for the pure choice.
+//! band key `P0` to `P5` (`P0` the most capable) to a list of weighted
+//! model-and-reasoning choices; every listed entry takes a share of the
+//! band's work, so the entries are interchangeable. See [`super::bands`]
+//! for the pure choice.
 
 use std::collections::BTreeMap;
 
@@ -15,9 +16,14 @@ use crate::error::VivariumError;
 /// The band keys a `bands` table may hold, most capable first.
 pub const BAND_KEYS: [&str; 6] = ["P0", "P1", "P2", "P3", "P4", "P5"];
 
-/// The most choices one band's list may hold. The first serves the band and
-/// later entries are reserved, so a longer list is refused by name.
+/// The most choices one band's list may hold. Every listed entry takes a
+/// share of the band's work, so a longer list is refused by name.
 pub const MAX_CHOICES_PER_BAND: usize = 4;
+
+/// The weight a [`BandChoice`] carries when its `weight` key is omitted.
+fn default_weight() -> u32 {
+    1
+}
 
 /// One model-and-reasoning choice a pool offers for a band.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -26,6 +32,11 @@ pub struct BandChoice {
     pub model: String,
     /// Reasoning effort the harness is run at, e.g. `low` or `xhigh`.
     pub reasoning: String,
+    /// How large a share of the band's work this choice takes, at least 1.
+    /// Every listed entry serves, so this only sizes its share. Omitted
+    /// means 1.
+    #[serde(default = "default_weight")]
+    pub weight: u32,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
 }
@@ -49,8 +60,9 @@ impl PoolBands {
 impl PoolConfig {
     /// Check the pool's `bands` table: keys are `P0` to `P5`, each band lists
     /// at most [`MAX_CHOICES_PER_BAND`] choices, every `reasoning` is a short
-    /// effort word, and every `model` is one the harness offers when a
-    /// harness is configured. A pool with no `bands` table passes untouched.
+    /// effort word, every `weight` is at least 1, and every `model` is one
+    /// the harness offers when a harness is configured. A pool with no
+    /// `bands` table passes untouched.
     ///
     /// # Errors
     /// Returns a configuration error naming the first bad key or choice.
@@ -79,15 +91,27 @@ fn check_key(key: &str) -> Result<(), VivariumError> {
 fn check_choices(pool: &str, key: &str, choices: &[BandChoice]) -> Result<(), VivariumError> {
     if choices.len() > MAX_CHOICES_PER_BAND {
         return Err(super::config::bad(format!(
-            "bands.{key} holds {} choices; at most {MAX_CHOICES_PER_BAND} are allowed (the first serves the band, later entries are reserved)",
+            "bands.{key} holds {} choices; at most {MAX_CHOICES_PER_BAND} are allowed (every listed entry takes a share of the work)",
             choices.len()
         )));
     }
     for choice in choices {
         super::config::reject_unknown(pool, &format!(".bands.{key}"), &choice.unknown)?;
         check_reasoning(key, &choice.reasoning)?;
+        check_weight(key, choice.weight)?;
     }
     Ok(())
+}
+
+/// Refuse a zero weight: every listed entry serves the band, so each must
+/// take a share.
+fn check_weight(key: &str, weight: u32) -> Result<(), VivariumError> {
+    if weight > 0 {
+        return Ok(());
+    }
+    Err(super::config::bad(format!(
+        "bands.{key} has weight 0: every listed entry takes a share of the work, so each weight must be at least 1"
+    )))
 }
 
 fn check_reasoning(key: &str, reasoning: &str) -> Result<(), VivariumError> {
