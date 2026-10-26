@@ -21,16 +21,27 @@
 //! ```
 //!
 //! `VIVI_MEASURE_SENDS` overrides the smoke corpus size.
+//!
+//! The process fixture (`support/hosted_process.rs`) is checked here too:
+//! the CPU-delta/wall-delta arithmetic stands alone (no process needed),
+//! the sampler integrates a live PID honestly, and — ignored, like the
+//! fixture smoke — a real `vivi server run` process boots from this
+//! fixture's isolated data directory, becomes ready, is accounted while
+//! alive, and is killed and reaped on drop.
 
 use std::panic::AssertUnwindSafe;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use vivi::registry::{Flags, Registry, save_at};
 use vivi::server::projects::{IndexOutcome, Viewer};
 
 #[path = "support/hosted_measure.rs"]
 mod hosted_measure;
+#[path = "support/hosted_process.rs"]
+mod hosted_process;
 
 use hosted_measure::{HostedMeasure, MIN_MEASURE_SENDS, OFF_HOST};
+use hosted_process::{CpuDelta, CpuSampler, HostedServer, Sample, ServerSpec};
 
 /// The smoke corpus: far below the measurement minimum, on purpose.
 const SMOKE_SENDS: usize = 24;
@@ -224,4 +235,143 @@ fn hosted_measure_fixture_is_isolated_classified_and_guarded() {
         .collect();
     expected.sort_unstable();
     assert_eq!(served, expected);
+}
+
+#[test]
+fn cpu_delta_arithmetic_stands_alone() {
+    let t0 = Instant::now();
+    let start = Sample {
+        cpu_seconds: 1.5,
+        at: t0,
+    };
+    let end = Sample {
+        cpu_seconds: 2.75,
+        at: t0 + Duration::from_millis(2_400),
+    };
+    let delta = CpuDelta::between(start, end).expect("an advancing window");
+    assert_eq!(delta.cpu_seconds, 1.25);
+    assert_eq!(
+        delta.wall_seconds,
+        Duration::from_millis(2_400).as_secs_f64()
+    );
+    assert!((delta.average_cores() - 1.25 / 2.4).abs() < 1e-12);
+    assert!((delta.percent_of_one_core() - delta.average_cores() * 100.0).abs() < 1e-9);
+
+    // An idle window is legitimate: zero CPU over real wall time.
+    let idle = CpuDelta::between(
+        start,
+        Sample {
+            cpu_seconds: 1.5,
+            at: end.at,
+        },
+    )
+    .unwrap();
+    assert_eq!(idle.cpu_seconds, 0.0);
+    assert_eq!(idle.average_cores(), 0.0);
+
+    // A window that does not advance is an error, never a division by zero.
+    assert_eq!(
+        CpuDelta::between(start, start),
+        Err(hosted_process::DeltaError(
+            "the second sample must come after the first"
+        ))
+    );
+    assert!(CpuDelta::between(end, start).is_err());
+}
+
+#[test]
+fn cpu_sampler_integrates_a_live_pid() {
+    // Mechanics check on a real, live PID: this test process. The
+    // measurement harness itself only ever points the sampler at the
+    // server's PID, never this one.
+    let mut sampler = CpuSampler::attach(std::process::id()).expect("this platform accounts CPU");
+    assert_eq!(sampler.pid(), std::process::id());
+    assert_eq!(
+        sampler.cumulative(),
+        0.0,
+        "the priming refresh has no window"
+    );
+
+    let start = sampler.sample().expect("the pid is live");
+    // Burn real CPU inside the window so the integration must see it: a
+    // sampler that silently produced zeros would fail the bound below.
+    let spin_until = Instant::now() + Duration::from_millis(200);
+    let mut spun = 0u64;
+    while Instant::now() < spin_until {
+        spun = spun.wrapping_add(1);
+    }
+    let end = sampler.sample().expect("the pid is still live");
+    let _ = spun;
+
+    let delta = CpuDelta::between(start, end).expect("an advancing window");
+    assert!(
+        delta.wall_seconds >= hosted_process::MIN_SAMPLE_INTERVAL.as_secs_f64(),
+        "the sampler enforces its own refresh cadence: {delta:?}"
+    );
+    assert!(
+        delta.cpu_seconds >= 0.05,
+        "200ms of spin must surface as CPU seconds, not vanish: {delta:?}"
+    );
+    let cores = usize::from(std::thread::available_parallelism().unwrap()) as f64;
+    assert!(
+        delta.cpu_seconds <= delta.wall_seconds * cores,
+        "one process cannot burn more CPU than the machine has cores: {delta:?}"
+    );
+}
+
+#[test]
+#[ignore = "boots the real vivi server binary as a hosted process"]
+fn hosted_server_boots_ready_accounted_and_reaped() {
+    let env = HostedMeasure::open("process");
+
+    // What the server serves is the fixture's registry decision: register
+    // both hosted roots `serve = true` in the fixture's own registry file,
+    // which the child reads through its isolated VIVI_CONFIG_DIR.
+    let config = env.base.join("config");
+    let mut registry = Registry::default();
+    for host in &env.hosts {
+        let _ = registry.add(
+            host.root.clone(),
+            Flags {
+                pump: false,
+                serve: true,
+            },
+        );
+    }
+    save_at(&config.join("vivi").join("pump-service.toml"), &registry)
+        .expect("write the isolated registry");
+
+    let mut server = HostedServer::spawn(ServerSpec::new(env.data.clone(), config));
+    let pid = server.pid;
+    assert!(
+        hosted_process::process_alive(pid),
+        "the server is live after spawn"
+    );
+    server
+        .wait_ready(Duration::from_secs(30))
+        .expect("the server becomes ready and answers /healthz");
+    assert_ne!(server.spec().port, 0);
+
+    // A live server PID pays real cumulative accounting, outside this
+    // process: two samples a window apart.
+    let mut sampler = CpuSampler::attach(pid).expect("the server pid is accountable");
+    let start = sampler.sample().expect("the server is live");
+    let end = sampler.sample().expect("the server is still live");
+    let delta = CpuDelta::between(start, end).expect("an advancing window");
+    assert!(
+        delta.wall_seconds >= hosted_process::MIN_SAMPLE_INTERVAL.as_secs_f64(),
+        "accounting windows respect the refresh cadence: {delta:?}"
+    );
+    assert!(
+        delta.cpu_seconds >= 0.0,
+        "accounting is never negative: {delta:?}"
+    );
+
+    // Cleanup: dropping the handle kills and reaps on the success path;
+    // Drop covers the failure and unwind paths the same way.
+    drop(server);
+    assert!(
+        !hosted_process::process_alive(pid),
+        "server pid {pid} was not reaped"
+    );
 }
