@@ -156,22 +156,32 @@ fn offline_view(config: &MindConfig) -> Result<super::socket::StatusView, Vivari
 }
 
 fn print_status(view: &super::socket::StatusView, running: bool) {
-    println!("running {running}");
-    println!("authority {}", view.authority);
-    println!("paused {}", view.paused);
-    println!("busy {}", view.busy);
-    println!("session {}", view.session_id.as_deref().unwrap_or("none"));
-    println!("ignored {}", view.ignored);
-    match &view.last_wake {
-        Some(wake) => println!(
+    for line in status_lines(view, running) {
+        println!("{line}");
+    }
+}
+
+/// The lines `vivi mind status` prints, with times in local time.
+fn status_lines(view: &super::socket::StatusView, running: bool) -> Vec<String> {
+    let last = match &view.last_wake {
+        Some(wake) => format!(
             "last wake started {} ended {} outcome {}",
-            wake.started_at,
+            wake::readable_time(wake.started_at),
             wake.ended_at
-                .map_or_else(|| String::from("in-flight"), |at| at.to_string()),
+                .map_or_else(|| String::from("in-flight"), wake::readable_time),
             wake.outcome.as_deref().unwrap_or("none")
         ),
-        None => println!("last wake none"),
-    }
+        None => String::from("last wake none"),
+    };
+    vec![
+        format!("running {running}"),
+        format!("authority {}", view.authority),
+        format!("paused {}", view.paused),
+        format!("busy {}", view.busy),
+        format!("session {}", view.session_id.as_deref().unwrap_or("none")),
+        format!("ignored {}", view.ignored),
+        last,
+    ]
 }
 
 /// One read-only pass of what a tick sees: watched roots, their signals,
@@ -206,6 +216,9 @@ fn probe(config: &MindConfig, json: bool) -> Result<(), VivariumError> {
     }
     for signal in &signals {
         println!("{}  alarming={}", signal.fingerprint(), signal.alarming());
+        if let Some(at) = signal.last_envelope_failure_at {
+            println!("  newest envelope failure {}", wake::readable_time(at));
+        }
         for reason in &signal.reasons {
             println!("  {reason}");
         }
@@ -304,3 +317,7 @@ async fn attach(socket: &Path) -> Result<(), VivariumError> {
         println!();
     }
 }
+
+#[cfg(test)]
+#[path = "commands_test.rs"]
+mod tests;

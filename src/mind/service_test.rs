@@ -209,6 +209,65 @@ async fn a_stalled_pump_wakes_the_mind_and_unstick_dry_runs_the_unlock() {
     assert!(state.pending_report.unwrap().contains("permitted"));
 }
 
+#[test]
+fn an_attached_prompt_carries_a_fresh_probe_of_every_project() {
+    let fx = fixture("observe");
+    let text = attach_text(
+        &fx.registry,
+        &fx.config.paths.state,
+        &stalled(),
+        "how is app doing?",
+    );
+    assert!(
+        text.contains("Project /w/app verdict stalled (STUCK)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<<<untrusted source=\"pump-health\">"),
+        "{text}"
+    );
+    assert!(text.ends_with("Operator:\nhow is app doing?"), "{text}");
+}
+
+#[test]
+fn an_attached_prompt_still_goes_when_the_projects_cannot_be_read() {
+    let fx = fixture("observe");
+    std::fs::write(&fx.registry, "[[project\nroot = ").unwrap();
+    let text = attach_text(&fx.registry, &fx.config.paths.state, &stalled(), "hello");
+    assert!(
+        text.starts_with("(a fresh pump status could not be read"),
+        "{text}"
+    );
+    assert!(text.ends_with("\nhello"), "{text}");
+}
+
+fn log_text(fx: &Fixture) -> String {
+    std::fs::read_to_string(&fx.config.paths.log).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn the_mind_log_says_why_a_wake_began() {
+    let fx = fixture("unstick");
+    one_tick(
+        &fx,
+        FakePi::with_replies(&["Nothing to do."]),
+        &FakeProbe(vec![]),
+        NOW,
+    )
+    .await;
+    let log = log_text(&fx);
+    assert!(log.contains("wake begins: heartbeat ("), "{log}");
+    assert!(!log.contains("signal"), "{log}");
+
+    let fx = fixture("unstick");
+    one_tick(&fx, FakePi::with_replies(&[UNLOCK]), &stalled(), NOW).await;
+    let log = log_text(&fx);
+    assert!(
+        log.contains("wake begins: heartbeat (") && log.contains("; signal /w/app verdict=stalled"),
+        "{log}"
+    );
+}
+
 #[tokio::test]
 async fn observe_refuses_the_same_unlock_and_reports_it_next_wake() {
     let fx = fixture("observe");

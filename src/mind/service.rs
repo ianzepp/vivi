@@ -21,7 +21,7 @@ use super::probe::{HealthProbe, Probe, ProjectSignals};
 use super::prompt;
 use super::socket::{self, BusyGuard, Shared};
 use super::store::{self, MindState};
-use super::wake::{self, WakeDecision, WakeInputs, WakeRecord};
+use super::wake::{self, WakeDecision, WakeInputs, WakeReason, WakeRecord};
 
 /// How often the loop re-evaluates wakes. Heartbeats are coarser than this.
 pub const TICK: Duration = Duration::from_secs(60);
@@ -92,6 +92,11 @@ pub async fn tick<P: PiSession, Q: Probe>(
         } => (reasons, attempt, seen),
     };
     let record = begin_wake(state_path, started, attempt, seen)?;
+    let why: Vec<String> = reasons.iter().map(WakeReason::log_label).collect();
+    log_line(
+        &cx.config.paths.log,
+        &format!("wake begins: {}", why.join("; ")),
+    );
     let mut message = prompt::wake_prompt(cx.config.authority, &reasons, &signals);
     if let Some(report) = &state.pending_report {
         message = format!("{report}\n{message}");
@@ -102,6 +107,22 @@ pub async fn tick<P: PiSession, Q: Probe>(
         pi.prompt(message, None).await
     };
     finish_wake(cx, record, turn, &watched, actuator)
+}
+
+/// What an attached operator prompt is sent as: a fresh probe of every
+/// watched project, then the operator's text. When the projects cannot be
+/// read the text goes as typed, with a line saying so, so an attach never
+/// fails on the probe.
+pub fn attach_text<Q: Probe>(registry: &Path, state_path: &Path, probe: &Q, text: &str) -> String {
+    let watched = store::load_at(state_path)
+        .and_then(|state| super::projects::watched_at(registry, &state.ignored));
+    match watched {
+        Ok(roots) => {
+            let signals: Vec<ProjectSignals> = roots.iter().map(|root| probe.probe(root)).collect();
+            prompt::attach_prompt(text, &signals)
+        }
+        Err(error) => format!("(a fresh pump status could not be read: {error})\n{text}"),
+    }
 }
 
 fn begin_wake(
@@ -193,7 +214,7 @@ fn apply_envelope(
 /// Append one timestamped line to the mind log. Logging never fails the
 /// service.
 pub fn log_line(path: &Path, text: &str) {
-    let stamp = chrono::Utc::now().to_rfc3339();
+    let stamp = chrono::Local::now().to_rfc3339();
     let written = OpenOptions::new()
         .create(true)
         .append(true)
@@ -228,11 +249,18 @@ pub async fn serve_forever() -> Result<(), VivariumError> {
             "previous wake was interrupted; closed as failed",
         );
     }
-    let shared = Arc::new(Shared::new(
-        start_pi(&config).await?,
-        config.authority.as_str(),
-        config.paths.state.clone(),
-    ));
+    let registry = crate::registry::path()?;
+    let state_path = config.paths.state.clone();
+    let shared = Arc::new(
+        Shared::new(
+            start_pi(&config).await?,
+            config.authority.as_str(),
+            config.paths.state.clone(),
+        )
+        .with_attach_context(Box::new(move |text| {
+            attach_text(&registry, &state_path, &HealthProbe, text)
+        })),
+    );
     let listener = socket::bind(&config.paths.socket)?;
     tokio::spawn(socket::serve(
         listener,

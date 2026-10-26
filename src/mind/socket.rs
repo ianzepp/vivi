@@ -86,6 +86,10 @@ impl StatusView {
     }
 }
 
+/// Builds the text an attached prompt is sent as from what the operator
+/// typed; the service uses it to put a fresh probe in front of the question.
+pub type AttachContext = Box<dyn Fn(&str) -> String + Send + Sync>;
+
 /// What every connection handler shares with the service loop.
 pub struct Shared<P> {
     /// The turn lock around the one session.
@@ -95,6 +99,8 @@ pub struct Shared<P> {
     pub authority: String,
     pub state_path: PathBuf,
     pub shutdown: watch::Sender<bool>,
+    /// Applied to every attached prompt; `None` sends the text as typed.
+    pub attach_context: Option<AttachContext>,
 }
 
 impl<P> Shared<P> {
@@ -106,7 +112,15 @@ impl<P> Shared<P> {
             authority: authority.to_string(),
             state_path,
             shutdown: watch::Sender::new(false),
+            attach_context: None,
         }
+    }
+
+    /// Send each attached prompt through `context`.
+    #[must_use]
+    pub fn with_attach_context(mut self, context: AttachContext) -> Self {
+        self.attach_context = Some(context);
+        self
     }
 }
 
@@ -280,6 +294,10 @@ async fn prompt<P: PiSession + 'static, W: AsyncWrite + Unpin>(
 ) -> Result<(), VivariumError> {
     let mut pi = lock(shared, write).await?;
     let _busy = BusyGuard::hold(&shared.busy);
+    let text = shared
+        .attach_context
+        .as_ref()
+        .map_or(text.clone(), |context| context(&text));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let turn = pi.prompt(text, Some(tx));
     tokio::pin!(turn);

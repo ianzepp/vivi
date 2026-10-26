@@ -46,6 +46,44 @@ pub enum WakeReason {
     Signal { fingerprint: String },
 }
 
+/// A unix time as the operator reads it: local date, time and UTC offset.
+#[must_use]
+pub fn readable_time(epoch: u64) -> String {
+    readable_time_in(epoch, &chrono::Local)
+}
+
+/// [`readable_time`] in a given zone. An out-of-range time prints as the
+/// number it is.
+#[must_use]
+pub fn readable_time_in<Tz: chrono::TimeZone>(epoch: u64, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let time = match i64::try_from(epoch) {
+        Ok(secs) => chrono::DateTime::from_timestamp(secs, 0),
+        Err(_) => None,
+    };
+    time.map_or_else(
+        || epoch.to_string(),
+        |time| {
+            time.with_timezone(zone)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        },
+    )
+}
+
+impl WakeReason {
+    /// One line for the mind log saying why a wake happened.
+    #[must_use]
+    pub fn log_label(&self) -> String {
+        match self {
+            Self::Heartbeat { state } => format!("heartbeat ({state})"),
+            Self::Signal { fingerprint } => format!("signal {fingerprint}"),
+        }
+    }
+}
+
 /// The scheduler's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WakeDecision {

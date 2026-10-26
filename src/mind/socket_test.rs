@@ -72,6 +72,31 @@ async fn a_regular_file_is_never_removed() {
 }
 
 #[tokio::test]
+async fn an_attached_prompt_is_sent_through_the_attach_context() {
+    let dir = tempdir().unwrap();
+    let socket = dir.path().join("run").join("mind.sock");
+    let shared = Arc::new(
+        Shared::new(
+            FakePi::with_replies(&["ok"]),
+            "observe",
+            dir.path().join("state.json"),
+        )
+        .with_attach_context(Box::new(|text| format!("FRESH STATUS\n{text}"))),
+    );
+    let listener = bind(&socket).unwrap();
+    tokio::spawn(serve(listener, socket.clone(), Arc::clone(&shared)));
+    let mut client = Client::connect(&socket).await.unwrap();
+    client
+        .collect(&Request::Prompt {
+            text: "how is app?".into(),
+        })
+        .await
+        .unwrap();
+    let pi = shared.pi.lock().await;
+    assert_eq!(pi.prompts, vec!["FRESH STATUS\nhow is app?".to_string()]);
+}
+
+#[tokio::test]
 async fn prompts_stream_through_one_session_across_reconnects() {
     let mind = start(&["hello operator", "still here"]);
     let mut first = Client::connect(&mind.socket).await.unwrap();
