@@ -23,6 +23,7 @@ impl StepHandler for AdmitterStep {
         );
         let spec = step_inputs::read_only_job(
             cx.ctx,
+            cx.store,
             cx.run,
             step,
             &NodeClass::Admitter,

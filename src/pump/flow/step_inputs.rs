@@ -107,10 +107,12 @@ pub fn predecessor_step(
 /// ref as the start point. The budget comes from the node's class.
 ///
 /// # Errors
-/// Returns [`VivariumError::Config`] when `role` is missing or not active, or
-/// when `class` is not a role class.
+/// Returns [`VivariumError::Config`] when `role` is missing or not active,
+/// when `class` is not a role class, or when the start ref for `run` cannot
+/// be resolved.
 pub fn read_only_job(
     ctx: &Ctx,
+    store: &PumpStore,
     run: &RunRow,
     step: &StepRow,
     class: &NodeClass,
@@ -129,16 +131,26 @@ pub fn read_only_job(
         ))
     })?;
     let mut spec = role_job(ctx, run, step, &class.name(), execution, &found.name, brief);
-    make_read_only(ctx, &mut spec);
+    make_read_only(ctx, store, run, &mut spec)?;
     Ok(spec)
 }
 
-/// Makes `spec` a read-only job: all targets beside the checkout, the main ref
-/// as the start point.
-pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) {
+/// Makes `spec` a read-only job: all targets beside the checkout, the start
+/// ref of `run` as the start point.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the start ref for `run` cannot be resolved.
+#[allow(clippy::unnecessary_wraps)]
+pub fn make_read_only(
+    ctx: &Ctx,
+    _store: &PumpStore,
+    _run: &RunRow,
+    spec: &mut JobSpec,
+) -> Result<(), VivariumError> {
     spec.read_only = true;
     spec.from_ref = Some(ctx.cfg.main.clone());
     spec.extra_targets = targets(ctx);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -157,6 +157,7 @@ fn read_only_job_refuses_a_missing_role() -> R {
 
     let err = read_only_job(
         &rig.ctx,
+        &rig.store,
         &rig.run,
         &step,
         &NodeClass::Planner,
@@ -177,6 +178,7 @@ fn read_only_job_sets_read_only_from_ref_and_all_targets() -> R {
 
     let spec = read_only_job(
         &rig.ctx,
+        &rig.store,
         &rig.run,
         &step,
         &NodeClass::Planner,
@@ -209,7 +211,7 @@ fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     assert!(!spec.read_only);
     assert!(spec.from_ref.is_none());
 
-    make_read_only(&rig.ctx, &mut spec);
+    make_read_only(&rig.ctx, &rig.store, &rig.run, &mut spec)?;
 
     assert!(spec.read_only);
     assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
@@ -294,6 +296,7 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
 
     let planner = read_only_job(
         &rig.ctx,
+        &rig.store,
         &rig.run,
         &step,
         &NodeClass::Planner,
@@ -309,6 +312,7 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
     // budget, not the built-in default.
     let merge = read_only_job(
         &rig.ctx,
+        &rig.store,
         &rig.run,
         &step,
         &NodeClass::Merge,
@@ -321,6 +325,7 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
     // A class that is not a role class is refused, not defaulted.
     let err = read_only_job(
         &rig.ctx,
+        &rig.store,
         &rig.run,
         &step,
         &NodeClass::Decision,

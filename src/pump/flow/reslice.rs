@@ -124,7 +124,7 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
     let fanout = store.slice_link(&slice.task)?.and_then(|link| link.fanout);
     store.link_slice(&SliceLink::for_run(run, &task, fanout, Vec::new()))?;
     let brief = brief(ctx, mail, slice, mode, input)?;
-    let spec = job(ctx, run, &row, slice, mode, &brief)?;
+    let spec = job(ctx, store, run, &row, slice, mode, &brief)?;
     jobs::enqueue(st, spec)?;
     Ok(task)
 }
@@ -144,13 +144,14 @@ fn sentinel_task(rows: &[StepRow], run: &RunRow) -> Result<String, VivariumError
 /// The slicer job `reslice-<task>-a1` for a reslice step row.
 fn job(
     ctx: &Ctx,
+    store: &PumpStore,
     run: &RunRow,
     row: &StepRow,
     slice: &StepRow,
     mode: Mode,
     brief: &str,
 ) -> Result<JobSpec, VivariumError> {
-    let mut spec = read_only_job(ctx, run, row, &NodeClass::Slicer, SLICER_ROLE, brief)?;
+    let mut spec = read_only_job(ctx, store, run, row, &NodeClass::Slicer, SLICER_ROLE, brief)?;
     spec.id = format!("reslice-{}-a1", row.task);
     spec.kind = KIND.to_owned();
     spec.task = Some(row.task.clone());
