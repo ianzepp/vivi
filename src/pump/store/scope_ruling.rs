@@ -9,8 +9,9 @@
 //!
 //! A row records the full request identity, the typed decision, the
 //! publication acknowledgement, one stable continuation identity, an
-//! optional scope round, and an optional typed slice-coordination result.
-//! Preparing the same identity twice adopts the record; reusing a source key
+//! optional scope round, and an optional typed slice-coordination result
+//! (the plain word beside its full payload). Preparing the same identity
+//! twice adopts the record; reusing a source key
 //! for different work is refused. A decision may be refreshed while the
 //! record is genuinely unpublished; a published decision and a reserved
 //! continuation never drift. Round allocation is transactional and counts
@@ -45,7 +46,8 @@ CREATE TABLE IF NOT EXISTS scope_journal (
     published_at INTEGER,
     continuation TEXT,
     round INTEGER,
-    coordination TEXT
+    coordination TEXT,
+    coordination_json TEXT
 );
 CREATE INDEX IF NOT EXISTS scope_journal_task_idx ON scope_journal (task);
 ";
@@ -53,10 +55,31 @@ CREATE INDEX IF NOT EXISTS scope_journal_task_idx ON scope_journal (task);
 const COLUMNS: &str = "source, need, target, run, node, task, attempt, paths_json, reason, \
      design, decision, issue, published_at, continuation, round, coordination";
 
-/// Create the scope-journal table when it is missing.
+/// Create the scope-journal table when it is missing, and add the typed
+/// coordination payload column to a journal written by an earlier binary.
 pub(super) fn ensure_table(conn: &Connection) -> Result<(), VivariumError> {
     conn.execute_batch(DDL)
-        .map_err(db_err("create scope journal table"))
+        .map_err(db_err("create scope journal table"))?;
+    ensure_coordination_json(conn)
+}
+
+fn ensure_coordination_json(conn: &Connection) -> Result<(), VivariumError> {
+    let present: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scope_journal') \
+             WHERE name = 'coordination_json'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err("read scope journal columns"))?;
+    if present == 0 {
+        conn.execute(
+            "ALTER TABLE scope_journal ADD COLUMN coordination_json TEXT",
+            [],
+        )
+        .map_err(db_err("add scope journal coordination_json"))?;
+    }
+    Ok(())
 }
 
 /// One journal row: a prepared request and everything recorded about it.
@@ -653,6 +676,8 @@ impl PumpStore {
         read_row(&self.conn, key)
     }
 }
+
+mod coordination;
 
 #[cfg(test)]
 #[path = "scope_ruling_test.rs"]
