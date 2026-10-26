@@ -358,6 +358,11 @@ pub(super) fn thread(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> 
     let handle = req_str(arguments, "handle")?;
     let limit = opt_usize(arguments, "limit", THREAD_DEFAULT, THREAD_MAX)?;
     let messages = h.ms.thread(handle, false, limit, 50).map_err(lib_error)?;
+    // The outline is the uncapped inventory of the same linked thread: it
+    // sizes the whole thread, so the bounded assembly can say honestly
+    // whether the message or depth bound stopped it early. A returned count
+    // below the requested cap alone would not prove that.
+    let total = h.ms.thread_outline(handle).map_err(lib_error)?.len();
     let seed = messages
         .iter()
         .find(|m| m.handle.eq_ignore_ascii_case(handle) || m.message_id == handle)
@@ -396,7 +401,16 @@ pub(super) fn thread(h: &Hosted, arguments: &Value) -> Result<Value, ToolError> 
             item
         })
         .collect();
-    Ok(json!({ "handle": handle, "state": state, "event": event, "messages": rows }))
+    let truncated = messages.len() < total;
+    Ok(json!({
+        "handle": handle,
+        "state": state,
+        "event": event,
+        "messages": rows,
+        "total_messages": total,
+        "returned_messages": rows.len(),
+        "truncated": truncated,
+    }))
 }
 
 /// The backlog graph, `None` until the mailspace has minted any work.
