@@ -12,6 +12,21 @@ use std::path::{Path, PathBuf};
 
 use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
 use crate::VivariumError;
+use crate::pool::dispatch::BUDGET_RANGE;
+use crate::pump::envelope::roles::RoleKind;
+
+/// The thinking steps that carry a `[pump.dispatch.step_budgets]` key, each
+/// with its canonical key spelling. `head-cto` is spelled out here because
+/// [`RoleKind::name`] says `cto`, which is not an accepted key.
+const THINKING_STEPS: [(RoleKind, &str); 7] = [
+    (RoleKind::Planner, "planner"),
+    (RoleKind::Admitter, "admitter"),
+    (RoleKind::Slicer, "slicer"),
+    (RoleKind::Auditor, "auditor"),
+    (RoleKind::HeadCeo, "head-cto"),
+    (RoleKind::Researcher, "researcher"),
+    (RoleKind::Judge, "judge"),
+];
 
 /// One thing the pump needs and the config does not yet say.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,13 +204,56 @@ impl PumpConfig {
         }
     }
 
-    /// `budget` and `parallel` are the only dispatch keys the pump reads.
+    /// `budget`, `parallel` and the per-step budget policy are the dispatch
+    /// keys the pump reads. A budget kill gets one retry at a raised budget
+    /// before the step counts as failed, so the fallback must sit inside the
+    /// pool range and every effective initial budget must leave headroom
+    /// strictly under the pool ceiling.
     fn validate_dispatch(&self, found: &mut Findings) {
-        if self.dispatch.budget == 0 {
-            found.invalid("[pump.dispatch] budget must be >= 1");
-        }
         if self.dispatch.parallel == 0 {
             found.invalid("[pump.dispatch] parallel must be >= 1");
+        }
+        if BUDGET_RANGE.contains(&self.dispatch.budget) {
+            self.validate_thinking_headroom(found);
+        } else {
+            found.invalid(format!(
+                "[pump.dispatch] budget must be between {} and {} seconds",
+                BUDGET_RANGE.start(),
+                BUDGET_RANGE.end()
+            ));
+        }
+        if !BUDGET_RANGE.contains(&self.dispatch.envelope_fix_budget()) {
+            found.invalid(format!(
+                "pump.dispatch.step_budgets.envelope-fix must be between {} and {} seconds",
+                BUDGET_RANGE.start(),
+                BUDGET_RANGE.end()
+            ));
+        }
+    }
+
+    /// Every effective initial thinking budget (override or inherited
+    /// fallback) must be positive and strictly below the pool maximum: the
+    /// retry raise caps there, so a budget at the ceiling cannot dispatch.
+    /// The fallback itself may sit at the ceiling only when all seven
+    /// thinking steps carry a valid lower override; oversized or zero
+    /// fallbacks were rejected before this runs.
+    fn validate_thinking_headroom(&self, found: &mut Findings) {
+        let budget = self.dispatch.budget;
+        let max = *BUDGET_RANGE.end();
+        for (role, step) in THINKING_STEPS {
+            let effective = self.dispatch.step_budget(role);
+            if effective > 0 && effective < max {
+                continue;
+            }
+            let key = format!("pump.dispatch.step_budgets.{step}");
+            if effective == budget {
+                found.invalid(format!(
+                    "[pump.dispatch] budget leaves {step} no retry headroom; \
+                     set {key} strictly below {max}"
+                ));
+            } else {
+                found.invalid(format!("{key} must be positive and strictly below {max}"));
+            }
         }
     }
 }
