@@ -2,11 +2,14 @@
 //!
 //! The monitor reads a project's dispatch/collect history without opening the
 //! read-write [`crate::storage::Storage`], whose open runs schema-write
-//! transactions. The connection here is read-only at every level:
+//! transactions. Database contents and schema stay read-only at every level:
 //! `SQLITE_OPEN_READ_ONLY`, a query-only pragma, and a short busy timeout —
-//! it never blocks a writer.
+//! it never blocks a writer. When the reader owns the database file, a normal
+//! read-only open may create the missing WAL `-shm` coordination sidecar
+//! (correctly owned); nothing else is ever created or written.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
@@ -98,9 +101,11 @@ fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
     })?;
     let conn = Storage::open_mailspace_connection_read_only(
         dir,
-        // Strict until this reader gets its own owner-policy slice; the
-        // monitor must never create the sidecar it reports against.
-        WalSidecarPolicy::ExistingSidecarOnly,
+        // The monitor owns the database it reports against: when the `-shm`
+        // index is missing, the owner policy lets the read-only open
+        // recreate a correctly owned sidecar so recently committed events
+        // stay visible. Contents and schema are still never written.
+        WalSidecarPolicy::AllowOwnedSidecar,
     )?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
@@ -205,16 +210,33 @@ fn finished_rows(rows: &[EventRow], handles: &HashMap<String, String>) -> Vec<Fi
     finished
 }
 
+/// Fallible absence check for the mailspace database. Only a genuinely
+/// absent path reads as absent; a non-file path, a permission failure, or
+/// any other I/O error is an error rather than an empty history, and
+/// nothing is ever created.
+fn absent_database(db: &Path) -> Result<bool, VivariumError> {
+    match fs::metadata(db) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(e.into()),
+        Ok(meta) if !meta.is_file() => Err(VivariumError::Other(format!(
+            "mail database path is not a file: {}",
+            db.display()
+        ))),
+        Ok(_) => Ok(false),
+    }
+}
+
 /// Read the pool history of the mailspace database at `db`.
 ///
-/// A missing database reads as an empty history. `last_finished` keeps only
-/// the newest that many collected dispatches.
+/// A genuinely missing database reads as an empty history without creating
+/// anything; any other filesystem failure is an error. `last_finished` keeps
+/// only the newest that many collected dispatches.
 ///
 /// # Errors
-/// Returns an error if the database cannot be opened read-only or a query
-/// fails.
+/// Returns an error if the database cannot be inspected, cannot be opened
+/// read-only, or a query fails.
 pub fn read(db: &Path, last_finished: usize) -> Result<ProjectEvents, VivariumError> {
-    if !db.exists() {
+    if absent_database(db)? {
         return Ok(ProjectEvents::default());
     }
     let conn = open_read_only(db)?;
@@ -294,7 +316,10 @@ fn add_task_need_metadata(
     task_info: &mut BTreeMap<String, TaskInfo>,
     dir: &Path,
 ) -> Result<(), VivariumError> {
-    let storage = Storage::open_mailspace_read_only(dir)?;
+    // Legacy dispatches carry their need only in item metadata; keep that
+    // fallback readable for an owner too, or those rows alone would fail.
+    let storage =
+        Storage::open_mailspace_read_only_with_policy(dir, WalSidecarPolicy::AllowOwnedSidecar)?;
     for (handle, info) in task_info.iter_mut().filter(|(_, info)| info.need.is_none()) {
         let Ok(id) = storage.resolve_message_token(handle) else {
             continue;
