@@ -2569,6 +2569,7 @@ vivi pump target remove <id>
 vivi pump rungs show [--target <id>]
 vivi pump rungs set <task|need|main|release> <command> [--target <id>]
 vivi pump send --need <need> [--from <id>] [--body TEXT]
+vivi need send --from <id> --to <id> --subject <text> --body <text> --done-when <clause> --dispatch [--priority <level>]
 vivi pump list [--need <need>] [--status open|done|all] [--json]
 vivi pump show <record> [--json]
 vivi pump done <record> [--note TEXT]
@@ -2603,6 +2604,13 @@ Control, priority, requeue, replan, withdraw, answer and unlock commands accept
 control mode in **&lt;project&gt;/.vivi/pump/pump.db**. A second writer for the same
 home is refused.
 
+A **priority level** is a nonnegative i64 integer, under one operator ruling:
+the same levels as `vivi pump priority set`; higher is more urgent, 0 or
+absent means none. Writing 0 clears the level (no row is kept for 0); no
+negative level exists. Priority is local scheduling state keyed by the
+record's canonical need in the configured pump home — never need front matter
+and never a field on the record letter.
+
 ### Records and runs
 
 A **pump record** is one dispatch of one need: **pump send** files it open,
@@ -2613,15 +2621,40 @@ the **tested** tip; see
 [the pump record](references/envelope.md#pump-record). Without a **kind** the
 run kind is the need's mark (`research`, `release` or `repair`), else `build`.
 A need holds at most one open record; a second send is refused and names it.
-**pump send** also refuses a need that is done, a handle that is not a need and
-a need that is not addressed to **[pump] reply_from** (or held under another
-mailspace's address). **pump done --note** closes a record with any outcome
+**pump send** also refuses a need that is done and a handle that is not a
+need. It is the record, not the need, that is addressed to the pump: a need
+may sit with any local role — one addressed to a third party dispatches the
+same way. **pump done --note** closes a record with any outcome
 text; a later dispatch of the same need is a new record, and **pump history**
 lists them oldest first. **pump reopen** is refused while another record of the
 need is open; check and send are one store transaction, so two concurrent sends
 cannot both open a record. A record is the pump's own, local to its mailspace:
 it is not backlog work (no graph node, never dispatched by **vivi step**) and
 **vivi sync** does not carry it.
+
+**One-command filing.** `vivi need send` takes **--dispatch**, with an
+optional **--priority &lt;level&gt;**, as a convenience over separate filing and
+pump calls. The sequence: file the need letter and finish any **--mark**
+slugs, open one record with the ordinary pump-send defaults (**[pump]
+reply_from** as recipient, **[pump] from** as sender), then — only when
+**--priority** is present — write the level. It is not a combined transaction,
+a pump start or a tick: the pump still picks the record up at its next tick.
+The two-command workflow and explicit **vivi pump send --need &lt;need&gt;** stay
+the delegated-dispatch path, including needs addressed to third parties.
+Dispatch requires effective **[pump]** configuration and resolves **[pump]
+reply_from** against a delivered copy of the need: **To**, **Cc**, an alias
+and local-address forms all count; the same name under another mailspace does
+not. These checks run after the need is filed and require no runnable pool.
+The level and its ruling are the pump's own (see priority above);
+**--priority 0** still requires **--dispatch** and clears through the
+ordinary priority write, while omitting the flag performs no priority write.
+
+**Recovering a partial dispatch.** The steps publish in sequence and are not
+atomic. A refused dispatch exits nonzero and leaves the filed need and its
+marks in place; a failed priority write exits nonzero after reporting the open
+record and leaves need and record in place. Recover from the reported handles
+with the explicit commands — **pump send --need**, **pump priority set** or
+**pump priority clear** — rather than blindly refiling the need.
 
 **A pump record is the pump's intake.** Each tick the pump starts a run for
 each need that has an open record and no run: repair first, then by **pump
