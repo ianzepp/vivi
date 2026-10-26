@@ -40,8 +40,8 @@ fn pump_tick_rows_show_timing_and_keep_finished_cycles_gray() {
     assert_eq!(finished_tick.running_secs, Some(16));
 
     let mut history = super::super::history::SessionHistory::default();
-    history.refresh(finished, |_| None);
-    history.refresh(Vec::new(), |_| None);
+    history.refresh(finished, 920);
+    history.refresh(Vec::new(), 920);
     let retained = history
         .rows()
         .iter()
