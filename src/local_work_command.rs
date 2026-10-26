@@ -5,8 +5,8 @@ use vivi::cli::{
 };
 use vivi::letter::sugar::{self, Sugar};
 use vivi::mailspace::{
-    DumpFilters, Mailspace, Recipient, SendRequest, TaskDumpRequest, WantListOptions,
-    WantMetadataUpdate,
+    DeliveryResult, DumpFilters, Mailspace, PumpRecord, Recipient, SendRequest, TaskDumpRequest,
+    WantListOptions, WantMetadataUpdate,
 };
 
 pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumError> {
@@ -412,17 +412,43 @@ fn dump_work_items(
 ///
 /// The slugs are validated before anything is sent. The need letter goes
 /// first and the mark letters second, so a mark never travels ahead of its
-/// need.
+/// need. With `--dispatch`, the filed need is chained into a pump record
+/// after the marks; an empty mark list never bypasses the dispatch.
 fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> {
     vivi::mailspace::validate_marks_filter(&command.marks)?;
     let result = send_local_item_sent(&command.send, "needs", "need", "created", &command.sugar())?;
-    if command.marks.is_empty() {
+    if command.marks.is_empty() && !command.dispatch {
         return Ok(());
     }
-    let mailspace = Mailspace::discover(command.send.project.as_deref())?;
-    // The sender's own copy first: it is the copy whose mark letters travel.
-    // Then each local recipient's copy, which is the one `need list` shows.
-    let mut targets = vec![(command.send.from.as_str(), result.sent.as_str())];
+    let mailspace = match Mailspace::discover(command.send.project.as_deref()) {
+        Ok(mailspace) => mailspace,
+        // No marks: this rediscovery happened only to dispatch.
+        Err(error) if command.marks.is_empty() => {
+            return Err(dispatch_boundary(error, &result.sent));
+        }
+        Err(error) => return Err(error),
+    };
+    write_send_marks(&mailspace, &command.send.from, &result, &command.marks)?;
+    if command.dispatch {
+        let record = dispatch_filed_need(&mailspace, &result)?;
+        println!("pump record {} for need {}", record.handle, record.need);
+    }
+    Ok(())
+}
+
+/// The mark writes of a sent need. The sender's own copy first: it is the
+/// copy whose mark letters travel. Then each local recipient's copy, which
+/// is the one `need list` shows.
+fn write_send_marks(
+    mailspace: &Mailspace,
+    from: &str,
+    result: &DeliveryResult,
+    marks: &[String],
+) -> Result<(), VivariumError> {
+    if marks.is_empty() {
+        return Ok(());
+    }
+    let mut targets = vec![(from, result.sent.as_str())];
     targets.extend(
         result
             .delivered
@@ -430,12 +456,55 @@ fn send_need(command: &vivi::cli::NeedSendCommand) -> Result<(), VivariumError> 
             .map(|copy| (copy.identity.as_str(), copy.handle.as_str())),
     );
     for (identity, handle) in targets {
-        let writes = mailspace.set_marks(identity, handle, "need", true, &command.marks)?;
+        let writes = mailspace.set_marks(identity, handle, "need", true, marks)?;
         for write in writes {
             print_mark(&write.handle, &write.slug, true, write.changed);
         }
     }
     Ok(())
+}
+
+/// Chain a just-filed need into a pump record (`need send --dispatch`).
+///
+/// This post-filing shortcut requires the pump configuration: the configured
+/// `reply_from` must resolve to a role of this mailspace, and that role must
+/// have received a delivered copy of the need — by name, alias, local
+/// address or Cc. The pump sender and body keep their `vivi pump send`
+/// defaults, and the duplicate and actionable checks stay with `pump_send`.
+fn dispatch_filed_need(
+    mailspace: &Mailspace,
+    result: &DeliveryResult,
+) -> Result<PumpRecord, VivariumError> {
+    dispatch_filed_need_checked(mailspace, result)
+        .map_err(|error| dispatch_boundary(error, &result.sent))
+}
+
+fn dispatch_filed_need_checked(
+    mailspace: &Mailspace,
+    result: &DeliveryResult,
+) -> Result<PumpRecord, VivariumError> {
+    let pump = mailspace.config.pump.as_ref().ok_or_else(|| {
+        VivariumError::Config(String::from(
+            "no [pump] table in .vivi/mailspace.toml; --dispatch needs a configured pump",
+        ))
+    })?;
+    let reply_from = mailspace.resolve_identity(&pump.reply_from)?;
+    if !result
+        .delivered
+        .iter()
+        .any(|copy| copy.identity == reply_from)
+    {
+        return Err(VivariumError::Message(format!(
+            "no delivered copy of the filed need for {reply_from}; the dispatch pump must be a recipient"
+        )));
+    }
+    mailspace.pump_send(None, &result.sent, None)
+}
+
+/// Wrap a dispatch-boundary failure with the dispatch phase, the filed sent
+/// handle and the underlying reason.
+fn dispatch_boundary(error: VivariumError, sent: &str) -> VivariumError {
+    VivariumError::Other(format!("dispatch of filed need {sent} failed: {error}"))
 }
 
 fn send_local_item(
@@ -536,6 +605,10 @@ fn move_item_with_close_location(
     print_move_receipt(&moved, "done");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "local_work_command_test.rs"]
+mod tests;
 
 /// The `timing:` close line `need done` and `task done` print: open-to-done,
 /// attempts, summed agent time and the slowest attempt, read from the
