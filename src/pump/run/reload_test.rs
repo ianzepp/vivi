@@ -10,6 +10,8 @@ use tempfile::tempdir;
 
 use super::refresh_config;
 use crate::mailspace::Mailspace;
+use crate::pump::config::ScopeDecision;
+use crate::pump::config::scope::authorize;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::step_inputs;
@@ -97,6 +99,22 @@ fn run_row() -> (RunRow, StepRow) {
             state: StepState::Waiting,
             verdict: None,
         },
+    )
+}
+
+/// The checked decision of `paths` for the running target `id` against its
+/// own resolved integration checkout: the same shape the scope-request
+/// settlement uses, never the controller's current checkout.
+fn decide(ctx: &Ctx, id: &str, paths: &[&str]) -> ScopeDecision {
+    let checkout = ctx.cfg.target_repo_dir(&ctx.project, id);
+    authorize(
+        &ctx.cfg.target_configs(),
+        id,
+        checkout.as_deref(),
+        &paths
+            .iter()
+            .map(|path| String::from(*path))
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -317,6 +335,94 @@ fn the_repair_budget_reloads_live_and_an_invalid_budget_is_refused() {
     write_toml(dir.path(), &with_budget("7200"));
     assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
     assert_eq!(ctx.cfg.repair_attempt_secs, 7200);
+}
+
+#[test]
+fn scope_policy_reload_applies_to_new_requests() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+    source(dir.path(), "alpha");
+    let guarded = concat!(
+        "[pump.targets.alpha]\npath = \"alpha\"\n",
+        "scope_allow = [\"src/\"]\nscope_deny = [\"src/secret.rs\"]\n\n",
+    );
+    write_toml(dir.path(), &toml(2, guarded));
+    let (mut ctx, _host) = running(dir.path());
+    let mut fingerprint = None;
+    let mut last_error = None;
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+
+    // The running target's own integration checkout, not the controller's
+    // current checkout, is what checked decisions inspect. The fake clone
+    // leaves no tree behind, so stand one in as the clone would.
+    let checkout = ctx.cfg.target_repo_dir(&ctx.project, "alpha").unwrap();
+    assert_ne!(checkout, dir.path());
+    fs::create_dir_all(checkout.join("src")).unwrap();
+    fs::write(checkout.join("src/secret.rs"), "hush").unwrap();
+
+    assert_eq!(
+        decide(&ctx, "alpha", &["src/lib.rs"]),
+        ScopeDecision::Allowed
+    );
+    assert_eq!(
+        decide(&ctx, "alpha", &["src/secret.rs"]),
+        ScopeDecision::Denied
+    );
+    assert_eq!(
+        decide(&ctx, "alpha", &["docs/notes.md"]),
+        ScopeDecision::OutsideAllow
+    );
+
+    // Dropping the scope keys on the unchanged running target widens the
+    // policy to the repository-wide default for the next request.
+    write_toml(
+        dir.path(),
+        &toml(2, "[pump.targets.alpha]\npath = \"alpha\"\n\n"),
+    );
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert!(last_error.is_none());
+    assert_eq!(
+        decide(&ctx, "alpha", &["docs/notes.md"]),
+        ScopeDecision::Allowed
+    );
+    assert_eq!(
+        decide(&ctx, "alpha", &["src/secret.rs"]),
+        ScopeDecision::Allowed
+    );
+
+    // A malformed scope entry is a config error: the whole reload is
+    // refused and the last valid snapshot keeps deciding.
+    let malformed = concat!(
+        "[pump.targets.alpha]\npath = \"alpha\"\n",
+        "scope_allow = [\"src/\"]\nscope_deny = [\"/abs\"]\n\n",
+    );
+    write_toml(dir.path(), &toml(2, malformed));
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        decide(&ctx, "alpha", &["docs/notes.md"]),
+        ScopeDecision::Allowed
+    );
+    assert_eq!(
+        decide(&ctx, "alpha", &["src/secret.rs"]),
+        ScopeDecision::Allowed
+    );
+    assert!(
+        exceptions(&ctx)
+            .iter()
+            .any(|line| line.contains("scope_deny"))
+    );
+
+    // Repairing the file back to the retained snapshot changes nothing: the
+    // fingerprint of the refused snapshot never displaced the valid one.
+    write_toml(
+        dir.path(),
+        &toml(2, "[pump.targets.alpha]\npath = \"alpha\"\n\n"),
+    );
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(
+        decide(&ctx, "alpha", &["docs/notes.md"]),
+        ScopeDecision::Allowed
+    );
 }
 
 #[test]
