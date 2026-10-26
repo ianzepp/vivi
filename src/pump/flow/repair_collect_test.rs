@@ -168,6 +168,38 @@ fn a_timeout_answers_overtime_with_no_retry() -> R {
 }
 
 #[test]
+fn a_budget_killed_repairer_correction_answers_failed_without_a_rerun() -> R {
+    // A budget result on a correction job groups with the failed answers: it
+    // is inapplicable to the repairer, so it never answers overtime, never
+    // reruns the full role and never queues a second correction.
+    let mut rig = rig()?;
+    let step = rig.step("fix1")?;
+    let mut spec = JobSpec::new("fix-j1-c1", "envelope-fix", "repairer", "s", "b");
+    spec.task = Some(step.task.clone());
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    rig.store.insert_step_job(
+        NEED,
+        &StepJobRow {
+            job: "fix-j1-c1".into(),
+            run: 1,
+            node: "fix1".into(),
+            task: step.task.clone(),
+            attempt: 1,
+        },
+    )?;
+    rig.jobs.jobs.get_mut("fix-j1-c1").unwrap().status = JobStatus::Timeout;
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.state, StepState::Done);
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    assert_eq!(rig.jobs.jobs.len(), 2, "no rerun and no second correction");
+    assert!(!rig.jobs.jobs.contains_key("fix-j1-a2"));
+    assert!(!rig.jobs.jobs.contains_key("fix-j1-c2"));
+    Ok(())
+}
+
+#[test]
 fn a_lost_job_runs_a_second_attempt() -> R {
     let mut rig = rig()?;
     rig.end(JobStatus::Lost, None);

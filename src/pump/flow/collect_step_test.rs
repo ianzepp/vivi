@@ -14,8 +14,7 @@ use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::budget_retry::{PAYLOAD_KEY, raised_budget};
-use crate::pump::flow::def::FlowDef;
-use crate::pump::flow::def::FlowKind;
+use crate::pump::flow::def::{FAILED, FlowDef, FlowKind};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
@@ -852,5 +851,71 @@ fn lost_job_retry_keeps_its_budget() -> R {
     // No correction was queued alongside the retry.
     assert_eq!(rig.jobs.jobs.len(), 2);
     assert_eq!(rig.plan_step()?.state, StepState::Running);
+    Ok(())
+}
+
+#[test]
+fn a_budget_killed_planner_queues_one_raised_retry() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    // The bounded pool summary reports the timeout exit: machine evidence
+    // of a budget kill, with no environment failure and no usable envelope.
+    finished_job(
+        &mut rig,
+        "plan-j1",
+        "planner",
+        &step.task,
+        receipt(124, "", ""),
+    )?;
+    rig.jobs.jobs.get_mut("plan-j1").unwrap().budget = 600;
+    let held = collect_role(&mut rig, "plan-j1", "plan")?;
+    // The first kill queues the raised rerun and nothing else: the same task
+    // and run keep going with no correction and no operator alarm.
+    let raised = &rig.jobs.jobs["plan-j1-a2"];
+    assert_eq!(raised.budget, 1_200);
+    assert_eq!(raised.kind, "planner");
+    assert_eq!(raised.payload[PAYLOAD_KEY], serde_json::json!(true));
+    let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(stored.run, 1);
+    assert_eq!(stored.task, step.task);
+    assert_eq!(stored.attempt, 2);
+    assert_eq!(held.state, StepState::Running);
+    assert_eq!(held.verdict.as_deref(), None);
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-c1"));
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert!(rig.exceptions().is_empty());
+    Ok(())
+}
+
+#[test]
+fn correction_budget_kill_does_not_rerun_the_role() -> R {
+    // Both kill representations answer failed for a killed correction: never
+    // a full-role raised rerun and never another correction.
+    for (status, outcome) in [
+        (JobStatus::Timeout, None),
+        (JobStatus::Finished, Some(receipt(124, "", ""))),
+    ] {
+        let mut rig = rig()?;
+        let step = rig.plan_step()?;
+        let mut spec = JobSpec::new("plan-j1-c1", "envelope-fix", "planner", "s", "b");
+        spec.task = Some(step.task.clone());
+        jobs::enqueue(&mut rig.jobs, spec)?;
+        let job = rig.jobs.jobs.get_mut("plan-j1-c1").unwrap();
+        job.status = status;
+        job.outcome = outcome.map(|receipt| JobOutcome {
+            state: "finished".to_owned(),
+            detail: String::new(),
+            receipt,
+            at: 0,
+        });
+        collect_role(&mut rig, "plan-j1-c1", "plan")?;
+        let done = rig.plan_step()?;
+        assert_eq!(done.state, StepState::Done);
+        assert_eq!(done.verdict.as_deref(), Some(FAILED));
+        assert_eq!(rig.jobs.jobs.len(), 1, "no rerun and no second correction");
+        assert!(!rig.jobs.jobs.contains_key("plan-j1-a2"));
+        assert!(!rig.jobs.jobs.contains_key("plan-j1-c2"));
+        assert!(rig.exceptions().is_empty());
+    }
     Ok(())
 }

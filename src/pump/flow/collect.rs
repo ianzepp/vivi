@@ -8,10 +8,13 @@
 
 use serde_json::json;
 
+use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::attempt_record::hand_message;
+use crate::pump::envelope::correct;
 use crate::pump::envelope::correct::correction_n;
 use crate::pump::envelope::roles::{Parsed, RoleKind, parse_for};
 use crate::pump::envelope::{EnvelopeError, split};
+use crate::pump::flow::budget_retry;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::flow::mail::MailWriter;
@@ -29,6 +32,10 @@ const NEW_FACT_RUN: u32 = 3;
 pub const ENVELOPE_FAILED: &str = "flow-envelope-failed";
 /// Exception kind: the envelope's answer contradicts the machine receipt.
 pub const ENVELOPE_DISAGREES: &str = "flow-envelope-disagrees";
+/// Exception kind: an unspent budget kill whose stored budget has no legal
+/// raise at or above the pool ceiling, so the step fails instead of queueing
+/// an invalid rerun.
+pub const BUDGET_UNRAISABLE: &str = "flow-budget-unraisable";
 
 /// What a finished role-step job amounts to.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +63,8 @@ pub enum Collected {
 /// corrections never count as attempts. `expected_ref` is the ref a merge
 /// step must have published; other classes ignore it. Alarms go to the
 /// exceptions log and parse errors on a merge go to the step task as a reply.
+/// A thinking-step budget kill is machine evidence: it decides before any
+/// envelope is read.
 #[must_use]
 pub fn collect<M: MailWriter>(
     ctx: &Ctx,
@@ -70,6 +79,9 @@ pub fn collect<M: MailWriter>(
     };
     if kind == RoleKind::Merge {
         return merge(ctx, mail, job, step, expected_ref);
+    }
+    if budget_retry::is_budget_kill(job) && budget_retry::is_thinking(kind) {
+        return budget_kill(ctx, job, step);
     }
     if job.status != JobStatus::Finished {
         return lost(step);
@@ -89,6 +101,32 @@ fn lost(step: &StepJobRow) -> Collected {
         Collected::Retry
     } else {
         Collected::Failed
+    }
+}
+
+/// A thinking-step budget kill: one retry at a raised budget, then failed.
+/// The raise is derived from the stored budget; a spent allowance and a
+/// killed correction (whose budget policy is the correction's own) fail
+/// outright. A stored budget with no strict raise left at or above the pool
+/// ceiling fails with an alarm instead of queueing an invalid rerun.
+fn budget_kill(ctx: &Ctx, job: &PoolJob, step: &StepJobRow) -> Collected {
+    match budget_retry::retry_budget(job) {
+        Some(budget) => Collected::BudgetRetry { budget },
+        None if budget_retry::spent(job) || job.kind == correct::KIND => Collected::Failed,
+        None => {
+            ctx.exception(
+                BUDGET_UNRAISABLE,
+                &step.task,
+                &format!(
+                    "{} job {}: budget {} has no raise at or above the pool ceiling {}; failed",
+                    step.node,
+                    job.id,
+                    job.budget,
+                    BUDGET_RANGE.end()
+                ),
+            );
+            Collected::Failed
+        }
     }
 }
 

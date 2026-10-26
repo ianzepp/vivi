@@ -8,6 +8,8 @@ use super::{Collected, collect};
 use crate::letter::fixture::step_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
+use crate::pump::envelope::correct::KIND;
+use crate::pump::flow::budget_retry::PAYLOAD_KEY;
 use crate::pump::flow::def::NodeClass;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepJobRow;
@@ -73,6 +75,13 @@ fn run(f: &mut Fixture, job: &PoolJob, attempt: u32, class: &NodeClass) -> Colle
 
 const PLANNED: &str = "+++\nanswer = \"planned\"\n+++\nThe plan.";
 const BROKEN: &str = "+++\nanswer = \"planned\"\nproof = 'x'\n+++\nThe plan.";
+
+/// A finished pool result whose bounded summary head reports the timeout
+/// exit, with `message` as the receipt section the envelope parser would
+/// read.
+fn killed_receipt(message: &str) -> String {
+    format!("agent exit 124 after 600s\n\n--- receipt\n{message}")
+}
 
 #[test]
 fn a_valid_envelope_is_the_outcome() {
@@ -157,14 +166,140 @@ fn a_third_broken_output_is_failed_with_an_alarm() {
 }
 
 #[test]
-fn timeout_and_lost_retry_then_fail() {
-    for status in [JobStatus::Timeout, JobStatus::Lost] {
-        let mut f = fixture();
-        let j = job("j1", status, PLANNED);
-        assert_eq!(run(&mut f, &j, 1, &NodeClass::Planner), Collected::Retry);
-        assert_eq!(run(&mut f, &j, 2, &NodeClass::Planner), Collected::Failed);
-        assert!(exceptions(&f).is_empty());
-    }
+fn lost_retries_once_then_fails() {
+    let mut f = fixture();
+    let mut lost = job("j1", JobStatus::Lost, PLANNED);
+    lost.budget = 600;
+    // A lost job is not a budget kill: the attempt limit governs on its own,
+    // and an ordinary second attempt never consumes the budget retry.
+    assert_eq!(run(&mut f, &lost, 1, &NodeClass::Planner), Collected::Retry);
+    assert_eq!(
+        run(&mut f, &lost, 2, &NodeClass::Planner),
+        Collected::Failed
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn budget_kill_beats_a_partial_valid_envelope() {
+    let mut f = fixture();
+    // The summary head reports the kill while the receipt still carries a
+    // parseable answer: the machine evidence decides before the envelope is
+    // read, and the raise comes from the stored budget.
+    let receipt = killed_receipt(PLANNED);
+    let mut finished = job("j1", JobStatus::Finished, &receipt);
+    finished.budget = 600;
+    assert_eq!(
+        run(&mut f, &finished, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    // The terminal timeout status is a kill with no summary text at all.
+    let mut timed_out = job("j2", JobStatus::Timeout, PLANNED);
+    timed_out.budget = 600;
+    assert_eq!(
+        run(&mut f, &timed_out, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn budget_kill_is_machine_evidence_only() {
+    let mut f = fixture();
+    // A clean summary with exit-124 prose in the hand's reply parses as the
+    // outcome: only the bounded summary head is evidence.
+    let prose = "agent exit 0 in 8s\n\n--- receipt\n+++\nanswer = \"planned\"\n+++\nThe log said agent exit 124.";
+    let got = run(
+        &mut f,
+        &job("j1", JobStatus::Finished, prose),
+        1,
+        &NodeClass::Planner,
+    );
+    assert!(
+        matches!(&got, Collected::Outcome(word, _) if word == "planned"),
+        "{got:?}"
+    );
+    // A lost job is never a budget kill, even with a kill-shaped summary.
+    let killed = killed_receipt(PLANNED);
+    let mut lost = job("j2", JobStatus::Lost, &killed);
+    lost.budget = 600;
+    assert_eq!(run(&mut f, &lost, 1, &NodeClass::Planner), Collected::Retry);
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn first_budget_kill_raises_once_and_a_spent_one_fails() {
+    let mut f = fixture();
+    let receipt = killed_receipt(PLANNED);
+    // The first kill at any attempt raises: the policy is driven by the
+    // durable marker, not by the attempt counter.
+    let mut first = job("j1", JobStatus::Finished, &receipt);
+    first.budget = 600;
+    assert_eq!(
+        run(&mut f, &first, 1, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    assert_eq!(
+        run(&mut f, &first, 2, &NodeClass::Planner),
+        Collected::BudgetRetry { budget: 1_200 }
+    );
+    // With the marker set the one retry is spent: the next kill fails.
+    let mut spent = job("j2", JobStatus::Finished, &receipt);
+    spent.budget = 600;
+    spent.payload[PAYLOAD_KEY] = serde_json::json!(true);
+    assert_eq!(
+        run(&mut f, &spent, 2, &NodeClass::Planner),
+        Collected::Failed
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn a_killed_correction_fails_without_a_raise_or_correction() {
+    let mut f = fixture();
+    let receipt = killed_receipt(PLANNED);
+    // A killed correction fails in both kill representations: never a
+    // full-role raised rerun and never another correction.
+    let mut finished = job("j1-c1", JobStatus::Finished, &receipt);
+    finished.kind = KIND.to_owned();
+    finished.budget = 600;
+    assert_eq!(
+        run(&mut f, &finished, 1, &NodeClass::Planner),
+        Collected::Failed
+    );
+    let mut timed_out = job("j1-c1", JobStatus::Timeout, "");
+    timed_out.kind = KIND.to_owned();
+    assert_eq!(
+        run(&mut f, &timed_out, 1, &NodeClass::Planner),
+        Collected::Failed
+    );
+    assert!(exceptions(&f).is_empty());
+}
+
+#[test]
+fn an_unraisable_budget_kill_fails_with_an_alarm() {
+    let mut f = fixture();
+    let receipt = killed_receipt(PLANNED);
+    // A stored budget already at the pool ceiling has no strict raise: the
+    // step fails through the existing route and the reason is recorded.
+    let mut capped = job("j1", JobStatus::Finished, &receipt);
+    capped.budget = 43_200;
+    assert_eq!(
+        run(&mut f, &capped, 1, &NodeClass::Planner),
+        Collected::Failed
+    );
+    let text = exceptions(&f);
+    assert!(text.contains("flow-budget-unraisable"), "{text}");
+    assert!(text.contains("j1"), "{text}");
+    assert!(text.contains("43200"), "{text}");
+    // A stored budget below the pool's range is just as unraisable.
+    let mut zero = job("j2", JobStatus::Finished, &receipt);
+    zero.budget = 0;
+    assert_eq!(
+        run(&mut f, &zero, 1, &NodeClass::Planner),
+        Collected::Failed
+    );
+    assert!(exceptions(&f).contains("j2"));
 }
 
 #[test]
