@@ -38,6 +38,8 @@ fn pump_tick_rows_show_timing_and_keep_finished_cycles_gray() {
     assert_eq!(finished_tick.state, RowState::Finished("ok".into()));
     assert_eq!(finished_tick.started_at, Some(900));
     assert_eq!(finished_tick.running_secs, Some(16));
+    assert_eq!(finished_tick.finished_at, Some(916));
+    assert_eq!(finished_tick.stale_age_secs, None);
 
     let mut history = super::super::history::SessionHistory::default();
     history.refresh(finished, |_| None);
@@ -180,4 +182,122 @@ fn unreadable_pump_db_is_unavailable_without_creating_sidecars() {
         std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
     assert_eq!(std::fs::read(&db).unwrap(), before, "bytes must not change");
+}
+
+/// One cycle receipt line for a hand-written cycle log.
+fn cycle_receipt(
+    id: &str,
+    started_at: u64,
+    ended_at: Option<u64>,
+    duration_secs: Option<u64>,
+    outcome: Option<&str>,
+) -> crate::pump::cycle::TickRecord {
+    crate::pump::cycle::TickRecord {
+        id: id.to_owned(),
+        started_at,
+        ended_at,
+        duration_secs,
+        outcome: outcome.map(str::to_owned),
+    }
+}
+
+/// Write the pump home's real cycle log with controlled timestamps.
+fn write_cycle_log(home: &std::path::Path, receipts: &[crate::pump::cycle::TickRecord]) {
+    let text = receipts
+        .iter()
+        .map(|receipt| serde_json::to_string(receipt).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(home.join("monitor-cycles.jsonl"), text + "\n").unwrap();
+}
+
+fn tick_row<'a>(
+    rows: &'a [super::super::model::MonitorRow],
+    id: &str,
+) -> Option<&'a super::super::model::MonitorRow> {
+    rows.iter().find(|row| row.task.as_deref() == Some(id))
+}
+
+/// Expiry follows the recorded completion (`ended_at`), never start plus
+/// duration; the inclusive window boundary keeps a cycle; an old-started
+/// cycle completing now is recent; an old active cycle stays visible; the
+/// status header is outside the expiry rule.
+#[test]
+fn old_finished_cycle_is_not_in_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("alpha");
+    std::fs::create_dir_all(root.join(".vivi")).unwrap();
+    let config_path = root.join(".vivi/mailspace.toml");
+    std::fs::write(&config_path, "name='alpha'\n[pump]\n").unwrap();
+    let config =
+        crate::mailspace::inherit::load_config(&config_path, "name='alpha'\n[pump]\n").unwrap();
+    let home = config.pump.as_ref().unwrap().home_dir(&root);
+    std::fs::create_dir_all(&home).unwrap();
+    let now = 10_000_000_u64;
+    write_cycle_log(
+        &home,
+        &[
+            cycle_receipt(
+                "day-old",
+                now - 90_000,
+                Some(now - 86_400),
+                Some(60),
+                Some("ok"),
+            ),
+            cycle_receipt(
+                "end-not-duration",
+                now - 1_000,
+                Some(now - 301),
+                Some(1),
+                Some("ok"),
+            ),
+            cycle_receipt(
+                "boundary",
+                now - 400,
+                Some(now - 300),
+                Some(100),
+                Some("ok"),
+            ),
+            cycle_receipt("recent", now - 100, Some(now - 50), Some(50), Some("ok")),
+            cycle_receipt(
+                "completing-now",
+                now - 5_000,
+                Some(now),
+                Some(5_000),
+                Some("ok"),
+            ),
+            cycle_receipt("old-active", now - 4_000, None, None, None),
+        ],
+    );
+    let (rows, warnings) = rows("alpha", &home, now);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(
+        tick_row(&rows, "day-old").is_none(),
+        "day-old finish expired"
+    );
+    assert!(
+        tick_row(&rows, "end-not-duration").is_none(),
+        "expiry follows the recorded end, not start plus duration"
+    );
+    let boundary = tick_row(&rows, "boundary").unwrap();
+    assert_eq!(boundary.state, RowState::Finished("ok".into()));
+    assert_eq!(boundary.finished_at, Some(now - 300));
+    let recent = tick_row(&rows, "recent").unwrap();
+    assert_eq!(recent.state, RowState::Finished("ok".into()));
+    assert_eq!(recent.finished_at, Some(now - 50));
+    assert_eq!(recent.running_secs, Some(50));
+    assert_eq!(recent.stale_age_secs, None);
+    let completing_now = tick_row(&rows, "completing-now").unwrap();
+    assert_eq!(completing_now.state, RowState::Finished("ok".into()));
+    assert_eq!(completing_now.started_at, Some(now - 5_000));
+    assert_eq!(completing_now.finished_at, Some(now));
+    assert_eq!(completing_now.running_secs, Some(5_000));
+    let old_active = tick_row(&rows, "old-active").unwrap();
+    assert_eq!(old_active.state, RowState::Running);
+    assert_eq!(old_active.finished_at, None);
+    assert_eq!(old_active.running_secs, Some(4_000));
+    assert!(
+        rows.iter().any(|row| row.task.is_none()),
+        "the status header stays outside the expiry rule"
+    );
 }

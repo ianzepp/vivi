@@ -4,7 +4,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use super::model::{MonitorRow, RowKind, RowState};
+use super::model::{MonitorRow, RECENT_FINISHED_SECS, RowKind, RowState};
 use crate::storage::read_only::{WalSidecarPolicy, guard_wal_sidecar};
 
 /// Service status plus recent actual tick rows from the bounded cycle log.
@@ -19,14 +19,32 @@ pub fn rows(project: &str, home: &Path, now: u64) -> (Vec<MonitorRow>, Vec<Strin
         Ok(cycles) => rows.extend(
             cycles
                 .into_iter()
-                .map(|cycle| cycle_row(project, home, now, cycle)),
+                .filter_map(|cycle| cycle_row(project, home, now, cycle)),
         ),
         Err(error) => warnings.push(format!("pump cycles: {error}")),
     }
     (rows, warnings)
 }
 
+/// One cycle receipt as a row, or `None` when its recorded completion has
+/// fallen out of the shared recent-finished window. The recorded end is
+/// authoritative: recency is never reconstructed from start plus duration.
+/// Unfinished cycles stay visible regardless of start age.
 fn cycle_row(
+    project: &str,
+    home: &Path,
+    now: u64,
+    cycle: crate::pump::cycle::TickRecord,
+) -> Option<MonitorRow> {
+    if let Some(ended) = cycle.ended_at {
+        if now.saturating_sub(ended) > RECENT_FINISHED_SECS {
+            return None;
+        }
+    }
+    Some(finished_or_running_row(project, home, now, cycle))
+}
+
+fn finished_or_running_row(
     project: &str,
     home: &Path,
     now: u64,
@@ -50,7 +68,7 @@ fn cycle_row(
         subject: None,
         model: String::new(),
         state,
-        finished_at: None,
+        finished_at: cycle.ended_at,
         stale_age_secs: None,
         started_at: Some(cycle.started_at),
         running_secs: Some(
