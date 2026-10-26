@@ -33,7 +33,7 @@ use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
 /// Exception kind of an operator action the flow cannot apply.
@@ -195,7 +195,7 @@ fn requeue(
     }
     let id = unused_id(st.jobs().keys().collect(), &old.id);
     let again = row.again(&id);
-    let mut spec = copy_spec(&old, id);
+    let mut spec = old.rerun_spec(id);
     again.stamp(&run.need, &mut spec.payload);
     jobs::enqueue(st, spec)?;
     store.insert_step_job(&run.need, &again)?;
@@ -261,41 +261,6 @@ fn unused_id(taken: BTreeSet<&String>, old: &str) -> String {
         .map(|n| format!("{base}-q{n}"))
         .find(|id| !taken.contains(id))
         .unwrap_or_default()
-}
-
-/// A pending copy of `job` under `id`.
-fn copy_spec(job: &PoolJob, id: String) -> JobSpec {
-    let mut spec = JobSpec::new(
-        id,
-        &job.kind,
-        &job.role,
-        job.subject.clone(),
-        job.body.clone(),
-    );
-    spec.task.clone_from(&job.task);
-    spec.target.clone_from(&job.target);
-    spec.from_ref.clone_from(&job.from_ref);
-    spec.branch.clone_from(&job.branch);
-    spec.publish_ref.clone_from(&job.publish_ref);
-    spec.publish_expect.clone_from(&job.publish_expect);
-    spec.publish_contains.clone_from(&job.publish_contains);
-    spec.delete_ref.clone_from(&job.delete_ref);
-    spec.delete_expect.clone_from(&job.delete_expect);
-    spec.pool_candidates.clone_from(&job.pool_candidates);
-    spec.pool_exclude.clone_from(&job.pool_exclude);
-    spec.extra_targets.clone_from(&job.extra_targets);
-    spec.with.clone_from(&job.with);
-    spec.model.clone_from(&job.model);
-    spec.command.clone_from(&job.command);
-    spec.builtin_role.clone_from(&job.builtin_role);
-    spec.allow_default_branch = job.allow_default_branch;
-    spec.local_only = job.local_only;
-    spec.read_only = job.read_only;
-    spec.budget = job.budget;
-    spec.units.clone_from(&job.units);
-    spec.source_jobs.clone_from(&job.source_jobs);
-    spec.payload = job.payload.clone();
-    spec
 }
 
 #[cfg(test)]

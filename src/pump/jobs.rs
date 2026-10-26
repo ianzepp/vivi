@@ -31,7 +31,10 @@ pub(in crate::pump) use release::release_held_after_reload;
 pub(crate) use slots::{parse_created_handle, slots};
 
 /// A request to make one durable role-addressed pool task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable so a replacement copy made by [`PoolJob::rerun_spec`] can be
+/// persisted as a durable intent later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobSpec {
     /// Stable caller-owned identity; repeated enqueue with this ID is a no-op.
     pub id: String,

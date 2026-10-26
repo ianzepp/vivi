@@ -68,6 +68,104 @@ fn enqueue_rejects_path_unsafe_job_ids() {
     assert!(store.jobs.is_empty());
 }
 
+/// A job with every dispatch input set to a distinct value and every runtime
+/// ownership/result field also set, as a dispatched job looks.
+fn rich_job(id: &str) -> PoolJob {
+    let mut spec = JobSpec::new(id, "planner", "pump-planner", "subject", "body");
+    spec.pool_candidates = vec!["alpha".into(), "beta".into()];
+    spec.local_only = true;
+    spec.pool_exclude = vec!["refused".into()];
+    spec.target = Some("target-repo".into());
+    spec.extra_targets = vec!["side-repo".into()];
+    spec.from_ref = Some("refs/heads/from".into());
+    spec.with = vec!["refs/heads/extra".into()];
+    spec.model = Some("model-x".into());
+    spec.command = Some("run.sh".into());
+    spec.builtin_role = Some("tugboat".into());
+    spec.branch = Some("vivi/work/x".into());
+    spec.allow_default_branch = true;
+    spec.publish_ref = Some("refs/heads/publish".into());
+    spec.publish_expect = Some("expect-sha".into());
+    spec.publish_contains = Some("contain-sha".into());
+    spec.delete_ref = Some("refs/heads/delete".into());
+    spec.delete_expect = Some("delete-sha".into());
+    spec.budget = 900;
+    spec.read_only = true;
+    spec.units = vec!["unit-1".into()];
+    spec.source_jobs = vec!["src-1".into()];
+    spec.payload = serde_json::json!({"custom": 7});
+    spec.task = Some("task-1".into());
+    let mut job = PoolJob::from(spec);
+    job.queued_at = 100;
+    job.pool = Some("alpha".into());
+    job.dispatched_at = Some(200);
+    job.status = JobStatus::Dispatched;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: "ok".into(),
+        receipt: "receipt text".into(),
+        at: 300,
+    });
+    job.applied_at = Some(400);
+    job.dispatch_refusals = 2;
+    job.held = Some("too many refusals".into());
+    job
+}
+
+#[test]
+fn retry_preserves_complete_dispatch_contract() {
+    let job = rich_job("job-1");
+    let replacement = job.rerun_spec("job-1-r1");
+
+    // Only the identity differs; every dispatch input is carried over.
+    assert_eq!(replacement.id, "job-1-r1");
+    assert_eq!(replacement.kind, job.kind);
+    assert_eq!(replacement.role, job.role);
+    assert_eq!(replacement.subject, job.subject);
+    assert_eq!(replacement.body, job.body);
+    assert_eq!(replacement.pool_candidates, job.pool_candidates);
+    assert_eq!(replacement.local_only, job.local_only);
+    assert_eq!(replacement.pool_exclude, job.pool_exclude);
+    assert_eq!(replacement.target, job.target);
+    assert_eq!(replacement.extra_targets, job.extra_targets);
+    assert_eq!(replacement.from_ref, job.from_ref);
+    assert_eq!(replacement.with, job.with);
+    assert_eq!(replacement.model, job.model);
+    assert_eq!(replacement.command, job.command);
+    assert_eq!(replacement.builtin_role, job.builtin_role);
+    assert_eq!(replacement.branch, job.branch);
+    assert_eq!(replacement.allow_default_branch, job.allow_default_branch);
+    assert_eq!(replacement.publish_ref, job.publish_ref);
+    assert_eq!(replacement.publish_expect, job.publish_expect);
+    assert_eq!(replacement.publish_contains, job.publish_contains);
+    assert_eq!(replacement.delete_ref, job.delete_ref);
+    assert_eq!(replacement.delete_expect, job.delete_expect);
+    assert_eq!(replacement.budget, job.budget);
+    assert_eq!(replacement.read_only, job.read_only);
+    assert_eq!(replacement.units, job.units);
+    assert_eq!(replacement.source_jobs, job.source_jobs);
+    assert_eq!(replacement.payload, job.payload);
+    assert_eq!(replacement.task, job.task);
+
+    // Replacement inputs serialize, so a later durable intent can persist one.
+    let text = serde_json::to_string(&replacement).unwrap();
+    let back: JobSpec = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, replacement);
+
+    // Enqueueing the replacement starts fresh runtime state.
+    let mut store = Store::default();
+    enqueue(&mut store, replacement).unwrap();
+    let queued = &store.jobs["job-1-r1"];
+    assert_eq!(queued.status, JobStatus::Pending);
+    assert_eq!(queued.pool, None);
+    assert_eq!(queued.dispatched_at, None);
+    assert_eq!(queued.outcome, None);
+    assert_eq!(queued.applied_at, None);
+    assert_eq!(queued.dispatch_refusals, 0);
+    assert_eq!(queued.held, None);
+    assert_ne!(queued.queued_at, job.queued_at);
+}
+
 #[test]
 fn non_flow_jobs_rank_by_priority_then_age() {
     let mut priority_plan = PoolJob::from(JobSpec::new(
