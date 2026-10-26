@@ -9,7 +9,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::{
-    done_step, need_thread, read_only_job, step_replies, targets,
+    done_step, need_thread, read_only_job, scope_brief, step_replies, targets,
 };
 use crate::pump::jobs::JobStore;
 
@@ -52,6 +52,7 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
     )
     .map_err(fmt_err)?;
     text.push_str(&front_lines(cx, need)?);
+    writeln!(text, "{}", scope_brief(cx.ctx, cx.store, cx.mail, need)?).map_err(fmt_err)?;
     writeln!(text, "thread:\n{}", need_thread(cx.ctx, need)?).map_err(fmt_err)?;
     if step.node == SECOND_PLAN {
         writeln!(

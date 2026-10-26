@@ -16,9 +16,10 @@ impl StepHandler for AdmitterStep {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
         let plan = plan_of(cx, step)?;
         let brief = format!(
-            "need: {}\nrun: {}\n\nplan:\n{plan}\n\nthread:\n{}",
+            "need: {}\nrun: {}\n\nplan:\n{plan}\n\n{}\n\nthread:\n{}",
             cx.run.need,
             cx.run.run,
+            step_inputs::scope_brief(cx.ctx, cx.store, cx.mail, &cx.run.need)?,
             step_inputs::need_thread(cx.ctx, &cx.run.need)?,
         );
         let spec = step_inputs::read_only_job(
