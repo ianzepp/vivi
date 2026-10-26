@@ -36,14 +36,15 @@ impl StepHandler for RepairerStart {
             .lookup(REPAIRER_ROLE)
             .ok_or_else(|| VivariumError::Config("no repairer role".to_owned()))?;
         let name = repair::branch(need, cx.run.run, attempt);
-        let brief = brief(cx, &rec, &main_tip, &name, attempt)?;
+        let budget_secs = cx.ctx.cfg.repair_attempt_secs;
+        let brief = brief(cx, &rec, &main_tip, &name, budget_secs, attempt)?;
         let mut spec = role_job(cx.ctx, cx.run, step, "repairer", &role.name, &brief);
         spec.target = Some(rec.target);
         spec.from_ref = Some(main_tip);
         spec.publish_ref = Some(format!("refs/heads/{name}"));
         spec.branch = Some(name);
         spec.read_only = false;
-        spec.budget = repair::ATTEMPT_SECS;
+        spec.budget = budget_secs;
         Ok(StartAction::Job(Box::new(spec)))
     }
 }
@@ -89,6 +90,7 @@ fn brief(
     rec: &RepairRecord,
     main_tip: &str,
     name: &str,
+    budget_secs: u64,
     attempt: u32,
 ) -> Result<String, VivariumError> {
     let tested = rec.tested.as_deref().unwrap_or("unknown");
@@ -98,11 +100,12 @@ fn brief(
          Failing output:\n{tail}\n\n\
          Run the failing tests first.\n\
          Never weaken, delete, ignore or gate a test; fix the cause.\n\
-         Time cap: 30 minutes for this attempt; no diff cap.\n\
+         Time cap: {budget_secs} seconds for this attempt; no diff cap.\n\
          Reply with the repairer envelope (answer built or failed).\n",
         need = cx.run.need,
         target = rec.target,
         tail = rec.tail,
+        budget_secs = budget_secs,
     );
     if attempt >= 2 {
         text.push_str(&prior_attempt(cx)?);
