@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use self::config_workspace::PumpWorkspace;
 
+mod budgets;
 mod check;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
@@ -17,6 +18,7 @@ mod show;
 pub mod targets;
 mod validate;
 
+pub use budgets::StepBudgets;
 pub use check::{ValidateReport, issues_json, validate};
 pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
 pub use migrate::{MigrateReport, WrittenCharter, migrate};
@@ -524,6 +526,11 @@ pub struct DispatchConfig {
     pub max_attempts: u32,
     /// `--budget` of a unit dispatch, in seconds.
     pub budget: u64,
+    /// Per-thinking-step budget overrides (the `[pump.dispatch.step_budgets]`
+    /// table). Absent keys fall back to `budget` (`envelope-fix` to 300);
+    /// the table is omitted when empty.
+    #[serde(default, skip_serializing_if = "StepBudgets::is_empty")]
+    pub step_budgets: StepBudgets,
     /// Transient-class failures (host/harness, shared-check timeout,
     /// generated-file conflict) are retried without counting toward
     /// `max_attempts`, at most this many times; 0 disables.
@@ -574,6 +581,7 @@ impl Default for DispatchConfig {
             last_resort: String::new(),
             max_attempts: 3,
             budget: 600,
+            step_budgets: StepBudgets::default(),
             transient_max: 2,
             transient_backoff: 120,
             overdue_grace: 900,
