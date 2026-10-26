@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
-use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
+use super::{JobStatus, JobStore, PoolJob, brief, recovery, replay, tail};
 use crate::error::VivariumError;
 use crate::letter::records::NoteWord;
 use crate::letter::work::{JobFront, TaskFront};
@@ -22,7 +22,8 @@ use crate::pump::par::map_bounded;
 /// Returns filesystem and task-store errors that prevent writing a brief.
 pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>, VivariumError> {
     super::release::apply_releases(ctx, st)?;
-    if !st.jobs().values().any(dispatchable) {
+    let now = ctx.now();
+    if !st.jobs().values().any(|job| dispatchable(job, now)) {
         return Ok(Vec::new());
     }
     let mut free = super::slots(ctx);
@@ -30,7 +31,7 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
     let mut pending: Vec<PoolJob> = st
         .jobs()
         .iter()
-        .filter(|(_, job)| dispatchable(job))
+        .filter(|(_, job)| dispatchable(job, now))
         .map(|(_, job)| job.clone())
         .collect();
     pending.sort_by_key(|job| dispatch_order(job, &priorities));
@@ -46,9 +47,16 @@ pub fn dispatch_pending(ctx: &Ctx, st: &mut impl JobStore) -> Result<Vec<String>
 /// Pool refusals after which a job is held back from dispatch.
 pub const REFUSAL_LIMIT: u32 = 3;
 
-/// Whether a job waits for a pool: Pending and not held.
-fn dispatchable(job: &PoolJob) -> bool {
-    job.status == JobStatus::Pending && job.held.is_none()
+/// Whether a job waits for a pool: Pending, not held, and past any durable
+/// retry deadline its payload carries. A job with a future `not_before` is
+/// excluded before slot probing, ranking and the dispatch waves, so it
+/// consumes no capacity, sends nothing and counts no refusal. Jobs without
+/// the metadata are immediately eligible; a replacement is eligible exactly
+/// at its deadline.
+fn dispatchable(job: &PoolJob, now: u64) -> bool {
+    job.status == JobStatus::Pending
+        && job.held.is_none()
+        && replay::dispatch_not_before(&job.payload).is_none_or(|at| now >= at)
 }
 
 /// One job being offered to its candidate pools in order.
@@ -566,3 +574,7 @@ pub fn candidate_pools(
     }
     pools
 }
+
+#[cfg(test)]
+#[path = "dispatcher_test.rs"]
+mod tests;
