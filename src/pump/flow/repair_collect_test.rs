@@ -9,6 +9,7 @@ use super::register;
 use crate::error::VivariumError;
 use crate::letter::fixture::repair_record_body;
 use crate::pump::config::PumpConfig;
+use crate::pump::envelope::correct::KIND;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -152,6 +153,25 @@ fn receipt(publish: &str, message: &str) -> String {
 
 fn pushed() -> String {
     format!("runner publish: pushed refs/heads/{BRANCH} {CAND} {CAND}")
+}
+
+#[test]
+fn a_killed_repairer_correction_answers_failed_without_overtime() -> R {
+    let mut rig = rig()?;
+    // The rig's one fix job is an envelope-fix correction killed at its
+    // time budget: the correction's own budget policy applies, never the
+    // repairer's overtime rule, a raised rerun or a second correction.
+    rig.jobs.jobs.get_mut("fix-j1").unwrap().kind = KIND.to_owned();
+    rig.end(JobStatus::Timeout, None);
+    rig.tick()?;
+    let fix = rig.step("fix1")?;
+    assert_eq!(fix.verdict.as_deref(), Some("failed"));
+    assert_eq!(rig.step("fix2")?.state, StepState::Pending);
+    // Only the killed correction itself is in the pool: no raised rerun,
+    // no second correction.
+    assert_eq!(rig.jobs.jobs.len(), 1, "{:?}", rig.jobs.jobs.keys());
+    assert!(rig.jobs.jobs.contains_key("fix-j1"));
+    Ok(())
 }
 
 #[test]

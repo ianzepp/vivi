@@ -11,6 +11,7 @@ use crate::error::VivariumError;
 use crate::letter::fixture::record_body;
 use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
 use crate::pump::envelope::EnvelopeError;
+use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::budget_retry::{PAYLOAD_KEY, raised_budget};
@@ -852,5 +853,88 @@ fn lost_job_retry_keeps_its_budget() -> R {
     // No correction was queued alongside the retry.
     assert_eq!(rig.jobs.jobs.len(), 2);
     assert_eq!(rig.plan_step()?.state, StepState::Running);
+    Ok(())
+}
+
+/// The pool summary head of a job the runner killed at its time budget.
+const KILL_SUMMARY: &str = "unit a1\nagent exit 124 after 600s\npool: local";
+
+/// A valid planner envelope: without the kill the finished summary would
+/// parse it and answer `planned`.
+const PLANNED: &str = "+++\nanswer = \"planned\"\n+++\nThe plan.";
+
+#[test]
+fn a_first_budget_kill_queues_one_raised_rerun() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
+    spec.task = Some(step.task.clone());
+    spec.budget = 600;
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    let killed = rig.jobs.jobs.get_mut("plan-j1").unwrap();
+    killed.status = JobStatus::Timeout;
+    let collected = collect_role(&mut rig, "plan-j1", "plan")?;
+    // The same task and run stay running: the step is not closed, not
+    // routed to the cto and not corrected — the kill queued the raised
+    // rerun instead.
+    assert_eq!(collected.state, StepState::Running);
+    assert_eq!(collected.verdict, None);
+    let queued = &rig.jobs.jobs["plan-j1-a2"];
+    assert_eq!(queued.budget, 1_200);
+    assert_eq!(queued.payload[PAYLOAD_KEY], serde_json::json!(true));
+    assert_eq!(queued.task.as_deref(), Some(step.task.as_str()));
+    let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(stored.attempt, 2);
+    // Exactly one raised job and no correction; no alarm was raised.
+    assert_eq!(rig.jobs.jobs.len(), 2);
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-c1"));
+    assert!(rig.exceptions().is_empty());
+    Ok(())
+}
+
+#[test]
+fn correction_budget_kill_does_not_rerun_the_role() -> R {
+    // A killed envelope-fix correction answers `failed` for both kill
+    // representations: never a full-role raised rerun and never another
+    // correction, not even when a valid envelope rides the receipt.
+    for (name, status, receipt) in [
+        ("timeout status", JobStatus::Timeout, String::new()),
+        (
+            "finished summary exit 124",
+            JobStatus::Finished,
+            format!("{KILL_SUMMARY}\n\n--- receipt\n{PLANNED}"),
+        ),
+    ] {
+        let mut rig = rig()?;
+        let step = rig.plan_step()?;
+        let mut spec = JobSpec::new("plan-j1-c1", correct::KIND, "planner", "s", "b");
+        spec.task = Some(step.task.clone());
+        jobs::enqueue(&mut rig.jobs, spec)?;
+        let killed = rig.jobs.jobs.get_mut("plan-j1-c1").unwrap();
+        killed.status = status;
+        if !receipt.is_empty() {
+            killed.outcome = Some(JobOutcome {
+                state: "finished".into(),
+                detail: String::new(),
+                receipt,
+                at: 0,
+            });
+        }
+        let failed = collect_role(&mut rig, "plan-j1-c1", "plan")?;
+        assert_eq!(failed.verdict.as_deref(), Some("failed"), "{name}");
+        // The existing failed route took over: a fresh cto step is pending,
+        // and no raised rerun or second correction was queued.
+        let cto = rig
+            .store
+            .steps_of(NEED, 1)?
+            .into_iter()
+            .find(|row| row.node == "cto")
+            .ok_or_else(|| VivariumError::Message("no cto step".into()))?;
+        assert_eq!(cto.state, StepState::Pending, "{name}");
+        assert_eq!(rig.jobs.jobs.len(), 1, "{name}");
+        assert!(!rig.jobs.jobs.contains_key("plan-j1-a2"), "{name}");
+        assert!(!rig.jobs.jobs.contains_key("plan-j1-c2"), "{name}");
+        assert!(rig.exceptions().is_empty(), "{name}");
+    }
     Ok(())
 }
