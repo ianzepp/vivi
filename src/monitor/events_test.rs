@@ -1,7 +1,8 @@
 use super::*;
 use crate::mailspace::{Mailspace, SendRequest};
-use crate::storage::Storage;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 const DISPATCH: &str = r#"{"pool":"here","need":"need1234","kind":"fix","slot":"vivarium-here-slot-1","machine":"burgus","job":"3cc45261-3-a1","model":"zai/glm-5.3-flash","from":"mind","branch":"unit/3cc45261-3-a1","start":"1792421950abc","budget":1800,"at":1792421950,"read_only":false}"#;
 const COLLECT: &str = r#"{"job":"3cc45261-3-a1","pool":"here","slot":"vivarium-here-slot-1","outcome":"failed","agent_rc":"1"}"#;
@@ -123,26 +124,182 @@ fn read_missing_db_is_empty() {
     assert!(events.open.is_empty());
     assert!(events.task_info.is_empty());
     assert!(events.finished.is_empty());
+    assert_eq!(
+        fs::read_dir(tmp.path()).unwrap().count(),
+        0,
+        "an absent database must not be created nor sidecarred"
+    );
 }
 
 #[test]
-fn read_only_wal_events_skip_when_shm_is_missing_without_creating_it() {
+fn read_refuses_a_non_file_database_path_without_creating_anything() {
     let tmp = tempfile::tempdir().unwrap();
-    let _storage = Storage::open_mailspace(tmp.path()).unwrap();
-    drop(_storage);
-    let db = tmp.path().join("mail.sqlite");
-    let shm = tmp.path().join("mail.sqlite-shm");
-    let wal = tmp.path().join("mail.sqlite-wal");
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-        .unwrap();
-    drop(conn);
-    let _ = fs::remove_file(&shm);
-    let _ = fs::remove_file(&wal);
-    let before = fs::read(&db).unwrap();
+    let fake = tmp.path().join("mail.sqlite");
+    fs::create_dir(&fake).unwrap();
+    let error = read(&fake, 8).err().unwrap().to_string();
+    assert!(error.contains("not a file"), "{error}");
+    assert_eq!(
+        fs::read_dir(tmp.path()).unwrap().count(),
+        1,
+        "nothing may be created beside the non-file path"
+    );
+}
 
-    let error = read(&db, 8).err().unwrap().to_string();
-    assert!(error.contains("mail.sqlite-shm"), "{error}");
-    assert!(!shm.exists(), "the monitor created the missing sidecar");
-    assert_eq!(fs::read(&db).unwrap(), before);
+#[test]
+#[cfg(unix)]
+fn read_refuses_an_unreadable_database_without_creating_anything() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("mail.sqlite");
+    fs::write(&db, b"not even a header").unwrap();
+    fs::set_permissions(&db, fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        read(&db, 8).is_err(),
+        "an unreadable database is an error, not empty history"
+    );
+    assert_eq!(
+        fs::read_dir(tmp.path()).unwrap().count(),
+        1,
+        "the refusal must create no database or sidecar"
+    );
+}
+
+/// Copy a quiescent mailspace database and its committed WAL into a fresh
+/// isolated directory, without the writer's `-shm` index. The writer is
+/// still open while the copies are taken; nothing live is unlinked, and the
+/// source directory is abandoned whole.
+fn wal_only_copy(space: &Mailspace) -> (tempfile::TempDir, std::path::PathBuf) {
+    let source_db = space.dir.join("mail.sqlite");
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("mail.sqlite");
+    fs::copy(&source_db, &db).unwrap();
+    fs::copy(
+        source_db.with_file_name("mail.sqlite-wal"),
+        dir.path().join("mail.sqlite-wal"),
+    )
+    .unwrap();
+    assert!(
+        !dir.path().join("mail.sqlite-shm").exists(),
+        "the copy must not carry the writer's -shm index"
+    );
+    (dir, db)
+}
+
+/// The copied pair must carry `marker` only in the WAL: never checkpointed
+/// into the copied database bytes.
+fn assert_marker_is_wal_only(db: &std::path::Path, marker: &str) {
+    let db_bytes = fs::read(db).unwrap();
+    let wal_bytes = fs::read(db.with_file_name("mail.sqlite-wal")).unwrap();
+    assert!(
+        !contains(&db_bytes, marker),
+        "{marker} must not be checkpointed into the copied database"
+    );
+    assert!(
+        contains(&wal_bytes, marker),
+        "{marker} must live in the copied WAL"
+    );
+}
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle.as_bytes())
+}
+
+/// The owner read succeeds where the strict policy refused: a dispatch
+/// committed only in the copied WAL is observed, through a sidecar the open
+/// itself recreated under this process's ownership.
+#[test]
+#[cfg(unix)]
+fn owner_read_observes_dispatch_committed_only_in_the_copied_wal() {
+    let (_tmp, space, handle) = space_with_task();
+    space
+        .record_pool_note(&handle, "pool_dispatched", DISPATCH, "dispatched")
+        .unwrap();
+    let (copy_dir, db) = wal_only_copy(&space);
+    assert_marker_is_wal_only(&db, "need1234");
+    drop(space);
+
+    let events = read(&db, 8).unwrap();
+    assert_eq!(
+        events.open.len(),
+        1,
+        "the WAL-only dispatch must be observed"
+    );
+    assert_eq!(events.open[0].task, handle);
+    assert_eq!(events.open[0].record.need.as_deref(), Some("need1234"));
+    assert_eq!(events.open[0].record.model, "zai/glm-5.3-flash");
+    assert!(
+        copy_dir.path().join("mail.sqlite-shm").exists(),
+        "the owned read recreated the -shm sidecar"
+    );
+}
+
+/// The legacy-metadata fallback runs for an owner with no other reader
+/// maintaining `-shm`: the recorded `source_kind=need`/`source_handle`
+/// parent resolves out of WAL-backed metadata, and the database and WAL
+/// bytes are unchanged.
+#[test]
+#[cfg(unix)]
+fn owner_metadata_fallback_reads_wal_without_shm() {
+    let (_tmp, space, handle) = space_with_task();
+    let mut record: serde_json::Value = serde_json::from_str(DISPATCH).unwrap();
+    record.as_object_mut().unwrap().remove("need");
+    record.as_object_mut().unwrap().remove("kind");
+    space
+        .record_pool_note(
+            &handle,
+            "pool_dispatched",
+            &record.to_string(),
+            "dispatched",
+        )
+        .unwrap();
+    let storage = space.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    storage
+        .set_item_metadata(
+            &id,
+            &std::collections::BTreeMap::from([
+                ("source_handle".to_string(), "needwal99".to_string()),
+                ("source_kind".to_string(), "need".to_string()),
+            ]),
+        )
+        .unwrap();
+
+    let (copy_dir, db) = wal_only_copy(&space);
+    assert_marker_is_wal_only(&db, "needwal99");
+    drop(storage);
+    drop(space);
+
+    let before_db = fs::read(&db).unwrap();
+    let before_wal = fs::read(db.with_file_name("mail.sqlite-wal")).unwrap();
+
+    let mut task_info = std::collections::BTreeMap::from([(
+        handle.clone(),
+        TaskInfo {
+            subject: "Fix the edge".into(),
+            role: "hand".into(),
+            ..Default::default()
+        },
+    )]);
+    add_task_need_metadata(&mut task_info, copy_dir.path()).unwrap();
+
+    assert_eq!(
+        task_info[&handle].need.as_deref(),
+        Some("needwal99"),
+        "the WAL-backed metadata parent must resolve"
+    );
+    assert_eq!(
+        fs::read(&db).unwrap(),
+        before_db,
+        "database bytes must be unchanged"
+    );
+    assert_eq!(
+        fs::read(db.with_file_name("mail.sqlite-wal")).unwrap(),
+        before_wal,
+        "WAL bytes must be unchanged"
+    );
+    assert!(
+        copy_dir.path().join("mail.sqlite-shm").exists(),
+        "the owned fallback recreated the -shm sidecar"
+    );
 }
