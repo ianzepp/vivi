@@ -105,6 +105,8 @@ fn row(
             RowState::Finished("uncollected".into())
         },
         started_at,
+        stale_age_secs: None,
+        finished_at: None,
         running_secs: slot
             .running_secs
             .or_else(|| started_at.map(|at| now.saturating_sub(at))),

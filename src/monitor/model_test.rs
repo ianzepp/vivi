@@ -17,6 +17,8 @@ fn row(state: RowState) -> MonitorRow {
         model: "test/model".to_string(),
         state,
         started_at: Some(0),
+        stale_age_secs: None,
+        finished_at: None,
         running_secs: Some(90),
         budget_secs: Some(1800),
         read_only: Some(false),
@@ -75,11 +77,47 @@ fn started_text_zero_is_utc_midnight() {
 fn activity_key_is_stable_shape() {
     assert_eq!(
         activity_key(&row(RowState::Running)),
-        "proj|here|slot-1|Some(\"a1b2c3d4\")"
+        "proj|here|slot-1|Some(\"a1b2c3d4\")|Some(0)"
     );
     let mut r = row(RowState::Running);
     r.task = None;
-    assert_eq!(activity_key(&r), "proj|here|slot-1|None");
+    assert_eq!(activity_key(&r), "proj|here|slot-1|None|Some(0)");
+    r.started_at = None;
+    assert_eq!(activity_key(&r), "proj|here|slot-1|None|None");
+}
+
+#[test]
+fn activity_key_distinguishes_attempts_of_one_task() {
+    let first = row(RowState::Running);
+    let mut second = row(RowState::Running);
+    second.started_at = Some(60);
+    assert_ne!(activity_key(&first), activity_key(&second));
+}
+
+#[test]
+fn fresh_row_serializes_without_staleness_or_completion() {
+    let value = serde_json::to_value(row(RowState::Running)).unwrap();
+    assert_eq!(value["stale_age_secs"], serde_json::Value::Null);
+    assert_eq!(value["finished_at"], serde_json::Value::Null);
+    assert_eq!(value["state"], "running");
+}
+
+#[test]
+fn stale_row_serializes_observation_age() {
+    let mut r = row(RowState::Running);
+    r.stale_age_secs = Some(120);
+    let value = serde_json::to_value(r).unwrap();
+    assert_eq!(value["stale_age_secs"], 120);
+    assert_eq!(value["state"], "running");
+}
+
+#[test]
+fn finished_row_serializes_authoritative_completion_time() {
+    let mut r = row(RowState::Finished("pushed".to_string()));
+    r.finished_at = Some(1_700_000_000);
+    let value = serde_json::to_value(r).unwrap();
+    assert_eq!(value["finished_at"], 1_700_000_000);
+    assert_eq!(value["state"], serde_json::json!({"finished": "pushed"}));
 }
 
 #[test]

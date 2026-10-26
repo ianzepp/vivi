@@ -59,6 +59,8 @@ fn open_row(
         model: open.record.model.clone(),
         state: RowState::Running,
         started_at: Some(open.record.at),
+        stale_age_secs: None,
+        finished_at: None,
         running_secs: Some(now.saturating_sub(open.record.at)),
         budget_secs: Some(open.record.budget),
         read_only: Some(open.record.read_only),
@@ -99,6 +101,8 @@ fn finished_row(
         model: done.model.clone(),
         state: RowState::Finished(done.outcome.clone()),
         started_at: Some(done.started_at),
+        stale_age_secs: None,
+        finished_at: None,
         running_secs: Some(
             crate::pump::attempt_read::opened_epoch(&done.ended_at)
                 .unwrap_or(done.started_at)
