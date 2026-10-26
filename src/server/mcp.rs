@@ -14,6 +14,7 @@ mod send_options;
 pub mod server;
 mod tool_schema;
 mod tools;
+mod work_schema;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -644,16 +645,7 @@ fn tools_list() -> Value {
                 "required": ["id"],
                 "additionalProperties": false
             })),
-            tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. The need itself need not be addressed to the pump — it is the record that goes to the pump identity — so a need addressed to any role dispatches the same way. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need that is done, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
-                "type": "object",
-                "properties": {
-                    "need": { "type": "string", "description": "The need handle the dispatch covers" },
-                    "body": { "type": "string", "description": "Record body, literal text (the CLI's - and @path forms are not accepted). Defaults to a dispatch line." },
-                    "from": { "type": "string", "description": "Sender identity (the CLI's --from); defaults to the project's [pump] from" }
-                },
-                "required": ["need"],
-                "additionalProperties": false
-            })),
+            work_schema::pump_send_tool(),
             tool_schema::pump_priority_tool(),
             tool("pump_list", "Hosted projects only, operator only. List pump records, oldest first, as `vivi pump list` does. Same authorization as pump_control. At most `limit` records are returned (the newest when more match); `total` counts every match. Returns {records, total, truncated}.", json!({
                 "type": "object",
@@ -682,36 +674,10 @@ fn tools_list() -> Value {
                 "required": ["file"],
                 "additionalProperties": false
             })),
-            tool("pump_action", "Hosted projects only, operator only. One pump action, the same library call as the CLI: withdraw (needs + reason; closes each need withdrawn), requeue (steps or job, not both; dry_run previews), replan (need), answer (step + word, note optional), or unlock (need, entry and note optional). Posted for the pump's next tick. Not refused while the pump runs. A library refusal is the tool error, with the library's message. Every call is a write and one audit line, including a requeue dry run. Same authorization as pump_control.", json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["withdraw", "requeue", "replan", "answer", "unlock"] },
-                    "need": { "type": "string", "description": "Need handle for replan and unlock" },
-                    "needs": {
-                        "description": "Need handles to withdraw, as a string or an array of strings",
-                        "oneOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" } }
-                        ]
-                    },
-                    "steps": {
-                        "description": "Flow step task handles to requeue, as a string or an array of strings",
-                        "oneOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" } }
-                        ]
-                    },
-                    "job": { "type": "string", "description": "Held pool job to release. Mutually exclusive with steps" },
-                    "step": { "type": "string", "description": "Flow step task to answer" },
-                    "word": { "type": "string", "description": "Answer word" },
-                    "entry": { "type": "string", "description": "Flow entry to restart at (unlock). The flow's first entry when omitted" },
-                    "reason": { "type": "string", "description": "Withdraw reason, or the reason posted with a step requeue" },
-                    "note": { "type": "string", "description": "Letter body for answer and unlock" },
-                    "dry_run": { "type": "boolean", "default": false, "description": "Requeue only. Preview without posting. Still audited as a write" }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-            })),
+            work_schema::pump_action_tool(),
+            work_schema::need_show_tool(),
+            work_schema::need_thread_tool(),
+            work_schema::task_thread_tool(),
             tool("pump_reset", "Hosted projects only, operator only. Archive the pump home beside itself and start a fresh database, as `vivi pump reset` does (`pump::reset::archive`). Refused while the pump lock is held, running or paused, with the library's message; nothing moves on a refusal. Returns {archive_dir, moved, mode, open_records}: moved is the home-relative names that moved, and mode is the fresh database's control mode. One audit line. Same authorization as pump_control.", json!({
                 "type": "object",
                 "properties": {},
