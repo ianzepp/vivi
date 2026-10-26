@@ -49,6 +49,11 @@ From the server's unreleased work (vivi-server after 2.4.0):
 
 ## Fixes
 
+- Pump replies: a role reply that opens with a sentence or two of prose and then
+  its `+++` envelope is read from the first fence line, the prose kept at the
+  head of the body. Models often introduce their receipt this way, and every
+  such reply used to cost two correction jobs. A reply with no fence line is
+  still refused, and letters elsewhere keep the strict rule.
 - Pool jobs: a commit made by vivi's own local-pool code under a pool job now
   keeps its configured identity even when the job inherits `GIT_AUTHOR_*` and
   `GIT_COMMITTER_*` from the runner (the main rung was red on every pool run).
