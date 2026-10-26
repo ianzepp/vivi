@@ -254,6 +254,7 @@ fn every_note_word_round_trips() {
         NoteWord::Brief,
         NoteWord::Deviations,
         NoteWord::FollowUp,
+        NoteWord::ScopeRuling,
         NoteWord::SliceEnv,
         NoteWord::RepairAttempt,
         NoteWord::RepairRung,
@@ -276,6 +277,22 @@ fn every_note_word_round_trips() {
         };
         assert_eq!(round_trip(&front), front);
     }
+}
+
+#[test]
+fn scope_ruling_note_round_trips_kebab_case() {
+    let front = MailFront {
+        pump: Some(PumpNote {
+            note: NoteWord::ScopeRuling,
+            t: 7,
+            reference: Some("job-9".to_string()),
+        }),
+        ..MailFront::default()
+    };
+    assert_eq!(round_trip(&front), front);
+    let text = render(&front, "prose").expect("render");
+    assert!(text.contains("note = \"scope-ruling\""), "{text}");
+    assert_eq!(round_trip(&front), front);
 }
 
 #[test]

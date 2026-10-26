@@ -24,6 +24,7 @@ pub mod mail;
 pub mod main_rung;
 pub mod milestone;
 pub mod need_branch;
+pub mod need_scope;
 pub mod operator_actions;
 pub mod outcome;
 pub mod prune;
