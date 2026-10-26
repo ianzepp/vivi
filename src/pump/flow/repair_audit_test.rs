@@ -268,9 +268,11 @@ fn an_auditor_step_budget_override_reaches_the_audit_job() -> R {
 }
 
 #[test]
-fn an_absent_auditor_override_uses_the_dispatch_fallback() -> R {
+fn an_absent_auditor_override_uses_the_dispatch_fallback_despite_unrelated_overrides() -> R {
     let mut cfg = PumpConfig::default();
     cfg.dispatch.budget = 4242;
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
     let mut rig = rig_with(cfg, true)?;
     rig.land("repair", true)?;
     rig.tick()?;
