@@ -13,6 +13,7 @@ use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::start;
+use crate::pump::flow::budget_retry::{PAYLOAD_KEY, raised_budget};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -506,5 +507,130 @@ fn envelope_fix_uses_config_and_defaults_to_300() -> R {
         ..DispatchConfig::default()
     };
     assert_eq!(corrected_budget(absent)?, 300);
+    Ok(())
+}
+
+#[test]
+fn raised_retry_preserves_execution_context() -> R {
+    let mut rig = rig()?;
+    let step = rig.plan_step()?;
+    let mut spec = JobSpec::new("plan-j1", "planner", "pump-planner", "s", "b");
+    spec.task = Some(step.task.clone());
+    spec.branch = Some("vivi/repair/x".into());
+    spec.pool_candidates = vec!["alpha".into()];
+    spec.pool_exclude = vec!["refused".into()];
+    spec.extra_targets = vec!["side-repo".into()];
+    spec.from_ref = Some("refs/heads/from".into());
+    spec.with = vec!["refs/heads/extra".into()];
+    spec.model = Some("model-old".into());
+    spec.command = Some("run.sh".into());
+    spec.builtin_role = Some("tugboat".into());
+    spec.publish_expect = Some("expect-sha".into());
+    spec.budget = 600;
+    spec.read_only = true;
+    spec.units = vec!["unit-1".into()];
+    spec.payload = serde_json::json!({"plan_file": "plan/one.md"});
+    jobs::enqueue(&mut rig.jobs, spec)?;
+    let row = StepJobRow {
+        job: "plan-j1".into(),
+        run: 1,
+        node: "plan".into(),
+        task: step.task.clone(),
+        attempt: 1,
+    };
+    rig.store.insert_step_job(NEED, &row)?;
+    let job = rig.jobs.jobs["plan-j1"].clone();
+    let raised = raised_budget(job.budget).expect("600 doubles inside the pool range");
+    let run = rig.store.runs_of(NEED)?.remove(0);
+    let decide = |_: &_, _: &_| Err(VivariumError::Message("no decision".into()));
+    {
+        let mut cx = RunCx {
+            ctx: &rig.ctx,
+            st: &mut rig.jobs,
+            store: &rig.store,
+            mail: &mut rig.mail,
+            registry: &rig.registry,
+            decide: &decide,
+            def: rig.def.clone(),
+            run: run.clone(),
+        };
+        cx.rerun_budget(&job, &row, &step, raised)?;
+    }
+
+    let queued = &rig.jobs.jobs["plan-j1-a2"];
+    // Only the budget rose; the planner's execution context is the copy's.
+    assert_eq!(queued.budget, raised);
+    assert_eq!(queued.model.as_deref(), Some("model-old"));
+    assert_eq!(queued.extra_targets, vec!["side-repo"]);
+    // Routing restrictions survive.
+    assert_eq!(queued.pool_candidates, vec!["alpha"]);
+    assert_eq!(queued.pool_exclude, vec!["refused"]);
+    // Refs survive.
+    assert_eq!(queued.with, vec!["refs/heads/extra"]);
+    assert_eq!(queued.from_ref.as_deref(), Some("refs/heads/from"));
+    // The charter, the command and the rest of the spec survive.
+    assert_eq!(queued.builtin_role.as_deref(), Some("tugboat"));
+    assert_eq!(queued.command.as_deref(), Some("run.sh"));
+    assert_eq!(queued.branch.as_deref(), Some("vivi/repair/x"));
+    assert_eq!(queued.publish_expect.as_deref(), Some("expect-sha"));
+    assert!(queued.read_only);
+    assert_eq!(queued.units, vec!["unit-1"]);
+    // The raised retry is marked durably; unrelated payload keys survive.
+    assert_eq!(queued.payload[PAYLOAD_KEY], serde_json::json!(true));
+    assert_eq!(
+        queued.payload["plan_file"],
+        serde_json::json!("plan/one.md")
+    );
+    // Same task and run, one incremented ordinary attempt.
+    assert_eq!(queued.task.as_deref(), Some(step.task.as_str()));
+    let stored = rig.store.step_job("plan-j1-a2")?.unwrap();
+    assert_eq!(stored.run, row.run);
+    assert_eq!(stored.task, row.task);
+    assert_eq!(stored.attempt, row.attempt + 1);
+    assert_eq!(queued.payload["task"], serde_json::json!(stored.task));
+    assert_eq!(queued.payload["run"], serde_json::json!(stored.run));
+    assert_eq!(queued.payload["attempt"], serde_json::json!(stored.attempt));
+    // The step keeps running on the same run; no correction was queued.
+    assert_eq!(rig.plan_step()?.state, StepState::Running);
+    assert!(!rig.jobs.jobs.contains_key("plan-j1-c1"));
+
+    // The auditor's refs survive its raised rerun too.
+    let audit_step = step_of(&mut rig, "audit1")?;
+    let mut audit_spec = JobSpec::new("aud-j1", "auditor", "pump-auditor", "s", "b");
+    audit_spec.task = Some(audit_step.task.clone());
+    audit_spec.with = vec!["refs/heads/audit-ref".into()];
+    audit_spec.budget = 600;
+    jobs::enqueue(&mut rig.jobs, audit_spec)?;
+    let audit_row = StepJobRow {
+        job: "aud-j1".into(),
+        run: 1,
+        node: "audit1".into(),
+        task: audit_step.task.clone(),
+        attempt: 1,
+    };
+    rig.store.insert_step_job(NEED, &audit_row)?;
+    let audit_job = rig.jobs.jobs["aud-j1"].clone();
+    let mut cx = RunCx {
+        ctx: &rig.ctx,
+        st: &mut rig.jobs,
+        store: &rig.store,
+        mail: &mut rig.mail,
+        registry: &rig.registry,
+        decide: &decide,
+        def: rig.def.clone(),
+        run,
+    };
+    cx.rerun_budget(&audit_job, &audit_row, &audit_step, raised)?;
+
+    // Repeating the same request queues no duplicate work.
+    cx.rerun_budget(&job, &row, &step, raised)?;
+    cx.rerun_budget(&audit_job, &audit_row, &audit_step, raised)?;
+    assert_eq!(rig.jobs.jobs.len(), 4);
+    assert_eq!(
+        rig.jobs.jobs["aud-j1-a2"].with,
+        vec!["refs/heads/audit-ref"]
+    );
+    assert_eq!(rig.store.step_job("plan-j1-a2")?.unwrap().attempt, 2);
+    assert_eq!(rig.store.step_job("aud-j1-a2")?.unwrap().attempt, 2);
     Ok(())
 }

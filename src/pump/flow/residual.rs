@@ -55,6 +55,12 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for AuditCollector {
                 cx.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
             }
             Collected::Retry => cx.rerun(job, row, step),
+            // A raised rerun queues before any residual or gap filing; a
+            // correction never receives a full-role raised rerun.
+            Collected::BudgetRetry { .. } if job.kind == correct::KIND => {
+                cx.advance_word(step, FAILED, serde_json::json!({"job": job.id}))
+            }
+            Collected::BudgetRetry { budget } => cx.rerun_budget(job, row, step, budget),
             Collected::Correct { error } => {
                 let kind = RoleKind::from_class(class).ok_or_else(|| {
                     VivariumError::Parse(format!("node {} has no role kind", step.node))
