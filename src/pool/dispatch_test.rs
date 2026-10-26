@@ -1055,6 +1055,40 @@ fn a_command_job_plans_without_a_harness_block_and_gets_no_env() {
 }
 
 #[test]
+fn a_bridge_enabled_command_job_keeps_its_body_and_one_commit_suffix() {
+    let mut config = config();
+    config.bridge.enabled = true;
+    // No harness block: a command job plans without one.
+    config.harness = None;
+    let command = DispatchFlags {
+        command: Some("cargo test --quiet".into()),
+        ..flags("")
+    };
+    let p = plan_on(&config, &command).unwrap();
+    let brief = &p.brief;
+    // The complete effective task body survives as the brief.
+    assert!(
+        brief.starts_with(&format!("{}\n\n", body_text().trim_end())),
+        "{brief}"
+    );
+    assert!(brief.contains("body text"), "{brief}");
+    // No bridge pointer and no model reads: a command job runs no model and
+    // carries its task text instead of a pointer at the server.
+    for phrase in ["Your task handle", "vivi tools", "on the server", "model"] {
+        assert!(!brief.contains(phrase), "{phrase}: {brief}");
+    }
+    // The commit-hygiene suffix lands exactly once.
+    assert_eq!(
+        brief
+            .matches(crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE)
+            .count(),
+        1,
+        "{brief}"
+    );
+    assert!(brief.ends_with("Use this commit subject: S\n"), "{brief}");
+}
+
+#[test]
 fn every_owned_cleanup_prefix_takes_one_segment_and_no_more() {
     let mut cleanup = flags("m/ok");
     cleanup.delete_expect = Some("b".repeat(40));

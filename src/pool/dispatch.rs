@@ -179,7 +179,7 @@ fn assemble_job_plan(
         need: flags.need.clone(),
         kind: flags.kind.clone(),
         subject: subject.to_string(),
-        brief: brief_for(config, handle, subject, body, flags.need.as_deref()),
+        brief: brief_for(config, handle, subject, body, flags),
         rules,
         refs,
         publish_ref: flags.publish_ref.clone(),
@@ -333,20 +333,29 @@ fn plan_reasoning(
 
 /// The brief the worker reads: with the bridge on, a pointer at the task on
 /// the server (the worker reads it with the vivi tools); without it, the
-/// task body itself. Either way ends with the commit message rule and the commit
-/// subject to use.
+/// task body itself. A command job runs no model, so it never gets the
+/// pointer: it carries its effective task body either way. Either way ends
+/// with the commit message rule and the commit subject to use.
 fn brief_for(
     config: &PoolConfig,
     handle: &str,
     subject: &str,
     body: &str,
-    need: Option<&str>,
+    flags: &DispatchFlags,
 ) -> String {
-    let brief = if config.bridge.enabled {
+    let brief = if config.bridge.enabled && flags.command.is_none() {
         bridge_brief(handle, subject)
     } else {
         body.to_string()
     };
+    brief_with_commit_rule(&brief, subject, flags.need.as_deref())
+}
+
+/// The final brief: the chosen brief text, then the commit-message rule and
+/// the commit subject to use, applied exactly once. The pump's binary
+/// planning replaces the chosen brief and applies this same suffix itself.
+#[must_use]
+pub fn brief_with_commit_rule(brief: &str, subject: &str, need: Option<&str>) -> String {
     format!(
         "{}\n\n{}\n",
         brief.trim_end(),
