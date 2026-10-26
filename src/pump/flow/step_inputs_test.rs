@@ -288,6 +288,7 @@ fn role_job_resolves_the_budget_from_the_execution_kind_not_the_label() -> R {
 fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
     let mut cfg = PumpConfig::default();
     cfg.dispatch.step_budgets.planner = Some(90);
+    cfg.dispatch.budget = 777;
     let rig = rig_with(cfg)?;
     let step = row("admit1", "t1", StepState::Running);
 
@@ -300,7 +301,12 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
         "b",
     )?;
     assert_eq!(planner.budget, 90);
-    // A role class with no thinking key falls back to the shared budget.
+    // The class-based job still carries the read-only checkout context.
+    assert!(planner.read_only);
+    assert_eq!(planner.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(planner.extra_targets, targets(&rig.ctx));
+    // A role class with no thinking key falls back to the changed shared
+    // budget, not the built-in default.
     let merge = read_only_job(
         &rig.ctx,
         &rig.run,
@@ -309,6 +315,7 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
         "pump-planner",
         "b",
     )?;
+    assert_eq!(merge.budget, 777);
     assert_eq!(merge.budget, rig.ctx.cfg.dispatch.budget);
 
     // A class that is not a role class is refused, not defaulted.
