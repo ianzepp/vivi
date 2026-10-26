@@ -86,6 +86,8 @@ pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
         "pump_show" => Some(pump_show),
         "pump_priority" => Some(pump_priority),
         "need_show" => Some(work_read::need_show),
+        "need_thread" => Some(work_read::need_thread),
+        "task_thread" => Some(work_read::task_thread),
         "pump_log" => Some(views::pump_log),
         "pump_action" => Some(pump_action),
         "pump_reset" => Some(pump_reset),
