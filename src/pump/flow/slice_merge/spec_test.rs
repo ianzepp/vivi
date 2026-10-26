@@ -291,6 +291,65 @@ fn hand_job_of_picks_the_newest_attempt_of_the_task() {
     assert!(hand_job_of(&jobs, "T9").is_none());
 }
 
+/// A terminal or running hand job of `T1` stamped at replacement `order`
+/// (0 = original) in an envelope correction chain over `h1`.
+fn stamped(order: u64, queued_at: u64, status: JobStatus) -> PoolJob {
+    let id = if order == 0 {
+        "h1".to_owned()
+    } else {
+        format!("h1-c{order}")
+    };
+    let mut job = hand_job(&id, "T1", 1, queued_at, "");
+    job.status = status;
+    job.payload["replacement_order"] = order.into();
+    if order > 0 {
+        job.payload["replaces"] = if order == 1 { "h1" } else { "h1-c1" }.into();
+    }
+    job
+}
+
+#[test]
+fn replacement_order_ignores_late_equal_attempt_results() {
+    // An envelope correction chain at one attempt: the original queues last
+    // and still loses to the correction stamps that superseded it.
+    let mut jobs = Jobs::default();
+    for job in [
+        stamped(0, 99, JobStatus::Finished),
+        stamped(1, 50, JobStatus::Finished),
+        stamped(2, 50, JobStatus::Finished),
+    ] {
+        jobs.jobs.insert(job.id.clone(), job);
+    }
+    assert_eq!(
+        hand_job_of(&jobs, "T1").map(|job| job.id).as_deref(),
+        Some("h1-c2")
+    );
+
+    // A newer equal-attempt replacement still pending: the finished result
+    // it supersedes is not authoritative, so nothing merges yet.
+    let mut jobs = Jobs::default();
+    for job in [
+        stamped(0, 99, JobStatus::Finished),
+        stamped(1, 50, JobStatus::Dispatched),
+    ] {
+        jobs.jobs.insert(job.id.clone(), job);
+    }
+    assert!(hand_job_of(&jobs, "T1").is_none());
+
+    // Historical jobs without stamps keep the old queued-at order, and a
+    // pending newer attempt does not block it.
+    let mut jobs = Jobs::default();
+    let mut pending = hand_job("h4", "T1", 4, 99, "");
+    pending.status = JobStatus::Dispatched;
+    for job in [hand_job("h1", "T1", 1, 10, ""), pending] {
+        jobs.jobs.insert(job.id.clone(), job);
+    }
+    assert_eq!(
+        hand_job_of(&jobs, "T1").map(|job| job.id).as_deref(),
+        Some("h1")
+    );
+}
+
 #[test]
 fn hand_commit_reads_both_receipt_forms() {
     let runner = hand_job("h", "T1", 1, 1, &publish_receipt(HAND));

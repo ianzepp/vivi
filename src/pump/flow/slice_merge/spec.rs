@@ -13,7 +13,7 @@ use crate::pump::flow::need_branch;
 use crate::pump::flow::slice_dispatch::{self, SliceMail};
 use crate::pump::flow::verify::remote_tip;
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
+use crate::pump::jobs::{JobSpec, JobStore, PoolJob, replay};
 use crate::pump::store::PumpStore;
 
 /// Job kind of a slice merge job.
@@ -23,18 +23,35 @@ pub(crate) const KIND: &str = "slice-merge";
 /// need ids or branch names, so it names neither.
 const MESSAGE: &str = "Merge one slice onto the need branch";
 
-/// The newest terminal hand job that ran `task`: highest payload `attempt`,
-/// then latest `queued_at`.
+/// The authoritative hand job that ran `task`: the highest payload
+/// `attempt`, then the highest recorded replacement order, then the latest
+/// `queued_at` (the old order of historical jobs without stamps). A late
+/// original or correction result is ignored when a newer equal-attempt
+/// replacement exists — including when that replacement is still pending, so
+/// nothing merges until the authoritative execution lands.
 pub(crate) fn hand_job_of<S: JobStore>(st: &S, task: &str) -> Option<PoolJob> {
-    st.jobs()
-        .values()
-        .filter(|job| {
-            job.kind == slice_dispatch::KIND
-                && job.status.is_terminal()
-                && job.task.as_deref() == Some(task)
-        })
-        .max_by_key(|job| (attempt_of(job), job.queued_at))
-        .cloned()
+    let hand = || {
+        st.jobs()
+            .values()
+            .filter(|job| job.kind == slice_dispatch::KIND && job.task.as_deref() == Some(task))
+    };
+    let done = hand()
+        .filter(|job| job.status.is_terminal())
+        .max_by_key(|job| {
+            (
+                attempt_of(job),
+                replay::replacement_order(&job.payload),
+                job.queued_at,
+            )
+        })?;
+    // A newer equal-attempt replacement still outstanding blocks the merge:
+    // the finished result it supersedes is not authoritative.
+    let outstanding = hand().any(|job| {
+        !job.status.is_terminal()
+            && attempt_of(job) == attempt_of(&done)
+            && replay::replacement_order(&job.payload) > replay::replacement_order(&done.payload)
+    });
+    (!outstanding).then(|| done.clone())
 }
 
 fn attempt_of(job: &PoolJob) -> u64 {

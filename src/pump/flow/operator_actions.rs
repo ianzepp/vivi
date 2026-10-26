@@ -6,11 +6,17 @@
 //! - `replan` restarts the live run at `plan`;
 //! - `withdraw` closes the need's pump record (the tick withdraws a run whose
 //!   record closed);
-//! - `requeue` queues the step's newest job again, as `<job id>-q<n>`, at the
-//!   same attempt; it is refused unless that job is terminal and the step is
-//!   open (a done step is reopened by advance, never here). A Pending job held
-//!   after repeated pool refusals is released in place instead: its hold and
-//!   refusal count clear and the next dispatch offers it to a pool again.
+//! - `requeue` queues the step's newest execution again, as `<job id>-q<n>`,
+//!   at the same attempt; it is refused unless that job is terminal and the
+//!   step is open (a done step is reopened by advance, never here). The copy
+//!   names the superseded execution at a raised replacement order and mints a
+//!   genuinely new transient input generation, and any retry dispatch hold
+//!   the superseded execution carried is shed. A Pending job held after
+//!   repeated pool refusals is released in place instead: its hold and
+//!   refusal count clear and it takes the same replacement and generation
+//!   stamps, so the next dispatch offers a fresh execution to a pool again.
+//!   The fresh generation is a digest of the action's durable id, so recovery
+//!   of the same action cannot reset the retry budget twice.
 //!
 //! For a need with no active run (none, or a done, locked or withdrawn one):
 //!
@@ -24,6 +30,8 @@
 //! `applied_actions` either way, and a refusal raises `flow-action-refused`.
 
 use std::collections::BTreeSet;
+
+use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
 use crate::mailspace::{PumpAction, PumpActionKind};
@@ -151,7 +159,7 @@ fn apply_one<M: MailWriter + MailReader>(
             run_restart::restart(ctx, store, mail, run, REPLAN_ENTRY).map(drop)
         }
         PumpActionKind::Withdraw => mail.close_record(&action.need, "withdrawn"),
-        PumpActionKind::Requeue => requeue(st, store, run, action.request.unit.as_deref()),
+        PumpActionKind::Requeue => requeue(st, store, run, action),
         PumpActionKind::Answer | PumpActionKind::Unlock => Err(VivariumError::Message(format!(
             "{} is applied by another phase",
             action.request.kind.as_str()
@@ -159,16 +167,22 @@ fn apply_one<M: MailWriter + MailReader>(
     }
 }
 
-/// Queue the newest job of step task `unit` again at the same attempt. The
-/// copy is the shared replay copy: it carries every execution input and
-/// names the superseded execution at a raised replacement order.
+/// Queue the step's newest execution again at the same attempt. The copy is
+/// the shared replay copy: it carries every execution input, names the
+/// superseded execution at a raised replacement order, mints the action's
+/// fresh input generation, and sheds the superseded execution's retry
+/// dispatch hold — an explicit requeue dispatches now.
 fn requeue(
     st: &mut impl JobStore,
     store: &PumpStore,
     run: &RunRow,
-    unit: Option<&str>,
+    action: &PumpAction,
 ) -> Result<(), VivariumError> {
-    let task = unit.ok_or_else(|| VivariumError::Message("requeue names no step task".into()))?;
+    let task = action
+        .request
+        .unit
+        .as_deref()
+        .ok_or_else(|| VivariumError::Message("requeue names no step task".into()))?;
     let step = store
         .step_by_task(task)?
         .filter(|row| row.run == run.run)
@@ -184,7 +198,7 @@ fn requeue(
             step.state
         )));
     }
-    if release_held(st, store, &run.need, task)? {
+    if release_held(st, store, &run.need, task, &action.id)? {
         return Ok(());
     }
     let (old, row) = newest_job(st, store, task)?
@@ -199,33 +213,90 @@ fn requeue(
     let again = row.again(&id);
     let mut spec = replay::copy_spec(&old, id);
     replay::stamp_replacement(&mut spec.payload, &old);
+    restamp_fresh_execution(&mut spec.payload, &action.id, &old.payload);
     again.stamp(&run.need, &mut spec.payload);
     jobs::enqueue(st, spec)?;
     store.insert_step_job(&run.need, &again)?;
     store.set_step_state(&step.task, StepState::Running, None)
 }
 
+/// Stamp `payload` as a genuinely new execution of the requeued step: a new
+/// transient input generation derived from the durable action identity, and
+/// no dispatch hold — a retry deadline the superseded execution still
+/// carried is obsolete once the operator requeues by hand.
+fn restamp_fresh_execution(
+    payload: &mut serde_json::Value,
+    action_id: &str,
+    previous: &serde_json::Value,
+) {
+    replay::replace_input(
+        payload,
+        action_generation(action_id, replay::input_generation(previous)),
+    );
+    replay::stamp_dispatch_not_before(payload, 0);
+}
+
+/// The fresh transient input generation an explicit requeue mints: a digest
+/// of the durable action identity, so recovery of the same action derives
+/// the same generation and cannot reset the retry budget twice. `previous`
+/// is the superseded execution's generation; a digest colliding with it is
+/// bumped past, so the generation is genuinely new. The retry store counts
+/// generations as `u32`, so the mint stays in that universe.
+fn action_generation(action_id: &str, previous: u64) -> u64 {
+    const DOMAIN: &[u8] = b"vivi:requeue-input-generation";
+    const MAX: u64 = u32::MAX as u64;
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN);
+    hasher.update([0]);
+    hasher.update(action_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut head = [0u8; 4];
+    let len = digest.as_slice().len().min(4);
+    head[..len].copy_from_slice(&digest.as_slice()[..len]);
+    let fresh = u64::from(u32::from_be_bytes(head)).max(1);
+    if fresh == previous {
+        if previous >= MAX { 1 } else { previous + 1 }
+    } else {
+        fresh
+    }
+}
+
 /// Release every held Pending job of step `task` in place: a job whose
 /// payload names this task and need (a slice-merge job, a correction) or that
-/// has a `step_jobs` row for it. True when any was released.
+/// has a `step_jobs` row for it. The release is an explicit requeue of the
+/// current execution, so each released job is restamped a replacement of
+/// itself at a raised order, mints the action's fresh input generation, and
+/// sheds its retry dispatch hold. A pending job already restamped in place
+/// counts as handled, so recovery of the same action is a no-op. True when
+/// any job was released or already stood released.
 fn release_held(
     st: &mut impl JobStore,
     store: &PumpStore,
     need: &str,
     task: &str,
+    action_id: &str,
 ) -> Result<bool, VivariumError> {
     let mut ids = Vec::new();
     for job in st.jobs().values() {
-        if job.status != JobStatus::Pending || job.held.is_none() {
+        if job.status != JobStatus::Pending {
             continue;
         }
         let stamped = job.payload["task"] == task && job.payload["need"] == need;
-        if stamped || store.step_job(&job.id)?.is_some_and(|row| row.task == task) {
+        if !(stamped || store.step_job(&job.id)?.is_some_and(|row| row.task == task)) {
+            continue;
+        }
+        if job.held.is_some() || restamped_in_place(job) {
             ids.push(job.id.clone());
         }
     }
     for id in &ids {
         if let Some(job) = st.jobs_mut().get_mut(id) {
+            if job.held.is_none() {
+                continue; // released by an earlier application of an action
+            }
+            let snapshot = job.clone();
+            replay::stamp_replacement(&mut job.payload, &snapshot);
+            restamp_fresh_execution(&mut job.payload, action_id, &snapshot.payload);
             job.held = None;
             job.dispatch_refusals = 0;
         }
@@ -233,7 +304,17 @@ fn release_held(
     Ok(!ids.is_empty())
 }
 
-/// The step's job at its highest attempt, with its `step_jobs` row.
+/// Whether a pending job was already requeued in place: it names itself as
+/// its superseded execution, the stamp no other write makes.
+fn restamped_in_place(job: &PoolJob) -> bool {
+    replay::replacement_predecessor(&job.payload) == Some(job.id.as_str())
+}
+
+/// The step's newest execution: highest attempt, then highest recorded
+/// replacement order, then latest queue second — never the lexical job id,
+/// so a late original or correction result is not picked over the
+/// replacement that superseded it. Historical jobs without replacement
+/// stamps keep their old queued-at ordering.
 fn newest_job(
     st: &impl JobStore,
     store: &PumpStore,
@@ -244,14 +325,20 @@ fn newest_job(
         let Some(row) = store.step_job(&job.id)? else {
             continue;
         };
-        let newer = best
-            .as_ref()
-            .is_none_or(|(held, kept)| (row.attempt, &job.id) > (kept.attempt, &held.id));
+        let newer = best.as_ref().is_none_or(|(held, kept)| {
+            (row.attempt, replacement_rank(job)) > (kept.attempt, replacement_rank(held))
+        });
         if row.task == task && newer {
             best = Some((job.clone(), row));
         }
     }
     Ok(best)
+}
+
+/// The recorded replacement ordering of a job: its payload replacement
+/// order, then the queue second for historical jobs that carry no stamp.
+fn replacement_rank(job: &PoolJob) -> (u64, u64) {
+    (replay::replacement_order(&job.payload), job.queued_at)
 }
 
 /// `<base>-q<n>` for the first `n` no job uses; a requeued id requeues its base.

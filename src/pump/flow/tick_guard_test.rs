@@ -17,10 +17,10 @@ use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::guard::FOREIGN_CLOSE;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::handlers::Registry;
-use crate::pump::flow::index::{RunRow, StepRow, StepState};
+use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus, TaskStatus};
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobStore, PoolJob};
+use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, enqueue};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -138,6 +138,36 @@ impl Rig {
         )
     }
 
+    /// A job of the rig's `plan` step at attempt 1, with its index row.
+    /// `order` stamps an envelope correction chain at that replacement order
+    /// (0 = the original execution).
+    fn chain_job(&mut self, id: &str, order: u64, status: JobStatus) -> R {
+        let mut spec = JobSpec::new(id, "hand", "hand", "subject", "body");
+        spec.task = Some(self.step.clone());
+        spec.from_ref = Some(String::from("refs/heads/main"));
+        enqueue(&mut self.jobs, spec)?;
+        let job = self.jobs.jobs.get_mut(id).expect("just enqueued");
+        job.status = status;
+        job.payload["attempt"] = 1.into();
+        if order > 0 {
+            job.payload["replacement_order"] = order.into();
+            job.payload["correction_ordinal"] = order.into();
+            job.payload["correction_original_job"] = "a1".into();
+            job.payload["replaces"] = if order == 1 { "a1" } else { "a1-c1" }.into();
+        }
+        self.store.insert_step_job(
+            &self.need,
+            &StepJobRow {
+                job: id.to_owned(),
+                run: 1,
+                node: "plan".into(),
+                task: self.step.clone(),
+                attempt: 1,
+            },
+        )?;
+        Ok(())
+    }
+
     fn mind_closes(&self, task: &str) -> R {
         self.p
             .mailspace
@@ -191,5 +221,51 @@ fn a_need_closed_with_a_run_task_open_is_still_withdrawn() -> R {
     assert!(rig.store.live_runs()?.is_empty());
     assert_eq!(rig.store.runs_in_state("withdrawn")?.len(), 1);
     assert!(!rig.exceptions().contains(FOREIGN_CLOSE));
+    Ok(())
+}
+
+// ---- authoritative replacement selection -------------------------------
+
+#[test]
+fn replacement_order_ignores_late_equal_attempt_results() -> R {
+    let mut rig = rig()?;
+    rig.chain_job("a1", 0, JobStatus::Finished)?;
+    // The correction of the original, still pending: it owns the step.
+    rig.chain_job("a1-c1", 1, JobStatus::Pending)?;
+
+    rig.tick()?;
+
+    let text = rig.exceptions();
+    assert!(text.contains(super::STALE_ATTEMPT), "{text}");
+    assert!(text.contains("superseded by replacement a1-c1"), "{text}");
+    assert!(
+        rig.jobs.jobs()["a1"].applied_at.is_some(),
+        "the late original was shelved"
+    );
+    let pending = &rig.jobs.jobs()["a1-c1"];
+    assert_eq!(pending.status, JobStatus::Pending);
+    assert!(pending.applied_at.is_none(), "the replacement is untouched");
+    assert_eq!(rig.jobs.jobs().len(), 2, "nothing was collected");
+    Ok(())
+}
+
+#[test]
+fn a_finished_correction_drives_collection_and_a_late_original_is_ignored() -> R {
+    let mut rig = rig()?;
+    rig.chain_job("a1", 0, JobStatus::Finished)?;
+    rig.chain_job("a1-c1", 1, JobStatus::Finished)?;
+
+    rig.tick()?;
+
+    let text = rig.exceptions();
+    assert!(text.contains(super::STALE_ATTEMPT), "{text}");
+    assert!(text.contains("superseded by replacement a1-c1"), "{text}");
+    assert!(rig.jobs.jobs()["a1"].applied_at.is_some());
+    assert!(rig.jobs.jobs()["a1-c1"].applied_at.is_some());
+    // The replacement, not the late original, drove the collection: the
+    // envelope correction chain grew past it.
+    let next = &rig.jobs.jobs()["a1-c2"];
+    assert_eq!(next.payload["correction_ordinal"], 2);
+    assert_eq!(next.payload["correction_original_job"], "a1");
     Ok(())
 }

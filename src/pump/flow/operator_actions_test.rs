@@ -1,15 +1,18 @@
 //! Tests for the operator-actions phase: replan, withdraw and requeue on a
 //! need with an active run go to the flow, once each; on a need with no active
 //! run a withdraw closes the record and a requeue or replan is refused, also
-//! once each; answer and unlock letters are left alone.
+//! once each; answer and unlock letters are left alone. A requeue selects the
+//! step's authoritative execution by recorded replacement order, mints the
+//! action's fresh input generation, sheds obsolete retry deadlines, and
+//! recovers the same action without resetting anything twice.
 
 use std::collections::BTreeMap;
 use std::fs;
 
-use super::{ACTION_REFUSED, active_run, register};
+use super::{ACTION_REFUSED, active_run, newest_job, register, requeue};
 use crate::error::VivariumError;
 use crate::letter::fixture::step_body;
-use crate::mailspace::PumpActionRequest;
+use crate::mailspace::{PumpAction, PumpActionRequest};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -17,7 +20,7 @@ use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, FakeHost};
-use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, dispatch_pending, enqueue};
+use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, dispatch_pending, enqueue, replay};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
@@ -461,5 +464,211 @@ fn an_unlock_letter_is_left_unapplied_by_this_phase() -> R {
 
     assert!(!rig.applied(&id)?);
     assert!(!rig.exceptions().contains(ACTION_REFUSED));
+    Ok(())
+}
+
+// ---- authoritative selection, fresh generations, idempotence ----------
+
+#[test]
+fn newest_job_ranks_by_replacement_order_not_the_lexical_id() -> R {
+    let mut rig = rig()?;
+    let step = rig.step.clone();
+    for (id, order) in [("z-late", 0u64), ("a-early", 1u64)] {
+        let mut spec = JobSpec::new(id, "hand", "hand", "s", "b");
+        spec.task = Some(step.clone());
+        enqueue(&mut rig.jobs, spec)?;
+        let job = rig.jobs.jobs.get_mut(id).expect("enqueued");
+        job.status = JobStatus::Finished;
+        job.payload["replacement_order"] = order.into();
+        rig.store.insert_step_job(
+            &rig.need,
+            &StepJobRow {
+                job: id.into(),
+                run: 1,
+                node: "build1".into(),
+                task: step.clone(),
+                attempt: 2,
+            },
+        )?;
+    }
+
+    let (job, _) = newest_job(&rig.jobs, &rig.store, &step)?.expect("newest");
+    assert_eq!(job.id, "a-early");
+    Ok(())
+}
+
+#[test]
+fn a_requeue_copies_the_authoritative_execution_not_a_late_result() -> R {
+    let mut rig = rig()?;
+    let step = rig.step.clone();
+    // The original's result arrived late, after the correction that
+    // superseded it; only the correction's stamp makes it authoritative.
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-a2") {
+        job.queued_at = 999;
+    }
+    let mut spec = JobSpec::new("hand-a2-c1", "hand", "hand", "fix", "body");
+    spec.task = Some(step.clone());
+    enqueue(&mut rig.jobs, spec)?;
+    let job = rig.jobs.jobs.get_mut("hand-a2-c1").expect("enqueued");
+    job.status = JobStatus::Finished;
+    job.queued_at = 100;
+    job.payload["attempt"] = 2.into();
+    job.payload["replacement_order"] = 1.into();
+    job.payload["replaces"] = "hand-a2".into();
+    rig.store.insert_step_job(
+        &rig.need,
+        &StepJobRow {
+            job: "hand-a2-c1".into(),
+            run: 1,
+            node: "build1".into(),
+            task: step.clone(),
+            attempt: 2,
+        },
+    )?;
+
+    let id = rig.post(&PumpActionRequest::requeue(&step, "again"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(!rig.exceptions().contains(ACTION_REFUSED));
+    let copy = rig
+        .jobs
+        .jobs()
+        .get("hand-a2-c1-q1")
+        .expect("copy of the correction");
+    assert_eq!(copy.payload["replaces"], "hand-a2-c1");
+    assert_eq!(copy.payload["replacement_order"], 2);
+    assert!(!rig.jobs.jobs().contains_key("hand-a2-q1"));
+    Ok(())
+}
+
+#[test]
+fn a_requeue_mints_the_action_fresh_generation_and_sheds_the_retry_hold() -> R {
+    let mut rig = rig()?;
+    let step = rig.step.clone();
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-a2") {
+        job.payload["input_generation"] = 7.into();
+        job.payload["not_before"] = (rig.ctx.now() + 6_000).into();
+    }
+    let id = rig.post(&PumpActionRequest::requeue(&step, "again"))?;
+    rig.phase()?;
+
+    let copy = rig.jobs.jobs().get("hand-a2-q1").expect("copy");
+    assert_eq!(
+        replay::input_generation(&copy.payload),
+        super::action_generation(&id, 7),
+        "the copy runs on the action's genuinely new generation"
+    );
+    assert_ne!(replay::input_generation(&copy.payload), 7);
+    assert_eq!(copy.payload["not_before"], 0, "the retry deadline is shed");
+    Ok(())
+}
+
+#[test]
+fn the_action_generation_is_durable_per_action_and_always_genuinely_new() {
+    let first = super::action_generation("action-1", 0);
+    assert_eq!(
+        first,
+        super::action_generation("action-1", 0),
+        "recovery derives the same generation from the durable action id"
+    );
+    assert_ne!(first, super::action_generation("action-2", 0));
+    assert_eq!(
+        first,
+        super::action_generation("action-1", 7),
+        "the superseded generation never changes the mint"
+    );
+    assert_ne!(
+        first,
+        super::action_generation("action-1", first),
+        "a collision is bumped past, so the generation is genuinely new"
+    );
+    assert_ne!(first, 0);
+    assert!(
+        first <= u64::from(u32::MAX),
+        "the retry store counts generations as u32"
+    );
+}
+
+#[test]
+fn a_requeue_of_a_held_job_releases_a_fresh_replacement_of_itself() -> R {
+    let mut rig = rig()?;
+    let (need, step) = (rig.need.clone(), rig.step.clone());
+    hold(&mut rig.jobs, "hand-a2", &need, &step);
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-a2") {
+        job.payload["replacement_order"] = 3.into();
+        job.payload["replaces"] = "hand-a2-c1".into();
+        job.payload["input_generation"] = 4.into();
+        job.payload["not_before"] = (rig.ctx.now() + 6_000).into();
+    }
+    let id = rig.post(&PumpActionRequest::requeue(&step, "go"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    let job = &rig.jobs.jobs()["hand-a2"];
+    assert!(job.held.is_none());
+    assert_eq!(job.dispatch_refusals, 0);
+    assert_eq!(job.payload["replacement_order"], 4);
+    assert_eq!(
+        job.payload["replaces"], "hand-a2",
+        "a replacement of itself"
+    );
+    assert_eq!(
+        replay::input_generation(&job.payload),
+        super::action_generation(&id, 4)
+    );
+    assert_eq!(job.payload["not_before"], 0);
+    Ok(())
+}
+
+#[test]
+fn recovering_the_same_requeue_action_cannot_reset_the_budget_again() -> R {
+    let mut rig = rig()?;
+    let (need, step) = (rig.need.clone(), rig.step.clone());
+    hold(&mut rig.jobs, "hand-a2", &need, &step);
+    let run = rig.store.runs_of(&need)?.remove(0);
+    let action = PumpAction {
+        id: "action-1".into(),
+        record: String::new(),
+        need: need.clone(),
+        date: String::new(),
+        request: PumpActionRequest::requeue(&step, "go"),
+    };
+    requeue(&mut rig.jobs, &rig.store, &run, &action)?;
+    let first = rig.jobs.jobs()["hand-a2"].clone();
+
+    // Recovery applies the same durable action again before it was marked.
+    requeue(&mut rig.jobs, &rig.store, &run, &action)?;
+
+    assert_eq!(rig.jobs.jobs().len(), 1, "no copy was queued");
+    let job = &rig.jobs.jobs()["hand-a2"];
+    assert_eq!(
+        replay::input_generation(&job.payload),
+        replay::input_generation(&first.payload),
+        "the budget was not reset a second time"
+    );
+    assert_eq!(
+        job.payload["replacement_order"],
+        first.payload["replacement_order"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_requeue_of_a_pending_retry_replacement_is_still_refused() -> R {
+    let mut rig = rig()?;
+    if let Some(job) = rig.jobs.jobs.get_mut("hand-a2") {
+        job.status = JobStatus::Pending;
+        job.payload["replacement_order"] = 1.into();
+        job.payload["replaces"] = "hand-a2-c1".into();
+    }
+    let step = rig.step.clone();
+    let id = rig.post(&PumpActionRequest::requeue(&step, "x"))?;
+    rig.phase()?;
+
+    assert!(rig.applied(&id)?);
+    assert!(rig.exceptions().contains(ACTION_REFUSED));
+    assert!(rig.exceptions().contains("not finished"));
+    assert_eq!(rig.jobs.jobs().len(), 1);
     Ok(())
 }

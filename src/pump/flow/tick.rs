@@ -63,7 +63,8 @@ pub const KIND_CHANGED: &str = "flow-kind-changed";
 pub const WORD_REJECTED: &str = "flow-word-rejected";
 /// Exception kind: a finished step job belongs to a run that cannot apply it.
 pub const JOB_ORPHANED: &str = "flow-job-orphaned";
-/// Exception kind: a finished step job is not its step's newest attempt.
+/// Exception kind: a finished step job is not its step's newest attempt, or
+/// is an equal-attempt result a newer replacement has superseded.
 pub const STALE_ATTEMPT: &str = "flow-stale-attempt";
 /// Exception kind: a run was stored under another flow version than the
 /// loaded definition.
@@ -432,17 +433,8 @@ where
             return Ok(());
         };
         let newest = self.store.last_attempt(&row.task)?;
-        if row.attempt < newest {
-            jobs::mark_applied(self.st, id, self.ctx.now());
-            raise_once(
-                self.ctx,
-                STALE_ATTEMPT,
-                id,
-                &format!(
-                    "job {id} step {}: expected attempt {newest}; actual: attempt {}; result ignored",
-                    row.task, row.attempt
-                ),
-            );
+        let order = jobs::replay::replacement_order(&job.payload);
+        if self.shelve_late_result(id, row, newest, order)? {
             return Ok(());
         }
         let step = self.store.step_by_task(&row.task)?;
@@ -473,6 +465,63 @@ where
         }
         jobs::mark_applied(self.st, id, self.ctx.now());
         Ok(())
+    }
+
+    /// Shelf and ignore a finished job that is not its step's authoritative
+    /// execution: an older attempt, or an equal-attempt result a newer
+    /// replacement — even one still pending — has superseded. The late
+    /// original or correction is marked applied and never collected. True
+    /// when shelved.
+    fn shelve_late_result(
+        &mut self,
+        id: &str,
+        row: &StepJobRow,
+        newest: u32,
+        order: u64,
+    ) -> Result<bool, VivariumError> {
+        let stale = if row.attempt < newest {
+            format!(
+                "job {id} step {}: expected attempt {newest}; actual: attempt {}; result ignored",
+                row.task, row.attempt
+            )
+        } else if let Some(later) = self.newer_equal_attempt_replacement(id, row, order)? {
+            format!(
+                "job {id} step {}: superseded by replacement {later} at attempt {}; result ignored",
+                row.task, row.attempt
+            )
+        } else {
+            return Ok(false);
+        };
+        jobs::mark_applied(self.st, id, self.ctx.now());
+        raise_once(self.ctx, STALE_ATTEMPT, id, &stale);
+        Ok(true)
+    }
+
+    /// The id of a newer equal-attempt replacement of job `id`, when one
+    /// exists: another job of the same task and attempt whose recorded
+    /// replacement order is higher, whatever its own state — a pending
+    /// replacement already outranks a finished predecessor.
+    fn newer_equal_attempt_replacement(
+        &self,
+        id: &str,
+        row: &StepJobRow,
+        order: u64,
+    ) -> Result<Option<String>, VivariumError> {
+        for candidate in self.st.jobs().values() {
+            if candidate.id == id {
+                continue;
+            }
+            let Some(other) = self.store.step_job(&candidate.id)? else {
+                continue;
+            };
+            if other.task == row.task
+                && other.attempt == row.attempt
+                && jobs::replay::replacement_order(&candidate.payload) > order
+            {
+                return Ok(Some(candidate.id.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// The text of a step whose node the loaded flow does not have.
