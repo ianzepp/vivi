@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::pool::collect::JobResult;
 use crate::pool::config::PoolConfig;
+use crate::pool::record::OpenDispatch;
 use crate::pool::slot::{self, PoolId};
 
 use super::events::ProjectEvents;
@@ -87,6 +89,7 @@ fn row(
         .and_then(|open| open.record.kind.clone())
         .or_else(|| info.and_then(|item| item.kind.clone()));
     let started_at = dispatch.map(|open| open.record.at).or(slot.claimed_at);
+    let (finished_at, running_secs) = finish_times(root, slot, dispatch, started_at, now);
     MonitorRow {
         project: project.to_owned(),
         kind: RowKind::Slot,
@@ -106,10 +109,8 @@ fn row(
         },
         started_at,
         stale_age_secs: None,
-        finished_at: None,
-        running_secs: slot
-            .running_secs
-            .or_else(|| started_at.map(|at| now.saturating_sub(at))),
+        finished_at,
+        running_secs,
         budget_secs: slot
             .budget_secs
             .or_else(|| dispatch.map(|open| open.record.budget)),
@@ -117,9 +118,97 @@ fn row(
             .read_only
             .or_else(|| dispatch.map(|open| open.record.read_only)),
         remote: false,
-        tail: Path::new(&slot.id)
-            .file_name()
-            .and_then(|name| slot_tail(&root.join(name))),
+        tail: slot_dir(root, slot).and_then(|dir| slot_tail(&dir)),
+    }
+}
+
+/// Completion and duration for one row. A stopped slot with an open dispatch
+/// may carry a validated current-attempt result artifact; when it does, its
+/// completion epoch is authoritative and the duration stops there instead of
+/// running to `now`. Running slots never read an artifact.
+fn finish_times(
+    root: &Path,
+    slot: &slot::SlotStatus,
+    dispatch: Option<&OpenDispatch>,
+    started_at: Option<u64>,
+    now: u64,
+) -> (Option<u64>, Option<u64>) {
+    let finished_at = if slot.state == "busy" {
+        None
+    } else {
+        slot_dir(root, slot).and_then(|dir| {
+            dispatch.and_then(|open| artifact_completion(&dir, open, started_at, now))
+        })
+    };
+    let running_secs = finished_at
+        .zip(started_at)
+        .map(|(done, at)| done.saturating_sub(at))
+        .or(slot.running_secs)
+        .or_else(|| started_at.map(|at| now.saturating_sub(at)));
+    (finished_at, running_secs)
+}
+
+/// The on-disk directory of a local slot: the pool dir joined to the slot's
+/// directory name (the last component of its id), matching `slot_tail`.
+fn slot_dir(root: &Path, slot: &slot::SlotStatus) -> Option<PathBuf> {
+    Path::new(&slot.id).file_name().map(|name| root.join(name))
+}
+
+/// Validated completion epoch from a stopped slot's `job/result` artifact,
+/// written by the runner as key=value lines with no absolute completion time.
+/// The artifact counts only when it provably belongs to the current attempt:
+/// `state=done`, a `job` identity matching the open dispatch, and any dispatch
+/// target/repository echoed unchanged. The file's modification time then
+/// supplies the completion epoch, which must sit inside the attempt window:
+/// not before the attempt started, not a future completion relative to `now`.
+/// A claim or start time is never used as a completion; an artifact that
+/// cannot be validated leaves the finish unknown so session history can infer
+/// a first-observed one.
+fn artifact_completion(
+    slot_dir: &Path,
+    dispatch: &OpenDispatch,
+    started_at: Option<u64>,
+    now: u64,
+) -> Option<u64> {
+    let path = slot_dir.join("job/result");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return None,
+    };
+    let result = JobResult::parse(&String::from_utf8_lossy(&bytes));
+    let echoes = |key: &str, want: Option<&String>| match want {
+        Some(value) => result.get(key) == value.as_str(),
+        None => true,
+    };
+    if !(result.get("state") == "done"
+        && result.get("job") == dispatch.record.job
+        && echoes("target", dispatch.record.target.as_ref())
+        && echoes("repository", dispatch.record.repository.as_ref()))
+    {
+        return None;
+    }
+    match modification_epoch(&path) {
+        Some(secs) => started_at
+            .is_some_and(|at| secs >= at && secs <= now)
+            .then_some(secs),
+        None => None,
+    }
+}
+
+/// When `path` was last modified, as epoch seconds; none when the metadata or
+/// the timestamp cannot be read, or the time predates the epoch.
+fn modification_epoch(path: &Path) -> Option<u64> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return None,
+    };
+    let modified = match metadata.modified() {
+        Ok(time) => time,
+        Err(_) => return None,
+    };
+    match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(age) => Some(age.as_secs()),
+        Err(_) => None,
     }
 }
 
