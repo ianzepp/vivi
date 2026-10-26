@@ -250,6 +250,103 @@ local = { worktree_of = "/tmp/x" }
     assert_eq!(band(&raw), None, "{raw}");
 }
 
+/// One `P2` band row with an optional `weight` key; empty means omitted.
+fn band_row(weight: &str) -> String {
+    if weight.is_empty() {
+        r#"{ model = "m/ok", reasoning = "high" }"#.into()
+    } else {
+        format!(r#"{{ model = "m/ok", reasoning = "high", weight = {weight} }}"#)
+    }
+}
+
+/// Run `config validate` over a minimal pool whose `P2` band holds `rows`.
+fn validate_p2_band(rows: &[String]) -> Output {
+    let dir = project_with(&format!(
+        r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[pools.p]
+provider = "local"
+slots = 2
+[pools.p.bands]
+P2 = [{}]
+"#,
+        rows.join(", ")
+    ));
+    let root = dir.path().to_str().unwrap();
+    vivi(&["config", "validate", "--project", root])
+}
+
+#[test]
+fn config_validate_accepts_band_weight() {
+    // Omitted weight defaults to 1.
+    let omitted = validate_p2_band(&[band_row("")]);
+    assert_success(&omitted);
+    // Explicit positive values are kept, up to and including u32::MAX.
+    let explicit = validate_p2_band(&[band_row("3"), band_row("4294967295")]);
+    assert_success(&explicit);
+    // Mixed weights across the full four-entry maximum still validate.
+    let four = validate_p2_band(&[
+        band_row("3"),
+        band_row(""),
+        band_row("2"),
+        band_row("4294967295"),
+    ]);
+    assert_success(&four);
+}
+
+#[test]
+fn config_validate_rejects_invalid_band_weight() {
+    // Zero parses as u32 and is refused by name: every entry takes a share.
+    let zero = validate_p2_band(&[band_row("0")]);
+    assert!(!zero.status.success());
+    let text = format!("{}{}", stdout(&zero), stderr(&zero));
+    assert!(text.contains("configuration error"), "{text}");
+    assert!(text.contains("bands.P2 has weight 0"), "{text}");
+
+    // Wrong shapes never deserialize as u32 at all.
+    for (bad, expected) in [
+        ("-3", "invalid value: integer `-3`, expected u32"),
+        ("1.5", "invalid type: floating point `1.5`, expected u32"),
+        ("\"3\"", "invalid type: string \"3\", expected u32"),
+        (
+            "4294967296",
+            "invalid value: integer `4294967296`, expected u32",
+        ),
+    ] {
+        let out = validate_p2_band(&[band_row(bad)]);
+        assert!(!out.status.success(), "{bad}: {}", stdout(&out));
+        let err = stderr(&out);
+        assert!(
+            err.contains("failed to parse mailspace config"),
+            "{bad}: {err}"
+        );
+        assert!(err.contains(expected), "{bad}: {err}");
+        // A bad weight is a deserialization error, never unknown-field drift.
+        assert!(!err.contains("unknown field"), "{bad}: {err}");
+    }
+
+    // The four-entry maximum still holds: four rows pass, five are refused.
+    let five = validate_p2_band(&[
+        band_row("3"),
+        band_row(""),
+        band_row("2"),
+        band_row(""),
+        band_row("1"),
+    ]);
+    assert!(!five.status.success());
+    let text = format!("{}{}", stdout(&five), stderr(&five));
+    assert!(text.contains("holds 5 choices; at most 4"), "{text}");
+
+    // An unrelated unknown key is still refused by name, so the weight
+    // rejections above are about weight itself.
+    let frob = validate_p2_band(&[r#"{ model = "m/ok", reasoning = "high", frob = 1 }"#.into()]);
+    assert!(!frob.status.success());
+    let err = stderr(&frob);
+    assert!(err.contains("unknown field \"frob\" in [pools.p.bands.P2]"), "{err}");
+    assert!(!err.contains("weight"), "{err}");
+}
+
 #[test]
 fn pool_set_takes_a_whole_harness_as_an_inline_table() {
     let dir = project_with(
