@@ -5,6 +5,13 @@
 //! `config_edit::guard_file` (the library function itself is not guarded).
 //! A dry run calls `migrate` with `write` false and is a read.
 //! `config_set` / `config_unset` are `config_edit::set_key` / `unset_key`.
+//!
+//! One Mind-only exception in `config_set`: a `pools.<pool>.caps.<model>`
+//! key may ride the operational guard, where a Mind seat's only write is an
+//! integer reduction of that already-configured cap. Increases, new caps,
+//! wrong types and every other key are refused before a write, an operator
+//! keeps the full `set_key` behavior, and `config_unset`, `migrate` and the
+//! allow-list and target tools stay operator-only.
 //! `pool_allow_set` writes `[pools.<pool>.harness] models` — the allow list
 //! `pool_bands` checks — through `crate::pool::config_allow::set_allow`
 //! (check-then-write, guarded), after checking `models` is an array of
@@ -13,6 +20,9 @@
 
 use std::path::Path;
 
+use toml_edit::{DocumentMut, Item};
+
+use crate::error::VivariumError;
 use crate::mailspace::config_edit;
 use crate::pool::config_allow;
 use crate::pump::config::targets::{self, TargetSpec};
@@ -22,8 +32,10 @@ use crate::server::identities::IdentityRecord;
 use crate::server::mcp::tools::{ToolError, opt_str, rate_limit, req_str};
 use crate::server::safety::RateLimiter;
 
-use super::lib_error;
-use super::pump::{acting_key, authorize};
+use super::pump::{
+    OperationalKind, acting_key, authorize, authorize_operational, operational_kind,
+};
+use super::{Hosted, lib_error};
 
 pub(in crate::server::mcp) fn config_migrate(
     limiter: &RateLimiter,
@@ -51,12 +63,176 @@ pub(in crate::server::mcp) fn config_set(
     acting: Option<&str>,
     arguments: &Value,
 ) -> Result<Value, ToolError> {
-    let hosted = open("config_set", "set config", root, caller, acting)?;
     let key = req_str(arguments, "key")?;
     let value = req_str(arguments, "value")?;
+    // A `pools.<pool>.caps.<model>` key may take the operational guard;
+    // every other key keeps the operator-only rule.
+    let cap = cap_key(key);
+    let requested = acting_key("config_set", "set config", acting)?;
+    let hosted = if cap.is_some() {
+        authorize_operational("config_set", root, caller, requested)?
+    } else {
+        authorize("config_set", root, caller, requested)?
+    };
     rate_limit(limiter, project_id, &hosted.actor)?;
+    // A Mind seat's one write is the guarded reduction; an operator falls
+    // through to the full `set_key`, unchanged.
+    if let Some(cap) = cap
+        && seat_kind(&hosted)? == OperationalKind::Mind
+    {
+        return reduce_cap(root, key, value, arguments, &cap, &hosted);
+    }
     let set = config_edit::set_key(root, key, value).map_err(lib_error)?;
     Ok(json!({"key": key, "value": set.value, "kind": set.kind}))
+}
+
+/// The cap a key names: exactly `pools.<pool>.caps.<model>`, parsed with
+/// `config_edit`'s key parser so quoted segments stay whole (a model with
+/// dots or slashes is one segment). Any other shape is not a cap.
+struct CapKey {
+    pool: String,
+    model: String,
+    path: Vec<String>,
+}
+
+fn cap_key(key: &str) -> Option<CapKey> {
+    let Ok(path) = config_edit::parse_key(key) else {
+        return None;
+    };
+    let [top, pool, caps, model] = path.as_slice() else {
+        return None;
+    };
+    if top != "pools" || caps != "caps" || pool.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some(CapKey {
+        pool: pool.clone(),
+        model: model.clone(),
+        path,
+    })
+}
+
+/// The operational kind of the role this call acts as.
+fn seat_kind(hosted: &Hosted) -> Result<OperationalKind, ToolError> {
+    let kind = hosted.ms.role_view(&hosted.actor).map_err(lib_error)?.kind;
+    Ok(operational_kind(kind.as_deref()))
+}
+
+/// The Mind seat's one write: reduce an already-configured
+/// `pools.<pool>.caps.<model>` integer to a lower one, under the guard.
+/// Only `key` and `value` may ride along, the value must be an integer a
+/// caps entry can hold, and the reduction is checked against the current
+/// configuration inside the guarded edit (running refusal, backup and
+/// rollback all stay).
+fn reduce_cap(
+    root: &Path,
+    key: &str,
+    raw: &str,
+    arguments: &Value,
+    cap: &CapKey,
+    hosted: &Hosted,
+) -> Result<Value, ToolError> {
+    only_key_value(arguments)?;
+    let new = cap_value(raw)?;
+    let file = crate::mailspace::Mailspace::open_root(root.to_path_buf())
+        .map_err(lib_error)?
+        .config_path();
+    // Refuse before the guard touches anything when the live file already
+    // fails the check; the guarded edit re-checks inside its own lock.
+    let live = config_edit::load(&file).map_err(lib_error)?;
+    check_reduction(&live, cap, new).map_err(lib_error)?;
+    config_edit::guard_file(root, &file, || {
+        config_edit::apply(&file, |doc| apply_reduction(doc, cap, new))
+    })
+    .map_err(lib_error)?;
+    Ok(json!({
+        "key": key,
+        "value": new.to_string(),
+        "kind": "integer",
+        "by": hosted.actor,
+    }))
+}
+
+/// The current integer value of the cap named by `cap`, walking
+/// `pools` -> pool -> `caps` -> model in the document. Absent pools, absent
+/// `caps` tables, absent models and non-integer values are all refused.
+fn current_cap(doc: &DocumentMut, cap: &CapKey) -> Result<i64, VivariumError> {
+    let name = cap.path.join(".");
+    let not_set = || VivariumError::Config(format!("`{name}` is not set"));
+    let pools = doc
+        .get("pools")
+        .and_then(Item::as_table_like)
+        .ok_or_else(not_set)?;
+    let pool = pools
+        .get(&cap.pool)
+        .and_then(Item::as_table_like)
+        .ok_or_else(not_set)?;
+    let caps = pool
+        .get("caps")
+        .and_then(Item::as_table_like)
+        .ok_or_else(not_set)?;
+    caps.get(&cap.model)
+        .and_then(Item::as_value)
+        .and_then(toml_edit::Value::as_integer)
+        .ok_or_else(|| VivariumError::Config(format!("`{name}` is not a configured integer cap")))
+}
+
+/// The reduction rule against the current configuration: the new value must
+/// be strictly lower than the cap that is set.
+fn check_reduction(doc: &DocumentMut, cap: &CapKey, new: i64) -> Result<(), VivariumError> {
+    let name = cap.path.join(".");
+    let current = current_cap(doc, cap)?;
+    if new >= current {
+        return Err(VivariumError::Config(format!(
+            "`{name}` may only be reduced: it is {current} now"
+        )));
+    }
+    Ok(())
+}
+
+/// The guarded edit: re-check against the file as the guard holds it, then
+/// lower the cap.
+fn apply_reduction(doc: &mut DocumentMut, cap: &CapKey, new: i64) -> Result<(), VivariumError> {
+    check_reduction(doc, cap, new)?;
+    config_edit::set_in(doc, &cap.path, toml_edit::Value::from(new))
+}
+
+/// The TOML text of `value` must be an integer a caps entry can hold;
+/// `PoolConfig` stores `BTreeMap<String, u32>`.
+fn cap_value(raw: &str) -> Result<i64, ToolError> {
+    let parsed = config_edit::parse_value(raw);
+    let Some(value) = parsed.as_integer() else {
+        return Err(ToolError::new(format!(
+            "a cap must be an integer; `{raw}` is a {}",
+            config_edit::value_type(&parsed)
+        )));
+    };
+    if u32::try_from(value).is_err() {
+        return Err(ToolError::new(format!(
+            "a cap must be between 0 and {}: got {value}",
+            u32::MAX
+        )));
+    }
+    Ok(value)
+}
+
+/// The restricted path takes exactly `key` and `value`; any other argument
+/// is refused before a write.
+fn only_key_value(arguments: &Value) -> Result<(), ToolError> {
+    let extra: Vec<String> = arguments
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, _)| name.clone())
+        .filter(|name| name != "key" && name != "value")
+        .collect();
+    if extra.is_empty() {
+        return Ok(());
+    }
+    Err(ToolError::new(format!(
+        "reducing a cap takes only `key` and `value`; got {}",
+        extra.join(", ")
+    )))
 }
 
 pub(in crate::server::mcp) fn config_unset(
