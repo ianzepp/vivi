@@ -66,8 +66,13 @@ fn need_body(want: Option<&str>, prose: &str) -> String {
 
 /// A rig whose need task carries `body`; `with_role` adds the researcher.
 fn rig(body: &str, with_role: bool) -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default(), body, with_role)
+}
+
+/// A rig over `cfg`, so tests can shape the dispatch budgets.
+fn rig_with(cfg: PumpConfig, body: &str, with_role: bool) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     let ctx = if with_role {
         let mut routing = (*ctx.routing).clone();
         routing.roles.push(researcher());
@@ -214,6 +219,38 @@ fn no_researcher_role_is_an_error() -> R {
     let error = start_job(&rig).err().map(|error| error.to_string());
     let text = error.ok_or_else(|| VivariumError::Message(String::from("expected an error")))?;
     assert!(text.contains("researcher"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_configured_researcher_budget_reaches_the_research_job() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.researcher = Some(333);
+    // Unrelated thinking steps stay distinguishable: resolving the budget
+    // from any other kind must fail.
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
+    cfg.dispatch.step_budgets.auditor = Some(44);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let rig = rig_with(cfg, &need_body(None, "Look into it."), true)?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+    let spec = start_job(&rig)?;
+    assert_eq!(spec.budget, 333);
+    Ok(())
+}
+
+#[test]
+fn an_absent_researcher_override_uses_the_dispatch_fallback_despite_unrelated_overrides() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 4242;
+    cfg.dispatch.step_budgets.planner = Some(11);
+    cfg.dispatch.step_budgets.head_cto = Some(22);
+    cfg.dispatch.step_budgets.auditor = Some(44);
+    cfg.dispatch.step_budgets.judge = Some(55);
+    let rig = rig_with(cfg, &need_body(None, "Look into it."), true)?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+    let spec = start_job(&rig)?;
+    assert_eq!(spec.budget, 4242);
     Ok(())
 }
 

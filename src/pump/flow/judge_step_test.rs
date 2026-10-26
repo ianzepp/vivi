@@ -26,8 +26,13 @@ struct Rig {
 }
 
 fn rig() -> Result<Rig, VivariumError> {
+    rig_with(PumpConfig::default())
+}
+
+/// A rig over `cfg`, so tests can shape the dispatch budgets.
+fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     Ok(Rig {
         _dir: dir,
@@ -105,6 +110,50 @@ fn judge_job_is_a_read_only_auditor_with_audit_and_rung() -> Result<(), Vivarium
     assert!(spec.body.contains("AUDIT-ANSWER-TEXT"));
     assert!(spec.body.contains("vivi::pump::flow::a_test"));
     assert!(spec.body.contains("exit: 101"));
+    Ok(())
+}
+
+/// An auditor row and a need-rung row, the two rows a judge start reads.
+fn store_audit_and_rung(rig: &Rig) -> Result<(), VivariumError> {
+    store_row(
+        rig,
+        "auditor",
+        json!({"front": {"answer": "defects"}, "body": "AUDIT-ANSWER-TEXT"}),
+    )?;
+    store_row(rig, "rung-need", json!({"exit": 0, "failing": []}))
+}
+
+#[test]
+fn a_judge_budget_override_reaches_the_judge_job_not_the_auditor_seat() -> Result<(), VivariumError>
+{
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.step_budgets.judge = Some(333);
+    // The auditor seat carries a different override: budgeting from the seat
+    // would put 444 on the job.
+    cfg.dispatch.step_budgets.auditor = Some(444);
+    cfg.dispatch.step_budgets.planner = Some(11);
+    let rig = rig_with(cfg)?;
+    store_audit_and_rung(&rig)?;
+    let StartAction::Job(spec) = start(&rig)? else {
+        return Err(VivariumError::Other("not a job".into()));
+    };
+    assert_eq!(spec.budget, 333);
+    Ok(())
+}
+
+#[test]
+fn an_absent_judge_override_uses_the_dispatch_fallback_despite_an_auditor_override()
+-> Result<(), VivariumError> {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.budget = 4242;
+    cfg.dispatch.step_budgets.auditor = Some(444);
+    cfg.dispatch.step_budgets.planner = Some(11);
+    let rig = rig_with(cfg)?;
+    store_audit_and_rung(&rig)?;
+    let StartAction::Job(spec) = start(&rig)? else {
+        return Err(VivariumError::Other("not a job".into()));
+    };
+    assert_eq!(spec.budget, 4242);
     Ok(())
 }
 
