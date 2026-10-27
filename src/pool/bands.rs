@@ -40,8 +40,8 @@ fn band_digit(text: &str) -> Option<u8> {
     }
 }
 
-/// The model-and-reasoning pair a pool offers for a band: the first entry of
-/// the band's list.
+/// A model-and-reasoning pair a pool offers for a band: one of the band's
+/// configured choices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     /// The band this choice serves, `0` to `5`.
@@ -52,9 +52,8 @@ pub struct Choice {
     pub reasoning: String,
 }
 
-/// The model-and-reasoning pair `pool` offers for `band`: the first entry of
-/// the band's list in the pool's `[pools.<name>.bands]` table. Later entries
-/// of the list are reserved and never chosen here.
+/// The model-and-reasoning pair `pool` offers for `band`: one of the choices
+/// in the band's list in the pool's `[pools.<name>.bands]` table.
 ///
 /// # Errors
 /// Returns an error naming the band, the pool and the bands the pool does
