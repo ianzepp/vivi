@@ -81,6 +81,28 @@ fn cases() -> Vec<Case> {
             want: Some(("endpoint", None)),
         },
         Case {
+            name: "endpoint marker after an unknown heading inside the stderr tail",
+            why: "failed",
+            detail: "",
+            receipt: receipt(
+                1,
+                "the hand gave up",
+                "boom\n--- unexpected heading ---\nHTTP 503 Service Unavailable",
+            ),
+            want: Some(("endpoint", None)),
+        },
+        Case {
+            name: "negative: the same endpoint marker only inside the receipt",
+            why: "failed",
+            detail: "",
+            receipt: receipt(
+                1,
+                "boom\n--- unexpected heading ---\nHTTP 503 Service Unavailable",
+                "",
+            ),
+            want: None,
+        },
+        Case {
             name: "stderr section line Connection error.",
             why: "failed",
             detail: "",
@@ -181,6 +203,18 @@ fn sections_tail_joins_stderr_and_runner_log() {
     assert!(tail.contains("boom"));
     assert!(tail.contains("log line"));
     assert!(!tail.contains("unit said things"));
+
+    // An unknown heading inside a tail section does not end the evidence:
+    // everything after it still joins, and receipt text that reads like
+    // environment failure stays out.
+    let text = "pool result j1: failed\n\n--- receipt\nthe hand saw: bash: line 1: pi: command not found\n\n--- stderr tail\nboom\n--- unexpected heading ---\nbigger boom\n\n--- runner log tail\nlog line\n--- also unknown ---\nstill logging";
+    let tail = sections_tail(text);
+    assert!(tail.contains("boom"), "{tail}");
+    assert!(tail.contains("bigger boom"), "{tail}");
+    assert!(tail.contains("log line"), "{tail}");
+    assert!(tail.contains("still logging"), "{tail}");
+    assert!(!tail.contains("the hand saw"), "{tail}");
+    assert!(!tail.contains("command not found"), "{tail}");
 }
 
 #[test]
