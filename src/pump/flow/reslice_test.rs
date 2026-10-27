@@ -6,8 +6,10 @@ use tempfile::{TempDir, tempdir};
 
 use super::{KIND, Mode, RESLICE_FAILED, Reslices, request, settle_error};
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::mailspace::shipped::SLICER_ROLE;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout;
@@ -63,6 +65,18 @@ fn step(node: &str, task: &str) -> StepRow {
     }
 }
 
+/// A valid readable root need letter for `NEED`, so the lazy need-target
+/// fallback of a reslice request finds a body.
+fn seed_need_root(mail: &mut FakeMail) -> R {
+    let front = NeedFront::new(vec![String::from("the need is done")]);
+    let body = need_body_with(&front, "prose");
+    let sent = mail.send_step("pump", "pump", "the need", &body, &[])?;
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
+    Ok(())
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     rig_with(PumpConfig::default())
 }
@@ -94,6 +108,7 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    seed_need_root(&mut mail)?;
     let sentinel = mail.send_step("pump", "pump", "run", "sentinel", &[])?;
     let slice_task = mail.send_step("pump", "pump", "s", "slice body text", &[])?;
     store.insert_step(NEED, &step("sentinel", &sentinel))?;
@@ -299,11 +314,23 @@ fn phase_rig() -> Result<(Rig, String), VivariumError> {
 }
 
 /// A rig whose slice A was fanned out, plus the task a `mode` request queued.
+///
+/// The planted slice A targets `vivi`; that target is configured here so the
+/// reslice job can resolve it (an unknown target is refused, never
+/// defaulted).
 fn phase_rig_with(
     cfg: PumpConfig,
     mode: Mode,
     input: &str,
 ) -> Result<(Rig, String), VivariumError> {
+    let mut cfg = cfg;
+    cfg.targets.insert(
+        String::from("vivi"),
+        PumpTarget {
+            main: String::from("vivi-main"),
+            ..PumpTarget::default()
+        },
+    );
     let mut rig = rig_with(cfg)?;
     let slicer_task = rig.mail.send_step("pump", "pump", "slice", "slicer", &[])?;
     let slicer = step("slice", &slicer_task);
