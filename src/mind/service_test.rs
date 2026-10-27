@@ -199,7 +199,7 @@ async fn a_stalled_pump_wakes_the_mind_and_unstick_dry_runs_the_unlock() {
     assert_eq!(planned[0].verdict, Ok(()));
     assert_eq!(
         actuator.applied,
-        vec!["would run vivi pump unlock 3f9a1c2e --project /w/app"]
+        vec!["would unlock a stuck need via pump_action need=3f9a1c2e project=/w/app"]
     );
     assert_eq!(pi.prompts.len(), 1);
     assert!(pi.prompts[0].contains("<<<untrusted source=\"pump-health\">"));

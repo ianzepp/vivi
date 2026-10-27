@@ -301,6 +301,31 @@ fn argv_maps_onto_existing_pump_commands() {
         answer.argv().unwrap(),
         ["pump", "answer", "s1", "failed", "--project", "/w/app"]
     );
+    let unlock = ActionRequest {
+        project: Some("/w/app".into()),
+        need: Some("3f9a1c2e".into()),
+        ..request(Action::Unlock)
+    };
+    assert_eq!(
+        unlock.argv().unwrap(),
+        ["pump", "unlock", "3f9a1c2e", "--project", "/w/app"]
+    );
+    let entered = ActionRequest {
+        entry: Some("fix1".into()),
+        ..unlock
+    };
+    assert_eq!(
+        entered.argv().unwrap(),
+        [
+            "pump",
+            "unlock",
+            "3f9a1c2e",
+            "--entry",
+            "fix1",
+            "--project",
+            "/w/app"
+        ]
+    );
     let letter = ActionRequest {
         kind: Action::Escalate,
         ..answer
@@ -313,8 +338,11 @@ fn dry_run_records_and_runs_nothing() {
     let requests = parse_envelope(REQUEUE).unwrap();
     let mut actuator = DryRun::default();
     let line = actuator.apply(&requests[0]).unwrap();
-    assert!(line.starts_with("would run vivi pump requeue"), "{line}");
-    assert_eq!(actuator.applied.len(), 1);
+    assert!(line.contains("pump_action"), "{line}");
+    assert!(line.contains("step=b71d04aa"), "{line}");
+    assert!(line.contains("note=\"flaky gate\""), "{line}");
+    assert_eq!(actuator.applied, vec![line]);
+    assert!(!DryRun::default().feeds_back());
 }
 
 #[test]
@@ -328,8 +356,312 @@ fn a_dry_run_letter_names_its_project_need_and_note() {
     let line = DryRun::default().apply(&request).unwrap();
     assert_eq!(
         line,
-        "would send Escalate (letter or stub) project=/w/app need=3f9a1c2e note=\"locked at the operator gate\""
+        "would send the operator an escalation via send need=3f9a1c2e project=/w/app note=\"locked at the operator gate\""
     );
+}
+
+#[test]
+fn a_dry_run_unlock_names_the_entry_only_when_it_travels() {
+    let bare = ActionRequest {
+        project: Some("/w/app".into()),
+        need: Some("3f9a1c2e".into()),
+        ..request(Action::Unlock)
+    };
+    let line = DryRun::default().apply(&bare).unwrap();
+    assert_eq!(
+        line,
+        "would unlock a stuck need via pump_action need=3f9a1c2e project=/w/app"
+    );
+    let entered = ActionRequest {
+        entry: Some("fix1".into()),
+        note: Some("restart at fix1".into()),
+        ..bare
+    };
+    let line = DryRun::default().apply(&entered).unwrap();
+    assert!(line.contains("entry=fix1"), "{line}");
+    assert!(line.contains("note=\"restart at fix1\""), "{line}");
+}
+
+/// One row of the dry-run table: the request to describe, the substrings
+/// its receipt must carry — the server tool it would drive and the action
+/// parameters that matter — and the substrings it must not. Every request
+/// names the watched root /w/app, as a permitted one does.
+fn dry_cases() -> Vec<(
+    ActionRequest,
+    &'static [&'static str],
+    &'static [&'static str],
+)> {
+    let mut cases: Vec<(
+        ActionRequest,
+        &'static [&'static str],
+        &'static [&'static str],
+    )> = vec![
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                status: Some("open".into()),
+                limit: Some(25),
+                ..request(Action::ReadStatus)
+            },
+            &[
+                "would read pump records via pump_list",
+                "need=3f9a1c2e",
+                "status=open",
+                "limit=25",
+            ],
+            &["pump_log"],
+        ),
+        (
+            ActionRequest {
+                file: Some("log".into()),
+                lines: Some(80),
+                filter: Some("flaky".into()),
+                ..request(Action::ReadLog)
+            },
+            &["pump_log", "file=log", "lines=80", "filter=flaky"],
+            &["pump_list"],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                ..request(Action::ReadNeed)
+            },
+            &["need_show", "need=3f9a1c2e"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                limit: Some(25),
+                before: Some("msg_01".into()),
+                ..request(Action::ReadNeedThread)
+            },
+            &["need_thread", "need=3f9a1c2e", "limit=25", "before=msg_01"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                step: Some("b71d04aa".into()),
+                before: Some("msg_01".into()),
+                ..request(Action::ReadTaskThread)
+            },
+            &["task_thread", "step=b71d04aa", "before=msg_01"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                flow: Some("build".into()),
+                need: Some("3f9a1c2e".into()),
+                ..request(Action::ReadFlow)
+            },
+            &["flow_show", "flow=build", "need=3f9a1c2e"],
+            &[],
+        ),
+        (
+            request(Action::ReadConfig),
+            &["config_show", "project=/w/app"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                pool: Some("hands".into()),
+                ..request(Action::ReadPool)
+            },
+            &["pool_show", "pool=hands"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                note: Some("status".into()),
+                ..request(Action::LetterToOperator)
+            },
+            &["would send the operator a letter via send", "need=3f9a1c2e"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                note: Some("stuck".into()),
+                ..request(Action::Escalate)
+            },
+            &[
+                "would send the operator an escalation via send",
+                "need=3f9a1c2e",
+            ],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                note: Some("on it".into()),
+                ..request(Action::ReplyNeed)
+            },
+            &["via reply", "need=3f9a1c2e", "note=\"on it\""],
+            &[],
+        ),
+        (
+            request(Action::PausePump),
+            &["would pause the pump via pump_control"],
+            &[],
+        ),
+        (
+            request(Action::ResumePump),
+            &["would resume the pump via pump_control"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                step: Some("b71d04aa".into()),
+                ..request(Action::Requeue)
+            },
+            &["would requeue a step via pump_action", "step=b71d04aa"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                ..request(Action::Replan)
+            },
+            &["would ask for a replan via pump_action", "need=3f9a1c2e"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                step: Some("b71d04aa".into()),
+                word: Some("go".into()),
+                ..request(Action::Answer)
+            },
+            &["pump_action", "step=b71d04aa", "word=go"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                ..request(Action::Unlock)
+            },
+            &["would unlock a stuck need via pump_action", "need=3f9a1c2e"],
+            &["entry="],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                note: Some("duplicate".into()),
+                ..request(Action::WithdrawNeed)
+            },
+            &["would withdraw a need via pump_action", "need=3f9a1c2e"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                priority: Some(1),
+                ..request(Action::SetPriority)
+            },
+            &["pump_priority action=set", "need=3f9a1c2e", "level=1"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                role: Some("hand".into()),
+                model: Some("vendor/model.v1".into()),
+                ..request(Action::SetRoleModel)
+            },
+            &["role_set", "role=hand", "model=vendor/model.v1"],
+            &[],
+        ),
+        (
+            ActionRequest {
+                pool: Some("hands".into()),
+                model: Some("vendor/model.v1".into()),
+                cap: Some(2),
+                ..request(Action::SetPoolCap)
+            },
+            &[
+                "would set a pool's per-model cap via config_set",
+                "pool=hands",
+                "model=vendor/model.v1",
+                "cap=2",
+            ],
+            &["pool_bands"],
+        ),
+        (
+            ActionRequest {
+                pool: Some("hands".into()),
+                band: Some("P1".into()),
+                model: Some("vendor/model.v1".into()),
+                reasoning: Some("mid".into()),
+                ..request(Action::SetPoolBand)
+            },
+            &[
+                "pool_bands action=set",
+                "pool=hands",
+                "band=P1",
+                "model=vendor/model.v1",
+                "reasoning=mid",
+            ],
+            &["config_set"],
+        ),
+        (
+            request(Action::FileNeed),
+            &[
+                "would file a new need",
+                "filing is not wired to the server yet",
+            ],
+            &[],
+        ),
+        (
+            request(Action::FileFixNeed),
+            &[
+                "would file a fix need",
+                "filing is not wired to the server yet",
+            ],
+            &[],
+        ),
+        (
+            ActionRequest {
+                need: Some("3f9a1c2e".into()),
+                ..request(Action::DispatchNeed)
+            },
+            &["dispatch is not wired", "need=3f9a1c2e"],
+            &[],
+        ),
+        (request(Action::Upgrade), &["upgrade is not wired"], &[]),
+        (
+            request(Action::SelfRelease),
+            &["self-release is not wired"],
+            &[],
+        ),
+    ];
+    for (request, _, _) in &mut cases {
+        request.project = Some("/w/app".into());
+    }
+    cases
+}
+
+#[test]
+fn dry_run_describes_the_intended_mcp_operation_for_every_kind() {
+    for (request, present, absent) in dry_cases() {
+        let line = DryRun::default().apply(&request).unwrap();
+        assert!(line.contains("project=/w/app"), "{line}");
+        for needle in present {
+            assert!(line.contains(needle), "{line} lacks {needle:?}");
+        }
+        for needle in absent {
+            assert!(!line.contains(needle), "{line} carries {needle:?}");
+        }
+    }
+    // The table names every kind the field matrix knows, so a new action
+    // cannot land without a described dry run.
+    let mut covered: Vec<Action> = dry_cases()
+        .into_iter()
+        .map(|(request, _, _)| request.kind)
+        .collect();
+    covered.sort_unstable();
+    covered.dedup();
+    let mut all: Vec<Action> = matrix().into_iter().map(|row| row.kind).collect();
+    all.sort_unstable();
+    assert_eq!(covered, all);
 }
 
 /// One row of the field matrix: a kind and the TOML lines its required
