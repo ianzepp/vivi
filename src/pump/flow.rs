@@ -8,6 +8,7 @@ pub mod build_front;
 pub mod collect;
 pub mod collect_slice;
 pub mod collect_step;
+pub mod continuation;
 pub mod cto_step;
 pub mod decide;
 pub mod def;
@@ -128,6 +129,10 @@ fn run_index(
 #[cfg(test)]
 #[path = "flow/fake_mail_test.rs"]
 pub(crate) mod fake_mail;
+
+#[cfg(test)]
+#[path = "flow/continuation_test.rs"]
+mod continuation_test;
 
 #[cfg(test)]
 #[path = "flow/verify_flow_test.rs"]
