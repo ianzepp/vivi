@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use vivi::VivariumError;
 use vivi::cli::{McpCommand, McpSubcommand};
-use vivi::mailspace::Mailspace;
 use vivi::mcp::client::{self, Client};
 use vivi::mcp::resolve::{self, MailspaceSource, McpFlags};
 use vivi::mcp::{BridgeConfig, HttpUpstream, serve};
@@ -217,8 +216,22 @@ fn mailspace_source(project: Option<&Path>) -> Result<Option<MailspaceSource>, V
     let Some(root) = root else {
         return Ok(None);
     };
-    let mailspace = Mailspace::open_root(root)?;
-    let sync = mailspace.config.sync.clone().unwrap_or_default();
+    // Read the two values straight from the file: opening the mailspace
+    // would repair and rewrite it, and a read must not write.
+    #[derive(serde::Deserialize, Default)]
+    struct Sync {
+        server: Option<String>,
+        project: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        sync: Option<Sync>,
+    }
+    let path = root.join(".vivi").join("mailspace.toml");
+    let text = std::fs::read_to_string(&path)?;
+    let file: File = toml::from_str(&text)
+        .map_err(|e| VivariumError::Other(format!("{}: {e}", path.display())))?;
+    let sync = file.sync.unwrap_or_default();
     Ok(Some(MailspaceSource {
         server: sync.server,
         project: sync.project,
