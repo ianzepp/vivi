@@ -48,7 +48,7 @@ const RECEIPT: &str = concat!(
 
 /// A real mailspace project with its pump context, fake host, index and port.
 struct Rig {
-    _project: Project,
+    project: Project,
     ctx: Ctx,
     host: Arc<FakeHost>,
     store: PumpStore,
@@ -65,7 +65,7 @@ fn rig() -> R<Rig> {
     };
     Ok(Rig {
         host: p.host.clone(),
-        _project: p,
+        project: p,
         ctx,
         store,
         port,
@@ -168,8 +168,10 @@ fn cto_job(rig: &Rig, run: &RunRow) -> R<JobSpec> {
 #[test]
 fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
     let rig = rig()?;
-    let need = "need-diag";
-    let run = build_run(need, 2);
+    // A real valid need root: the cto start reads the need's target from
+    // this letter, so a fabricated handle would fail the start.
+    let need = rig.project.need("diagnose the exhausted slice");
+    let run = build_run(&need, 2);
     rig.store.insert_run(&run)?;
 
     let task = rig.port.send_step(
@@ -179,7 +181,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         &task_body_with(
             &TaskFront {
                 target: Some("vivi".into()),
-                ..TaskFront::step(need, 2, "slice:a")
+                ..TaskFront::step(&need, 2, "slice:a")
             },
             "",
         ),
@@ -192,7 +194,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         state: StepState::Running,
         verdict: None,
     };
-    rig.store.insert_step(need, &slice)?;
+    rig.store.insert_step(&need, &slice)?;
 
     let mut st = State::default();
     let retried = retry(
@@ -200,7 +202,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         &mut st,
         &rig.store,
         &rig.port,
-        need,
+        &need,
         &slice,
         &failed_job(&task),
         MAX_ATTEMPTS,
@@ -246,13 +248,15 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
 #[test]
 fn attempt_thread_read_errors_are_not_hidden() -> R<()> {
     let rig = rig()?;
-    let need = "need-broken-thread";
-    let early = build_run(need, 1);
-    let late = build_run(need, 2);
+    // A real valid need root; only the slice task stays fabricated, so the
+    // start still fails on its unreadable thread, not on the need letter.
+    let need = rig.project.need("need with a broken slice thread");
+    let early = build_run(&need, 1);
+    let late = build_run(&need, 2);
     rig.store.insert_run(&early)?;
     rig.store.insert_run(&late)?;
     rig.store.insert_step(
-        need,
+        &need,
         &StepRow {
             run: 1,
             node: "slice:ghost".into(),
