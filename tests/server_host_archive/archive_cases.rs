@@ -401,7 +401,7 @@ async fn a_registry_only_project_is_refused_as_not_hosted() {
     );
 }
 
-/// After creation the archive needs only `HOST_LANES_ROOT`: with every
+/// After creation the archive needs only `lanes_root`: with every
 /// other host setting blanked the tool still succeeds and records the
 /// lanes directory under it.
 #[tokio::test]

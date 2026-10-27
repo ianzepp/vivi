@@ -9,7 +9,7 @@ use tempfile::{TempDir, tempdir};
 
 fn vivi(config_dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vivi"))
-        .env("VIVI_CONFIG_DIR", config_dir)
+        .env("VIVI_HOME", config_dir)
         .args(args)
         .output()
         .unwrap()
@@ -85,7 +85,7 @@ fn create_prints_the_result_and_registers_the_project() {
 
     assert!(host.lanes.join("app/app.git/HEAD").is_file());
     assert!(host.projects.join("app/app/.git").is_dir());
-    let registry = fs::read_to_string(host.config.join("vivi/pump-service.toml")).unwrap();
+    let registry = fs::read_to_string(host.config.join("server/registry.toml")).unwrap();
     assert!(
         registry.contains("pump = true") && registry.contains("serve = false"),
         "{registry}"
@@ -169,6 +169,6 @@ fn delete_needs_the_name_twice_then_removes_everything() {
     assert!(out.contains("unregistered"), "{out}");
     assert!(!host.projects.join("app").exists());
     assert!(!host.lanes.join("app").exists());
-    let registry = fs::read_to_string(host.config.join("vivi/pump-service.toml")).unwrap();
+    let registry = fs::read_to_string(host.config.join("server/registry.toml")).unwrap();
     assert!(!registry.contains("app"), "{registry}");
 }

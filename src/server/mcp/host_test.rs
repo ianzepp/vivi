@@ -12,10 +12,10 @@ fn require_lanes_needs_only_the_lanes_root() {
     assert_eq!(lanes, PathBuf::from("/lanes"));
     let error = require_lanes(&HostConfig::default(), "archive_project")
         .err()
-        .expect("an unset HOST_LANES_ROOT is an error")
+        .expect("an unset lanes_root is an error")
         .message;
     assert_eq!(
         error,
-        "archive_project is not configured on this host: HOST_LANES_ROOT not set"
+        "archive_project is not configured on this host: lanes_root not set"
     );
 }

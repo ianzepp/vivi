@@ -38,23 +38,24 @@ fn version_line_names_the_crate_version() {
 }
 
 #[test]
-fn help_text_lists_every_variable_the_server_reads() {
+fn help_text_lists_every_config_key_and_secret() {
     let help = help_text();
     for name in [
-        "PORT",
-        "BIND",
-        "DATA_DIR",
+        "bind",
+        "port",
+        "data_dir",
+        "send_rate_per_minute",
+        "hosted_default_identity",
+        "log",
+        "projects_root",
+        "lanes_root",
+        "git_url_prefix",
+        "default_pool",
+        "config.toml",
+        "creds/",
         "STORE_ENCRYPTION_KEY",
         "MODERATION_TOKEN",
         "HOST_OPERATOR_TOKEN",
-        "HOSTED_DEFAULT_IDENTITY",
-        "SEND_RATE_PER_MINUTE",
-        "HOST_PROJECTS_ROOT",
-        "HOST_LANES_ROOT",
-        "HOST_GIT_URL_PREFIX",
-        "HOST_DEFAULT_POOL",
-        "RUST_LOG",
-        "CREDENTIALS_DIRECTORY",
     ] {
         assert!(help.contains(name), "help is missing {name}");
     }

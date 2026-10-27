@@ -1,5 +1,5 @@
 //! CLI surface of the exploratory `vivi mind` spike. Every binary run points
-//! the config dir and the mind home at a temp dir, so no real registry,
+//! VIVI_HOME and the mind home at a temp dir, so no real registry,
 //! mind state, or socket is touched.
 
 use clap::Parser;
@@ -35,7 +35,7 @@ fn bare_mind_parses_as_attach_and_service_verbs_parse() {
 fn vivi(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args(args)
-        .env("VIVI_CONFIG_DIR", dir.join("config"))
+        .env("VIVI_HOME", dir.join("home"))
         .env("VIVI_MIND_HOME", dir.join("mind"))
         .output()
         .unwrap()
@@ -74,7 +74,8 @@ fn unit_prints_the_example_and_install_is_a_stub() {
 #[test]
 fn a_later_authority_stage_is_refused_at_load() {
     let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("config").join("vivi");
+    // mind.toml lives beside the host registry, under $VIVI_HOME/server.
+    let config = dir.path().join("home").join("server");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("mind.toml"), "authority = \"self-release\"\n").unwrap();
     let output = vivi(dir.path(), &["mind", "status"]);

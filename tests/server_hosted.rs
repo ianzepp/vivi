@@ -1,6 +1,6 @@
 //! Hosted projects (S2): the server serves the registry's `serve = true`
 //! roots straight from each project's own mailspace, with its per-project
-//! data under `DATA_DIR/projects/<id>/` and no second mailspace.
+//! data under `data_dir/projects/<id>/` and no second mailspace.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -117,7 +117,7 @@ fn hosts_a_root_under_the_id_derived_from_its_mailspace() {
     assert!(meta.epoch.is_some());
     assert_eq!(env.projects.mailspace_dir(&id).unwrap(), root.join(".vivi"));
 
-    // Server data lives under DATA_DIR; no mailspace was created there.
+    // Server data lives under data_dir; no mailspace was created there.
     let dir = project_dir(&env, &id);
     for file in [
         "project.json",
@@ -127,7 +127,7 @@ fn hosts_a_root_under_the_id_derived_from_its_mailspace() {
     ] {
         assert!(dir.join(file).is_file(), "{file}");
     }
-    assert!(!dir.join(".vivi").exists(), "no .vivi under DATA_DIR");
+    assert!(!dir.join(".vivi").exists(), "no .vivi under data_dir");
 
     // The mailspace's own key is the creator member.
     let members = env.identities.list(&id);
@@ -749,9 +749,9 @@ fn a_discard_failure_still_refuses_the_letter_and_records_nothing() {
 async fn the_watcher_follows_the_registry_file() {
     let env = env("watch");
     let (root, _) = host_root(&env, "app", None);
-    let config = env.hosts.join("config");
+    let config = env.hosts.join("home");
     // This test alone sets the variable in this binary.
-    unsafe { std::env::set_var("VIVI_CONFIG_DIR", &config) };
+    unsafe { std::env::set_var("VIVI_HOME", &config) };
     let file = registry::path().unwrap();
     assert!(file.starts_with(&config));
     let save = |serve: bool| {

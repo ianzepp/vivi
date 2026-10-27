@@ -19,14 +19,14 @@ const PREFIX: &str = "git@hub.example.ts.net:";
 static ENV: Once = Once::new();
 
 /// One scratch config directory for the whole test binary: the host registry
-/// is process-global (`VIVI_CONFIG_DIR`). Every test uses its own names.
+/// is process-global (`VIVI_HOME`). Every test uses its own names.
 fn isolate_registry() {
     ENV.call_once(|| {
         let dir = std::env::temp_dir().join(format!("vivi-server-host-cfg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: runs once, before any test reads the environment.
-        unsafe { std::env::set_var("VIVI_CONFIG_DIR", &dir) };
+        unsafe { std::env::set_var("VIVI_HOME", &dir) };
     });
 }
 
@@ -384,8 +384,8 @@ async fn missing_host_configuration_is_a_clear_error() {
     assert!(errored, "{value}");
     let message = value["error"].as_str().unwrap();
     assert!(
-        message.contains("HOST_PROJECTS_ROOT, HOST_LANES_ROOT and HOST_GIT_URL_PREFIX are not set"),
-        "every unset variable is named at once: {message}"
+        message.contains("projects_root, lanes_root and git_url_prefix are not set"),
+        "every unset key is named at once: {message}"
     );
 
     let mut partial = fx.state.clone();
@@ -401,7 +401,7 @@ async fn missing_host_configuration_is_a_clear_error() {
         value["error"]
             .as_str()
             .unwrap()
-            .contains("HOST_GIT_URL_PREFIX is not set"),
+            .contains("git_url_prefix is not set"),
         "{value}"
     );
     assert!(!fx.projects.join("nowhere").exists());

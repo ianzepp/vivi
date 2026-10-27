@@ -5,19 +5,15 @@
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// Run the binary with exactly `vars` added (and no `DATA_DIR` unless one is
-/// given), under a deadline.
-fn wait(args: &[&str], vars: &[(&str, &str)]) -> Output {
+/// Run the binary with `VIVI_HOME` set to `home`, under a deadline.
+fn wait(args: &[&str], home: &std::path::Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_vivi"));
     command
         .args(["server", "run"])
         .args(args)
-        .env_remove("DATA_DIR")
+        .env("VIVI_HOME", home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (name, value) in vars {
-        command.env(name, value);
-    }
     let mut child = command.spawn().expect("spawn vivi-server");
     let deadline = Instant::now() + Duration::from_secs(10);
     while child.try_wait().expect("poll vivi-server").is_none() {
@@ -32,23 +28,26 @@ fn wait(args: &[&str], vars: &[(&str, &str)]) -> Output {
         .expect("collect vivi-server output")
 }
 
-fn scratch_data_dir(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("vivi-server-cli-{tag}-{}", std::process::id()))
+/// A fresh server home whose `config.toml` holds `config`.
+fn scratch_home(tag: &str, config: &str) -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!("vivi-server-cli-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("server")).expect("create server home");
+    std::fs::write(home.join("server/config.toml"), config).expect("write config.toml");
+    home
 }
 
 fn run(args: &[&str]) -> Output {
-    let data = scratch_data_dir("args");
-    let out = wait(
-        args,
-        &[
-            ("PORT", "0"),
-            ("DATA_DIR", data.to_str().expect("utf-8 path")),
-        ],
-    );
+    // Tests run in parallel: each call needs its own home.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let home = scratch_home(&format!("args{n}"), "port = 0\n");
+    let out = wait(args, &home);
     assert!(
-        !data.exists(),
+        !home.join("server/data").exists(),
         "vivi-server {args:?} created its data directory"
     );
+    let _ = std::fs::remove_dir_all(&home);
     out
 }
 
@@ -66,12 +65,13 @@ fn version_prints_name_and_crate_version() {
 }
 
 #[test]
-fn help_prints_usage_and_environment() {
+fn help_prints_usage_and_config() {
     for flag in ["--help", "-h"] {
         let out = run(&[flag]);
         assert!(out.status.success(), "{flag}: {:?}", out.status);
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("Usage: vivi server run"), "{text}");
+        assert!(text.contains("config.toml"), "{text}");
         assert!(text.contains("STORE_ENCRYPTION_KEY"), "{text}");
     }
 }
@@ -87,35 +87,14 @@ fn an_unknown_argument_exits_2_without_serving() {
 }
 
 #[test]
-fn serving_without_a_data_dir_exits_2() {
-    let out = wait(&[], &[("PORT", "0")]);
-    assert_eq!(out.status.code(), Some(2));
-    let text = String::from_utf8_lossy(&out.stderr);
-    assert!(text.contains("DATA_DIR is required"), "{text}");
-}
-
-#[test]
-fn a_relative_data_dir_exits_2_and_is_not_created() {
-    let out = wait(&[], &[("PORT", "0"), ("DATA_DIR", "relative-data")]);
-    assert_eq!(out.status.code(), Some(2));
-    let text = String::from_utf8_lossy(&out.stderr);
-    assert!(text.contains("DATA_DIR must be an absolute path"), "{text}");
-    assert!(!std::path::Path::new("relative-data").exists());
-}
-
-#[test]
 fn an_address_already_in_use_exits_1_before_the_data_dir_is_touched() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = taken.local_addr().expect("local addr").port().to_string();
-    let data = scratch_data_dir("taken");
-    let out = wait(
-        &[],
-        &[
-            ("BIND", "127.0.0.1"),
-            ("PORT", &port),
-            ("DATA_DIR", data.to_str().expect("utf-8 path")),
-        ],
+    let home = scratch_home(
+        "taken",
+        &format!("bind = \"127.0.0.1\"\nport = {port}\n"),
     );
+    let out = wait(&[], &home);
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("cannot bind 127.0.0.1"), "{text}");
@@ -123,5 +102,9 @@ fn an_address_already_in_use_exits_1_before_the_data_dir_is_touched() {
         !text.contains("panicked"),
         "a bind failure must be an error exit, not a panic: {text}"
     );
-    assert!(!data.exists(), "the data directory was created before bind");
+    assert!(
+        !home.join("server/data").exists(),
+        "the data directory was created before bind"
+    );
+    let _ = std::fs::remove_dir_all(&home);
 }

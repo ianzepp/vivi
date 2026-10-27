@@ -1,7 +1,7 @@
 //! Direct-handler test fixtures for the host archive lifecycle
 //! (`cfg(test)` only, so nothing here reaches a production build).
 //!
-//! The harness follows the isolated `VIVI_CONFIG_DIR` + scratch
+//! The harness follows the isolated `VIVI_HOME` + scratch
 //! `HostConfig` pattern of `tests/host_archive.rs`: one config directory
 //! per test binary (the host registry is process-global) and a scratch
 //! data/projects/lanes tree per fixture. Every fixture creates its project
@@ -41,7 +41,7 @@ static CONFIG_DIR: Once = Once::new();
 
 /// Serializes every test of this binary that builds a fixture, for the
 /// test's whole life. The host registry is process-global
-/// (`VIVI_CONFIG_DIR`) and `reconcile` serves every registry-served root
+/// (`VIVI_HOME`) and `reconcile` serves every registry-served root
 /// into whatever data dir it is handed, so a sibling registering a project
 /// mid-test can import it into this fixture's data dir: distinct names do
 /// not isolate data-dir assertions. The guard lives in the fixture, so it is
@@ -52,7 +52,7 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static NAMES: AtomicU64 = AtomicU64::new(0);
 
 /// One scratch config directory for the whole test binary: the host
-/// registry is process-global (`VIVI_CONFIG_DIR`). Every test uses its own
+/// registry is process-global (`VIVI_HOME`). Every test uses its own
 /// names.
 fn isolate_registry() {
     CONFIG_DIR.call_once(|| {
@@ -63,7 +63,7 @@ fn isolate_registry() {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: runs once, before any test reads the environment.
-        unsafe { std::env::set_var("VIVI_CONFIG_DIR", &dir) };
+        unsafe { std::env::set_var("VIVI_HOME", &dir) };
     });
 }
 
