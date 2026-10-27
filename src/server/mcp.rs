@@ -820,7 +820,7 @@ fn tools_list() -> Value {
                 "properties": {},
                 "additionalProperties": false
             })),
-            tool("target_log", "Hosted projects only, operator only. Read-only: the newest commits on a target's main branch, read from its lane on this host (the target's remote_url under HOST_LANES_ROOT, or a file:// URL). Each commit is {commit, parents, author, date, subject}. Default target: `default`, else the only target. Same authorization as pump_control.", json!({
+            tool("target_log", "Hosted projects only, operator only. Read-only: the newest commits on a target's main branch, read from its lane on this host (the target's remote_url under lanes_root, or a file:// URL). Each commit is {commit, parents, author, date, subject}. Default target: `default`, else the only target. Same authorization as pump_control.", json!({
                 "type": "object",
                 "properties": {
                     "target": { "type": "string", "description": "Target id; defaults to the primary target" },

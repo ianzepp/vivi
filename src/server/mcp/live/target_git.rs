@@ -3,8 +3,8 @@
 //! host. Read-only and operator-only, like the other pump views.
 //!
 //! The lane is found from the target's `remote_url`: a URL that starts with
-//! `HOST_GIT_URL_PREFIX` is the path after the prefix under
-//! `HOST_LANES_ROOT`; a `file://` URL or an absolute path is read as it is.
+//! `git_url_prefix` is the path after the prefix under
+//! `lanes_root`; a `file://` URL or an absolute path is read as it is.
 //! A target without a lane on this host is refused.
 
 use std::path::{Path, PathBuf};

@@ -104,14 +104,14 @@ pub(super) fn tools_list() -> Value {
             }),
         ),
         tool("create_project",
-        "Create a project on this host: its lanes directory <HOST_LANES_ROOT>/<name> with the \
+        "Create a project on this host: its lanes directory <lanes_root>/<name> with the \
          first target's bare git repository <target>.git, a project directory with an \
          initialised mailspace and starter pump config, the first target's checkout and \
          [pump.targets.<target>] entry, and a host registry entry; seed the given rung commands \
          into [pump.rungs]; then set a registered project's pump control mode to running \
          (the same control state pump_control start writes; with pump:false the mode is left \
          alone), serve it and mint an operator API key. Returns project_root, \
-         lanes_dir, target, git_url (<HOST_GIT_URL_PREFIX><name>/<target>.git), repo_path, \
+         lanes_dir, target, git_url (<git_url_prefix><name>/<target>.git), repo_path, \
          checkout_path, mailspace_id, initial_commit, readiness (what the pump still needs), \
          project_id, mcp_path, operator_key (shown once; store it), pump_mode (the inspected \
          control state) and, when the mode could not be written or read, pump_error. \
@@ -147,7 +147,7 @@ pub(super) fn tools_list() -> Value {
         tool(
             "lane_create",
             "Add a lane to a project on this host: the bare repository \
-             <HOST_LANES_ROOT>/<name>/<target>.git, its checkout <project>/<target>, and \
+             <lanes_root>/<name>/<target>.git, its checkout <project>/<target>, and \
              [pump.targets.<target>] through the guarded config write (a running pump refuses; \
              pause it first). Returns target_id, repo_path, checkout_path, git_url, \
              initial_commit and the project's pump readiness. A second add of the same target is \
@@ -155,9 +155,9 @@ pub(super) fn tools_list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Existing project directory name under HOST_PROJECTS_ROOT" },
+                    "name": { "type": "string", "description": "Existing project directory name under projects_root" },
                     "target": { "type": "string", "description": "Target id (lowercase letters, digits and hyphens): [pump.targets.<target>]" },
-                    "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><name>/<target>.git (SSH or file://). Defaults to HOST_GIT_URL_PREFIX" },
+                    "git_url_prefix": { "type": "string", "description": "Lane URL is <prefix><name>/<target>.git (SSH or file://). Defaults to git_url_prefix" },
                     "seed": { "type": "boolean", "default": false, "description": "Create one empty seed commit on the lane's main branch" },
                     "source": { "type": "string", "description": "Fill the lane from this Git address (every branch and tag), fetched by this host; it needs a main branch. Excludes seed. Must match ^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?$; local paths, file://, ssh://, other hosts, user info, query and fragment are refused" }
                 },
@@ -188,7 +188,7 @@ pub(super) fn tools_list() -> Value {
             "Serve a mailspace that already exists on this host's disk: add its root to the host \
              registry with serve on and reconcile at once. `root` must be an absolute path whose \
              .vivi/mailspace.toml exists; a base config (`base = true`) and an archived project's \
-             root are refused. A new entry gets pump off; an existing entry keeps its pump flag. \
+             root are refused. A new entry is written pump = true: the project's own pump control decides whether it pumps. \
              Nothing on disk changes. Returns root, project_id, name and served (plus serve_error \
              when serving was refused). Host principal only.",
             json!({
@@ -382,7 +382,7 @@ pub(super) fn require(
     }
 }
 
-/// The lanes root alone, or one error naming `HOST_LANES_ROOT` when it is
+/// The lanes root alone, or one error naming `lanes_root` when it is
 /// unset.
 pub(super) fn require_lanes(host: &HostConfig, tool: &str) -> Result<PathBuf, ToolError> {
     host.lanes_root.clone().ok_or_else(|| {

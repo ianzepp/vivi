@@ -41,7 +41,7 @@ use crate::server::projects::Archived;
 /// unregistered if still present, the registry reconciles, and the
 /// existing record is returned.
 ///
-/// A first archive needs only `HOST_LANES_ROOT`: it is canonicalized and
+/// A first archive needs only `lanes_root`: it is canonicalized and
 /// its `join(name)` recorded as `lanes_dir`. The registry is loaded before
 /// any metadata write and an unreadable registry aborts. The matching
 /// registered root and its exact pump/serve flags are recorded; a root

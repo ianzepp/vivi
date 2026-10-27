@@ -1,7 +1,7 @@
 //! `lane_create`: `vivi project lane add` as a host tool.
 //!
 //! The server owns the host's projects and lanes roots, so the tool makes
-//! the whole lane: the bare repository `<HOST_LANES_ROOT>/<name>/<target>.git`,
+//! the whole lane: the bare repository `<lanes_root>/<name>/<target>.git`,
 //! the checkout `<project>/<target>` and the `[pump.targets.<target>]` entry,
 //! then answers the project's pump readiness.
 
