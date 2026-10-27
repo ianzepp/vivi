@@ -55,6 +55,29 @@ use super::{
 };
 use crate::server::ids::normalize_room_id;
 
+// The private pipeline slots. The live pass is still `push::push` above;
+// these modules carry the types and seams of the server-only incremental
+// path. The scope ruling for that path: "The generic CLI sync
+// implementation is not changed."
+mod addressing;
+mod binding;
+mod discovery;
+mod followups;
+mod groups;
+mod model;
+mod naming;
+mod observations;
+mod pipeline;
+mod policy;
+mod rfc;
+mod selection;
+mod sender;
+mod state;
+
+#[cfg(test)]
+#[path = "hosted_index/tests.rs"]
+mod tests;
+
 /// Where a hosted project's pull-style filing state lives, beside
 /// `project.json`: `DATA_DIR/projects/<id>/sync/state.json`.
 const SYNC_STATE_DIR: &str = "sync";
