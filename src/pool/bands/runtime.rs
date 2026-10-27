@@ -1,19 +1,29 @@
-//! Shared band-runtime decision types: what a selection answers and what a
-//! pool currently has free.
+//! Shared band-runtime decision types and the availability-aware selection
+//! that answers with them: what a selection answers, what a pool currently
+//! has free, and which configured band choice is both served and free right
+//! now.
 //!
-//! These types are the contract between whoever resolves a band to a
-//! model-and-reasoning pair and whoever orchestrates a dispatch session;
-//! neither resolution nor session orchestration lives in this module. Every
-//! count and deadline below is already scoped to the one pool the snapshot
-//! was taken for: nothing here crosses pools.
+//! Session orchestration stays out: these types are the contract between
+//! whoever resolves a band to a model-and-reasoning pair and whoever
+//! orchestrates a dispatch session around it. Every count and deadline
+//! below is already scoped to the one pool the snapshot was taken for:
+//! nothing here crosses pools.
 //!
 //! Folding recorded evidence into a snapshot is [`Availability::from_evidence`];
 //! gathering that evidence live is I/O that belongs to [`super::live`].
 
 use std::collections::BTreeMap;
 
+use rand_core::{OsRng, RngCore};
+
+use crate::error::VivariumError;
+use crate::pool::config::PoolConfig;
+use crate::pool::config_bands::BandChoice;
 use crate::pool::record::OpenDispatch;
 use crate::pool::slot::SlotStatus;
+
+use super::Choice;
+use super::cooldown;
 
 /// The answer to one dispatch-selection question.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +143,152 @@ fn claim_is_recorded(open: &[OpenDispatch], pool: &str, slot: &SlotStatus) -> bo
             && d.record.machine == slot.id
             && Some(d.task.as_str()) == slot.task.as_deref()
     })
+}
+
+/// The model-and-reasoning pair `pool` offers for `band`, drawn only among
+/// the band's choices that are free as of the snapshot: a choice whose
+/// model has reached its configured pool cap is out, and so is every choice
+/// whose provider is still cooling down. The survivors are sampled by
+/// their configured relative weights, so a removed choice's share flows to
+/// the rest, and duplicate model entries at different reasoning efforts
+/// stay distinct choices. A band the pool configures nothing for stays a
+/// configuration error — no amount of waiting serves it.
+///
+/// # Errors
+/// As [`super::choose`]: a band the pool does not serve, a list the
+/// configuration cap refuses, or an entropy failure of the system source
+/// of randomness.
+pub fn select_available(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+    availability: &Availability,
+) -> Result<Decision<Choice>, VivariumError> {
+    let mut rng = OsRng;
+    select_available_with(config, pool, band, availability, &mut rng)
+}
+
+/// [`select_available`] with the source of randomness injected: the seam
+/// the tests share, mirroring [`super::sample_pair`].
+///
+/// # Errors
+/// As [`select_available`].
+pub(crate) fn select_available_with<R: RngCore>(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+    availability: &Availability,
+    rng: &mut R,
+) -> Result<Decision<Choice>, VivariumError> {
+    let key = format!("P{band}");
+    let Some(list) = config
+        .bands
+        .entries
+        .get(&key)
+        .filter(|list| !list.is_empty())
+    else {
+        return Err(super::not_served(pool, band, &config.bands));
+    };
+    let free: Vec<BandChoice> = list
+        .iter()
+        .filter(|entry| !cap_blocks(config, &entry.model, availability))
+        .filter(|entry| provider_deadline(&entry.model, availability).is_none())
+        .cloned()
+        .collect();
+    if free.is_empty() {
+        return Ok(Decision::Waiting(blocked_wait(config, list, availability)));
+    }
+    let entry = super::sample(&key, &free, rng)?;
+    Ok(Decision::Ready(Choice {
+        band,
+        model: entry.model.clone(),
+        reasoning: entry.reasoning.clone(),
+    }))
+}
+
+/// Whether one dispatch of `model` is free to start: `Ready` when the
+/// pool's cap for the model has room and the model's provider is not
+/// cooling down. The judge is this model alone — its own cap, its own
+/// provider's deadline — never another model's occupancy or a sibling
+/// provider's cooldown, and no substitute choice answers for it.
+#[must_use]
+pub fn pinned_available(
+    config: &PoolConfig,
+    model: &str,
+    availability: &Availability,
+) -> Decision<()> {
+    if cap_blocks(config, model, availability) {
+        return Decision::Waiting(Wait {
+            reason: WaitReason::ModelCap,
+            retry_at: None,
+        });
+    }
+    match provider_deadline(model, availability) {
+        Some(until) => Decision::Waiting(Wait {
+            reason: WaitReason::ProviderCooldown,
+            retry_at: Some(until),
+        }),
+        None => Decision::Ready(()),
+    }
+}
+
+/// Whether `model`'s cap in this pool is spent: its recorded occupancy plus
+/// the pool's unresolved claims — counted conservatively against every
+/// capped model — reaches the cap. An absent cap is no model limit at all;
+/// a model capped at zero is spent with nothing running.
+fn cap_blocks(config: &PoolConfig, model: &str, availability: &Availability) -> bool {
+    let Some(cap) = config.caps.get(model) else {
+        return false;
+    };
+    let occupancy = availability
+        .model_counts
+        .get(model)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(availability.unresolved_claims);
+    occupancy >= u64::from(*cap)
+}
+
+/// The cooldown deadline still running for `model`'s provider, if any: a
+/// deadline at or before the snapshot's `now` has expired and blocks
+/// nothing.
+fn provider_deadline(model: &str, availability: &Availability) -> Option<u64> {
+    availability
+        .provider_until
+        .get(cooldown::provider_key(model))
+        .filter(|until| **until > availability.now)
+        .copied()
+}
+
+/// The wait a served band owes when none of its choices are free: a
+/// model-cap wait when only spent caps block (capacity is released by the
+/// pool's own work finishing, which no snapshot can name a time for), a
+/// provider-cooldown wait ending at the earliest deadline still running
+/// when only cooldowns block, and a band-unavailable wait when the two
+/// mix — including one choice doubly blocked by both at once.
+fn blocked_wait(config: &PoolConfig, list: &[BandChoice], availability: &Availability) -> Wait {
+    let mut capped = false;
+    let mut cooling: Vec<u64> = Vec::new();
+    for entry in list {
+        capped |= cap_blocks(config, &entry.model, availability);
+        if let Some(until) = provider_deadline(&entry.model, availability) {
+            cooling.push(until);
+        }
+    }
+    match (capped, cooling.is_empty()) {
+        (true, true) => Wait {
+            reason: WaitReason::ModelCap,
+            retry_at: None,
+        },
+        (false, false) => Wait {
+            reason: WaitReason::ProviderCooldown,
+            retry_at: cooling.iter().min().copied(),
+        },
+        _ => Wait {
+            reason: WaitReason::BandUnavailable,
+            retry_at: None,
+        },
+    }
 }
 
 #[cfg(test)]
