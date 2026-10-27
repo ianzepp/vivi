@@ -5,11 +5,16 @@
 //! class the failure was classified as. Grouping model slugs into
 //! providers is [`provider_key`], so every slug a provider serves cools
 //! down together. Classifying a live failure into evidence is live I/O
-//! and lives in [`super::live`], not here.
+//! and lives in [`super::live`], not here. Replaying recorded evidence
+//! across every pool of one mailspace is [`fold`]: pure reading of the
+//! recorded notes, no live I/O.
+
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::mailspace::PoolEventRow;
 use crate::pool::collect::Outcome;
 
 /// How long one classified failure cools its provider down.
@@ -97,6 +102,57 @@ pub struct Evidence {
     pub until: u64,
     /// The failure class the failure was recorded as.
     pub class: FailureClass,
+}
+
+/// The note key a collected record carries its cooldown evidence under:
+/// a namespaced object shaped exactly like [`Evidence`]. Notes are
+/// extensible JSON, so every other key — including the pool that wrote
+/// the record — is another module's namespace, never a scope here.
+const BAND_COOLDOWN_KEY: &str = "band_cooldown";
+
+/// Replay recorded cooldown evidence across every pool of one mailspace:
+/// the maximum unexpired absolute deadline per provider, keyed by
+/// [`provider_key`]. Evidence travels in the [`BAND_COOLDOWN_KEY`] object
+/// of `pool_collected` notes; a note without metadata and malformed or
+/// non-object metadata are evidence of nothing, as is any event of
+/// another type. Deadlines are absolute: folding never restarts one from
+/// `now`, never clears an earlier failure because a success follows, and
+/// at `now == until` the evidence is expired. Successes carry no
+/// metadata, so the fold is order-independent and replaying it again is
+/// a fixed point. The live snapshot owns calling this fold; nothing here
+/// performs live I/O.
+#[must_use]
+pub fn fold(events: &[PoolEventRow], now: u64) -> BTreeMap<String, u64> {
+    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    for evidence in events.iter().filter_map(recorded_evidence) {
+        if evidence.until <= now {
+            continue;
+        }
+        let until = deadlines.entry(evidence.provider).or_default();
+        if evidence.until > *until {
+            *until = evidence.until;
+        }
+    }
+    deadlines
+}
+
+/// The cooldown evidence one event's note records, when it carries any:
+/// only a `pool_collected` note whose JSON holds a well-formed
+/// [`BAND_COOLDOWN_KEY`] object shaped like [`Evidence`] counts.
+/// Arbitrary receipt strings never become evidence.
+fn recorded_evidence(event: &PoolEventRow) -> Option<Evidence> {
+    if event.event_type != "pool_collected" {
+        return None;
+    }
+    let note = match serde_json::from_str::<serde_json::Value>(&event.note) {
+        Ok(note) => note,
+        Err(_) => return None,
+    };
+    let metadata = note.get(BAND_COOLDOWN_KEY)?;
+    match Evidence::deserialize(metadata) {
+        Ok(evidence) => Some(evidence),
+        Err(_) => None,
+    }
 }
 
 /// The provider a model slug belongs to: the prefix before the first
