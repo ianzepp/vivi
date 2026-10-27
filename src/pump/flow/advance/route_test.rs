@@ -3,6 +3,7 @@
 //! rejected.
 
 use serde_json::json;
+use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{JoinInput, Routed, route};
@@ -10,13 +11,14 @@ use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
 use crate::letter::read::step_of;
 use crate::pump::config::PumpConfig;
+use crate::pump::flow::continuation::{Origin, OriginSource, OriginStep, origin_of};
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
-use crate::pump::host::{Ctx, test_ctx};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -26,6 +28,7 @@ const NEED: &str = "n1";
 struct Rig {
     _dir: TempDir,
     ctx: Ctx,
+    host: Arc<FakeHost>,
     store: PumpStore,
     mail: FakeMail,
     def: FlowDef,
@@ -34,7 +37,7 @@ struct Rig {
 
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
-    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     store.insert_run(&RunRow {
         need: NEED.into(),
@@ -61,6 +64,7 @@ fn rig() -> Result<Rig, VivariumError> {
     Ok(Rig {
         _dir: dir,
         ctx,
+        host,
         store,
         mail,
         def: load(FlowKind::Build)?,
@@ -597,5 +601,157 @@ fn routing_an_outcome_whose_run_row_is_missing_errors_and_sends_nothing() -> R {
         "a step was sent for a missing run"
     );
     assert_eq!(rig.store.steps_of(NEED, 9)?.len(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_park_route_records_the_finished_step_as_its_origin() -> R {
+    let mut rig = rig()?;
+    let plan = rig.step("plan")?;
+
+    let routed = rig.route(&with_word(plan.clone(), "operator"), "")?;
+    assert_eq!(nodes(&routed), vec!["parked"]);
+    let park = rig
+        .store
+        .step_by_task(&routed.sent[0].task)?
+        .expect("park row");
+    assert_eq!(park.state, StepState::Waiting);
+
+    let boundary = rig
+        .store
+        .latest_pause_boundary(NEED, 1, "plan", &plan.task)?
+        .expect("the park origin is recorded");
+    assert_eq!(boundary.node, "plan", "the origin's own coordinates");
+    assert_eq!(boundary.origin_task, plan.task);
+    assert_eq!(boundary.gate, "parked");
+    assert_eq!(boundary.pause_generation, 1);
+    assert_eq!(boundary.role_request, format!("step-{}-a1", plan.task));
+    assert_eq!(boundary.state, "open");
+    assert_eq!(boundary.boundary_message, None);
+
+    // The shared lookup reads the record back as the park's origin.
+    let origin = origin_of(&rig.store, &rig.def, NEED, &park)?;
+    assert_eq!(
+        origin,
+        Origin::Found(OriginStep {
+            step: rig.store.step_by_task(&plan.task)?.expect("plan row"),
+            source: OriginSource::Recorded,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_park_indexed_by_an_interrupted_route_gains_its_origin_on_replay() -> R {
+    let mut rig = rig()?;
+    let parked = rig.step("parked")?;
+    let plan = rig.step("plan")?;
+    rig.mail.calls.clear();
+
+    // The interrupted route indexed the park row but recorded no origin; the
+    // replay reuses the row and records the origin anyway.
+    let routed = rig.route(&with_word(plan.clone(), "operator"), "")?;
+    assert_eq!(nodes(&routed), vec!["parked"]);
+    assert_eq!(
+        routed.sent[0].task, parked.task,
+        "the indexed row is reused"
+    );
+    let sends = rig
+        .mail
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::SendStep { .. }))
+        .count();
+    assert_eq!(sends, 0, "no second park task");
+    let boundary = rig
+        .store
+        .latest_pause_boundary(NEED, 1, "plan", &plan.task)?
+        .expect("the origin is recorded by the replay");
+    assert_eq!(boundary.gate, "parked");
+    assert_eq!(boundary.origin_task, plan.task);
+    Ok(())
+}
+
+#[test]
+fn a_park_task_sent_before_a_crash_is_adopted_with_its_origin() -> R {
+    let mut rig = rig()?;
+    let label = rig
+        .def
+        .nodes
+        .iter()
+        .find(|node| node.id == "parked")
+        .map(|node| node.label.clone())
+        .expect("park node");
+    let subject = format!("{label} ({NEED} r1)");
+    let adopted = rig.mail.send_step(
+        "pump",
+        "pump",
+        &subject,
+        &step_body(NEED, 1, "parked", ""),
+        &[],
+    )?;
+    let plan = rig.step("plan")?;
+    rig.mail.calls.clear();
+
+    let routed = rig.route(&with_word(plan.clone(), "operator"), "")?;
+    assert_eq!(nodes(&routed), vec!["parked"]);
+    assert_eq!(routed.sent[0].task, adopted, "the sent task is adopted");
+    let parked_tasks = rig
+        .mail
+        .tasks
+        .iter()
+        .filter(|(_, task)| step_of(&task.body).and_then(|s| s.node).as_deref() == Some("parked"))
+        .count();
+    assert_eq!(parked_tasks, 1, "never sent twice");
+    let boundary = rig
+        .store
+        .latest_pause_boundary(NEED, 1, "plan", &plan.task)?
+        .expect("the adopted park records its origin");
+    assert_eq!(boundary.gate, "parked");
+    Ok(())
+}
+
+#[test]
+fn a_rerouted_park_adopts_the_recorded_origin_unchanged() -> R {
+    let mut rig = rig()?;
+    let plan = rig.step("plan")?;
+    rig.route(&with_word(plan.clone(), "operator"), "")?;
+    let first = rig
+        .store
+        .latest_pause_boundary(NEED, 1, "plan", &plan.task)?
+        .expect("recorded");
+
+    rig.host.advance(60);
+    rig.route(&with_word(plan.clone(), "operator"), "")?;
+    let second = rig
+        .store
+        .latest_pause_boundary(NEED, 1, "plan", &plan.task)?
+        .expect("recorded");
+    assert_eq!(first, second, "the replay adopts the stored boundary");
+    Ok(())
+}
+
+#[test]
+fn a_second_planner_parking_the_run_never_overwrites_the_origin() -> R {
+    let mut rig = rig()?;
+    let plan = rig.step("plan")?;
+    let routed = rig.route(&with_word(plan.clone(), "operator"), "")?;
+    let park_task = routed.sent[0].task.clone();
+
+    let plan2 = rig.step("plan2")?;
+    let routed = rig.route(&with_word(plan2.clone(), "hold"), "")?;
+    assert_eq!(routed.sent.len(), 1);
+    assert_eq!(routed.sent[0].task, park_task, "the park row is reused");
+
+    // Both origins are recorded; neither replaces the other, and the lookup
+    // refuses to guess between them.
+    let park = rig.store.step_by_task(&park_task)?.expect("park row");
+    match origin_of(&rig.store, &rig.def, NEED, &park)? {
+        Origin::Parked(diagnostic) => {
+            assert!(diagnostic.contains(&plan.task), "{diagnostic}");
+            assert!(diagnostic.contains(&plan2.task), "{diagnostic}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
     Ok(())
 }
