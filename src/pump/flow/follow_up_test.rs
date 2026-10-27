@@ -6,6 +6,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::FollowUpRework;
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::{FollowUp, Hand, HandAnswer};
@@ -62,6 +64,18 @@ fn step(node: &str, task: &str) -> StepRow {
     }
 }
 
+/// A valid readable root need letter for `NEED`, so the lazy need-target
+/// fallback of a reslice request finds a body.
+fn seed_need_root(mail: &mut FakeMail) -> R {
+    let front = NeedFront::new(vec![String::from("the need is done")]);
+    let body = need_body_with(&front, "prose");
+    let sent = mail.send_step("pump", "pump", "the need", &body, &[])?;
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
+    Ok(())
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
@@ -89,6 +103,7 @@ fn rig() -> Result<Rig, VivariumError> {
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    seed_need_root(&mut mail)?;
     let sentinel = mail.send_step("pump", "pump", "run", "sentinel", &[])?;
     let slice_task = mail.send_step("pump", "pump", "s", "slice body text", &[])?;
     store.insert_step(NEED, &step("sentinel", &sentinel))?;

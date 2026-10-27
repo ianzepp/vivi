@@ -9,13 +9,15 @@ use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::def::NodeClass;
-use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply};
+use crate::pump::flow::fanout::{
+    SLICE_NODE_PREFIX, SLICES_INVALID, check_batch, parse_reply, target_of,
+};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
 use crate::pump::flow::reslice_apply;
 use crate::pump::flow::step_error::{self, STEP_ERROR_HELD, STEP_ERROR_LIMIT};
-use crate::pump::flow::step_inputs::{read_only_job, targets};
+use crate::pump::flow::step_inputs::{need_target, read_only_job, targets};
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
@@ -123,10 +125,25 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
     store.insert_run_step(run, &row)?;
     let fanout = store.slice_link(&slice.task)?.and_then(|link| link.fanout);
     store.link_slice(&SliceLink::for_run(run, &task, fanout, Vec::new()))?;
-    let brief = brief(ctx, mail, slice, mode, input)?;
-    let spec = job(ctx, run, &row, slice, mode, &brief)?;
+    let slice_body = mail.task_body(&slice.task)?;
+    let brief = brief(ctx, &slice_body, mode, input);
+    let target = reslice_target(mail, &slice_body, &run.need)?;
+    let spec = job(ctx, run, &row, slice, mode, &brief, target)?;
     jobs::enqueue(st, spec)?;
     Ok(task)
+}
+
+/// The slicer job's target: the original slice's own `target:` when its
+/// letter names one, else the root need's target, read only then.
+fn reslice_target<M: FlowMail>(
+    mail: &M,
+    slice_body: &str,
+    need: &str,
+) -> Result<Option<String>, VivariumError> {
+    match target_of(slice_body) {
+        Some(target) => Ok(Some(target)),
+        None => need_target(mail, need),
+    }
 }
 
 fn sentinel_task(rows: &[StepRow], run: &RunRow) -> Result<String, VivariumError> {
@@ -149,8 +166,17 @@ fn job(
     slice: &StepRow,
     mode: Mode,
     brief: &str,
+    target: Option<String>,
 ) -> Result<JobSpec, VivariumError> {
-    let mut spec = read_only_job(ctx, run, row, &NodeClass::Slicer, SLICER_ROLE, brief, None)?;
+    let mut spec = read_only_job(
+        ctx,
+        run,
+        row,
+        &NodeClass::Slicer,
+        SLICER_ROLE,
+        brief,
+        target,
+    )?;
     spec.id = format!("reslice-{}-a1", row.task);
     spec.kind = KIND.to_owned();
     spec.task = Some(row.task.clone());
@@ -182,20 +208,14 @@ fn body_tail(body: &str) -> &str {
     body.find("mode: ").map_or("", |at| &body[at..])
 }
 
-fn brief<M: FlowMail>(
-    ctx: &Ctx,
-    mail: &M,
-    slice: &StepRow,
-    mode: Mode,
-    input: &str,
-) -> Result<String, VivariumError> {
-    Ok(format!(
+fn brief(ctx: &Ctx, slice_body: &str, mode: Mode, input: &str) -> String {
+    format!(
         "mode: {}\nslice size: aim for 5 to {} minutes\ntargets: {}\n{input}\noriginal slice task:\n{}",
         mode.word(),
         ctx.cfg.slice.minutes(),
         targets(ctx).join(", "),
-        mail.task_body(&slice.task)?
-    ))
+        slice_body
+    )
 }
 
 /// Registry hook: the reslices phase.
@@ -500,6 +520,10 @@ mod retry;
 #[cfg(test)]
 #[path = "reslice_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reslice_target_test.rs"]
+mod target_tests;
 
 #[cfg(test)]
 #[path = "reslice_mailspace_test.rs"]
