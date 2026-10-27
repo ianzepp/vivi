@@ -1,6 +1,10 @@
 use super::MailspacePort;
-use crate::letter::fixture::{body_with_deps, task_body};
+use crate::letter::fixture::{body_with_deps, need_body, task_body};
+use crate::letter::records::NoteWord;
+use crate::mailspace::SendRequest;
+use crate::mailspace::pump_note::note_body;
 use crate::pump::fixture::{Project, project};
+use crate::pump::flow::slice_dispatch::SliceMail;
 
 fn port(p: &Project) -> MailspacePort {
     MailspacePort {
@@ -162,8 +166,6 @@ fn a_reply_lands_on_the_task() {
 
 #[test]
 fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
-    use crate::pump::flow::slice_dispatch::SliceMail;
-
     let p = project();
     let port = port(&p);
     let task = port
@@ -173,4 +175,97 @@ fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
     let replies = port.marked_replies(&task, "pool result ").unwrap();
     assert_eq!(replies.len(), 1, "{replies:?}");
     assert_eq!(replies[0].1, "pool result j1: finished");
+}
+
+/// Send a need from `from` to `to` with `cc`, and return its handle.
+fn need_from(p: &Project, from: &str, to: &[&str], cc: &[&str]) -> String {
+    p.mailspace
+        .send(SendRequest {
+            from: from.into(),
+            to: to.iter().map(|who| (*who).into()).collect(),
+            cc: cc.iter().map(|who| (*who).into()).collect(),
+            bcc: Vec::new(),
+            subject: "a need".into(),
+            body: need_body(&["it works"], ""),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+/// The `To` and `Cc` of every reply stored on `need`'s thread, each address
+/// resolved the way the mailspace classifies recipients (local identity name
+/// or remote address).
+fn reply_recipients(p: &Project, need: &str) -> (Vec<String>, Vec<String>) {
+    let storage = p.mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(need).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    let mut to = Vec::new();
+    let mut cc = Vec::new();
+    for child in storage.reply_child_contents(&view.content_id).unwrap() {
+        let row = storage.message_by_content_id(&child).unwrap().unwrap();
+        let bytes = storage.read_listed_blob(&row.blob_relpath).unwrap();
+        let parsed = mail_parser::MessageParser::default().parse(&bytes).unwrap();
+        for (header, out) in [(parsed.to(), &mut to), (parsed.cc(), &mut cc)] {
+            if let Some(addresses) = header {
+                for address in addresses.iter() {
+                    let Some(value) = address.address.as_deref() else {
+                        continue;
+                    };
+                    match p.mailspace.classify_recipient(value).unwrap() {
+                        crate::mailspace::Recipient::Local(identity) => out.push(identity),
+                        crate::mailspace::Recipient::Remote(remote) => out.push(remote),
+                    }
+                }
+            }
+        }
+    }
+    (to, cc)
+}
+
+#[test]
+fn audience_post_self_addresses_when_empty() {
+    let p = project();
+    let port = port(&p);
+    // A need from mind to mind: its whole audience is the pump identity, so
+    // the note can only be stored as a self-addressed reply.
+    let need = need_from(&p, "mind", &["mind"], &[]);
+    port.post_to_need_audience(
+        &need,
+        &note_body(NoteWord::Deviations, Some("run-1"), "pump: run 1 started").unwrap(),
+    )
+    .unwrap();
+    let found = port
+        .notes_from(&need, NoteWord::Deviations, "mind")
+        .unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].1.prose.trim(), "pump: run 1 started");
+    assert_eq!(found[0].1.pump.reference.as_deref(), Some("run-1"));
+    let (to, cc) = reply_recipients(&p, &need);
+    assert_eq!(to, vec!["mind".to_owned()], "{to:?}");
+    assert!(cc.is_empty(), "{cc:?}");
+}
+
+#[test]
+fn an_audience_post_keeps_the_need_recipients() {
+    let p = project();
+    let port = port(&p);
+    // Ordinary nonempty audience: the need's sender is still on the To list.
+    let ordinary = need_from(&p, "mind", &["operator"], &[]);
+    port.post_to_need_audience(&ordinary, "pump: run 2 started")
+        .unwrap();
+    let (to, cc) = reply_recipients(&p, &ordinary);
+    assert_eq!(to, vec!["operator".to_owned()], "{to:?}");
+    assert!(cc.is_empty(), "{cc:?}");
+    // Cc-only audience: the Cc member is promoted to To, as before.
+    let cc_only = need_from(&p, "mind", &["mind"], &["elsewhere"]);
+    port.post_to_need_audience(&cc_only, "pump: run 3 started")
+        .unwrap();
+    let (to, cc) = reply_recipients(&p, &cc_only);
+    assert_eq!(to, vec!["elsewhere".to_owned()], "{to:?}");
+    assert!(cc.is_empty(), "{cc:?}");
 }
