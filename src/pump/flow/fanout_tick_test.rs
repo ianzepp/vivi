@@ -6,8 +6,10 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
 use crate::letter::fixture::record_body;
 use crate::letter::fixture::step_body;
+use crate::letter::work::NeedFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::start;
@@ -111,6 +113,22 @@ fn slicer_reply(id: &str) -> String {
     )
 }
 
+/// Register the root letter of the fixtures' need: a valid NeedFront on the
+/// fixture target, so reads of the need thread find a stored root.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.register_need_root(
+        NEED,
+        &need_body_with(
+            &NeedFront {
+                done_when: vec![String::from("the slices are merged")],
+                target: Some(String::from("default")),
+                ..NeedFront::default()
+            },
+            "Build the need.",
+        ),
+    );
+}
+
 /// A live build run where build1 is Done `built` with its one slice merged,
 /// rework1 is Done `sliced` with a slicer reply, and build2 is Pending.
 fn rig() -> Result<Rig, VivariumError> {
@@ -119,6 +137,7 @@ fn rig() -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
+    seed_need_root(&mut mail);
     let run = start(&ctx, &store, &mut mail, NEED, Some("slice"))?;
     let mut rig = Rig {
         _dir: dir,

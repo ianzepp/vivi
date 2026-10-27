@@ -12,9 +12,9 @@ use super::{
     redispatch_scope, retry,
 };
 use crate::error::VivariumError;
-use crate::letter::fixture::{step_body, task_body_with};
+use crate::letter::fixture::{need_body_with, step_body, task_body_with};
 use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::parse;
@@ -102,14 +102,32 @@ fn rig_bare() -> Result<Rig, VivariumError> {
         entry: "plan".into(),
         state: "live".into(),
     })?;
+    let mut mail = FakeMail::new("pump");
+    seed_need_root(&mut mail);
     Ok(Rig {
         _dir: dir,
         ctx,
         host,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         jobs: Jobs::default(),
     })
+}
+
+/// Register the root letter of the fixtures' need: a valid NeedFront on the
+/// fixture target, so reads of the need thread find a stored root.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.register_need_root(
+        NEED,
+        &need_body_with(
+            &NeedFront {
+                done_when: vec![String::from("the slices are merged")],
+                target: Some(String::from("default")),
+                ..NeedFront::default()
+            },
+            "Build the need.",
+        ),
+    );
 }
 
 impl Rig {
