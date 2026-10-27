@@ -1,7 +1,9 @@
 //! Collecting slice hand jobs and the built-slice hooks.
 //!
 //! A finished slice job is classified (built, no defect, failed, correction,
-//! blocked scope) and acted on through the run's [`RunCx`]. A built slice
+//! blocked scope) and acted on through the run's [`RunCx`]. A blocked-scope
+//! request is authorized at need level before any slice coordination moves
+//! (see [`authorize`]). A built slice
 //! runs every registered [`BuiltHook`] in registration order; the default
 //! hook posts the hand's deviations and follow-up work and leaves the slice
 //! open. Hooks are independent: none reads another's result.
@@ -18,7 +20,6 @@ use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slic
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::TaskStatus;
-use crate::pump::flow::need_scope::RulingDecision;
 use crate::pump::flow::reslice::{self, Mode};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
@@ -183,10 +184,7 @@ where
                 Ok(())
             }
             AttemptResult::Correct { error } => self.correct(job, row, RoleKind::Hand, &error),
-            AttemptResult::BlockedScope(request) => {
-                let target = hand.target.clone().unwrap_or_default();
-                self.blocked(step, row, &target, &request)
-            }
+            AttemptResult::BlockedScope(request) => self.blocked(step, row, &request),
         }
     }
 
@@ -225,28 +223,45 @@ where
             .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
 
+    /// A blocked-scope request is authorized at need level first: the ruling
+    /// is classified against the target the stored slice task names — never
+    /// the hand envelope's own target metadata — journalled under the
+    /// original hand job's source key, and published on the need thread. A
+    /// refused request holds the slice for the operator and moves nothing
+    /// else. An allowed request keeps the existing journaled coordination
+    /// (widen, wait on holders, rework), with the normalized authorized
+    /// paths as the scheduling input.
     pub(crate) fn blocked(
         &mut self,
         step: &StepRow,
         row: &StepJobRow,
-        target: &str,
         request: &BlockedScope,
     ) -> Result<(), VivariumError> {
+        let source = correct::base_id(&row.job).to_owned();
+        let settled = authorize::authorize_hand(self, step, row, &source, request)?;
+        if !settled.decision.is_grant() {
+            return authorize::refuse(self, step, &settled);
+        }
         let journal = ScopeRequest {
-            source: correct::base_id(&row.job).to_owned(),
+            source,
             need: self.run.need.clone(),
-            target: target.to_owned(),
+            target: settled.target.clone(),
             run: self.run.run,
             node: step.node.clone(),
             task: step.task.clone(),
             attempt: row.attempt,
-            paths: request.paths.clone(),
+            paths: settled.paths.clone(),
             reason: request.reason.clone(),
             design: request.design,
-            decision: RulingDecision::Grant,
-            issue: None,
+            decision: settled.decision,
+            issue: settled.issue,
         };
-        let resolution = resolve(self.store, self.mail, &journal, request)?;
+        let scheduling = BlockedScope {
+            paths: settled.paths.clone(),
+            reason: request.reason.clone(),
+            design: request.design,
+        };
+        let resolution = resolve(self.store, self.mail, &journal, &scheduling)?;
         match resolution {
             Resolution::Widen(_) => self.redispatch(step, row.attempt, &journal.source),
             Resolution::WaitOn(_) => {
@@ -256,7 +271,7 @@ where
             Resolution::Rework(reason) => {
                 self.store.set_scope_state(&step.task, ScopeState::Rework)?;
                 self.ctx.exception(SCOPE_REWORK, &step.task, &reason);
-                self.rework(step, request)
+                self.rework(step, &scheduling)
             }
         }
     }
@@ -397,6 +412,8 @@ where
         }
     }
 }
+
+mod authorize;
 
 mod scope_replay;
 

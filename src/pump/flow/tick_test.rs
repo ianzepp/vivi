@@ -15,9 +15,9 @@ use super::{
     VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body, task_body_with};
+use crate::letter::fixture::{need_body_with, record_body, step_body, task_body_with};
 use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
@@ -85,6 +85,24 @@ fn seed_need_branch(store: &PumpStore) -> R {
     })
 }
 
+/// A valid immutable need root on the need thread: the letter delegates
+/// `docs/` on the default target, so a hand's `src/` blocked-scope ask is a
+/// real grant over the delegation. Sent as the pump and re-keyed to the need
+/// handle, the way a mailspace keeps the need thread at one handle.
+fn seed_need_root(mail: &mut FakeMail) {
+    let front = NeedFront {
+        write_scope: vec![String::from("docs/")],
+        target: Some(String::from("default")),
+        ..NeedFront::new(vec![String::from("done")])
+    };
+    let sent = mail
+        .send_step("mind", "hand", "the need", &need_body_with(&front, ""), &[])
+        .expect("need root letter");
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     rig_with("build")
 }
@@ -92,6 +110,10 @@ fn rig() -> Result<Rig, VivariumError> {
 fn rig_with(kind: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    // The default target's integration checkout: a real directory, so a
+    // blocked-scope ask is verified against it instead of failing safe to
+    // the operator.
+    fs::create_dir_all(ctx.cfg.repo_dir(&ctx.project)).expect("target checkout");
     let mut routing = (*ctx.routing).clone();
     routing.roles.push(RoutedRole {
         name: String::from("hand"),
@@ -107,6 +129,7 @@ fn rig_with(kind: &str) -> Result<Rig, VivariumError> {
     seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, kind))?;
+    seed_need_root(&mut mail);
     Ok(Rig {
         _dir: dir,
         ctx,

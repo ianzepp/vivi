@@ -2,14 +2,14 @@
 //! job and a scope rework goes to a rework job.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
-use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
+use crate::letter::fixture::{need_body_with, record_body, task_body_with};
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
@@ -74,6 +74,10 @@ fn role(name: &str, kind: &str, pool: &str) -> RoutedRole {
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    // The default target's integration checkout: a real directory, so a
+    // blocked-scope ask is verified against it instead of failing safe to
+    // the operator.
+    fs::create_dir_all(ctx.cfg.repo_dir(&ctx.project)).expect("target checkout");
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|r| r.name != SLICER_ROLE);
     routing
@@ -95,6 +99,7 @@ fn rig() -> Result<Rig, VivariumError> {
     })?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
+    seed_need_root(&mut mail);
     Ok(Rig {
         _dir: dir,
         ctx,
@@ -103,6 +108,24 @@ fn rig() -> Result<Rig, VivariumError> {
         mail,
         jobs: Jobs::default(),
     })
+}
+
+/// A valid immutable need root on the need thread: the letter delegates
+/// `docs/` on the default target, so a hand's `src/` blocked-scope ask is a
+/// real grant over the delegation. Sent as the pump and re-keyed to the need
+/// handle, the way a mailspace keeps the need thread at one handle.
+fn seed_need_root(mail: &mut FakeMail) {
+    let front = NeedFront {
+        write_scope: vec![String::from("docs/")],
+        target: Some(String::from("default")),
+        ..NeedFront::new(vec![String::from("done")])
+    };
+    let sent = mail
+        .send_step("mind", "hand", "the need", &need_body_with(&front, ""), &[])
+        .expect("need root letter");
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
 }
 
 /// Send and register one running slice step with a write scope.
