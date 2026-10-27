@@ -11,12 +11,14 @@ use crate::error::VivariumError;
 use crate::letter::read::step_of;
 use crate::letter::render;
 use crate::letter::work::TaskFront;
+use crate::pump::flow::continuation::step_request;
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use crate::pump::store::recovery::pause::{PauseBoundaryRow, pause_state};
 use crate::pump::store::step_payload::StepPayloadRow;
 
 /// One finished input of a code decision (a join or a raise check).
@@ -333,6 +335,9 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
         if !self.seen.insert(node.id.clone()) {
             return Ok(());
         }
+        if node.class == NodeClass::Park {
+            self.record_park_origin(node)?;
+        }
         let o = self.outcome;
         // An earlier route that failed part way already sent this node: reuse
         // its row so the retry binds it instead of sending a second task.
@@ -373,6 +378,29 @@ impl<M: MailWriter + MailReader> Walk<'_, M> {
             task,
         });
         Ok(())
+    }
+
+    /// The durable park origin: the finished step whose answer routed the run
+    /// into the park. Recorded before the park row lands and again on the
+    /// reuse and adoption paths, so an interrupted route can never leave an
+    /// indexed park without its origin; the store adopts the first record, so
+    /// a later route can never overwrite it with another task.
+    fn record_park_origin(&self, gate: &FlowNode) -> Result<(), VivariumError> {
+        let o = self.outcome;
+        let boundary = PauseBoundaryRow {
+            need: o.need.clone(),
+            run: o.run,
+            node: o.node.clone(),
+            origin_task: o.task.clone(),
+            gate: gate.id.clone(),
+            pause_generation: 1,
+            input_generation: 1,
+            role_request: step_request(&o.task),
+            boundary_message: None,
+            paused_at: self.ctx.now(),
+            state: pause_state::OPEN.into(),
+        };
+        self.store.record_pause(&boundary).map(|_| ())
     }
 
     /// Bind the new tasks together with the run sentinel, in one call.
