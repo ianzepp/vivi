@@ -1118,7 +1118,12 @@ async fn key_admin_round_trip_mints_lists_revokes_and_audits() {
     // second project registers `creator` too.
     fx.state
         .identities
-        .register(&other, "creator", &spki_pem(&key(2)), &mailspace_for("creator"))
+        .register(
+            &other,
+            "creator",
+            &spki_pem(&key(2)),
+            &mailspace_for("creator"),
+        )
         .unwrap();
     let minted = call_ok(
         &fx.app,
