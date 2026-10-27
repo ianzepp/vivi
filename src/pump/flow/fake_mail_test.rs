@@ -11,10 +11,10 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::read::{record_of, step_of};
+use crate::letter::fixture::{need_body_with, sentinel_body, step_body};
+use crate::letter::read::{need_of, record_of, step_of};
 use crate::letter::records::record_letter;
-use crate::letter::work::StepFront;
+use crate::letter::work::{NeedFront, StepFront};
 use crate::pump::flow::mail::{
     MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
 };
@@ -125,6 +125,34 @@ impl FakeMail {
         self.marks.insert(
             need.to_string(),
             marks.iter().map(|m| (*m).to_string()).collect(),
+        );
+    }
+
+    /// Store an original need letter under `handle` with the given typed
+    /// `target`. A fixture: no send is recorded and the task sequence is left
+    /// alone, so later sends keep their usual handles. Reads never
+    /// synthesize missing letters; this stores a real one up front.
+    pub(crate) fn store_need(&mut self, handle: &str, target: Option<&str>) {
+        let mut front = NeedFront::new(vec!["done".to_string()]);
+        front.target = target.map(str::to_string);
+        let body = need_body_with(&front, "prose");
+        self.tasks.insert(
+            handle.to_string(),
+            FakeTask {
+                from: "pump".to_string(),
+                to: "pump".to_string(),
+                subject: "original need".to_string(),
+                body,
+                depends_on: Vec::new(),
+                replies: Vec::new(),
+                state: TaskState {
+                    status: TaskStatus::Open,
+                    closer: None,
+                    verdict: None,
+                },
+                branch: None,
+                commit: None,
+            },
         );
     }
 
@@ -577,6 +605,34 @@ type R = Result<(), VivariumError>;
 
 fn step(mail: &mut FakeMail, body: &str) -> Result<String, VivariumError> {
     mail.send_step("pump", "hand", "subject", body, &[])
+}
+
+#[test]
+fn store_need_parses_with_the_requested_target_and_leaves_sends_alone() -> R {
+    let mut mail = FakeMail::new("pump");
+    mail.store_need("n9", Some("vivi"));
+    mail.store_need("plain", None);
+
+    let targeted = need_of("n9", &mail.tasks["n9"].body).unwrap();
+    assert_eq!(targeted.front.target.as_deref(), Some("vivi"));
+    assert_eq!(targeted.front.done_when, vec!["done"]);
+    let plain = need_of("plain", &mail.tasks["plain"].body).unwrap();
+    assert_eq!(plain.front.target, None);
+
+    // No send was recorded and the task sequence was untouched: the next two
+    // sent tasks take the first two numbers.
+    let t1 = step(&mut mail, "a")?;
+    let t2 = step(&mut mail, "b")?;
+    assert_eq!(t1, "t0001");
+    assert_eq!(t2, "t0002");
+    assert_eq!(
+        mail.calls
+            .iter()
+            .filter(|call| matches!(call, Call::SendStep { .. }))
+            .count(),
+        2
+    );
+    Ok(())
 }
 
 #[test]

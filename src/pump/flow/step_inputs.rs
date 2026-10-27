@@ -51,6 +51,21 @@ pub fn need_thread(ctx: &Ctx, need: &str) -> Result<String, VivariumError> {
     }
 }
 
+/// The typed `target:` of the original need letter under `need`, or `None`
+/// when a valid need letter carries no target.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the body of `need` cannot be read, and
+/// [`VivariumError::Message`] naming `need` when its body is not a valid need
+/// letter: a legacy body without front matter, malformed TOML and invalid
+/// typed front matter stay errors and never fall back to another selection.
+pub fn need_target(mail: &dyn SliceMail, need: &str) -> Result<Option<String>, VivariumError> {
+    let body = mail.task_body(need)?;
+    let envelope = crate::letter::read::need_of(need, &body)
+        .map_err(|error| VivariumError::Message(format!("need {need}: {error}")))?;
+    Ok(envelope.front.target)
+}
+
 /// The ids of every configured target.
 #[must_use]
 pub fn targets(ctx: &Ctx) -> Vec<String> {
