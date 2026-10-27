@@ -237,7 +237,9 @@ pub(super) fn tools_list() -> Value {
     ));
     tools.push(tool(
         "grant_add",
-        "Host only. Add one grant to an existing principal. A host principal accepts none.",
+        "Host only. Add one grant to an existing principal. A host principal accepts none. \
+         `project_id` may be a project id or a hosted project's name. `member` must be a \
+         registered member identity on the project; omit it when the project has exactly one.",
         json!({
             "type": "object",
             "properties": {
@@ -250,7 +252,7 @@ pub(super) fn tools_list() -> Value {
                         "identity": { "type": "string" },
                         "level": { "type": "string", "enum": ["member", "operator"] }
                     },
-                    "required": ["project_id", "member"],
+                    "required": ["project_id"],
                     "additionalProperties": false
                 }
             },
@@ -787,10 +789,10 @@ fn key_admin(state: &AppState, name: &str, arguments: &Value) -> Result<Value, T
         }
         "grant_add" => {
             let principal = req_str(arguments, "principal")?;
-            let grant = arguments
+            let raw = arguments
                 .get("grant")
-                .ok_or_else(|| ToolError::new("a grant object is required"))
-                .and_then(parse_grant)?;
+                .ok_or_else(|| ToolError::new("a grant object is required"))?;
+            let grant = parse_grant(&resolve_new_grant(state, raw)?)?;
             store
                 .add_grant(principal, grant.clone())
                 .map_err(grants_error)?;
@@ -822,6 +824,67 @@ fn key_admin(state: &AppState, name: &str, arguments: &Value) -> Result<Value, T
         }
         other => Err(ToolError::new(format!("unknown tool '{other}'"))),
     }
+}
+
+/// Complete a `grant_add` grant object: `project_id` may be a project id
+/// or a hosted project's name (resolved to the id), and `member` may be
+/// omitted when the project has exactly one registered member identity.
+/// A member that is not registered on the project is refused here, naming
+/// the registered ones, rather than at the grant's first use.
+fn resolve_new_grant(state: &AppState, raw: &Value) -> Result<Value, ToolError> {
+    let Some(object) = raw.as_object() else {
+        return Err(ToolError::new("a grant must be an object"));
+    };
+    let named = object
+        .get("project_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::new("a grant needs a project_id"))?;
+    let project_id = match state.projects.load_meta_including_retired(named) {
+        Ok(meta) => meta.project_id,
+        Err(_) => super::host::hosted_entry(state, named)
+            .map(|meta| meta.project_id)
+            .ok_or_else(|| ToolError::new(format!("no project with id or name '{named}'")))?,
+    };
+    let names: Vec<String> = state
+        .identities
+        .list(&project_id)
+        .into_iter()
+        .map(|identity| identity.name)
+        .collect();
+    let member = match object.get("member") {
+        None | Some(Value::Null) => match names.as_slice() {
+            [only] => only.clone(),
+            [] => {
+                return Err(ToolError::new(format!(
+                    "project {project_id} has no registered member identities"
+                )));
+            }
+            many => {
+                return Err(ToolError::new(format!(
+                    "project {project_id} has several registered members; name one of: {}",
+                    many.join(", ")
+                )));
+            }
+        },
+        Some(Value::String(member)) => {
+            if !names.iter().any(|name| name == member) {
+                return Err(ToolError::new(format!(
+                    "'{member}' is not a registered member on {project_id}; registered members: {}",
+                    if names.is_empty() {
+                        "(none)".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                )));
+            }
+            member.clone()
+        }
+        Some(_) => return Err(ToolError::new("grant member must be a string")),
+    };
+    let mut resolved = object.clone();
+    resolved.insert("project_id".into(), Value::String(project_id));
+    resolved.insert("member".into(), Value::String(member));
+    Ok(Value::Object(resolved))
 }
 
 /// A per-project mirror revocation failure: the storage error is logged

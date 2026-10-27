@@ -525,8 +525,8 @@ impl ServerKeyStore {
             .iter()
             .find(|p| p.principal != principal && p.machine_keys.iter().any(|k| k == public_key))
         {
-            return Err(GrantsError::Storage(format!(
-                "machine key already belongs to {}",
+            return Err(GrantsError::PrincipalCollision(format!(
+                "this machine key already belongs to principal {}",
                 other.principal
             )));
         }
