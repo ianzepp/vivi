@@ -8,6 +8,7 @@
 //! cannot reach the mailspace. Posting never blocks or fails the tick: one try
 //! per attempt end, a failed send is logged and dropped.
 
+use crate::pool::record::{SECTION_RECEIPT, SECTION_RUNNER_LOG, SECTION_STDERR, split_sections};
 use crate::pump::collect::tail;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::PoolJob;
@@ -21,10 +22,6 @@ const EXCERPT_CHARS: usize = 800;
 const EXIT_MARKER: &str = "agent exit ";
 /// The pool summary fragment that carries the dispatch time.
 const STARTED_MARKER: &str = "started from ";
-/// The receipt section titles the pool writes after its summary lines.
-const SECTION_RECEIPT: &str = "receipt";
-const SECTION_STDERR: &str = "stderr tail";
-const SECTION_RUNNER_LOG: &str = "runner log tail";
 
 /// The failing command of an attempt and a short excerpt of its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,27 +160,15 @@ pub(crate) fn sections_tail(text: &str) -> String {
     joined
 }
 
-/// A task receipt split into its summary head and its `(title, body)`
-/// sections, each opened by a `--- <title>` line after a blank line.
-fn split_sections(text: &str) -> (&str, impl Iterator<Item = (&str, &str)>) {
-    let mut parts = text.split("\n\n--- ");
-    let head = parts.next().unwrap_or_default();
-    let sections = parts.map(|section| {
-        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
-        (title.trim(), body)
-    });
-    (head, sections)
-}
-
 /// The hand's final message from a full pool task receipt.
 #[must_use]
 pub fn hand_message(text: &str) -> String {
     parse_receipt(text).message
 }
 
-/// Split a task receipt: the pool's summary lines come first, then sections
-/// each opened by a `--- <title>` line after a blank line. A receipt with no
-/// `--- receipt` section is taken as the hand's message whole.
+/// Split a task receipt: the pool's summary lines come first, then the
+/// rendered sections. A receipt with no `--- receipt` section is taken as
+/// the hand's message whole.
 fn parse_receipt(text: &str) -> Parsed {
     let mut parsed = Parsed {
         exit: agent_exit(text),

@@ -280,10 +280,10 @@ fn finished_text(done: &Collected) -> String {
     }
     text.push_str(&with_text(&done.result));
     for (title, body) in [
-        ("facts", &facts::text(&done.result.facts())),
-        ("receipt", &done.receipt),
-        ("stderr tail", &done.stderr),
-        ("runner log tail", &done.log),
+        (SECTION_FACTS, &facts::text(&done.result.facts())),
+        (SECTION_RECEIPT, &done.receipt),
+        (SECTION_STDERR, &done.stderr),
+        (SECTION_RUNNER_LOG, &done.log),
     ] {
         if !body.trim().is_empty() {
             text.push_str("\n\n--- ");
@@ -293,6 +293,101 @@ fn finished_text(done: &Collected) -> String {
         }
     }
     text
+}
+
+/// The rendered section titles of a result letter.
+pub(crate) const SECTION_FACTS: &str = "facts";
+pub(crate) const SECTION_RECEIPT: &str = "receipt";
+pub(crate) const SECTION_STDERR: &str = "stderr tail";
+pub(crate) const SECTION_RUNNER_LOG: &str = "runner log tail";
+
+/// The section titles in the forward order a letter renders them; any of
+/// them may be omitted.
+const SECTIONS: [&str; 4] = [
+    SECTION_FACTS,
+    SECTION_RECEIPT,
+    SECTION_STDERR,
+    SECTION_RUNNER_LOG,
+];
+
+/// The text that always opens a rendered section heading line.
+const HEADING_MARK: &str = "\n--- ";
+
+/// Split a rendered result letter into its summary head and its `(title,
+/// body)` sections: a reader splits only on the headings the renderer
+/// writes. A section opens at a complete `--- <title>` line at line start,
+/// preceded by one newline or the renderer's blank-line separation, in
+/// forward facts/receipt/stderr-tail/runner-log-tail order with omissions;
+/// repeated or backward headings, lookalike headings and any other content
+/// stay in the section they landed in. Bodies are slices of `text` with
+/// internal whitespace kept; the last runs through end of text.
+pub(crate) fn split_sections(text: &str) -> (&str, impl Iterator<Item = (&str, &str)>) {
+    let mut found: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+    let mut head_at = None;
+    let mut next = 0;
+    let mut from = 0;
+    while let Some((at, index)) = next_heading(text, from, next) {
+        let body = heading_body(text, at);
+        let end = next_heading(text, body, index + 1)
+            .map_or(text.len(), |(after, _)| heading_boundary(text, after))
+            .max(body);
+        head_at.get_or_insert(at);
+        found.push((index, body..end));
+        from = body;
+        next = index + 1;
+    }
+    let head = match head_at {
+        Some(at) => &text[..heading_boundary(text, at)],
+        None => text,
+    };
+    let sections = found
+        .into_iter()
+        .map(move |(index, span)| (SECTIONS[index], &text[span]));
+    (head, sections)
+}
+
+/// The next rendered heading at or after byte `from` that the sequence still
+/// accepts: `(byte of its `---`, title index)`. `next` is the smallest title
+/// index the sequence takes; a lookalike line or an earlier or already-seen
+/// title stays content.
+fn next_heading(text: &str, from: usize, next: usize) -> Option<(usize, usize)> {
+    let mut at = from;
+    while let Some(offset) = text[at..].find(HEADING_MARK) {
+        at += offset + 1;
+        if let Some(index) = heading_index(&text[at..])
+            && index >= next
+        {
+            return Some((at, index));
+        }
+    }
+    None
+}
+
+/// The title index when `rest` opens with a complete rendered heading line:
+/// exactly `--- <title>` through the line's end.
+fn heading_index(rest: &str) -> Option<usize> {
+    let end = rest.find('\n').unwrap_or(rest.len());
+    let line = rest.get(..end)?;
+    SECTIONS
+        .iter()
+        .position(|title| line.strip_prefix("--- ") == Some(*title))
+}
+
+/// Where the content before a heading at `at` ends: before the renderer's
+/// blank-line separation when it is there, else before the heading's own
+/// line break.
+fn heading_boundary(text: &str, at: usize) -> usize {
+    if text[..at].ends_with("\n\n") {
+        at - 2
+    } else {
+        at - 1
+    }
+}
+
+/// Where the content after a heading at `at` starts: past its line break, or
+/// end of text when the heading is the last line.
+fn heading_body(text: &str, at: usize) -> usize {
+    text[at..].find('\n').map_or(text.len(), |end| at + end + 1)
 }
 
 /// The extra-ref lines of a finished result: one per named ref and the
