@@ -31,6 +31,8 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use super::authority::{self, Action, BudgetClass, Denial, Gate};
+use super::mcp_actuator::ACTION_RESULT_ALLOWANCE;
+use super::prompt::clipped;
 use fields::{drop_blank_fields, validate_fields};
 
 /// Longest free-text note accepted from a turn.
@@ -167,6 +169,37 @@ pub struct Planned {
     /// What the actuator answered, once a permitted action has run: its
     /// receipt, or the failure text.
     pub executed: Option<Result<String, String>>,
+}
+
+/// What one turn's envelope produced: the planned actions, and, when the
+/// `+++` block could not be parsed at all, the bounded failure text. An
+/// empty plan with no failure is an empty but valid envelope.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvelopeOutcome {
+    pub planned: Vec<Planned>,
+    /// Why the envelope could not be read, when it could not be.
+    pub parse_failure: Option<String>,
+}
+
+impl EnvelopeOutcome {
+    /// The outcome for a reply whose envelope could not be parsed. The
+    /// failure is kept within the action-report allowance and its fence
+    /// markers defused, so a hostile reply can neither bloat the outcome
+    /// nor break out of the report's fencing.
+    #[must_use]
+    pub fn parse_failed(error: &str) -> Self {
+        Self {
+            planned: Vec::new(),
+            parse_failure: Some(clipped(error, ACTION_RESULT_ALLOWANCE)),
+        }
+    }
+
+    /// Whether there is nothing to tell the next turn about: no plans and
+    /// no parse failure.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.planned.is_empty() && self.parse_failure.is_none()
+    }
 }
 
 /// A `+++` fence line. A live model opened its envelope with `+++ TOML`

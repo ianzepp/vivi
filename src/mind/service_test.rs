@@ -426,6 +426,10 @@ async fn tick_answering(fx: &Fixture, pi: FakePi, now: u64) -> (TickOutcome, Fak
 const REQUEUE: &str =
     "Checking.\n+++\n[[action]]\nkind = \"unlock\"\nproject = \"/w/app\"\nneed = \"4b8c0d1e\"\n+++";
 
+/// A well-meant envelope whose TOML does not parse: a blank value where a
+/// need handle belongs.
+const MALFORMED: &str = "Filing now.\n+++\n[[action]]\nkind = \"unlock\"\nneed = \n+++";
+
 #[tokio::test]
 async fn the_session_sees_what_its_actions_answered_and_may_act_again() {
     let fx = fixture_with_mcp(2);
@@ -479,6 +483,72 @@ async fn a_reply_without_actions_ends_the_wake_without_a_follow_up() {
     let (_, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&["All healthy."]), NOW).await;
     assert_eq!(pi.prompts.len(), 1);
     assert!(actuator.ran.is_empty());
+}
+
+#[tokio::test]
+async fn a_malformed_envelope_is_retained_as_a_parse_failure_for_the_next_wake() {
+    let fx = fixture("unstick");
+    let (outcome, _, actuator) =
+        one_tick(&fx, FakePi::with_replies(&[MALFORMED]), &stalled(), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert!(
+        planned.is_empty(),
+        "a bad envelope plans nothing: {planned:?}"
+    );
+    assert!(actuator.applied.is_empty());
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    let pending = state.pending_report.unwrap();
+    assert!(pending.contains("- envelope: unparseable"), "{pending}");
+    assert!(
+        pending.contains("<<<untrusted source=\"envelope-parse\">"),
+        "{pending}"
+    );
+    let (_, pi, _) = one_tick(&fx, FakePi::default(), &stalled(), NOW + 4000).await;
+    assert!(
+        pi.prompts[0].starts_with("Action results ("),
+        "{}",
+        pi.prompts[0]
+    );
+    assert!(pi.prompts[0].contains("- envelope: unparseable"));
+}
+
+#[tokio::test]
+async fn an_empty_but_valid_envelope_leaves_no_pending_report() {
+    let fx = fixture("unstick");
+    let (_, _, actuator) = one_tick(
+        &fx,
+        FakePi::with_replies(&["All quiet.\n+++\n+++\n"]),
+        &stalled(),
+        NOW,
+    )
+    .await;
+    assert!(actuator.applied.is_empty());
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert!(state.pending_report.is_none());
+    let (_, pi, _) = one_tick(&fx, FakePi::default(), &stalled(), NOW + 4000).await;
+    assert!(
+        !pi.prompts[0].starts_with("Action results ("),
+        "{}",
+        pi.prompts[0]
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_follow_up_keeps_the_earlier_rounds_planned_actions() {
+    let fx = fixture_with_mcp(2);
+    let replies = [UNLOCK, MALFORMED];
+    let (outcome, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&replies), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert_eq!(planned.len(), 1, "the first round's plans still aggregate");
+    assert_eq!(actuator.ran, ["Unlock ok for 3f9a1c2e"]);
+    assert_eq!(pi.prompts.len(), 2, "a parse failure ends the wake");
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    let pending = state.pending_report.unwrap();
+    assert!(pending.contains("- envelope: unparseable"), "{pending}");
 }
 
 #[tokio::test]
