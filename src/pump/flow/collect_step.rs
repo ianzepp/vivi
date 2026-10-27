@@ -23,6 +23,8 @@ use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
+mod scope;
+
 /// One live run's tick: the context every step and slice collector works in.
 pub(crate) struct RunCx<'a, S, M> {
     pub(crate) ctx: &'a Ctx,
@@ -166,7 +168,12 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
         let expected = job.publish_ref.clone().unwrap_or_default();
         let collected = collect::collect(cx.ctx, cx.mail, job, row, class, &expected);
         match collected {
-            Collected::Outcome(word, payload) => cx.advance_word(step, &word, payload),
+            Collected::Outcome(word, payload) => {
+                if scope::intercept(cx, job, row, step, class, &word, &payload)? {
+                    return Ok(());
+                }
+                cx.advance_word(step, &word, payload)
+            }
             Collected::Failed => cx.advance_word(step, FAILED, serde_json::json!({"job": job.id})),
             Collected::Verify => cx.verify_step(job, step),
             Collected::Retry if job.kind == correct::KIND => {
