@@ -223,6 +223,7 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
         &NodeClass::Planner,
         "pump-planner",
         "brief one",
+        None,
     )
     .unwrap();
     assert_eq!(queued.budget, 97);
@@ -241,13 +242,21 @@ fn a_reloaded_budget_reaches_new_jobs_and_leaves_queued_ones_alone() {
         &NodeClass::Planner,
         "pump-planner",
         "brief one",
+        None,
     )
     .unwrap();
     assert_eq!(fresh.budget, 151);
     // An omitted thinking-kind override follows the reloaded fallback.
-    let judge =
-        step_inputs::read_only_job(&ctx, &run, &step, &NodeClass::Judge, "auditor", "brief two")
-            .unwrap();
+    let judge = step_inputs::read_only_job(
+        &ctx,
+        &run,
+        &step,
+        &NodeClass::Judge,
+        "auditor",
+        "brief two",
+        None,
+    )
+    .unwrap();
     assert_eq!(judge.budget, 233);
     assert_eq!(ctx.cfg.dispatch.envelope_fix_budget(), 300);
 

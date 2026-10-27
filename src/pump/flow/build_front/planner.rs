@@ -35,6 +35,7 @@ impl StepHandler for PlannerStep {
             &NodeClass::Planner,
             PUMP_PLANNER_ROLE,
             &brief,
+            None,
         )?;
         Ok(StartAction::Job(Box::new(spec)))
     }

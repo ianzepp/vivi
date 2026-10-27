@@ -28,6 +28,7 @@ impl StepHandler for SliceStep {
             &NodeClass::Slicer,
             SLICER_ROLE,
             &brief,
+            None,
         )?;
         Ok(StartAction::Job(Box::new(spec)))
     }
