@@ -9,6 +9,7 @@ use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::PoolTask;
+use vivi::pool::bands::runtime::{Decision, Wait};
 use vivi::pool::bridge;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::config::RepoAccess;
@@ -54,50 +55,53 @@ struct Planned {
     job_id: String,
 }
 
-/// Decide the job without claiming a slot or touching a remote.
+/// Decide the job without claiming a slot or touching a remote. `Ready`
+/// carries the plan; `Waiting` names a temporary block and is a successful
+/// answer, not an error. Every permanent check runs before either arm, so a
+/// wait never hides a configuration fault.
 fn plan_phase(
     command: &PoolDispatchCommand,
     space: &Mailspace,
     task: &PoolTask,
     handle: &pools::PoolHandle,
-) -> Result<Planned, VivariumError> {
+) -> Result<Decision<Planned>, VivariumError> {
     let selected = resolve_target_config(space, &handle.config, command.target.as_deref())?;
     let config = selected
         .as_ref()
         .map_or(&handle.config, |selected| &selected.config);
+    let pool = handle.id.pool.as_str();
     let ready_timeout =
         dispatch::check_ready_timeout(handle.provider.slot_lifetime(), command.ready_timeout)?;
     let job_id = fresh_job_id(&task.handle);
-    let (flags, rules, role_line) = resolve_dispatch(
-        command,
-        config,
-        &handle.id.pool,
-        space,
-        task,
-        load_rules(config, space)?,
-    )?;
-    let mut plan = dispatch::plan_job(
-        config,
-        &handle.id.pool,
-        (&task.handle, &task.subject, &task.body),
-        &flags,
-        rules,
-        job_id.clone(),
-    )?;
+    let rules_text = load_rules(config, space)?;
+    let planned = resolve_dispatch(command, config, pool, space, task, rules_text)?;
+    let (flags, rules, role_line) = match planned {
+        Decision::Ready(planned) => planned,
+        Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
+    };
+    // The request-level checks plan_job runs, ahead of any availability
+    // decision: a later wait can only ever be about capacity.
+    let letter = (
+        task.handle.as_str(),
+        task.subject.as_str(),
+        task.body.as_str(),
+    );
+    dispatch::validate_request(config, pool, letter, &flags)?;
+    let mut plan = dispatch::plan_job(config, pool, letter, &flags, rules, job_id.clone())?;
     plan.target = selected.as_ref().map(|selected| selected.target.clone());
     if config.provider == "local" {
         plan.publish_remote = selected
             .as_ref()
             .and_then(|selected| selected.target.publish_remote.clone());
     }
-    Ok(Planned {
+    Ok(Decision::Ready(Planned {
         selected,
         ready_timeout,
         flags,
         role_line,
         plan,
         job_id,
-    })
+    }))
 }
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
@@ -117,11 +121,21 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         role_line,
         mut plan,
         job_id,
-    } = plan_phase(command, &space, &task, &handle).inspect_err(|e| {
+    } = match plan_phase(command, &space, &task, &handle).inspect_err(|e| {
         if command.porcelain {
             println!("{}", porcelain::refused(&task.handle, &e.to_string()));
         }
-    })?;
+    })? {
+        Decision::Ready(planned) => planned,
+        // A wait answers successfully: neither dispatched nor refused.
+        Decision::Waiting(wait) => {
+            println!(
+                "{}",
+                waiting_line(&task.handle, &handle.id.pool, &wait, command.porcelain)
+            );
+            return Ok(());
+        }
+    };
     let config = selected
         .as_ref()
         .map_or(&handle.config, |selected| &selected.config);
@@ -330,6 +344,11 @@ fn refuse_second_dispatch(space: &Mailspace, handle: &str) -> Result<(), Vivariu
 /// prompt whose pool note follows the pool's bridge: with the bridge on it
 /// names the server's vivi tools, without it the receipt ending. A role with
 /// no charter, or no role, gets the pool rules followed by the project rules.
+/// The model intent is normalized once ([`role_dispatch::normalize`]) and
+/// every candidate pair is checked ([`validate_pairs`]) before the
+/// configuration-only draw ([`role_dispatch::resolve_intent`]); `Waiting` is
+/// reserved for the availability decision that follows planning and is never
+/// an error here.
 fn resolve_dispatch(
     command: &PoolDispatchCommand,
     config: &PoolConfig,
@@ -337,9 +356,9 @@ fn resolve_dispatch(
     space: &Mailspace,
     task: &PoolTask,
     pool_rules: String,
-) -> Result<(DispatchFlags, String, String), VivariumError> {
+) -> Result<Decision<(DispatchFlags, String, String)>, VivariumError> {
     if command.command.is_some() {
-        return resolve_command_dispatch(command, space, task, pool_rules);
+        return resolve_command_dispatch(command, space, task, pool_rules).map(Decision::Ready);
     }
     if let Some(slug) = &command.model {
         if let Some(harness) = &config.harness {
@@ -347,7 +366,7 @@ fn resolve_dispatch(
         }
     }
     let role = dispatch_role(command, space, task)?;
-    let resolved = role_dispatch::resolve(
+    let intent = role_dispatch::normalize(
         config,
         pool,
         &role_dispatch::Input {
@@ -357,6 +376,8 @@ fn resolve_dispatch(
             body: &task.body,
         },
     )?;
+    validate_pairs(config, pool, &intent)?;
+    let resolved = role_dispatch::resolve_intent(config, pool, &intent)?;
     let rules = match role.as_ref() {
         Some(role) => role_dispatch::standing_prompt(
             &role.name,
@@ -378,7 +399,45 @@ fn resolve_dispatch(
         reasoning: resolved.reasoning,
         ..base_flags(command, need, kind)
     };
-    Ok((flags, rules, role_line))
+    Ok(Decision::Ready((flags, rules, role_line)))
+}
+
+/// The permanent model-and-reasoning checks of one normalized intent, run
+/// without a draw: a pin validates directly; a band draw validates every
+/// candidate on its list, so a configuration fault is refused for the band
+/// whatever a later draw would pick.
+fn validate_pairs(
+    config: &PoolConfig,
+    pool: &str,
+    intent: &role_dispatch::Intent,
+) -> Result<(), VivariumError> {
+    match &intent.selection {
+        role_dispatch::Selection::Pin { model, reasoning } => {
+            dispatch::validate_pair(config, pool, model, reasoning.as_deref())
+        }
+        role_dispatch::Selection::Draw { band } => config
+            .bands
+            .entries
+            .get(&format!("P{band}"))
+            .map_or(Ok(()), |choices| {
+                choices.iter().try_for_each(|choice| {
+                    dispatch::validate_pair(config, pool, &choice.model, Some(&choice.reasoning))
+                })
+            }),
+    }
+}
+
+/// What a wait reports: the fixed porcelain line, or one concise human
+/// sentence. A wait is a successful answer, neither `dispatched` nor
+/// `refused`.
+fn waiting_line(task: &str, pool: &str, wait: &Wait, porcelain: bool) -> String {
+    if porcelain {
+        return porcelain::waiting(task, pool, wait);
+    }
+    let retry = wait
+        .retry_at
+        .map_or_else(String::new, |at| format!("; ask again after {at}"));
+    format!("waiting {task} in {pool}: {}{retry}", wait.reason.word())
 }
 
 /// The flags every dispatch shares, as the command line gave them; the model,

@@ -1,8 +1,9 @@
-//! The extra refs of a dispatch on a worktree pool: resolved in the source
-//! repository before any slot is claimed. A throwaway Git repository; nothing
-//! is launched.
+//! The planning of `vivi pool dispatch` and the extra refs it resolves:
+//! exercised directly, with no slot claimed and nothing launched.
 
 use super::*;
+use vivi::letter::work::TaskFront;
+use vivi::pool::bands::runtime::WaitReason;
 use vivi::pool::config::PoolCommitter;
 
 /// A repository with `main` and `review/aaa`; returns the directory and the
@@ -85,6 +86,108 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
         restore: Vec::new(),
         bridge: None,
     }
+}
+
+/// A pool config with a harness and one served band: enough to plan a model
+/// job without touching a machine.
+fn band_config() -> PoolConfig {
+    toml::from_str(
+        r#"
+provider = 'local'
+slots = 2
+[harness]
+name = 'fake'
+run = 'fake --model {model} @{brief}'
+models = ['m/ok', 'm/other']
+[[bands.P1]]
+model = 'm/ok'
+reasoning = 'high'
+[[bands.P1]]
+model = 'm/other'
+reasoning = 'low'
+[committer]
+name = 'bot'
+email = 'bot@example.com'
+"#,
+    )
+    .unwrap()
+}
+
+/// The dispatch flags of a `vivi pool dispatch` invocation, all flags unset.
+fn dispatch_command(task: &str) -> PoolDispatchCommand {
+    PoolDispatchCommand {
+        target: None,
+        also_target: Vec::new(),
+        task: task.to_string(),
+        need: None,
+        kind: None,
+        role: None,
+        model: None,
+        from: None,
+        branch: None,
+        publish_ref: None,
+        publish_expect: None,
+        publish_contains: None,
+        delete_ref: None,
+        delete_expect: None,
+        with: Vec::new(),
+        read_only: false,
+        budget: None,
+        command: None,
+        allow_default_branch: false,
+        ready_timeout: None,
+        porcelain: true,
+        pool: Some("p".into()),
+        project: None,
+    }
+}
+
+/// The `Ready` payload of a planning result; a wait or a refusal fails the test.
+fn ready(
+    result: Result<Decision<(DispatchFlags, String, String)>, VivariumError>,
+) -> (DispatchFlags, String, String) {
+    match result {
+        Ok(Decision::Ready(planned)) => planned,
+        Ok(Decision::Waiting(wait)) => panic!("unexpected wait: {}", wait.reason.word()),
+        Err(e) => panic!("unexpected refusal: {e}"),
+    }
+}
+
+/// A task body from a front, the way the dispatcher reads one.
+fn task_body(front: &TaskFront, prose: &str) -> String {
+    vivi::letter::render(front, prose).unwrap()
+}
+
+/// A mailspace with one stored task, as the dispatcher would find it: the
+/// body carries `front`, the addressee is a plain `pump` role.
+fn stored_task_with(front: TaskFront) -> (tempfile::TempDir, Mailspace, PoolTask) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = Mailspace::init(Some(tmp.path())).unwrap();
+    space.add_identity("mind").unwrap();
+    space
+        .add_role("pump", vivi::mailspace::RoleUpdate::default())
+        .unwrap();
+    let sent = space
+        .send(vivi::mailspace::SendRequest {
+            from: "mind".into(),
+            to: vec!["pump".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "go".into(),
+            body: task_body(&front, "do it"),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let handle = sent.delivered[0].handle.clone();
+    let task = space.pool_task(&handle).unwrap();
+    (tmp, space, task)
+}
+
+/// A task whose body names no band, ready to plan against `band_config`.
+fn plain_task() -> (tempfile::TempDir, Mailspace, PoolTask) {
+    stored_task_with(TaskFront::default())
 }
 
 #[test]
@@ -253,4 +356,195 @@ fn the_named_role_wins_over_the_task_addressee() {
     assert_eq!(default.kind.as_deref(), Some("pump"));
 
     assert!(role_facts(&space, &task, Some("nobody")).is_none());
+}
+
+#[test]
+fn resolve_dispatch_normalizes_a_pinned_model_into_the_flags() {
+    let (_tmp, space, task) = plain_task();
+    let mut command = dispatch_command(&task.handle);
+    command.model = Some("m/other".into());
+
+    let (flags, rules, role_line) = ready(resolve_dispatch(
+        &command,
+        &band_config(),
+        "p",
+        &space,
+        &task,
+        "pool rules".into(),
+    ));
+
+    assert_eq!(flags.model, "m/other");
+    assert_eq!(flags.reasoning, None, "no band names the reasoning");
+    assert!(!flags.read_only);
+    assert_eq!(rules, "pool rules", "no charter, no project rules");
+    assert!(
+        role_line.contains("role pump band - -> m/other"),
+        "{role_line}"
+    );
+}
+
+#[test]
+fn resolve_dispatch_resolves_a_band_draw_from_the_bands_table() {
+    let (_tmp, space, task) = stored_task_with(TaskFront {
+        band: Some("P1".into()),
+        ..TaskFront::default()
+    });
+    let command = dispatch_command(&task.handle);
+
+    let (flags, _rules, role_line) = ready(resolve_dispatch(
+        &command,
+        &band_config(),
+        "p",
+        &space,
+        &task,
+        String::new(),
+    ));
+
+    assert_eq!(
+        flags.model, "m/ok",
+        "the draw takes the band's first choice"
+    );
+    assert_eq!(flags.reasoning.as_deref(), Some("high"));
+    assert!(
+        role_line.contains("role pump band P1 -> m/ok high"),
+        "{role_line}"
+    );
+}
+
+#[test]
+fn resolve_command_planning_stays_outside_model_selection() {
+    let (_tmp, space, task) = plain_task();
+    let mut command = dispatch_command(&task.handle);
+    command.command = Some("echo hi".into());
+
+    let (flags, rules, role_line) = ready(resolve_dispatch(
+        &command,
+        &band_config(),
+        "p",
+        &space,
+        &task,
+        "pool rules".into(),
+    ));
+
+    assert_eq!(flags.model, "", "a --command job names no model");
+    assert_eq!(flags.reasoning, None);
+    assert_eq!(flags.command.as_deref(), Some("echo hi"));
+    assert_eq!(rules, "pool rules", "the pool rules verbatim");
+    assert!(role_line.is_empty());
+}
+
+#[test]
+fn permanent_planning_faults_stay_errors_not_waits() {
+    let (_tmp, space, task) = plain_task();
+    let config = band_config();
+    let mut unknown = dispatch_command(&task.handle);
+    unknown.model = Some("m/nope".into());
+    let err = resolve_dispatch(&unknown, &config, "p", &space, &task, String::new())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("not in [harness].models") && err.contains("m/nope"),
+        "{err}"
+    );
+
+    let (_tmp, space, unserved) = stored_task_with(TaskFront {
+        band: Some("P5".into()),
+        ..TaskFront::default()
+    });
+    let no_model = dispatch_command(&unserved.handle);
+    let err = resolve_dispatch(&no_model, &config, "p", &space, &unserved, String::new())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("P5"), "{err}");
+}
+
+/// A local pool handle over `root`, ready to plan against.
+fn local_pool(space: &Mailspace, config: PoolConfig) -> pools::PoolHandle {
+    let ctx = vivi::pool::runpod::HostContext {
+        dir: space.dir.clone(),
+        mailspace: String::from("test"),
+        pool: String::from("p"),
+        pools: vec![String::from("p")],
+    };
+    let provider = vivi::pool::open_provider(&config, &ctx);
+    pools::PoolHandle {
+        id: PoolId::new(&space.config.name, space.mailspace_id(), "p"),
+        config,
+        provider,
+    }
+}
+
+#[test]
+fn plan_phase_answers_ready_without_launching_anything() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_sent_dir, space, task) = stored_task_with(TaskFront {
+        from: Some("main".into()),
+        branch: Some("factory/x".into()),
+        ..TaskFront::default()
+    });
+    let handle = task.handle.clone();
+
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let mut config = band_config();
+    config.local.worktree_of = Some(repo.display().to_string());
+    let pool = local_pool(&space, config);
+    let mut command = dispatch_command(&handle);
+    command.model = Some("m/ok".into());
+
+    let planned = plan_phase(&command, &space, &task, &pool).unwrap();
+    let Decision::Ready(planned) = planned else {
+        panic!("a pinned job with free config is ready, not waiting");
+    };
+    assert_eq!(planned.plan.model, "m/ok");
+    assert_eq!(planned.plan.refs.branch, "factory/x");
+    assert_eq!(planned.plan.refs.from, "main");
+    assert_eq!(planned.plan.job, planned.job_id);
+    assert!(planned.plan.checkout.is_none(), "no slot was prepared");
+    assert!(
+        work::open_dispatches(&space).unwrap().is_empty(),
+        "planning records no dispatch"
+    );
+}
+
+#[test]
+fn a_wait_reports_porcelain_lines_that_parse_back() {
+    let wait = Wait {
+        reason: WaitReason::ModelCap,
+        retry_at: Some(1700),
+    };
+    let line = waiting_line("abcd1234", "p", &wait, true);
+    assert_eq!(line, porcelain::waiting("abcd1234", "p", &wait));
+    let parsed = porcelain::parse_waiting(&line).unwrap();
+    assert_eq!(parsed.task, "abcd1234");
+    assert_eq!(parsed.pool, "p");
+    assert_eq!(parsed.reason, WaitReason::ModelCap);
+    assert_eq!(parsed.retry_at, Some(1700));
+}
+
+#[test]
+fn a_wait_reports_one_concise_human_line_without_a_refusal() {
+    let waiting = Wait {
+        reason: WaitReason::ProviderCooldown,
+        retry_at: None,
+    };
+    let line = waiting_line("abcd1234", "p", &waiting, false);
+    assert!(
+        line.starts_with("waiting abcd1234 in p: provider-cooldown"),
+        "{line}"
+    );
+    assert!(
+        !line.contains("refused") && !line.contains("dispatched"),
+        "{line}"
+    );
+    let deadlined = waiting_line(
+        "abcd1234",
+        "p",
+        &Wait {
+            reason: WaitReason::BandUnavailable,
+            retry_at: Some(99),
+        },
+        false,
+    );
+    assert!(deadlined.contains("ask again after 99"), "{deadlined}");
 }
