@@ -28,7 +28,10 @@
 //! unserved band) before any selection runs. [`resolve_intent`] then
 //! performs the configuration-only selection: a draw takes the pair
 //! [`choose`] serves for the band, exactly once; a pin runs as normalized.
-//! [`resolve`] is the two steps back to back.
+//! [`resolve`] is the two steps back to back. [`resolve_available`] is the
+//! availability-aware selection over the same intents: the draw runs once
+//! against a live [`Availability`] snapshot, and a pin that is not free
+//! right now answers a typed wait instead of a substitute.
 //!
 //! There is no failover, no health tracking and no retry on another model.
 //! [`standing_prompt`] builds the worker's standing prompt: the role's
@@ -39,6 +42,7 @@ use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::routing::resolve_read_only;
 
+use super::bands::runtime::{Availability, Decision};
 use super::bands::{self, choose, parse_band};
 use super::config::PoolConfig;
 
@@ -227,6 +231,50 @@ pub fn resolve_intent(
         read_only: intent.read_only,
         role: intent.role.clone(),
     })
+}
+
+/// Resolve one normalized intent against the pool's live availability: a
+/// band draw asks [`bands::runtime::select_available`] exactly once and
+/// carries the whole selected model-and-reasoning pair into the
+/// [`Resolved`], with the intent's band, read-only mode and role unchanged;
+/// a pin asks [`bands::runtime::pinned_available`] about the exact
+/// normalized pair. A draw with nothing free, or a pin that is not free
+/// right now, answers a typed [`Decision::Waiting`] — never a substitute
+/// model, a rerolled reasoning, or a configuration-only draw. Configuration
+/// faults stay errors whatever the snapshot says: an unknown model, an
+/// unserved band or a missing intent is never turned into a wait.
+///
+/// # Errors
+/// As [`resolve_intent`] and [`bands::runtime::select_available`]: a band
+/// the pool does not serve, a list the configuration cap refuses, or an
+/// entropy failure of the system source of randomness.
+pub fn resolve_available(
+    config: &PoolConfig,
+    pool: &str,
+    intent: &Intent,
+    availability: &Availability,
+) -> Result<Decision<Resolved>, VivariumError> {
+    let (model, reasoning) = match &intent.selection {
+        Selection::Draw { band } => {
+            match bands::runtime::select_available(config, pool, *band, availability)? {
+                Decision::Ready(choice) => (choice.model, Some(choice.reasoning)),
+                Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
+            }
+        }
+        Selection::Pin { model, reasoning } => {
+            match bands::runtime::pinned_available(config, model, availability) {
+                Decision::Ready(()) => (model.clone(), reasoning.clone()),
+                Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
+            }
+        }
+    };
+    Ok(Decision::Ready(Resolved {
+        model,
+        reasoning,
+        band: intent.band,
+        read_only: intent.read_only,
+        role: intent.role.clone(),
+    }))
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release

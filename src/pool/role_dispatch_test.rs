@@ -2,6 +2,7 @@ use super::*;
 use chrono::TimeZone;
 
 use crate::letter::work::TaskFront;
+use crate::pool::bands::runtime::{Wait, WaitReason};
 use crate::pool::slot::PoolId;
 
 /// A task letter whose front matter sets `band`.
@@ -1109,6 +1110,365 @@ fn normalize_then_resolve_intent_matches_resolve_for_single_entry_precedence() {
         assert_eq!(
             resolve(config, "bridge", &input).unwrap(),
             through_intent(config, &input),
+            "{name}"
+        );
+    }
+}
+
+/// `pool()` with a cap of one on each of its two models, so a snapshot can
+/// spend either model's capacity.
+fn capped_pool() -> PoolConfig {
+    pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["zai/glm-5.3-flash", "other/model"]
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "xhigh"
+[[bands.P2]]
+model = "other/model"
+reasoning = "low"
+[caps]
+"zai/glm-5.3-flash" = 1
+"other/model" = 1
+[local]
+root = "~/lanes"
+"#,
+    )
+}
+
+/// The three-entry P2 pool with a cap of one on every model, so a snapshot
+/// can spend any entry's capacity and leave the rest free.
+fn capped_multi_pool() -> PoolConfig {
+    pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["first/model", "second/model", "third/model"]
+[[bands.P2]]
+model = "first/model"
+reasoning = "low"
+[[bands.P2]]
+model = "second/model"
+reasoning = "high"
+[[bands.P2]]
+model = "third/model"
+reasoning = "xhigh"
+[caps]
+"first/model" = 1
+"second/model" = 1
+"third/model" = 1
+[local]
+root = "~/lanes"
+"#,
+    )
+}
+
+/// A snapshot of the pool's freedom taken at `now`: `counts` live slots per
+/// model and `cooling` provider deadlines, with no unresolved claims.
+fn snapshot(now: u64, counts: &[(&str, u64)], cooling: &[(&str, u64)]) -> Availability {
+    let mut availability = Availability {
+        now,
+        ..Availability::default()
+    };
+    for (model, count) in counts {
+        availability.model_counts.insert((*model).into(), *count);
+    }
+    for (provider, until) in cooling {
+        availability
+            .provider_until
+            .insert((*provider).into(), *until);
+    }
+    availability
+}
+
+/// Normalize first, then resolve against live availability: the composition
+/// the dispatch command runs. An error here is a normalization fault,
+/// refused before any selection ran.
+fn resolve_live(
+    config: &PoolConfig,
+    request: &Input,
+    availability: &Availability,
+) -> Result<Decision<Resolved>, VivariumError> {
+    let intent = normalize(config, "bridge", request)?;
+    resolve_available(config, "bridge", &intent, availability)
+}
+
+#[test]
+fn a_later_eligible_entry_supplies_both_model_and_reasoning() {
+    // first/model and third/model sit at their caps, so the band's second
+    // entry is the only survivor: the draw answers it (a one-entry free
+    // list is served without consulting randomness) with that later
+    // entry's model and its own reasoning, not the first entry's.
+    let config = capped_multi_pool();
+    let hand = role("lane-3", Some("hand"), Some("P2"));
+    let intent = normalize(
+        &config,
+        "bridge",
+        &input(Some(&hand), "build it", None, false),
+    )
+    .unwrap();
+    let busy = snapshot(100, &[("first/model", 1), ("third/model", 1)], &[]);
+    assert_eq!(
+        resolve_available(&config, "bridge", &intent, &busy).unwrap(),
+        Decision::Ready(Resolved {
+            model: "second/model".into(),
+            reasoning: Some("high".into()),
+            band: Some(2),
+            read_only: false,
+            role: Some("lane-3".into()),
+        })
+    );
+}
+
+#[test]
+fn an_unavailable_pinned_model_waits_despite_another_eligible_model() {
+    // An explicit --model whose cap is spent waits even though the band's
+    // other entries are free: a pin is never substituted.
+    let config = capped_multi_pool();
+    let hand = role("lane-3", Some("hand"), Some("P2"));
+    let pinned = normalize(
+        &config,
+        "bridge",
+        &input(Some(&hand), "build it", Some("second/model"), false),
+    )
+    .unwrap();
+    let busy = snapshot(100, &[("second/model", 1)], &[]);
+    assert_eq!(
+        resolve_available(&config, "bridge", &pinned, &busy).unwrap(),
+        Decision::Waiting(Wait {
+            reason: WaitReason::ModelCap,
+            retry_at: None,
+        })
+    );
+
+    // A role slug is a pin too: a live provider cooldown waits with the
+    // deadline, never with another model in its place.
+    let config = pool();
+    let slugger = slug_role("zai/glm-5.3-flash", Some("deep"));
+    let pinned = normalize(
+        &config,
+        "bridge",
+        &input(Some(&slugger), "build it", None, false),
+    )
+    .unwrap();
+    let cooling = snapshot(100, &[], &[("zai", 200)]);
+    assert_eq!(
+        resolve_available(&config, "bridge", &pinned, &cooling).unwrap(),
+        Decision::Waiting(Wait {
+            reason: WaitReason::ProviderCooldown,
+            retry_at: Some(200),
+        })
+    );
+
+    // Once the deadline passes the exact normalized pair runs: the role's
+    // own thinking, not the band entry's reasoning for the same model.
+    let cooled = snapshot(300, &[], &[("zai", 200)]);
+    assert_eq!(
+        resolve_available(&config, "bridge", &pinned, &cooled).unwrap(),
+        Decision::Ready(Resolved {
+            model: "zai/glm-5.3-flash".into(),
+            reasoning: Some("deep".into()),
+            band: None,
+            read_only: false,
+            role: Some("slugger".into()),
+        })
+    );
+}
+
+#[test]
+fn configuration_faults_stay_errors_even_with_an_exhausted_snapshot() {
+    let config = capped_pool();
+    // Every model at its cap and every provider cooling: the fullest
+    // snapshot the pool can answer with.
+    let exhausted = snapshot(
+        100,
+        &[("zai/glm-5.3-flash", 1), ("other/model", 1)],
+        &[("zai", 200), ("other", 200)],
+    );
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+
+    // An unknown --model is refused as before, not turned into a wait.
+    let unknown_model = input(Some(&hand), "build it", Some("mystery/model"), false);
+    let message = resolve_live(&config, &unknown_model, &exhausted)
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("mystery/model"), "got: {message}");
+    assert!(message.contains("harness.models"), "got: {message}");
+
+    // No model intent at all, with and without a role, is still an error.
+    let mute = role("scribe", Some("hand"), None);
+    assert!(
+        resolve_live(
+            &config,
+            &input(Some(&mute), "write it", None, false),
+            &exhausted
+        )
+        .is_err()
+    );
+    assert!(resolve_live(&config, &plain("write it"), &exhausted).is_err());
+
+    // A band the pool does not serve is still a configuration fault.
+    assert!(resolve_live(&config, &plain(&band_body("P3")), &exhausted).is_err());
+
+    // The same holds for a hand-built draw that skips normalization: the
+    // unserved band is an error from the runtime selector itself, whatever
+    // the snapshot holds.
+    let hand_built = Intent {
+        selection: Selection::Draw { band: 3 },
+        band: Some(3),
+        read_only: false,
+        role: None,
+    };
+    assert!(resolve_available(&config, "bridge", &hand_built, &exhausted).is_err());
+
+    // And the snapshot is not a no-op: the same request against a live
+    // cooldown waits instead of resolving.
+    let served = normalize(
+        &config,
+        "bridge",
+        &input(Some(&hand), "build it", None, false),
+    )
+    .unwrap();
+    let cooling = snapshot(100, &[], &[("zai", 200)]);
+    assert_eq!(
+        resolve_available(&config, "bridge", &served, &cooling).unwrap(),
+        Decision::Waiting(Wait {
+            reason: WaitReason::ProviderCooldown,
+            retry_at: Some(200),
+        })
+    );
+}
+
+#[test]
+fn same_model_choices_keep_their_own_reasoning_but_share_eligibility() {
+    // The same model twice in one band at two reasonings: the entries stay
+    // distinct, but eligibility is the model's, so a spent cap blocks both
+    // and the band waits instead of answering either reasoning.
+    let doubled = pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["zai/glm-5.3-flash"]
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "low"
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "high"
+[caps]
+"zai/glm-5.3-flash" = 1
+[local]
+root = "~/lanes"
+"#,
+    );
+    let intent = normalize(&doubled, "bridge", &plain(&band_body("P1"))).unwrap();
+    let spent = snapshot(100, &[("zai/glm-5.3-flash", 1)], &[]);
+    assert_eq!(
+        resolve_available(&doubled, "bridge", &intent, &spent).unwrap(),
+        Decision::Waiting(Wait {
+            reason: WaitReason::ModelCap,
+            retry_at: None,
+        })
+    );
+
+    // The same model served by two bands at different reasonings: each
+    // single-entry band answers its own pair, the reasoning riding the
+    // selected entry and no randomness consulted.
+    let split = pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["zai/glm-5.3-flash"]
+[[bands.P1]]
+model = "zai/glm-5.3-flash"
+reasoning = "low"
+[[bands.P2]]
+model = "zai/glm-5.3-flash"
+reasoning = "high"
+[local]
+root = "~/lanes"
+"#,
+    );
+    for (band, reasoning) in [(1u8, "low"), (2, "high")] {
+        let body = band_body(&format!("P{band}"));
+        let intent = normalize(&split, "bridge", &plain(&body)).unwrap();
+        assert_eq!(
+            resolve_available(&split, "bridge", &intent, &Availability::default()).unwrap(),
+            Decision::Ready(Resolved {
+                model: "zai/glm-5.3-flash".into(),
+                reasoning: Some(reasoning.into()),
+                band: Some(band),
+                read_only: false,
+                role: None,
+            })
+        );
+    }
+}
+
+#[test]
+fn an_idle_pool_resolves_exactly_what_the_configuration_only_resolver_answers() {
+    // With nothing recorded and nothing cooling, the availability-aware
+    // resolution answers the configuration-only one exactly: the task-band
+    // precedence, the read-only mode, the role and the harness allow-list
+    // all behave as they always did.
+    let config = pool();
+    let empty = Availability::default();
+    let auditor = role("reviewer", Some("auditor"), Some("P1-S0"));
+    let hand_p1 = role("lane-3", Some("hand"), Some("P1"));
+    let hand_p2 = role("lane-3", Some("hand"), Some("P2-S0"));
+    let slugger = slug_role("other/model", Some("high"));
+    let body_band_p1 = band_body("P1");
+    for (name, role, body, model, read_only) in [
+        ("auditor band", Some(&auditor), "review it", None, false),
+        (
+            "body band beats role band",
+            Some(&hand_p2),
+            body_band_p1.as_str(),
+            None,
+            false,
+        ),
+        ("role band alone", Some(&hand_p1), "build it", None, false),
+        (
+            "read-only flag wins",
+            Some(&hand_p1),
+            "build it",
+            None,
+            true,
+        ),
+        (
+            "slug role with thinking",
+            Some(&slugger),
+            "build it",
+            None,
+            false,
+        ),
+        (
+            "no role, flag pin",
+            None,
+            "nothing",
+            Some("zai/glm-5.3-flash"),
+            false,
+        ),
+    ] {
+        let request = input(role, body, model, read_only);
+        let expected = resolve(&config, "bridge", &request).unwrap();
+        assert_eq!(
+            resolve_live(&config, &request, &empty).unwrap(),
+            Decision::Ready(expected),
             "{name}"
         );
     }
