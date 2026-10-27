@@ -1,4 +1,5 @@
 use super::*;
+use crate::pool::bands::runtime::{Wait, WaitReason};
 use crate::pool::doctor::Status;
 use crate::pool::slot::SlotStatus;
 
@@ -442,4 +443,132 @@ fn output_without_a_refused_line_gives_none() {
         None
     );
     assert_eq!(refused_reason("not refused here"), None);
+}
+
+fn wait(reason: WaitReason, retry_at: Option<u64>) -> Wait {
+    Wait { reason, retry_at }
+}
+
+#[test]
+fn waiting_lines_round_trip_every_reason_and_deadline() {
+    for reason in [
+        WaitReason::ModelCap,
+        WaitReason::ProviderCooldown,
+        WaitReason::BandUnavailable,
+        WaitReason::DispatchBusy,
+    ] {
+        let absent = waiting("3f2a", "lanes", &wait(reason, None));
+        assert_eq!(
+            absent,
+            format!("waiting 3f2a lanes {} -", reason.word()),
+            "{absent}"
+        );
+        assert_eq!(
+            parse_waiting(&absent),
+            Some(Waiting {
+                task: "3f2a".into(),
+                pool: "lanes".into(),
+                reason,
+                retry_at: None,
+            }),
+            "{absent}"
+        );
+        let present = waiting("3f2a", "lanes", &wait(reason, Some(1_760_000_000)));
+        assert_eq!(
+            present,
+            format!("waiting 3f2a lanes {} 1760000000", reason.word()),
+            "{present}"
+        );
+        assert_eq!(
+            parse_waiting(&present),
+            Some(Waiting {
+                task: "3f2a".into(),
+                pool: "lanes".into(),
+                reason,
+                retry_at: Some(1_760_000_000),
+            }),
+            "{present}"
+        );
+    }
+}
+
+#[test]
+fn waiting_round_trips_quoted_names_escapes_and_literal_dashes() {
+    for (task, pool) in [
+        ("-", "p"),
+        ("t", "-"),
+        ("hand one", "lane two"),
+        (r#"say \"hi\""#, r"back\\slash"),
+        ("tab\there\nline", "p"),
+    ] {
+        let said = waiting(task, pool, &wait(WaitReason::DispatchBusy, Some(0)));
+        assert!(said.starts_with("waiting "), "{said}");
+        assert_eq!(
+            parse_waiting(&said),
+            Some(Waiting {
+                task: task.into(),
+                pool: pool.into(),
+                reason: WaitReason::DispatchBusy,
+                retry_at: Some(0),
+            }),
+            "{said}"
+        );
+    }
+    let dashed = waiting("-", "-", &wait(WaitReason::ModelCap, None));
+    assert_eq!(dashed, "waiting \"-\" \"-\" model-cap -");
+    assert_eq!(
+        parse_waiting(&dashed).map(|w| (w.task, w.pool)),
+        Some(("-".into(), "-".into())),
+        "a quoted dash is a literal dash, not an absent field"
+    );
+}
+
+#[test]
+fn parse_waiting_reads_the_first_complete_waiting_line_of_mixed_output() {
+    let mixed = format!(
+        "issue p poll-error - \"Fly unreachable\" 1760000000 -\n{}\n{}",
+        waiting(
+            "3f2a",
+            "lanes",
+            &wait(WaitReason::ProviderCooldown, Some(9))
+        ),
+        refused("9c1d", "no from: pass --from")
+    );
+    assert_eq!(
+        parse_waiting(&mixed),
+        Some(Waiting {
+            task: "3f2a".into(),
+            pool: "lanes".into(),
+            reason: WaitReason::ProviderCooldown,
+            retry_at: Some(9),
+        })
+    );
+}
+
+#[test]
+fn lines_that_are_not_dispatch_waits_do_not_parse_as_waiting() {
+    let empty_and_unrelated = [
+        "",
+        "nothing-open",
+        "dispatched t p s j m main x - 1 write 0 -",
+        "refused t no-from",
+        "waiting for 1 dispatch(es): 3f2a (checks every 5s, gives up after 1800s)",
+        "waiting  3f2a on p-slot-2  running 150s of 1800s budget",
+        "waiting  seeding ms-p-slot-1 ",
+    ];
+    for line in empty_and_unrelated {
+        assert_eq!(parse_waiting(line), None, "{line}");
+    }
+    let malformed = [
+        "waiting t p model-cap",
+        "waiting t p model-cap ",
+        "waiting t p model-cap 100 extra",
+        "waiting t p sometimes 100",
+        "waiting t p model-cap soon",
+        "waiting t p model-cap -5",
+        "waiting \"open task model-cap 100",
+    ];
+    for line in malformed {
+        assert_eq!(parse_waiting(line), None, "{line}");
+    }
 }
