@@ -39,6 +39,8 @@ pub enum Action {
     Unlock,
     /// File a fix need to the vivi project through the normal pump.
     FileFixNeed,
+    /// Ask the hub to switch back from the active edge build.
+    RollbackEdge,
     /// `vivi update --version <v>` after an operator-cut release. Stub.
     Upgrade,
     /// Cut a release. Stub.
@@ -60,6 +62,7 @@ impl Action {
             Self::Answer => "answer",
             Self::Unlock => "unlock",
             Self::FileFixNeed => "file-fix-need",
+            Self::RollbackEdge => "rollback-edge",
             Self::Upgrade => "upgrade",
             Self::SelfRelease => "self-release",
         }
@@ -75,7 +78,8 @@ impl Action {
             | Self::Requeue
             | Self::Replan
             | Self::Answer
-            | Self::Unlock => AuthorityStage::Unstick,
+            | Self::Unlock
+            | Self::RollbackEdge => AuthorityStage::Unstick,
             Self::FileFixNeed => AuthorityStage::FileFixes,
             Self::Upgrade => AuthorityStage::UpgradeOnApproval,
             Self::SelfRelease => AuthorityStage::SelfRelease,
@@ -89,6 +93,13 @@ impl Action {
             self,
             Self::Requeue | Self::Replan | Self::Answer | Self::Unlock
         )
+    }
+
+    /// Whether the action acts on the hub rather than one project, so it
+    /// names no project.
+    #[must_use]
+    pub fn hub_wide(self) -> bool {
+        matches!(self, Self::RollbackEdge)
     }
 
     /// Whether the action changes pump or project state. Reads and letters

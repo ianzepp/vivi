@@ -190,14 +190,28 @@ fn probe(config: &MindConfig, json: bool) -> Result<(), VivariumError> {
     let state = store::load_at(&config.paths.state)?;
     let roots = projects::watched_at(&crate::registry::path()?, &state.ignored)?;
     let signals: Vec<ProjectSignals> = roots.iter().map(|root| HealthProbe.probe(root)).collect();
+    let now = super::service::now();
+    let hub = match config
+        .edge
+        .as_ref()
+        .map(|edge| super::edge::read(&edge.status))
+    {
+        Some(Ok(Some(status))) => status.fingerprints(now),
+        Some(Err(error)) => {
+            eprintln!("edge status: {error}");
+            Vec::new()
+        }
+        Some(Ok(None)) | None => Vec::new(),
+    };
     let decision = wake::decide(&WakeInputs {
-        now: super::service::now(),
+        now,
         heartbeat: &config.heartbeat,
         last: state.last_wake.as_ref(),
         recent: &state.recent_wakes,
         max_wakes_per_hour: config.budgets.max_wakes_per_hour,
         paused: state.paused,
         signals: &signals,
+        hub: &hub,
     });
     let (wake, reasons) = match decision {
         WakeDecision::Sleep(why) => (false, vec![serde_json::json!({ "sleep": why })]),

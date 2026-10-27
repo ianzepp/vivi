@@ -35,6 +35,7 @@ fn request(kind: Action) -> ActionRequest {
         step: Some("a1b2c3d4".into()),
         word: Some("yes".into()),
         note: None,
+        build: None,
     }
 }
 

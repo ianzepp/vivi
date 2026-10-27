@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use super::actions::Planned;
 use super::authority::Action;
 use super::config::AuthorityStage;
+use super::edge::EdgeStatus;
 use super::probe::ProjectSignals;
 use super::wake::WakeReason;
 
@@ -17,7 +18,7 @@ const CLOSE: &str = "untrusted>>>";
 const MAX_FIELD: usize = 2000;
 /// Every action a turn may name, in stage order; a wake lists the ones its
 /// stage opens.
-const ACTIONS: [Action; 10] = [
+const ACTIONS: [Action; 11] = [
     Action::ReadStatus,
     Action::LetterToOperator,
     Action::Escalate,
@@ -27,6 +28,7 @@ const ACTIONS: [Action; 10] = [
     Action::Replan,
     Action::Answer,
     Action::Unlock,
+    Action::RollbackEdge,
     Action::FileFixNeed,
 ];
 /// What the probe's signals mean. A live model read a need locked at its
@@ -49,12 +51,14 @@ pub fn fence(source: &str, text: &str) -> String {
     format!("{OPEN} source=\"{source}\">\n{safe}\n{CLOSE}")
 }
 
-/// The prompt for one autonomous wake.
+/// The prompt for one autonomous wake. `edge` is the edge status and the
+/// time it was read, when the mind watches an edge channel.
 #[must_use]
 pub fn wake_prompt(
     stage: AuthorityStage,
     reasons: &[WakeReason],
     signals: &[ProjectSignals],
+    edge: Option<(&EdgeStatus, u64)>,
 ) -> String {
     let mut out = String::from(
         "Autonomous wake. You supervise every registered pump on this hub.\n\
@@ -71,20 +75,52 @@ pub fn wake_prompt(
     }
     out.push_str(LEGEND);
     out.push_str(&project_blocks(signals));
+    if let Some((status, now)) = edge {
+        out.push_str(&edge_block(status, now));
+    }
     let kinds: Vec<&str> = ACTIONS
         .iter()
         .filter(|action| action.required_stage() <= stage)
+        .filter(|action| edge.is_some() || **action != Action::RollbackEdge)
         .map(|action| action.as_str())
         .collect();
     let _ignored = writeln!(
         out,
         "Decide: leave it, act within your stage, or pause and escalate to the operator.\n\
-         End with a +++ TOML envelope of [[action]] tables (kind, project, need, step, word, note),\n\
-         or no envelope to take no action. Kinds open at this stage: {}. project is the project's \
-         root path; need and step are bare handles such as 6c02e949; leave out every field the \
-         kind does not use.",
+         End with a +++ TOML envelope of [[action]] tables (kind, project, need, step, word, note, \
+         build),\nor no envelope to take no action. Kinds open at this stage: {}. project is the \
+         project's root path; need and step are bare handles such as 6c02e949; build is the 12-hex \
+         edge commit; leave out every field the kind does not use.",
         kinds.join(", ")
     );
+    out
+}
+
+/// What the hub runs, and during an edge build's watch window what to judge.
+fn edge_block(status: &EdgeStatus, now: u64) -> String {
+    let active = if status.active.is_empty() {
+        "unknown"
+    } else {
+        status.active.as_str()
+    };
+    let mut out = format!(
+        "Hub binary: {active} (previous {}, release {}).\n",
+        status.previous.as_deref().unwrap_or("none"),
+        status.release.as_deref().unwrap_or("none")
+    );
+    if let (true, Some(sha), Some(at)) = (status.watching(now), &status.edge, status.switched_at) {
+        let _ignored = writeln!(
+            out,
+            "Edge build {sha} went live {} minutes ago and is under watch: the pumps now run code \
+             that is not released. Judge it from the pumps since the switch. Roll it back \
+             (kind rollback-edge, build {sha}) when a pump went stalled or degraded, or errors \
+             began that the old binary did not raise (run errors, panics, every job failing the \
+             same way). Do not roll back for problems that predate the switch or come from \
+             providers and pools. After a rollback the hub stays on the previous binary until a \
+             newer edge build is published.",
+            now.saturating_sub(at) / 60
+        );
+    }
     out
 }
 
