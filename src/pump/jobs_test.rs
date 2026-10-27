@@ -11,6 +11,7 @@ use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::fixture::ProbeHost;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
@@ -1188,4 +1189,108 @@ fn start_from_target_main_rejects_an_untargeted_ambiguous_configuration() {
     let err = job.start_from_target_main(&cfg).unwrap_err();
     assert!(matches!(err, VivariumError::Config(_)), "{err}");
     assert_eq!(job, before, "a failed resolution leaves the spec unchanged");
+}
+
+/// One unscoped workspace configuration: the workspace main stays `main`, the
+/// explicit `vivi` and `other` targets carry their own mains, and the explicit
+/// `default` target carries a main unlike every other, so an accidental
+/// fallback to the workspace main or the default target is observable.
+fn target_main_workspace() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("main");
+    for (id, main) in [
+        ("vivi", "vivi/main"),
+        ("other", "other/main"),
+        ("default", "main-default"),
+    ] {
+        cfg.targets.insert(
+            String::from(id),
+            PumpTarget {
+                main: String::from(main),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    cfg
+}
+
+#[test]
+fn a_saved_job_dispatches_its_persisted_target_and_main() {
+    let cfg = target_main_workspace();
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), cfg.clone());
+
+    let mut state = State::default();
+    for (id, target, main) in [
+        ("plan-vivi-1", "vivi", "vivi/main"),
+        ("plan-other-1", "other", "other/main"),
+    ] {
+        let mut job = spec(id);
+        job.target = Some(String::from(target));
+        job.start_from_target_main(&cfg).unwrap();
+        assert_eq!(job.from_ref.as_deref(), Some(main), "{id}");
+        enqueue(&mut state, job).unwrap();
+    }
+
+    let mut pump_db = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    pump_db.save(&state).unwrap();
+    let reloaded = pump_db.load().unwrap();
+
+    for (id, target, main) in [
+        ("plan-vivi-1", "vivi", "vivi/main"),
+        ("plan-other-1", "other", "other/main"),
+    ] {
+        let job = &reloaded.jobs[id];
+        assert_eq!(job.target.as_deref(), Some(target), "{id}");
+        assert_eq!(job.from_ref.as_deref(), Some(main), "{id}");
+
+        let command = command_for(&ctx, job, "local", "t1");
+        assert!(
+            command.contains(&format!("--target {target}")),
+            "{id} keeps its target: {command}"
+        );
+        assert!(
+            command.contains(&format!("--from {main}")),
+            "{id} starts from its target's main: {command}"
+        );
+        assert!(
+            !command.contains("--from main-default"),
+            "the default target's main is never substituted: {command}"
+        );
+        assert!(
+            !command.contains("--target default"),
+            "dispatch never falls back to the default target: {command}"
+        );
+        assert!(
+            !command.split_whitespace().any(|word| word == "main"),
+            "the workspace main is never substituted: {command}"
+        );
+    }
+}
+
+#[test]
+fn a_saved_legacy_job_stays_untargeted_and_dispatches_the_workspace_main() {
+    let cfg = PumpConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), cfg.clone());
+
+    let mut legacy = spec("cadence-legacy-1");
+    legacy.start_from_target_main(&cfg).unwrap();
+    assert_eq!(legacy.target, None);
+    assert_eq!(legacy.from_ref.as_deref(), Some("main"));
+
+    let mut state = State::default();
+    enqueue(&mut state, legacy).unwrap();
+    let mut pump_db = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    pump_db.save(&state).unwrap();
+    let reloaded = pump_db.load().unwrap();
+
+    let job = &reloaded.jobs["cadence-legacy-1"];
+    assert_eq!(job.target, None, "storage must not mint a target");
+    let command = command_for(&ctx, job, "local", "t1");
+    assert!(command.contains("--from main"), "{command}");
+    assert!(
+        !command.contains("--target"),
+        "a legacy job gains no --target: {command}"
+    );
 }
