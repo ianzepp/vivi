@@ -1,6 +1,7 @@
 //! Tests for [`crate::mind::service`]: one wake tick end to end over temp
 //! dirs, a fake probe, and the fake session.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -364,6 +365,10 @@ fn a_wake_left_open_by_a_dead_mind_is_closed_as_failed_on_start() {
 }
 
 fn fixture_with_mcp(follow_ups: u32) -> Fixture {
+    fixture_staged_with_mcp("unstick", follow_ups)
+}
+
+fn fixture_staged_with_mcp(stage: &str, follow_ups: u32) -> Fixture {
     let dir = tempdir().unwrap();
     let registry = dir.path().join("vivi").join("pump-service.toml");
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
@@ -373,7 +378,7 @@ fn fixture_with_mcp(follow_ups: u32) -> Fixture {
     let paths = MindPaths::under(dir.path().join("mind.toml"), &home);
     let config = parse(
         &format!(
-            "authority = \"unstick\"\n[mcp]\nserver = \"http://127.0.0.1:1\"\nfollow_ups = {follow_ups}\n"
+            "authority = \"{stage}\"\n[mcp]\nserver = \"http://127.0.0.1:1\"\nfollow_ups = {follow_ups}\n"
         ),
         paths,
     )
@@ -409,18 +414,33 @@ impl Actuator for Answering {
 }
 
 async fn tick_answering(fx: &Fixture, pi: FakePi, now: u64) -> (TickOutcome, FakePi, Answering) {
-    let shared = Shared::new(pi, "unstick", fx.config.paths.state.clone());
+    let mut actuator = Answering::default();
+    let (outcome, pi) = tick_session(fx, pi, &stalled(), now, &mut actuator).await;
+    (outcome, pi, actuator)
+}
+
+/// One tick with any session and any actuator, over the stalled probe.
+async fn tick_session<P: PiSession>(
+    fx: &Fixture,
+    pi: P,
+    probe: &FakeProbe,
+    now: u64,
+    actuator: &mut dyn Actuator,
+) -> (TickOutcome, P) {
+    let shared = Shared::new(
+        pi,
+        fx.config.authority.as_str(),
+        fx.config.paths.state.clone(),
+    );
     let clock = TestClock::fixed(now);
-    let stalled = stalled();
     let cx = TickContext {
         config: &fx.config,
         registry: &fx.registry,
-        probe: &stalled,
+        probe,
         clock: &clock,
     };
-    let mut actuator = Answering::default();
-    let outcome = tick(&shared, &cx, &mut actuator).await.unwrap();
-    (outcome, shared.pi.into_inner(), actuator)
+    let outcome = tick(&shared, &cx, actuator).await.unwrap();
+    (outcome, shared.pi.into_inner())
 }
 
 const REQUEUE: &str =
@@ -545,10 +565,185 @@ async fn a_malformed_follow_up_keeps_the_earlier_rounds_planned_actions() {
     };
     assert_eq!(planned.len(), 1, "the first round's plans still aggregate");
     assert_eq!(actuator.ran, ["Unlock ok for 3f9a1c2e"]);
-    assert_eq!(pi.prompts.len(), 2, "a parse failure ends the wake");
+    assert_eq!(pi.prompts.len(), 3, "the parse failure earns its own turn");
+    assert!(
+        pi.prompts[2].contains("- envelope: unparseable"),
+        "{}",
+        pi.prompts[2]
+    );
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert!(
+        state.pending_report.is_none(),
+        "the failure was delivered and the last reply was empty"
+    );
+}
+
+#[tokio::test]
+async fn a_gate_only_refusal_gets_bounded_follow_up_turns() {
+    let fx = fixture_staged_with_mcp("observe", 2);
+    let replies = [UNLOCK, UNLOCK, UNLOCK];
+    let (outcome, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&replies), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert!(planned.iter().all(|item| item.verdict.is_err()));
+    assert!(
+        actuator.ran.is_empty(),
+        "nothing ran; the refusal alone fed back"
+    );
+    assert_eq!(
+        pi.prompts.len(),
+        3,
+        "the wake prompt plus two refusal follow-ups, then the bound"
+    );
+    assert!(
+        pi.prompts[1].contains("- Unlock: refused"),
+        "{}",
+        pi.prompts[1]
+    );
+    assert!(
+        pi.prompts[1].contains("<<<untrusted source=\"gate-refusal\">"),
+        "{}",
+        pi.prompts[1]
+    );
+    assert!(
+        pi.prompts[2].contains("- Unlock: refused"),
+        "{}",
+        pi.prompts[2]
+    );
     let state = store::load_at(&fx.config.paths.state).unwrap();
     let pending = state.pending_report.unwrap();
-    assert!(pending.contains("- envelope: unparseable"), "{pending}");
+    assert!(pending.contains("- Unlock: refused"), "{pending}");
+}
+
+#[tokio::test]
+async fn a_malformed_envelope_gets_a_follow_up_turn_when_the_actuator_feeds_back() {
+    let fx = fixture_with_mcp(2);
+    let replies = [MALFORMED, "Sending a fixed envelope."];
+    let (outcome, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&replies), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert!(
+        planned.is_empty(),
+        "a bad envelope plans nothing: {planned:?}"
+    );
+    assert!(actuator.ran.is_empty());
+    assert_eq!(pi.prompts.len(), 2, "the parse failure earned one turn");
+    assert!(
+        pi.prompts[1].contains("- envelope: unparseable"),
+        "{}",
+        pi.prompts[1]
+    );
+    assert!(
+        pi.prompts[1].contains("<<<untrusted source=\"envelope-parse\">"),
+        "{}",
+        pi.prompts[1]
+    );
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert!(
+        state.pending_report.is_none(),
+        "the failure was delivered and the reply was empty"
+    );
+}
+
+#[tokio::test]
+async fn a_valid_empty_envelope_ends_a_feeding_back_wake_without_another_turn() {
+    let fx = fixture_with_mcp(3);
+    let replies = [UNLOCK, "All done.\n+++\n+++\n"];
+    let (outcome, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&replies), NOW).await;
+    let TickOutcome::Woke { planned } = outcome else {
+        panic!("expected a wake, got {outcome:?}");
+    };
+    assert_eq!(planned.len(), 1);
+    assert_eq!(actuator.ran.len(), 1);
+    assert_eq!(pi.prompts.len(), 2, "the empty envelope ends the wake");
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert!(state.pending_report.is_none());
+}
+
+#[tokio::test]
+async fn zero_follow_ups_ends_the_wake_with_the_results_pending() {
+    let fx = fixture_with_mcp(0);
+    let (_, pi, actuator) = tick_answering(&fx, FakePi::with_replies(&[UNLOCK]), NOW).await;
+    assert_eq!(pi.prompts.len(), 1, "no follow-up turns at all");
+    assert_eq!(actuator.ran.len(), 1);
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    let pending = state.pending_report.unwrap();
+    assert!(pending.contains("Unlock: permitted"), "{pending}");
+    assert!(pending.contains("Unlock ok for 3f9a1c2e"), "{pending}");
+}
+
+/// A scripted session whose turns may fail, so a follow-up can die
+/// mid-wake.
+struct Scripted {
+    prompts: Vec<String>,
+    turns: VecDeque<Result<String, String>>,
+}
+
+impl Scripted {
+    fn with_turns(turns: Vec<Result<String, String>>) -> Self {
+        Self {
+            prompts: Vec::new(),
+            turns: turns.into(),
+        }
+    }
+}
+
+impl PiSession for Scripted {
+    async fn prompt(
+        &mut self,
+        message: String,
+        _events: Option<tokio::sync::mpsc::UnboundedSender<crate::mind::pi::TurnEvent>>,
+    ) -> Result<TurnSummary, crate::VivariumError> {
+        self.prompts.push(message);
+        self.turns
+            .pop_front()
+            .unwrap_or_else(|| Ok(String::from("no-op")))
+            .map(|text| TurnSummary { text })
+            .map_err(crate::VivariumError::Other)
+    }
+
+    async fn compact(&mut self) -> Result<String, crate::VivariumError> {
+        Ok(String::new())
+    }
+
+    async fn history(&mut self, _limit: usize) -> Result<Vec<String>, crate::VivariumError> {
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn a_failed_follow_up_keeps_its_outstanding_report_for_the_next_wake() {
+    let fx = fixture_with_mcp(2);
+    let pi = Scripted::with_turns(vec![Ok(UNLOCK.into()), Err("turn failed".into())]);
+    let mut actuator = Answering::default();
+    let stalled = stalled();
+    let (outcome, pi) = tick_session(&fx, pi, &stalled, NOW, &mut actuator).await;
+    assert!(matches!(outcome, TickOutcome::Woke { .. }), "{outcome:?}");
+    assert_eq!(actuator.ran.len(), 1);
+    assert_eq!(pi.prompts.len(), 2, "the follow-up was sent, then failed");
+    assert!(
+        log_text(&fx).contains("follow-up turn failed"),
+        "{}",
+        log_text(&fx)
+    );
+    let state = store::load_at(&fx.config.paths.state).unwrap();
+    assert_eq!(state.last_wake.unwrap().outcome.as_deref(), Some("success"));
+    let pending = state.pending_report.unwrap();
+    assert!(pending.contains("Unlock: permitted"), "{pending}");
+    let (_, pi, _) = tick_answering(&fx, FakePi::default(), NOW + 4000).await;
+    assert_eq!(pi.prompts.len(), 1);
+    assert!(
+        pi.prompts[0].starts_with("Action results ("),
+        "{}",
+        pi.prompts[0]
+    );
+    assert!(
+        pi.prompts[0].contains("- Unlock: permitted"),
+        "{}",
+        pi.prompts[0]
+    );
 }
 
 #[tokio::test]
