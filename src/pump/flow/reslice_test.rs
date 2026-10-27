@@ -6,8 +6,10 @@ use tempfile::{TempDir, tempdir};
 
 use super::{KIND, Mode, RESLICE_FAILED, Reslices, request, settle_error};
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout;
@@ -69,6 +71,11 @@ fn rig() -> Result<Rig, VivariumError> {
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    // The source slice must carry a target this context knows: the caller's
+    // only explicit target, or the synthetic `default` of a legacy one.
+    let target = cfg
+        .primary_target()
+        .unwrap_or_else(|| String::from("default"));
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|role| role.name != SLICER_ROLE);
@@ -95,7 +102,19 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
     let sentinel = mail.send_step("pump", "pump", "run", "sentinel", &[])?;
-    let slice_task = mail.send_step("pump", "pump", "s", "slice body text", &[])?;
+    let slice_task = mail.send_step(
+        "pump",
+        "pump",
+        "s",
+        &task_body_with(
+            &TaskFront {
+                target: Some(target),
+                ..TaskFront::step(NEED, 1, "slice:a")
+            },
+            "slice body text",
+        ),
+        &[],
+    )?;
     store.insert_step(NEED, &step("sentinel", &sentinel))?;
     let slice = step("slice:a", &slice_task);
     store.insert_step(NEED, &slice)?;
@@ -304,6 +323,12 @@ fn phase_rig_with(
     mode: Mode,
     input: &str,
 ) -> Result<(Rig, String), VivariumError> {
+    // The planted slices target vivi: configure it unless the caller already
+    // did, keeping every caller-supplied budget and other setting.
+    let mut cfg = cfg;
+    cfg.targets
+        .entry(String::from("vivi"))
+        .or_insert_with(PumpTarget::default);
     let mut rig = rig_with(cfg)?;
     let slicer_task = rig.mail.send_step("pump", "pump", "slice", "slicer", &[])?;
     let slicer = step("slice", &slicer_task);

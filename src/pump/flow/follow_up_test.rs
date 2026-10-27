@@ -6,6 +6,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::FollowUpRework;
 use crate::error::VivariumError;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::{FollowUp, Hand, HandAnswer};
@@ -90,7 +92,21 @@ fn rig() -> Result<Rig, VivariumError> {
     store.insert_run(&run)?;
     let mut mail = FakeMail::new(&ctx.cfg.reply_from);
     let sentinel = mail.send_step("pump", "pump", "run", "sentinel", &[])?;
-    let slice_task = mail.send_step("pump", "pump", "s", "slice body text", &[])?;
+    // Legacy configuration: the source slice carries the synthetic `default`
+    // target the pump derives for it.
+    let slice_task = mail.send_step(
+        "pump",
+        "pump",
+        "s",
+        &task_body_with(
+            &TaskFront {
+                target: Some(String::from("default")),
+                ..TaskFront::step(NEED, 1, "slice:a")
+            },
+            "slice body text",
+        ),
+        &[],
+    )?;
     store.insert_step(NEED, &step("sentinel", &sentinel))?;
     let slice = step("slice:a", &slice_task);
     store.insert_step(NEED, &slice)?;
