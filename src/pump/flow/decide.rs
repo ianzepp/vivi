@@ -7,12 +7,12 @@
 
 use serde_json::Value;
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::def::{FlowNode, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 const AUDIT_WORDS: [&str; 4] = ["clean_pass", "residual", "block_range", "block_ship"];
 const RUNG_WORDS: [&str; 2] = ["pass", "fail"];

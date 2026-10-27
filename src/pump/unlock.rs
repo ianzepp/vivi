@@ -8,8 +8,8 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::mailspace::{Mailspace, PumpActionRequest};
+use vivi_error::VivariumError;
 
 /// What [`unlock`] posted. Display is the line the CLI prints.
 ///

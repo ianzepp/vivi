@@ -30,7 +30,7 @@ use super::ssh::SshProvider;
 use super::ssh_cli::SshCli;
 use super::ssh_script::WORKER_MACOS_SCRIPT;
 use super::ssh_state;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// How long a new slot's seed (fetch and seed commands) may take.
 const SEED_LIMIT: Duration = Duration::from_secs(30 * 60);

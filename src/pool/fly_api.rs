@@ -16,7 +16,7 @@ use super::fly_token::{TOKEN_MAX_AGE, TokenCache};
 use super::github::Secret;
 use super::provider::{ExecOutput, Hold, MachineRecord};
 use crate::b64;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const BASE: &str = "https://api.machines.dev/v1/apps";
 const USER_AGENT: &str = "vivi-pool";

@@ -23,7 +23,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufRea
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, mpsc, watch};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 use super::pi::{PiSession, TurnEvent};
 use super::store::{self, MindState};

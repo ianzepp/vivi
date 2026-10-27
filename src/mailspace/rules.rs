@@ -13,15 +13,15 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::delivery::add_header;
-use crate::error::VivariumError;
 use crate::extract::extract_text;
-use crate::letter::plain::{RuleFront, RuleScope};
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Front, LetterKind, of_message, parse_kind};
-use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{
     MailspaceEvent, MailspaceEventInput, MessageIngestRequest, Storage, StoredMessage,
     StoredMessageView,
 };
+use vivi_error::VivariumError;
+use vivi_mail::letter::plain::{RuleFront, RuleScope};
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION, Front, LetterKind, of_message, parse_kind};
+use vivi_mail::message::{ComposeDraft, build_compose_draft};
 
 /// One rule in a list or a search result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -279,7 +279,7 @@ impl Mailspace {
         // Scope and supersedes travel as front matter; the composed body is
         // parsed back as the rule kind, so a writer bug is an error at
         // write time.
-        let prose = crate::letter::plain::render(&front, body)
+        let prose = vivi_mail::letter::plain::render(&front, body)
             .map_err(|error| VivariumError::Message(format!("the rule letter: {error}")))?;
         parse_kind(&LetterKind::Rule, &prose)
             .map_err(|error| VivariumError::Message(format!("the rule letter: {error}")))?;

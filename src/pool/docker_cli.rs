@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// How long an ordinary call may take.
 pub const CALL_TIMEOUT: Duration = Duration::from_mins(2);

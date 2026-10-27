@@ -5,10 +5,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{UNREPAIRED_NODE, answer_green};
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::records::{RecordFront, RecordKind};
-use crate::letter::render;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -16,6 +12,10 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
+use vivi_mail::letter::records::{RecordFront, RecordKind};
+use vivi_mail::letter::render;
 
 type R = Result<(), VivariumError>;
 

@@ -6,10 +6,10 @@ use tempfile::tempdir;
 
 use super::{KIND, base_id, correction_n, enqueue, resumable, spec};
 use crate::pump::envelope::EnvelopeError;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_mail::letter::roles::RoleKind;
 
 #[derive(Default)]
 struct Store {

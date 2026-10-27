@@ -9,8 +9,6 @@
 use std::collections::BTreeSet;
 
 use crate::b64;
-use crate::error::VivariumError;
-use crate::letter::{LetterError, of_message};
 use crate::mailspace::{Mailspace, prefix_of_domain};
 use crate::storage::{
     IngestEvent, IngestOutcome, MessageIngestRequest, RemoteBindingInput, Storage,
@@ -21,6 +19,8 @@ use crate::sync::pull::{PullReport, QuarantinedRecord, RefusedRecord};
 use crate::sync::quarantine;
 use crate::sync::transport::Record;
 use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY};
+use vivi_error::VivariumError;
+use vivi_mail::letter::{LetterError, of_message};
 
 /// The inputs of filing one record. The validity bindings are written
 /// under starts at [`UIDVALIDITY`] and is kept in step with the server

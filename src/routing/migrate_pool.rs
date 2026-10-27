@@ -42,7 +42,7 @@ pub(super) fn settings_source(
 pub(super) fn add_pool(
     doc: &mut DocumentMut,
     pool: &NewPool,
-) -> Result<(), crate::error::VivariumError> {
+) -> Result<(), vivi_error::VivariumError> {
     crate::mailspace::config_edit::upsert_pool(
         doc,
         &PoolAdd {

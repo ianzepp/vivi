@@ -6,9 +6,6 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use super::ReadySlices;
-use crate::error::VivariumError;
-use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::TickPhase;
@@ -21,6 +18,9 @@ use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::task_body_with;
+use vivi_mail::letter::work::TaskFront;
 
 type R = Result<(), VivariumError>;
 

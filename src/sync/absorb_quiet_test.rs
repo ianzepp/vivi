@@ -3,10 +3,10 @@
 //! the state the author's absorb letter names for its own `sent` row of a
 //! closed item, and the one seal two concurrent absorbs converge on.
 
-use crate::letter::fixture::{need_body, task_body};
 use crate::mailspace::{AbsorbConfig, Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
+use vivi_mail::letter::fixture::{need_body, task_body};
 
 /// The value of a letter's header, when it has one.
 fn header_of(bytes: &[u8], name: &str) -> Option<String> {

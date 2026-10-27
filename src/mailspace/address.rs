@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use super::Mailspace;
 use super::config_file::PREFIX_LEN;
 use super::identity::sanitize_identity;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Longest local part the wire accepts for an address.
 const MAX_LOCAL_LEN: usize = 64;

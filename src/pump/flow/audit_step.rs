@@ -2,8 +2,6 @@
 
 use serde_json::Value;
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -12,6 +10,8 @@ use crate::pump::flow::verify_inputs::{
     admitted_plan, audit_context, branch_range, capped, latest_of_class, need_thread, requirements,
 };
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The class of rows whose earlier audit a second pass carries.
 const AUDITOR_CLASS: &str = "auditor";

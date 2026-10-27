@@ -23,10 +23,10 @@ use std::collections::BTreeMap;
 
 use super::property::{PropertyEvent, PropertyKind, earliest_absorb, property_chain};
 use super::{EventTally, HeldItem, Mailspace, held_item};
-use crate::error::VivariumError;
 use crate::mailspace::backlog::backlog_node_by_token;
 use crate::mailspace::dependencies::depends_on_refs;
 use crate::storage::{BACKLOG_GRAPH_CODE, Storage};
+use vivi_error::VivariumError;
 
 /// The newest counted letter's word per dependency `Message-ID`: `true`
 /// when the edge is there, `false` when a newer letter removed it.

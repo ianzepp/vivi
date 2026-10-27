@@ -13,10 +13,10 @@ use super::backlog::backlog_node_by_token;
 use super::holding::is_foreign_account;
 use super::item_events::event_release_due;
 use super::want_state::WantState;
-use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphEdgeRow, WorkGraphNodeRow,
 };
+use vivi_error::VivariumError;
 
 /// One citizenship violation.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

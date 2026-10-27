@@ -6,7 +6,6 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{PRUNE_FAILED, register};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -17,6 +16,7 @@ use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::{RoleRouting, RoutedRole};
 use std::sync::Arc;
+use vivi_error::VivariumError;
 
 const NEED: &str = "n1";
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";

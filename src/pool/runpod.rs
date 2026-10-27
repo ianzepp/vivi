@@ -41,7 +41,7 @@ use super::slot::{
 use super::ssh::SshProvider;
 use super::ssh_cli::SshCli;
 use super::ssh_state;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The slot root inside a pod (the scripts' `/work`).
 pub const POD_ROOT: &str = "/work";

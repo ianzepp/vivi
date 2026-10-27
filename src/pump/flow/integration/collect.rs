@@ -5,7 +5,6 @@
 //! answers `conflict` at once. A lost or timed-out job is settled by git, never
 //! by the pool's say-so.
 
-use crate::error::VivariumError;
 use crate::pump::flow::collect_step::{RunCx, StepCollector, merged_payload};
 use crate::pump::flow::def::{FAILED, NodeClass};
 use crate::pump::flow::handlers::FlowMail;
@@ -16,6 +15,7 @@ use crate::pump::flow::verify;
 use crate::pump::jobs::merge_main::{self, MergeMainResult};
 use crate::pump::jobs::rung_result::{self, EnvFailure};
 use crate::pump::jobs::{self, JobOutcome, JobStatus, JobStore, PoolJob};
+use vivi_error::VivariumError;
 
 /// Times a merge-main step is queued again after main moved or a lost job left
 /// main unchanged; the next failure answers.

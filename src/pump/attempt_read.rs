@@ -130,7 +130,7 @@ impl AttemptFields {
 /// record.
 #[must_use]
 pub fn parse_record(body: &str) -> Option<AttemptFields> {
-    let prose = match crate::letter::split(body) {
+    let prose = match vivi_mail::letter::split(body) {
         Ok((_, prose)) => prose.trim_start(),
         Err(_) => body,
     };

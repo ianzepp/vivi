@@ -15,8 +15,6 @@
 //! attempt number ([`retry`]), up to [`MAX_ATTEMPTS`]. A blocked-scope answer
 //! and an envelope correction use no attempt ([`redispatch_scope`]).
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::{Note, note_of};
 use crate::mailspace::{MailspaceThreadMessage, order_notes};
 use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
@@ -24,7 +22,6 @@ use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct::correction_n;
 use crate::pump::envelope::parse;
-use crate::pump::envelope::roles::{CheckResult, Hand, HandAnswer};
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -35,6 +32,9 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::need::unit_branch;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::{CheckResult, Hand, HandAnswer};
 
 /// Job kind of a slice hand job.
 pub const KIND: &str = "hand";
@@ -236,9 +236,9 @@ impl MailspacePort {
         Ok(thread
             .into_iter()
             .filter(|message| message.event.is_none() && message.message_id != id)
-            .filter(|message| crate::letter::prose_of(&message.body).starts_with(marker))
+            .filter(|message| vivi_mail::letter::prose_of(&message.body).starts_with(marker))
             .map(|message| {
-                let prose = crate::letter::prose_of(&message.body).to_owned();
+                let prose = vivi_mail::letter::prose_of(&message.body).to_owned();
                 (message.date, prose)
             })
             .collect())

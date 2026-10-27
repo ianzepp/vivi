@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use super::kind::{effective_kind, events_kind, matches_kind, matches_kind_events};
 use super::{MailAbsorbFilter, Mailspace, canonical_local_role};
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, StoredMessageView};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Clone, Default)]
 pub struct DumpFilters {

@@ -2,13 +2,13 @@
 //! route files a letter, the receiver's graph, `step` and
 //! `task list --blocked` agree.
 
-use crate::letter::fixture::{body_with_deps, task_body_with};
-use crate::letter::work::TaskFront;
 use crate::mailspace::{GraphNodeView, RoleUpdate, SourceTaskRequest};
 use crate::sync::fake_server::{LETTER_DATE, World, wire_id};
 use crate::sync::fetch::fetch_handles;
 use crate::sync::pull::{PullPlan, pull_with};
 use crate::sync::refs::follow_refs;
+use vivi_mail::letter::fixture::{body_with_deps, task_body_with};
+use vivi_mail::letter::work::TaskFront;
 
 /// A need or task that declares `it is done`, so `step` can dispatch it.
 fn body(kind: &str, deps: &[String]) -> String {

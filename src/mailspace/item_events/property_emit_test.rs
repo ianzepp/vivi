@@ -3,9 +3,9 @@
 
 use super::super::held_item;
 use super::gated_event_body;
-use crate::letter::plain::CloseFront;
-use crate::letter::{Front, LetterKind, of_message};
 use crate::mailspace::{AbsorbConfig, Mailspace, SendRequest};
+use vivi_mail::letter::plain::CloseFront;
+use vivi_mail::letter::{Front, LetterKind, of_message};
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();
@@ -24,7 +24,7 @@ fn send_work(mailspace: &Mailspace, kind: &str, subject: &str) -> (String, Strin
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::body_for(kind, "body"),
+            body: vivi_mail::letter::fixture::body_for(kind, "body"),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,

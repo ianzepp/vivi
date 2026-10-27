@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::ADMITTER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowKind};
@@ -19,6 +18,7 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 type Reg = Registry<Jobs, FakeMail>;

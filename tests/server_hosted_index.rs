@@ -12,7 +12,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
-use vivi::VivariumError;
 use vivi::mailspace::{Mailspace, SendRequest};
 use vivi::server::hosted;
 use vivi::server::identities::IdentityRegistry;
@@ -25,6 +24,7 @@ use vivi::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery as WireQuery, Page, Transport,
 };
 use vivi::sync::{SyncConfig, SyncSettings, sync_dir};
+use vivi_error::VivariumError;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

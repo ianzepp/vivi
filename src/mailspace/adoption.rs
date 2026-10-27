@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 
 use super::Mailspace;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Folders a held letter can wait in: the inbox and the work queues.
 const HELD_ROLES: [&str; 4] = ["inbox", "tasks", "needs", "wants"];

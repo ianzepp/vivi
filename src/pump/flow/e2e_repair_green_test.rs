@@ -13,7 +13,6 @@
 
 use std::sync::Arc;
 
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::fixture::send_need;
 use crate::pump::flow::e2e_rig::{Rig, agent_receipt, push_receipt, rig};
@@ -25,6 +24,7 @@ use crate::pump::flow::main_rung::{
 use crate::pump::flow::repair_unrepaired::MAIN_UNREPAIRED;
 use crate::pump::jobs::{JobStatus, PoolJob};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

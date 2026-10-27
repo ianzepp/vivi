@@ -7,7 +7,6 @@
 
 use std::collections::HashSet;
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::Storage;
 use crate::sync::fetch::lookup_and_file;
@@ -16,6 +15,7 @@ use crate::sync::pull::{PullReport, settle_events, settle_links};
 use crate::sync::state::SyncState;
 use crate::sync::transport::Transport;
 use crate::sync::{SyncSettings, sync_dir};
+use vivi_error::VivariumError;
 
 /// Deepest hop count a pull may follow.
 pub const MAX_DEPTH: u8 = 3;

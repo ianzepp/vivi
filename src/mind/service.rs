@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 use super::actions::{self, Actuator, DryRun, Planned};
 use super::authority::Gate;

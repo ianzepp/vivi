@@ -17,7 +17,7 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -119,7 +119,7 @@ fn unknown_need_and_non_need_are_refused() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "a task".into(),
-            body: crate::letter::fixture::task_body("body"),
+            body: vivi_mail::letter::fixture::task_body("body"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,
@@ -185,7 +185,7 @@ fn pump_config_names_the_sender_and_the_pump_identity() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "fix auth".into(),
-            body: crate::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -296,7 +296,7 @@ fn send_admits_a_need_addressed_to_a_third_identity() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "not for the pump".into(),
-            body: crate::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -324,7 +324,7 @@ fn a_need_copied_to_the_pump_identity_is_plannable() {
             cc: vec!["mind".into()],
             bcc: Vec::new(),
             subject: "cc the pump".into(),
-            body: crate::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -349,7 +349,7 @@ fn a_need_the_pump_identity_sent_itself_gets_a_record_whoever_it_is_addressed_to
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: subject.into(),
-                body: crate::letter::fixture::need_body(&["it works"], ""),
+                body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
                 role: "needs".into(),
                 kind: Some("need".into()),
                 reply_to: None,
@@ -409,7 +409,7 @@ fn send_refuses_a_closed_need() {
     let error = refused(
         &mailspace,
         &need,
-        &crate::letter::fixture::record_body(&need, "build"),
+        &vivi_mail::letter::fixture::record_body(&need, "build"),
     );
     assert!(error.contains("is done"), "{error}");
     assert!(error.contains("needs an open need"), "{error}");
@@ -441,7 +441,7 @@ fn send_refuses_a_repair_record_without_a_known_target() {
     let none = refused(
         &mailspace,
         &need,
-        &crate::letter::fixture::record_body(&need, "repair"),
+        &vivi_mail::letter::fixture::record_body(&need, "repair"),
     );
     assert!(none.contains("alpha, beta"), "{none}");
     assert!(none.contains("actual: none"), "{none}");
@@ -454,7 +454,7 @@ fn send_refuses_a_repair_record_without_a_known_target() {
     let unknown = refused(
         &mailspace,
         &need,
-        &crate::letter::fixture::repair_record_body(&need, "gamma", None, ""),
+        &vivi_mail::letter::fixture::repair_record_body(&need, "gamma", None, ""),
     );
     assert!(unknown.contains("actual: gamma"), "{unknown}");
 }
@@ -491,10 +491,10 @@ fn send_accepts_valid_build_and_repair_records() {
     let (mut mailspace, _tmp) = roster();
     pump_with_targets(&mut mailspace, &["alpha"]);
     let build = send_need(&mailspace, "build it");
-    let body = crate::letter::fixture::record_body(&build, "build");
+    let body = vivi_mail::letter::fixture::record_body(&build, "build");
     mailspace.pump_send(None, &build, Some(&body)).unwrap();
     let repair = send_need(&mailspace, "repair it");
-    let body = crate::letter::fixture::repair_record_body(&repair, "alpha", None, "");
+    let body = vivi_mail::letter::fixture::repair_record_body(&repair, "alpha", None, "");
     mailspace.pump_send(None, &repair, Some(&body)).unwrap();
     assert_eq!(mailspace.pump_list(None, None).unwrap().len(), 2);
 }
@@ -506,10 +506,10 @@ fn without_pump_config_a_repair_record_needs_a_target_but_any_name() {
     let error = refused(
         &mailspace,
         &need,
-        &crate::letter::fixture::record_body(&need, "repair"),
+        &vivi_mail::letter::fixture::record_body(&need, "repair"),
     );
     assert!(error.contains("actual: none"), "{error}");
-    let body = crate::letter::fixture::repair_record_body(&need, "anything", None, "");
+    let body = vivi_mail::letter::fixture::repair_record_body(&need, "anything", None, "");
     mailspace.pump_send(None, &need, Some(&body)).unwrap();
 }
 
@@ -524,7 +524,7 @@ fn send_accepts_a_need_addressed_to_hand() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "for hand".into(),
-            body: crate::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -547,7 +547,7 @@ fn a_record_has_no_need_header_and_its_body_parses_as_a_record_front() {
     let raw = String::from_utf8(storage.read_message(&id).unwrap()).unwrap();
     assert!(!raw.contains("X-Vivi-Need"), "{raw}");
     let (shown, body) = mailspace.pump_show(&record.handle).unwrap();
-    let envelope = crate::letter::read::record_of(&shown.handle, &body).unwrap();
+    let envelope = vivi_mail::letter::read::record_of(&shown.handle, &body).unwrap();
     assert_eq!(envelope.front.need, need);
     assert_eq!(envelope.body, format!("Dispatch of need {need}."));
 }
@@ -557,12 +557,17 @@ fn a_full_front_matter_body_is_accepted_and_a_need_mismatch_refused() {
     let (mailspace, _tmp) = roster();
     let first = send_need(&mailspace, "fix auth");
     let second = send_need(&mailspace, "fix mail");
-    let body = crate::letter::fixture::record_body(&first, "build");
+    let body = vivi_mail::letter::fixture::record_body(&first, "build");
     let record = mailspace.pump_send(None, &first, Some(&body)).unwrap();
     assert_eq!(record.need, first);
     let (_, stored) = mailspace.pump_show(&record.handle).unwrap();
-    let front = crate::letter::read::record_of("", &stored).unwrap().front;
-    assert_eq!(front.kind, Some(crate::letter::records::RecordKind::Build));
+    let front = vivi_mail::letter::read::record_of("", &stored)
+        .unwrap()
+        .front;
+    assert_eq!(
+        front.kind,
+        Some(vivi_mail::letter::records::RecordKind::Build)
+    );
     let error = mailspace
         .pump_send(None, &second, Some(&body))
         .unwrap_err()

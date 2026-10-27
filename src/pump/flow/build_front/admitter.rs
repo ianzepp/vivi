@@ -1,6 +1,5 @@
 //! The admitter step handler (admit1, admit2): a read-only admitter role job.
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::ADMITTER_ROLE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -8,6 +7,7 @@ use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
 
 /// Starts an admitter step: the plan to check and the need thread.
 struct AdmitterStep;

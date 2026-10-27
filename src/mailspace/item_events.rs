@@ -51,9 +51,9 @@ use serde::Serialize;
 
 use super::holding::{first_bare_address, is_foreign_account};
 use super::{Mailspace, prefix_of_domain};
-use crate::error::VivariumError;
-use crate::message::normalize_message_id;
 use crate::storage::{ItemEventWrite, MailspaceEventInput, RoleMove, Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::message::normalize_message_id;
 
 mod arrival;
 mod dependency;

@@ -1,0 +1,20 @@
+[package]
+name = "vivi-mail"
+version = "22.1.0"
+edition = "2024"
+description = "The vivi letter format and EML composition"
+license = "MIT"
+
+[features]
+# Exposes the `letter::fixture` body builders to the tests of other crates.
+test-support = []
+
+[dependencies]
+chrono.workspace = true
+lettre.workspace = true
+mail-builder.workspace = true
+mail-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+vivi-error.workspace = true

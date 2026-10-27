@@ -1,9 +1,9 @@
 use super::raw_letter;
-use crate::letter::fixture::{body_with_deps, need_body, task_body_with};
-use crate::letter::records::MailFront;
-use crate::letter::work::{NeedFront, TaskFront};
-use crate::letter::{Front, LetterKind, of_message};
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_mail::letter::fixture::{body_with_deps, need_body, task_body_with};
+use vivi_mail::letter::records::MailFront;
+use vivi_mail::letter::work::{NeedFront, TaskFront};
+use vivi_mail::letter::{Front, LetterKind, of_message};
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();
@@ -57,7 +57,7 @@ fn a_front_matter_need_is_stored_with_the_format_header_and_no_dependency_header
 #[test]
 fn a_need_without_done_when_is_refused_and_nothing_is_stored() {
     let (_tmp, mailspace) = space();
-    let body = crate::letter::render(&NeedFront::default(), "prose").unwrap();
+    let body = vivi_mail::letter::render(&NeedFront::default(), "prose").unwrap();
     let err = mailspace.send(work("need", body)).unwrap_err().to_string();
     assert!(err.contains("need has no done_when"), "{err}");
     assert!(
@@ -181,7 +181,7 @@ fn a_raw_format_1_need_with_valid_front_matter_imports() {
 #[test]
 fn a_raw_format_1_need_without_done_when_is_refused_and_nothing_is_stored() {
     let (_tmp, mailspace) = space();
-    let body = crate::letter::render(&NeedFront::default(), "prose").unwrap();
+    let body = vivi_mail::letter::render(&NeedFront::default(), "prose").unwrap();
     let err = mailspace
         .deliver_raw(&raw("need", Some("1"), &body), "inbox")
         .unwrap_err()

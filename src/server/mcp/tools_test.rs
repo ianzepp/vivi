@@ -62,7 +62,7 @@ fn record(raw: Vec<u8>) -> ProjectRecord {
 
 /// Headers in front of a composed letter, the shape `of_message` reads.
 fn drafted(headers: &str, body: &str) -> Vec<u8> {
-    let drafted = crate::message::build_compose_draft(&crate::message::ComposeDraft {
+    let drafted = vivi_mail::message::build_compose_draft(&vivi_mail::message::ComposeDraft {
         from: "a@b.local".to_owned(),
         to: vec!["a@b.local".to_owned()],
         cc: Vec::new(),

@@ -80,7 +80,7 @@ fn with_branch(f: &Fixture) {
         0,
         &serde_json::to_string(&json!([
             {"handle": NEED, "message_id": "m1", "from": "operator@local",
-             "subject": "Need", "body": crate::letter::fixture::need_body(&["Build the thing"], "")},
+             "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["Build the thing"], "")},
             {"handle": "reply-1", "message_id": "m2", "from": "operator@local",
              "subject": "Need amendment", "body": "also keep the CLI shape"}
         ]))
@@ -121,11 +121,11 @@ fn payload_in(f: &Fixture, run: u32, task: &str, node: &str, class: &str, body: 
         .unwrap();
 }
 
-fn start(f: &Fixture, node: &str) -> Result<JobSpec, crate::error::VivariumError> {
+fn start(f: &Fixture, node: &str) -> Result<JobSpec, vivi_error::VivariumError> {
     start_in(f, 1, node)
 }
 
-fn start_in(f: &Fixture, run: u32, node: &str) -> Result<JobSpec, crate::error::VivariumError> {
+fn start_in(f: &Fixture, run: u32, node: &str) -> Result<JobSpec, vivi_error::VivariumError> {
     let def = load(FlowKind::Build)?;
     let run_row = RunRow {
         run,

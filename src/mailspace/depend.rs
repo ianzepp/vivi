@@ -17,8 +17,8 @@ use super::Mailspace;
 use super::backlog::{resolve_backlog_dep, resolve_dep_message};
 use super::dependencies::{dependency_rfc_id, depends_on_refs, reaches};
 use super::item_events::{HeldItem, PropertyKind, copy_nodes, held_item};
-use crate::error::VivariumError;
 use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// The header a dependency letter names each dependency's `Message-ID` in.
 const EVENT_DEP_HEADER: &str = "X-Vivi-Event-Dep";

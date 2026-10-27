@@ -4,7 +4,7 @@ use semver::Version;
 use serde::Deserialize;
 use std::time::Duration;
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Public release host for `ianzepp/vivi`.
 pub(crate) const DOWNLOAD_BASE: &str = "https://github.com/ianzepp/vivi/releases/download";

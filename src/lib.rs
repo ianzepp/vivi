@@ -11,15 +11,12 @@ pub mod boot;
 pub mod cli;
 pub mod doctor;
 pub mod duration;
-pub mod error;
 pub mod extract;
 pub mod home;
 pub mod judgment;
-pub mod letter;
 pub mod machine_key;
 pub mod mailspace;
 pub mod mcp;
-pub mod message;
 #[cfg(unix)]
 pub mod mind;
 pub mod monitor;
@@ -39,5 +36,3 @@ pub mod storage;
 pub mod store;
 pub mod sync;
 pub mod update;
-
-pub use error::VivariumError;

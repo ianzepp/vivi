@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use chrono::Utc;
 
-use crate::letter::fixture::{body_for, body_with_deps, need_body, task_body};
-use crate::letter::plain::MemoFront;
-use crate::letter::{FENCE, Front, LetterKind, of_message};
 use crate::mailspace::memos::{MemoConfig, MemoFilter};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{MessageIngestRequest, StoredMessageView};
 use crate::sync::SyncConfig;
+use vivi_mail::letter::fixture::{body_for, body_with_deps, need_body, task_body};
+use vivi_mail::letter::plain::MemoFront;
+use vivi_mail::letter::{FENCE, Front, LetterKind, of_message};
 
 const REMOTE: &str = "hand@3f9a1c7e.local";
 
@@ -367,9 +367,12 @@ fn a_close_with_verdict_carries_it_as_front_matter() {
             "close metadata stayed a header: {letter}"
         );
     }
-    let parsed = crate::letter::of_message(letter.as_bytes(), &event).unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Event("done".into()));
-    let crate::letter::Front::Event(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(letter.as_bytes(), &event).unwrap();
+    assert_eq!(
+        parsed.kind,
+        vivi_mail::letter::LetterKind::Event("done".into())
+    );
+    let vivi_mail::letter::Front::Event(front) = parsed.front else {
         panic!("not a close front: {letter}");
     };
     assert_eq!(front.verdict.as_deref(), Some("accepted"));
@@ -408,11 +411,11 @@ fn a_close_without_metadata_stores_its_note_with_no_fence() {
         !letter.contains("+++"),
         "an empty front shows no fence: {letter}"
     );
-    let parsed = crate::letter::of_message(letter.as_bytes(), &handle).unwrap();
-    let crate::letter::Front::Event(front) = &parsed.front else {
+    let parsed = vivi_mail::letter::of_message(letter.as_bytes(), &handle).unwrap();
+    let vivi_mail::letter::Front::Event(front) = &parsed.front else {
         panic!("not a close front: {letter}");
     };
-    assert_eq!(front, &crate::letter::plain::CloseFront::default());
+    assert_eq!(front, &vivi_mail::letter::plain::CloseFront::default());
     assert_eq!(parsed.prose, "all landed");
 }
 
@@ -469,9 +472,9 @@ fn a_report_with_verdict_carries_it_as_a_letter() {
             "close metadata stayed a header: {letter}"
         );
     }
-    let parsed = crate::letter::of_message(letter.as_bytes(), &handle).unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
-    let crate::letter::Front::Mail(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(letter.as_bytes(), &handle).unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Mail);
+    let vivi_mail::letter::Front::Mail(front) = parsed.front else {
         panic!("not a mail front: {letter}");
     };
     let close = front

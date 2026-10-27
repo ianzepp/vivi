@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Read a body argument from a string, `-` for stdin, or `@path` for a file.
 ///

@@ -10,8 +10,8 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use serde::Serialize;
 
 use super::{Mailspace, kind::effective_kind};
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, SHORT_HANDLE_LEN, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// Print a trace graph for the given handle.
 ///

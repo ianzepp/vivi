@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const FILE_NAME: &str = "monitor-cycles.jsonl";
 const TEMP_NAME: &str = ".monitor-cycles.jsonl.tmp";

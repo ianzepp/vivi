@@ -1,8 +1,8 @@
-use vivi::VivariumError;
 use vivi::cli::{RoleCharterCommand, RoleCommand};
 use vivi::mailspace::config_edit::{self, GuardedWrite};
 use vivi::mailspace::{Mailspace, RoleUpdate, RoleView, read_body_input};
 use vivi::role_status;
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_role_command(command: &RoleCommand) -> Result<(), VivariumError> {
     match command {

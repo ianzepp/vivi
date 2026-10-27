@@ -4,13 +4,13 @@
 
 use std::collections::HashSet;
 
-use vivi::VivariumError;
 use vivi::cli::{
     GraphActivateCommand, GraphApplyCommand, GraphAuditCommand, GraphBlockedCommand, GraphCommand,
     GraphCompleteCommand, GraphConnectCommand, GraphExportCommand, GraphImportCommand,
     GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
 };
 use vivi::mailspace::{GraphFrontier, GraphShow, Mailspace, frontier_from_show};
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_graph_command(command: &GraphCommand) -> Result<(), VivariumError> {
     match command {

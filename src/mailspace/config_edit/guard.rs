@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::DocumentMut;
 
-use crate::error::VivariumError;
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace};
 use crate::pump::control::{self, PumpMode};
 use crate::routing::Severity;
+use vivi_error::VivariumError;
 
 /// How many timestamped backups of one file are kept.
 const KEEP_BACKUPS: usize = 10;

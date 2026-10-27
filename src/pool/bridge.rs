@@ -10,12 +10,12 @@
 //! revoked at collect; the keys of everything else a pool left behind are
 //! swept by `pool destroy --all`.
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pool::github::Secret;
 use crate::sync::SyncSettings;
 use crate::sync::identity::SyncIdentity;
 use crate::sync::keys;
+use vivi_error::VivariumError;
 
 /// The longest label the project server accepts.
 const LABEL_MAX: usize = 64;

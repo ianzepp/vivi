@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Parse a positive duration from a human interval string.
 ///

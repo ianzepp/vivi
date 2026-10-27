@@ -1,6 +1,6 @@
-use vivi::VivariumError;
 use vivi::cli::SkillsCommand;
 use vivi::skills::{self, Skill};
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_skills_command(command: &SkillsCommand) -> Result<(), VivariumError> {
     match command {

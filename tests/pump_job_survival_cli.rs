@@ -8,8 +8,6 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vivi::letter::render;
-use vivi::letter::work::{NeedFront, TaskFront};
 use vivi::mailspace::{Mailspace, PumpState, SendRequest};
 use vivi::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepState, run_state};
 use vivi::pump::flow::mail::{MailWriter, MailspacePort};
@@ -19,6 +17,8 @@ use vivi::pump::flow::tick::RUN_ERROR;
 use vivi::pump::jobs::{self, JobSpec, JobStatus};
 use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_mail::letter::render;
+use vivi_mail::letter::work::{NeedFront, TaskFront};
 
 const WORKERS: &[(&str, &str, &str)] = &[
     ("cadence-survival", "cadence", "mind"),

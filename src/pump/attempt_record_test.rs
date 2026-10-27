@@ -165,7 +165,10 @@ fn a_task_record_is_an_attempt_note_labelled_with_the_ending() {
     ));
     let records = records_for(&ctx, "t9");
     let note = crate::mailspace::pump_note::note_of(&records[0].1).expect("a pump note");
-    assert_eq!(note.pump.note, crate::letter::records::NoteWord::Attempt);
+    assert_eq!(
+        note.pump.note,
+        vivi_mail::letter::records::NoteWord::Attempt
+    );
     assert!(note.pump.reference.is_some_and(|label| !label.is_empty()));
     assert!(
         note.prose.contains("pump: attempt record"),

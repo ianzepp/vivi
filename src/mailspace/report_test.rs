@@ -21,8 +21,8 @@ fn space() -> (tempfile::TempDir, Mailspace) {
 
 /// A `kind` letter that says `lands` is done and depends on `depends_on`.
 fn work_body(kind: &str, depends_on: &[&str]) -> String {
-    use crate::letter::fixture::{need_body_with, task_body_with};
-    use crate::letter::work::{NeedFront, TaskFront};
+    use vivi_mail::letter::fixture::{need_body_with, task_body_with};
+    use vivi_mail::letter::work::{NeedFront, TaskFront};
     let depends_on: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
     let done_when = vec![String::from("lands")];
     match kind {
@@ -374,7 +374,7 @@ fn foreign_task(mailspace: &Mailspace) -> (String, String) {
          Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{}",
         mailspace.address_for("hand"),
         mailspace.address_for("mind"),
-        crate::letter::fixture::body_for("task", "lands\n").replace('\n', "\r\n"),
+        vivi_mail::letter::fixture::body_for("task", "lands\n").replace('\n', "\r\n"),
     );
     let delivery = mailspace.deliver_raw(letter.as_bytes(), "tasks").unwrap();
     let handle_of = |identity: &str| {
@@ -482,7 +482,7 @@ fn with_no_author_role_and_no_mind_step_names_the_manual_path() {
          X-Vivi-Format: 1\r\n\
          Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{}",
         mailspace.address_for("hand"),
-        crate::letter::fixture::body_for("task", "lands\n").replace('\n', "\r\n"),
+        vivi_mail::letter::fixture::body_for("task", "lands\n").replace('\n', "\r\n"),
     );
     let handle = mailspace
         .deliver_raw(letter.as_bytes(), "tasks")

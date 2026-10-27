@@ -4,7 +4,6 @@ use std::fs;
 
 use tempfile::tempdir;
 
-use crate::VivariumError;
 use crate::pump::boardpass::BoardPass;
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
@@ -14,6 +13,7 @@ use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::tick_steps::soft_step;
 use crate::pump::tick_steps::{RERAISE_SECS, should_raise};
+use vivi_error::VivariumError;
 
 fn exceptions(ctx: &Ctx) -> String {
     fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()

@@ -4,8 +4,6 @@
 use std::collections::BTreeMap;
 
 use super::{KIND, Mode, RESLICE_NODE_PREFIX, request};
-use crate::error::VivariumError;
-use crate::letter::fixture::task_body;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::fixture::project;
 use crate::pump::flow::advance::start::start;
@@ -15,6 +13,8 @@ use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::task_body;
 
 type R = Result<(), VivariumError>;
 
@@ -61,7 +61,7 @@ fn a_repeated_request_with_multi_line_input_sends_nothing() -> R {
     MailWriter::open_record(
         &mut port,
         &need,
-        &crate::letter::fixture::record_body(&need, "build"),
+        &vivi_mail::letter::fixture::record_body(&need, "build"),
     )?;
     let run = start(&ctx, &store, &mut port, &need, Some("plan"))?;
 

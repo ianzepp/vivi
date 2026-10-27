@@ -8,9 +8,9 @@
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
-use crate::letter::fixture::need_body;
 use crate::mailspace::{RoleUpdate, SendRequest, with_clock_skew};
 use crate::storage::BACKLOG_GRAPH_CODE;
+use vivi_mail::letter::fixture::need_body;
 
 const MINUTE: i64 = 60 * 1_000_000;
 const TRAVEL: &str = "travel";

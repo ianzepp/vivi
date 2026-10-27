@@ -7,11 +7,11 @@ use std::process;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use vivi::VivariumError;
 use vivi::cli::{
     Cli, Command, ProxySubcommand, PumpServiceCommand, PumpSubcommand, ServerSubcommand,
 };
 use vivi::update::CheckOutcome;
+use vivi_error::VivariumError;
 
 mod local_board_command;
 mod local_boot_command;

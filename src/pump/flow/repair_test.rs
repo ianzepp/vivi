@@ -6,13 +6,13 @@ use super::{
     AttemptFacts, attempt_of, branch, facts_text, fix_node, latest_facts, parse_facts, record,
     rung_node,
 };
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
 
 type R = Result<(), VivariumError>;
 
@@ -55,7 +55,7 @@ fn the_branch_is_one_segment_after_the_prefix() {
 
 #[test]
 fn a_front_matter_record_gives_target_tested_and_the_tail() -> R {
-    use crate::letter::fixture::{record_body, repair_record_body};
+    use vivi_mail::letter::fixture::{record_body, repair_record_body};
     let body = repair_record_body(
         NEED,
         "default",
@@ -77,7 +77,7 @@ fn a_front_matter_record_gives_target_tested_and_the_tail() -> R {
 
 #[test]
 fn tested_is_optional_and_target_is_required() -> R {
-    use crate::letter::fixture::{record_body, repair_record_body};
+    use vivi_mail::letter::fixture::{record_body, repair_record_body};
     let rec = record(&repair_record_body(NEED, "vivi", None, "boom"))?;
     assert_eq!(rec.tested, None);
     assert_eq!(rec.tail, "boom");

@@ -5,7 +5,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::PoolTask;
@@ -27,6 +26,7 @@ use vivi::pool::role_dispatch::{self, RoleFacts};
 use vivi::pool::slot::PoolId;
 use vivi::pool::work::{self, WaitOptions, Waited};
 use vivi::pool::{PoolConfig, github, job, run};
+use vivi_error::VivariumError;
 
 const WAIT_POLL: Duration = Duration::from_secs(8);
 
@@ -501,7 +501,7 @@ fn role_facts(space: &Mailspace, task: &PoolTask, named: Option<&str>) -> Option
     if let Some(facts) = named.and_then(known) {
         return Some(facts);
     }
-    let builtin_auditor = match vivi::letter::read::task_of(&task.handle, &task.body) {
+    let builtin_auditor = match vivi_mail::letter::read::task_of(&task.handle, &task.body) {
         Ok(envelope) => envelope
             .front
             .job

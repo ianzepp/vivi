@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::restart;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::collect_slice::{self, BuiltHook, PostBuiltNotes};
@@ -26,6 +25,7 @@ use crate::pump::flow::{integration, main_rung, slice_merge};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Everything the flow engine asks of a mail port.
 pub(crate) trait FlowMail: MailWriter + SliceMail + SliceEdges + OpenRecords {}

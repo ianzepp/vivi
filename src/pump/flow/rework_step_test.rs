@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -18,6 +17,7 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

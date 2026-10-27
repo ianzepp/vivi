@@ -10,10 +10,10 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::error::VivariumError;
 use crate::sync::SyncSettings;
 use crate::sync::http::{MintedToken, RawResponse, mint_token, project_base_url, send_raw};
 use crate::sync::identity::SyncIdentity;
+use vivi_error::VivariumError;
 
 /// One live project API key as the list route reports it: never a secret.
 #[derive(Debug, Clone, PartialEq, Eq)]

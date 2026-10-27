@@ -15,8 +15,8 @@ use super::provider::PoolProvider;
 use super::record::OpenDispatch;
 use super::slot::PoolId;
 use super::work::{self, ReconcileReport};
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 /// Reconcile every pool of `ids` concurrently, one thread per pool, and merge
 /// the results. `open` makes a pool's machine host; it runs on the pool's own

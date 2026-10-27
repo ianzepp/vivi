@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::config_file::{parse_config, read_raw};
 use super::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace, config_edit, project_root};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// What `vivi mailspace init` appends to a new `mailspace.toml`. Every value
 /// the pump needs and cannot guess is left empty; until each is filled in the

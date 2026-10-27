@@ -58,8 +58,8 @@ pub mod verify_inputs;
 
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 use super::config::PumpConfig;
 use super::store::{DB_FILENAME, PumpStore};

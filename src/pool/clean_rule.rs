@@ -10,7 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Reclaim when `bytes > BUILD_CAP_MUL * baseline`.
 pub const BUILD_CAP_MUL: u64 = 2;

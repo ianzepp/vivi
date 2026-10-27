@@ -3,13 +3,13 @@
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use crate::VivariumError;
 use crate::storage::{MessageIngestRequest, RemoteBindingInput};
 use crate::sync::fake_server::{FakeClient, LETTER_DATE, PROJECT, World, letter, wire_id};
 use crate::sync::pull::{PageProgress, PullPlan, PullReport, pull_with};
 use crate::sync::state::{Floor, SyncState};
 use crate::sync::sync_dir;
 use crate::sync::transport::{AppendFailure, Appended, Envelope, ListQuery, Page, Transport};
+use vivi_error::VivariumError;
 
 const T1: &str = "2026-09-01T00:00:00Z";
 const T2: &str = "2026-10-01T00:00:00Z";

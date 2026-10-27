@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::VivariumError;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::bands::parse_band;
 use crate::pool::config::PoolConfig;
 use crate::pool::slot::PoolId;
 use crate::pump::config::PumpConfig;
+use vivi_error::VivariumError;
 
 use super::defaults::is_band_model;
 use super::model::{RoleRouting, RoutedRole, from_mailspace};

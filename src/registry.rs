@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const REGISTRY_FILENAME: &str = "registry.toml";
 

@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 
 use super::Mailspace;
-use crate::error::VivariumError;
 use crate::storage::GoalRow;
+use vivi_error::VivariumError;
 
 /// Goal registration plus whether the path currently exists on disk.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -5,9 +5,9 @@
 
 use super::super::Mailspace;
 use super::super::serves::canonical_wants;
-use crate::error::VivariumError;
-use crate::letter::gate as letter_gate;
-use crate::letter::{Front, Letter, LetterError, of_message, render};
+use vivi_error::VivariumError;
+use vivi_mail::letter::gate as letter_gate;
+use vivi_mail::letter::{Front, Letter, LetterError, of_message, render};
 
 /// A checked letter body and what it declares.
 pub(super) struct Gated {

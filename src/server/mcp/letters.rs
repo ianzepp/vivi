@@ -11,9 +11,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, render as render_front};
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Gated, gate, of_message};
-use crate::message::{ComposeDraft, build_compose_draft, normalize_message_id};
+use vivi_mail::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, render as render_front};
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION, Gated, gate, of_message};
+use vivi_mail::message::{ComposeDraft, build_compose_draft, normalize_message_id};
 
 use crate::server::auth::AuthError;
 use crate::server::identities::IdentityRecord;

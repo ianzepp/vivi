@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::error::VivariumError;
 use crate::storage::Storage;
+use vivi_error::VivariumError;
 
 /// Split arrivals into event targets and ordinary work items to settle.
 pub(super) fn targets(

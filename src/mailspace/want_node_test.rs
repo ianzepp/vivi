@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::letter::fixture::{body_with_deps, need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest, WantState};
+use vivi_mail::letter::fixture::{body_with_deps, need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();

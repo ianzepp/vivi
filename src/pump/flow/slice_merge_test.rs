@@ -6,10 +6,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::register;
-use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
-use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::collect_slice;
@@ -25,6 +21,10 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_body;
+use vivi_mail::letter::fixture::task_body_with;
+use vivi_mail::letter::work::TaskFront;
 
 type R = Result<(), VivariumError>;
 

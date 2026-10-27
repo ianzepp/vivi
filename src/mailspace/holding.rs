@@ -21,8 +21,8 @@ use std::collections::HashSet;
 
 use super::Mailspace;
 use super::graph::GraphNodeView;
-use crate::error::VivariumError;
 use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// Readiness of an open node that is the sender's copy of remote work.
 pub(crate) const READINESS_AWAITING: &str = "awaiting";

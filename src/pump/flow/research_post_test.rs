@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use super::register;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::handlers::Registry;
@@ -15,6 +14,7 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -53,9 +53,9 @@ fn rig(explores: bool) -> Result<Rig, VivariumError> {
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
     let want = mail.send_step("mind", "mind", "the want", "wanted", &[])?;
-    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![String::from("answered")]);
     front.explores = explores.then(|| want.clone());
-    let body = crate::letter::fixture::need_body_with(&front, "research it");
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "research it");
     let need = mail.send_step("mind", "mind", "the need", &body, &[])?;
     let mut registry = Registry::new();
     register(&mut registry);

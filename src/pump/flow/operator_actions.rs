@@ -25,7 +25,6 @@
 
 use std::collections::BTreeSet;
 
-use crate::error::VivariumError;
 use crate::mailspace::{PumpAction, PumpActionKind};
 use crate::pump::flow::advance::restart::{self as run_restart};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -35,6 +34,7 @@ use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Exception kind of an operator action the flow cannot apply.
 pub const ACTION_REFUSED: &str = "flow-action-refused";

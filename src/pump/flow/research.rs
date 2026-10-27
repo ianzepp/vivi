@@ -4,9 +4,7 @@
 //! need thread, plus the want the need front's `explores` names. The
 //! job is read-only; the researcher answers with its envelope.
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::RESEARCHER_ROLE;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -14,6 +12,8 @@ use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// Largest share of the brief one thread section may take.
 const SECTION_CAP: usize = 24 * 1024;
@@ -28,7 +28,7 @@ const READ_TIMEOUT: u64 = 60;
 /// Returns the letter error text when the need body does not parse, so the
 /// research step and the research post fail loudly instead of skipping.
 pub(crate) fn for_want(body: &str) -> Result<Option<String>, VivariumError> {
-    match crate::letter::read::need_of("", body) {
+    match vivi_mail::letter::read::need_of("", body) {
         Ok(envelope) => Ok(envelope.front.explores),
         Err(error) => Err(VivariumError::Message(error.to_string())),
     }

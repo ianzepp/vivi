@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::github::Secret;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// A cached token is fetched again once it is this old.
 pub const TOKEN_MAX_AGE: Duration = Duration::from_mins(1);

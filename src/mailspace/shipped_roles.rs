@@ -4,7 +4,7 @@ use super::shipped::{
     ADMITTER_ROLE, HEAD_CTO_ROLE, REPAIRER_ROLE, RESEARCHER_ROLE, SLICER_ROLE, shipped_charter,
 };
 use super::{Mailspace, MailspaceConfig, RoleUpdate};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const FLOW_ROLES: [&str; 3] = [RESEARCHER_ROLE, ADMITTER_ROLE, SLICER_ROLE];
 

@@ -5,9 +5,9 @@
 use std::collections::BTreeSet;
 use std::process::{Command, Output};
 
-use vivi::letter::render;
-use vivi::letter::work::{NeedFront, TaskFront};
 use vivi::mailspace::{Mailspace, PumpActionKind, SendRequest};
+use vivi_mail::letter::render;
+use vivi_mail::letter::work::{NeedFront, TaskFront};
 
 fn project() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();

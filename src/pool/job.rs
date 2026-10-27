@@ -15,8 +15,8 @@ use std::process::Command;
 use super::bridge::Grant;
 use super::config::PoolCommitter;
 use super::github::Secret;
-use crate::error::VivariumError;
-use crate::letter::work::TaskFront;
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::TaskFront;
 
 /// The generic job runner, embedded in the binary.
 pub const RUNNER: &str = include_str!("job-run.sh");
@@ -98,7 +98,7 @@ pub struct BodyRefs {
 /// The task front matter of a body (old bodies go through the transitional
 /// reader); a body that does not read as a task letter has none.
 pub(crate) fn task_front(body: &str) -> TaskFront {
-    match crate::letter::read::task_of("", body) {
+    match vivi_mail::letter::read::task_of("", body) {
         Ok(envelope) => envelope.front,
         Err(_) => TaskFront::default(),
     }

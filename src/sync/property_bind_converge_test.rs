@@ -10,11 +10,11 @@ use std::rc::Rc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use crate::letter::fixture::{body_for, task_body};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::{body_for, task_body};
 
 #[path = "property_bind_test.rs"]
 mod property_bind_test;

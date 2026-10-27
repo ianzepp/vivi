@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
-use vivi::VivariumError;
 use vivi::cli::{
     Command, CycleCommand, LocalSendCommand, MailCommand, MailListCommand, MailReplyCommand,
     MailspaceCommand, MailspaceIdentityCommand, MailspaceImportCommand, MemoCommand, TaskCommand,
@@ -13,6 +12,7 @@ use vivi::mailspace::{
     SourceTaskRequest,
 };
 use vivi::storage::StoredMessageView;
+use vivi_error::VivariumError;
 
 mod mail;
 
@@ -752,7 +752,7 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         command.send.body.as_deref(),
         command.send.body_file.as_deref(),
     )?;
-    let sugared = vivi::letter::sugar::apply("task", &body, &command.sugar())
+    let sugared = vivi_mail::letter::sugar::apply("task", &body, &command.sugar())
         .map_err(|err| VivariumError::Message(err.to_string()))?;
     let body = sugared.body;
     let result = mailspace.send(SendRequest {

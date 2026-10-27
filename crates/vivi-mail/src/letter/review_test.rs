@@ -4,9 +4,8 @@ use super::{
     ADMITTER_ANSWERS, AUDITOR_ANSWERS, CTO_ANSWERS, HEAD_CEO_ANSWERS, JUDGE_ANSWERS, MERGE_ANSWERS,
     RESEARCHER_ANSWERS,
 };
-use crate::pump::envelope::EnvelopeError;
-use crate::pump::envelope::roles::{RoleKind, parse_for};
-use crate::pump::flow::def::NodeClass;
+use crate::letter::LetterError as EnvelopeError;
+use crate::letter::roles::{RoleKind, parse_for};
 
 fn env(front: &str) -> String {
     format!("+++\n{front}+++\nreport\n")
@@ -190,57 +189,6 @@ fn minimal(kind: RoleKind, word: &str) -> String {
         _ => {}
     }
     front
-}
-
-#[test]
-fn every_flow_class_answer_set_matches_the_parser() {
-    let classes = [
-        NodeClass::Researcher,
-        NodeClass::Planner,
-        NodeClass::Admitter,
-        NodeClass::Slicer,
-        NodeClass::Auditor,
-        NodeClass::Judge,
-        NodeClass::Cto,
-        NodeClass::Merge,
-    ];
-    for class in classes {
-        let kind = RoleKind::from_class(&class).expect("role class");
-        let mut words: Vec<&str> = class.words().to_vec();
-        words.retain(|w| *w != "failed");
-        for word in &words {
-            assert_eq!(answer(kind, &minimal(kind, word)), *word, "{kind:?} {word}");
-        }
-        assert!(
-            is_err(kind, &minimal(kind, "failed")),
-            "{kind:?} takes no failed"
-        );
-        assert!(
-            is_err(kind, &minimal(kind, "bogus")),
-            "{kind:?} takes no bogus"
-        );
-    }
-}
-
-#[test]
-fn answer_constants_equal_the_flow_words_without_failed() {
-    let cases: [(NodeClass, &[&str]); 6] = [
-        (NodeClass::Researcher, RESEARCHER_ANSWERS),
-        (NodeClass::Admitter, ADMITTER_ANSWERS),
-        (NodeClass::Auditor, AUDITOR_ANSWERS),
-        (NodeClass::Judge, JUDGE_ANSWERS),
-        (NodeClass::Cto, CTO_ANSWERS),
-        (NodeClass::Merge, MERGE_ANSWERS),
-    ];
-    for (class, constant) in cases {
-        let flow: Vec<&str> = class
-            .words()
-            .iter()
-            .copied()
-            .filter(|w| *w != "failed")
-            .collect();
-        assert_eq!(flow, constant, "{class:?}");
-    }
 }
 
 #[test]

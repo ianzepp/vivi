@@ -2,7 +2,7 @@ use crate::sync::fake_server::{LETTER_DATE, World, handle, wire_id};
 use crate::sync::fetch::{FetchReport, fetch_handles, normalize_handles};
 use crate::sync::sync_dir;
 
-fn fetch(w: &World, handles: &[&str]) -> Result<FetchReport, crate::VivariumError> {
+fn fetch(w: &World, handles: &[&str]) -> Result<FetchReport, vivi_error::VivariumError> {
     let handles: Vec<String> = handles.iter().map(|h| (*h).to_string()).collect();
     fetch_handles(&w.bob.mailspace, &w.bob.settings, &w.bob_client, &handles)
 }

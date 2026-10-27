@@ -12,11 +12,11 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::cli::PumpRequeueCommand;
 use crate::pump::control::project_home;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 #[path = "requeue_job.rs"]
 mod requeue_job;

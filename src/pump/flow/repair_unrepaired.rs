@@ -1,7 +1,6 @@
 //! The unrepaired waiting node: after two failed attempts the run waits here,
 //! main stays red, and the one alarm tells a person where things stand.
 
-use crate::error::VivariumError;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -11,6 +10,7 @@ use crate::pump::flow::repair;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
 
 /// The exception raised once when a repair run reaches `unrepaired`.
 pub const MAIN_UNREPAIRED: &str = "flow-main-unrepaired";

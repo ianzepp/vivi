@@ -10,10 +10,10 @@ use super::item_events::{
 };
 use super::kind::effective_kind;
 use super::{DeliveryResult, Mailspace, SendRequest, prefix_of_domain};
-use crate::error::VivariumError;
-use crate::letter::work::TaskFront;
-use crate::message::normalize_message_id;
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::TaskFront;
+use vivi_mail::message::normalize_message_id;
 
 /// Absorb ruling settings (the `[absorb]` table in `mailspace.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -625,14 +625,14 @@ fn source_parent(storage: &Storage, message_id: &str) -> Result<Option<String>, 
 /// The task letter body: `body` with `parent` set in its front matter, or the
 /// prose wrapped in a front matter that holds only the parent.
 fn task_body(body: &str, parent: Option<String>) -> Result<String, VivariumError> {
-    let message = |err: crate::letter::LetterError| VivariumError::Message(err.to_string());
+    let message = |err: vivi_mail::letter::LetterError| VivariumError::Message(err.to_string());
     let opens_front = body
         .lines()
         .find(|line| !line.trim().is_empty())
         .map(str::trim)
         == Some("+++");
     let (mut front, prose) = if opens_front {
-        let envelope = crate::letter::parse_letter::<TaskFront>(body).map_err(message)?;
+        let envelope = vivi_mail::letter::parse_letter::<TaskFront>(body).map_err(message)?;
         (envelope.front, envelope.body)
     } else {
         (TaskFront::default(), body.to_string())
@@ -644,8 +644,9 @@ fn task_body(body: &str, parent: Option<String>) -> Result<String, VivariumError
         front.parent = parent;
     }
     // Parsed back as a task, so a writer bug is an error before send stores it.
-    let rendered = crate::letter::render(&front, &prose).map_err(message)?;
-    crate::letter::parse_kind(&crate::letter::LetterKind::Task, &rendered).map_err(message)?;
+    let rendered = vivi_mail::letter::render(&front, &prose).map_err(message)?;
+    vivi_mail::letter::parse_kind(&vivi_mail::letter::LetterKind::Task, &rendered)
+        .map_err(message)?;
     Ok(rendered)
 }
 

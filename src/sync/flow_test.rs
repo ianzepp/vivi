@@ -2,13 +2,13 @@
 //! addressed to a role at the other's prefix, arrives with the same bytes,
 //! id, handle, and hash, and the reply finds its way back.
 
-use crate::letter::fixture::need_body;
 use crate::mailspace::SendRequest;
 use crate::storage::sha256_hex;
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
 use crate::sync::state::SyncState;
 use crate::sync::sync_dir;
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::need_body;
 
 fn alice() -> Checkout {
     checkout("alice", &["mind", "hand", "peer"])

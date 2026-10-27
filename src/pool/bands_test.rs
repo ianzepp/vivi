@@ -1,7 +1,7 @@
 use super::*;
 
-use crate::letter::work::TaskFront;
 use crate::pool::slot::PoolId;
+use vivi_mail::letter::work::TaskFront;
 
 /// A pool with two choices for `P1` and one for `P2`.
 fn bridge() -> PoolConfig {
@@ -99,7 +99,7 @@ fn band_body(band: Option<&str>) -> String {
         band: band.map(str::to_string),
         ..TaskFront::default()
     };
-    crate::letter::fixture::task_body_with(&front, "Do it.")
+    vivi_mail::letter::fixture::task_body_with(&front, "Do it.")
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn a_body_without_a_band_key_has_no_band() {
         from: Some("main".into()),
         ..TaskFront::default()
     };
-    let body = crate::letter::fixture::task_body_with(&front, "Do it.");
+    let body = vivi_mail::letter::fixture::task_body_with(&front, "Do it.");
     assert_eq!(body_band(&body).unwrap(), None);
     assert_eq!(body_band(&band_body(None)).unwrap(), None);
     assert_eq!(body_band("").unwrap(), None);

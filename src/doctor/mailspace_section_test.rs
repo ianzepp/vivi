@@ -1,8 +1,8 @@
 use super::*;
 use crate::doctor::Status;
-use crate::letter::fixture::{task_body, task_body_with};
-use crate::letter::work::TaskFront;
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_mail::letter::fixture::{task_body, task_body_with};
+use vivi_mail::letter::work::TaskFront;
 
 fn open_mailspace() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();

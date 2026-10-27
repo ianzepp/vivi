@@ -259,7 +259,7 @@ pub fn post_on_task(
         message: tail(&parse_receipt(receipt).message, FINAL_MESSAGE_CHARS),
     };
     let body = match crate::mailspace::pump_note::note_body(
-        crate::letter::records::NoteWord::Attempt,
+        vivi_mail::letter::records::NoteWord::Attempt,
         Some(&ending.label),
         &compose(&facts),
     ) {

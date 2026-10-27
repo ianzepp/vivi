@@ -14,11 +14,11 @@ mod property_emit;
 #[path = "property_marks_test.rs"]
 mod property_marks;
 
-use crate::letter::fixture::{body_for, need_body};
 use crate::mailspace::{AbsorbConfig, Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::{body_for, need_body};
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])

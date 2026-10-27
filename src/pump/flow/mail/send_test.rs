@@ -1,6 +1,6 @@
 use super::MailspacePort;
-use crate::letter::fixture::{body_with_deps, task_body};
 use crate::pump::fixture::{Project, project};
+use vivi_mail::letter::fixture::{body_with_deps, task_body};
 
 fn port(p: &Project) -> MailspacePort {
     MailspacePort {

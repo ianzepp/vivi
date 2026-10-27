@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use super::Mailspace;
 use super::item_events::{PropertyKind, held_item};
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// The header a `marked` or `unmarked` letter carries its slug in.
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";

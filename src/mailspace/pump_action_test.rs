@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::letter::records::{ActionFront, ActionWord};
 use crate::mailspace::SendRequest;
+use vivi_mail::letter::records::{ActionFront, ActionWord};
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -20,7 +20,7 @@ fn send_need(mailspace: &Mailspace, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::need_body(&["it works"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["it works"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -60,7 +60,7 @@ fn a_posted_action_is_a_reply_on_the_open_record_with_front_matter_and_no_pump_h
     assert!(!raw.contains("X-Vivi-Pump-"), "{raw}");
     assert!(!raw.contains("X-Vivi-Need"), "{raw}");
     let body = crate::extract::extract_text(raw.as_bytes()).unwrap();
-    let front = crate::letter::parse_letter::<ActionFront>(&body).unwrap();
+    let front = vivi_mail::letter::parse_letter::<ActionFront>(&body).unwrap();
     assert_eq!(front.body.trim(), "host was down");
     assert_eq!(
         front.front,
@@ -218,7 +218,7 @@ fn an_answer_posts_on_the_open_record_of_the_steps_need_with_step_and_word_heade
     let record = mailspace.pump_send(None, &need, None).unwrap();
     let step = send_task(
         &mailspace,
-        &crate::letter::fixture::step_body(&need, 1, "plan", "Plan"),
+        &vivi_mail::letter::fixture::step_body(&need, 1, "plan", "Plan"),
     );
 
     let posted = mailspace
@@ -243,7 +243,7 @@ fn an_answer_to_the_run_sentinel_posts_too() {
     mailspace.pump_send(None, &need, None).unwrap();
     let sentinel = send_task(
         &mailspace,
-        &crate::letter::fixture::sentinel_body(&need, 1, ""),
+        &vivi_mail::letter::fixture::sentinel_body(&need, 1, ""),
     );
 
     mailspace
@@ -259,7 +259,7 @@ fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     let need = send_need(&mailspace, "fix auth");
     let step = send_task(
         &mailspace,
-        &crate::letter::fixture::step_body(&need, 1, "plan", ""),
+        &vivi_mail::letter::fixture::step_body(&need, 1, "plan", ""),
     );
     let error = mailspace
         .pump_post_answer(None, &step, "planned", "")
@@ -270,7 +270,7 @@ fn an_answer_is_refused_without_an_open_record_a_pump_step_or_a_word() {
     mailspace.pump_send(None, &need, None).unwrap();
     let plain = send_task(
         &mailspace,
-        &crate::letter::fixture::task_body("just a task"),
+        &vivi_mail::letter::fixture::task_body("just a task"),
     );
     let error = mailspace
         .pump_post_answer(None, &plain, "planned", "")

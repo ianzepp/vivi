@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::config::{self, BackendKind, ProviderConfig, ProxyConfig};
 use super::native;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Print one line per provider.
 ///

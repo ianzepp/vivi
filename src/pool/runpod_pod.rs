@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use super::runpod_cli::create_wait;
 use super::runpod_config::PoolRunpod;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// One pod as the CLI prints it (a `pod list` row, or `pod get` / `pod
 /// create` output, which hold more).

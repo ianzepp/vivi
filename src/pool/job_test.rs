@@ -1,7 +1,7 @@
 use super::*;
 
-use crate::letter::work::TaskFront;
 use crate::pool::bridge::Grant;
+use vivi_mail::letter::work::TaskFront;
 
 const SECRET: &str = "ghs_SUPERsecretTOKEN0123456789";
 const BRIDGE_KEY: &str = "vivi_bridge_SECRET0123456789abcdef";
@@ -304,7 +304,7 @@ fn refs_body(from: Option<&str>, branch: Option<&str>, with: &[&str]) -> String 
         with: with.iter().map(|w| (*w).to_string()).collect(),
         ..TaskFront::default()
     };
-    crate::letter::fixture::task_body_with(&front, "Do it.")
+    vivi_mail::letter::fixture::task_body_with(&front, "Do it.")
 }
 
 #[test]

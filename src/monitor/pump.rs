@@ -62,7 +62,7 @@ fn cycle_row(
     }
 }
 
-pub fn row(project: &str, home: &Path, _now: u64) -> Result<MonitorRow, crate::VivariumError> {
+pub fn row(project: &str, home: &Path, _now: u64) -> Result<MonitorRow, vivi_error::VivariumError> {
     refuse_missing_wal_index(home)?;
     let control = crate::pump::control::read(home)?;
     let active = crate::pump::run::lock_is_held(home)?;
@@ -96,7 +96,7 @@ pub fn row(project: &str, home: &Path, _now: u64) -> Result<MonitorRow, crate::V
     })
 }
 
-fn refuse_missing_wal_index(home: &Path) -> Result<(), crate::VivariumError> {
+fn refuse_missing_wal_index(home: &Path) -> Result<(), vivi_error::VivariumError> {
     let db = home.join(crate::pump::store::DB_FILENAME);
     let shm = home.join(format!("{}-shm", crate::pump::store::DB_FILENAME));
     if !db.is_file() || shm.exists() {
@@ -107,7 +107,7 @@ fn refuse_missing_wal_index(home: &Path) -> Result<(), crate::VivariumError> {
     };
     let mut header = [0_u8; 20];
     if file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2 {
-        return Err(crate::VivariumError::Other(format!(
+        return Err(vivi_error::VivariumError::Other(format!(
             "pump monitor inspection skipped: {}-shm is missing; refusing to create it",
             db.display()
         )));

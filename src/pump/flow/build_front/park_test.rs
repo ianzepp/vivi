@@ -5,7 +5,6 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{NEED_PARKED, ParkStep};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -15,6 +14,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

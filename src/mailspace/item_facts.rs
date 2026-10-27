@@ -3,8 +3,8 @@
 //! marks. This is the one copy of the done rule (the newest folder move
 //! wins, else any row in `done`) and of the event-ordered marks fold.
 
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// Every live row of one item and every event logged against those rows.
 pub(crate) struct HeldItem {

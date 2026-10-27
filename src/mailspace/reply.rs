@@ -2,13 +2,13 @@ use std::collections::BTreeSet;
 
 use super::delivery::add_header;
 use super::{DeliveryResult, Mailspace, Recipient, SendRequest};
-use crate::error::VivariumError;
-use crate::letter::gate as letter_gate;
-use crate::letter::plain;
-use crate::letter::records::MailFront;
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION};
-use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{MessageIngestRequest, Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::gate as letter_gate;
+use vivi_mail::letter::plain;
+use vivi_mail::letter::records::MailFront;
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION};
+use vivi_mail::message::{ComposeDraft, build_compose_draft};
 
 pub(super) struct NoteReply {
     pub(super) requests: Vec<MessageIngestRequest>,

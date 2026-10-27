@@ -10,7 +10,7 @@ use super::grok;
 use super::kimi;
 use super::route::Action;
 use super::usage::Usage;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Run the configured native adapter.
 ///

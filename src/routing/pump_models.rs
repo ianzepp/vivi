@@ -68,7 +68,7 @@ fn resolve_like_dispatch(
     role: &RoutedRole,
     pool_name: &str,
     pool: &PoolConfig,
-) -> Result<(), crate::error::VivariumError> {
+) -> Result<(), vivi_error::VivariumError> {
     let facts = RoleFacts {
         name: role.name.clone(),
         kind: role.kind.clone(),

@@ -10,9 +10,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::load_state;
-use crate::VivariumError;
 use crate::pump::jobs::JobStatus;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 /// Ask the pump to release held job `id`. Refuses an unknown job and one that
 /// is not held, naming its status. `dry_run` checks and returns a preview,

@@ -7,8 +7,6 @@ use std::fs;
 use std::process::{Command, Output};
 use std::sync::Arc;
 
-use vivi::letter::read::{need_of, record_of};
-use vivi::letter::records::RecordKind;
 use vivi::mailspace::{Mailspace, PumpState};
 use vivi::pump::config::{BoardConfig, FlowConfig, PumpConfig, RungsConfig};
 use vivi::pump::flow::tick::tick;
@@ -17,6 +15,8 @@ use vivi::pump::jobs::{JobOutcome, JobStatus, PoolJob, rung};
 use vivi::pump::state::State;
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 use vivi::routing::{RoleRouting, RoutedPool, RoutedRole};
+use vivi_mail::letter::read::{need_of, record_of};
+use vivi_mail::letter::records::RecordKind;
 
 const TARGET: &str = "default";
 const TIP: &str = "0123456789abcdef0123456789abcdef01234567";

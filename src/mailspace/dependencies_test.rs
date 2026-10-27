@@ -1,7 +1,7 @@
 use super::*;
-use crate::letter::fixture::{need_body_with, task_body_with};
-use crate::letter::work::{NeedFront, TaskFront};
 use crate::storage::MessageIngestRequest;
+use vivi_mail::letter::fixture::{need_body_with, task_body_with};
+use vivi_mail::letter::work::{NeedFront, TaskFront};
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();

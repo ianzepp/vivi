@@ -4,7 +4,6 @@
 use tempfile::tempdir;
 
 use super::{restart, resume};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -12,6 +11,7 @@ use crate::pump::flow::index::run_state;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::test_ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 const NEED: &str = "n1";
 

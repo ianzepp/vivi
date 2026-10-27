@@ -8,8 +8,6 @@
 //! setup failure) is never retried: the pump alarms once and holds the slice.
 //! A result the receipt cannot settle goes to git.
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
@@ -26,6 +24,8 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
 
 /// Exception kind for a finished slice merge that could not be applied.
 const APPLY_FAILED: &str = "flow-slice-merge-apply-failed";

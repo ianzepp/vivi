@@ -3,7 +3,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 pub(crate) fn secure_create_dir_all(path: &Path) -> Result<(), VivariumError> {
     fs::create_dir_all(path)?;

@@ -18,8 +18,8 @@ fn space_with_task() -> (tempfile::TempDir, Mailspace, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "Fix the edge".into(),
-            body: crate::letter::fixture::task_body_with(
-                &crate::letter::work::TaskFront {
+            body: vivi_mail::letter::fixture::task_body_with(
+                &vivi_mail::letter::work::TaskFront {
                     from: Some("main".into()),
                     branch: Some("factory/x".into()),
                     ..Default::default()

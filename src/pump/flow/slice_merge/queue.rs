@@ -4,7 +4,6 @@
 //! tick starts the first queued slice of a need that has no slice merge job
 //! pending or dispatched, so the need branch moves one merge at a time.
 
-use crate::error::VivariumError;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
 use crate::pump::flow::index::{JOB_STALE, PayloadIdentity, RunRow, StepRow, StepState};
@@ -16,6 +15,7 @@ use crate::pump::flow::verify;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Verdict of a built slice row waiting for its merge onto the need branch.
 pub(crate) const MERGE_QUEUED: &str = "merge-queued";

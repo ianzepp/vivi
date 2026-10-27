@@ -11,12 +11,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::b64;
-use crate::error::VivariumError;
 use crate::sync::SyncSettings;
 use crate::sync::identity::SyncIdentity;
 use crate::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Lookup, Page, Transport,
 };
+use vivi_error::VivariumError;
 
 /// Request timeout for project server calls.
 const TIMEOUT: Duration = Duration::from_secs(15);

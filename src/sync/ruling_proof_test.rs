@@ -9,7 +9,6 @@
 
 use std::rc::Rc;
 
-use crate::letter::fixture::need_body;
 use crate::mailspace::{
     AbsorbConfig, ItemEventState, Mailspace, MoveOutcome, RoleUpdate, SendRequest,
 };
@@ -17,6 +16,7 @@ use crate::sync::events::{role_of, state};
 use crate::sync::fake_server::{Checkout, FakeServer, LETTER_DATE, checkout, letter, wire_id};
 use crate::sync::push::PushReport;
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::need_body;
 
 /// Five minutes in microseconds: the clear gap between two conflicting
 /// events, inside the ten minutes of clock skew a receiver still counts —

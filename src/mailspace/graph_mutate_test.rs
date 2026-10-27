@@ -19,7 +19,7 @@ fn activate_pins_task_content_in_binding_event() {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "unit".into(),
-            body: crate::letter::fixture::body_for("task", "lands"),
+            body: vivi_mail::letter::fixture::body_for("task", "lands"),
             role: "tasks".into(),
             kind: Some("task".into()),
             reply_to: None,

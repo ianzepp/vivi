@@ -1,5 +1,8 @@
 //! Flow definition types: kinds, node classes, answer words, nodes and edges.
 
+use vivi_mail::letter::records::RecordKind;
+use vivi_mail::letter::roles::RoleKind;
+
 /// Verdict word: the task was withdrawn.
 pub const VERDICT_WITHDRAWN: &str = "withdrawn";
 /// Verdict word: the task was replaced.
@@ -17,6 +20,18 @@ pub enum FlowKind {
     Research,
     Release,
     Repair,
+}
+
+impl From<RecordKind> for FlowKind {
+    /// The flow a pump record kind selects.
+    fn from(kind: RecordKind) -> Self {
+        match kind {
+            RecordKind::Build => Self::Build,
+            RecordKind::Research => Self::Research,
+            RecordKind::Release => Self::Release,
+            RecordKind::Repair => Self::Repair,
+        }
+    }
 }
 
 impl FlowKind {
@@ -72,6 +87,23 @@ pub enum NodeClass {
 }
 
 impl NodeClass {
+    /// The role of a flow step node; `None` for rung, fanout and other
+    /// code-run nodes, and for merge-main (a code job, not a role reply).
+    pub fn role_kind(&self) -> Option<RoleKind> {
+        Some(match self {
+            Self::Researcher => RoleKind::Researcher,
+            Self::Planner => RoleKind::Planner,
+            Self::Admitter => RoleKind::Admitter,
+            Self::Slicer => RoleKind::Slicer,
+            Self::Auditor => RoleKind::Auditor,
+            Self::Judge => RoleKind::Judge,
+            Self::Cto => RoleKind::Cto,
+            Self::Merge => RoleKind::Merge,
+            Self::Repairer => RoleKind::Repairer,
+            _ => return None,
+        })
+    }
+
     pub fn parse(text: &str) -> Option<Self> {
         if let Some(entry) = text.strip_prefix("restart-") {
             return (!entry.is_empty()).then(|| Self::Restart(entry.to_string()));
@@ -221,3 +253,7 @@ pub struct FlowDef {
 #[cfg(test)]
 #[path = "def_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "def_roles_test.rs"]
+mod roles_tests;

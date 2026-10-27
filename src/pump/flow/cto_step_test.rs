@@ -6,7 +6,6 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::CtoStart;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
@@ -21,6 +20,7 @@ use crate::pump::jobs::JobSpec;
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_mail::letter::records::NoteWord;
 
 const NEED: &str = "need-1";
 

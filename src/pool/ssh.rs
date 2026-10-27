@@ -35,7 +35,7 @@ use super::ssh_cli::SshCli;
 use super::ssh_doctor::Probe;
 use super::ssh_script::{PRIVATE_UMASK, SLOT_SCRIPT, command_line_of};
 use super::ssh_state::{self as state, is_slot_id, parse_listing};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The slot root as the pool's scripts and tasks spell it; a slot maps it to
 /// its own directory.

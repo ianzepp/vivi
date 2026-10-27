@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use super::clean_rule::{DISK_RECLAIM_GIB, DISK_REFUSE_GIB, GIB, format_bytes, volume_free_bytes};
 use super::clean_slot::{self, slot_is_free};
 use super::pools::{self, Need, PoolHandle};
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 pub mod rule {
     pub use super::super::clean_rule::*;

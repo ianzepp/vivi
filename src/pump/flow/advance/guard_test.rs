@@ -5,14 +5,14 @@ use std::fs;
 use tempfile::tempdir;
 
 use super::pass;
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
 
 type R = Result<(), VivariumError>;
 

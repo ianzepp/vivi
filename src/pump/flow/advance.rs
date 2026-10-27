@@ -1,11 +1,11 @@
 //! Advancing a flow run: routing, terminals and the completion guard.
 
-use crate::error::VivariumError;
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 pub(crate) mod guard;
 pub(crate) mod restart;

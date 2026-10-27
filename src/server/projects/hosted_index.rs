@@ -37,7 +37,6 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::VivariumError;
 use crate::b64;
 use crate::mailspace::Mailspace;
 use crate::storage::ChangeWatermark;
@@ -48,6 +47,7 @@ use crate::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Page, Record, Transport,
 };
 use crate::sync::{SendFilter, SyncSettings, push, sync_dir};
+use vivi_error::VivariumError;
 
 use super::{
     AppendItem, AppendOutcome, Project, ProjectError, ProjectMeta, ProjectStore, append_lock,

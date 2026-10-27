@@ -111,14 +111,14 @@ fn pool_body(
     band: Option<&str>,
     with: &[&str],
 ) -> String {
-    let front = vivi::letter::work::TaskFront {
+    let front = vivi_mail::letter::work::TaskFront {
         from: from.map(str::to_string),
         branch: branch.map(str::to_string),
         band: band.map(str::to_string),
         with: with.iter().map(|w| (*w).to_string()).collect(),
-        ..vivi::letter::work::TaskFront::default()
+        ..vivi_mail::letter::work::TaskFront::default()
     };
-    vivi::letter::render(&front, prose).expect("a rendered task letter")
+    vivi_mail::letter::render(&front, prose).expect("a rendered task letter")
 }
 
 fn handle(rig: &Rig, subject: &str) -> String {

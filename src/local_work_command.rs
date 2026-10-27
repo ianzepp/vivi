@@ -1,13 +1,13 @@
-use vivi::VivariumError;
 use vivi::cli::{
     LocalSendCommand, NeedCommand, TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand,
     WantStatus,
 };
-use vivi::letter::sugar::{self, Sugar};
 use vivi::mailspace::{
     DeliveryResult, DumpFilters, Mailspace, PumpRecord, Recipient, SendRequest, TaskDumpRequest,
     WantListOptions, WantMetadataUpdate,
 };
+use vivi_error::VivariumError;
+use vivi_mail::letter::sugar::{self, Sugar};
 
 pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumError> {
     match command {

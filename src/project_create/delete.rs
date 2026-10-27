@@ -18,10 +18,10 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::{check_name, config, existing_dir};
-use crate::VivariumError;
 use crate::pump::control;
 use crate::pump::run::lock_is_held;
 use crate::registry;
+use vivi_error::VivariumError;
 
 /// Everything needed to delete one project.
 #[derive(Clone, Debug)]

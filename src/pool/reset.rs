@@ -15,8 +15,8 @@ use super::local_git::Repo;
 use super::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
 use super::provider::{ExecOutput, PoolProvider};
 use super::slot::META_BASE;
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 /// `marks/base_ref`: origin branch the slot was last reset onto.
 pub const MARK_BASE_REF: &str = "base_ref";

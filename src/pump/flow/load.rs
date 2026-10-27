@@ -2,8 +2,8 @@
 
 use super::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use super::registry::shipped;
-use crate::error::VivariumError;
 use crate::mailspace::{MermaidNode, parse_flowchart};
+use vivi_error::VivariumError;
 
 /// The id of the unclassed terminal that ends a run.
 const TERMINAL_ID: &str = "done";

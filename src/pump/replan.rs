@@ -10,11 +10,11 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::cli::PumpReplanCommand;
 use crate::mailspace::{Mailspace, PumpActionRequest};
 use crate::pump::control::project_home;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 /// The replan [`replan`] posted. Display is the line the CLI prints.
 ///

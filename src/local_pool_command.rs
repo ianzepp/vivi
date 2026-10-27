@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use crate::local_pool_scale_command as scale;
 use crate::local_pool_work_command as work;
-use vivi::VivariumError;
 use vivi::cli::{
     PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolResetCommand, PoolStatusCommand,
     PoolSubcommand,
@@ -23,6 +22,7 @@ use vivi::pool::run::{self, CreateOptions, CreateReport, DestroyTarget, SlotOutc
 use vivi::pool::scale::no_resting_slots;
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), VivariumError> {
     match command {

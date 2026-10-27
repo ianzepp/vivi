@@ -8,10 +8,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{GoalView, Mailspace};
-use crate::error::VivariumError;
 use crate::role_schedule::{ScheduleReport, ScheduleState};
 use crate::role_status::ProcessReport;
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 mod wants;
 

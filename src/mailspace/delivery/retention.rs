@@ -1,7 +1,7 @@
 use chrono::Utc;
 
 use super::Mailspace;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 pub(super) fn prune_retained_memos(
     mailspace: &Mailspace,

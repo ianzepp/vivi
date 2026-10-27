@@ -8,11 +8,11 @@ use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use vivi::VivariumError;
 use vivi::cli::{McpCommand, McpSubcommand};
 use vivi::mcp::client::{self, Client};
 use vivi::mcp::resolve::{self, MailspaceSource, McpFlags};
 use vivi::mcp::{BridgeConfig, HttpUpstream, serve};
+use vivi_error::VivariumError;
 
 /// Exit status for a tool that reports `isError: true`.
 const EXIT_TOOL_ERROR: i32 = 1;

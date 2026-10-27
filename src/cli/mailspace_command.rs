@@ -349,8 +349,8 @@ pub struct TaskSendCommand {
 impl TaskSendCommand {
     /// The front matter flags of this send.
     #[must_use]
-    pub fn sugar(&self) -> crate::letter::sugar::Sugar {
-        crate::letter::sugar::Sugar {
+    pub fn sugar(&self) -> vivi_mail::letter::sugar::Sugar {
+        vivi_mail::letter::sugar::Sugar {
             done_when: self.done_when.clone(),
             target: self.target.clone(),
             write_scope: self.write_scope.clone(),
@@ -410,8 +410,8 @@ pub struct NeedSendCommand {
 impl NeedSendCommand {
     /// The front matter flags of this send.
     #[must_use]
-    pub fn sugar(&self) -> crate::letter::sugar::Sugar {
-        crate::letter::sugar::Sugar {
+    pub fn sugar(&self) -> vivi_mail::letter::sugar::Sugar {
+        vivi_mail::letter::sugar::Sugar {
             done_when: self.done_when.clone(),
             target: self.target.clone(),
             write_scope: self.write_scope.clone(),
@@ -440,8 +440,8 @@ pub struct WantSendCommand {
 impl WantSendCommand {
     /// The front matter flags of this send.
     #[must_use]
-    pub fn sugar(&self) -> crate::letter::sugar::Sugar {
-        crate::letter::sugar::Sugar {
+    pub fn sugar(&self) -> vivi_mail::letter::sugar::Sugar {
+        vivi_mail::letter::sugar::Sugar {
             question: self.question.clone(),
             depends_on: self.depends_on.clone(),
             ..Default::default()

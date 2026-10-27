@@ -6,10 +6,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{find_repair_need, report_red};
-use crate::error::VivariumError;
-use crate::letter::fixture::repair_record_body;
-use crate::letter::read::record_of;
-use crate::letter::records::{NoteWord, RecordFront, RecordKind};
 use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -17,6 +13,10 @@ use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::main_rung::{FAILING, REPAIRED, key};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::repair_record_body;
+use vivi_mail::letter::read::record_of;
+use vivi_mail::letter::records::{NoteWord, RecordFront, RecordKind};
 
 type R = Result<(), VivariumError>;
 
@@ -175,7 +175,7 @@ fn find_repair_need_ignores_a_build_need_with_a_target_line() -> R {
             target: Some("default".to_string()),
             tested: None,
         };
-        let body = crate::letter::render(&front, "").unwrap();
+        let body = vivi_mail::letter::render(&front, "").unwrap();
         MailWriter::open_record(&mut rig.mail, need, &body)?;
     }
     assert_eq!(find_repair_need(&rig.mail, "default")?, None);

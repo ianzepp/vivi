@@ -8,10 +8,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::mailspace::{Mailspace, PumpActionRequest, PumpState};
 use crate::pump::flow::index::run_state;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// A step task and the need whose run holds it.
 pub(super) type StepTarget = (String, String);

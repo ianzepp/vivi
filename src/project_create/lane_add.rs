@@ -17,10 +17,10 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::{config, existing_dir, git, lane, refuse_existing};
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::config::targets::{self, TargetSpec};
 use crate::pump::config::valid_target_id;
+use vivi_error::VivariumError;
 
 /// Everything needed to add one lane.
 #[derive(Clone, Debug)]

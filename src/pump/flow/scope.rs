@@ -2,9 +2,9 @@
 //! paths outside its slice's write scope against the scopes of the run's
 //! other open slices. No model is involved.
 
-use crate::error::VivariumError;
 use crate::pump::flow::fanout::{self, SliceEdges};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// A request for more paths than this goes to the slicer.
 const MAX_REQUEST_PATHS: usize = 5;

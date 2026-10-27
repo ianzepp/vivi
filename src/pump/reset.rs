@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
-use crate::VivariumError;
 use crate::mailspace::{Mailspace, PumpState};
+use vivi_error::VivariumError;
 
 use super::control::{self, PumpMode};
 

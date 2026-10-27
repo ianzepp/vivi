@@ -8,8 +8,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::VERDICT_SUPERSEDED;
@@ -22,6 +20,8 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, mark_applied};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
 
 /// Exception kind: a restart stayed unfinished too long.
 pub(crate) const RESTART_STUCK: &str = "flow-run-restart-stuck";

@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use vivi::VivariumError;
 use vivi::mailspace::{Mailspace, WantStateReport};
+use vivi_error::VivariumError;
 
 /// Show a want. `--latest` keeps the plain thread output; text adds the
 /// state block after the thread; `--json` wraps the thread and the state.

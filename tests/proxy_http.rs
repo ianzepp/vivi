@@ -1035,7 +1035,7 @@ fn check_codex(
     dir: &TempDir,
     creds: &std::path::Path,
     addr: std::net::SocketAddr,
-) -> Result<(), vivi::VivariumError> {
+) -> Result<(), vivi_error::VivariumError> {
     let rt = runtime();
     let (server, _) = wait(&rt, load_codex(dir, creds, addr));
     let path = dir.path().join("proxy.toml");

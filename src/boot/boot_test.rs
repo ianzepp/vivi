@@ -8,9 +8,9 @@ use super::handles::{HandleRow, Verdict, apply_verdicts, parse_verdict, triage_s
 use super::probe::{ProbeVerdict, parse_output};
 use super::truncate::{Truncation, capped, record};
 use super::{GoalRow, SeatRow, collect_wants, goal_line, human_seconds, seat_line};
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn now() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 9, 21, 12, 0, 0)

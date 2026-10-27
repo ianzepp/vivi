@@ -1,6 +1,6 @@
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();
@@ -97,7 +97,12 @@ fn front_matter_copied_from_need_show_resolves_the_message_id_form() {
 #[test]
 fn serving_or_exploring_a_task_or_a_missing_handle_is_refused() {
     let (_tmp, mailspace) = space();
-    let task = send(&mailspace, "task", crate::letter::fixture::task_body("p")).unwrap();
+    let task = send(
+        &mailspace,
+        "task",
+        vivi_mail::letter::fixture::task_body("p"),
+    )
+    .unwrap();
 
     let err = send(&mailspace, "need", need_front(Some(&task), None, &[])).unwrap_err();
     assert!(

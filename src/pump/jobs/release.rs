@@ -2,9 +2,9 @@
 //! request into `pump.db`, and each dispatch pass applies the requests here.
 
 use super::{JobStatus, JobStore};
-use crate::error::VivariumError;
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 /// Release every held job after a config reload changed the config. A job is
 /// held after repeated pool refusals, whose message says to fix the cause and

@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::holding::is_foreign_account;
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEventInput, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Clone)]
 pub struct MailspaceImportOptions {

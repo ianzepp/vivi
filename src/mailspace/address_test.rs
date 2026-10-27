@@ -27,7 +27,7 @@ fn send(mailspace: &Mailspace, to: &[&str], role: &str, kind: Option<&str>) -> S
         cc: Vec::new(),
         bcc: Vec::new(),
         subject: "subject".into(),
-        body: crate::letter::fixture::body_for(kind.unwrap_or(""), "body\n"),
+        body: vivi_mail::letter::fixture::body_for(kind.unwrap_or(""), "body\n"),
         role: role.into(),
         kind: kind.map(String::from),
         reply_to: None,
@@ -330,7 +330,7 @@ fn pulled_need(mailspace: &Mailspace, to: &str) -> String {
          Message-ID: <please@a1b2c3d4.local>\r\nX-Vivi-Kind: need\r\n\
          X-Vivi-Format: 1\r\n\
          Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{}",
-        crate::letter::fixture::body_for("need", "body\n").replace('\n', "\r\n"),
+        vivi_mail::letter::fixture::body_for("need", "body\n").replace('\n', "\r\n"),
     );
     mailspace
         .deliver_raw(letter.as_bytes(), "needs")

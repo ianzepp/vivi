@@ -6,12 +6,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
-use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, RoleView, WantState};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec};
 use crate::pump::state::State;
 use crate::role_schedule::{self, state_label};
+use vivi_error::VivariumError;
 
 /// The `state.extra` key holding the cadence state.
 pub const EXTRA_KEY: &str = "cadence";

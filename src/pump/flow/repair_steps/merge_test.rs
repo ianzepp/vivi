@@ -7,8 +7,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::super::register;
-use crate::error::VivariumError;
-use crate::letter::fixture::{repair_record_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -21,6 +19,8 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, merge_main};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{repair_record_body, step_body};
 
 type R = Result<(), VivariumError>;
 

@@ -5,10 +5,10 @@
 //! precision, so same-second notes need their own order: [`next_stamp`] hands
 //! out strictly increasing microsecond stamps.
 
-use crate::error::VivariumError;
-use crate::letter::records::{MailFront, NoteWord, PumpNote};
-use crate::letter::work::JobFront;
 use std::sync::atomic::{AtomicI64, Ordering};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::{MailFront, NoteWord, PumpNote};
+use vivi_mail::letter::work::JobFront;
 
 /// The last order stamp handed out by [`next_stamp`].
 static LAST_STAMP: AtomicI64 = AtomicI64::new(0);
@@ -57,7 +57,7 @@ pub fn note_body(
         }),
         ..MailFront::default()
     };
-    crate::letter::render(&front, prose)
+    vivi_mail::letter::render(&front, prose)
         .map_err(|err| VivariumError::Message(format!("pump note: {err}")))
 }
 
@@ -76,7 +76,7 @@ pub fn brief_body(job: JobFront, prose: &str) -> Result<String, VivariumError> {
         job: Some(job),
         ..MailFront::default()
     };
-    crate::letter::render(&front, prose)
+    vivi_mail::letter::render(&front, prose)
         .map_err(|err| VivariumError::Message(format!("pump brief: {err}")))
 }
 
@@ -84,7 +84,7 @@ pub fn brief_body(job: JobFront, prose: &str) -> Result<String, VivariumError> {
 /// letter with no `[pump]` table.
 #[must_use]
 pub fn note_of(body: &str) -> Option<Note> {
-    let letter = match crate::letter::parse_letter::<MailFront>(body) {
+    let letter = match vivi_mail::letter::parse_letter::<MailFront>(body) {
         Ok(letter) => letter,
         Err(_) => return None,
     };

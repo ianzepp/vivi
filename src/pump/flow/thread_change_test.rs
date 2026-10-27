@@ -6,8 +6,6 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use super::{THREAD_CHANGED, THREAD_CHECK_FAILED, ThreadChange};
-use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body};
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::handlers::TickPhase;
@@ -15,6 +13,8 @@ use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailWriter, MailspacePort};
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{record_body, step_body};
 
 type R = Result<(), VivariumError>;
 
@@ -125,7 +125,7 @@ fn the_run_started_post_is_stored_as_written_and_still_counts() -> R {
         .thread(&rig.need, false, usize::MAX, usize::MAX)?;
     let start = thread
         .iter()
-        .find(|m| crate::letter::prose_of(&m.body).starts_with("pump: run r1 started"))
+        .find(|m| vivi_mail::letter::prose_of(&m.body).starts_with("pump: run r1 started"))
         .expect("the run-started post");
     assert!(!start.body.contains("+++"), "{}", start.body);
     rig.reply_as("operator")?;

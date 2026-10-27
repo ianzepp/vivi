@@ -4,8 +4,6 @@
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
-use crate::error::VivariumError;
-use crate::letter::fixture::repair_record_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::route::JoinInput;
@@ -20,6 +18,8 @@ use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::repair_record_body;
 
 type R = Result<(), VivariumError>;
 

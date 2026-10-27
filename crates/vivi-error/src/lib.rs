@@ -1,3 +1,5 @@
+#![deny(clippy::pedantic)]
+
 //! Error type for the mailspace crate.
 
 use std::io;

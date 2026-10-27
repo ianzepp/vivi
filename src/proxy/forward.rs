@@ -10,7 +10,7 @@ use super::http_error;
 use super::route::Action;
 use super::sse;
 use super::usage::Usage;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Headers that must not be copied hop-to-hop.
 const HOP: [&str; 9] = [

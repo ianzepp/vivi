@@ -3,10 +3,10 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{VERDICT_MERGED, close_slice_merged, slice_node};
-use crate::error::VivariumError;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use super::config::RepoAccess;
 use crate::b64;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const API: &str = "https://api.github.com";
 const USER_AGENT: &str = "vivi-pool";

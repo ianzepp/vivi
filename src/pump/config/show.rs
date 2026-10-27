@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::mailspace::inherit::ConfigOrigins;
 use crate::routing::{self, ConfigOverview};
+use vivi_error::VivariumError;
 
 use super::origins::origins_of;
 

@@ -2,7 +2,6 @@ use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 
-use vivi::VivariumError;
 use vivi::cli::{ApiKeyCommand, QuarantineCommand, SyncCommand, SyncSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::sync::fetch::fetch_handles;
@@ -18,6 +17,7 @@ use vivi::sync::state::SyncState;
 use vivi::sync::vouch::{compose_vouch, send_vouch};
 use vivi::sync::window::{parse_age, parse_since};
 use vivi::sync::{SyncSettings, pull, push, refs, sync_dir};
+use vivi_error::VivariumError;
 
 /// How a pull differs from continuing at the stored cursor.
 #[derive(Default)]

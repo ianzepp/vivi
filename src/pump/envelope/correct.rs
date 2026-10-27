@@ -2,11 +2,11 @@
 //! job rewrites only the envelope. A correction never counts as an attempt.
 
 use super::EnvelopeError;
-use super::roles::RoleKind;
-use crate::error::VivariumError;
 use crate::pump::flow::index::StepJobRow;
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// Job kind of a correction job.
 pub const KIND: &str = "envelope-fix";

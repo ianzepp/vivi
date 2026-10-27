@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::VivariumError;
 use crate::pump::attempt_read::AttemptFields;
 use crate::storage::Storage;
+use vivi_error::VivariumError;
 
 use super::model::{AttemptRecord, NeedWindow, ReportData};
 

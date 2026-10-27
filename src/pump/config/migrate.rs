@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::mailspace::config_edit;
 use crate::routing::{
     CharterWrite, LegacyCharter, MigrateInputs, MigratePlan, apply_plan_to_document, plan_migrate,
     render_plan, unified_diff,
 };
+use vivi_error::VivariumError;
 
 /// What `vivi config migrate` computed, and what it wrote when asked.
 #[derive(Debug, Clone)]

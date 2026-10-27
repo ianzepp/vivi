@@ -1,18 +1,18 @@
 //! Curated MCP tools. Reads use the transport index (visibility) plus
 //! vivi's mailspace store for memos. Writes compose through
-//! `crate::message::build_compose_draft` and append as the authenticated
+//! `vivi_mail::message::build_compose_draft` and append as the authenticated
 //! caller — the server mints the traveling id (decided item 15).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use crate::letter::plain::{CloseFront, MemoFront, render as render_front};
-use crate::letter::sugar::opens_with_fence;
-use crate::letter::{Front, of_message};
-use crate::message::{render_message, to_json_message};
 use crate::storage::{MessageIngestRequest, Storage};
 use serde_json::{Value, json};
+use vivi_mail::letter::plain::{CloseFront, MemoFront, render as render_front};
+use vivi_mail::letter::sugar::opens_with_fence;
+use vivi_mail::letter::{Front, of_message};
+use vivi_mail::message::{render_message, to_json_message};
 
 use crate::server::identities::IdentityRecord;
 use crate::server::projects::{ProjectError, ProjectRecord, ProjectStore, Scan, Viewer};
@@ -914,8 +914,8 @@ pub(super) fn parse_depends(arguments: &Value) -> Result<Vec<String>, ToolError>
 /// The sugar arguments of a `send`, as the CLI's flags: the front matter a
 /// need, task, or want is built from. Every field is empty when its
 /// argument is absent.
-pub(super) fn parse_sugar(arguments: &Value) -> Result<crate::letter::sugar::Sugar, ToolError> {
-    Ok(crate::letter::sugar::Sugar {
+pub(super) fn parse_sugar(arguments: &Value) -> Result<vivi_mail::letter::sugar::Sugar, ToolError> {
+    Ok(vivi_mail::letter::sugar::Sugar {
         done_when: sugar_list(arguments, "done_when")?,
         target: opt_str(arguments, "target")?.map(str::to_owned),
         write_scope: sugar_list(arguments, "write_scope")?,
@@ -959,7 +959,7 @@ fn sugar_list(arguments: &Value, name: &str) -> Result<Vec<String>, ToolError> {
 
 /// The sugar arguments `sugar` carries, by name, in schema order: what a
 /// refusal of a sugarless kind names.
-fn sugar_given(sugar: &crate::letter::sugar::Sugar) -> Vec<&'static str> {
+fn sugar_given(sugar: &vivi_mail::letter::sugar::Sugar) -> Vec<&'static str> {
     [
         (!sugar.done_when.is_empty(), "done_when"),
         (sugar.target.is_some(), "target"),
@@ -984,7 +984,7 @@ fn sugar_given(sugar: &crate::letter::sugar::Sugar) -> Vec<&'static str> {
 pub(super) fn sugared_body(kind: &str, body: &str, arguments: &Value) -> Result<String, ToolError> {
     let sugar = parse_sugar(arguments)?;
     if matches!(kind, "need" | "task" | "want") {
-        let sugared = crate::letter::sugar::apply(kind, body, &sugar)
+        let sugared = vivi_mail::letter::sugar::apply(kind, body, &sugar)
             .map_err(|error| ToolError::new(error.to_string()))?;
         return Ok(sugared.body);
     }

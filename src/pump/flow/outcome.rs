@@ -1,13 +1,13 @@
 //! A step's outcome and the contract of the handlers that start each class of step.
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::{RoleKind, Slice};
 use crate::pump::flow::def::FlowDef;
 use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobSpec;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{RoleKind, Slice};
 
 /// What a finished step answered.
 #[derive(Debug, Clone, PartialEq)]

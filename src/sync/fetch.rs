@@ -7,7 +7,6 @@
 //! later transparent mode can call [`fetch_handles`] to resolve a handle it
 //! does not hold.
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::Storage;
 use crate::sync::filer::Filer;
@@ -15,6 +14,7 @@ use crate::sync::pull::{PullReport, RefusedRecord, settle_events, settle_links};
 use crate::sync::state::SyncState;
 use crate::sync::transport::Transport;
 use crate::sync::{SyncSettings, sync_dir};
+use vivi_error::VivariumError;
 
 /// Handles per lookup request (the server's maximum).
 pub const LOOKUP_CHUNK: usize = 100;

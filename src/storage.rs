@@ -11,8 +11,8 @@ use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-use crate::error::VivariumError;
 use crate::store::secure_create_dir_all;
+use vivi_error::VivariumError;
 
 mod backlog_graph;
 pub use backlog_graph::{

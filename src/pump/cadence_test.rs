@@ -1,9 +1,9 @@
 use super::*;
 use chrono::TimeZone;
 
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::SendRequest;
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn scan(name: &str, kind: Option<&str>, status: &str, cadence: Option<&str>) -> RoleScan {
     RoleScan {

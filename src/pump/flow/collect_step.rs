@@ -4,9 +4,7 @@
 //! keyed by `(FlowKind, NodeClass)`. [`RunCx`] is the per-run context the
 //! tick builds and every collector works through.
 
-use crate::error::VivariumError;
 use crate::pump::envelope::correct;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::{self, route};
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect::{self, Collected};
@@ -22,6 +20,8 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// One live run's tick: the context every step and slice collector works in.
 pub(crate) struct RunCx<'a, S, M> {
@@ -180,7 +180,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for RoleCollector {
             }
             Collected::BudgetRetry { budget } => cx.rerun_budget(job, row, step, budget),
             Collected::Correct { error } => {
-                let kind = RoleKind::from_class(class).ok_or_else(|| {
+                let kind = class.role_kind().ok_or_else(|| {
                     VivariumError::Parse(format!("node {} has no role kind", step.node))
                 })?;
                 cx.correct(job, row, kind, &error)

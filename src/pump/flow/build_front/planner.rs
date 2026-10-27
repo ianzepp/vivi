@@ -2,7 +2,6 @@
 
 use std::fmt::Write as _;
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -12,6 +11,7 @@ use crate::pump::flow::step_inputs::{
     done_step, need_thread, read_only_job, step_replies, targets,
 };
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
 
 /// The node whose answer `plan2` builds on.
 const FIRST_PLAN: &str = "plan";
@@ -76,7 +76,7 @@ fn brief(cx: &StartCx<'_>, step: &StepRow) -> Result<String, VivariumError> {
 /// is not a valid need letter.
 fn front_lines(cx: &StartCx<'_>, need: &str) -> Result<String, VivariumError> {
     let body = cx.mail.task_body(need)?;
-    let envelope = crate::letter::read::need_of(need, &body)
+    let envelope = vivi_mail::letter::read::need_of(need, &body)
         .map_err(|error| VivariumError::Message(format!("need {need}: {error}")))?;
     let front = envelope.front;
     let mut lines: Vec<String> = front

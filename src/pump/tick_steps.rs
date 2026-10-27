@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::VivariumError;
 use crate::pump::host::Ctx;
+use vivi_error::VivariumError;
 
 /// A step that keeps failing re-raises its exception at most this often while
 /// the error text stays the same; a changed error is raised at once.

@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use crate::pump::config::RungsConfig;
 
-use crate::error::VivariumError;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::fanout::{self, VERDICT_MERGED};
@@ -29,6 +28,7 @@ use crate::pump::host::{Ctx, FakeHost};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -90,7 +90,7 @@ fn rig() -> Result<Rig, VivariumError> {
     // The audit brief reads the full need thread as JSON.
     let thread = serde_json::json!([
         {"handle": need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "build something in two slices")}
+         "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["it works"], "build something in two slices")}
     ]);
     host.reply("need show", 0, &thread.to_string());
     let mut ctx = p.pump_ctx();
@@ -116,7 +116,7 @@ fn rig() -> Result<Rig, VivariumError> {
     crate::pump::flow::mail::MailWriter::open_record(
         &mut port,
         &need,
-        &crate::letter::fixture::record_body(&need, "build"),
+        &vivi_mail::letter::fixture::record_body(&need, "build"),
     )?;
     Ok(Rig {
         _project: p,

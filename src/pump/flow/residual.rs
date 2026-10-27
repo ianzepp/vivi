@@ -5,13 +5,8 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-use crate::error::VivariumError;
 use crate::pump::board::{NeedRow, parse_rows};
 use crate::pump::envelope::correct;
-use crate::pump::envelope::review::{
-    Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus,
-};
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::collect::{self, Collected};
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
 use crate::pump::flow::def::{FAILED, FlowKind, NodeClass};
@@ -19,6 +14,8 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::{JobStore, PoolJob};
+use vivi_error::VivariumError;
+use vivi_mail::letter::review::{Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus};
 
 pub(crate) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) {
     registry.collector(
@@ -62,7 +59,7 @@ impl<S: JobStore, M: FlowMail> StepCollector<S, M> for AuditCollector {
             }
             Collected::BudgetRetry { budget } => cx.rerun_budget(job, row, step, budget),
             Collected::Correct { error } => {
-                let kind = RoleKind::from_class(class).ok_or_else(|| {
+                let kind = class.role_kind().ok_or_else(|| {
                     VivariumError::Parse(format!("node {} has no role kind", step.node))
                 })?;
                 cx.correct(job, row, kind, &error)

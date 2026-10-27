@@ -4,9 +4,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::BoardServing;
-use crate::error::VivariumError;
 use crate::mailspace::want_state::{WantState, serving_needs, want_states};
 use crate::storage::{Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// Rows of wants that sit in a board account's `done` folder but have an open
 /// serving need, shown as `wants` rows. A hand-closed want that a later need

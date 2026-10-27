@@ -9,9 +9,9 @@ use std::path::Path;
 use toml_edit::{DocumentMut, Item, Table, value};
 
 use super::{PumpConfig, RUNG_NAMES};
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::mailspace::config_edit::{self, GuardedWrite};
+use vivi_error::VivariumError;
 
 /// Merge settings that `add` can write.
 const MERGE_KEYS: [&str; 2] = ["format", "remote_limit"];

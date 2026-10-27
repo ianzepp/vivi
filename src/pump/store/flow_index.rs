@@ -9,9 +9,9 @@ use std::collections::BTreeSet;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{PumpStore, db_err};
-use crate::error::VivariumError;
 use crate::pump::flow::index::{RunRow, StepJobRow, StepRow, StepState, run_state};
 use crate::pump::flow::scope::ScopeState;
+use vivi_error::VivariumError;
 
 /// The error text for a run state word outside the one vocabulary.
 fn unknown_run_state(word: &str) -> String {

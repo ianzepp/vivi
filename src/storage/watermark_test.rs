@@ -1,6 +1,6 @@
-use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{ChangeWatermark, Storage};
+use vivi_mail::letter::fixture::need_body;
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();

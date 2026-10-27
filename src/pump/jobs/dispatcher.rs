@@ -7,12 +7,12 @@ use std::fs;
 use std::path::Path;
 
 use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
-use crate::letter::work::{JobFront, TaskFront};
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::work::{JobFront, TaskFront};
 
 /// Dispatch every pending job that has a free pool slot.
 ///
@@ -387,7 +387,7 @@ pub(super) fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, Viva
         }),
         ..TaskFront::default()
     };
-    let body = crate::letter::render(&front, &job.body)
+    let body = vivi_mail::letter::render(&front, &job.body)
         .map_err(|err| VivariumError::Message(format!("job {} brief: {err}", job.id)))?;
     let body = fit_brief(ctx, job, &dir, body)?;
     fs::write(&path, body)?;

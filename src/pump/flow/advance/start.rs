@@ -2,10 +2,6 @@
 //! kind is fixed once, the sentinel goes first, then the entry step, both
 //! bound in one letter.
 
-use crate::error::VivariumError;
-use crate::letter::read::step_of;
-use crate::letter::render;
-use crate::letter::work::TaskFront;
 use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::index::{FLOW_VERSION_NUMBER, RunRow, StepRow, StepState, run_state};
 use crate::pump::flow::kind;
@@ -13,6 +9,10 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::read::step_of;
+use vivi_mail::letter::render;
+use vivi_mail::letter::work::TaskFront;
 
 /// The step-row node name of a run's sentinel task.
 pub const SENTINEL_NODE: &str = "sentinel";

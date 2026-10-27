@@ -44,7 +44,7 @@ fn pool_rows(
     config: &PoolConfig,
     events: &ProjectEvents,
     now: u64,
-) -> Result<Vec<MonitorRow>, crate::VivariumError> {
+) -> Result<Vec<MonitorRow>, vivi_error::VivariumError> {
     let mailspace = slot::space_key(project, mailspace_id);
     let site = crate::pool::local_site::resolve(
         config.local.root_or_default(),

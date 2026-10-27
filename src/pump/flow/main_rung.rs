@@ -6,8 +6,6 @@ mod schedule;
 
 use std::collections::BTreeSet;
 
-use crate::error::VivariumError;
-use crate::letter::read::record_of;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::load::load;
@@ -17,6 +15,8 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::{self, EnvFailure};
 use crate::pump::jobs::{self, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::read::record_of;
 
 /// main_state key: the last main tip a main rung finished on.
 pub(crate) const TESTED: &str = "main-tested";

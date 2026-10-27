@@ -6,7 +6,7 @@
 //! destroyed here, and is reported as skipped.
 
 use super::slot::SlotStatus;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// What a scale would do.
 #[derive(Debug, Clone, PartialEq, Eq)]

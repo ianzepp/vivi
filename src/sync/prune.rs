@@ -13,10 +13,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::StoredMessageView;
 use crate::sync::PROVIDER;
+use vivi_error::VivariumError;
 
 /// Listing lines shown before the rest is summarized.
 const LISTING: usize = 20;

@@ -12,8 +12,8 @@ use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use crate::error::VivariumError;
 use crate::sync::state::ensure_sync_dir;
+use vivi_error::VivariumError;
 
 const LOCK_FILE: &str = "sync.lock";
 

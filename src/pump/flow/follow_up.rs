@@ -4,14 +4,14 @@
 //! which chooses the owner. Optional follow-ups are only posted on the slice
 //! task (the default built-slice hook does that); this hook only routes.
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::{FollowUp, Hand};
 use crate::pump::flow::collect_slice::BuiltHook;
 use crate::pump::flow::collect_step::RunCx;
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::reslice::{self, Mode};
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{FollowUp, Hand};
 
 /// Sends one slicer rework job per required follow-up of a built slice.
 pub(crate) struct FollowUpRework;

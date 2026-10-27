@@ -6,11 +6,11 @@
 use std::rc::Rc;
 
 use super::{alice, bob, close, node_state, rfc_id, role_of, send_task};
-use crate::letter::fixture::body_for;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, letter, wire_id};
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::body_for;
 
 /// The writer (alice) and the holder (bob) of one lowered need.
 struct Pair {

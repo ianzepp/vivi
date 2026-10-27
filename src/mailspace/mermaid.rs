@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Node kinds that never dispatch: `graph activate` refuses them and
 /// frontiers list them as gates instead of ready work.

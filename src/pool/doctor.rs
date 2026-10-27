@@ -18,7 +18,7 @@ use super::provider::PoolProvider;
 use super::record::OpenDispatch;
 use super::requires;
 use super::slot::{self, PoolId, SlotStatus};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The outcome of one check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

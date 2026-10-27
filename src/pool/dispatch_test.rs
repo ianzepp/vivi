@@ -1,11 +1,11 @@
 use super::*;
-use crate::letter::work::TaskFront;
 use crate::pool::fake_provider::{Fake, claimed, pid, slot};
 use crate::pool::slot::{META_CLAIMED, META_TASK};
+use vivi_mail::letter::work::TaskFront;
 
 /// A task letter with no pool keys: what a pool job is planned from.
 fn body_text() -> String {
-    crate::letter::fixture::task_body("body text")
+    vivi_mail::letter::fixture::task_body("body text")
 }
 
 /// A task letter whose front matter sets the pool keys.
@@ -16,7 +16,7 @@ fn refs_body(from: Option<&str>, branch: Option<&str>, with: &[&str]) -> String 
         with: with.iter().map(|w| (*w).to_string()).collect(),
         ..TaskFront::default()
     };
-    crate::letter::fixture::task_body_with(&front, "do it")
+    vivi_mail::letter::fixture::task_body_with(&front, "do it")
 }
 
 fn config() -> PoolConfig {

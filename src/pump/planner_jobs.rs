@@ -7,11 +7,11 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::host::{Ctx, exit_receipt_path};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::state::State;
+use vivi_error::VivariumError;
 
 const PLAN_BEGIN: &str = "PUMP-PLAN-BEGIN";
 const PLAN_END: &str = "PUMP-PLAN-END";

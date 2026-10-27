@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Canonicalize a path, including a missing tail, through its nearest
 /// existing ancestor.

@@ -1,6 +1,6 @@
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn send(mailspace: &Mailspace, kind: &str, body: String) -> String {
     let result = mailspace

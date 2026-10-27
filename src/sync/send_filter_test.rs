@@ -7,12 +7,12 @@
 //! follows it. Everything else is machine-local traffic, counted as `local
 //! only` and never unsent.
 
-use crate::letter::fixture::task_body;
 use crate::mailspace::SendRequest;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
 use crate::sync::push::{self, PushReport};
 use crate::sync::select::{Selection, SkipReason};
 use crate::sync::{SendFilter, SyncSettings};
+use vivi_mail::letter::fixture::task_body;
 
 /// A checkout whose `[sync]` `send` key is `value` (`None` leaves it absent).
 fn sent_as(name: &str, roles: &[&str], value: Option<&str>) -> Checkout {

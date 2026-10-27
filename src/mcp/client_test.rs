@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::error::VivariumError;
 use crate::sync::http::RawResponse;
+use vivi_error::VivariumError;
 
 struct Stub {
     bodies: RefCell<Vec<Value>>,

@@ -183,7 +183,7 @@ impl Rig {
                 cc: Vec::new(),
                 bcc: Vec::new(),
                 subject: format!("job {}", self.sent),
-                body: crate::letter::fixture::task_body("a throwaway task\n"),
+                body: vivi_mail::letter::fixture::task_body("a throwaway task\n"),
                 role: "tasks".into(),
                 kind: Some("task".into()),
                 reply_to: None,
@@ -235,7 +235,7 @@ impl Rig {
         let mut plan = dispatch::plan_job(
             &config,
             "wt",
-            (&task, "subject", &crate::letter::fixture::task_body("")),
+            (&task, "subject", &vivi_mail::letter::fixture::task_body("")),
             &flags,
             DEFAULT_RULES.into(),
             job,
@@ -527,7 +527,7 @@ fn a_branch_that_appeared_after_the_decision_is_refused_by_the_runner_and_never_
         let mut plan = dispatch::plan_job(
             &rig.config,
             "wt",
-            (&task, "subject", &crate::letter::fixture::task_body("")),
+            (&task, "subject", &vivi_mail::letter::fixture::task_body("")),
             &DispatchFlags {
                 model: "standin".into(),
                 need: None,

@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use vivi::VivariumError;
 use vivi::cli::{
     ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsFormat, ReportSubcommand,
 };
 use vivi::report::format::OutputFormat;
 use vivi::report::model::{Dimension, Filter, View};
+use vivi_error::VivariumError;
 
 pub(crate) fn run(command: &ReportCommand) -> Result<(), VivariumError> {
     let (view, common, format, by, top) = match &command.command {

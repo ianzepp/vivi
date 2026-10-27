@@ -14,8 +14,8 @@ use super::open_provider;
 use super::provider::PoolProvider;
 use super::runpod::HostContext;
 use super::slot::PoolId;
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 /// Whether a command needs `--pool` once there is more than one pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

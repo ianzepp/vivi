@@ -2,7 +2,6 @@
 //! run is resumed, and the need ends with one run and no duplicate tasks.
 
 use super::{SENTINEL_NODE, resume, start};
-use crate::letter::read::step_of;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
@@ -10,6 +9,7 @@ use crate::pump::flow::index::run_state;
 use crate::pump::flow::mail::MailReader;
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_mail::letter::read::step_of;
 
 const NEED: &str = "need1";
 

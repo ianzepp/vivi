@@ -11,7 +11,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::{Project, project, send_need};
 use crate::pump::flow::advance::start::start;
@@ -23,6 +22,7 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -99,7 +99,7 @@ pub(crate) fn rig(cfg: PumpConfig, record_body: &str, entry: &str) -> Result<Rig
     MailWriter::open_record(
         &mut port,
         &need,
-        &crate::letter::fixture::record_with_need(record_body, &need),
+        &vivi_mail::letter::fixture::record_with_need(record_body, &need),
     )?;
     start(&ctx, &store, &mut port, &need, Some(entry))?;
     let registry = shipped::<Jobs, MailspacePort>(&ctx);
@@ -233,7 +233,7 @@ impl Rig {
         MailWriter::open_record(
             &mut self.port,
             &need,
-            &crate::letter::fixture::record_with_need(record_body, &need),
+            &vivi_mail::letter::fixture::record_with_need(record_body, &need),
         )?;
         start(&self.ctx, &self.store, &mut self.port, &need, Some(entry))?;
         Ok(need)

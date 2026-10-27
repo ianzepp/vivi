@@ -4,7 +4,6 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::{decide, sticky_raise};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::def::{FlowNode, NodeClass};
@@ -15,6 +14,7 @@ use crate::pump::host::test_ctx;
 use crate::pump::state::State;
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 fn open() -> Result<(TempDir, PumpStore), VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;

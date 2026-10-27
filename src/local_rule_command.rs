@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use vivi::VivariumError;
 use vivi::cli::{
     AbsorbCommand, RuleCommand, RuleRetireCommand, RuleSaveCommand, RuleSupersedeCommand,
 };
 use vivi::mailspace::{Mailspace, RuleDetail, RuleRecord};
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_rule_command(command: &RuleCommand) -> Result<(), VivariumError> {
     match command {

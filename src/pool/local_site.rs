@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// A resolved local pool site: the pool root plus the directory that holds
 /// this mailspace's slots inside it.

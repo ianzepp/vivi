@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{MergeMainStart, SyncStart};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -16,6 +15,7 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::JobSpec;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::{RoleRouting, RoutedRole};
+use vivi_error::VivariumError;
 
 const NEED: &str = "n1";
 const MAIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

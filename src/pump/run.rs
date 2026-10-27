@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::boardpass::BoardPass;
 use crate::pump::collect;
@@ -18,6 +17,7 @@ use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::tick_steps;
+use vivi_error::VivariumError;
 
 mod reload;
 pub(super) use reload::refresh_config;

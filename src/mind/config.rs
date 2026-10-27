@@ -31,8 +31,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::VivariumError;
 use crate::duration::parse_duration_secs;
+use vivi_error::VivariumError;
 
 use super::edge::EdgeConfig;
 

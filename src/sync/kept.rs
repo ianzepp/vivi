@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::Storage;
 use crate::sync::select::{self, Selection, Skipped};
 use crate::sync::{SyncSettings, sync_dir};
+use vivi_error::VivariumError;
 
 const KEPT_FILE: &str = "kept-local.json";
 

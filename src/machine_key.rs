@@ -18,7 +18,7 @@ use rand_core::OsRng;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// What the machine signs: this prefix, then the raw nonce bytes. Must match
 /// the server's `machine_auth::MESSAGE_PREFIX`.

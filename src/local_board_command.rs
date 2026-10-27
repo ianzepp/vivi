@@ -5,11 +5,11 @@ use std::fs;
 use std::io::ErrorKind;
 
 use chrono::{DateTime, Utc};
-use vivi::VivariumError;
 use vivi::cli::BoardCommand;
 use vivi::mailspace::board::{Board, BoardGraph, BoardItem, BoardOptions, IdentityBoard};
 use vivi::mailspace::{GoalView, Mailspace};
 use vivi::role_schedule::{ScheduleReport, ScheduleState, state_label as schedule_state_label};
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;

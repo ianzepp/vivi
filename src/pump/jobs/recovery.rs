@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::VivariumError;
 use crate::pump::host::{Ctx, shell_quote};
+use vivi_error::VivariumError;
 
 use super::{JobOutcome, JobStatus, JobStore, PoolJob, tail};
 
@@ -153,7 +153,7 @@ fn pool_name(latest: &str) -> Option<String> {
 fn marker_matches(text: &str, id: &str) -> bool {
     text.contains(&format!("[pump-job:{id}]"))
         || bodies_of(text).iter().any(|body| {
-            crate::letter::read::task_of("", body)
+            vivi_mail::letter::read::task_of("", body)
                 .is_ok_and(|task| task.front.job.is_some_and(|job| job.id == id))
         })
 }

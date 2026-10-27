@@ -11,12 +11,12 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::control::{self, PumpControl, PumpMode};
 use crate::pump::host::{Host, RealHost};
 use crate::pump::readiness;
 use crate::routing::{self, Issue, Severity};
+use vivi_error::VivariumError;
 
 /// How a held pump was started.
 #[derive(Debug, Clone, Copy)]

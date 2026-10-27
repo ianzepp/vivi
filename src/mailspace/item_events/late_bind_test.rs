@@ -22,7 +22,7 @@ fn need(mailspace: &Mailspace, subject: &str) -> (String, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::need_body(&["ok"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["ok"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -82,7 +82,7 @@ fn file_bound(mailspace: &Mailspace, need: &str, need_rfc: &str, unit: &str, dat
 /// backlog, and return its content id.
 fn file_unit(mailspace: &Mailspace, unit: &str) -> String {
     let domain = mailspace.address_domain();
-    let body = crate::letter::fixture::task_body("work").replace('\n', "\r\n");
+    let body = vivi_mail::letter::fixture::task_body("work").replace('\n', "\r\n");
     let bytes = format!(
         "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: {unit}\r\n\
          Message-ID: <{unit}>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\

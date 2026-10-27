@@ -17,7 +17,7 @@ use super::progress::Issue;
 use super::provider::{MachineRecord, PoolProvider, SlotLifetime};
 use super::record::OpenDispatch;
 use super::slot::{self, META_TASK, SlotStatus};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Seconds past the budget before a silent job counts as timed out. The
 /// slot's own hard limit is the budget plus the runner slack, so this only

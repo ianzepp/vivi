@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Refuse unconfirmed stdout larger than this many bytes.
 pub const MAX_STDOUT_BYTES: usize = 64 * 1024;

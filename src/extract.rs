@@ -2,7 +2,7 @@
 
 use mail_parser::MessageParser;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Extract the plain-text body from raw `.eml` bytes.
 ///

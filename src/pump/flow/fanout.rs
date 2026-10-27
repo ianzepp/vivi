@@ -10,10 +10,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::VivariumError;
-use crate::letter::render;
-use crate::letter::work::TaskFront;
-use crate::pump::envelope::roles::{Slice, Slicer};
 use crate::pump::envelope::{EnvelopeError, parse};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::FAILED;
@@ -24,6 +20,10 @@ use crate::pump::flow::scope::ScopeState;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
 use crate::pump::store::flow_links::SliceLink;
+use vivi_error::VivariumError;
+use vivi_mail::letter::render;
+use vivi_mail::letter::roles::{Slice, Slicer};
+use vivi_mail::letter::work::TaskFront;
 
 /// Prefix of a slice step row's node: `slice:<id>`.
 pub const SLICE_NODE_PREFIX: &str = "slice:";
@@ -70,7 +70,7 @@ pub fn is_slice_row(row: &StepRow) -> bool {
 /// The `target` key of a slice task's front matter, if it has one.
 #[must_use]
 pub fn target_of(body: &str) -> Option<String> {
-    match crate::letter::read::task_of("", body) {
+    match vivi_mail::letter::read::task_of("", body) {
         Ok(envelope) => envelope.front.target,
         Err(_) => None,
     }

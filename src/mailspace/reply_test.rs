@@ -2,9 +2,9 @@
 //! report, and a pool event note.
 
 use super::*;
-use crate::letter::plain::CloseFront;
-use crate::letter::records::PoolNote;
 use crate::mailspace::SendRequest;
+use vivi_mail::letter::plain::CloseFront;
+use vivi_mail::letter::records::PoolNote;
 
 /// The content headers W3-B4 moved into front matter; none may appear on a
 /// note letter.
@@ -73,11 +73,11 @@ fn a_plain_note_reply_is_prose_mail_with_the_format_header() {
     assert!(text.contains("X-Vivi-Kind: mail"), "{text}");
     assert!(!text.contains("+++"), "plain prose shows no fence: {text}");
     assert_no_moved_headers(&text);
-    let parsed = crate::letter::of_message(&reply.data, "t").unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
+    let parsed = vivi_mail::letter::of_message(&reply.data, "t").unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Mail);
     assert_eq!(
         parsed.front,
-        crate::letter::Front::Mail(MailFront::default())
+        vivi_mail::letter::Front::Mail(MailFront::default())
     );
     assert_eq!(parsed.prose, "moved for review");
 }
@@ -109,9 +109,9 @@ fn a_report_note_carries_its_close_facts_as_front_matter() {
     let text = String::from_utf8_lossy(&reply.data).into_owned();
     assert!(text.contains("X-Vivi-Format: 1"), "{text}");
     assert_no_moved_headers(&text);
-    let parsed = crate::letter::of_message(&reply.data, "t").unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
-    let crate::letter::Front::Mail(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(&reply.data, "t").unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Mail);
+    let vivi_mail::letter::Front::Mail(front) = parsed.front else {
         panic!("not a mail front: {text}");
     };
     assert_eq!(front.close.as_ref(), Some(&close));
@@ -140,9 +140,9 @@ fn a_pool_note_carries_the_event_and_record_in_its_front() {
     let text = String::from_utf8_lossy(&reply.data).into_owned();
     assert!(text.contains("X-Vivi-Format: 1"), "{text}");
     assert_no_moved_headers(&text);
-    let parsed = crate::letter::of_message(&reply.data, "t").unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
-    let crate::letter::Front::Mail(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(&reply.data, "t").unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Mail);
+    let vivi_mail::letter::Front::Mail(front) = parsed.front else {
         panic!("not a mail front: {text}");
     };
     let pool = front

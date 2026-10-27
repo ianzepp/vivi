@@ -7,8 +7,6 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use super::{ACTION_REFUSED, active_run, register};
-use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
 use crate::mailspace::PumpActionRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
@@ -20,6 +18,8 @@ use crate::pump::host::{Ctx, FakeHost};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, dispatch_pending, enqueue};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::step_body;
 
 type R = Result<(), VivariumError>;
 

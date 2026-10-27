@@ -8,9 +8,6 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use super::{FAILING, REPAIRED, key, record_target};
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
-use crate::letter::records::{RecordFront, RecordKind};
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::FlowMail;
@@ -20,6 +17,9 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::flow::verify;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::records::{RecordFront, RecordKind};
 
 /// Main-state key (per target): the tip whose repair need is being sent.
 /// Written before `need send`; cleared once the need's record is open.
@@ -189,7 +189,7 @@ fn open_filed<M: FlowMail>(
         target: Some(target.to_string()),
         tested: Some(tip.to_string()),
     };
-    let record = crate::letter::render(&front, "")
+    let record = vivi_mail::letter::render(&front, "")
         .map_err(|error| VivariumError::Message(error.to_string()))?;
     MailWriter::open_record(mail, need, &record)?;
     store.clear_main_state(&key(SENDING, target))

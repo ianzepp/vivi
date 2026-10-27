@@ -26,7 +26,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::flow::collect::ENVELOPE_FAILED;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -34,6 +33,7 @@ use crate::pump::flow::index::StepState;
 use crate::pump::health::{self, HealthOptions, Verdict};
 use crate::pump::jobs::{JobStatus, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
+use vivi_error::VivariumError;
 
 /// A pending pool job older than this is a stall, whatever health says.
 pub const STALE_PENDING_SECS: u64 = 30 * 60;

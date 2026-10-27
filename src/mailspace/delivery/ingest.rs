@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use crate::error::VivariumError;
 use crate::mailspace::DeliveredMessage;
 use crate::storage::{MessageIngestRequest, Storage, StoredMessage};
+use vivi_error::VivariumError;
 
 pub(in crate::mailspace) struct DeliveredMessageId {
     pub(in crate::mailspace) identity: String,

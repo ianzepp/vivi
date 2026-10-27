@@ -9,7 +9,7 @@
 
 use super::provider::{Abandoned, Hold, OpenRequest, PoolProvider, SlotLifetime};
 use super::slot::{self, PoolId, SlotStatus};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// How long a lease-based provider holds the claim window while it marks and
 /// delivers.

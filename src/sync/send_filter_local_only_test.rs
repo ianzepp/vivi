@@ -11,12 +11,12 @@
 
 use std::rc::Rc;
 
-use crate::letter::fixture::body_for;
 use crate::mailspace::{AbsorbConfig, SendRequest};
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
 use crate::sync::push;
 use crate::sync::select::{Selection, SkipReason};
 use crate::sync::{SyncSettings, sync_dir};
+use vivi_mail::letter::fixture::body_for;
 
 /// Flip `[sync]` `send` to `value` and re-resolve the settings.
 fn set_send(co: &mut Checkout, value: Option<&str>) {

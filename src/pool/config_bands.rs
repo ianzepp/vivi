@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::config::{PoolConfig, PoolHarness};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The band keys a `bands` table may hold, most capable first.
 pub const BAND_KEYS: [&str; 6] = ["P0", "P1", "P2", "P3", "P4", "P5"];

@@ -4,8 +4,6 @@
 //! tip (a full SHA) and the target's current main tip. Neither is guessed; a
 //! missing one is an error the tick reports.
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::FAILED;
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::need_branch;
@@ -13,6 +11,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::flow::verify;
 use crate::pump::jobs::merge_main;
 use crate::pump::need::is_full_sha;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The facts a merge-main or sync step starts from.
 struct Tips {

@@ -1,8 +1,8 @@
 use super::*;
-use crate::letter::fixture::{need_body, task_body, task_body_with, want_body};
-use crate::letter::work::TaskFront;
 use crate::mailspace::SendRequest;
 use crate::storage::MessageIngestRequest;
+use vivi_mail::letter::fixture::{need_body, task_body, task_body_with, want_body};
+use vivi_mail::letter::work::TaskFront;
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -499,9 +499,9 @@ impl crate::judgment::JudgmentProvider for FakeProvider {
         &self,
         _state: &serde_json::Value,
         questions: &[crate::judgment::JudgmentQuestion],
-    ) -> Result<Vec<crate::judgment::JudgmentAnswer>, crate::VivariumError> {
+    ) -> Result<Vec<crate::judgment::JudgmentAnswer>, vivi_error::VivariumError> {
         if self.fail {
-            return Err(crate::VivariumError::Message(
+            return Err(vivi_error::VivariumError::Message(
                 "judgment provider unreachable: boom".into(),
             ));
         }
@@ -629,9 +629,9 @@ fn legacy_prose_task_is_letter_invalid_naming_the_handle() {
 #[test]
 fn front_matter_need_dispatches_with_clauses_and_write_scope() {
     let (mailspace, _tmp) = roster();
-    let mut front = crate::letter::work::NeedFront::new(vec!["first".into(), "second".into()]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec!["first".into(), "second".into()]);
     front.write_scope = vec!["src/a.rs".into()];
-    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
     let need = send_item(&mailspace, "needs", "need", "front need", &body);
     let dispatch =
         manifest_for(&mailspace, &need).unwrap_or_else(|| panic!("expected dispatch for {need}"));
@@ -642,7 +642,7 @@ fn front_matter_need_dispatches_with_clauses_and_write_scope() {
 #[test]
 fn front_matter_step_task_is_pump_owned() {
     let (mailspace, _tmp) = roster();
-    let body = crate::letter::fixture::step_body("n1", 1, "plan", "Plan");
+    let body = vivi_mail::letter::fixture::step_body("n1", 1, "plan", "Plan");
     let task = send_item(&mailspace, "tasks", "task", "step", &body);
     let exception =
         exception_for(&mailspace, &task).unwrap_or_else(|| panic!("expected exception for {task}"));
@@ -653,7 +653,7 @@ fn front_matter_step_task_is_pump_owned() {
 fn job_only_task_is_pump_owned_not_no_done_when() {
     let (mailspace, _tmp) = roster();
     let front = TaskFront {
-        job: Some(crate::letter::work::JobFront {
+        job: Some(vivi_mail::letter::work::JobFront {
             id: "j1".into(),
             kind: "correction".into(),
             builtin_role: None,

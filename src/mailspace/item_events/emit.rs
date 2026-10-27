@@ -8,17 +8,17 @@ use super::{
     EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, EVENT_PREV_HEADER, EventLetter, HeldItem,
     ItemEventKind, chain_heads, dated_within_clock, held_item, role_move,
 };
-use crate::error::VivariumError;
-use crate::letter::plain::CloseFront;
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterKind, parse_kind};
 use crate::mailspace::Mailspace;
 use crate::mailspace::Recipient;
 use crate::mailspace::delivery::add_header;
 use crate::mailspace::reply::{add_reply_headers, reply_subject};
-use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{
     ItemEventWrite, MailspaceEventInput, MessageIngestRequest, RoleMove, Storage, StoredMessageView,
 };
+use vivi_error::VivariumError;
+use vivi_mail::letter::plain::CloseFront;
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterKind, parse_kind};
+use vivi_mail::message::{ComposeDraft, build_compose_draft};
 
 /// One event an owner writes.
 pub(super) struct EmitRequest<'a> {
@@ -425,7 +425,7 @@ impl Mailspace {
         // Close metadata travels as front matter; an empty front stores the
         // prose as written, with no fence. The composed body is parsed back
         // as the event kind, so a writer bug is an error at write time.
-        let body = crate::letter::plain::render(&request.close, &prose)
+        let body = vivi_mail::letter::plain::render(&request.close, &prose)
             .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;
         parse_kind(&LetterKind::Event(verb.to_string()), &body)
             .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;

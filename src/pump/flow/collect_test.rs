@@ -5,7 +5,6 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{BUDGET_UNRAISABLE, Collected, collect};
-use crate::letter::fixture::step_body;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::EnvelopeError;
@@ -16,6 +15,7 @@ use crate::pump::flow::index::StepJobRow;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
+use vivi_mail::letter::fixture::step_body;
 
 const REF: &str = "refs/heads/need/n1";
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";

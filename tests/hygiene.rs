@@ -1,6 +1,7 @@
 //! Production-source hygiene ratchet.
 //!
-//! Scans `src/**/*.rs` excluding dedicated test companions. Size checks are
+//! Scans `src/**/*.rs` and `crates/*/src/**/*.rs` excluding dedicated test
+//! companions. Size checks are
 //! per-file and per-function ceilings. Banned-pattern budgets are monotonic
 //! — lower, never raise.
 
@@ -38,10 +39,21 @@ struct SourceFile {
     content: String,
 }
 
+/// The `src` directories scanned: the root crate's and each workspace crate's.
+fn source_roots() -> Vec<std::path::PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![root.join("src")];
+    if let Ok(entries) = fs::read_dir(root.join("crates")) {
+        roots.extend(entries.flatten().map(|entry| entry.path().join("src")));
+    }
+    roots
+}
+
 fn production_files() -> Vec<SourceFile> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    collect_production_files(&src, &mut files);
+    for src in source_roots() {
+        collect_production_files(&src, &mut files);
+    }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files
 }

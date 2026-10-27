@@ -4,8 +4,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 use super::config::PumpConfig;
 use super::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};

@@ -19,7 +19,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::Storage;
 use crate::sync::filer::Filer;
@@ -27,6 +26,7 @@ use crate::sync::link::{self, LinkOutcome};
 use crate::sync::state::{Floor, SyncState};
 use crate::sync::transport::{ListQuery, PAGE_LIMIT, Page, Record, Transport};
 use crate::sync::{SyncSettings, UIDVALIDITY, sync_dir};
+use vivi_error::VivariumError;
 
 /// A record this pass would not file, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]

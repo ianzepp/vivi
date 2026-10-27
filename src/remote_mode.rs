@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use vivi::VivariumError;
 use vivi::cli::{Command, MailCommand, NeedCommand, TaskStatus};
 use vivi::mcp::HttpUpstream;
 use vivi::mcp::client::{self, Client};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RemoteConfig {

@@ -6,8 +6,8 @@ use super::{
 };
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::envelope::correct::KIND;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
+use vivi_mail::letter::roles::RoleKind;
 
 /// A durable job in `status` with an empty payload and no outcome.
 fn job(status: JobStatus) -> PoolJob {

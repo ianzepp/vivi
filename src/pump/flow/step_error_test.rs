@@ -5,12 +5,12 @@ use std::fs;
 use tempfile::tempdir;
 
 use super::{STEP_ERROR_HELD, hold, note_failure, note_success};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::host::test_ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 #[test]
 fn counts_go_up_and_reset_on_success() {

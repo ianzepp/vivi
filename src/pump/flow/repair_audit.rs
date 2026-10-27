@@ -15,10 +15,7 @@ use std::collections::BTreeSet;
 
 use serde_json::json;
 
-use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
-use crate::pump::envelope::review::Finding;
-use crate::pump::envelope::roles::{RoleKind, parse_for};
 use crate::pump::flow::fanout::VERDICT_MERGED;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
@@ -29,6 +26,9 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::review::Finding;
+use vivi_mail::letter::roles::{RoleKind, parse_for};
 
 /// Exception kind of an audit that could not be queued or collected.
 pub const REPAIR_AUDIT_FAILED: &str = "flow-repair-audit-failed";

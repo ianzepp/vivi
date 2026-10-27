@@ -2,7 +2,6 @@
 
 use tempfile::{TempDir, tempdir};
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
@@ -17,6 +16,7 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -65,7 +65,7 @@ fn rig_with(cfg: PumpConfig, with_role: bool, run_no: u32) -> Result<Rig, Vivari
     };
     store.insert_run(&run)?;
     let mut mail = FakeMail::new("pump");
-    let body = crate::letter::fixture::need_body(&["build the widget"], "prose");
+    let body = vivi_mail::letter::fixture::need_body(&["build the widget"], "prose");
     let sent = mail.send_step("pump", "pump", "the need", &body, &[])?;
     if let Some(task) = mail.tasks.remove(&sent) {
         mail.tasks.insert(NEED.to_string(), task);
@@ -129,13 +129,13 @@ fn plan_is_a_read_only_planner_job_with_the_thread() -> R {
 #[test]
 fn plan_brief_shows_done_when_target_and_depends_on_above_the_thread() -> R {
     let mut rig = rig(true, 1)?;
-    let mut front = crate::letter::work::NeedFront::new(vec![
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![
         String::from("first thing"),
         String::from("second thing"),
     ]);
     front.target = Some(String::from("default"));
     front.depends_on = vec![String::from("a1"), String::from("b2")];
-    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "prose");
     let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
     rig.run.need = need;
 

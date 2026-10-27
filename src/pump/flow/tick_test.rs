@@ -14,13 +14,8 @@ use super::{
     OPERATOR_HOLD, RUN_ERROR, SCOPE_REWORK, SIDE_EFFECT_UNCLEAR, STALE_ATTEMPT, STEP_OVERDUE,
     VALIDATED, tick_with,
 };
-use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body, task_body_with};
-use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
 use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -39,6 +34,11 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{record_body, step_body, task_body_with};
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::Slice;
+use vivi_mail::letter::work::TaskFront;
 
 type R = Result<(), VivariumError>;
 

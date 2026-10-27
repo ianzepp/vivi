@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::jwt;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Open (or create) a sibling `.lock` and take a blocking exclusive lock.
 ///

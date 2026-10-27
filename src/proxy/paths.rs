@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const CONFIG_DIRECTORY: &str = "vivi";
 const CONFIG_FILENAME: &str = "proxy.toml";

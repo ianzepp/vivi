@@ -21,8 +21,8 @@ use super::run::{self, CreateOptions};
 use super::selftest_source::{self as source, harness_command};
 use super::slot::{PoolId, SlotStatus};
 use super::work::{self, WaitOptions, Waited};
-use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_error::VivariumError;
 
 /// Every wait and pause the test uses. `Default` is for a live provider;
 /// [`Timing::instant`] is for tests against the fake.
@@ -396,8 +396,8 @@ impl<'a> World<'a> {
 
 /// The front-matter body every stand-in task is sent with.
 fn test_task_body() -> Result<String, VivariumError> {
-    crate::letter::render(
-        &crate::letter::work::TaskFront::default(),
+    vivi_mail::letter::render(
+        &vivi_mail::letter::work::TaskFront::default(),
         "Throwaway task of `vivi pool doctor --test`. It lives in a temporary mailspace that is deleted when the test ends.\n",
     )
     .map_err(|error| VivariumError::Message(format!("failed to render test task: {error}")))

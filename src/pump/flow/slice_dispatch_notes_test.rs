@@ -1,12 +1,12 @@
 //! Tests for `SliceMail::notes` and `notes_from` on the real port and the fake.
 
 use super::SliceMail;
-use crate::letter::fixture::{step_body, task_body_with};
-use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::mail::{MailWriter, MailspacePort};
+use vivi_mail::letter::fixture::{step_body, task_body_with};
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::work::TaskFront;
 
 fn prose_of(notes: &[(String, super::Note)]) -> Vec<String> {
     notes

@@ -6,9 +6,6 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use super::{RepairMerge, RepairRung, register};
-use crate::error::VivariumError;
-use crate::letter::fixture::{repair_record_body, step_body};
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::{note_body, note_of};
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
@@ -25,6 +22,9 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{repair_record_body, step_body};
+use vivi_mail::letter::records::NoteWord;
 
 type R = Result<(), VivariumError>;
 

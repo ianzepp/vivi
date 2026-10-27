@@ -7,11 +7,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::VivariumError;
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use vivi_error::VivariumError;
 
 /// The planner verdict that marks an admitted plan.
 const PLANNED: &str = "planned";
@@ -92,7 +92,7 @@ pub(crate) fn requirements(
     };
     let handle = root["handle"].as_str().unwrap_or("");
     let body = root["body"].as_str().unwrap_or("");
-    let envelope = crate::letter::read::need_of(handle, body)
+    let envelope = vivi_mail::letter::read::need_of(handle, body)
         .map_err(|error| VivariumError::Message(format!("need {handle}: {error}")))?;
     let root_id = format!("{handle}-r0");
     let mut out: Vec<NeedAuditRequirement> = envelope
@@ -128,7 +128,7 @@ pub fn whole_message_requirements(
         .filter_map(|(_, message)| {
             let handle = message["handle"].as_str().filter(|h| !h.is_empty())?;
             let body = message["body"].as_str().unwrap_or("");
-            if crate::letter::prose_of(body).trim().is_empty() {
+            if vivi_mail::letter::prose_of(body).trim().is_empty() {
                 return None;
             }
             Some(NeedAuditRequirement {

@@ -5,10 +5,10 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use vivi::letter::render;
-use vivi::letter::work::{NeedFront, TaskFront, WantFront};
 use vivi::mailspace::Mailspace;
 use vivi::storage::MessageIngestRequest;
+use vivi_mail::letter::render;
+use vivi_mail::letter::work::{NeedFront, TaskFront, WantFront};
 
 fn vivi<I, S>(args: I) -> Output
 where

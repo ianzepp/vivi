@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::docker_cli::{RunOutput, Runner, finish};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Seconds `ssh` waits to connect before it gives up (no key, no route).
 const CONNECT_TIMEOUT_SECS: &str = "10";

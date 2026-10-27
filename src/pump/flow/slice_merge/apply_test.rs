@@ -7,10 +7,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::run;
-use crate::error::VivariumError;
-use crate::letter::fixture::task_body_with;
-use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
 use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -23,6 +19,10 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::task_body_with;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::work::TaskFront;
 
 type R = Result<(), VivariumError>;
 

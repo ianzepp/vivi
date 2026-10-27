@@ -43,10 +43,10 @@ impl PiSession for SlowPi {
         &mut self,
         _message: String,
         _events: Option<tokio::sync::mpsc::UnboundedSender<crate::mind::pi::TurnEvent>>,
-    ) -> Result<TurnSummary, crate::VivariumError> {
+    ) -> Result<TurnSummary, vivi_error::VivariumError> {
         self.clock.advance(self.secs);
         if self.fail {
-            Err(crate::VivariumError::Other("turn failed".into()))
+            Err(vivi_error::VivariumError::Other("turn failed".into()))
         } else {
             Ok(TurnSummary {
                 text: self.reply.clone(),
@@ -54,11 +54,11 @@ impl PiSession for SlowPi {
         }
     }
 
-    async fn compact(&mut self) -> Result<String, crate::VivariumError> {
+    async fn compact(&mut self) -> Result<String, vivi_error::VivariumError> {
         Ok(String::new())
     }
 
-    async fn history(&mut self, _limit: usize) -> Result<Vec<String>, crate::VivariumError> {
+    async fn history(&mut self, _limit: usize) -> Result<Vec<String>, vivi_error::VivariumError> {
         Ok(Vec::new())
     }
 }

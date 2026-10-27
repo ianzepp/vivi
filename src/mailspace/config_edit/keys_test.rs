@@ -12,11 +12,11 @@ fn doc(text: &str) -> DocumentMut {
     text.parse().unwrap()
 }
 
-fn set(d: &mut DocumentMut, key: &str, raw: &str) -> Result<(), crate::error::VivariumError> {
+fn set(d: &mut DocumentMut, key: &str, raw: &str) -> Result<(), vivi_error::VivariumError> {
     set_in(d, &parse_key(key)?, parse_value(raw))
 }
 
-fn err_text(result: Result<(), crate::error::VivariumError>) -> String {
+fn err_text(result: Result<(), vivi_error::VivariumError>) -> String {
     result.unwrap_err().to_string()
 }
 

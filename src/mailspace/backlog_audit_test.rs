@@ -18,7 +18,7 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str) -> St
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::body_for(kind, ""),
+            body: vivi_mail::letter::fixture::body_for(kind, ""),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,
@@ -36,7 +36,7 @@ fn deliver_untracked_task(mailspace: &Mailspace, subject: &str) {
         "From: {}\r\nTo: {}\r\nSubject: {subject}\r\nX-Vivi-Kind: task\r\nX-Vivi-Format: 1\r\n\r\n{}",
         mailspace.address_for("ceo"),
         mailspace.address_for("cto"),
-        crate::letter::fixture::task_body("plain body"),
+        vivi_mail::letter::fixture::task_body("plain body"),
     );
     mailspace
         .storage()
@@ -234,7 +234,7 @@ fn audit_flags_orphan_node_for_deleted_item() {
 
 fn send_served_want(mailspace: &Mailspace) -> (String, String) {
     let want = send_item(mailspace, "wants", "want", "a want");
-    let mut front = crate::letter::work::NeedFront::new(vec!["done".to_string()]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec!["done".to_string()]);
     front.serves = Some(want.clone());
     let need = mailspace
         .send(SendRequest {
@@ -243,7 +243,7 @@ fn send_served_want(mailspace: &Mailspace) -> (String, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "serving need".into(),
-            body: crate::letter::fixture::need_body_with(&front, ""),
+            body: vivi_mail::letter::fixture::need_body_with(&front, ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,

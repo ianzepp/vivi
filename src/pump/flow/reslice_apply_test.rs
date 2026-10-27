@@ -5,10 +5,7 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{FOLLOW_UP_UNROUTED, apply};
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::{Slice, Slicer, SlicerAnswer, SlicerMode};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::fanout::{self, slice_node};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -16,6 +13,9 @@ use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::reslice::Mode;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
+use vivi_mail::letter::roles::{Slice, Slicer, SlicerAnswer, SlicerMode};
 
 type R = Result<(), VivariumError>;
 

@@ -10,8 +10,6 @@ mod classify;
 mod queue;
 mod spec;
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::Hand;
 use crate::pump::flow::collect_slice::BuiltHook;
 use crate::pump::flow::collect_step::RunCx;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -19,6 +17,8 @@ use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::Hand;
 
 /// Queues a built slice for its merge onto the need branch.
 struct SliceMergeHook;

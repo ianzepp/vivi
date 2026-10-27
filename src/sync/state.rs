@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const STATE_FILE: &str = "state.json";
 

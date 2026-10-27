@@ -3,9 +3,9 @@
 //! beside or after the seal is only counted.
 
 use super::node_state;
-use crate::letter::fixture::need_body;
 use crate::sync::fake_server::{LETTER_DATE, World, handle, letter, wire_id};
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::need_body;
 
 /// The reply headers every event letter carries, plus `extra` payload ones.
 fn event_headers(item: u64, kind: &str, extra: &str) -> String {

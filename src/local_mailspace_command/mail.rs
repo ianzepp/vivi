@@ -1,7 +1,7 @@
-use vivi::VivariumError;
 use vivi::cli::{MailAbsorbStatus, MailDumpCommand};
 use vivi::mailspace::{DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace};
-use vivi::message;
+use vivi_error::VivariumError;
+use vivi_mail::message;
 
 pub(super) fn print_local_messages(
     mailspace: &Mailspace,

@@ -15,10 +15,10 @@ pub fn render(
     rows: &[Value],
     columns: &[&str],
     format: OutputFormat,
-) -> Result<String, crate::VivariumError> {
+) -> Result<String, vivi_error::VivariumError> {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(rows)
-            .map_err(|error| crate::VivariumError::Other(format!("report JSON: {error}"))),
+            .map_err(|error| vivi_error::VivariumError::Other(format!("report JSON: {error}"))),
         OutputFormat::JsonLines => json_lines(rows),
         OutputFormat::Csv => Ok(csv(rows, columns)),
         OutputFormat::Markdown => Ok(markdown(rows, columns)),
@@ -26,11 +26,11 @@ pub fn render(
     }
 }
 
-fn json_lines(rows: &[Value]) -> Result<String, crate::VivariumError> {
+fn json_lines(rows: &[Value]) -> Result<String, vivi_error::VivariumError> {
     let mut out = String::new();
     for row in rows {
         let line = serde_json::to_string(row)
-            .map_err(|error| crate::VivariumError::Other(format!("report JSONL: {error}")))?;
+            .map_err(|error| vivi_error::VivariumError::Other(format!("report JSONL: {error}")))?;
         out.push_str(&line);
         out.push('\n');
     }

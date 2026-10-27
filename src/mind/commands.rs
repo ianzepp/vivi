@@ -9,8 +9,8 @@ use std::path::Path;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::VivariumError;
 use crate::cli::{MindCommand, MindServiceCommand, MindSubcommand};
+use vivi_error::VivariumError;
 
 use super::config::{self, MindConfig};
 use super::probe::{HealthProbe, Probe, ProjectSignals};

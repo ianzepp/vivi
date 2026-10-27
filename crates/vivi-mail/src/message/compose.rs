@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Process-wide counter that keeps Message-ID local parts distinct even when
 /// two letters are composed within the same nanosecond tick.

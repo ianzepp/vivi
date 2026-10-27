@@ -1,7 +1,6 @@
 //! Terminal handling: a `done` node lands the need, a `restart-<entry>` node
 //! starts a new run, and a withdrawal closes what is left of a run.
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::advance::route::Terminal;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
@@ -12,6 +11,7 @@ use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Verdict word the sentinel closes with when the run delivered.
 const VERDICT_DELIVERED: &str = "delivered";

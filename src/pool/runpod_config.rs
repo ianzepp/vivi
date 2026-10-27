@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::config::{bad, reject_unknown};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const DEFAULT_GPU_COUNT: u32 = 1;
 const MAX_GPU_COUNT: u32 = 8;

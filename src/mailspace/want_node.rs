@@ -6,8 +6,8 @@
 use super::Mailspace;
 use super::backlog::backlog_node_by_token;
 use super::want_state::{WantState, state_of_handle};
-use crate::error::VivariumError;
 use crate::storage::BACKLOG_GRAPH_CODE;
+use vivi_error::VivariumError;
 
 impl Mailspace {
     /// Bring the node of the want that the need `need` serves in step with

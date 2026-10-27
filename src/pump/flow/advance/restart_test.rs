@@ -9,9 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::{TempDir, tempdir};
 
 use super::{RESTART_STUCK, prune_dead_jobs, register, restart};
-use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::Note;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
@@ -27,6 +24,9 @@ use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob, enqueue};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::step_body;
+use vivi_mail::letter::records::NoteWord;
 
 type R = Result<(), VivariumError>;
 

@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::boot::BootReport;
-use crate::letter::fixture::{need_body, task_body};
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
+use vivi_mail::letter::fixture::{need_body, task_body};
 
 fn pair() -> (Rc<FakeServer>, Checkout, Checkout, String) {
     let server = FakeServer::new();

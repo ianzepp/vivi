@@ -5,9 +5,6 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use super::{SENTINEL_NODE, resume, start};
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::read::step_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
 use crate::pump::flow::advance::route::{JoinInput, route};
@@ -20,6 +17,9 @@ use crate::pump::flow::mail::{MailReader, MailWriter};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::test_ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
+use vivi_mail::letter::read::step_of;
 
 type R = Result<(), VivariumError>;
 

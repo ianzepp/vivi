@@ -11,7 +11,7 @@ fn vivi(project: &Path, args: &[&str]) -> Output {
 }
 
 fn prose_json(stored: &str) -> serde_json::Value {
-    let (_, prose) = vivi::letter::split(stored).unwrap();
+    let (_, prose) = vivi_mail::letter::split(stored).unwrap();
     serde_json::from_str(prose).unwrap()
 }
 
@@ -160,7 +160,7 @@ fn delivery_pushes_under_mind_prefix_and_merge_role_closes_with_commit() {
         .find(|message| message["handle"] == delivery)
         .unwrap();
     let stored = root["body"].as_str().unwrap();
-    let (front, _) = vivi::letter::split(stored).unwrap();
+    let (front, _) = vivi_mail::letter::split(stored).unwrap();
     assert!(
         front.contains(&format!(
             "branch mind/review at {tip} is merged into {base}"

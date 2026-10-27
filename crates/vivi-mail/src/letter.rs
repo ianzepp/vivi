@@ -10,6 +10,8 @@ pub mod message;
 pub mod plain;
 pub mod read;
 pub mod records;
+pub mod review;
+pub mod roles;
 pub mod sugar;
 pub mod work;
 
@@ -298,6 +300,6 @@ mod tests;
 #[path = "letter/gate_test.rs"]
 mod gate_test;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "letter/fixture_test.rs"]
-pub(crate) mod fixture;
+pub mod fixture;

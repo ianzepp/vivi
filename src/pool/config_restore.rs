@@ -2,7 +2,7 @@
 //! the start commit before a job commits.
 
 use super::config::PoolConfig;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The most paths a pool's `restore` list may hold.
 pub const MAX_RESTORE_PATHS: usize = 100;

@@ -2,10 +2,10 @@
 //! the item — the server shows it by its `X-Vivi-Event` header, whatever
 //! kind its envelope carries — and files as mail whatever kind it carries.
 
-use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, RoleUpdate};
 use crate::sync::events::{role_of, state};
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
+use vivi_mail::letter::fixture::need_body;
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])

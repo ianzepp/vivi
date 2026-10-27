@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Execute a secret-producing shell command. Failures report stderr only.
 ///

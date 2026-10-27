@@ -34,10 +34,10 @@ use serde::Serialize;
 
 use super::pump_record::{PumpState, in_write_batch};
 use super::{Mailspace, SendRequest};
-use crate::error::VivariumError;
-use crate::letter::records::{ActionFront, ActionWord};
-use crate::letter::{FENCE, LetterError, parse_letter};
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::{ActionFront, ActionWord};
+use vivi_mail::letter::{FENCE, LetterError, parse_letter};
 
 /// The event command and type every posted action logs.
 const EVENT_COMMAND: &str = "pump action";
@@ -336,7 +336,7 @@ impl Mailspace {
         } else {
             request.reason.clone()
         };
-        let body = crate::letter::render(&front, &prose)
+        let body = vivi_mail::letter::render(&front, &prose)
             .map_err(|error| VivariumError::Message(error.to_string()))?;
         let result = self.send(SendRequest {
             from: letter.from.to_string(),
@@ -481,7 +481,7 @@ impl Mailspace {
 fn read_front(
     handle: &str,
     body: &str,
-) -> Result<crate::letter::Envelope<ActionFront>, LetterError> {
+) -> Result<vivi_mail::letter::Envelope<ActionFront>, LetterError> {
     let opens = body
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -503,7 +503,7 @@ fn step_need(storage: &Storage, task: &str) -> Result<String, VivariumError> {
         .resolve_message_token(task)
         .map_err(|error| VivariumError::Message(format!("unknown task '{task}': {error}")))?;
     let body = crate::extract::extract_text(&storage.read_message(&message_id)?)?;
-    crate::letter::read::step_of(&body)
+    vivi_mail::letter::read::step_of(&body)
         .map(|step| step.need)
         .ok_or_else(|| {
             VivariumError::Message(format!(

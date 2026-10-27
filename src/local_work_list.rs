@@ -1,7 +1,7 @@
 use serde::Serialize;
-use vivi::VivariumError;
 use vivi::mailspace::{Mailspace, is_foreign_account};
 use vivi::storage::{MailspaceEvent, StoredMessageView};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Serialize)]
 struct WorkListItem {

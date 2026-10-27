@@ -6,8 +6,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::config::{self, BackendKind, ProviderConfig, ProxyConfig};
-use crate::VivariumError;
 use crate::cli::ProxyCheckCommand;
+use vivi_error::VivariumError;
 
 /// Probe one provider, or every provider.
 ///

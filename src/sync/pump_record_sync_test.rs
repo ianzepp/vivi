@@ -1,11 +1,11 @@
 //! A pump record is the pump's own, local record: a push selects the need
 //! and skips the record without reporting it as stuck.
 
-use crate::letter::fixture::need_body;
 use crate::mailspace::SendRequest;
 use crate::sync::fake_server::checkout;
 use crate::sync::push;
 use crate::sync::select::SkipReason;
+use vivi_mail::letter::fixture::need_body;
 
 #[test]
 fn push_skips_pump_records_as_a_local_kind() {

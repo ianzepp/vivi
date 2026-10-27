@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::mailspace::config_edit::{self, GuardedWrite};
+use vivi_error::VivariumError;
 
 /// The four rung names, in climbing order.
 pub const RUNG_NAMES: [&str; 4] = ["task", "need", "main", "release"];

@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::process;
 
-use vivi::VivariumError;
 use vivi::cli::DoctorCommand;
 use vivi::doctor::{DoctorReport, Finding, Project, Verdict};
+use vivi_error::VivariumError;
 
 /// Gather and print the project-wide read-only doctor report.
 pub(crate) fn run(

@@ -1,7 +1,7 @@
-use crate::letter::fixture::body_with_deps;
 use crate::sync::fake_server::{World, handle, letter, wire_id};
 use crate::sync::pull::{PullPlan, PullReport, pull_with};
 use crate::sync::refs::{MAX_DEPTH, MAX_LOOKUPS, RefsReport, follow_refs, references_in};
+use vivi_mail::letter::fixture::body_with_deps;
 
 fn eml(subject: &str, body: &str, extra: &str) -> Vec<u8> {
     letter(

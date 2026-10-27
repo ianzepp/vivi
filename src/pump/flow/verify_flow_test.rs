@@ -11,8 +11,6 @@ use std::sync::Arc;
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
-use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -25,6 +23,8 @@ use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_body;
 
 type R = Result<(), VivariumError>;
 type Reg = Registry<Jobs, FakeMail>;
@@ -121,7 +121,7 @@ fn replies(host: &Arc<FakeHost>) -> R {
     );
     let thread = serde_json::to_string(&json!([
         {"handle": NEED, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
+         "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]))
     .map_err(|e| VivariumError::Other(e.to_string()))?;
     host.reply("need show", 0, &thread);

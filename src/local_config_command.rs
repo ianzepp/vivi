@@ -3,12 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
-use vivi::VivariumError;
 use vivi::cli::ConfigCommand;
 use vivi::mailspace::config_edit;
 use vivi::mailspace::inherit::ConfigOrigins;
 use vivi::pump::config::{self, MigrateReport};
 use vivi::routing::{ConfigOverview, format_report, render_text, require_ok};
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_config_command(command: &ConfigCommand) -> Result<(), VivariumError> {
     match command {

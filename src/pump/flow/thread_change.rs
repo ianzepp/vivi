@@ -16,7 +16,6 @@ use std::collections::BTreeSet;
 
 use chrono::DateTime;
 
-use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, MailspaceThreadMessage, Recipient};
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
@@ -29,6 +28,7 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::record::open_mailspace;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Exception kind: a reply arrived on a run that is too far along to restart.
 pub const THREAD_CHANGED: &str = "flow-thread-changed";
@@ -139,7 +139,7 @@ fn change_since_start<'a>(
     let Some(started) = thread.iter().find(|m| {
         is_pump(m)
             && m.event.is_none()
-            && crate::letter::prose_of(&m.body)
+            && vivi_mail::letter::prose_of(&m.body)
                 .trim_start()
                 .starts_with(&start)
     }) else {

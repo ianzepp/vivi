@@ -8,9 +8,9 @@
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
-use crate::letter::fixture::need_body;
 use crate::mailspace::{RoleUpdate, SendRequest};
 use crate::sync::pull::PullReport;
+use vivi_mail::letter::fixture::need_body;
 
 const TRAVEL: &str = "travel";
 

@@ -4,9 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::review::{Admitter, Auditor, Cto, HeadCeo, Judge, Merge, Researcher};
-use super::{Envelope, EnvelopeError, Validate, parse};
-use crate::letter::FENCE;
-use crate::pump::flow::def::NodeClass;
+use super::{Envelope, FENCE, LetterError as EnvelopeError, Validate, parse};
 
 /// Which role wrote a reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,23 +70,6 @@ impl RoleKind {
             Self::Repairer => &["built", "failed"],
             Self::HeadCeo => &["reviewed", "no-op"],
         }
-    }
-
-    /// The role of a flow step node; `None` for rung, fanout and other
-    /// code-run nodes, and for merge-main (a code job, not a role reply).
-    pub fn from_class(class: &NodeClass) -> Option<Self> {
-        Some(match class {
-            NodeClass::Researcher => Self::Researcher,
-            NodeClass::Planner => Self::Planner,
-            NodeClass::Admitter => Self::Admitter,
-            NodeClass::Slicer => Self::Slicer,
-            NodeClass::Auditor => Self::Auditor,
-            NodeClass::Judge => Self::Judge,
-            NodeClass::Cto => Self::Cto,
-            NodeClass::Merge => Self::Merge,
-            NodeClass::Repairer => Self::Repairer,
-            _ => return None,
-        })
     }
 }
 

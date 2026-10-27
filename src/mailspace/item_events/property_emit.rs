@@ -15,14 +15,14 @@ use super::{
     EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, HeldItem, Mailspace, dated_within_clock,
     parse_property_event,
 };
-use crate::error::VivariumError;
-use crate::letter::plain::EmptyFront;
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterKind, parse_kind};
 use crate::mailspace::delivery::add_header;
 use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::reply::{add_reply_headers, reply_subject};
-use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{ItemEventWrite, Storage};
+use vivi_error::VivariumError;
+use vivi_mail::letter::plain::EmptyFront;
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION, LetterKind, parse_kind};
+use vivi_mail::message::{ComposeDraft, build_compose_draft};
 
 /// The body of a property or assignment letter. The facts stay in the event
 /// protocol headers, so the front is empty and the prose is stored as
@@ -30,7 +30,7 @@ use crate::storage::{ItemEventWrite, Storage};
 /// writer bug is an error before anything is stored.
 fn gated_event_body(verb: &str, note: Option<&str>) -> Result<String, VivariumError> {
     let prose = note.map_or_else(|| verb.to_string(), str::to_string);
-    let body = crate::letter::plain::render(&EmptyFront {}, &prose)
+    let body = vivi_mail::letter::plain::render(&EmptyFront {}, &prose)
         .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;
     parse_kind(&LetterKind::Event(verb.to_string()), &body)
         .map_err(|error| VivariumError::Message(format!("the {verb} letter: {error}")))?;

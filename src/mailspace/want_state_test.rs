@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::{WantState, fold, refuse_hand_close};
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();
@@ -129,7 +129,7 @@ fn a_reply_on_a_done_want_keeps_it_done() {
     send(
         &mailspace,
         "task",
-        crate::letter::fixture::task_body("p"),
+        vivi_mail::letter::fixture::task_body("p"),
         Some(&want),
     );
     assert_eq!(state(&mailspace, &want), WantState::Done);

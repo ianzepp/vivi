@@ -9,11 +9,11 @@ use super::{
     DeliveredMessage, DeliveryResult, Mailspace, RawDelivery, Recipient, SendRequest,
     canonical_local_role,
 };
-use crate::error::VivariumError;
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION, Letter};
-use crate::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 use crate::storage::StoredMessageView;
 use crate::sync::{MAX_LETTER_BYTES, SyncSettings};
+use vivi_error::VivariumError;
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION, Letter};
+use vivi_mail::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 
 mod compose;
 mod ingest;

@@ -173,7 +173,7 @@ fn cell_text(row: &MonitorRow) -> Vec<String> {
     ]
 }
 
-pub fn run(roots: &[PathBuf]) -> Result<(), crate::VivariumError> {
+pub fn run(roots: &[PathBuf]) -> Result<(), vivi_error::VivariumError> {
     let mut stdout = io::stdout();
     enable_raw_mode().map_err(io_error)?;
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -218,7 +218,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     roots: &[PathBuf],
-) -> Result<(), crate::VivariumError> {
+) -> Result<(), vivi_error::VivariumError> {
     let mut history = SessionHistory::default();
     let mut view = ListView::default();
     let mut warnings = Vec::new();
@@ -264,7 +264,7 @@ fn run_loop(
 fn open_tail(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     path: &Path,
-) -> Result<(), crate::VivariumError> {
+) -> Result<(), vivi_error::VivariumError> {
     let mut scroll = 0usize;
     loop {
         let text = read_tail(path);
@@ -346,8 +346,8 @@ fn epoch_secs() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-fn io_error(error: io::Error) -> crate::VivariumError {
-    crate::VivariumError::Other(format!("monitor terminal: {error}"))
+fn io_error(error: io::Error) -> vivi_error::VivariumError {
+    vivi_error::VivariumError::Other(format!("monitor terminal: {error}"))
 }
 
 #[cfg(test)]

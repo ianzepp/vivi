@@ -6,8 +6,6 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use super::{answer, job, register};
-use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body};
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -19,6 +17,8 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{record_body, step_body};
 
 type R = Result<(), VivariumError>;
 type Reg = Registry<Jobs, FakeMail>;

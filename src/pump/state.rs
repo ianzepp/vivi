@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Where a unit sits in the pump lifecycle (kebab-case in `state.json`).
 ///

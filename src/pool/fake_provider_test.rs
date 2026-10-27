@@ -10,7 +10,7 @@ use super::slot::{
     META_BASE, META_CLAIMED, META_MAILSPACE, META_POOL, META_SLOT, META_STATE, META_TASK, PoolId,
     STATE_READY,
 };
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 type Hook = Box<dyn Fn(&Fake, &str)>;
 /// Decides what `exec` prints on a machine; `None` falls back to `exec_out`.

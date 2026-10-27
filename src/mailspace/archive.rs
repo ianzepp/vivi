@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::Mailspace;
-use crate::error::VivariumError;
 use crate::storage::{Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Serialize)]
 struct ArchiveFrontmatter {

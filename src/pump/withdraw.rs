@@ -14,13 +14,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::cli::PumpWithdrawCommand;
 use crate::mailspace::want_state::need_closed;
 use crate::mailspace::{Mailspace, PumpActionRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::control::project_home;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 /// Whether this call closed the need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

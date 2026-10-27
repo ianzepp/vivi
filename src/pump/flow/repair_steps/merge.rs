@@ -5,7 +5,6 @@
 //! receipt (failed, lost, timed out) is settled by git: main either contains
 //! the commit or it does not. Only a git that cannot answer holds the step.
 
-use crate::error::VivariumError;
 use crate::pump::flow::collect_step::{RunCx, StepCollector, merged_payload};
 use crate::pump::flow::def::{FAILED, NodeClass};
 use crate::pump::flow::handlers::FlowMail;
@@ -16,6 +15,7 @@ use crate::pump::flow::verify;
 use crate::pump::jobs::merge_main::{self, MergeMainResult};
 use crate::pump::jobs::rung_result::{self, EnvFailure};
 use crate::pump::jobs::{JobStore, PoolJob};
+use vivi_error::VivariumError;
 
 /// The repair flow's merge-main collector.
 pub(super) struct RepairMergeMain;

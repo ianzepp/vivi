@@ -3,7 +3,6 @@
 use tempfile::{TempDir, tempdir};
 
 use super::SliceStep;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -18,6 +17,7 @@ use crate::pump::jobs::JobSpec;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

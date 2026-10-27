@@ -9,7 +9,6 @@
 //! answer, the env hold, the lock alarm and the per-step error hold.
 
 use super::e2e_rig::{Rig, agent_receipt, env_receipt, push_receipt, rig};
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::shipped;
@@ -22,6 +21,7 @@ use crate::pump::jobs::JobStatus;
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::store::NeedBranchRow;
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -96,7 +96,7 @@ fn build(base: &str) -> Result<Rig, VivariumError> {
     rig.git("main", MAIN);
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
+         "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["it works"], "Build the thing")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

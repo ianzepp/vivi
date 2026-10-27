@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use super::provider::MachineRecord;
 use super::slot::{META_CLAIMED, META_TASK};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Label naming what a container is to the pool.
 pub const LABEL_ROLE: &str = "vivi_pool_role";

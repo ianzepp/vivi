@@ -6,9 +6,9 @@ use std::collections::VecDeque;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::error::VivariumError;
 use crate::mcp::serve_with_project;
 use crate::sync::http::RawResponse;
+use vivi_error::VivariumError;
 
 /// Records every body it saw and pops scripted answers.
 struct Stub {

@@ -14,8 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{PAYLOAD_KEY, spent};
-use crate::error::VivariumError;
-use crate::letter::fixture::record_with_need;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::correct::base_id;
 use crate::pump::fixture::{Project, project};
@@ -28,6 +26,8 @@ use crate::pump::jobs::{JobOutcome, JobStatus, PoolJob};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_with_need;
 
 type R = Result<(), VivariumError>;
 

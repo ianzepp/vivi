@@ -98,9 +98,9 @@ fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
     let task = PoolTask {
         handle: String::from("abcd1234"),
         subject: String::from("audit"),
-        body: vivi::letter::render(
-            &vivi::letter::work::TaskFront {
-                job: Some(vivi::letter::work::JobFront {
+        body: vivi_mail::letter::render(
+            &vivi_mail::letter::work::TaskFront {
+                job: Some(vivi_mail::letter::work::JobFront {
                     id: String::from("audit-1"),
                     kind: String::from("auditor:range"),
                     builtin_role: Some(String::from("auditor")),
@@ -239,8 +239,11 @@ fn the_named_role_wins_over_the_task_addressee() {
     let task = PoolTask {
         handle: String::from("abcd1234"),
         subject: String::from("step"),
-        body: vivi::letter::render(&vivi::letter::work::TaskFront::step("n", 1, "merge"), "")
-            .unwrap(),
+        body: vivi_mail::letter::render(
+            &vivi_mail::letter::work::TaskFront::step("n", 1, "merge"),
+            "",
+        )
+        .unwrap(),
         addressee: Some(String::from("pump")),
     };
 

@@ -1,27 +1,10 @@
 //! Tests for the typed role envelopes.
 
 use super::{RoleKind, parse_for};
-use crate::pump::envelope::EnvelopeError;
-use crate::pump::flow::def::NodeClass;
+use crate::letter::LetterError as EnvelopeError;
 
 fn hand(front: &str) -> String {
     format!("+++\n{front}+++\nreport\n")
-}
-
-#[test]
-fn from_class_maps_role_nodes_only() {
-    assert_eq!(
-        RoleKind::from_class(&NodeClass::Slicer),
-        Some(RoleKind::Slicer)
-    );
-    assert_eq!(RoleKind::from_class(&NodeClass::Cto), Some(RoleKind::Cto));
-    assert_eq!(
-        RoleKind::from_class(&NodeClass::Merge),
-        Some(RoleKind::Merge)
-    );
-    assert_eq!(RoleKind::from_class(&NodeClass::RungNeed), None);
-    assert_eq!(RoleKind::from_class(&NodeClass::Fanout), None);
-    assert_eq!(RoleKind::from_class(&NodeClass::Decision), None);
 }
 
 #[test]
@@ -227,14 +210,6 @@ fn a_non_optional_follow_up_serializes_without_the_optional_key() {
 
 const REPAIRER_BUILT: &str = "answer = \"built\"\nchange = [\"src/a.rs\"]\n\
     [[check]]\ncmd = \"cargo test\"\nresult = \"pass\"\nseconds = 12\n";
-
-#[test]
-fn from_class_maps_the_repairer() {
-    assert_eq!(
-        RoleKind::from_class(&NodeClass::Repairer),
-        Some(RoleKind::Repairer)
-    );
-}
 
 #[test]
 fn a_valid_repairer_envelope_parses() {

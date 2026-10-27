@@ -7,7 +7,6 @@
 //! restarts a parked run at `plan` (the `thread-change` phase), and an operator
 //! answer on the step routes it.
 
-use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -15,6 +14,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
 
 /// Exception kind raised once when a run parks.
 pub const NEED_PARKED: &str = "flow-need-parked";

@@ -1,10 +1,7 @@
 //! Repairer step handler: each attempt works on a branch cut from the current
 //! main tip, and the need gets a `need_branches` row so prune can find it.
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::shipped::REPAIRER_ROLE;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -14,6 +11,9 @@ use crate::pump::flow::repair::{self, RepairRecord};
 use crate::pump::flow::verify::remote_tip;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::NeedBranchRow;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::RoleKind;
 
 /// Starts a repairer attempt (`fix1`, `fix2`).
 struct RepairerStart;

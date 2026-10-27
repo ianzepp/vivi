@@ -8,11 +8,11 @@ use serde::Serialize;
 use super::Mailspace;
 use super::holding::with_readiness;
 use super::mermaid::{MermaidFlowchart, parse_flowchart};
-use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, Storage, WorkGraphEdgeInput, WorkGraphEdgeRow, WorkGraphImportCommit,
     WorkGraphImportInput, WorkGraphNodeInput, WorkGraphNodeRow, WorkGraphRow, sha256_hex,
 };
+use vivi_error::VivariumError;
 
 /// Import report returned by check and commit paths.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -4,11 +4,11 @@
 //! `graph audit --repair` can still close a step or the sentinel by hand.
 //! [`pass`] finds those closes, reopens the task and reports it.
 
-use crate::error::VivariumError;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskState, TaskStatus};
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Exception kind raised for a task closed by someone other than the pump.
 pub(crate) const FOREIGN_CLOSE: &str = "flow-foreign-close";

@@ -3,12 +3,12 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{Prereq, PrereqState, prerequisites};
-use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_body;
 
 type R = Result<(), VivariumError>;
 

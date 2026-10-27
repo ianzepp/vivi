@@ -1,8 +1,8 @@
 use super::*;
 use chrono::TimeZone;
 
-use crate::letter::work::TaskFront;
 use crate::pool::slot::PoolId;
+use vivi_mail::letter::work::TaskFront;
 
 /// A task letter whose front matter sets `band`.
 fn band_body(band: &str) -> String {
@@ -10,7 +10,7 @@ fn band_body(band: &str) -> String {
         band: Some(band.to_string()),
         ..TaskFront::default()
     };
-    crate::letter::fixture::task_body_with(&front, "build it")
+    vivi_mail::letter::fixture::task_body_with(&front, "build it")
 }
 
 /// A pool that serves `P1` with the flash model at `xhigh` and `P2` with the

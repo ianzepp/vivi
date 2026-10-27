@@ -2,7 +2,7 @@
 //! writes tar streams on a stopped container: write a stream of regular files
 //! (with their parent directories), and read the regular files out of one.
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const BLOCK: usize = 512;
 

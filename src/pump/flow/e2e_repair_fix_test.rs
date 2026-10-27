@@ -3,11 +3,11 @@
 //! and ticking.
 
 use super::e2e_rig::{Rig, agent_receipt, env_receipt, push_receipt, rig};
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::repair;
 use crate::pump::jobs::{JobStatus, PoolJob};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

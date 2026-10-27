@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use semver::Version;
 
 use super::parse_version;
-use crate::VivariumError;
 use crate::cli::UninstallCommand;
+use vivi_error::VivariumError;
 
 /// Resolve the directory that holds `vivi-<version>` and the `vivi` symlink.
 ///

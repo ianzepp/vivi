@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -20,6 +19,7 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Exception kind of a step or job held Pending past its budget.
 pub const STEP_PENDING: &str = "flow-step-pending";

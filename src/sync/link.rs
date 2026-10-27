@@ -5,12 +5,12 @@
 //! `In-Reply-To` (else the last `References` id) names; it is looked up among
 //! the live rows' `Message-ID` headers, never by wire id.
 
-use crate::error::VivariumError;
-use crate::letter::plain::{CLOSE_EVENTS, CloseFront};
-use crate::letter::{Front, LetterKind, of_message};
 use crate::mailspace::EVENT_HEADER;
-use crate::message::normalize_message_id;
 use crate::storage::Storage;
+use vivi_error::VivariumError;
+use vivi_mail::letter::plain::{CLOSE_EVENTS, CloseFront};
+use vivi_mail::letter::{Front, LetterKind, of_message};
+use vivi_mail::message::normalize_message_id;
 
 /// The headers of a pulled letter that sync reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

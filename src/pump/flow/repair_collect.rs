@@ -6,11 +6,8 @@
 
 use serde_json::json;
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::envelope::correct;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::collect::{self, Collected};
 use crate::pump::flow::collect_slice::runner_env_failure;
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
@@ -19,6 +16,9 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow};
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The answer word of a repairer job that ran past its time cap.
 const OVERTIME: &str = "overtime";

@@ -9,7 +9,6 @@
 //! entry moves it to its prior name (publish the prior name, delete the old
 //! name) and cuts a fresh one. [`BranchRestarts`] does that over several ticks.
 
-use crate::error::VivariumError;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::RunRow;
 use crate::pump::flow::tick::raise_once;
@@ -17,6 +16,7 @@ use crate::pump::flow::verify::remote_tip;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
 
 /// No base yet for the row's run.
 pub const FRESH: &str = "fresh";

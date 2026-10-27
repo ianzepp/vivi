@@ -5,10 +5,10 @@
 //! reslice task and payload — at twice the failed budget, capped by the
 //! pool's budget range, and is durably marked so it never retries again.
 
-use crate::error::VivariumError;
 use crate::pump::flow::budget_retry;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobStore, PoolJob};
+use vivi_error::VivariumError;
 
 /// Answer whether the budget-killed reslice `job` raised its one retry.
 /// A job the pool evidence does not call a budget kill

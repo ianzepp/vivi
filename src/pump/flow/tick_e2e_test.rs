@@ -12,10 +12,7 @@
 use std::collections::BTreeMap;
 
 use super::tick_with;
-use crate::error::VivariumError;
-use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -27,6 +24,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::need_body;
 
 type R = Result<(), VivariumError>;
 
@@ -63,7 +62,7 @@ impl StepHandler for JobStep {
             .iter()
             .find(|node| node.id == step.node)
             .ok_or_else(|| VivariumError::Message(format!("no node {} in the flow", step.node)))?;
-        let execution = RoleKind::from_class(&node.class).ok_or_else(|| {
+        let execution = node.class.role_kind().ok_or_else(|| {
             VivariumError::Message(format!("node {} has no role kind", step.node))
         })?;
         Ok(StartAction::Job(Box::new(role_job(
@@ -134,7 +133,7 @@ fn rig_for(p: Project, need: String) -> Result<Rig, VivariumError> {
     MailWriter::open_record(
         &mut port,
         &need,
-        &crate::letter::fixture::record_body(&need, "build"),
+        &vivi_mail::letter::fixture::record_body(&need, "build"),
     )?;
     Ok(Rig {
         _project: p,

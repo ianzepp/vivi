@@ -7,8 +7,8 @@
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::error::VivariumError;
 use crate::pump::flow::index::RunRow;
+use vivi_error::VivariumError;
 
 use super::{PumpStore, db_err};
 

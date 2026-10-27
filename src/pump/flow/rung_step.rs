@@ -1,7 +1,6 @@
 //! Rung steps: start rung jobs at the need-branch tip and collect them, with
 //! one retry when the job is lost or times out.
 
-use crate::error::VivariumError;
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
 use crate::pump::flow::decide;
 use crate::pump::flow::def::{FAILED, FlowKind, NodeClass};
@@ -13,6 +12,7 @@ use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::rung_result::EnvFailure;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob, rung, rung_result};
+use vivi_error::VivariumError;
 
 /// The rung a need-rung step runs.
 const NEED_RUNG: &str = "need";

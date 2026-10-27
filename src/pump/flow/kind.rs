@@ -1,7 +1,7 @@
 //! The flow kind of a need: the record front matter kind, then marks.
 
 use super::def::FlowKind;
-use crate::letter::read::record_of;
+use vivi_mail::letter::read::record_of;
 
 /// The kind of a need's runs.
 ///
@@ -13,7 +13,7 @@ pub fn of(record_body: Option<&str>, marks: &[String]) -> FlowKind {
     if let Some(body) = record_body {
         if let Ok(envelope) = record_of("", body) {
             if let Some(kind) = envelope.front.kind {
-                return kind.flow_kind();
+                return kind.into();
             }
         }
     }

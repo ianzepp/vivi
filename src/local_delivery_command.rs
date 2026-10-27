@@ -1,10 +1,10 @@
 use std::process::Command as ProcessCommand;
 
 use serde::{Deserialize, Serialize};
-use vivi::VivariumError;
 use vivi::cli::DeliveryCommand;
-use vivi::letter::work::NeedFront;
 use vivi::mailspace::{Mailspace, SendRequest};
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::NeedFront;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeliveryNeed {
@@ -298,7 +298,7 @@ fn file_delivery(
         "branch {} at {} is merged into {}",
         delivery.branch, delivery.tip, delivery.base
     )]);
-    let body = vivi::letter::render(&front, &json).map_err(|error| {
+    let body = vivi_mail::letter::render(&front, &json).map_err(|error| {
         VivariumError::Message(format!("failed to render delivery need: {error}"))
     })?;
     let result = mailspace.send(SendRequest {
@@ -368,7 +368,7 @@ fn require_delivery(mailspace: &Mailspace, handle: &str) -> Result<(), VivariumE
         .ok_or_else(|| VivariumError::Message("delivery item has no structured body".into()))?;
     let not_delivery =
         || VivariumError::Message(format!("{handle} is not a structured delivery need"));
-    let (_, prose) = vivi::letter::split(&body).map_err(|_| not_delivery())?;
+    let (_, prose) = vivi_mail::letter::split(&body).map_err(|_| not_delivery())?;
     let delivery: DeliveryNeed = serde_json::from_str(prose).map_err(|_| not_delivery())?;
     if delivery.schema != 1 {
         return Err(VivariumError::Message(format!(

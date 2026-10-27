@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 use super::start::MergeMainStart;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -21,6 +20,7 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

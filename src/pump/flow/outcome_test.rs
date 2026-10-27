@@ -4,11 +4,11 @@
 use tempfile::{TempDir, tempdir};
 
 use super::role_job;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::host::{Ctx, test_ctx};
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 type R = Result<(), VivariumError>;
 

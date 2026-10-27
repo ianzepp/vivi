@@ -10,8 +10,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::tick_with;
-use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, sentinel_body, step_body};
 use crate::mailspace::RoleUpdate;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::guard::FOREIGN_CLOSE;
@@ -22,6 +20,8 @@ use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus,
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{record_body, sentinel_body, step_body};
 
 type R = Result<(), VivariumError>;
 

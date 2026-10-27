@@ -16,7 +16,7 @@ use super::provider::{Abandoned, OpenRequest, PoolProvider, SlotLifetime, Ticket
 use super::record::DispatchRecord;
 use super::run::dispatch_spec;
 use super::slot::PoolId;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 #[path = "target.rs"]
 pub mod target;
@@ -381,7 +381,7 @@ fn brief_for(
 /// Refuse a task body that is not a format-1 letter: an old-format task is
 /// history and is never dispatched. The error names the handle.
 fn check_task_letter(handle: &str, body: &str) -> Result<(), VivariumError> {
-    crate::letter::read::task_of(handle, body)
+    vivi_mail::letter::read::task_of(handle, body)
         .map(|_| ())
         .map_err(|err| VivariumError::Message(err.to_string()))
 }

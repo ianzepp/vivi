@@ -9,8 +9,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::VivariumError;
 use crate::registry;
+use vivi_error::VivariumError;
 
 /// One registered project as the mind sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]

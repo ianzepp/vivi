@@ -1,7 +1,6 @@
 //! Classifies each prerequisite of a release need: landed, still open (or held
 //! by an operator-only state), or closed without landing.
 
-use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepState};
@@ -9,6 +8,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// The pump record outcome of a need that landed.
 const LANDED: &str = "landed";

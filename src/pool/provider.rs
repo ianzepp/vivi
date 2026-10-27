@@ -9,7 +9,7 @@ use super::doctor::Check;
 use super::job::JobPlan;
 use super::progress::Progress;
 use super::slot::PoolId;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The proof of an exclusive claim: what a provider hands back when a claim
 /// succeeds, and takes back to deliver the job and to end the claim window.

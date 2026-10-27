@@ -6,7 +6,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 use super::{PumpStore, db_err};
 

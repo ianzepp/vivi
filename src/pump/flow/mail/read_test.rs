@@ -1,15 +1,15 @@
 //! Reader tests on a real mailspace.
 
 use super::{run_count, sentinel_count_of};
-use crate::letter::fixture::{
-    need_body_with, record_body, sentinel_body, step_body, task_body_with,
-};
-use crate::letter::work::{NeedFront, StepFront, TaskFront};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::fixture::project;
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskStatus};
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::storage::MailspaceEventInput;
+use vivi_mail::letter::fixture::{
+    need_body_with, record_body, sentinel_body, step_body, task_body_with,
+};
+use vivi_mail::letter::work::{NeedFront, StepFront, TaskFront};
 
 /// A task from `mind` to `elsewhere`; the handle `elsewhere` holds.
 fn send_task(mailspace: &Mailspace, subject: &str, body: &str) -> String {
@@ -113,12 +113,12 @@ fn need_state_marks_and_open_record_are_read() {
         .unwrap();
     let (handle, body) = port.open_record(&need).unwrap().expect("an open record");
     assert_eq!(handle, record.handle);
-    let front = crate::letter::read::record_of(&handle, &body)
+    let front = vivi_mail::letter::read::record_of(&handle, &body)
         .unwrap()
         .front;
     assert_eq!(
         front.kind,
-        Some(crate::letter::records::RecordKind::Release)
+        Some(vivi_mail::letter::records::RecordKind::Release)
     );
     let listed = port.open_record_needs().unwrap();
     assert_eq!(listed.len(), 1);

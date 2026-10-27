@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::error::VivariumError;
 use crate::mailspace::{
     DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, RoleView, TaskDumpRequest,
     TaskDumpStatus, WantState,
@@ -27,6 +26,7 @@ use crate::mailspace::{
 use crate::role_schedule::{self, ScheduleState};
 use crate::role_status::{self, ProcessState};
 use crate::storage::{Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 pub mod format;
 pub mod goals;

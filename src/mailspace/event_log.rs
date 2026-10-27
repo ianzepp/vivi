@@ -1,7 +1,7 @@
 use super::SendRequest;
 use super::delivery::DeliveredMessageId;
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEventInput, Storage, StoredMessage, StoredMessageView};
+use vivi_error::VivariumError;
 
 pub(super) fn log_send_events(
     storage: &Storage,

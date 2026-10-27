@@ -4,13 +4,13 @@
 use std::collections::BTreeSet;
 
 use crate::cli::PumpWithdrawCommand;
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, WantState, held_item, is_done};
 use crate::pump::fixture::project;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::withdraw::{WithdrawClose, run, withdraw};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn command(needs: &[&str], reason: &str) -> PumpWithdrawCommand {
     PumpWithdrawCommand {

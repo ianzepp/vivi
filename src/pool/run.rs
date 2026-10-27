@@ -11,7 +11,7 @@ use super::provider::{CreateSpec, MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
 use super::requires;
 use super::slot::{self, META_STATE, PoolId, STATE_READY, SlotStatus};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Environment names the seed needs once; they never stay on a ready slot.
 pub const ONCE_ENV: [&str; 1] = ["GH_TOKEN"];

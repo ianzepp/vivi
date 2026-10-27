@@ -30,7 +30,7 @@ use super::provider::{CreateSpec, Hold, MachineRecord};
 use super::slot::{META_CLAIMED, META_STATE, META_TASK, STATE_READY};
 use super::ssh::{one_line, relative};
 use super::ssh_state::{is_slot_id, name_of};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// What the listing's `region` column shows.
 pub const WHERE: &str = "local";

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{INTERVAL_SECS, MAIN_REF_MISSING, schedule};
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::main_rung::{
@@ -15,6 +14,7 @@ use crate::pump::flow::main_rung::{
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

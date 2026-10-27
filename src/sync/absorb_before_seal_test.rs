@@ -13,9 +13,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
-use crate::letter::fixture::body_for;
 use crate::mailspace::{AbsorbConfig, RoleUpdate, SendRequest};
 use crate::storage::BACKLOG_GRAPH_CODE;
+use vivi_mail::letter::fixture::body_for;
 
 const TRAVEL: &str = "travel";
 

@@ -17,8 +17,8 @@ use super::job::ExtraCheckout;
 use super::local_git::Repo;
 use super::plain_git::{self, RepoSource};
 use super::progress::Progress;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
+use vivi_error::VivariumError;
 
 /// Resolve the named targets into read-only checkouts, in the order given.
 /// A target that is the job's own (`primary`), names the same source as it,

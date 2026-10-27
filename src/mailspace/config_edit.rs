@@ -10,7 +10,7 @@ use std::path::Path;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value, value};
 
 use super::config_file::{edit_document, parse_document, read_raw, write_raw};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 mod guard;
 mod identity;

@@ -1,8 +1,6 @@
 //! Handler for the judge steps. The judge is the auditor role in judge mode: it
 //! reads the audit and the need rung report and rules `block` or `residual`.
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
@@ -10,6 +8,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The cap on the audit text a judge brief carries.
 const AUDIT_CAP: usize = 30_000;

@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use super::super::event_log::log_move_event;
 use super::super::{Mailspace, MoveOutcome, canonical_local_role};
 use super::sorted_identity_names;
-use crate::error::VivariumError;
-use crate::letter::plain::CloseFront;
-use crate::letter::records::MailFront;
 use crate::storage::{MailspaceEventInput, MailspaceMoveWithReply, Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::plain::CloseFront;
+use vivi_mail::letter::records::MailFront;
 
 impl Mailspace {
     /// Move a task message to a new role (e.g. `done`, `tasks`). If `note` is

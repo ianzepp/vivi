@@ -10,8 +10,8 @@ use serde::Serialize;
 
 use super::config::load;
 use super::paths::{self, ensure_private_dir};
-use crate::VivariumError;
 use crate::cli::ProxyLogCommand;
+use vivi_error::VivariumError;
 
 const MAX_BYTES: u64 = 10 * 1024 * 1024;
 const KEEP: u32 = 5;

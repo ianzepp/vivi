@@ -4,12 +4,13 @@ use crate::storage::{
 };
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout, wire_id};
 use crate::sync::link;
+use crate::sync::pull;
 use crate::sync::state::SyncState;
 use crate::sync::sync_dir;
 use crate::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Page, Record, Transport,
 };
-use crate::{VivariumError, sync::pull};
+use vivi_error::VivariumError;
 
 #[path = "pull_summary_test.rs"]
 mod summary;

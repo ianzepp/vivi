@@ -3,10 +3,10 @@
 
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
-use crate::pump::envelope::roles::RoleKind;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// A `StepBudgets` with exactly one override set.
 fn only(role: RoleKind, secs: u64) -> StepBudgets {

@@ -23,7 +23,6 @@ use std::fmt;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, PumpAction, PumpActionKind};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, route::Decide};
@@ -36,6 +35,7 @@ use crate::pump::flow::outcome::Outcome;
 use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// The exception kind raised for an answer that cannot be applied.
 pub const ANSWER_REFUSED: &str = "flow-answer-refused";

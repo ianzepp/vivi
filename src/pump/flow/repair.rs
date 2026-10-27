@@ -1,10 +1,10 @@
 //! Repair flow helpers: attempts, branch names, the repair record lines, attempt facts.
 
-use crate::error::VivariumError;
-use crate::letter::read::record_of;
-use crate::letter::records::NoteWord;
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::read::record_of;
+use vivi_mail::letter::records::NoteWord;
 
 /// The attempt (1 or 2) a repair node belongs to: `fix<N>`, `rung<N>` and
 /// `merge<N>` give N; any other node gives `None`.

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 use super::control::project_home;
 

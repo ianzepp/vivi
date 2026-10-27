@@ -1,0 +1,9 @@
+[package]
+name = "vivi-error"
+version = "22.1.0"
+edition = "2024"
+description = "The shared error type for the vivi crates"
+license = "MIT"
+
+[dependencies]
+thiserror.workspace = true

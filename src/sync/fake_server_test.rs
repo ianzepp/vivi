@@ -10,8 +10,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::b64;
-use crate::error::VivariumError;
-use crate::letter::fixture::need_body;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{StoredMessageView, is_traveling_id, sha256_hex};
 use crate::sync::link;
@@ -21,6 +19,8 @@ use crate::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Lookup, Page, Record, Transport,
 };
 use crate::sync::{MAX_LETTER_BYTES, SyncConfig, SyncSettings};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::need_body;
 
 #[derive(Debug, Clone)]
 pub struct Item {

@@ -37,9 +37,9 @@ use super::runpod::{HostContext, iso};
 use super::slot::{
     META_CLAIMED, META_MAILSPACE, META_POOL, META_SLOT, META_STATE, META_TASK, STATE_READY,
 };
-use crate::error::VivariumError;
 use crate::mcp::HttpUpstream;
 use crate::mcp::client::{Client, result_is_error, result_text};
+use vivi_error::VivariumError;
 
 /// What a dispatch remembers about its job, in `<job_id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

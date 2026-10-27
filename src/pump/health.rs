@@ -17,8 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 use super::cycle::{self, TickRecord};
 use super::report::{self, PumpRead, Snapshot};

@@ -6,13 +6,13 @@
 
 use std::rc::Rc;
 
-use crate::letter::fixture::{need_body, task_body};
 use crate::mailspace::{AbsorbConfig, Mailspace, SendRequest};
 use crate::sync::events::state;
 use crate::sync::fake_server::{
     Checkout, FakeServer, Item, LETTER_DATE, World, checkout, handle, wire_id,
 };
 use crate::sync::link;
+use vivi_mail::letter::fixture::{need_body, task_body};
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])

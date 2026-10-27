@@ -7,10 +7,10 @@ use std::process::Command;
 use tempfile::{TempDir, tempdir};
 
 use super::{LaneAdd, Step, add_with};
-use crate::VivariumError;
 use crate::project_create::{ProjectCreate, create_at};
 use crate::pump::config::targets;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 struct Site {
     _tmp: TempDir,

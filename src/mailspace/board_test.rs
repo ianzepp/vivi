@@ -17,7 +17,7 @@ fn send(mailspace: &Mailspace, role: &str, subject: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::body_for(role.trim_end_matches('s'), "body"),
+            body: vivi_mail::letter::fixture::body_for(role.trim_end_matches('s'), "body"),
             role: role.into(),
             kind: Some(role.trim_end_matches('s').into()),
             reply_to: None,
@@ -104,7 +104,7 @@ fn board_caps_wants_and_counts_hidden() {
 }
 
 fn serving_need(mailspace: &Mailspace, want: &str) -> String {
-    let mut front = crate::letter::work::NeedFront::new(vec!["done".to_string()]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec!["done".to_string()]);
     front.serves = Some(want.to_string());
     mailspace
         .send(SendRequest {
@@ -113,7 +113,7 @@ fn serving_need(mailspace: &Mailspace, want: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "serving need".into(),
-            body: crate::letter::fixture::need_body_with(&front, "prose"),
+            body: vivi_mail::letter::fixture::need_body_with(&front, "prose"),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,

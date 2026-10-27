@@ -64,11 +64,11 @@ fn setup(project: &Path) -> String {
         "--subject",
         "Edge case",
         "--body",
-        &vivi::letter::render(
-            &vivi::letter::work::TaskFront {
+        &vivi_mail::letter::render(
+            &vivi_mail::letter::work::TaskFront {
                 from: Some("main".to_string()),
                 branch: Some("factory/x".to_string()),
-                ..vivi::letter::work::TaskFront::default()
+                ..vivi_mail::letter::work::TaskFront::default()
             },
             "do it",
         )

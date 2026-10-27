@@ -6,9 +6,7 @@ use super::{
     POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
     role_job, step_replies, targets,
 };
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -16,6 +14,8 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 type R = Result<(), VivariumError>;
 

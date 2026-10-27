@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::{RemoteBindingInput, Storage, sha256_hex};
 use crate::sync::kept::KeptLocal;
@@ -18,6 +17,7 @@ use crate::sync::select::{self, Letter, Selection, Skipped};
 use crate::sync::state::SyncState;
 use crate::sync::transport::{AppendFailure, Appended, Envelope, Transport};
 use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY, sync_dir};
+use vivi_error::VivariumError;
 
 /// Handles listed per detail group before the rest is summarized.
 const LISTED: usize = 10;

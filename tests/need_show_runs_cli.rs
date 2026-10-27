@@ -60,7 +60,7 @@ fn send(p: &Path, kind: &str, subject: &str, body: &str) -> String {
 
 /// A pump run sentinel as a whole front-matter letter.
 fn sentinel_body(need: &str, run: u32) -> String {
-    vivi::letter::render(&vivi::letter::work::TaskFront::sentinel(need, run), "").unwrap()
+    vivi_mail::letter::render(&vivi_mail::letter::work::TaskFront::sentinel(need, run), "").unwrap()
 }
 
 fn board_line(board: &str, handle: &str) -> String {

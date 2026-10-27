@@ -11,8 +11,8 @@
 
 use serde_json::Value;
 
-use crate::error::VivariumError;
 use crate::pump::state::Unit;
+use vivi_error::VivariumError;
 
 /// The `extra_json` key of [`Unit::quarantine`].
 const QUARANTINE_KEY: &str = "quarantine";

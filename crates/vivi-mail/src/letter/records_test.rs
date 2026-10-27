@@ -77,14 +77,6 @@ fn record_refusals() {
 }
 
 #[test]
-fn record_kind_maps_to_flow_kind() {
-    assert_eq!(RecordKind::Build.flow_kind(), FlowKind::Build);
-    assert_eq!(RecordKind::Research.flow_kind(), FlowKind::Research);
-    assert_eq!(RecordKind::Release.flow_kind(), FlowKind::Release);
-    assert_eq!(RecordKind::Repair.flow_kind(), FlowKind::Repair);
-}
-
-#[test]
 fn action_round_trips_full_and_minimal() {
     let requeue = ActionFront {
         action: ActionWord::Requeue,

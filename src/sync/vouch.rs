@@ -9,9 +9,9 @@
 use rand_core::{OsRng, RngCore};
 use serde_json::json;
 
-use crate::error::VivariumError;
-use crate::letter::{self, FORMAT_HEADER, FORMAT_VERSION};
 use crate::sync::transport::{AppendFailure, Appended, Envelope, Transport};
+use vivi_error::VivariumError;
+use vivi_mail::letter::{self, FORMAT_HEADER, FORMAT_VERSION};
 
 /// The envelope recipient of every governance letter.
 const POSTMASTER: &str = "postmaster";

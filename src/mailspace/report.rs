@@ -18,8 +18,8 @@ use super::graph::GraphNodeView;
 use super::holding::{Holding, is_foreign_account, node_row};
 use super::item_events::{HeldItem, ItemEventKind, held_item};
 use super::step::StepException;
-use crate::error::VivariumError;
 use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 /// What a `done`/`reopen`-style move did.
 #[derive(Debug, Clone, PartialEq, Eq)]

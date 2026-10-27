@@ -4,9 +4,9 @@
 //! each writer and greps the raw bytes.
 
 use super::*;
-use crate::letter::plain::CloseFront;
-use crate::letter::records::MailFront;
 use std::collections::BTreeMap;
+use vivi_mail::letter::plain::CloseFront;
+use vivi_mail::letter::records::MailFront;
 
 /// The content headers W3-B4 moved into front matter; no writer may emit
 /// one.
@@ -37,7 +37,7 @@ fn send_work(mailspace: &Mailspace, kind: &str, subject: &str) -> (String, Strin
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::body_for(kind, "body"),
+            body: vivi_mail::letter::fixture::body_for(kind, "body"),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,

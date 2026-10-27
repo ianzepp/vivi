@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{GRACE_SECS, STEP_PENDING, register};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -21,6 +20,7 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 const NEED: &str = "n1";
 

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use super::job::{BranchAction, Checkout, Refs};
 use super::local_git::{Repo, Worktree};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Everything the decision reads about the repository.
 #[derive(Debug, Clone, Default)]

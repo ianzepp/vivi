@@ -1,9 +1,9 @@
 //! Letters a pull files wake `watch` exactly as locally delivered ones do.
 
-use crate::letter::fixture::task_body;
 use crate::mailspace::{Mailspace, MailspaceWatchRequest, SendRequest, run_watch};
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
 use crate::sync::fetch::fetch_handles;
+use vivi_mail::letter::fixture::task_body;
 
 fn request(role: &str, kinds: &str, events: &str) -> MailspaceWatchRequest {
     MailspaceWatchRequest {

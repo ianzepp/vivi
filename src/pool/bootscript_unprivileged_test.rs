@@ -196,7 +196,11 @@ fn a_job_runs_unprivileged_pushes_and_leaves_the_warm_build_in_place() {
     let plan = dispatch::plan_job(
         &config,
         "p",
-        ("task-1", "subject", &crate::letter::fixture::task_body("")),
+        (
+            "task-1",
+            "subject",
+            &vivi_mail::letter::fixture::task_body(""),
+        ),
         &DispatchFlags {
             model: source::MODEL.to_string(),
             need: None,
@@ -290,7 +294,11 @@ fn one_job_archive(config: &PoolConfig, id: &str) -> Vec<u8> {
     let plan = dispatch::plan_job(
         config,
         "p",
-        ("task-2", "subject", &crate::letter::fixture::task_body("")),
+        (
+            "task-2",
+            "subject",
+            &vivi_mail::letter::fixture::task_body(""),
+        ),
         &DispatchFlags {
             model: source::MODEL.to_string(),
             need: None,

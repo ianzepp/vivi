@@ -2,12 +2,12 @@
 
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::mailspace::config_edit;
 use crate::mailspace::inherit::ConfigOrigins;
 use crate::pump::readiness;
 use crate::routing::{Issue, MigrateInputs, Severity, plan_migrate};
+use vivi_error::VivariumError;
 
 use super::PumpConfig;
 use super::origins::origins_of;

@@ -2,9 +2,9 @@
 
 use std::fs;
 
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::mailspace::inherit::{self, ConfigOrigins};
+use vivi_error::VivariumError;
 
 pub(super) fn origins_of(mailspace: &Mailspace) -> Result<ConfigOrigins, VivariumError> {
     let path = mailspace.config_path();

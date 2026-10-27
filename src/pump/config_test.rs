@@ -1,11 +1,11 @@
 //! Tests for [`crate::pump::config`].
 
-use crate::VivariumError;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::{DispatchConfig, Kind, PumpConfig, PumpTarget, StepBudgets};
 use std::collections::BTreeMap;
 use std::path::Path;
+use vivi_error::VivariumError;
 
 /// A kind dispatching to `pool`.
 fn kind(pool: &str) -> Kind {
@@ -797,7 +797,7 @@ fn repair_attempt_seconds_fit_pool_budget_range() {
         let err = cfg
             .validate(Path::new("."), &pool_names())
             .expect_err("out-of-range repair_attempt_secs must fail");
-        assert!(matches!(err, crate::VivariumError::Config(_)), "{err}");
+        assert!(matches!(err, vivi_error::VivariumError::Config(_)), "{err}");
         assert!(
             err.to_string().contains("pump.repair_attempt_secs"),
             "{err}"

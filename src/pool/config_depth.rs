@@ -1,7 +1,7 @@
 //! The fetch depth of a pool: the `depth` setting, its default, and its range.
 
 use super::config::PoolConfig;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The Git fetch depth a pool uses when it sets no `depth`: recent history
 /// enough for a job to build and test, never the full history.

@@ -4,9 +4,7 @@
 
 use serde_json::Value;
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fanout::{VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -18,6 +16,8 @@ use crate::pump::flow::verify_inputs::{
 };
 use crate::pump::jobs::JobStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The build node this handler overrides.
 const REWORK_NODE: &str = "rework1";

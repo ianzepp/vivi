@@ -5,8 +5,8 @@
 //! read transaction pins a single WAL snapshot. The transaction only reads and
 //! is always rolled back, so it takes no write lock and never blocks the pump.
 
-use crate::error::VivariumError;
 use crate::pump::state::State;
+use vivi_error::VivariumError;
 
 use super::{PumpStore, db_err};
 

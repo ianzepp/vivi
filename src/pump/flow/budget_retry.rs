@@ -10,8 +10,8 @@
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::attempt_record;
 use crate::pump::envelope::correct;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
+use vivi_mail::letter::roles::RoleKind;
 
 /// The durable boolean payload key marking the raised-budget retry as spent;
 /// missing means false.

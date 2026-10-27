@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::config::{bad, reject_unknown};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The worker root when none is configured: the login user's home, on the
 /// internal disk (macOS will not mount a volume inside another external one).

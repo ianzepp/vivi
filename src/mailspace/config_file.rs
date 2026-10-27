@@ -15,7 +15,7 @@ use rand_core::{OsRng, RngCore};
 use toml_edit::DocumentMut;
 
 use super::MailspaceConfig;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Length of the address prefix: the first characters of the mailspace id.
 pub(crate) const PREFIX_LEN: usize = 8;

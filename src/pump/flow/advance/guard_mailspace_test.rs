@@ -9,8 +9,6 @@
 //! both tasks and the need comes back.
 
 use super::{FOREIGN_CLOSE, pass};
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
 use crate::mailspace::RoleUpdate;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
@@ -18,6 +16,8 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailspacePort, NeedStatus, TaskStatus};
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
 
 type R = Result<(), VivariumError>;
 

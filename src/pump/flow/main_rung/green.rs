@@ -7,7 +7,6 @@
 
 use serde_json::json;
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::{advance, withdraw};
 use crate::pump::flow::def::{FlowDef, FlowNode};
@@ -20,6 +19,7 @@ use crate::pump::flow::tick::{OPERATOR_HOLD, WORD_REJECTED, raise_once};
 use crate::pump::flow::verify;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// The repair flow node that waits for a green main rung.
 pub(crate) const UNREPAIRED_NODE: &str = "unrepaired";

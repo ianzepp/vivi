@@ -4,7 +4,6 @@
 use std::path::Path;
 
 use serde::Serialize;
-use vivi::VivariumError;
 use vivi::cli::{
     PoolAddCommand, PoolBandsCommand, PoolConfigSetCommand, PoolListCommand, PoolRemoveCommand,
     PoolShowCommand, PoolUnsetCommand,
@@ -14,6 +13,7 @@ use vivi::mailspace::config_edit::{self, GuardedWrite, PoolAdd};
 use vivi::pool::PoolConfig;
 use vivi::pool::config::{PoolRow, check_pool_name, list_view, show_view};
 use vivi::pool::work::open_dispatches;
+use vivi_error::VivariumError;
 
 pub(crate) fn list(command: &PoolListCommand) -> Result<(), VivariumError> {
     let rows = list_view(command.project.as_deref())?;

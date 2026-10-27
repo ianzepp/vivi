@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
 use super::{MAILSPACE_CONFIG, MAILSPACE_DIR, MailspaceConfig};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 mod merge;
 mod origins;

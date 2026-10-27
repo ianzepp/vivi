@@ -159,7 +159,7 @@ fn thread_json() -> String {
             "message_id": "message-1",
             "from": "operator@local",
             "subject": "Need",
-            "body": crate::letter::fixture::need_body(&["Build the thing"], "")
+            "body": vivi_mail::letter::fixture::need_body(&["Build the thing"], "")
         },
         {
             "handle": "reply-1",
@@ -186,7 +186,7 @@ fn need_thread_parses_a_need_show_reply() {
 #[test]
 fn a_front_matter_root_gives_one_requirement_per_done_when_entry() {
     let f = fixture();
-    let root = crate::letter::fixture::need_body(&["first thing", "second thing"], "prose");
+    let root = vivi_mail::letter::fixture::need_body(&["first thing", "second thing"], "prose");
     let messages: Vec<serde_json::Value> = vec![
         json!({"handle": NEED, "from": "operator@local", "body": root}),
         json!({"handle": "reply-1", "from": "operator@local", "body": "also keep the CLI shape"}),

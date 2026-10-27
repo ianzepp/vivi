@@ -6,7 +6,6 @@ use crate::letter::plain::CloseFront;
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::JobFront;
 use crate::letter::{LetterError, Validate, check_text, parse_letter};
-use crate::pump::flow::def::FlowKind;
 
 /// The flow a pump record asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,19 +15,6 @@ pub enum RecordKind {
     Research,
     Release,
     Repair,
-}
-
-impl RecordKind {
-    /// The flow this record kind selects.
-    #[must_use]
-    pub fn flow_kind(self) -> FlowKind {
-        match self {
-            Self::Build => FlowKind::Build,
-            Self::Research => FlowKind::Research,
-            Self::Release => FlowKind::Release,
-            Self::Repair => FlowKind::Repair,
-        }
-    }
 }
 
 /// Front matter of a pump record: the need a run serves and its flow.

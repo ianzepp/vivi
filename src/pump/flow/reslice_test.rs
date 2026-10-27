@@ -5,10 +5,8 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use super::{KIND, Mode, RESLICE_FAILED, Reslices, request, settle_error};
-use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::TickPhase;
@@ -23,6 +21,8 @@ use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::Slice;
 
 type R = Result<(), VivariumError>;
 
@@ -147,7 +147,7 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
 
     assert_eq!(sends(&rig), before + 1);
     let body = rig.mail.tasks[&task].body.clone();
-    let step = crate::letter::read::step_of(&body).expect("step");
+    let step = vivi_mail::letter::read::step_of(&body).expect("step");
     assert_eq!((step.need.as_str(), step.run), (NEED, 1));
     assert_eq!(step.node.as_deref(), Some("reslice:a-1"));
     assert!(body.contains("\n\nmode: split\nslice: "), "{body}");

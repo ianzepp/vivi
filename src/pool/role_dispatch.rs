@@ -24,9 +24,9 @@
 //! builds the worker's standing prompt: the role's charter above the pool
 //! rules, with a note on how the slot reaches the mailspace.
 
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::routing::resolve_read_only;
+use vivi_error::VivariumError;
 
 use super::bands::{self, choose, parse_band};
 use super::config::PoolConfig;

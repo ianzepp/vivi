@@ -10,8 +10,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::config::PoolConfig;
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 /// One pool as the `vivi pool list` and `vivi pool show` views render it.
 /// This struct is also the body of both commands' `--json` output.

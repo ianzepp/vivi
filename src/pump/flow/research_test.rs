@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{for_want, register};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -18,6 +17,7 @@ use crate::pump::host::{FakeHost, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -59,9 +59,9 @@ fn researcher() -> RoutedRole {
 
 /// A need body that explores `want` (when given) over `prose`.
 fn need_body(want: Option<&str>, prose: &str) -> String {
-    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![String::from("answered")]);
     front.explores = want.map(str::to_owned);
-    crate::letter::fixture::need_body_with(&front, prose)
+    vivi_mail::letter::fixture::need_body_with(&front, prose)
 }
 
 /// A rig whose need task carries `body`; `with_role` adds the researcher.
@@ -143,11 +143,11 @@ fn a_body_with_no_front_matter_is_an_error() {
 
 #[test]
 fn for_want_reads_a_front_matter_explores() -> R {
-    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec![String::from("answered")]);
     front.explores = Some(String::from("want-9"));
-    let body = crate::letter::fixture::need_body_with(&front, "Look into it.");
+    let body = vivi_mail::letter::fixture::need_body_with(&front, "Look into it.");
     assert_eq!(for_want(&body)?, Some("want-9".to_owned()));
-    let plain = crate::letter::fixture::need_body(&["answered"], "Look into it.");
+    let plain = vivi_mail::letter::fixture::need_body(&["answered"], "Look into it.");
     assert_eq!(for_want(&plain)?, None);
     Ok(())
 }

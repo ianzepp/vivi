@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use serde::Serialize;
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
 

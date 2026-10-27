@@ -9,7 +9,7 @@
 use std::process::Command;
 
 use super::config::{PoolConfig, RepoAccess};
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Where a pool's jobs fetch from and push to.
 #[derive(Debug, Clone, Copy)]

@@ -72,7 +72,7 @@ fn the_block_of_an_attempt_record_parses_field_by_field() {
 #[test]
 fn a_note_wrapped_record_parses_from_its_prose() {
     let body = crate::mailspace::pump_note::note_body(
-        crate::letter::records::NoteWord::Attempt,
+        vivi_mail::letter::records::NoteWord::Attempt,
         Some("delivered"),
         RECORD,
     )

@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::VivariumError;
 use crate::pump::host::Ctx;
+use vivi_error::VivariumError;
 
 mod brief;
 mod dispatcher;

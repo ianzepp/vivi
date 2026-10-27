@@ -3,7 +3,6 @@
 //! Node `slice` only. Node `rework1` (also class slicer) belongs to a later
 //! slice and gets no handler here.
 
-use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -11,6 +10,7 @@ use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
 
 /// The node this handler owns.
 const SLICE_NODE: &str = "slice";

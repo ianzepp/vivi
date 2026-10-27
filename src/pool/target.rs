@@ -5,8 +5,8 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::super::config::PoolConfig;
-use crate::VivariumError;
 use crate::pump::config::PumpConfig;
+use vivi_error::VivariumError;
 
 /// Repository selection delivered with one job. Cache names contain no paths.
 #[derive(Debug, Clone)]

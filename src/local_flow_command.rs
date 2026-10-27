@@ -3,12 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use vivi::VivariumError;
 use vivi::cli::FlowCommand;
 use vivi::pump::flow::def::FlowKind;
 use vivi::pump::flow::index::{RunRow, StepRow, StepState};
 use vivi::pump::flow::registry::FLOW_VERSION;
 use vivi::pump::flow::view;
+use vivi_error::VivariumError;
 
 const KINDS: [FlowKind; 4] = [
     FlowKind::Build,

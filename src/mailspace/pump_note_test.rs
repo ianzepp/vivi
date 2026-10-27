@@ -1,5 +1,5 @@
 use super::*;
-use crate::letter::fixture::task_body;
+use vivi_mail::letter::fixture::task_body;
 
 #[test]
 fn a_note_body_round_trips_through_note_of() {
@@ -58,7 +58,7 @@ fn plain_prose_and_an_empty_front_are_not_notes() {
     assert_eq!(note_of("pump-attempt: t=1 hello"), None);
     assert_eq!(note_of("just words"), None);
     assert_eq!(note_of(""), None);
-    let empty = crate::letter::render(&MailFront::default(), "words").unwrap();
+    let empty = vivi_mail::letter::render(&MailFront::default(), "words").unwrap();
     assert_eq!(note_of(&empty), None);
     assert_eq!(note_of(&task_body("a task")), None);
 }

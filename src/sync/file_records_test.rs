@@ -5,12 +5,12 @@
 use std::rc::Rc;
 
 use crate::b64;
-use crate::letter::fixture::need_body;
 use crate::mailspace::{AbsorbConfig, SendRequest};
 use crate::sync::fake_server::{Checkout, FakeServer, Item, checkout};
 use crate::sync::pull::{PullReport, file_records};
 use crate::sync::state::SyncState;
 use crate::sync::transport::Record;
+use vivi_mail::letter::fixture::need_body;
 
 fn alice() -> Checkout {
     let mut alice = checkout("alice", &["mind"]);

@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::letter::plain::CloseFront;
 use crate::mailspace::{DeliveryResult, SendRequest, folded_marks};
 use serde_json::{Value, json};
+use vivi_mail::letter::plain::CloseFront;
 
 use crate::server::mcp::tools::{
     ToolError, close_arguments, opt_str, parse_to, rate_limit, req_str, sugared_body,

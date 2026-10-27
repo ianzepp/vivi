@@ -2,8 +2,6 @@
 //! prerequisite need of the run's need has landed on main.
 
 use self::prereq::{Prereq, PrereqState, prerequisites};
-use crate::error::VivariumError;
-use crate::letter::work::StepFront;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -12,6 +10,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::StepFront;
 
 mod prereq;
 

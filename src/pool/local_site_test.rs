@@ -3,7 +3,7 @@ use std::path::Path;
 use tempfile::tempdir;
 
 use super::{LocalSite, resolve};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 #[test]
 fn relative_root_resolves_under_project() {

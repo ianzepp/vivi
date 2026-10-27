@@ -627,8 +627,8 @@ async fn done_and_reopen_move_the_item_as_the_cli_does() {
         assert!(!raw.contains("X-Vivi-Branch"), "{raw}");
         assert!(!raw.contains("X-Vivi-Commit"), "{raw}");
         let letter =
-            vivi::letter::of_message(raw.as_bytes(), "").expect("hosted event letter parses");
-        let vivi::letter::Front::Event(front) = &letter.front else {
+            vivi_mail::letter::of_message(raw.as_bytes(), "").expect("hosted event letter parses");
+        let vivi_mail::letter::Front::Event(front) = &letter.front else {
             panic!("hosted done front matter: {:?}", letter.front);
         };
         assert_eq!(

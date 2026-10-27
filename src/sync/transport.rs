@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// A letter and what travels beside it on append: the declared recipient and
 /// kind. The sender is never client input; the server takes it from the

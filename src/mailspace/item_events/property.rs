@@ -49,16 +49,16 @@ use super::{
     EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, EventTally, HeldItem, ItemEventKind, Mailspace,
     date_micros, from_domain_of, rfc3339_micros, role_move,
 };
-use crate::error::VivariumError;
-use crate::letter::plain::{CLOSE_EVENTS, CloseFront};
-use crate::letter::{Front, Letter, LetterKind, of_message};
 use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::marks::{folded_marks, mark_event};
-use crate::message::normalize_message_id;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, ItemEventWrite, MailspaceEvent, MailspaceEventInput, RoleMove, Storage,
     StoredMessageView, WorkGraphNodeRow,
 };
+use vivi_error::VivariumError;
+use vivi_mail::letter::plain::{CLOSE_EVENTS, CloseFront};
+use vivi_mail::letter::{Front, Letter, LetterKind, of_message};
+use vivi_mail::message::normalize_message_id;
 
 const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
 const EVENT_DEP_HEADER: &str = "X-Vivi-Event-Dep";

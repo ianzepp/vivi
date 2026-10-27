@@ -12,7 +12,7 @@ use super::config::{BackendKind, ProviderConfig};
 use super::forward;
 use super::health::HealthTable;
 use super::paths::ensure_private_dir;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const START_DELAY: Duration = Duration::from_millis(200);
 const BACKOFF_CAP: Duration = Duration::from_secs(60);

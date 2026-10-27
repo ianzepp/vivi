@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::boot::probe::ProbeConfig;
-use crate::error::VivariumError;
 use crate::judgment::Judgment;
 use crate::pool::PoolConfig;
 use crate::storage::Storage;
@@ -14,6 +13,7 @@ use crate::store::secure_create_dir_all;
 use crate::sync::SyncConfig;
 pub(crate) use config_file::PREFIX_LEN;
 use config_file::{ensure_id, write_config};
+use vivi_error::VivariumError;
 
 mod address;
 mod adoption;

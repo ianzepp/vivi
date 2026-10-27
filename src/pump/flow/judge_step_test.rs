@@ -4,7 +4,6 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::JudgeStart;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -14,6 +13,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 const NEED: &str = "n1";
 

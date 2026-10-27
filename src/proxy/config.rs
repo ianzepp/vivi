@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::paths::{self, expand_user_str};
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Default public listener.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:18180";

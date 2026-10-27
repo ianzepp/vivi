@@ -9,7 +9,7 @@ use super::clean_rule::{
 use super::local_proc;
 use super::local_slots::{CHECKOUT, RECLAIM_FILE, hold_reclaim, is_known, release_reclaim};
 use super::slot::STATE_READY;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// True when the slot is claimed, its boot process is still alive, or a
 /// build-tree reclaim is emptying it.

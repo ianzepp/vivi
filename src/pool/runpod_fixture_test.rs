@@ -26,7 +26,7 @@ use super::runpod::{HostContext, Link, Pace, RunpodProvider};
 use super::runpod_name::PodName;
 use super::runpod_pin::KeyScanner;
 use super::slot::{PoolId, slot_metadata};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 pub const NOW: u64 = 1_790_000_000;
 pub const HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIBo";

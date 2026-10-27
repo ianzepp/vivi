@@ -18,15 +18,15 @@ fn hold(mailspace: &Mailspace, account: &str, role: &str, kind: &str, subject: &
         domain = mailspace.address_domain(),
         format = if work { "X-Vivi-Format: 1\r\n" } else { "" },
         body = if kind == "task" {
-            crate::letter::fixture::task_body_with(
-                &crate::letter::work::TaskFront {
+            vivi_mail::letter::fixture::task_body_with(
+                &vivi_mail::letter::work::TaskFront {
                     done_when: vec![subject.into()],
                     ..Default::default()
                 },
                 "",
             )
         } else {
-            crate::letter::fixture::body_for(kind, subject)
+            vivi_mail::letter::fixture::body_for(kind, subject)
         },
     );
     let storage = mailspace.storage().unwrap();

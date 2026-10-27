@@ -8,8 +8,6 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{FANOUT_UNBOUND, STEP_OVERDUE, tick_with};
-use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::fake_mail::FakeMail;
@@ -19,6 +17,8 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{record_body, step_body};
 
 type R = Result<(), VivariumError>;
 type Reg = Registry<Jobs, FakeMail>;

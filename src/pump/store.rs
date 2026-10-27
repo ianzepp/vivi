@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 mod codec;
 mod flow_index;

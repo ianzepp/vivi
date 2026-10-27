@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use vivi::VivariumError;
 use vivi::cli::{
     PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpResetCommand, PumpRungsCommand,
     PumpServiceCommand, PumpSubcommand, PumpTargetCommand,
@@ -15,6 +14,7 @@ use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
 use vivi::pump::priority;
 use vivi::pump::reset::ResetReport;
 use vivi::pump::run as pump_run;
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), VivariumError> {
     match command {

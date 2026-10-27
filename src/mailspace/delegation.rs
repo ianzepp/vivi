@@ -5,9 +5,9 @@ use mail_parser::{HeaderValue, MessageParser};
 use super::Mailspace;
 use super::Recipient;
 use super::item_events::{EventTally, HeldItem, held_item};
-use crate::error::VivariumError;
-use crate::message::normalize_message_id;
 use crate::storage::{Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::message::normalize_message_id;
 
 const EVENT: &str = "X-Vivi-Event";
 const EVENT_OF: &str = "X-Vivi-Event-Of";

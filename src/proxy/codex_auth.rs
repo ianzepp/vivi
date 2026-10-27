@@ -9,7 +9,7 @@ use super::credentials;
 use super::dead::{self, RefreshClass};
 use super::jwt;
 use super::paths::expand_user_str;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Official Codex CLI client id (public, not a secret).
 pub const DEFAULT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";

@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use tempfile::{TempDir, tempdir};
 
 use super::{Registry, TickPhase};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -15,6 +14,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::JobStore;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 type Reg = Registry<(), FakeMail>;
 

@@ -2,8 +2,6 @@
 //! outcome edge out of the rung and merge steps of attempts 1 and 2 in
 //! `flows/repair.mmd`, each driven only by finishing the pool job and ticking.
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::e2e_rig::{Rig, agent_receipt, env_receipt, push_receipt, rig};
 use crate::pump::flow::index::StepState;
@@ -12,6 +10,8 @@ use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::flow::tick::OPERATOR_HOLD;
 use crate::pump::jobs::JobStatus;
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
 
 type R = Result<(), VivariumError>;
 

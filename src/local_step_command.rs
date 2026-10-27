@@ -1,6 +1,6 @@
-use vivi::VivariumError;
 use vivi::judgment::{JudgmentProvider, TypesafeProvider};
 use vivi::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_step_command(
     apply: Option<&str>,

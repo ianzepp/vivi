@@ -8,13 +8,13 @@
 //! adds the attempt-2 land edges and re-drives the failures into `fix2` and
 //! `unrepaired` with the alarm count asserted.
 
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::e2e_rig::{Rig, agent_receipt, push_receipt, rig};
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::jobs::{JobStatus, PoolJob};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

@@ -14,7 +14,6 @@
 //! `rework` is refused once, and a `plan` ruling restarts the need.
 
 use super::e2e_rig::{Rig, agent_receipt, rig};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::answer::ANSWER_REFUSED;
 use crate::pump::flow::fanout::SLICES_INVALID;
@@ -26,6 +25,7 @@ use crate::pump::flow::step_error::{STEP_ERROR_HELD, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::{OPERATOR_HOLD, RUN_ERROR, WORD_REJECTED};
 use crate::pump::jobs::JobStatus;
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

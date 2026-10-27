@@ -4,8 +4,6 @@
 //! from pump.db), newest reply first, so a later correction wins. The need
 //! branch tip at the start is recorded once per fanout for the CTO brief.
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::{Slice, SlicerAnswer};
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fanout::{SLICES_INVALID, check_batch, parse_reply};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -14,6 +12,8 @@ use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{Slice, SlicerAnswer};
 
 /// Starts a fanout step from the slicer's reply.
 struct FanoutStart;

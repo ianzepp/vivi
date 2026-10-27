@@ -7,7 +7,7 @@ use std::path::Path;
 use toml_edit::{DocumentMut, Item, Key, Table, TableLike, Value};
 
 use super::{GuardedWrite, guarded};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// What `set_key` stored.
 #[derive(Debug, Clone, PartialEq, Eq)]

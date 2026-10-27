@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use vivi::VivariumError;
 use vivi::boot::BootReport;
 use vivi::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 pub(crate) fn handle_boot_command(project: Option<&Path>, json: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;

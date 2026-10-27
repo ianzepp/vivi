@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::config;
 #[cfg(target_os = "macos")]
 use super::paths;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// launchd label.
 pub const LAUNCHD_LABEL: &str = "com.vivi.proxy";

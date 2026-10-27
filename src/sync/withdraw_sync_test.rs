@@ -5,13 +5,13 @@
 use std::fs;
 
 use crate::cli::PumpWithdrawCommand;
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{SendRequest, WantState, held_item, is_done};
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::withdraw::run;
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn send(from: &Checkout, to: &str, kind: &str, body: String) -> String {
     from.mailspace

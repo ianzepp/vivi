@@ -7,10 +7,6 @@
 
 use std::collections::BTreeSet;
 
-use crate::error::VivariumError;
-use crate::letter::read::step_of;
-use crate::letter::render;
-use crate::letter::work::TaskFront;
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter};
@@ -18,6 +14,10 @@ use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use vivi_error::VivariumError;
+use vivi_mail::letter::read::step_of;
+use vivi_mail::letter::render;
+use vivi_mail::letter::work::TaskFront;
 
 /// One finished input of a code decision (a join or a raise check).
 #[derive(Debug, Clone, PartialEq, Eq)]

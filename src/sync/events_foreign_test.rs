@@ -3,9 +3,9 @@
 //! re-applies a stale foreign row.
 
 use super::events::{put_event, role_of, state};
-use crate::letter::fixture::need_body;
 use crate::mailspace::is_foreign_account;
 use crate::sync::fake_server::{Checkout, LETTER_DATE, World, checkout, handle, wire_id};
+use vivi_mail::letter::fixture::need_body;
 
 // A third mailspace: the work lands there, and bob only witnesses it.
 fn carol() -> Checkout {

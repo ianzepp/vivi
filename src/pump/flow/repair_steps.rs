@@ -5,8 +5,6 @@
 
 use serde_json::Value;
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -16,6 +14,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::repair::{self, AttemptFacts};
 use crate::pump::flow::rung_step::{self, RungCollector};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob, merge_main, rung_result};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
 
 mod merge;
 

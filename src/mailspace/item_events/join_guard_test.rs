@@ -31,7 +31,7 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str) -> St
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: subject.into(),
-            body: crate::letter::fixture::body_for(kind, ""),
+            body: vivi_mail::letter::fixture::body_for(kind, ""),
             role: role.into(),
             kind: Some(kind.into()),
             reply_to: None,

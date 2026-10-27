@@ -30,7 +30,7 @@ use super::runpod_pin;
 use super::runpod_pod::{self as pod_api, GpuType, Pod};
 use super::slot::{META_SLOT, META_STATE, PoolId, STATE_READY};
 use super::ssh::SshProvider;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// How long to wait for a created pod to show its SSH address.
 const ENDPOINT_WAIT: Duration = Duration::from_secs(90);

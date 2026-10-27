@@ -2693,8 +2693,8 @@ fn task_from_records_source_provenance_and_want_list_has_no_task_column() {
         "--subject",
         "task: tidy the seam",
         "--body",
-        &vivi::letter::render(
-            &vivi::letter::work::TaskFront {
+        &vivi_mail::letter::render(
+            &vivi_mail::letter::work::TaskFront {
                 done_when: vec!["the seam is tidy".into()],
                 ..Default::default()
             },

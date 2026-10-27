@@ -22,7 +22,7 @@ use super::oauth;
 use super::paths::expand_user_str;
 use super::route::Action;
 use super::usage::Usage;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const DEFAULT_UPSTREAM: &str = "https://api.kimi.com/coding/v1";
 const DEFAULT_TOKEN_URL: &str = "https://auth.kimi.com/api/oauth/token";

@@ -26,13 +26,13 @@ use super::Mailspace;
 use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep, resolve_dep_message};
 use super::graph::GraphNodeView;
 use super::holding::is_foreign_account;
-use crate::error::VivariumError;
-use crate::letter::Front;
-use crate::message::normalize_message_id;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, Storage, StoredMessage,
     WorkGraphEdgeInput, WorkGraphEdgeRow, WorkGraphNodeRow,
 };
+use vivi_error::VivariumError;
+use vivi_mail::letter::Front;
+use vivi_mail::message::normalize_message_id;
 
 /// A letter written to the store: `(message id, content id)`.
 pub type ArrivedLetter = (String, String);
@@ -65,7 +65,7 @@ pub(super) struct MissingEdge {
 /// without duplicates. A format-1 work letter names them in its front matter;
 /// an old-format letter or one with invalid front matter names none.
 pub(crate) fn depends_on_refs(bytes: &[u8]) -> Vec<String> {
-    let listed: Vec<String> = match crate::letter::of_message(bytes, "") {
+    let listed: Vec<String> = match vivi_mail::letter::of_message(bytes, "") {
         Ok(letter) => match letter.front {
             Front::Need(front) => front.depends_on,
             Front::Want(front) => front.depends_on,
@@ -88,7 +88,7 @@ pub(crate) fn depends_on_refs(bytes: &[u8]) -> Vec<String> {
 /// source a `task from` was lowered from. `None` when the letter names none
 /// (plain mail, an event letter, an old-format letter).
 pub(crate) fn parent_ref(bytes: &[u8]) -> Option<String> {
-    match crate::letter::of_message(bytes, "") {
+    match vivi_mail::letter::of_message(bytes, "") {
         Ok(letter) => match letter.front {
             Front::Task(front) => front.parent.as_deref().and_then(normalize_message_id),
             _ => None,
@@ -195,7 +195,7 @@ impl Mailspace {
     ) -> Result<(), VivariumError> {
         let handle = self.storage()?.display_handle(message_id)?;
         self.backlog_attach(kind, &handle, subject, &[])?;
-        if let Ok(parsed) = crate::letter::of_message(letter, "") {
+        if let Ok(parsed) = vivi_mail::letter::of_message(letter, "") {
             let storage = self.storage()?;
             super::serves::index_front(&storage, message_id, &parsed)?;
             drop(storage);

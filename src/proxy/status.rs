@@ -8,7 +8,7 @@ use super::install::LAUNCHD_LABEL;
 #[cfg(target_os = "linux")]
 use super::install::{self, SYSTEMD_UNIT};
 use super::paths;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Print service-manager status and a short listener summary.
 ///

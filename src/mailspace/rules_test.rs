@@ -1,6 +1,6 @@
 use super::{rule_front, rule_scope, state_name, successor_note};
-use crate::letter::plain::{RuleFront, RuleScope};
 use crate::storage::MailspaceEvent;
+use vivi_mail::letter::plain::{RuleFront, RuleScope};
 
 fn event(event_type: &str, note: Option<&str>) -> MailspaceEvent {
     MailspaceEvent {
@@ -37,7 +37,7 @@ fn state_prefers_superseded_then_retired_then_absorbed() {
 
 /// A stored format-1 rule letter around the prose a [`RuleFront`] renders to.
 fn rule_letter(front: &RuleFront) -> Vec<u8> {
-    let prose = crate::letter::plain::render(front, "body").unwrap();
+    let prose = vivi_mail::letter::plain::render(front, "body").unwrap();
     format!(
         "Subject: one\r\nX-Vivi-Kind: rule\r\nX-Vivi-Format: 1\r\n\
          Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\n{prose}"

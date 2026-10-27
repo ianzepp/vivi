@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use super::{MailReader, MailspacePort, TaskStatus};
-use crate::error::VivariumError;
 use crate::mailspace::PumpState;
+use vivi_error::VivariumError;
 
 impl MailspacePort {
     /// Close the task `handle` with `verdict`. A merge also records the

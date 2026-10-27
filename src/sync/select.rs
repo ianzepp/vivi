@@ -11,14 +11,14 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::error::VivariumError;
 use crate::mailspace::effective_kind;
-use crate::message::normalize_message_id;
 use crate::storage::{Storage, StoredMessageView, is_traveling_id};
 use crate::sync::filer::forged_from;
 use crate::sync::kept::KeptLocal;
 use crate::sync::link::{self, LetterHeaders};
 use crate::sync::{MAX_LETTER_BYTES, PROVIDER, SendFilter, SyncSettings};
+use vivi_error::VivariumError;
+use vivi_mail::message::normalize_message_id;
 
 /// One letter to send.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,7 +18,7 @@ use super::config_bands::PoolBands;
 use super::config_bridge::PoolBridge;
 use super::runpod_config::PoolRunpod;
 use super::slot::{DOCTOR_SUFFIX, PoolId};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 #[path = "config_workspace.rs"]
 pub mod config_workspace;

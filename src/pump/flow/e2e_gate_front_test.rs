@@ -13,11 +13,11 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use super::e2e_rig::{Rig, agent_receipt, rig};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::jobs::JobStatus;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 

@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::kind::effective_kind;
-use crate::error::VivariumError;
 use crate::storage::{MailspaceLink, Storage, StoredMessageView};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MailspaceThreadMessage {

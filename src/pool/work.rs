@@ -17,8 +17,8 @@ use super::provider::PoolProvider;
 use super::record::{self, DispatchRecord, OpenDispatch};
 use super::run;
 use super::slot::{PoolId, SlotStatus};
-use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 /// Seconds since the Unix epoch.
 #[must_use]

@@ -9,12 +9,12 @@
 
 use std::rc::Rc;
 
-use crate::letter::fixture::{record_body, sentinel_body, step_body};
 use crate::mailspace::{Mailspace, RoleUpdate};
 use crate::pump::flow::mail::MailspacePort;
 use crate::storage::BACKLOG_GRAPH_CODE;
 use crate::sync::fake_server::{Checkout, FakeServer, Item, checkout};
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::{record_body, sentinel_body, step_body};
 
 /// The hub holds the pump identity `operator`, an operator-kind role (the
 /// shipped pump setup), so it may close for everyone.

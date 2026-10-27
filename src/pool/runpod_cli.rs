@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use super::docker_cli::{RunOutput, Runner, finish};
 use super::runpod_config::PoolRunpod;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 pub const BIN: &str = "runpodctl";
 

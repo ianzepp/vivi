@@ -37,7 +37,7 @@
 //! own budgets. A budget kill gets one retry at a raised budget before the
 //! step counts as failed."
 
-use crate::pump::envelope::roles::RoleKind;
+use vivi_mail::letter::roles::RoleKind;
 
 use super::DispatchConfig;
 

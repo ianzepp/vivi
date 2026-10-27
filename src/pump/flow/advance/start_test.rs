@@ -3,9 +3,6 @@
 use std::fs;
 
 use super::{SENTINEL_NODE, start};
-use crate::letter::fixture::record_body;
-use crate::letter::read::step_of;
-use crate::letter::work::StepFront;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::index::StepState;
@@ -13,6 +10,9 @@ use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::Ctx;
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_mail::letter::fixture::record_body;
+use vivi_mail::letter::read::step_of;
+use vivi_mail::letter::work::StepFront;
 
 const NEED: &str = "need1";
 

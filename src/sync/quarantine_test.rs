@@ -8,10 +8,10 @@
 use std::rc::Rc;
 
 use super::*;
-use crate::letter::fixture::need_body;
 use crate::storage::{MessageIngestRequest, sha256_hex};
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
 use crate::sync::pull::{self, PullPlan};
+use vivi_mail::letter::fixture::need_body;
 
 fn pair() -> (Rc<FakeServer>, Checkout, Checkout) {
     let server = FakeServer::new();

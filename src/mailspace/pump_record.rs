@@ -21,9 +21,9 @@ use super::backlog::canonical_content_handle;
 use super::event_log::log_move_event;
 use super::thread::MailspaceThreadMessage;
 use super::{Mailspace, SendRequest};
-use crate::error::VivariumError;
-use crate::letter::records::{RecordFront, record_letter};
 use crate::storage::{MailspaceEvent, Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::{RecordFront, record_letter};
 
 /// Where a pump record stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -111,7 +111,7 @@ impl Mailspace {
         let (need_handle, need_subject) = self.resolve_need(storage, need)?;
         let need_id = storage.resolve_message_token(&need_handle)?;
         let need_body = crate::extract::extract_text(&storage.read_message(&need_id)?)?;
-        crate::letter::read::need_of(&need_handle, &need_body)
+        vivi_mail::letter::read::need_of(&need_handle, &need_body)
             .map_err(|error| VivariumError::Message(format!("need {need_handle}: {error}")))?;
         if let Some(open) = self.open_record_of(storage, &need_handle)? {
             return Err(VivariumError::Message(format!(
@@ -138,7 +138,7 @@ impl Mailspace {
             }
         }
         front.need.clone_from(&need_handle);
-        let letter = crate::letter::render(&front, &prose)
+        let letter = vivi_mail::letter::render(&front, &prose)
             .map_err(|error| VivariumError::Message(error.to_string()))?;
         self.check_actionable(storage, &front, &letter)?;
         let result = self.send(SendRequest {
@@ -431,7 +431,7 @@ impl Mailspace {
         let events = storage.list_mailspace_events(&row.message_id)?;
         let handle = storage.display_handle(&row.message_id)?;
         let body = crate::extract::extract_text(&data)?;
-        let (need, letter_error) = match crate::letter::read::record_of(&handle, &body) {
+        let (need, letter_error) = match vivi_mail::letter::read::record_of(&handle, &body) {
             Ok(envelope) => (envelope.front.need, None),
             Err(error) => (String::new(), Some(error.to_string())),
         };

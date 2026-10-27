@@ -7,9 +7,9 @@ use std::process::Command;
 use tempfile::{TempDir, tempdir};
 
 use super::{ProjectCreate, Step, check_name, create_at, execute, lane_url};
-use crate::VivariumError;
 use crate::pump::config::targets;
 use crate::registry;
+use vivi_error::VivariumError;
 
 const PREFIX: &str = "git@hub.example.ts.net:";
 

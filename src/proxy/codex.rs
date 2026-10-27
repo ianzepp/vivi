@@ -17,7 +17,7 @@ use super::http_error;
 use super::route::Action;
 use super::sse::{self, Event};
 use super::usage::Usage;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const DEFAULT_UPSTREAM: &str = "https://chatgpt.com/backend-api/codex/responses";
 

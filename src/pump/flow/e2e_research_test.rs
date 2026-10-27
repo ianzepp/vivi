@@ -4,9 +4,6 @@
 
 use std::sync::Arc;
 
-use crate::error::VivariumError;
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::fixture::project;
@@ -17,6 +14,9 @@ use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus}
 use crate::pump::jobs::JobStatus;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 type R = Result<(), VivariumError>;
 
@@ -75,7 +75,7 @@ fn research_rig() -> Result<(Rig, String), VivariumError> {
     MailWriter::open_record(
         &mut port,
         &need,
-        &crate::letter::fixture::record_body(&need, "research"),
+        &vivi_mail::letter::fixture::record_body(&need, "research"),
     )?;
     start(&ctx, &store, &mut port, &need, Some("research"))?;
     let registry = shipped::<Jobs, MailspacePort>(&ctx);
@@ -123,7 +123,7 @@ fn research_replies(rig: &Rig, want: &str) -> Result<Vec<String>, VivariumError>
         .thread(want, false, 50, 8)?
         .into_iter()
         .map(|message| message.body)
-        .filter(|body| crate::letter::prose_of(body).starts_with("pump: research"))
+        .filter(|body| vivi_mail::letter::prose_of(body).starts_with("pump: research"))
         .collect())
 }
 

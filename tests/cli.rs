@@ -8,7 +8,7 @@ use vivi::cli::{
     SkillsCommand, TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand,
     WantSendCommand,
 };
-use vivi::letter::sugar::Sugar;
+use vivi_mail::letter::sugar::Sugar;
 
 #[test]
 fn parses_mailspace_identity_add() {

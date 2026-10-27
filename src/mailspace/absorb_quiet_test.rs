@@ -3,8 +3,8 @@
 //! `done` and its newest held event is at least the quiet period old
 //! (`[absorb]` `quiet_hours`, 24 hours by default, `0` off).
 
-use crate::letter::work::TaskFront;
 use crate::mailspace::{AbsorbConfig, Mailspace, SendRequest};
+use vivi_mail::letter::work::TaskFront;
 
 /// A mailspace whose `ceo` authors work handed to its `cto`.
 fn work_mailspace() -> (tempfile::TempDir, Mailspace) {
@@ -24,7 +24,7 @@ fn send_task(mailspace: &Mailspace) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "quiet".into(),
-            body: crate::letter::fixture::task_body_with(
+            body: vivi_mail::letter::fixture::task_body_with(
                 &TaskFront {
                     done_when: vec!["it works".into()],
                     ..TaskFront::default()

@@ -1,6 +1,6 @@
 //! JSON and numeric codecs shared by the pump store and its table modules.
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 pub(in crate::pump) fn json<T: serde::Serialize>(value: &T) -> Result<String, VivariumError> {
     serde_json::to_string(value).map_err(|err| VivariumError::Message(err.to_string()))

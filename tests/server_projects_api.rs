@@ -586,10 +586,10 @@ async fn idempotency_matrix() {
 
 /// Push `raw` and require `422 letter_format` whose message is the parser's.
 async fn assert_letter_format(fx: &Fixture, id: &str, raw: &[u8]) -> Value {
-    let expected = vivi::letter::of_message(raw, "")
+    let expected = vivi_mail::letter::of_message(raw, "")
         .expect_err("a refused letter is not one the parser accepts");
     assert!(
-        !matches!(expected, vivi::letter::LetterError::Legacy { .. }),
+        !matches!(expected, vivi_mail::letter::LetterError::Legacy { .. }),
         "legacy must not be refused: {expected}"
     );
     let (status, value) = fx.append(id, raw, None, Some("need")).await;
@@ -657,7 +657,7 @@ async fn a_format_one_letter_that_parses_is_accepted() {
         FORMAT_ONE_NEED,
         "+++\ndone_when = [\"it works\"]\n+++\n\nBuild the thing.\n",
     );
-    assert!(vivi::letter::of_message(&raw, "").is_ok());
+    assert!(vivi_mail::letter::of_message(&raw, "").is_ok());
     let (status, created) = fx.append(&id, &raw, None, Some("need")).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let items = read(&fx.app, &fx.project, &fx.token, 0).await;
@@ -691,8 +691,8 @@ async fn a_legacy_letter_without_a_format_header_is_refused() {
             .any(|w| w == b"X-Vivi-Format")
     );
     assert!(matches!(
-        vivi::letter::of_message(&raw, "").unwrap_err(),
-        vivi::letter::LetterError::Legacy { .. }
+        vivi_mail::letter::of_message(&raw, "").unwrap_err(),
+        vivi_mail::letter::LetterError::Legacy { .. }
     ));
 
     let (status, refused) = fx.append(&id, &raw, None, Some("need")).await;

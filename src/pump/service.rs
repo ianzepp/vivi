@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-use crate::VivariumError;
 use crate::registry::{self, Flags};
+use vivi_error::VivariumError;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const RESTART_DELAY: Duration = Duration::from_secs(15);

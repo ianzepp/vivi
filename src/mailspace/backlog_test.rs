@@ -1,7 +1,7 @@
 use super::*;
-use crate::letter::fixture::{body_with_deps, need_body};
 use crate::mailspace::{GraphNodeView, SendRequest};
 use crate::storage::Storage;
+use vivi_mail::letter::fixture::{body_with_deps, need_body};
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -325,8 +325,8 @@ fn joined_need_uses_common_unit_branch_and_latest_unit_commit() {
     let bytes = storage.read_message(&event.message_id).unwrap();
     let letter = String::from_utf8_lossy(&bytes);
     assert!(letter.contains("X-Vivi-Format: 1"), "{letter}");
-    let parsed = crate::letter::of_message(&bytes, &state.event).unwrap();
-    let crate::letter::Front::Event(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(&bytes, &state.event).unwrap();
+    let vivi_mail::letter::Front::Event(front) = parsed.front else {
         panic!("not a close front: {letter}");
     };
     assert_eq!(front.branch.as_deref(), Some("mind/review"));

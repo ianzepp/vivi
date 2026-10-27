@@ -11,8 +11,8 @@ use std::fs;
 use std::path::Path;
 
 use super::git;
-use crate::VivariumError;
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, inherit};
+use vivi_error::VivariumError;
 
 /// Author and committer of the initial commit when the project's `[pump]`
 /// names no committer.

@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::error::VivariumError;
 use crate::pump::flow::index::StepState;
 use crate::pump::flow::tick::{OPERATOR_HOLD, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Consecutive failing ticks after which a unit is held.
 pub(crate) const STEP_ERROR_LIMIT: u32 = 3;

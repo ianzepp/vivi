@@ -5,10 +5,10 @@ use std::fs;
 use tempfile::tempdir;
 
 use super::{AttemptResult, HAND_REPORTED_FAILURE, classify};
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::test_ctx;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
+use vivi_error::VivariumError;
 
 fn receipt(message: &str) -> String {
     format!(

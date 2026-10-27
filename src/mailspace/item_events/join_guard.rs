@@ -5,8 +5,8 @@
 
 use super::parse_property_event;
 use super::property::PropertyKind;
-use crate::error::VivariumError;
 use crate::storage::Storage;
+use vivi_error::VivariumError;
 
 /// True when a `bound` letter held as a reply to the need `need_source` names a
 /// unit that has never been seen on this member: no message row at all. A unit

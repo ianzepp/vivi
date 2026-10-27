@@ -4,7 +4,7 @@ use toml::{Table, Value};
 
 use super::origins::{ConfigOrigins, Tracker};
 use super::{Layer, is_inherited_key};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Merge `layers` (farthest base first, the project last) into one table.
 pub(super) fn merge_layers(

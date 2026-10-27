@@ -1,11 +1,8 @@
 //! Handler for the cto steps. N5 starts the CTO job with the run history and the
 //! block-ship context; the CTO word is mapped to a flow word elsewhere.
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::Note;
 use crate::mailspace::shipped::HEAD_CTO_ROLE;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fanout::is_slice_row;
@@ -19,6 +16,9 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::RoleKind;
 
 /// Classes whose stored reply the CTO reads as a key reply.
 const KEY_CLASSES: [&str; 4] = ["admitter", "auditor", "judge", "cto"];

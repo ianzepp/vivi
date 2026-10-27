@@ -9,9 +9,9 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout, wire_id};
-use crate::letter::fixture::body_with_deps;
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::body_with_deps;
 
 /// A member whose `mind` seat is of kind `mind`, so its dependency letters
 /// count for every member.

@@ -8,7 +8,7 @@ use semver::Version;
 use sha2::{Digest, Sha256};
 
 use super::release;
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Read a release asset from an HTTP(S) URL or a local path.
 pub(crate) fn fetch_location(location: &str) -> Result<Vec<u8>, VivariumError> {

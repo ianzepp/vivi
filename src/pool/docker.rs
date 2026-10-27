@@ -36,7 +36,7 @@ use super::docker_tar as tar;
 use super::doctor::Check;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
 use super::slot::{self, META_ARCH, META_CLAIMED, META_MAILSPACE, META_POOL, META_TASK};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Seconds a stopping container gets before the daemon kills it.
 const STOP_GRACE_SECS: &str = "10";

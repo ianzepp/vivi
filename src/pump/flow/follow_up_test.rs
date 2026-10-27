@@ -5,10 +5,8 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use super::FollowUpRework;
-use crate::error::VivariumError;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::{FollowUp, Hand, HandAnswer};
 use crate::pump::flow::collect_slice::BuiltHook;
 use crate::pump::flow::collect_step::RunCx;
 use crate::pump::flow::def::FlowKind;
@@ -22,6 +20,8 @@ use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::flow_links::SliceLink;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{FollowUp, Hand, HandAnswer};
 
 type R = Result<(), VivariumError>;
 

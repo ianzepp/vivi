@@ -14,7 +14,7 @@ use super::doctor::Check;
 use super::fly_api::FlyApi;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
 use super::slot::{self, META_CLAIMED, META_TASK};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Pool provider backed by the `fly` binary for list, create and destroy, and
 /// by the Machines API ([`FlyApi`]) for everything that acts on one machine.

@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 
 use chrono::DateTime;
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::start::{resume, start};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -27,6 +26,7 @@ use crate::pump::flow::tick::{FLOW_INVALID, raise_once};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Exception kind: a run stayed `starting` too long.
 pub const START_STUCK: &str = "flow-run-start-stuck";

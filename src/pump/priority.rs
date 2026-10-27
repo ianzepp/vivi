@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 use super::control::project_home;
 use super::host::Ctx;

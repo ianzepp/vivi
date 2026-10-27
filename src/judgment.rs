@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Judgment provider settings (the `[judgment]` table in `mailspace.toml`).
 ///

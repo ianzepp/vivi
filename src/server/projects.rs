@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
-use crate::letter::{LetterError, of_message};
 use crate::mailspace::Mailspace;
 use crate::storage::{IngestOutcome, MessageIngestRequest, Storage, is_traveling_id};
 use chrono::{DateTime, SecondsFormat, Timelike, Utc};
@@ -27,6 +26,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use vivi_mail::letter::{LetterError, of_message};
 
 use crate::server::admissions::{AdmissionError, AdmissionRegistry};
 use crate::server::crypto::harden_tree;

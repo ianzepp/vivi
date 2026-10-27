@@ -3,9 +3,9 @@
 //! branch is created on the target's remote, from the remote's default
 //! branch, the first time the pump finds it missing.
 
-use crate::VivariumError;
 use crate::pump::flow::verify::remote_tip;
 use crate::pump::host::{Ctx, shell_quote};
+use vivi_error::VivariumError;
 
 const GIT_SECS: u64 = 120;
 const QUERY_SECS: u64 = 30;

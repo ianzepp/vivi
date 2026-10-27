@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 
 use super::slots;
 use super::{LocalProvider, available_memory, pool_job_volume, remove_mount_worktree};
-use crate::error::VivariumError;
 use crate::pool::apfs;
 use crate::pool::ramdisk::{self, Disk, Runner};
+use vivi_error::VivariumError;
 
 /// The slot-root file that records a job's APFS volume.
 pub(super) const MARKER: &str = apfs::SLOT_MARKER;

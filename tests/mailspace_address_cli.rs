@@ -85,17 +85,19 @@ fn processes_opening_a_fresh_mailspace_together_agree_on_one_id() {
 
 /// A format-1 work letter body of `kind`, with its required front matter.
 fn work_body(kind: &str) -> String {
-    use vivi::letter::work::{NeedFront, TaskFront, WantFront};
+    use vivi_mail::letter::work::{NeedFront, TaskFront, WantFront};
     let rendered = match kind {
-        "need" => vivi::letter::render(&NeedFront::new(vec!["it is done".to_string()]), "body"),
-        "want" => vivi::letter::render(
+        "need" => {
+            vivi_mail::letter::render(&NeedFront::new(vec!["it is done".to_string()]), "body")
+        }
+        "want" => vivi_mail::letter::render(
             &WantFront {
                 question: "is it done".to_string(),
                 depends_on: Vec::new(),
             },
             "body",
         ),
-        _ => vivi::letter::render(&TaskFront::default(), "body"),
+        _ => vivi_mail::letter::render(&TaskFront::default(), "body"),
     };
     rendered.unwrap().replace('\n', "\r\n")
 }

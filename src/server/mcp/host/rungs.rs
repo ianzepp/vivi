@@ -4,12 +4,12 @@
 
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::mailspace::{Mailspace, config_edit};
 use crate::project_create::{MissingItem, ProjectCreated, Readiness};
 use crate::pump::config::{RUNG_NAMES, RungsConfig};
 use crate::pump::readiness;
 use serde_json::Value;
+use vivi_error::VivariumError;
 
 use crate::server::mcp::tools::ToolError;
 

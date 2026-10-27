@@ -167,12 +167,15 @@ fn supersede_replaces_the_active_rule() {
             "rule fact stayed a header: {bytes}"
         );
     }
-    let parsed = vivi::letter::of_message(bytes.as_bytes(), new_id).unwrap();
-    assert_eq!(parsed.kind, vivi::letter::LetterKind::Rule);
-    let vivi::letter::Front::Rule(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(bytes.as_bytes(), new_id).unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Rule);
+    let vivi_mail::letter::Front::Rule(front) = parsed.front else {
         panic!("not a rule letter: {bytes}")
     };
-    assert_eq!(front.scope, Some(vivi::letter::plain::RuleScope::Local));
+    assert_eq!(
+        front.scope,
+        Some(vivi_mail::letter::plain::RuleScope::Local)
+    );
     assert_eq!(front.supersedes.as_deref(), Some(old_id));
 
     let again = vivi([

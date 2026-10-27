@@ -8,22 +8,38 @@ autobins = false
 
 # This package is its own workspace root, so a worktree checked out under
 # `worktrees/` builds on its own instead of being adopted by the checkout above it.
+# The member crates live under `crates/`.
 [workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+mail-builder = "0.3"
+mail-parser = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+vivi-error = { path = "crates/vivi-error" }
+vivi-mail = { path = "crates/vivi-mail" }
 
 [[bin]]
 name = "vivi"
 path = "src/main.rs"
 
 [dependencies]
-chrono = { version = "0.4", features = ["serde"] }
+vivi-error.workspace = true
+vivi-mail.workspace = true
+chrono.workspace = true
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "6"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 hex = "0.4"
-lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
-mail-builder = "0.3"
-mail-parser = "0.9"
+lettre.workspace = true
+mail-builder.workspace = true
+mail-parser.workspace = true
 regex = "1.12"
 rand_core = { version = "0.6", features = ["getrandom"] }
 ratatui = "0.29"
@@ -33,18 +49,18 @@ bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-stream = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.10"
 semver = "1"
 flate2 = "1"
 tar = "0.4"
 sysinfo = "0.32"
 tempfile = "3"
-thiserror = "2"
+thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-toml = "0.8"
+toml.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml_edit = "0.22"
 # vivi server (formerly the vivi-server crate)
@@ -58,6 +74,7 @@ tower-http = { version = "0.6", default-features = false, features = ["compressi
 libc = "0.2"
 
 [dev-dependencies]
+vivi-mail = { workspace = true, features = ["test-support"] }
 tower = { version = "0.5", features = ["util"] }
 
 [profile.release]

@@ -4,8 +4,8 @@
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use super::{pools_mut, table_at};
-use crate::error::VivariumError;
 use crate::pool::config::check_pool_name;
+use vivi_error::VivariumError;
 
 /// Keys written by `vivi pool add`. Only fields the user set.
 #[derive(Debug, Clone)]

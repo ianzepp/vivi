@@ -7,11 +7,11 @@
 use std::rc::Rc;
 
 use super::{alice, bob};
-use crate::letter::fixture::need_body;
 use crate::mailspace::{RoleUpdate, is_foreign_account};
 use crate::sync::fake_server::{
     Checkout, FakeServer, LETTER_DATE, World, checkout, handle, wire_id,
 };
+use vivi_mail::letter::fixture::need_body;
 
 const TRAVEL: &str = "travel";
 

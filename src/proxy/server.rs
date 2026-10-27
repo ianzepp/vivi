@@ -21,7 +21,7 @@ use super::native;
 use super::route::{self, Action, Route};
 use super::tap;
 use super::usage::{self, Usage};
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 /// Shared listener state.
 pub struct AppState {

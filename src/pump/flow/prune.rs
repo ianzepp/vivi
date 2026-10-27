@@ -11,7 +11,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::VivariumError;
 use crate::pump::flow::fanout::is_slice_row;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::RunRow;
@@ -21,6 +20,7 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
 
 /// Exception kind of a cleanup job that did not delete its ref.
 pub const PRUNE_FAILED: &str = "flow-prune-failed";

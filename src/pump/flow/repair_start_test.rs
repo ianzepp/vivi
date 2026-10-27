@@ -6,10 +6,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::RepairerStart;
-use crate::error::VivariumError;
-use crate::letter::fixture::repair_record_body;
-use crate::letter::records::{NoteWord, RecordFront, RecordKind};
-use crate::letter::render;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::restart::restart;
@@ -25,6 +21,10 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::repair_record_body;
+use vivi_mail::letter::records::{NoteWord, RecordFront, RecordKind};
+use vivi_mail::letter::render;
 
 type R = Result<(), VivariumError>;
 

@@ -15,8 +15,8 @@ use super::Mailspace;
 use super::backlog::{backlog_node_by_token, canonical_content_handle};
 use super::item_facts::{HeldItem, held_item, is_done};
 use super::kind::effective_kind;
-use crate::error::VivariumError;
 use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphNodeRow};
+use vivi_error::VivariumError;
 
 /// Whether a want still has work to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

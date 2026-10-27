@@ -10,11 +10,11 @@ use super::Mailspace;
 use super::graph_mutate::{newly_ready_after_done, ready_handles, validate_source_id};
 use super::item_events::PropertyKind;
 use super::want_state::{WantState, state_of_handle};
-use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, MailspaceEventInput, Storage,
     WorkGraphEdgeInput, WorkGraphNodeRow,
 };
+use vivi_error::VivariumError;
 
 /// A resolved `--depends-on` reference to an existing need or want.
 pub(super) struct BacklogDep {
@@ -834,7 +834,7 @@ pub(super) fn backlog_node_by_token(
 /// holds it, and what its letter names it by.
 pub(super) fn resolve_dep_message(storage: &Storage, token: &str) -> Result<String, VivariumError> {
     if token.starts_with('<') {
-        let found = match crate::message::normalize_message_id(token) {
+        let found = match vivi_mail::message::normalize_message_id(token) {
             Some(rfc) => storage.live_message_by_rfc_id(&rfc)?,
             None => None,
         };

@@ -19,8 +19,8 @@ use std::io::{BufRead, Write};
 
 use serde_json::{Value, json};
 
-use crate::error::VivariumError;
 use crate::sync::http::{RawResponse, send_raw, server_mcp_url};
+use vivi_error::VivariumError;
 
 pub mod client;
 mod inject;

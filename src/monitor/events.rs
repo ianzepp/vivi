@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use rusqlite::params_from_iter;
 
-use crate::error::VivariumError;
 use crate::mailspace::{POOL_EVENT_TYPES, PoolEventRow};
 use crate::pool::record::{DispatchRecord, OpenDispatch, fold_open};
 use crate::storage::Storage;
+use vivi_error::VivariumError;
 
 /// Subject and addressee role of a task seen in the pool event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

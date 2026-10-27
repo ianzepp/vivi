@@ -15,7 +15,7 @@ use super::config::{self, ProxyConfig};
 use super::health::HealthTable;
 use super::paths::{self, ensure_private_dir};
 use super::server::{self, AppState};
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const READY: &str = "VIVI_PROXY_READY";

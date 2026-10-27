@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{bad, reject_unknown};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Size of a job's disk when the table sets none: enough for a hand lane's
 /// build, not for a gate pool's full test build.

@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Environment variable holding the project server URL.
 pub const ENV_SERVER: &str = "VIVI_MCP_SERVER";

@@ -792,7 +792,7 @@ fn contexts_built_through_with_parts_carry_an_empty_actor() {
 /// while the loop waits between ticks.
 struct LiveLoop {
     home: std::path::PathBuf,
-    done: std::sync::mpsc::Receiver<Result<(), crate::error::VivariumError>>,
+    done: std::sync::mpsc::Receiver<Result<(), vivi_error::VivariumError>>,
     _thread: thread::JoinHandle<()>,
 }
 

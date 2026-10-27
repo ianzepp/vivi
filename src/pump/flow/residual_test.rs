@@ -4,12 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::file;
-use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::review::{
-    Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus,
-};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::budget_retry::PAYLOAD_KEY;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -21,6 +16,9 @@ use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_body;
+use vivi_mail::letter::review::{Auditor, AuditorAnswer, Finding, Requirement, RequirementStatus};
 
 fn context(root: &std::path::Path) -> (Ctx, Arc<FakeHost>) {
     let (ctx, host) = test_ctx(root, PumpConfig::default());
@@ -260,7 +258,7 @@ fn the_shipped_registry_files_residual_needs_from_a_build_audit() -> Result<(), 
         "mind",
         "mind",
         "audit",
-        &crate::letter::fixture::step_body("n1", 1, "audit1", ""),
+        &vivi_mail::letter::fixture::step_body("n1", 1, "audit1", ""),
         &[],
     )?;
     store.insert_step(
@@ -376,7 +374,7 @@ fn audit_tick_rig() -> Result<AuditTick, VivariumError> {
         "mind",
         "mind",
         "audit",
-        &crate::letter::fixture::step_body("n1", 1, "audit1", ""),
+        &vivi_mail::letter::fixture::step_body("n1", 1, "audit1", ""),
         &[],
     )?;
     store.insert_step(

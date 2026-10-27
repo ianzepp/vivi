@@ -26,7 +26,7 @@ use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
 use super::slot::PoolId;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// What every pod of Vivi's name starts with; the `1` is the layout version.
 pub const PREFIX: &str = "vivi-rp1-";

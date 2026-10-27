@@ -1,11 +1,11 @@
 //! `vivi pump send|list|show|done|reopen|history`: the pump record verbs.
 
-use vivi::VivariumError;
 use vivi::cli::{
     PumpDoneCommand, PumpHistoryCommand, PumpListCommand, PumpListStatus, PumpReopenCommand,
     PumpSendCommand, PumpShowCommand,
 };
 use vivi::mailspace::{Mailspace, PumpRecord, PumpState, read_body_arg};
+use vivi_error::VivariumError;
 
 pub(crate) fn send(cmd: &PumpSendCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(cmd.project.as_deref())?;

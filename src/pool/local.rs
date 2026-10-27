@@ -41,8 +41,8 @@ use super::provider::{
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_state as state;
 use super::{local_git, local_site, ramdisk};
-use crate::error::VivariumError;
 use sha2::{Digest, Sha256};
+use vivi_error::VivariumError;
 
 #[path = "local_apfs.rs"]
 mod apfs_job;

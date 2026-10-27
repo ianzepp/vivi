@@ -34,8 +34,8 @@ pub mod usage;
 
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::cli::{ProxyRunCommand, ProxySubcommand};
+use vivi_error::VivariumError;
 
 /// Dispatch a synchronous `vivi proxy` subcommand.
 ///

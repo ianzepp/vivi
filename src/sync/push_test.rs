@@ -1,10 +1,10 @@
-use crate::letter::fixture::body_for;
 use crate::storage::{MessageIngestRequest, RemoteBindingInput};
 use crate::sync::MAX_LETTER_BYTES;
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
 use crate::sync::push;
 use crate::sync::select::SkipReason;
 use crate::sync::transport::{Envelope, Transport};
+use vivi_mail::letter::fixture::body_for;
 
 fn alice() -> Checkout {
     checkout("alice", &["mind", "hand", "peer"])
@@ -422,7 +422,7 @@ fn a_server_hash_that_differs_is_not_bound() {
                 content_sha256: Some("0".repeat(64)),
             })
         }
-        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, vivi_error::VivariumError> {
             Ok(Page {
                 records: Vec::new(),
                 next_cursor: query.since,
@@ -457,7 +457,7 @@ fn an_ack_without_a_content_hash_is_not_bound() {
                 content_sha256: None,
             })
         }
-        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, vivi_error::VivariumError> {
             Ok(Page {
                 records: Vec::new(),
                 next_cursor: query.since,
@@ -489,7 +489,7 @@ fn a_sequence_that_does_not_fit_a_binding_is_reported() {
                 content_sha256: Some(crate::storage::sha256_hex(letter.raw_eml)),
             })
         }
-        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, vivi_error::VivariumError> {
             Ok(Page {
                 records: Vec::new(),
                 next_cursor: query.since,
@@ -685,7 +685,7 @@ fn a_drain_stops_for_good_on_a_401_and_never_waits() {
             }
             self.inner.append(id, envelope)
         }
-        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, vivi_error::VivariumError> {
             self.inner.fetch(query)
         }
     }

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 use super::state::State;
 use super::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};

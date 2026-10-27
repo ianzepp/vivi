@@ -9,7 +9,7 @@
 
 use super::config::PoolConfig;
 use super::config_bands::PoolBands;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// The speed suffixes a band string may carry. Parsed and ignored: the S
 /// axis does not yet change which model-and-reasoning pair serves a band.

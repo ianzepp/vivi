@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{actor_string, ensure_target_repo, pump_config};
-use crate::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::Ctx;
+use vivi_error::VivariumError;
 
 /// Refresh the live mailspace config between ticks. Valid pool, routing,
 /// dispatch, merge, budget, check, and new-target changes apply to the

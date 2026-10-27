@@ -5,8 +5,6 @@
 use std::fs;
 
 use super::{ANSWER_REFUSED, ANSWER_RETRYING, apply_pending};
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::route::JoinInput;
@@ -17,6 +15,8 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
 
 struct Rig {
     project: Project,

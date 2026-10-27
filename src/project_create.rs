@@ -27,7 +27,6 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use toml_edit::{Item, value};
 
-use crate::VivariumError;
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR, Mailspace, config_edit};
 use crate::pool::config::check_pool_name;
 use crate::pool::plain_git::check_address;
@@ -35,6 +34,7 @@ use crate::pump::config::valid_target_id;
 use crate::pump::readiness;
 use crate::registry::{self, Flags};
 use crate::routing::{self, Severity};
+use vivi_error::VivariumError;
 
 pub mod delete;
 mod lane;

@@ -6,7 +6,6 @@
 //! `verified`, `merged`, with the need and its pump record closed by the pump.
 
 use super::e2e_rig::{Rig, agent_receipt, push_receipt, rig};
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::fanout::is_slice_row;
@@ -14,6 +13,7 @@ use crate::pump::flow::index::StepState;
 use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::jobs::{JobStatus, PoolJob};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -84,7 +84,7 @@ fn build() -> Result<Rig, VivariumError> {
         .reply("cat-file -e", 128, "fatal: Not a valid object name");
     let shown = serde_json::json!([
         {"handle": rig.need, "message_id": "m1", "from": "operator@local",
-         "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "build something in two slices")}
+         "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["it works"], "build something in two slices")}
     ]);
     rig.project.host.reply("need show", 0, &shown.to_string());
     Ok(rig)

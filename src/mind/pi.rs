@@ -27,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 use super::config::MindConfig;
 

@@ -7,11 +7,11 @@ use std::collections::BTreeMap;
 use super::Mailspace;
 use super::backlog::canonical_content_handle;
 use super::kind::effective_kind;
-use crate::error::VivariumError;
-use crate::letter::work::NeedFront;
-use crate::letter::{Front, Letter};
-use crate::message::normalize_message_id;
 use crate::storage::Storage;
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::NeedFront;
+use vivi_mail::letter::{Front, Letter};
+use vivi_mail::message::normalize_message_id;
 
 /// Resolve `serves` and `explores` to the wanted letter's Message-ID, written
 /// `<id>`, and refuse a handle that is not a want.

@@ -2,13 +2,13 @@
 //! its `wait` milestone for the needs it depends on; each test is one outcome
 //! of that milestone, driven only by the real tick.
 
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::e2e_rig::{Rig, rig};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
 use crate::pump::flow::milestone::{MILESTONE_PREREQ_HELD, MILESTONE_UNLANDED};
 use crate::pump::flow::tick::OPERATOR_HOLD;
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -42,7 +42,7 @@ fn close_as(rig: &mut Rig, prereq: &str, outcome: &str) -> R {
     MailWriter::open_record(
         &mut rig.port,
         prereq,
-        &crate::letter::fixture::record_body(prereq, "build"),
+        &vivi_mail::letter::fixture::record_body(prereq, "build"),
     )?;
     rig.port.close_need(prereq, "done")?;
     rig.port.close_record(prereq, outcome)

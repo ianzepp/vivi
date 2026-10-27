@@ -7,9 +7,9 @@ use crate::mailspace::{
     folded_marks, frontier_from_show, is_foreign_account, is_gate_kind, marks_include,
     prefix_of_domain, validate_marks_filter,
 };
-use crate::message::{render_message, to_json_message};
 use crate::storage::{MailspaceEvent, StoredMessageView};
 use serde_json::{Value, json};
+use vivi_mail::message::{render_message, to_json_message};
 
 use crate::server::mcp::letters::parse_letter;
 use crate::server::mcp::tools::{OVERVIEW_READY_CAP, ToolError, opt_str, opt_usize, req_str};

@@ -9,7 +9,6 @@
 //! Every unlock letter is applied or refused exactly once: its id goes into
 //! `applied_actions` either way, and a refusal raises [`UNLOCK_REFUSED`].
 
-use crate::error::VivariumError;
 use crate::mailspace::{PumpAction, PumpActionKind};
 use crate::pump::flow::advance::restart::restart;
 use crate::pump::flow::def::{FlowDef, FlowKind, NodeClass};
@@ -24,6 +23,7 @@ use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
 use crate::pump::store::step_payload::StepPayloadRow;
+use vivi_error::VivariumError;
 
 /// The exception kind raised for an unlock that cannot be applied.
 pub const UNLOCK_REFUSED: &str = "flow-unlock-refused";

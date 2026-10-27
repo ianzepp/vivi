@@ -233,7 +233,7 @@ fn the_owners_flow_with_no_sync_is_letters_all_the_way() {
         .unwrap()
         .iter()
         .map(|m| {
-            vivi::letter::prose_of(m["body"].as_str().unwrap())
+            vivi_mail::letter::prose_of(m["body"].as_str().unwrap())
                 .trim()
                 .to_string()
         })

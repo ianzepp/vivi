@@ -5,12 +5,12 @@ use chrono::Utc;
 use super::super::Mailspace;
 use super::add_header;
 use super::retention::prune_retained_memos;
-use crate::error::VivariumError;
-use crate::letter::gate as letter_gate;
-use crate::letter::plain::{MemoFront, render};
-use crate::letter::{FORMAT_HEADER, FORMAT_VERSION};
-use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{MessageIngestRequest, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::gate as letter_gate;
+use vivi_mail::letter::plain::{MemoFront, render};
+use vivi_mail::letter::{FORMAT_HEADER, FORMAT_VERSION};
+use vivi_mail::message::{ComposeDraft, build_compose_draft};
 
 impl Mailspace {
     /// Save a self-addressed memo into the identity's `memos` folder.

@@ -11,9 +11,9 @@
 use std::path::Path;
 
 use super::config::{PoolConfig, bad, is_model_slug};
-use crate::error::VivariumError;
 use crate::mailspace::config_edit::{self, GuardedWrite};
 use crate::mailspace::{MAILSPACE_CONFIG, MAILSPACE_DIR};
+use vivi_error::VivariumError;
 
 /// The pool's `harness.models`; empty when the pool has no harness.
 #[must_use]

@@ -23,8 +23,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::b64;
-use crate::error::VivariumError;
-use crate::letter;
 use crate::mailspace::{Mailspace, prefix_of_domain};
 use crate::storage::sha256_hex;
 use crate::sync::link;
@@ -32,6 +30,8 @@ use crate::sync::pull;
 use crate::sync::state::SyncState;
 use crate::sync::transport::Record;
 use crate::sync::{SyncSettings, sync_dir};
+use vivi_error::VivariumError;
+use vivi_mail::letter;
 
 /// The quarantine home: `<project>/.vivi/quarantine/`.
 #[must_use]

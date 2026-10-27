@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use toml_edit::{DocumentMut, Item, Table};
 
-use crate::error::VivariumError;
 use crate::mailspace::config_edit::{IdentityPatch, insert_identity, patch_identity};
 use crate::mailspace::shipped::{
     ADMITTER_ROLE, AUDITOR_CHARTER, MERGE_CHARTER, PUMP_PLANNER_CHARTER, PUMP_PLANNER_ROLE,
@@ -12,6 +11,7 @@ use crate::mailspace::shipped::{
 };
 use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
+use vivi_error::VivariumError;
 
 use super::defaults::is_band_model;
 use super::migrate_charters::plan_stale_charters;

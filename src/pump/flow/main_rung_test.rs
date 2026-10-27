@@ -10,7 +10,6 @@ use super::{
     GREEN, LOST, MAIN_RUNG_FAILED, MAIN_TARGET_UNKNOWN, MainRung, PAYLOAD_KEY, STARTED, TESTED,
     key, last_green,
 };
-use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, PumpTarget, RungsConfig};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::TickPhase;
@@ -19,6 +18,7 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob, rung};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -341,9 +341,9 @@ fn record_target_ignores_a_body_without_front_matter() {
 
 #[test]
 fn record_target_reads_the_front_matter() {
-    let body = crate::letter::fixture::repair_record_body("abcd1234", "vivi", None, "boom");
+    let body = vivi_mail::letter::fixture::repair_record_body("abcd1234", "vivi", None, "boom");
     assert_eq!(record_target(&body).as_deref(), Some("vivi"));
-    let none = crate::letter::fixture::record_body("abcd1234", "");
+    let none = vivi_mail::letter::fixture::record_body("abcd1234", "");
     assert_eq!(record_target(&none), None);
 }
 

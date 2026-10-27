@@ -5,7 +5,6 @@
 //! `task` rung, and the runner publishes the need branch only when the whole
 //! command exits 0.
 
-use crate::error::VivariumError;
 use crate::pump::config::DEFAULT_RUNG_TIMEOUT;
 use crate::pump::flow::fanout;
 use crate::pump::flow::index::{RunRow, StepRow};
@@ -15,6 +14,7 @@ use crate::pump::flow::verify::remote_tip;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Job kind of a slice merge job.
 pub(crate) const KIND: &str = "slice-merge";

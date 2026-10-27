@@ -9,9 +9,9 @@ use chrono::{DateTime, Utc};
 use super::config_edit::{self, IdentityPatch};
 use super::{Mailspace, MailspaceConfig};
 use crate::duration::parse_duration_secs;
-use crate::error::VivariumError;
 use crate::role_schedule::{self, LastSignal, ScheduleReport};
 use crate::storage::Storage;
+use vivi_error::VivariumError;
 
 /// Preferred lifecycle values; freeform strings are still accepted.
 pub const ROLE_STATUS_ACTIVE: &str = "active";

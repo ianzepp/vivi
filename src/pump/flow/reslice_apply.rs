@@ -4,8 +4,6 @@
 
 use std::fs;
 
-use crate::error::VivariumError;
-use crate::pump::envelope::roles::{Slicer, SlicerAnswer};
 use crate::pump::flow::def::VERDICT_REPLACED;
 use crate::pump::flow::fanout;
 use crate::pump::flow::handlers::FlowMail;
@@ -13,6 +11,8 @@ use crate::pump::flow::index::{RunRow, StepRow};
 use crate::pump::flow::reslice::Mode;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{Slicer, SlicerAnswer};
 
 /// Exception kind: a follow-up need was filed.
 pub(crate) const FOLLOW_UP_FILED: &str = "flow-follow-up-filed";

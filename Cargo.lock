@@ -2822,6 +2822,29 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "vivi-error",
+ "vivi-mail",
+]
+
+[[package]]
+name = "vivi-error"
+version = "22.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "vivi-mail"
+version = "22.1.0"
+dependencies = [
+ "chrono",
+ "lettre",
+ "mail-builder",
+ "mail-parser",
+ "serde",
+ "serde_json",
+ "toml",
+ "vivi-error",
 ]
 
 [[package]]

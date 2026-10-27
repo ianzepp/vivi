@@ -7,9 +7,9 @@
 
 use super::Mailspace;
 use super::thread::{MailspaceThreadMessage, text_body};
-use crate::error::VivariumError;
-use crate::letter::records::{MailFront, NoteWord, PoolNote};
 use crate::storage::{MailspaceEventInput, MailspaceNoteWithReply, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::{MailFront, NoteWord, PoolNote};
 
 /// A task as the pool reads it.
 #[derive(Debug, Clone)]
@@ -62,11 +62,11 @@ const ATTEMPTS_CUT: &str = "[older attempts cut]";
 /// dispatcher's refusal names the task.
 fn briefed_body(task_body: &str, note: &super::pump_note::Note) -> String {
     let prose = note.prose.trim_start_matches('\n');
-    match crate::letter::read::task_of("", task_body) {
+    match vivi_mail::letter::read::task_of("", task_body) {
         Ok(envelope) => {
             let mut front = envelope.front;
             front.job = note.job.clone();
-            match crate::letter::render(&front, prose) {
+            match vivi_mail::letter::render(&front, prose) {
                 Ok(rendered) => rendered,
                 Err(_) => prose.to_owned(),
             }

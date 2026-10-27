@@ -12,11 +12,11 @@ use super::graph::{
     split_ready_gates,
 };
 use super::mermaid::{MermaidFlowchart, MermaidNode, is_gate_kind, parse_flowchart};
-use crate::error::VivariumError;
 use crate::storage::{
     Storage, WorkGraphActivateInput, WorkGraphApplyPlan, WorkGraphEdgeInput, WorkGraphEdgeRow,
     WorkGraphNodeInput, WorkGraphNodeRow, WorkGraphRow, sha256_hex,
 };
+use vivi_error::VivariumError;
 
 /// Diff summary for apply / check.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

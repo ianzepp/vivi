@@ -11,9 +11,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::{MergeConfig, PumpConfig, PumpTarget, RUNG_NAMES, RungsConfig, known};
-use crate::VivariumError;
 use crate::pool::dispatch::BUDGET_RANGE;
-use crate::pump::envelope::roles::RoleKind;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::RoleKind;
 
 /// The thinking steps that carry a `[pump.dispatch.step_budgets]` key, each
 /// with its canonical key spelling. `head-cto` is spelled out here because

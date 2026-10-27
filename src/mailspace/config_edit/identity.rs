@@ -4,7 +4,7 @@
 use toml_edit::{DocumentMut, Table};
 
 use super::{identities_mut, identity_index, set_opt_bool, set_opt_str, set_str_array};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Fields a writer may put on one identity table. Absent slots are left
 /// untouched; `Some(None)` clears the key.

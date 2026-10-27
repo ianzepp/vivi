@@ -191,7 +191,7 @@ pub(super) fn enqueue_split(
     now: u64,
     prompt: &str,
     target: &str,
-) -> Result<String, crate::VivariumError> {
+) -> Result<String, vivi_error::VivariumError> {
     crate::pump::planner_jobs::enqueue(
         ctx,
         st,

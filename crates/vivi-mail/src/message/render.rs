@@ -2,7 +2,7 @@
 
 use chrono::DateTime;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 use super::normalize_message_id;
 

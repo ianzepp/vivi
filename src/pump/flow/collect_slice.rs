@@ -8,11 +8,8 @@
 
 use serde::Serialize;
 
-use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::envelope::correct;
-use crate::pump::envelope::roles::{FollowUp, Hand, RoleKind};
 use crate::pump::flow::collect_step::RunCx;
 use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slice_row};
 use crate::pump::flow::handlers::{FlowMail, Registry};
@@ -26,6 +23,9 @@ use crate::pump::flow::slice_dispatch::{self, AttemptResult, Retried};
 use crate::pump::flow::tick::{FOLLOW_UP, OPERATOR_HOLD, SCOPE_REWORK, raise_once};
 use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure, EnvKind};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
+use vivi_error::VivariumError;
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::{FollowUp, Hand, RoleKind};
 
 /// Characters of a timed-out hand's receipt passed to the split job.
 const RECEIPT_TAIL: usize = 2000;

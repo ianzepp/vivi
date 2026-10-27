@@ -5,9 +5,9 @@
 //! here and to the closing half.
 
 use super::MailspacePort;
-use crate::error::VivariumError;
-use crate::letter::work::TaskFront;
 use crate::mailspace::{Recipient, SendRequest};
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::TaskFront;
 
 impl MailspacePort {
     /// Send a step task from `from` to `to`, blocked on `depends_on`; returns
@@ -133,7 +133,7 @@ impl MailspacePort {
 
 /// Merge `depends_on` into the step task body's front matter (no duplicates).
 fn with_dependencies(body: &str, depends_on: &[String]) -> Result<String, VivariumError> {
-    let mut letter = crate::letter::parse_letter::<TaskFront>(body).map_err(|err| {
+    let mut letter = vivi_mail::letter::parse_letter::<TaskFront>(body).map_err(|err| {
         VivariumError::Message(format!("step task body must open with front matter: {err}"))
     })?;
     for dep in depends_on {
@@ -141,7 +141,7 @@ fn with_dependencies(body: &str, depends_on: &[String]) -> Result<String, Vivari
             letter.front.depends_on.push(dep.clone());
         }
     }
-    crate::letter::render(&letter.front, &letter.body)
+    vivi_mail::letter::render(&letter.front, &letter.body)
         .map_err(|err| VivariumError::Message(err.to_string()))
 }
 

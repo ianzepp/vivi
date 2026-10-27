@@ -10,7 +10,6 @@ use serde_json::json;
 
 use crate::pump::attempt_record::hand_message;
 use crate::pump::envelope::correct::{self, correction_n};
-use crate::pump::envelope::roles::{Parsed, RoleKind, parse_for};
 use crate::pump::envelope::{EnvelopeError, split};
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::def::NodeClass;
@@ -18,6 +17,7 @@ use crate::pump::flow::index::StepJobRow;
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, PoolJob};
+use vivi_mail::letter::roles::{Parsed, RoleKind, parse_for};
 
 /// A step is retried once: the second failed attempt answers `failed`.
 const MAX_ATTEMPTS: u32 = 2;
@@ -70,7 +70,7 @@ pub fn collect<M: MailWriter>(
     class: &NodeClass,
     expected_ref: &str,
 ) -> Collected {
-    let Some(kind) = RoleKind::from_class(class) else {
+    let Some(kind) = class.role_kind() else {
         return Collected::Failed;
     };
     if kind == RoleKind::Merge {

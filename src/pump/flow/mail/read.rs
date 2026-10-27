@@ -4,11 +4,11 @@
 use std::collections::BTreeSet;
 
 use super::{MailReader, MailspacePort, NeedStatus, OpenRecords, TaskState, TaskStatus};
-use crate::error::VivariumError;
-use crate::letter::read::{need_of, step_of};
-use crate::letter::work::StepFront;
 use crate::mailspace::{Mailspace, PumpState, held_item, is_done, newest_move, sorted_marks};
 use crate::storage::{Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::letter::read::{need_of, step_of};
+use vivi_mail::letter::work::StepFront;
 
 /// How many run sentinels `need` has: the bound tasks whose step table is a
 /// sentinel. This is the Q1 run count, derived from mail alone.

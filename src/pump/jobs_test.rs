@@ -328,9 +328,9 @@ fn recovery_finds_a_task_created_before_the_last_state_save() {
         0,
         &serde_json::json!({
             "messages": [{
-                "body": crate::letter::render(
-                    &crate::letter::work::TaskFront {
-                        job: Some(crate::letter::work::JobFront {
+                "body": vivi_mail::letter::render(
+                    &vivi_mail::letter::work::TaskFront {
+                        job: Some(vivi_mail::letter::work::JobFront {
                             id: String::from("plan-board-1"),
                             kind: String::from("planner:board"),
                             builtin_role: None,
@@ -561,7 +561,7 @@ fn a_sent_job_brief_carries_the_job_front_matter() {
     send_task(&ctx, &job).unwrap();
 
     let sent = std::fs::read_to_string(ctx.home.join("job-briefs/audit-1.txt")).unwrap();
-    let envelope = crate::letter::read::task_of("", &sent).unwrap();
+    let envelope = vivi_mail::letter::read::task_of("", &sent).unwrap();
     let front = envelope.front.job.unwrap();
     assert_eq!(front.id, "audit-1");
     assert_eq!(front.kind, "auditor:range");
@@ -812,7 +812,7 @@ fn a_preset_task_job_posts_one_brief_before_it_dispatches() {
     assert!(commands[reply].contains("t1"), "{commands:?}");
     let brief = brief.expect("brief file written");
     let note = crate::mailspace::pump_note::note_of(&brief).expect("a brief note");
-    assert_eq!(note.pump.note, crate::letter::records::NoteWord::Brief);
+    assert_eq!(note.pump.note, vivi_mail::letter::records::NoteWord::Brief);
     assert_eq!(note.job.expect("a [job] table").id, "h1");
     assert!(note.prose.contains("WRITE SCOPE: a.rs"), "{brief}");
 }
@@ -820,7 +820,7 @@ fn a_preset_task_job_posts_one_brief_before_it_dispatches() {
 #[test]
 fn a_task_that_already_has_this_jobs_brief_gets_no_second_one() {
     let brief = crate::mailspace::pump_note::brief_body(
-        crate::letter::work::JobFront {
+        vivi_mail::letter::work::JobFront {
             id: "h1".into(),
             kind: "merge".into(),
             builtin_role: None,

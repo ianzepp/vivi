@@ -10,14 +10,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::read::{record_of, step_of};
-use crate::letter::records::record_letter;
-use crate::letter::work::StepFront;
 use crate::pump::flow::mail::{
     MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
 };
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
+use vivi_mail::letter::read::{record_of, step_of};
+use vivi_mail::letter::records::record_letter;
+use vivi_mail::letter::work::StepFront;
 
 /// One recorded port call, in call order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,7 +438,7 @@ impl MailWriter for FakeMail {
                 front.need
             )));
         }
-        let stored = crate::letter::render(&front, &prose)
+        let stored = vivi_mail::letter::render(&front, &prose)
             .map_err(|error| VivariumError::Message(error.to_string()))?;
         self.next += 1;
         let handle = format!("r{:04}", self.next);
@@ -726,7 +726,7 @@ fn prerequisites_round_trip_and_last_closed_record_follows_the_record() -> R {
 
 #[test]
 fn sent_step_finds_the_newest_open_task_with_that_subject_and_step() -> R {
-    use crate::letter::fixture::step_body;
+    use vivi_mail::letter::fixture::step_body;
     let key = |node: &str| StepFront {
         need: "n1".into(),
         run: 1,

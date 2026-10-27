@@ -6,9 +6,6 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::{JoinInput, Routed, route};
-use crate::error::VivariumError;
-use crate::letter::fixture::{sentinel_body, step_body};
-use crate::letter::read::step_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowEdge, FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -18,6 +15,9 @@ use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::outcome::Outcome;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{sentinel_body, step_body};
+use vivi_mail::letter::read::step_of;
 
 type R = Result<(), VivariumError>;
 

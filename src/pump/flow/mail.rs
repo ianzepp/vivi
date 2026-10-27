@@ -1,8 +1,8 @@
 //! The flow engine's port onto the mailspace: every read and write a run needs.
 
-use crate::error::VivariumError;
-use crate::letter::work::StepFront;
 use crate::mailspace::Mailspace;
+use vivi_error::VivariumError;
+use vivi_mail::letter::work::StepFront;
 
 pub mod close;
 pub mod read;

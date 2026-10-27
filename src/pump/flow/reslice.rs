@@ -1,10 +1,6 @@
 //! Reslice: split, rework and follow-up slicer jobs on an existing slice.
 
-use crate::error::VivariumError;
-use crate::letter::render;
-use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
-use crate::pump::envelope::roles::{Slicer, SlicerMode};
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::budget_retry;
 use crate::pump::flow::collect_slice::runner_env_failure;
@@ -22,6 +18,10 @@ use crate::pump::jobs::rung_result::{ENV_FAILURE, EnvFailure};
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 use crate::pump::store::flow_links::SliceLink;
+use vivi_error::VivariumError;
+use vivi_mail::letter::render;
+use vivi_mail::letter::roles::{Slicer, SlicerMode};
+use vivi_mail::letter::work::TaskFront;
 
 /// Node-id prefix of a reslice step row.
 pub const RESLICE_NODE_PREFIX: &str = "reslice:";

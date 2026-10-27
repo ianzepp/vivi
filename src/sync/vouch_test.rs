@@ -61,9 +61,9 @@ fn a_vouch_is_format_one_mail_and_of_message_reads_the_json_prose() {
     );
     assert!(text.contains("X-Vivi-Kind: mail\n"), "{text}");
 
-    let parsed = crate::letter::of_message(&letter.raw_eml, "vouch-bob").unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
-    assert!(matches!(parsed.front, crate::letter::Front::Mail(_)));
+    let parsed = vivi_mail::letter::of_message(&letter.raw_eml, "vouch-bob").unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Mail);
+    assert!(matches!(parsed.front, vivi_mail::letter::Front::Mail(_)));
     assert!(
         !parsed.prose.starts_with("+++"),
         "the vouch fact is prose, not front matter: {}",

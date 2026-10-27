@@ -5,8 +5,6 @@
 use std::fs;
 
 use super::{LockWait, NEED_LOCKED, UNLOCK_REFUSED, apply_pending};
-use crate::error::VivariumError;
-use crate::letter::fixture::step_body;
 use crate::mailspace::PumpActionRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::advance::start::start;
@@ -18,6 +16,8 @@ use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::Ctx;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::step_body;
 
 type R = Result<(), VivariumError>;
 

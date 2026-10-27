@@ -1,9 +1,9 @@
 use super::*;
-use crate::letter::fixture::{body_with_deps, task_body_with};
-use crate::letter::work::TaskFront;
 use crate::mailspace::{
     DumpFilters, SendRequest, TaskDumpRequest, TaskDumpStatus, WantListOptions, frontier_from_show,
 };
+use vivi_mail::letter::fixture::{body_with_deps, task_body_with};
+use vivi_mail::letter::work::TaskFront;
 
 const REMOTE: &str = "hand@3f9a1c7e.local";
 

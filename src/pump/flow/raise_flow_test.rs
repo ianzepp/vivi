@@ -13,8 +13,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::tick::tick_with;
-use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -26,6 +24,8 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_body;
 
 type R = Result<(), VivariumError>;
 
@@ -104,7 +104,7 @@ fn script_host(host: &Arc<FakeHost>) {
         0,
         &serde_json::json!([
             {"handle": NEED, "message_id": "m1", "from": "operator@local",
-             "subject": "Need", "body": crate::letter::fixture::need_body(&["it works"], "Build the thing")}
+             "subject": "Need", "body": vivi_mail::letter::fixture::need_body(&["it works"], "Build the thing")}
         ])
         .to_string(),
     );

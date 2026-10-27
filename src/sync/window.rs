@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 
 use crate::duration::parse_duration;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Parse an age such as `30d`, `12h`, `90m`. Days are accepted here because a
 /// letter's age is naturally counted in days; every other form goes through

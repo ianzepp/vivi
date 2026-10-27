@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use super::docker_cli::finish;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Key types a pin may hold.
 const KEY_TYPES: [&str; 3] = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"];

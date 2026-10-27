@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::collections::BTreeMap;
-use vivi::VivariumError;
 use vivi::cli::PoolDoctorCommand;
 use vivi::mailspace::Mailspace;
+use vivi_error::VivariumError;
 
 use vivi::pool::collect;
 use vivi::pool::doctor::{self, Check, Inputs, Report};

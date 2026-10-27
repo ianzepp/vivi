@@ -7,10 +7,10 @@ use serde::de::DeserializeOwned;
 
 use crate::letter::plain::{CLOSE_EVENTS, CloseFront, EmptyFront, MemoFront, RuleFront};
 use crate::letter::records::{ActionFront, MailFront, RecordFront};
+use crate::letter::roles::{self, Parsed, RoleKind};
 use crate::letter::sugar::opens_with_fence;
 use crate::letter::work::{NeedFront, TaskFront, WantFront};
 use crate::letter::{LetterError, Validate, parse_letter, split};
-use crate::pump::envelope::roles::{self, Parsed, RoleKind};
 
 /// What a letter is.
 #[derive(Debug, Clone, PartialEq, Eq)]

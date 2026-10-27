@@ -1,11 +1,11 @@
 use super::*;
-use crate::letter::records::NoteWord;
 use crate::mailspace::SendRequest;
+use vivi_mail::letter::records::NoteWord;
 
 /// The task letter the tests send: pool lines in the front matter, prose "do it".
 fn brief_body() -> String {
-    crate::letter::fixture::task_body_with(
-        &crate::letter::work::TaskFront {
+    vivi_mail::letter::fixture::task_body_with(
+        &vivi_mail::letter::work::TaskFront {
             from: Some("main".into()),
             branch: Some("factory/x".into()),
             ..Default::default()
@@ -108,9 +108,9 @@ fn a_pool_note_letter_carries_the_record_in_its_front_matter() {
     let bytes = storage.read_message(&reply.message_id).unwrap();
     let text = String::from_utf8_lossy(&bytes).into_owned();
     assert!(text.contains("X-Vivi-Format: 1"), "{text}");
-    let parsed = crate::letter::of_message(&bytes, &handle).unwrap();
-    assert_eq!(parsed.kind, crate::letter::LetterKind::Mail);
-    let crate::letter::Front::Mail(front) = parsed.front else {
+    let parsed = vivi_mail::letter::of_message(&bytes, &handle).unwrap();
+    assert_eq!(parsed.kind, vivi_mail::letter::LetterKind::Mail);
+    let vivi_mail::letter::Front::Mail(front) = parsed.front else {
         panic!("not a mail front: {text}");
     };
     let pool = front
@@ -150,7 +150,7 @@ fn the_addressee_is_the_role_the_task_copy_is_held_under() {
 
 /// The body of an attempt note labelled `label` whose prose is `prose`.
 fn brief_note(job: &str, prose: &str) -> String {
-    let job = crate::letter::work::JobFront {
+    let job = vivi_mail::letter::work::JobFront {
         id: job.into(),
         kind: "merge".into(),
         builtin_role: None,
@@ -228,7 +228,7 @@ fn only_the_newest_brief_is_the_body_with_attempts_after_it() {
         &brief_note("job-b", "WRITE SCOPE and envelope"),
     );
     let body = space.pool_task(&handle).unwrap().body;
-    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    let envelope = vivi_mail::letter::read::task_of(&handle, &body).unwrap();
     assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
     assert_eq!(
         envelope.front.job.as_ref().map(|job| job.id.as_str()),
@@ -296,7 +296,7 @@ fn a_brief_becomes_the_prose_of_the_task_letter() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
     reply_on_task(&space, &handle, &brief_note("job-a", "BRIEF BODY"));
     let body = space.pool_task(&handle).unwrap().body;
-    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    let envelope = vivi_mail::letter::read::task_of(&handle, &body).unwrap();
     assert_eq!(envelope.front.from.as_deref(), Some("main"));
     assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
     assert_eq!(envelope.body.trim(), "BRIEF BODY");
@@ -311,7 +311,7 @@ fn a_brief_becomes_the_prose_of_the_task_letter() {
 fn a_task_without_a_brief_keeps_its_body() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
     let body = space.pool_task(&handle).unwrap().body;
-    let envelope = crate::letter::read::task_of(&handle, &body).unwrap();
+    let envelope = vivi_mail::letter::read::task_of(&handle, &body).unwrap();
     assert_eq!(envelope.front.branch.as_deref(), Some("factory/x"));
     assert_eq!(envelope.body.trim(), "do it");
 }

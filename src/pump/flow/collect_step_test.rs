@@ -7,12 +7,9 @@ use std::fs;
 use tempfile::{TempDir, tempdir};
 
 use super::{RoleCollector, RunCx, StepCollector};
-use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
 use crate::pump::config::{DispatchConfig, PumpConfig, StepBudgets};
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::budget_retry::{PAYLOAD_KEY, raised_budget};
@@ -30,6 +27,9 @@ use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::rung_result::ENV_FAILURE;
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::record_body;
+use vivi_mail::letter::roles::RoleKind;
 
 type R = Result<(), VivariumError>;
 

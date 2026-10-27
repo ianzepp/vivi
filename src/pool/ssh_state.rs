@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use super::provider::MachineRecord;
 use super::slot::{META_CLAIMED, META_TASK};
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 const SLOT_MARKER: &str = "@@slot ";
 /// The directory name of slot `index` inside its pool directory.

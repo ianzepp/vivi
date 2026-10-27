@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{db_err, from_json, from_u32, from_u64, json, json_or_null, unit_extra};
-use crate::error::VivariumError;
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
+use vivi_error::VivariumError;
 pub(super) fn clear(tx: &Transaction<'_>) -> Result<(), VivariumError> {
     for table in [
         "needs",

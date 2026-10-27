@@ -1,8 +1,8 @@
 //! Tests for the flow kind of a need.
 
 use super::of;
-use crate::letter::fixture::record_body;
 use crate::pump::flow::def::FlowKind;
+use vivi_mail::letter::fixture::record_body;
 
 fn marks(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_string()).collect()

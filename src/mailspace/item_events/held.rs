@@ -5,9 +5,9 @@ use mail_parser::MessageParser;
 use super::super::delegation::DelegationState;
 use super::super::holding::first_bare_address;
 use super::super::kind::{effective_kind, message_kind};
-use crate::error::VivariumError;
-use crate::message::normalize_message_id;
 use crate::storage::{Storage, StoredMessageView};
+use vivi_error::VivariumError;
+use vivi_mail::message::normalize_message_id;
 
 /// A work item held here: its rows and the facts events are judged by.
 pub(in crate::mailspace) struct HeldItem {

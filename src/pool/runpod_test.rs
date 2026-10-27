@@ -49,7 +49,7 @@ fn plan(r: &Rig) -> JobPlan {
         (
             "abcd1234",
             "Subject",
-            &crate::letter::fixture::task_body("body"),
+            &vivi_mail::letter::fixture::task_body("body"),
         ),
         &flags,
         "rules".into(),

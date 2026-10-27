@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 use super::SCHEMA_VERSION;
 

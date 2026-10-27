@@ -4,9 +4,9 @@
 
 use std::path::Path;
 
-use crate::VivariumError;
 use crate::pool::dispatch::BUDGET_RANGE;
 use crate::pump::config::{PumpConfig, StepBudgets};
+use vivi_error::VivariumError;
 
 fn pump(text: &str) -> PumpConfig {
     let mail: crate::mailspace::MailspaceConfig =

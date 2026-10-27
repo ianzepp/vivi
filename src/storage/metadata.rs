@@ -1,4 +1,4 @@
-use crate::message::normalize_message_id;
+use vivi_mail::message::normalize_message_id;
 
 #[derive(Debug, Clone)]
 pub(super) struct ParsedMetadata {

@@ -5,7 +5,6 @@
 //! attempt through [`slice_dispatch::dispatch`], which records the need
 //! branch base and sets the row `Running`.
 
-use crate::error::VivariumError;
 use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -17,6 +16,7 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// Exception kind: a dependency closed without building, so the slice waits
 /// for an operator decision.

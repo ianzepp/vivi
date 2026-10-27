@@ -1,10 +1,10 @@
 //! Closing-half tests on a real mailspace.
 
 use super::MailspacePort;
-use crate::letter::fixture::{need_body, record_body, sentinel_body, task_body};
 use crate::mailspace::SendRequest;
 use crate::pump::fixture::{Project, project};
 use crate::pump::flow::mail::{MailReader, MailWriter, NeedStatus, TaskStatus};
+use vivi_mail::letter::fixture::{need_body, record_body, sentinel_body, task_body};
 
 /// The port over the fixture; the fixture's pump identity (`[pump] reply_from`) is
 /// `mind`; `[pump] from` (`operator`) has no pump authority.

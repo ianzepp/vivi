@@ -20,8 +20,8 @@ mod reminders;
 
 use semver::Version;
 
-use crate::VivariumError;
 use crate::cli::{UninstallCommand, UpdateCommand, VersionsCommand};
+use vivi_error::VivariumError;
 
 /// Outcome of `vivi update --check`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

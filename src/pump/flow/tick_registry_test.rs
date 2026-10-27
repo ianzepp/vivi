@@ -7,11 +7,7 @@ use std::sync::{Arc, Mutex};
 use tempfile::{TempDir, tempdir};
 
 use super::{OPERATOR_HOLD, tick_with};
-use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body};
 use crate::pump::config::PumpConfig;
-use crate::pump::envelope::roles::RoleKind;
-use crate::pump::envelope::roles::Slice;
 use crate::pump::flow::advance::start::{SENTINEL_NODE, start};
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::{Call, FakeMail};
@@ -22,6 +18,10 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{record_body, step_body};
+use vivi_mail::letter::roles::RoleKind;
+use vivi_mail::letter::roles::Slice;
 
 type R = Result<(), VivariumError>;
 type Reg = Registry<Jobs, FakeMail>;

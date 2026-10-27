@@ -10,14 +10,9 @@ use super::{
     AttemptResult, DEVIATIONS_CAP, DEVIATIONS_CUT, EXAMPLE_BLOCKED, EXAMPLE_BUILT, MAX_ATTEMPTS,
     Retried, SliceMail, classify, classify_corrected, contract, dispatch, redispatch_scope, retry,
 };
-use crate::error::VivariumError;
-use crate::letter::fixture::{step_body, task_body_with};
-use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
 use crate::mailspace::pump_note::note_body;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::parse;
-use crate::pump::envelope::roles::Hand;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
@@ -27,6 +22,11 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
+use vivi_error::VivariumError;
+use vivi_mail::letter::fixture::{step_body, task_body_with};
+use vivi_mail::letter::records::NoteWord;
+use vivi_mail::letter::roles::Hand;
+use vivi_mail::letter::work::TaskFront;
 
 type R = Result<(), VivariumError>;
 

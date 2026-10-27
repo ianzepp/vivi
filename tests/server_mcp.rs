@@ -781,11 +781,11 @@ async fn a_memo_save_is_a_format_one_letter_with_tags_in_front_matter() {
     assert!(raw.contains("remember the prefix"), "{raw}");
     assert!(!raw.contains("X-Vivi-Tag"), "{raw}");
     // The stored bytes parse as the memo they claim to be.
-    let letter = vivi::letter::of_message(raw.as_bytes(), "").expect("memo letter parses");
-    assert_eq!(letter.kind, vivi::letter::LetterKind::Memo);
+    let letter = vivi_mail::letter::of_message(raw.as_bytes(), "").expect("memo letter parses");
+    assert_eq!(letter.kind, vivi_mail::letter::LetterKind::Memo);
     assert_eq!(
         letter.front,
-        vivi::letter::Front::Memo(vivi::letter::plain::MemoFront {
+        vivi_mail::letter::Front::Memo(vivi_mail::letter::plain::MemoFront {
             tags: vec!["wave3".to_owned(), "b4".to_owned()],
         })
     );
@@ -839,12 +839,12 @@ async fn done_composes_a_format_one_event_letter_with_close_front_matter() {
     }
     // The stored bytes parse as the event they claim to be, with the close
     // facts in the front matter and the note as prose.
-    let letter = vivi::letter::of_message(raw.as_bytes(), "").expect("event letter parses");
+    let letter = vivi_mail::letter::of_message(raw.as_bytes(), "").expect("event letter parses");
     assert_eq!(
         letter.kind,
-        vivi::letter::LetterKind::Event("done".to_owned())
+        vivi_mail::letter::LetterKind::Event("done".to_owned())
     );
-    let vivi::letter::Front::Event(front) = &letter.front else {
+    let vivi_mail::letter::Front::Event(front) = &letter.front else {
         panic!("done front matter: {:?}", letter.front);
     };
     assert_eq!(front.verdict.as_deref(), Some("clean_pass"));
@@ -867,14 +867,14 @@ async fn done_composes_a_format_one_event_letter_with_close_front_matter() {
         .await;
     assert!(raw.contains("X-Vivi-Format: 1"), "{raw}");
     assert!(!raw.contains("+++"), "{raw}");
-    let letter = vivi::letter::of_message(raw.as_bytes(), "").expect("reopened letter parses");
+    let letter = vivi_mail::letter::of_message(raw.as_bytes(), "").expect("reopened letter parses");
     assert_eq!(
         letter.kind,
-        vivi::letter::LetterKind::Event("reopened".to_owned())
+        vivi_mail::letter::LetterKind::Event("reopened".to_owned())
     );
     assert_eq!(
         letter.front,
-        vivi::letter::Front::Event(vivi::letter::plain::CloseFront::default())
+        vivi_mail::letter::Front::Event(vivi_mail::letter::plain::CloseFront::default())
     );
     assert_eq!(letter.prose, "reopened");
 }

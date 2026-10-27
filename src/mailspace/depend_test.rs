@@ -1,6 +1,6 @@
 use super::*;
-use crate::letter::fixture::{body_for, body_with_deps};
 use crate::mailspace::{GraphNodeView, RoleUpdate, SendRequest};
+use vivi_mail::letter::fixture::{body_for, body_with_deps};
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();

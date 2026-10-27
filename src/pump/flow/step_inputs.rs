@@ -3,9 +3,7 @@
 //! The planner, admitter, slicer, fanout and reslice handlers build their
 //! briefs from the same few inputs; they live here once.
 
-use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
-use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowDef, NodeClass};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::outcome::role_job;
@@ -13,6 +11,7 @@ use crate::pump::flow::slice_dispatch::SliceMail;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::JobSpec;
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
 
 /// A pool worker's result reply starts with this text.
 pub const POOL_RESULT_MARKER: &str = "pool result ";
@@ -122,7 +121,7 @@ pub fn read_only_job(
         .lookup(role)
         .filter(|found| found.status == "active")
         .ok_or_else(|| VivariumError::Config(format!("role {role} is missing or not active")))?;
-    let execution = RoleKind::from_class(class).ok_or_else(|| {
+    let execution = class.role_kind().ok_or_else(|| {
         VivariumError::Config(format!(
             "node class {} has no role kind to budget",
             class.name()

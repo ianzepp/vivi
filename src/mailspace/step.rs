@@ -7,8 +7,8 @@ use serde::Serialize;
 use super::Mailspace;
 use super::graph::GraphNodeView;
 use super::holding::{Holding, READINESS_AWAITING, READINESS_REPORTED};
-use crate::error::VivariumError;
 use crate::storage::BACKLOG_GRAPH_CODE;
+use vivi_error::VivariumError;
 
 /// One dispatchable ready node with its mechanical checks.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -297,10 +297,14 @@ struct WorkRead {
 
 /// Read a need or task body through the letter reader; any kind other than
 /// a need reads as a task.
-fn read_work(kind: &str, handle: &str, body: &str) -> Result<WorkRead, crate::letter::LetterError> {
+fn read_work(
+    kind: &str,
+    handle: &str,
+    body: &str,
+) -> Result<WorkRead, vivi_mail::letter::LetterError> {
     match kind {
         "need" => {
-            let envelope = crate::letter::read::need_of(handle, body)?;
+            let envelope = vivi_mail::letter::read::need_of(handle, body)?;
             Ok(WorkRead {
                 write_scope: !envelope.front.write_scope.is_empty(),
                 done_when: envelope.front.done_when,
@@ -309,7 +313,7 @@ fn read_work(kind: &str, handle: &str, body: &str) -> Result<WorkRead, crate::le
             })
         }
         _ => {
-            let envelope = crate::letter::read::task_of(handle, body)?;
+            let envelope = vivi_mail::letter::read::task_of(handle, body)?;
             Ok(WorkRead {
                 write_scope: !envelope.front.write_scope.is_empty(),
                 pump_owned: envelope.front.step.is_some() || envelope.front.job.is_some(),

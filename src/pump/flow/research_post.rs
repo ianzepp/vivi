@@ -7,9 +7,7 @@
 //! reply is tried again on the next tick. One run that fails does not stop the
 //! runs after it: the first error is returned once all of them were tried.
 
-use crate::error::VivariumError;
 use crate::pump::attempt_record::hand_message;
-use crate::pump::envelope::roles::{RoleKind, parse_for};
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
 use crate::pump::flow::index::run_state;
 use crate::pump::flow::index::{RunRow, StepRow};
@@ -19,6 +17,8 @@ use crate::pump::flow::tick::raise_once;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
+use vivi_error::VivariumError;
+use vivi_mail::letter::roles::{RoleKind, parse_for};
 
 /// Flow kind of a research run.
 const KIND_RESEARCH: &str = "research";

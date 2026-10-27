@@ -9,10 +9,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
-use crate::error::VivariumError;
-use crate::letter::{Front, of_message};
 use crate::mailspace::Mailspace;
 use crate::storage::StoredMessageView;
+use vivi_error::VivariumError;
+use vivi_mail::letter::{Front, of_message};
 
 /// Tags hidden from memo listings unless the caller asks for them.
 const DEFAULT_HIDDEN_TAG: &str = "digest";

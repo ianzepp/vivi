@@ -1,8 +1,8 @@
 //! A pulled need's `serves` is indexed in its row, as a sent one's is.
 
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::sync::fake_server::{LETTER_DATE, World, wire_id};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 const HEADERS_WANT: &str = "X-Vivi-Format: 1\r\nX-Vivi-Kind: want\r\n";
 const HEADERS_NEED: &str = "X-Vivi-Format: 1\r\nX-Vivi-Kind: need\r\n";

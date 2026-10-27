@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::{Mailspace, parse_time_bound};
-use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, Storage};
+use vivi_error::VivariumError;
 
 #[derive(Debug, Clone)]
 pub struct MailspaceWatchRequest {

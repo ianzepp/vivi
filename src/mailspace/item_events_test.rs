@@ -20,7 +20,7 @@ fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: format!("a {kind}"),
-            body: crate::letter::fixture::body_for(kind, ""),
+            body: vivi_mail::letter::fixture::body_for(kind, ""),
             role: format!("{kind}s"),
             kind: Some(kind.into()),
             reply_to: None,
@@ -395,7 +395,7 @@ fn the_event_letter_goes_to_the_items_recipients_minus_the_sender() {
             cc: vec!["auditor".into(), "hand@3f9a1c7e.local".into()],
             bcc: Vec::new(),
             subject: "wide".into(),
-            body: crate::letter::fixture::need_body(&["ok"], ""),
+            body: vivi_mail::letter::fixture::need_body(&["ok"], ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,
@@ -659,7 +659,7 @@ fn send_serving_need(mailspace: &Mailspace, want: &str) -> String {
     let id = storage.resolve_message_token(want).unwrap();
     let view = storage.message_by_id(&id).unwrap().unwrap();
     drop(storage);
-    let mut front = crate::letter::work::NeedFront::new(vec!["it works".to_string()]);
+    let mut front = vivi_mail::letter::work::NeedFront::new(vec!["it works".to_string()]);
     front.serves = Some(view.normalized_message_id.unwrap());
     let result = mailspace
         .send(SendRequest {
@@ -668,7 +668,7 @@ fn send_serving_need(mailspace: &Mailspace, want: &str) -> String {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: "serving need".into(),
-            body: crate::letter::fixture::need_body_with(&front, ""),
+            body: vivi_mail::letter::fixture::need_body_with(&front, ""),
             role: "needs".into(),
             kind: Some("need".into()),
             reply_to: None,

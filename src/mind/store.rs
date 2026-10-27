@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::VivariumError;
+use vivi_error::VivariumError;
 
 use super::authority::Ledger;
 use super::wake::WakeRecord;

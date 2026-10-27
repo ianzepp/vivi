@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use crate::local_pool_command::{SeedAt, create_into};
-use vivi::VivariumError;
 use vivi::cli::PoolScaleCommand;
 use vivi::mailspace::Mailspace;
 use vivi::pool::pools;
@@ -14,6 +13,7 @@ use vivi::pool::run::{self, CreateOptions};
 use vivi::pool::scale;
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
+use vivi_error::VivariumError;
 
 pub(crate) fn scale(command: &PoolScaleCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");

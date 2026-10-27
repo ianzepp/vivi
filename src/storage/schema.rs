@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 pub(crate) const STORAGE_SCHEMA_VERSION: &str = "9";
 

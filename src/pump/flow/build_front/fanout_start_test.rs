@@ -6,7 +6,6 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::FanoutStart;
-use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -17,6 +16,7 @@ use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use vivi_error::VivariumError;
 
 type R = Result<(), VivariumError>;
 
@@ -264,7 +264,7 @@ fn a_store_read_error_is_an_error_not_a_slices_invalid_failure() -> R {
         run: &rig.run,
         def: &rig.def,
     };
-    let slices = vec![crate::pump::envelope::roles::Slice {
+    let slices = vec![vivi_mail::letter::roles::Slice {
         id: "S1".into(),
         title: "t".into(),
         brief: "b".into(),

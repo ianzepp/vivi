@@ -17,7 +17,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use crate::error::VivariumError;
 use crate::pump::flow::advance::route::JoinInput;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::advance::{self, guard, terminal};
@@ -39,6 +38,7 @@ use crate::pump::flow::validate::validate;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use vivi_error::VivariumError;
 
 /// Verdict a step carries while it waits for `vivi pump answer`.
 pub const OPERATOR_HOLD: &str = "operator-hold";

@@ -9,7 +9,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Held while a dispatch makes its pod; released when dropped.
 #[derive(Debug)]

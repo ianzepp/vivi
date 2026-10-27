@@ -4,7 +4,6 @@
 
 use super::*;
 
-use crate::VivariumError;
 use crate::b64;
 use crate::storage::sha256_hex;
 use crate::sync::fake_server::{Checkout, PROJECT, World, checkout, wire_id};
@@ -17,6 +16,7 @@ use crate::sync::transport::{
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
+use vivi_error::VivariumError;
 
 use crate::sync::fake_server::{FakeClient, FakeServer};
 

@@ -2,10 +2,10 @@
 //! the need, and the assignee's pulled copy of the want is done with its node
 //! completed, with no letter about the want itself.
 
-use crate::letter::fixture::{need_body_with, want_body};
-use crate::letter::work::NeedFront;
 use crate::mailspace::{AbsorbConfig, SendRequest, WantState};
 use crate::sync::fake_server::{Checkout, FakeServer, checkout};
+use vivi_mail::letter::fixture::{need_body_with, want_body};
+use vivi_mail::letter::work::NeedFront;
 
 fn send(from: &Checkout, to: &str, kind: &str, body: String) -> String {
     let result = from

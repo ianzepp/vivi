@@ -16,8 +16,8 @@ use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 
-use crate::error::VivariumError;
 use crate::sync::state::ensure_sync_dir;
+use vivi_error::VivariumError;
 
 const IDENTITY_DIR: &str = "chat";
 const IDENTITY_FILE: &str = "identity.ed25519";

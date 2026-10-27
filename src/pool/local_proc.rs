@@ -32,7 +32,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::local_git;
-use crate::error::VivariumError;
+use vivi_error::VivariumError;
 
 /// Files in the slot directory.
 pub const BOOT_PID: &str = "boot.pid";
