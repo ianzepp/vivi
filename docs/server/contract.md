@@ -443,8 +443,9 @@ The project tools are the 1.2.0 list plus the hosted additions
 `pump_priority`, and the reads `pump_log`, `flow_show`,
 `config_show`, `config_validate`,
 `pool_list`, `pool_show`, `role_list`, `role_show`, `charter_show`,
-`target_list`, `target_log`, `target_show`); each also takes the required `project` argument on top
-of the arguments shown.
+`target_list`, `target_log`, `target_show`,
+`need_show`, `need_thread`, `task_thread`); each also takes the
+required `project` argument on top of the arguments shown.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
@@ -485,8 +486,25 @@ one audit line. A dry run is not.
 | `pool_allow_set` | `pool`, `models` (array of strings) | Writes `pools.<pool>.harness.models` (the allow list `pool_bands` checks) through `config_edit::set_pool_key`. A non-array or a non-string element is refused before a write |
 | `target_add` | `id`, `path`, `remote_url?`, `remote?`, `main?`, `github_repo?`, `rungs?` (`NAME=CMD`), `merge?` (`KEY=VALUE`) | `pump::config::targets::add`. Returns `{id, path, main, rungs}` |
 | `target_remove` | `id` | `pump::config::targets::remove`. Returns `{id, removed: true}` |
+| `pool_bands` | `action` show\|set\|unset; `pool`; `band?` (set, unset), `model?`, `reasoning?` (set; default `xhigh`) | One pool's band table (`[pools.<pool>.bands]`), as `vivi pool bands show\|set\|unset`. `set` and `unset` are writes under the guard above; `show` is a read. Every action answers the pool's table as it stands afterwards: `{pool, bands: {band: [{model, reasoning}]}, harness_models}` |
 
 `pump_rungs` `set` is the same guard (`RungsConfig::set`).
+
+`pool_bands` `set` performs a **guarded replacement** of one band's
+choice list: whatever `[[pools.<pool>.bands.<band>]]` holds today — a
+list the CLI wrote or one the editor wrote by hand as an array of
+tables — is replaced wholesale by the single `{model, reasoning}`
+choice, inside the same guard as every config write (backup first,
+comments and unrelated text preserved, refused while the pump runs,
+rolled back when the write would add a new config error). Before
+anything is written the model must be in that pool's `harness.models`
+allow list and the reasoning must parse as an effort, and a refusal
+changes nothing. The scope is deliberately narrow — one band of one
+pool, no migration and no arbitrary replacement of band config — which
+is what lets the server expose it at all: the other pool keys (`remote_url`,
+`harness.run`, another pool, a role, free-form config) stay out of
+reach, and the generic `config_set` still refuses to replace a table or
+array-of-tables leaf.
 
 #### Role and charter writes
 
@@ -514,6 +532,27 @@ paused, with the library's message, and nothing moves on a refusal.
 | --- | --- | --- |
 | `pump_action` | `action` withdraw\|requeue\|replan\|answer\|unlock; `needs?` (withdraw), `steps?` or `job?` (requeue; not both), `dry_run?` (requeue only, still a write), `need?` (replan, unlock), `step?`+`word?` (answer), `entry?`, `reason?`, `note?` | `withdraw` closes each need `withdrawn` and posts on its open record. `requeue` posts one action per flow step, or releases one held job. `replan`, `answer`, and `unlock` post on the open record. A library refusal is the tool error |
 | `pump_reset` | — | Archives the pump home beside itself. Returns `{archive_dir, moved, mode, open_records}`: `moved` is the home-relative names that moved, `mode` is the fresh database's control mode |
+
+#### Pump records
+
+One dispatch is one pump record, and an open record is what admits a
+need to the pump. `pump_send`, `pump_list` and `pump_show` are the
+operator's record tools on a hosted project — the `pump_control`
+authorization, the same library calls `vivi pump send\|list\|show`
+make. `pump_send` files one open record for `need` (`from?` defaults
+to the project's `[pump] from`; `body?` is literal text — the CLI's
+`-` and `@path` forms are not accepted — and defaults to a dispatch
+line) and is rate limited as a write. An unknown handle, a non-need, a
+done need, or a need that already has an open record is refused, the
+error naming the open record. The record — not the need — carries the
+addressee: it is addressed to the pump's own identity
+(`[pump] reply_from`), and admission reads that addressed record, so
+the need itself need not be addressed to the pump; a need addressed to
+any role dispatches the same way. `pump_list` is a read: records
+oldest first, filtered by `need?` and `status?` (`open` default,
+`done`, `all`), `limit?` (1–100, default 50) keeping the newest, with
+`total` counting every match and `truncated` saying so. `pump_show`
+answers one record and its body by handle.
 
 #### Hosted dispatch and priority
 
@@ -566,12 +605,14 @@ has not already observed the record before its priority write.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
-| `pump_priority` | `action` set\|clear\|list; `need?` (set, clear), `level?` (set) | The per-need dispatch priority the running pump reads each tick — the same rows `vivi pump priority` writes, in the configured pump home's `pump.db`. Live operator state, not a config edit: no write guard applies, and a running pump is fine. `set` stores `need` at `level` and returns `{action, need, level}`; `clear` removes the row, `{action, need, level: 0}` (a clear of a key without a row still succeeds); `list` returns `{priorities: [{need, level}…]}`, highest level first, then by need handle. Contradictions are refused before any write: `set` without `level`, a `level` beside `clear`, `need` or `level` beside `list`, an unknown `action`, and a `level` that is not a non-negative JSON integer. `need` stays literal — never looked up, canonicalized or required to exist — so a priority can be pre-seeded for a need that is only sent later; because a dispatch send keys its priority on the record's canonical need, prefer `pump.need` as the key. A project with no `[pump]` table refuses every action; every action, `list` included, needs the `pump_control` authorization |
+| `pump_priority` | `action` set\|clear\|list; `need?` (set, clear), `level?` (set) | The per-need dispatch priority the running pump reads each tick — the same rows `vivi pump priority` writes, in the configured pump home's `pump.db`. Live operator state, not a config edit: no write guard applies, and a running pump is fine. `set` stores `need` at `level` and returns `{action, need, level}`; `clear` removes the row, `{action, need, level: 0}` (a clear of a key without a row still succeeds, as does a `set` at `level: 0` — zero is no priority and removes the row); `list` returns `{priorities: [{need, level}…]}`, highest level first, then by need handle. Contradictions are refused before any write: `set` without `level`, a `level` beside `clear`, `need` or `level` beside `list`, an unknown `action`, and a `level` that is not a non-negative JSON integer. `set` and `clear` write canonically: the `need` argument is an anchor, resolved the way every handle resolves (a full handle or an unambiguous prefix) and held to be a need — a wrong kind is refused before anything is written — and the row is stored under the canonical handle, the same key a dispatch send files its priority under, so keying on the canonical need (a dispatch's `pump.need`) and on a prefix of it are the same row. Every refusal — wrong kind, unknown anchor, contradiction, an exhausted rate window — leaves the store unchanged. A project with no `[pump]` table refuses every action; every action, `list` included, needs the `pump_control` authorization |
 
 Accounting: a dispatched `send` is one write — one audit line, one
 rate-limit token — and the nested record adds no second line;
 `pump_priority` `set` and `clear` are each one audited, rate-limited
-write, and `list` is a read: no audit line and no quota, though the
+write — one audit line per attempted authenticated write, whatever the
+outcome (`ok`, `refused`, `error`), and no second line when the write
+refuses — and `list` is a read: no audit line and no quota, though the
 library may initialize or migrate the store it reads.
 
 Example — dispatch a need at a priority on a hosted project:
@@ -597,8 +638,9 @@ operations, one `pump_priority` call each:
 
 Hosted projects only, operator only — the same rule as the writes above
 — and read-only throughout: no config edit, no record, no letter, so
-none is audited or rate limited. Each calls the same vivi library
-function its CLI command calls and answers the CLI's `--json` body.
+none is audited or rate limited. The CLI-backed reads each call the
+same vivi library function their CLI command calls and answer the
+CLI's `--json` body.
 The live free-slot probe is refused on both tools that take `resolved`:
 it runs the vivi binary's `pool status`, which the server is not, so
 `free` is never answered here.
@@ -617,6 +659,39 @@ it runs the vivi binary's `pool status`, which the server is not, so
 | `target_list` | — | `vivi pump target list`: the configured pump targets, each `{id, path, main, rungs}` |
 | `target_log` | `target?`, `limit?` | The newest commits on a target's main branch (default target: `default`, else the only target), read from its lane on this host: `{target, branch, lane, commits: [{commit, parents, author, date, subject}]}` |
 | `target_show` | `target?`, `commit` | One commit of a target's lane: `{commit, parents, author, date, subject, stat, patch, patch_truncated}`; the patch is cut at 64 KiB. A merge commit returns its stat against the first parent and an empty patch |
+| `need_show` | `handle` | The generic `show` body for the need — item row, rendered text, parsed letter — plus `units`: the unit tasks the backlog graph binds to the need, each `{handle, state}` with its node state, empty while nothing is bound |
+| `need_thread` | `handle`, `limit?` (1–100, default 20), `before?` | The need's thread, one bounded page, newest page by default (shape below) |
+| `task_thread` | `handle`, `limit?` (1–100, default 20), `before?` | The task's thread, one bounded page, newest page by default (shape below) |
+
+The three work reads above share a shape. The `handle` anchor resolves
+the way every handle resolves — a full handle or an unambiguous prefix —
+and the answers key on the canonical handle it names; an unknown anchor
+is refused (`not found: …`), as is a wrong kind (`not a need: …`,
+`not a task: …`). The operator rule is re-checked live on every call,
+exactly as the writes re-check it: a grant demoted to `member` between
+calls loses these reads at once. They are reads and not writes — no
+config edit, no record, no letter — so they take no write audit line
+and no rate token.
+
+The two threads read the anchor's complete linked thread first (no
+traversal cap, never re-sorted), then answer one bounded page of it:
+`limit` letters, the newest page by default, each page oldest-first in
+thread order. `before` pages backwards: it is an exclusive cursor — a
+thread handle (case-insensitive) or a message id of this very thread —
+and only the letters before it are returned; a cursor that names no
+message of the thread is refused (`before: '<cursor>' is not a message
+of this thread`). The answer carries `handle` (the canonical anchor),
+`state` (`open` or `done`), `event` (the item's newest folded lifecycle
+event as `{state, event, heads}`, the fork heads held, or null before
+the first event), `messages` (the generic `thread` row: handle,
+message id, kind, from/to/cc, subject, role, date, marks, trimmed
+body, plus `status` on work kinds and `close_branch`/`close_commit`
+when the letter carries them), `total` (the whole thread's length),
+`truncated`, and `next_before` (the handle the next, older page takes
+as `before`; null once nothing older remains). Reading the whole
+thread before paging keeps the newest letter's evidence whole: a pump
+attempt record at the end of a thread far longer than any page still
+opens the default answer.
 
 #### Host tools
 
