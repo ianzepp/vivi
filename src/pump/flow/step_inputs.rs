@@ -129,16 +129,57 @@ pub fn read_only_job(
         ))
     })?;
     let mut spec = role_job(ctx, run, step, &class.name(), execution, &found.name, brief);
-    make_read_only(ctx, &mut spec);
+    make_read_only(ctx, &mut spec)?;
     Ok(spec)
 }
 
-/// Makes `spec` a read-only job: all targets beside the checkout, the main ref
-/// as the start point.
-pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) {
+/// Makes `spec` a read-only job: all targets beside the checkout, the
+/// resolved main ref as the start point.
+///
+/// The target resolves before `spec` changes: an explicit `spec.target` wins;
+/// otherwise the primary target of the configuration is selected, falling
+/// back to the synthetic legacy `default` when no targets are named. A legacy
+/// repository selection keeps `spec.target` unset; a named selection is
+/// persisted on `spec.target`, and an explicit one is preserved.
+///
+/// # Errors
+/// Returns [`VivariumError::Config`] when the explicit target is unknown, or
+/// when several targets are named without a `default`.
+pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) -> Result<(), VivariumError> {
+    let (target, main) = resolved_target(ctx, spec)?;
     spec.read_only = true;
-    spec.from_ref = Some(ctx.cfg.main.clone());
+    spec.from_ref = Some(main);
     spec.extra_targets = targets(ctx);
+    spec.target = target;
+    Ok(())
+}
+
+/// The effective target of a read-only start and the main ref of its
+/// configuration copy. Every error is decided before any specification
+/// mutation, so a refused start leaves `spec` untouched.
+fn resolved_target(ctx: &Ctx, spec: &JobSpec) -> Result<(Option<String>, String), VivariumError> {
+    let id = match spec.target.clone() {
+        Some(explicit) => explicit,
+        None if ctx.cfg.targets.is_empty() => {
+            // Legacy single-repository settings: the synthetic `default`
+            // target carries the pool's own repository selection, and the
+            // spec stays target-less so the pool checkout is used.
+            let cfg = ctx.cfg.for_target("default").ok_or_else(|| {
+                VivariumError::Config(String::from("legacy config has no default target"))
+            })?;
+            return Ok((None, cfg.main));
+        }
+        None => ctx.cfg.primary_target().ok_or_else(|| {
+            VivariumError::Config(String::from(
+                "several targets are configured and none is named `default`; set the target",
+            ))
+        })?,
+    };
+    let cfg = ctx
+        .cfg
+        .for_target(&id)
+        .ok_or_else(|| VivariumError::Config(format!("target {id} is not configured")))?;
+    Ok((Some(id), cfg.main))
 }
 
 #[cfg(test)]
