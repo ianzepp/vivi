@@ -4,8 +4,11 @@
 //! A band is a model at an effort, never a model alone. A role's `model`
 //! field holds a band string such as `P2-S0`; a task body may carry a
 //! `band:` line that overrides the role's band for one assignment. A pool's
-//! `[pools.<name>.bands]` table (see [`super::config_bands`]) says which
-//! choice serves which band; the `S` speed axis is parsed and ignored.
+//! `[pools.<name>.bands]` table (see [`super::config_bands`]) lists the
+//! model-and-reasoning choices that serve a band; every listed entry takes
+//! a share of the work, sized by its `weight`, so a band's choice is a
+//! weighted sample over the whole list. The `S` speed axis is parsed and
+//! ignored.
 
 pub mod cooldown;
 pub mod guard;
@@ -13,7 +16,7 @@ pub mod live;
 pub mod runtime;
 
 use super::config::PoolConfig;
-use super::config_bands::PoolBands;
+use super::config_bands::{BandChoice, PoolBands};
 use crate::error::VivariumError;
 
 /// The speed suffixes a band string may carry. Parsed and ignored: the S
@@ -45,8 +48,13 @@ fn band_digit(text: &str) -> Option<u8> {
     }
 }
 
+<<<<<<< HEAD
 /// A model-and-reasoning pair a pool offers for a band: one of the band's
 /// configured choices.
+=======
+/// The model-and-reasoning pair a pool offers for a band: one entry of the
+/// band's list, sampled by relative weight.
+>>>>>>> 81f9006dfba42d6e8e514fba5849a2a5ef7ae814
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     /// The band this choice serves, `0` to `5`.
@@ -57,27 +65,127 @@ pub struct Choice {
     pub reasoning: String,
 }
 
+<<<<<<< HEAD
 /// The model-and-reasoning pair `pool` offers for `band`: one of the choices
 /// in the band's list in the pool's `[pools.<name>.bands]` table.
+=======
+/// The model-and-reasoning pair `pool` offers for `band`: one entry of the
+/// band's list in the pool's `[pools.<name>.bands]` table, sampled by
+/// relative weight. No entry is a primary with reserved spares: every
+/// listed entry takes a share of the work. A single-entry band answers
+/// without consulting the entropy source.
+>>>>>>> 81f9006dfba42d6e8e514fba5849a2a5ef7ae814
 ///
 /// # Errors
 /// Returns an error naming the band, the pool and the bands the pool does
 /// serve when the pool has nothing for the band: send the job to a pool that
-/// serves it, or pass `--model`.
+/// serves it, or pass `--model`. Returns an error when the entropy source
+/// fails or the list breaks the shape configuration enforces.
 pub fn choose(config: &PoolConfig, pool: &str, band: u8) -> Result<Choice, VivariumError> {
-    let Some(entry) = config
+    let served = config
         .bands
         .entries
         .get(&format!("P{band}"))
-        .and_then(|list| list.first())
-    else {
+        .filter(|list| !list.is_empty());
+    let Some(list) = served else {
         return Err(not_served(pool, band, &config.bands));
     };
+    let entry = select(list, &mut OsDraw)?;
     Ok(Choice {
         band,
         model: entry.model.clone(),
         reasoning: entry.reasoning.clone(),
     })
+}
+
+/// The most entries of one band's list the sampler serves. Configuration
+/// (`PoolConfig::check_bands`) refuses longer lists before a pool loads;
+/// the sampler refuses them too instead of silently truncating to the
+/// first entries.
+const MAX_ENTRIES: usize = 4;
+
+/// Sample one entry of a band's list by relative weight: the shared seam
+/// `bands::runtime` resolution can call directly, with any [`Draw`] source.
+/// One eligible entry is returned without consulting `draw`; a list longer
+/// than configuration allows is refused, not truncated.
+///
+/// # Errors
+/// Returns a configuration error for an empty or oversized list and the
+/// draw's error when the entropy source fails.
+pub(super) fn select<'a>(
+    choices: &'a [BandChoice],
+    draw: &mut dyn Draw,
+) -> Result<&'a BandChoice, VivariumError> {
+    if choices.is_empty() {
+        return Err(VivariumError::Config(
+            "the band list is empty; it serves no model".to_string(),
+        ));
+    }
+    if choices.len() > MAX_ENTRIES {
+        return Err(VivariumError::Config(format!(
+            "the band list holds {} choices; at most {MAX_ENTRIES} are allowed",
+            choices.len()
+        )));
+    }
+    if let [only] = choices {
+        return Ok(only);
+    }
+    weighted(choices, draw)
+}
+
+/// The weighted draw over a list of two or more entries: a uniform u64
+/// reduced over the weight total, rejection-sampled so the reduction stays
+/// unbiased, then walked over the entries' cumulative shares.
+fn weighted<'a>(
+    choices: &'a [BandChoice],
+    draw: &mut dyn Draw,
+) -> Result<&'a BandChoice, VivariumError> {
+    let total: u64 = choices.iter().map(|c| u64::from(c.weight())).sum();
+    // Values at or above the largest multiple of `total` in the u64 range
+    // would bias the low residues, so they are drawn again.
+    let zone = u64::MAX - u64::MAX % total;
+    loop {
+        let drawn = draw_u64(draw)?;
+        if drawn >= zone {
+            continue;
+        }
+        let mut left = drawn % total;
+        for choice in choices {
+            let share = u64::from(choice.weight());
+            if left < share {
+                return Ok(choice);
+            }
+            left -= share;
+        }
+        // `left` began below `total` and every share was subtracted, so the
+        // walk above always returns; this line is only its exhaustive form.
+        return Ok(&choices[choices.len() - 1]);
+    }
+}
+
+/// One uniform u64 from the draw source, big-endian over eight bytes.
+fn draw_u64(draw: &mut dyn Draw) -> Result<u64, VivariumError> {
+    let mut bytes = [0u8; 8];
+    draw.fill(&mut bytes)?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
+/// A fallible uniform random source: the seam deterministic tests inject
+/// canned or failing sources through, and [`super::runtime`] resolution
+/// shares the sampler behind.
+trait Draw {
+    /// Fill `dest` with uniform random bytes.
+    fn fill(&mut self, dest: &mut [u8]) -> Result<(), VivariumError>;
+}
+
+/// The production draw: the operating system's entropy source.
+struct OsDraw;
+
+impl Draw for OsDraw {
+    fn fill(&mut self, dest: &mut [u8]) -> Result<(), VivariumError> {
+        getrandom::fill(dest)
+            .map_err(|e| VivariumError::Message(format!("the entropy source failed: {e}")))
+    }
 }
 
 fn not_served(pool: &str, band: u8, bands: &PoolBands) -> VivariumError {
