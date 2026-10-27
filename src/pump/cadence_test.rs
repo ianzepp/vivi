@@ -3,7 +3,7 @@ use chrono::TimeZone;
 
 use crate::letter::fixture::{need_body_with, want_body};
 use crate::letter::work::NeedFront;
-use crate::mailspace::SendRequest;
+use crate::mailspace::{RoleUpdate, SendRequest};
 
 fn scan(name: &str, kind: Option<&str>, status: &str, cadence: Option<&str>) -> RoleScan {
     RoleScan {
@@ -221,7 +221,8 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
             String::from("cadence"),
             String::from("subject"),
             String::from("body"),
-        );
+        )
+        .unwrap();
         assert!(spec.read_only, "{kind}");
         assert!(spec.branch.is_none(), "{kind}");
         assert!(spec.target.is_none(), "{kind}");
@@ -229,6 +230,148 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
             spec.from_ref.as_deref(),
             Some(ctx.cfg.main.as_str()),
             "{kind}"
+        );
+    }
+}
+
+/// One cadence `JobSpec` for the direct construction tests.
+fn direct_spec(ctx: &Ctx, kind: &str) -> JobSpec {
+    let mut role = head_role("periodic");
+    role.kind = Some(String::from(kind));
+    role.cadence = Some(String::from("4h"));
+    let scan = scan("periodic", Some(kind), "active", Some("4h"));
+    job_spec(ctx, &role, &scan, 1, 1_000).unwrap()
+}
+
+#[test]
+fn cadence_uses_effective_default_target_main() {
+    // A sole named target is the implicit default for both job kinds; its own
+    // main, not the workspace main, is the start point.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = PumpConfig {
+        targets: BTreeMap::from([(
+            String::from("vivi"),
+            crate::pump::config::PumpTarget {
+                main: String::from("vivi/main"),
+                ..crate::pump::config::PumpTarget::default()
+            },
+        )]),
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = crate::pump::host::test_ctx(dir.path(), cfg);
+    for kind in ["hand", "digest"] {
+        let spec = direct_spec(&ctx, kind);
+        assert_eq!(spec.target.as_deref(), Some("vivi"), "{kind}");
+        assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"), "{kind}");
+        assert!(spec.read_only, "{kind}");
+        assert!(spec.branch.is_none(), "{kind}");
+        assert!(spec.extra_targets.is_empty(), "{kind}");
+        assert_eq!(spec.budget, ctx.cfg.dispatch.budget, "{kind}");
+        assert_eq!(spec.payload["cadence"], "4h", "{kind}");
+        assert_eq!(spec.payload["scheduled_at"], 1_000, "{kind}");
+        assert_eq!(spec.payload["attempt"], 1, "{kind}");
+        assert_eq!(spec.payload["open_wants"], 0, "{kind}");
+        assert_eq!(spec.payload["open_needs"], 0, "{kind}");
+    }
+
+    // An explicit `default` target wins beside another named target.
+    let dir = tempfile::tempdir().unwrap();
+    let target = |main: &str| crate::pump::config::PumpTarget {
+        main: String::from(main),
+        ..crate::pump::config::PumpTarget::default()
+    };
+    let cfg = PumpConfig {
+        targets: BTreeMap::from([
+            (String::from("default"), target("default/main")),
+            (String::from("other"), target("other/main")),
+        ]),
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = crate::pump::host::test_ctx(dir.path(), cfg);
+    let spec = direct_spec(&ctx, "hand");
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some("default/main"));
+    assert!(spec.read_only);
+    assert!(spec.branch.is_none());
+    assert!(spec.extra_targets.is_empty());
+
+    // Legacy config with no named targets keeps target None and starts from
+    // the workspace main, whatever it is named.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = PumpConfig {
+        main: String::from("legacy-main"),
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = crate::pump::host::test_ctx(dir.path(), cfg);
+    let spec = direct_spec(&ctx, "hand");
+    assert!(spec.target.is_none());
+    assert_eq!(spec.from_ref.as_deref(), Some("legacy-main"));
+    assert!(spec.read_only);
+    assert!(spec.branch.is_none());
+    assert!(spec.extra_targets.is_empty());
+}
+
+#[test]
+fn cadence_without_a_resolvable_default_enqueues_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let mut mailspace = Mailspace::init(Some(&project)).unwrap();
+    for name in ["watch-a", "watch-b"] {
+        mailspace
+            .add_role(
+                name,
+                RoleUpdate {
+                    kind: Some(Some(String::from("hand"))),
+                    cadence: Some(Some(String::from("4h"))),
+                    ..RoleUpdate::default()
+                },
+            )
+            .unwrap();
+        mailspace.set_charter(name, "do the work").unwrap();
+    }
+    let target = |main: &str| crate::pump::config::PumpTarget {
+        main: String::from(main),
+        ..crate::pump::config::PumpTarget::default()
+    };
+    let cfg = PumpConfig {
+        targets: BTreeMap::from([
+            (String::from("alpha"), target("alpha/main")),
+            (String::from("beta"), target("beta/main")),
+        ]),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = crate::pump::host::test_ctx(dir.path(), cfg);
+
+    // Direct construction is a Config error: two named targets, no default.
+    let mut role = head_role("periodic");
+    role.kind = Some(String::from("hand"));
+    role.cadence = Some(String::from("4h"));
+    let scan = scan("periodic", Some("hand"), "active", Some("4h"));
+    let error = finish_cadence_spec(
+        &ctx,
+        &role,
+        &scan,
+        1,
+        1_000,
+        String::from("cadence-x-1"),
+        String::from("cadence"),
+        String::from("subject"),
+        String::from("body"),
+    )
+    .unwrap_err();
+    assert!(matches!(error, VivariumError::Config(_)));
+
+    // The real scan logs one failure per due role and enqueues nothing.
+    let mut st = State::default();
+    prepare_due(&ctx, &mut st);
+    assert!(st.jobs.is_empty());
+    assert!(state(&st).runs.is_empty());
+    let logs = host.logs();
+    for name in ["watch-a", "watch-b"] {
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("cadence spec") && line.contains(name)),
+            "no failure logged for {name}: {logs:?}"
         );
     }
 }
