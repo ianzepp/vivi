@@ -473,3 +473,153 @@ fn abandoned_pods_are_stated_with_an_approximate_cost_and_only_when_there_are_an
     };
     assert!(abandoned_text(&unpriced).ends_with("price unknown"));
 }
+
+// ---- section splitting ------------------------------------------------------
+//
+// A reader of a pool result letter splits only on the section headings the
+// pool renders. The round-trip regressions render letters with
+// `collected_text` and split them back apart; the rest drive the splitter
+// directly on hand-written shapes.
+
+/// A finished outcome with the given section bodies.
+fn finished_sections(receipt: &str, stderr: &str, log: &str) -> Outcome {
+    Outcome::Finished(Collected {
+        result: JobResult {
+            fields: BTreeMap::from([
+                ("job".to_string(), "j1".to_string()),
+                ("push".to_string(), "pushed".to_string()),
+                ("branch".to_string(), "factory/a".to_string()),
+                ("sha".to_string(), "b".repeat(40)),
+                ("agent_rc".to_string(), "0".to_string()),
+            ]),
+        },
+        receipt: receipt.into(),
+        stderr: stderr.into(),
+        log: log.into(),
+    })
+}
+
+/// The rendered letter of a finished result with the given section bodies.
+fn letter(receipt: &str, stderr: &str, log: &str) -> String {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    collected_text(&d, &finished_sections(receipt, stderr, log))
+}
+
+/// The sections of a letter as owned pairs, for whole-vector assertions.
+fn section_pairs(text: &str) -> Vec<(&str, &str)> {
+    split_sections(text).1.collect()
+}
+
+#[test]
+fn a_split_round_trip_keeps_a_receipt_with_document_headings_whole() {
+    let receipt = "done\n\n--- Begin document ---\ndoc body\n\n--- title\nafter the lookalike";
+    let text = letter(receipt, "boom\n", "log line\n");
+    let got = section_pairs(&text);
+    assert_eq!(
+        got,
+        vec![
+            (SECTION_RECEIPT, receipt),
+            (SECTION_STDERR, "boom"),
+            (SECTION_RUNNER_LOG, "log line"),
+        ]
+    );
+}
+
+#[test]
+fn omitted_sections_are_absent_and_an_unfollowed_receipt_runs_to_the_end() {
+    let receipt = "to the end\n\n--- and beyond\nstill mine\n";
+    let text = letter(receipt, "", "");
+    let got = section_pairs(&text);
+    assert_eq!(
+        got,
+        vec![(SECTION_RECEIPT, "to the end\n\n--- and beyond\nstill mine")]
+    );
+    let text = letter("kept\n", "", "");
+    let (head, _) = split_sections(&text);
+    assert!(head.contains("pool result j1: finished"), "{head}");
+}
+
+#[test]
+fn explicit_empty_sections_are_recognized_including_a_heading_at_eof() {
+    let (head, sections) =
+        split_sections("sum\n\n--- receipt\n\n--- stderr tail\n\n--- runner log tail");
+    assert_eq!(head, "sum");
+    assert_eq!(
+        sections.collect::<Vec<_>>(),
+        vec![
+            (SECTION_RECEIPT, ""),
+            (SECTION_STDERR, ""),
+            (SECTION_RUNNER_LOG, ""),
+        ]
+    );
+    let (head, sections) = split_sections("sum\n--- receipt");
+    assert_eq!(head, "sum");
+    assert_eq!(sections.collect::<Vec<_>>(), vec![(SECTION_RECEIPT, "")]);
+    let (head, sections) = split_sections("");
+    assert_eq!(head, "");
+    assert_eq!(sections.count(), 0);
+}
+
+#[test]
+fn lookalike_and_incomplete_heading_lines_stay_content() {
+    let (_, sections) = split_sections(
+        "sum\n\n--- receipt\n--- receipt extended\n---receipt\n--- receipt \n\
+         --- stderr tailish\nmine\n\n--- stderr tail\nreal\n",
+    );
+    assert_eq!(
+        sections.collect::<Vec<_>>(),
+        vec![
+            (
+                SECTION_RECEIPT,
+                "--- receipt extended\n---receipt\n--- receipt \n--- stderr tailish\nmine"
+            ),
+            (SECTION_STDERR, "real\n"),
+        ]
+    );
+}
+
+#[test]
+fn repeated_and_backward_headings_inside_a_receipt_stay_content() {
+    let (_, sections) = split_sections(
+        "sum\n\n--- receipt\nmine\n--- receipt\nagain\n--- facts\nbackward\
+         \nstill mine\n\n--- stderr tail\nerr\n\n--- runner log tail\nlog",
+    );
+    assert_eq!(
+        sections.collect::<Vec<_>>(),
+        vec![
+            (
+                SECTION_RECEIPT,
+                "mine\n--- receipt\nagain\n--- facts\nbackward\nstill mine"
+            ),
+            (SECTION_STDERR, "err"),
+            (SECTION_RUNNER_LOG, "log"),
+        ]
+    );
+}
+
+#[test]
+fn a_heading_after_a_single_newline_still_starts_a_section() {
+    let (_, sections) =
+        split_sections("sum\n--- receipt\nmine\n--- stderr tail\nerr\n--- runner log tail\nlog");
+    assert_eq!(
+        sections.collect::<Vec<_>>(),
+        vec![
+            (SECTION_RECEIPT, "mine"),
+            (SECTION_STDERR, "err"),
+            (SECTION_RUNNER_LOG, "log"),
+        ]
+    );
+}
+
+#[test]
+fn separation_beyond_a_blank_line_keeps_the_extra_newlines_as_content() {
+    let (head, sections) = split_sections("sum\n\n\n--- receipt\nmine\n\n\n\n--- stderr tail\nerr");
+    assert_eq!(head, "sum\n");
+    assert_eq!(
+        sections.collect::<Vec<_>>(),
+        vec![(SECTION_RECEIPT, "mine\n\n"), (SECTION_STDERR, "err")]
+    );
+}
