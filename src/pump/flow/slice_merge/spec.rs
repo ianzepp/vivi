@@ -6,6 +6,7 @@
 //! command exits 0.
 
 use crate::error::VivariumError;
+use crate::pool::record;
 use crate::pump::config::DEFAULT_RUNG_TIMEOUT;
 use crate::pump::flow::fanout;
 use crate::pump::flow::index::{RunRow, StepRow};
@@ -54,11 +55,10 @@ pub(crate) fn hand_commit(job: &PoolJob) -> Option<String> {
     {
         return Some(publish.remote_sha);
     }
-    let summary = outcome
-        .receipt
-        .split("\n\n--- ")
+    let (summary, _) = record::split_sections(&outcome.receipt);
+    let summary = summary
+        .split("hand's final message:")
         .next()
-        .and_then(|head| head.split("hand's final message:").next())
         .unwrap_or_default();
     let line = summary
         .lines()
