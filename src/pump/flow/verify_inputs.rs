@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VivariumError;
+use crate::pump::flow::def::{FlowDef, NodeClass};
+use crate::pump::flow::index::StepState;
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
@@ -16,8 +18,24 @@ use crate::pump::store::step_payload::StepPayloadRow;
 /// The planner verdict that marks an admitted plan.
 const PLANNED: &str = "planned";
 
+/// The admitter verdict that admits a plan.
+const ADMITTED: &str = "admitted";
+
 /// The class of an audit step.
 const AUDITOR: &str = "auditor";
+
+/// An admitted plan with the provenance that admitted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdmittedPlan {
+    /// The run whose admission was accepted.
+    pub run: u32,
+    /// The task of the planner step whose document was admitted.
+    pub planner: String,
+    /// The task of the admitter step that answered `admitted`.
+    pub admitter: String,
+    /// The accepted document: the planner step's stored payload body.
+    pub document: String,
+}
 
 /// The need branch of a need and the range an audit reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,23 +159,141 @@ pub fn whole_message_requirements(
         .collect()
 }
 
-/// The newest admitted plan of a need, over every run. Runs restarted at
-/// slice have no planner step, which is why this searches the whole need.
+/// The admitted plan a run at `run` builds on. An admission is a completed
+/// admitter step that answered [`ADMITTED`] whose flow-definition planner
+/// predecessor completed with verdict [`PLANNED`] in the same run; the
+/// accepted document is that planner step's stored payload body, never a
+/// pool reply. The consuming run is searched first; a run restarted at slice
+/// has no admission of its own, so the newest earlier run with a compatible
+/// admission follows. Other needs and runs after `run` are never read, and
+/// an unadmitted revision never replaces an admitted source.
 ///
 /// # Errors
-/// Returns [`VivariumError`] when the store cannot be read.
+/// Returns [`VivariumError`] when the store cannot be read or a matched
+/// planner step carries no payload body.
 pub(crate) fn admitted_plan(
     store: &PumpStore,
     need: &str,
-) -> Result<Option<String>, VivariumError> {
-    let rows = store.step_payloads_of_need(need)?;
-    for row in rows.iter().rev().filter(|row| row.class == "planner") {
-        let planned = store
-            .step_by_task(&row.task)?
-            .is_some_and(|step| step.verdict.as_deref() == Some(PLANNED));
-        if planned {
-            return Ok(row.payload["body"].as_str().map(str::to_string));
+    run: u32,
+    def: &FlowDef,
+) -> Result<Option<AdmittedPlan>, VivariumError> {
+    let pairs = planner_admitter_pairs(def);
+    if pairs.is_empty() {
+        return Ok(None);
+    }
+    if let Some(plan) = admitted_in_run(store, need, run, &pairs)? {
+        return Ok(Some(plan));
+    }
+    let mut earlier: Vec<u32> = store
+        .step_payloads_of_need(need)?
+        .iter()
+        .map(|row| row.run)
+        .filter(|found| *found < run)
+        .collect();
+    earlier.sort_unstable();
+    earlier.dedup();
+    for source in earlier.into_iter().rev() {
+        if let Some(plan) = admitted_in_run(store, need, source, &pairs)? {
+            return Ok(Some(plan));
         }
+    }
+    Ok(None)
+}
+
+/// Every planner/admitter node pair of a flow: each admitter node with the
+/// planner node that feeds it, directly or through one decision node.
+fn planner_admitter_pairs(def: &FlowDef) -> Vec<(String, String)> {
+    let class_of = |id: &str| {
+        def.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| &node.class)
+    };
+    let planner_of = |id: &str| (class_of(id) == Some(&NodeClass::Planner)).then(|| id.to_string());
+    def.nodes
+        .iter()
+        .filter(|node| node.class == NodeClass::Admitter)
+        .filter_map(|admitter| {
+            def.edges
+                .iter()
+                .filter(|edge| edge.to == admitter.id)
+                .find_map(|edge| {
+                    planner_of(&edge.from).or_else(|| planner_feeder(def, &edge.from, &planner_of))
+                })
+                .map(|planner| (planner, admitter.id.clone()))
+        })
+        .collect()
+}
+
+/// The planner feeding `decision`, when `decision` is a decision node.
+fn planner_feeder(
+    def: &FlowDef,
+    decision: &str,
+    planner_of: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let is_decision = def
+        .nodes
+        .iter()
+        .any(|node| node.id == decision && node.class == NodeClass::Decision);
+    if !is_decision {
+        return None;
+    }
+    def.edges
+        .iter()
+        .filter(|edge| edge.to == decision)
+        .find_map(|edge| planner_of(&edge.from))
+}
+
+/// The newest compatible admission of one run: the newest completed
+/// [`ADMITTED`] admitter whose paired planner step, inserted before it,
+/// completed [`PLANNED`] and carries an accepted payload body.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read or the matched
+/// planner step carries no payload body.
+fn admitted_in_run(
+    store: &PumpStore,
+    need: &str,
+    source: u32,
+    pairs: &[(String, String)],
+) -> Result<Option<AdmittedPlan>, VivariumError> {
+    let planner_for = |node: &str| {
+        pairs
+            .iter()
+            .find(|(_, admitter)| admitter == node)
+            .map(|(planner, _)| planner.as_str())
+    };
+    let steps = store.steps_of(need, source)?;
+    for (at, admitter) in steps.iter().enumerate().rev() {
+        let Some(planner_node) = planner_for(&admitter.node) else {
+            continue;
+        };
+        if admitter.state != StepState::Done || admitter.verdict.as_deref() != Some(ADMITTED) {
+            continue;
+        }
+        let Some(planner) = steps[..at].iter().rev().find(|row| {
+            row.node == planner_node
+                && row.state == StepState::Done
+                && row.verdict.as_deref() == Some(PLANNED)
+        }) else {
+            continue;
+        };
+        let payload = store.step_payload(&planner.task)?;
+        let document = payload
+            .as_ref()
+            .and_then(|row| row.payload["body"].as_str())
+            .ok_or_else(|| {
+                VivariumError::Message(format!(
+                    "admitted plan of {need}: planner step {} has no stored payload body",
+                    planner.task
+                ))
+            })?;
+        return Ok(Some(AdmittedPlan {
+            run: source,
+            planner: planner.task.clone(),
+            admitter: admitter.task.clone(),
+            document: document.to_string(),
+        }));
     }
     Ok(None)
 }

@@ -119,6 +119,7 @@ impl Rig {
     fn seed(&self) -> R {
         let rows = [
             ("plan", "planner", "t-plan", Some("planned")),
+            ("admit1", "admitter", "t-admit", Some("admitted")),
             ("audit1", "auditor", "t-audit", Some("block")),
             ("judge1", "judge", "t-judge", Some("block")),
             ("test1", "rung-need", "t-rung", Some("fail")),
@@ -132,6 +133,12 @@ impl Rig {
             .insert_step(NEED, &step("slice:s2", "t-s2", Some("failed")))?;
         let bodies = [
             payload("planner", "plan", "t-plan", json!({ "body": "THE PLAN" })),
+            payload(
+                "admitter",
+                "admit1",
+                "t-admit",
+                json!({ "front": { "answer": "admitted" } }),
+            ),
             payload(
                 "auditor",
                 "audit1",

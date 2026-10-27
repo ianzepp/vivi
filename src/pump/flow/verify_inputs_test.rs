@@ -10,7 +10,9 @@ use super::{
     requirements, rung_report, whole_message_requirements,
 };
 use crate::pump::config::PumpConfig;
+use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::index::{StepRow, StepState};
+use crate::pump::flow::load::load;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -49,36 +51,147 @@ fn payload(task: &str, run: u32, class: &str, body: serde_json::Value) -> StepPa
     }
 }
 
-fn step(task: &str, run: u32, verdict: Option<&str>) -> StepRow {
+fn step(task: &str, run: u32, node: &str, verdict: Option<&str>) -> StepRow {
     StepRow {
         run,
-        node: "plan".into(),
+        node: node.into(),
         task: task.into(),
         state: StepState::Done,
         verdict: verdict.map(str::to_string),
     }
 }
 
-fn record_plan(f: &Fixture, task: &str, run: u32, verdict: &str, text: &str) {
+fn build_def() -> FlowDef {
+    load(FlowKind::Build).expect("build flow")
+}
+
+/// A completed step of `need`.
+fn done(f: &Fixture, run: u32, node: &str, task: &str, verdict: &str) {
     f.store
-        .insert_step(NEED, &step(task, run, Some(verdict)))
+        .insert_step(NEED, &step(task, run, node, Some(verdict)))
         .unwrap();
+}
+
+/// A completed planner step whose stored payload body is the plan document.
+fn planned(f: &Fixture, run: u32, node: &str, task: &str, body: &str) {
+    done(f, run, node, task, "planned");
     f.store
-        .record_step_payload(&payload(task, run, "planner", json!({ "body": text })))
+        .record_step_payload(&StepPayloadRow {
+            need: NEED.into(),
+            run,
+            node: node.into(),
+            class: "planner".into(),
+            task: task.into(),
+            payload: json!({ "body": body }),
+        })
         .unwrap();
+}
+
+/// A completed admitter step that answered `admitted`.
+fn admitted(f: &Fixture, run: u32, node: &str, task: &str) {
+    done(f, run, node, task, "admitted");
 }
 
 #[test]
 fn admitted_plan_is_the_planned_plan_not_an_earlier_revision() {
     let f = fixture();
-    record_plan(&f, "t1", 1, "revised", "plan one");
-    record_plan(&f, "t2", 1, "planned", "plan two");
-    record_plan(&f, "t3", 2, "revised", "plan three");
-    assert_eq!(
-        admitted_plan(&f.store, NEED).unwrap().as_deref(),
-        Some("plan two")
-    );
-    assert_eq!(admitted_plan(&f.store, "other").unwrap(), None);
+    let def = build_def();
+    planned(&f, 1, "plan", "t1", "plan one");
+    admitted(&f, 1, "admit1", "a1");
+    // A later planned revision nobody admitted never replaces the source.
+    planned(&f, 1, "plan2", "t2", "plan two");
+
+    let plan = admitted_plan(&f.store, NEED, 1, &def).unwrap().unwrap();
+    assert_eq!(plan.run, 1);
+    assert_eq!(plan.planner, "t1");
+    assert_eq!(plan.admitter, "a1");
+    assert_eq!(plan.document, "plan one");
+}
+
+#[test]
+fn a_newer_admitted_revision_wins_over_the_first() {
+    let f = fixture();
+    let def = build_def();
+    planned(&f, 1, "plan", "t1", "plan one");
+    admitted(&f, 1, "admit1", "a1");
+    planned(&f, 1, "plan2", "t2", "plan two");
+    admitted(&f, 1, "admit2", "a2");
+
+    let plan = admitted_plan(&f.store, NEED, 1, &def).unwrap().unwrap();
+    assert_eq!(plan.document, "plan two");
+    assert_eq!(plan.planner, "t2");
+    assert_eq!(plan.admitter, "a2");
+}
+
+#[test]
+fn admitted_plan_lookup_is_need_and_run_bounded() {
+    let f = fixture();
+    let def = build_def();
+    // An admission of another need is invisible.
+    f.store
+        .insert_step("other", &step("o1", 1, "plan", Some("planned")))
+        .unwrap();
+    f.store
+        .insert_step("other", &step("o2", 1, "admit1", Some("admitted")))
+        .unwrap();
+    f.store
+        .record_step_payload(&StepPayloadRow {
+            need: "other".into(),
+            run: 1,
+            node: "plan".into(),
+            class: "planner".into(),
+            task: "o1".into(),
+            payload: json!({ "body": "other plan" }),
+        })
+        .unwrap();
+    assert!(admitted_plan(&f.store, NEED, 1, &def).unwrap().is_none());
+
+    // A future run's admission is invisible to the run that consumes it.
+    planned(&f, 3, "plan", "t3", "future plan");
+    admitted(&f, 3, "admit1", "a3");
+    assert!(admitted_plan(&f.store, NEED, 2, &def).unwrap().is_none());
+
+    // The consuming run's own admission is the source.
+    let plan = admitted_plan(&f.store, NEED, 3, &def).unwrap().unwrap();
+    assert_eq!(plan.run, 3);
+    assert_eq!(plan.document, "future plan");
+}
+
+#[test]
+fn a_slice_entry_continuation_takes_the_newest_earlier_admission() {
+    let f = fixture();
+    let def = build_def();
+    planned(&f, 1, "plan", "t1", "plan one");
+    admitted(&f, 1, "admit1", "a1");
+    planned(&f, 2, "plan2", "t2", "plan two");
+    admitted(&f, 2, "admit2", "a2");
+
+    // Run 3 restarted at slice has no admission of its own: the newest
+    // earlier compatible one is the source.
+    let plan = admitted_plan(&f.store, NEED, 3, &def).unwrap().unwrap();
+    assert_eq!(plan.run, 2);
+    assert_eq!(plan.planner, "t2");
+    assert_eq!(plan.document, "plan two");
+}
+
+#[test]
+fn an_admission_without_a_planned_predecessor_is_not_a_source() {
+    let f = fixture();
+    let def = build_def();
+    done(&f, 1, "plan", "t1", "delivered");
+    admitted(&f, 1, "admit1", "a1");
+    assert!(admitted_plan(&f.store, NEED, 1, &def).unwrap().is_none());
+}
+
+#[test]
+fn a_matched_planner_without_a_stored_payload_is_an_error() {
+    let f = fixture();
+    let def = build_def();
+    done(&f, 1, "plan", "t1", "planned");
+    admitted(&f, 1, "admit1", "a1");
+
+    let err = admitted_plan(&f.store, NEED, 1, &def).unwrap_err();
+    assert!(err.to_string().contains("t1"), "{err}");
 }
 
 #[test]
