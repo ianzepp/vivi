@@ -9,7 +9,7 @@ use super::{
 use crate::error::VivariumError;
 use crate::letter::fixture::need_body_with;
 use crate::letter::work::NeedFront;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
@@ -17,6 +17,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::JobSpec;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -195,6 +196,24 @@ fn need_target_is_an_error_on_a_legacy_body_without_front_matter() -> R {
 }
 
 #[test]
+fn need_target_reads_the_original_typed_need() -> R {
+    let mut mail = FakeMail::new("pump");
+    mail.store_need("aimed", Some("vivi"));
+    mail.store_need("plain", None);
+
+    assert_eq!(need_target(&mail, "aimed")?, Some("vivi".to_string()));
+    assert_eq!(need_target(&mail, "plain")?, None);
+
+    let mut broken = FakeMail::new("pump");
+    let missing = need_target(&broken, NEED).unwrap_err();
+    assert!(matches!(missing, VivariumError::Message(_)), "{missing}");
+    stored_body(&mut broken, NEED, "+++\ndone_when = [\n+++\nprose");
+    let malformed = need_target(&broken, NEED).unwrap_err();
+    assert!(matches!(malformed, VivariumError::Message(_)), "{malformed}");
+    Ok(())
+}
+
+#[test]
 fn targets_lists_the_configured_target_ids() -> R {
     let rig = rig()?;
     assert_eq!(targets(&rig.ctx), vec![String::from("default")]);
@@ -280,6 +299,27 @@ fn read_only_job_sets_read_only_from_ref_and_all_targets() -> R {
     Ok(())
 }
 
+/// A bare role job before any read-only shaping: no target, no start ref.
+fn plain_spec(rig: &Rig) -> JobSpec {
+    role_job(
+        &rig.ctx,
+        &rig.run,
+        &row("plan", "t1", StepState::Running),
+        "flow-x",
+        RoleKind::Planner,
+        "pump-planner",
+        "the brief",
+    )
+}
+
+/// An explicit repository target whose only distinguishing field is its main.
+fn target_with_main(main: &str) -> PumpTarget {
+    PumpTarget {
+        main: main.to_string(),
+        ..PumpTarget::default()
+    }
+}
+
 #[test]
 fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     let rig = rig()?;
@@ -296,11 +336,115 @@ fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     assert!(!spec.read_only);
     assert!(spec.from_ref.is_none());
 
-    make_read_only(&rig.ctx, &mut spec);
+    make_read_only(&rig.ctx, &mut spec)?;
 
     assert!(spec.read_only);
     assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
     assert_eq!(spec.extra_targets, targets(&rig.ctx));
+    Ok(())
+}
+
+#[test]
+fn make_read_only_prefers_an_explicit_target_over_the_primary() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(String::from("alpha"), target_with_main("a-main"));
+    cfg.targets
+        .insert(String::from("default"), target_with_main("d-main"));
+    let rig = rig_with(cfg)?;
+    let mut spec = plain_spec(&rig);
+    spec.target = Some("alpha".into());
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref, Some("a-main".to_string()));
+    assert_eq!(spec.target.as_deref(), Some("alpha"));
+    assert_eq!(spec.extra_targets, vec!["alpha".to_string(), "default".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_resolves_a_sole_explicit_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(String::from("solo"), target_with_main("s-main"));
+    let rig = rig_with(cfg)?;
+    let mut spec = plain_spec(&rig);
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref, Some("s-main".to_string()));
+    assert_eq!(spec.target.as_deref(), Some("solo"));
+    assert_eq!(spec.extra_targets, vec!["solo".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_resolves_an_explicit_default_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("default"), target_with_main("d-main"));
+    cfg.targets.insert(String::from("zeta"), target_with_main("z-main"));
+    let rig = rig_with(cfg)?;
+    let mut spec = plain_spec(&rig);
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert_eq!(spec.from_ref, Some("d-main".to_string()));
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.extra_targets, vec!["default".to_string(), "zeta".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_falls_back_to_the_legacy_default_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.main = "legacy-main".into();
+    let rig = rig_with(cfg)?;
+    let mut spec = plain_spec(&rig);
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref, Some("legacy-main".to_string()));
+    assert!(spec.target.is_none());
+    assert_eq!(spec.extra_targets, vec!["default".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_refuses_an_unknown_target_and_leaves_the_spec_unchanged() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(String::from("alpha"), target_with_main("a-main"));
+    let rig = rig_with(cfg)?;
+    let mut spec = plain_spec(&rig);
+    spec.target = Some("nope".into());
+
+    let err = make_read_only(&rig.ctx, &mut spec).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(!spec.read_only);
+    assert!(spec.from_ref.is_none());
+    assert!(spec.extra_targets.is_empty());
+    assert_eq!(spec.target.as_deref(), Some("nope"));
+    Ok(())
+}
+
+#[test]
+fn make_read_only_refuses_an_ambiguous_untargeted_configuration() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(String::from("alpha"), target_with_main("a-main"));
+    cfg.targets.insert(String::from("beta"), target_with_main("b-main"));
+    let rig = rig_with(cfg)?;
+    let mut spec = plain_spec(&rig);
+
+    let err = make_read_only(&rig.ctx, &mut spec).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(!spec.read_only);
+    assert!(spec.from_ref.is_none());
+    assert!(spec.extra_targets.is_empty());
+    assert!(spec.target.is_none());
     Ok(())
 }
 

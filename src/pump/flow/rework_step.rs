@@ -43,7 +43,7 @@ impl StepHandler for ReworkStart {
             SLICER_ROLE,
             &brief,
         );
-        make_read_only(cx.ctx, &mut spec);
+        make_read_only(cx.ctx, &mut spec)?;
         Ok(StartAction::Job(Box::new(spec)))
     }
 }

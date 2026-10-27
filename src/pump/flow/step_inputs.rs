@@ -144,16 +144,24 @@ pub fn read_only_job(
         ))
     })?;
     let mut spec = role_job(ctx, run, step, &class.name(), execution, &found.name, brief);
-    make_read_only(ctx, &mut spec);
+    make_read_only(ctx, &mut spec)?;
     Ok(spec)
 }
 
-/// Makes `spec` a read-only job: all targets beside the checkout, the main ref
-/// as the start point.
-pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) {
+/// Makes `spec` a read-only job: all targets beside the checkout, started at
+/// the job target's main — the explicit `spec.target` wins, else the
+/// configuration's primary target, resolved through
+/// [`crate::pump::config::PumpConfig::for_target`].
+///
+/// # Errors
+/// Returns [`VivariumError::Config`] when `spec` names an unknown target, or
+/// names none while the configuration has several explicit targets and no
+/// `default`. Either failure leaves `spec` unchanged.
+pub fn make_read_only(ctx: &Ctx, spec: &mut JobSpec) -> Result<(), VivariumError> {
+    spec.start_from_target_main(&ctx.cfg)?;
     spec.read_only = true;
-    spec.from_ref = Some(ctx.cfg.main.clone());
     spec.extra_targets = targets(ctx);
+    Ok(())
 }
 
 #[cfg(test)]
