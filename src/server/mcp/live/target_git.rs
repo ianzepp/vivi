@@ -98,6 +98,32 @@ fn commit_json(line: &str) -> Value {
     })
 }
 
+/// The lane path and main branch of `target` in the project at `root`,
+/// for the Git HTTP route. An unknown target names the project's targets.
+pub(crate) fn lane_for(root: &Path, target: &str) -> Result<(PathBuf, String), String> {
+    let mailspace = Mailspace::open_root(root.to_path_buf()).map_err(|e| format!("{e:?}"))?;
+    let cfg: PumpConfig = mailspace
+        .config
+        .pump
+        .ok_or_else(|| "the project has no [pump] table".to_owned())?;
+    let configured = cfg.target_configs();
+    let Some(spec) = configured.get(target) else {
+        let mut names: Vec<&str> = configured.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        return Err(format!(
+            "unknown target {target:?}; the project's targets: {}",
+            names.join(", ")
+        ));
+    };
+    let url = spec
+        .remote_url
+        .as_deref()
+        .ok_or_else(|| format!("target {target:?} has no remote_url naming its lane"))?;
+    let path = lane_path(url, &HostConfig::current())
+        .ok_or_else(|| format!("target {target:?}: lane {url} is not on this host"))?;
+    Ok((path, spec.main.clone()))
+}
+
 /// One target's lane on this host and its main branch.
 struct Lane {
     target: String,

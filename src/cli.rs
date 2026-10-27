@@ -361,6 +361,17 @@ pub enum DeliveryCommand {
 pub enum KeyCommand {
     /// Print the public key and fingerprint (makes the key on first use)
     Show,
+
+    /// Git credential helper: signs in with this machine's key and hands git
+    /// a fresh session token. Enable it for one server only, replacing any
+    /// other helper (a keychain helper would keep an old token):
+    /// `git config --global credential.http://<server>.helper ''` then
+    /// `git config --global --add credential.http://<server>.helper '!vivi key git-credential'`
+    /// (git passes the action: get, store or erase)
+    GitCredential {
+        /// get | store | erase
+        action: String,
+    },
 }
 
 /// `vivi server pump` actions.

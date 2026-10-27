@@ -91,6 +91,13 @@ fn main() {
         }
         return;
     }
+    if let Command::Key {
+        command: vivi::cli::KeyCommand::GitCredential { action },
+    } = &cli.command
+    {
+        git_credential(action);
+        return;
+    }
     if let Command::Server {
         command: ServerSubcommand::Pump { action },
     } = cli.command
@@ -217,5 +224,45 @@ fn run_update_check() -> Result<(), VivariumError> {
             eprintln!("error: {error}");
             process::exit(2);
         }
+    }
+}
+
+/// `vivi key git-credential <get|store|erase>`: git's credential-helper
+/// protocol over this machine's key.
+fn git_credential(action: &str) {
+    use std::io::Read;
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let field = |name: &str| {
+        input
+            .lines()
+            .find_map(|line| line.strip_prefix(name).and_then(|rest| rest.strip_prefix('=')))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (protocol, host) = (field("protocol"), field("host"));
+    if protocol.is_empty() || host.is_empty() {
+        return;
+    }
+    let server = format!("{protocol}://{host}");
+    match action {
+        // Always a fresh sign-in: git does not retry after a 401, so a cached
+        // token a restarted server no longer knows would fail the command.
+        "get" => match vivi::machine_key::forget(&server, false)
+            .and_then(|()| vivi::machine_key::sign_in(&server, false))
+        {
+            Ok(token) => {
+                println!("username=vivi");
+                println!("password={token}");
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        },
+        "erase" => {
+            let _ = vivi::machine_key::forget(&server, false);
+        }
+        _ => {}
     }
 }

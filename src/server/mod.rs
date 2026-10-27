@@ -10,6 +10,7 @@ pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod entry;
+pub mod git_http;
 pub mod grants;
 pub mod hardening;
 pub mod hosted;
@@ -179,6 +180,12 @@ pub fn router(state: AppState) -> Router {
             post(machine_auth::challenge_handler),
         )
         .route("/v1/auth/machine/verify", post(machine_auth::verify_handler))
+        // Git smart HTTP over each project's lanes: /git/<project>/<target>.git/...
+        .route(
+            "/git/{*path}",
+            axum::routing::any(git_http::git_handler)
+                .layer(DefaultBodyLimit::max(git_http::BODY_LIMIT)),
+        )
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(

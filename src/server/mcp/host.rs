@@ -298,7 +298,7 @@ pub(super) fn hosted_metas(state: &AppState) -> Vec<ProjectMeta> {
 
 /// The hosted project metadata named `name` (as [`super::server::hosted_name]
 /// spells it), served or retired, archived or not.
-pub(super) fn hosted_entry(state: &AppState, name: &str) -> Option<ProjectMeta> {
+pub(crate) fn hosted_entry(state: &AppState, name: &str) -> Option<ProjectMeta> {
     hosted_metas(state)
         .into_iter()
         .find(|meta| super::server::hosted_name(meta).as_deref() == Some(name))

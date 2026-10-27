@@ -9,7 +9,7 @@
 
 pub mod host;
 pub mod letters;
-mod live;
+pub(crate) mod live;
 mod send_options;
 pub mod server;
 mod tool_schema;

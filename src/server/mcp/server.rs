@@ -98,7 +98,7 @@ pub async fn server_mcp_handler(
 /// live server key. Identity tokens never carry the `vivi_` key prefix, so
 /// anything else is told that `/v1/mcp` needs a server key; an unknown
 /// `vivi_` secret is the generic invalid bearer.
-fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Response> {
+pub(crate) fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Response> {
     if let Some(expected) = state.host_operator_token.as_deref()
         && constant_time_eq(bearer, expected)
     {
@@ -337,8 +337,8 @@ pub(super) async fn call_tool(
 }
 
 /// One grant the call resolved to, ready to dispatch.
-struct Resolved {
-    project_id: String,
+pub(crate) struct Resolved {
+    pub(crate) project_id: String,
     identity: IdentityRecord,
     /// The vivi identity the key acts as on this project.
     acting_as: Option<String>,
@@ -457,7 +457,7 @@ async fn project_tool(
 /// so an archived grant still resolves (and is then refused as archived by
 /// [`live_grant`]). No match and unknown project share one text. The
 /// returned project id always comes from the grant, never from `named`.
-fn resolve_grant(
+pub(crate) fn resolve_grant(
     state: &AppState,
     grants: &[GrantRecord],
     named: &str,
@@ -530,7 +530,7 @@ fn dead_chat(meta: &ProjectMeta) -> bool {
 
 /// A hosted project's name: its root directory name, else its mailspace
 /// config `name`. Durable and chat projects resolve by id only.
-pub(super) fn hosted_name(meta: &ProjectMeta) -> Option<String> {
+pub(crate) fn hosted_name(meta: &ProjectMeta) -> Option<String> {
     if dead_chat(meta) {
         return None;
     }

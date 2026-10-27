@@ -25,7 +25,7 @@ mod pump_record;
 mod read;
 mod role_write;
 mod send_dispatch;
-mod target_git;
+pub(crate) mod target_git;
 mod views;
 mod write;
 
