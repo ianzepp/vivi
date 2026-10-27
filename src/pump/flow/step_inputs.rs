@@ -103,12 +103,26 @@ pub fn predecessor_step(
         .rfind(|row| row.state == StepState::Done && is_class(&row.node) && feeds(&row.node)))
 }
 
-/// A read-only job for a role step: all targets beside the checkout, the main
-/// ref as the start point. The budget comes from the node's class.
+/// The `target:` of `need`'s root letter, or `None` when it names none.
 ///
 /// # Errors
-/// Returns [`VivariumError::Config`] when `role` is missing or not active, or
-/// when `class` is not a role class.
+/// Returns [`VivariumError`] when the root body cannot be read or is not a
+/// valid need letter; `need` is named in any parsing error.
+pub fn need_target(mail: &dyn SliceMail, need: &str) -> Result<Option<String>, VivariumError> {
+    let body = mail.task_body(need)?;
+    let envelope = crate::letter::read::need_of(need, &body)
+        .map_err(|error| VivariumError::Message(format!("need {need}: {error}")))?;
+    Ok(envelope.front.target)
+}
+
+/// A read-only job for a role step: all targets beside the checkout, the main
+/// ref of `target` as the start point. The budget comes from the node's class.
+/// `target` is the need's own target; `None` resolves the primary (or named
+/// `default`) target of the configuration.
+///
+/// # Errors
+/// Returns [`VivariumError::Config`] when `role` is missing or not active,
+/// when `class` is not a role class, or when `target` cannot be resolved.
 pub fn read_only_job(
     ctx: &Ctx,
     run: &RunRow,
@@ -116,6 +130,7 @@ pub fn read_only_job(
     class: &NodeClass,
     role: &str,
     brief: &str,
+    target: Option<String>,
 ) -> Result<JobSpec, VivariumError> {
     let found = ctx
         .routing
@@ -129,6 +144,7 @@ pub fn read_only_job(
         ))
     })?;
     let mut spec = role_job(ctx, run, step, &class.name(), execution, &found.name, brief);
+    spec.target = target;
     make_read_only(ctx, &mut spec)?;
     Ok(spec)
 }

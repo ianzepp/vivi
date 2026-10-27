@@ -150,7 +150,7 @@ fn job(
     mode: Mode,
     brief: &str,
 ) -> Result<JobSpec, VivariumError> {
-    let mut spec = read_only_job(ctx, run, row, &NodeClass::Slicer, SLICER_ROLE, brief)?;
+    let mut spec = read_only_job(ctx, run, row, &NodeClass::Slicer, SLICER_ROLE, brief, None)?;
     spec.id = format!("reslice-{}-a1", row.task);
     spec.kind = KIND.to_owned();
     spec.task = Some(row.task.clone());

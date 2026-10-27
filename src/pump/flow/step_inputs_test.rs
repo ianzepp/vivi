@@ -3,10 +3,12 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
-    role_job, step_replies, targets,
+    POOL_RESULT_MARKER, done_step, make_read_only, need_target, need_thread, predecessor_step,
+    read_only_job, role_job, step_replies, targets,
 };
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -162,6 +164,7 @@ fn read_only_job_refuses_a_missing_role() -> R {
         &NodeClass::Planner,
         "nobody",
         "brief",
+        None,
     )
     .unwrap_err();
 
@@ -182,6 +185,7 @@ fn read_only_job_sets_read_only_from_ref_and_all_targets() -> R {
         &NodeClass::Planner,
         "pump-planner",
         "the brief",
+        None,
     )?;
 
     assert!(spec.read_only);
@@ -467,6 +471,7 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
         &NodeClass::Planner,
         "pump-planner",
         "b",
+        None,
     )?;
     assert_eq!(planner.budget, 90);
     // The class-based job still carries the read-only checkout context.
@@ -482,6 +487,7 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
         &NodeClass::Merge,
         "pump-planner",
         "b",
+        None,
     )?;
     assert_eq!(merge.budget, 777);
     assert_eq!(merge.budget, rig.ctx.cfg.dispatch.budget);
@@ -494,8 +500,91 @@ fn read_only_job_resolves_the_budget_from_the_node_class() -> R {
         &NodeClass::Decision,
         "pump-planner",
         "b",
+        None,
     )
     .unwrap_err();
     assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    Ok(())
+}
+
+#[test]
+fn need_target_reads_the_target_of_the_root_need_letter() -> R {
+    let mut mail = FakeMail::new("pump");
+    let mut front = NeedFront::new(vec![String::from("done")]);
+    front.target = Some(String::from("vivi"));
+    let targeted = mail.send_step(
+        "pump",
+        "pump",
+        "targeted",
+        &need_body_with(&front, "prose"),
+        &[],
+    )?;
+    let plain = mail.send_step(
+        "pump",
+        "pump",
+        "plain",
+        &need_body_with(&NeedFront::new(vec![String::from("done")]), "prose"),
+        &[],
+    )?;
+
+    assert_eq!(need_target(&mail, &targeted)?, Some(String::from("vivi")));
+    assert_eq!(need_target(&mail, &plain)?, None);
+    Ok(())
+}
+
+#[test]
+fn need_target_fails_on_a_missing_root_or_a_malformed_letter() -> R {
+    let mut mail = FakeMail::new("pump");
+    let broken = mail.send_step(
+        "pump",
+        "pump",
+        "broken",
+        "+++\ndone_when = 5\n+++\nprose",
+        &[],
+    )?;
+
+    // A root that is not in this mailspace is an error, never a target.
+    let err = need_target(&mail, "ghost").unwrap_err();
+    assert!(err.to_string().contains("ghost"), "{err}");
+
+    // A malformed letter is an error naming the need, never a target.
+    let err = need_target(&mail, &broken).unwrap_err();
+    assert!(err.to_string().contains(&broken), "{err}");
+    Ok(())
+}
+
+#[test]
+fn read_only_job_starts_from_the_main_of_the_explicit_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("workspace-main");
+    for (id, main) in [("default", "workspace-main"), ("vivi", "vivi-main")] {
+        cfg.targets.insert(
+            id.to_owned(),
+            PumpTarget {
+                main: main.to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let rig = rig_with(cfg)?;
+    let step = row("plan", "t1", StepState::Running);
+
+    let spec = read_only_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        &NodeClass::Planner,
+        "pump-planner",
+        "the brief",
+        Some(String::from("vivi")),
+    )?;
+
+    // The explicit target wins over the primary selection and carries its
+    // own main as the start ref; the rest of the job is unchanged.
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi-main"));
+    assert!(spec.read_only);
+    assert_eq!(spec.extra_targets, targets(&rig.ctx));
+    assert_eq!(spec.task.as_deref(), Some("t1"));
     Ok(())
 }

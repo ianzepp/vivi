@@ -28,6 +28,7 @@ impl StepHandler for AdmitterStep {
             &NodeClass::Admitter,
             ADMITTER_ROLE,
             &brief,
+            None,
         )?;
         Ok(StartAction::Job(Box::new(spec)))
     }
