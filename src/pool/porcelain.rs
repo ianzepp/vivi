@@ -11,7 +11,8 @@
 //!
 //! Every line that is about a pool carries POOL, the pool's name: it is the
 //! first field after the line kind, except on the lines that lead with TASK
-//! (`dispatched`, `collected`, `reconciled`), where it follows TASK.
+//! (`dispatched`, `collected`, `reconciled`, `waiting`), where it follows
+//! TASK.
 //!
 //! ```text
 //! pool create    home POOL TEXT                                   (only when the home was made)
@@ -30,6 +31,9 @@
 //!                                                                  works because they did not answer on SSH in time (0 on
 //!                                                                  every other host); COST: their approximate total charge
 //!                                                                  in dollars, `0.12`, or - when none or no price known
+//!                waiting TASK POOL REASON RETRY_AT                 REASON: model-cap|provider-cooldown|band-unavailable|
+//!                                                                  dispatch-busy; RETRY_AT: epoch seconds, or - when the
+//!                                                                  block has no deadline
 //! pool wait      collected TASK POOL SLOT STATE DETAIL             STATE: finished|timeout|lost
 //!                nothing-open
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED     KIND: poll-error
@@ -56,6 +60,7 @@
 //! recorded without one (made before pools were named), or an issue that is
 //! not about one pool.
 
+use super::bands::runtime::{Wait, WaitReason};
 use super::collect::RoundLine;
 use super::doctor::{Check, Counts};
 use super::progress::Issue;
@@ -150,6 +155,79 @@ pub fn refused_reason(output: &str) -> Option<String> {
             let (_task, rest) = next_token(rest)?;
             next_token(rest).map(|(reason, _)| reason)
         })
+}
+
+/// One parsed `waiting` line: a dispatch that could not start yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    /// The task the dispatch was for.
+    pub task: String,
+    /// The pool the dispatch asked.
+    pub pool: String,
+    /// Why the dispatch must wait.
+    pub reason: WaitReason,
+    /// The absolute epoch second after which asking again may succeed,
+    /// when the block has a deadline.
+    pub retry_at: Option<u64>,
+}
+
+/// `waiting TASK POOL REASON RETRY_AT`: the dispatch could not start yet.
+/// `REASON` is a stable [`WaitReason`] word; `RETRY_AT` is epoch seconds,
+/// or `-` when the block has no deadline.
+#[must_use]
+pub fn waiting(task: &str, pool: &str, wait: &Wait) -> String {
+    let fields = [
+        quote(task),
+        quote(pool),
+        wait.reason.word().to_string(),
+        num(wait.retry_at),
+    ];
+    line("waiting", &fields)
+}
+
+/// The first complete `waiting TASK POOL REASON RETRY_AT` line in command
+/// output, as a [`Waiting`]. A line only parses when every field is present
+/// and well formed and nothing follows: the human heartbeat lines that begin
+/// with `waiting` are not dispatch waits and do not parse as one.
+#[must_use]
+pub fn parse_waiting(output: &str) -> Option<Waiting> {
+    output.lines().find_map(|l| {
+        let rest = l.strip_prefix("waiting ")?;
+        let (task, rest) = next_token(rest)?;
+        let (pool, rest) = next_token(rest)?;
+        let (reason, rest) = next_token(rest)?;
+        let reason = wait_reason(&reason)?;
+        let (retry, rest) = next_token(rest)?;
+        if !rest.trim().is_empty() {
+            return None;
+        }
+        let retry_at = match retry.as_str() {
+            "-" => None,
+            _ => {
+                let Ok(secs) = retry.parse::<u64>() else {
+                    return None;
+                };
+                Some(secs)
+            }
+        };
+        Some(Waiting {
+            task,
+            pool,
+            reason,
+            retry_at,
+        })
+    })
+}
+
+/// The [`WaitReason`] the stable word names, or `None` for anything else.
+fn wait_reason(word: &str) -> Option<WaitReason> {
+    match word {
+        "model-cap" => Some(WaitReason::ModelCap),
+        "provider-cooldown" => Some(WaitReason::ProviderCooldown),
+        "band-unavailable" => Some(WaitReason::BandUnavailable),
+        "dispatch-busy" => Some(WaitReason::DispatchBusy),
+        _ => None,
+    }
 }
 
 /// One value of a line (see [`quote`]) and the text after it.
