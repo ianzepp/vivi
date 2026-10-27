@@ -7,7 +7,7 @@ use super::{
     role_job, step_replies, targets,
 };
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -209,11 +209,179 @@ fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     assert!(!spec.read_only);
     assert!(spec.from_ref.is_none());
 
-    make_read_only(&rig.ctx, &mut spec);
+    make_read_only(&rig.ctx, &mut spec)?;
 
     assert!(spec.read_only);
     assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
     assert_eq!(spec.extra_targets, targets(&rig.ctx));
+    Ok(())
+}
+
+/// A read-only planner spec on a rig.
+fn spec_for(rig: &Rig) -> crate::pump::jobs::JobSpec {
+    role_job(
+        &rig.ctx,
+        &rig.run,
+        &row("plan", "t1", StepState::Running),
+        "flow-x",
+        RoleKind::Planner,
+        "pump-planner",
+        "the brief",
+    )
+}
+
+#[test]
+fn make_read_only_preserves_explicit_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("workspace-main");
+    cfg.targets.insert(
+        String::from("default"),
+        PumpTarget {
+            main: String::from("workspace-main"),
+            ..PumpTarget::default()
+        },
+    );
+    cfg.targets.insert(
+        String::from("vivi"),
+        PumpTarget {
+            main: String::from("vivi-main"),
+            ..PumpTarget::default()
+        },
+    );
+    let rig = rig_with(cfg)?;
+    let mut spec = spec_for(&rig);
+    spec.target = Some(String::from("vivi"));
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi-main"));
+    assert_eq!(
+        spec.extra_targets,
+        vec![String::from("default"), String::from("vivi")]
+    );
+
+    // An explicit `default` is a named target like any other and keeps its
+    // own main.
+    let mut default_spec = spec_for(&rig);
+    default_spec.target = Some(String::from("default"));
+
+    make_read_only(&rig.ctx, &mut default_spec)?;
+
+    assert_eq!(default_spec.target.as_deref(), Some("default"));
+    assert_eq!(default_spec.from_ref.as_deref(), Some("workspace-main"));
+    Ok(())
+}
+
+#[test]
+fn read_only_target_resolution_rejects_unknown_or_ambiguous_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("vivi"),
+        PumpTarget {
+            main: String::from("vivi-main"),
+            ..PumpTarget::default()
+        },
+    );
+    let rig = rig_with(cfg)?;
+    let mut unknown = spec_for(&rig);
+    unknown.target = Some(String::from("ghost"));
+
+    let err = make_read_only(&rig.ctx, &mut unknown).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    // The refused resolution leaves the specification untouched.
+    assert!(!unknown.read_only);
+    assert!(unknown.from_ref.is_none());
+    assert!(unknown.extra_targets.is_empty());
+    assert_eq!(unknown.target.as_deref(), Some("ghost"));
+
+    let mut ambiguous_cfg = PumpConfig::default();
+    for id in ["one", "two"] {
+        ambiguous_cfg.targets.insert(
+            id.to_owned(),
+            PumpTarget {
+                main: format!("{id}-main"),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let rig = rig_with(ambiguous_cfg)?;
+    let mut ambiguous = spec_for(&rig);
+
+    let err = make_read_only(&rig.ctx, &mut ambiguous).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(!ambiguous.read_only);
+    assert!(ambiguous.from_ref.is_none());
+    assert!(ambiguous.extra_targets.is_empty());
+    assert!(ambiguous.target.is_none());
+    Ok(())
+}
+
+#[test]
+fn read_only_legacy_start_preserves_pool_repository_selection() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("trunk-legacy");
+    let rig = rig_with(cfg)?;
+    let mut spec = spec_for(&rig);
+    assert!(spec.target.is_none());
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert!(spec.target.is_none());
+    assert_eq!(spec.from_ref.as_deref(), Some("trunk-legacy"));
+    assert_eq!(spec.extra_targets, vec![String::from("default")]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_persists_an_implicitly_selected_sole_target() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("workspace-main");
+    cfg.targets.insert(
+        String::from("app"),
+        PumpTarget {
+            main: String::from("app-main"),
+            ..PumpTarget::default()
+        },
+    );
+    let rig = rig_with(cfg)?;
+    let mut spec = spec_for(&rig);
+    assert!(spec.target.is_none());
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.target.as_deref(), Some("app"));
+    assert_eq!(spec.from_ref.as_deref(), Some("app-main"));
+    assert_eq!(spec.extra_targets, vec![String::from("app")]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_selects_a_named_default_target_without_an_explicit_one() -> R {
+    let mut cfg = PumpConfig::default();
+    for (id, main) in [("gradus", "gradus-main"), ("default", "default-main")] {
+        cfg.targets.insert(
+            id.to_owned(),
+            PumpTarget {
+                main: main.to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let rig = rig_with(cfg)?;
+    let mut spec = spec_for(&rig);
+    assert!(spec.target.is_none());
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some("default-main"));
     Ok(())
 }
 
