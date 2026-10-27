@@ -17,6 +17,7 @@ fn paths() -> MindPaths {
 fn empty_file_is_observe_with_defaults() {
     let config = parse("", paths()).unwrap();
     assert_eq!(config.authority, AuthorityStage::Observe);
+    assert_eq!(config.human_only, HUMAN_ONLY_CATEGORIES.to_vec());
     assert_eq!(config.heartbeat, "30m");
     assert_eq!(config.heartbeat_secs, 1800);
     assert_eq!(config.proxy_url, DEFAULT_PROXY_URL);
@@ -28,6 +29,45 @@ fn empty_file_is_observe_with_defaults() {
         PathBuf::from("/home/mind/sessions")
     );
     assert_eq!(config.paths.state, PathBuf::from("/home/mind/state.json"));
+}
+
+#[test]
+fn human_only_defaults_and_overrides() {
+    // Omitted: every category, in canonical order.
+    let config = parse("", paths()).unwrap();
+    assert_eq!(config.human_only, HUMAN_ONLY_CATEGORIES.to_vec());
+    // An explicit subset is kept verbatim.
+    let config = parse("human_only = [\"releases\", \"credentials\"]", paths()).unwrap();
+    assert_eq!(
+        config.human_only,
+        vec![HumanOnlyCategory::Releases, HumanOnlyCategory::Credentials,]
+    );
+    // The empty list means no categories are human-only.
+    let config = parse("human_only = []", paths()).unwrap();
+    assert_eq!(config.human_only, Vec::new());
+    // The written names round-trip.
+    let config = parse(
+        "human_only = [\"spending-and-accounts\", \"host-root\", \"product-intent\"]",
+        paths(),
+    )
+    .unwrap();
+    assert_eq!(
+        config.human_only,
+        vec![
+            HumanOnlyCategory::SpendingAndAccounts,
+            HumanOnlyCategory::HostRoot,
+            HumanOnlyCategory::ProductIntent,
+        ]
+    );
+    for (text, want) in [
+        ("human_only = [\"bank-account\"]", "unknown variant"),
+        ("human_only = \"credentials\"", "invalid type"),
+        ("human_only = [7]", "wanted string or table"),
+    ] {
+        let said = parse(text, paths()).unwrap_err().to_string();
+        assert!(said.contains("invalid mind.toml"), "{text:?}: {said}");
+        assert!(said.contains(want), "{text:?}: {said}");
+    }
 }
 
 #[test]
