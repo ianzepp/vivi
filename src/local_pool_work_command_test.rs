@@ -181,6 +181,142 @@ fn an_unknown_ref_is_an_error_naming_the_ref_and_the_repository() {
     );
 }
 
+/// A bare `file://` origin with `main`, the need branch `needs/42` and the
+/// archive branch `archive/prior-42`, each on its own commit; returns the
+/// directory, the address, and the main, need and archive commits.
+fn origin_with_branches() -> (tempfile::TempDir, String, String, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    let bare = dir.path().join("origin.git");
+    std::fs::create_dir(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&work)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@localhost")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@localhost")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a.txt"), "one\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+    let main = commit_of(&work, "main");
+    git(&["checkout", "-q", "-b", "needs/42"]);
+    std::fs::write(work.join("a.txt"), "need\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "need"]);
+    let need = commit_of(&work, "needs/42");
+    git(&["checkout", "-q", "-b", "archive/prior-42", "main"]);
+    std::fs::write(work.join("a.txt"), "prior\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "prior"]);
+    let archive = commit_of(&work, "archive/prior-42");
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["clone", "-q", "--bare"])
+        .arg(&work)
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    (
+        dir,
+        format!("file://{}", bare.display()),
+        main,
+        need,
+        archive,
+    )
+}
+
+#[test]
+fn git_start_resolves_slash_containing_from_and_extra_refs_against_the_origin() {
+    let (_dir, url, _main, need, archive) = origin_with_branches();
+    let mut plan = plan_with(&["archive/prior-42"]);
+    plan.read_only = true;
+    plan.target = Some(dispatch::target::JobTarget {
+        id: "t".into(),
+        source: url.clone(),
+        publish_remote: None,
+        cache_key: "k".into(),
+        local_source: None,
+        seed: Vec::new(),
+        requires: Vec::new(),
+        build_dir: None,
+    });
+    plan.refs.from = "needs/42".into();
+
+    let (secret, start) = git_start(
+        &url,
+        &mut plan,
+        &DispatchFlags::default(),
+        &Progress::silent(),
+    )
+    .unwrap();
+
+    assert_eq!(start, need, "the returned start is the need branch tip");
+    assert_eq!(secret.expose(), "", "a plain Git remote carries no token");
+    assert_eq!(
+        plan.refs.from, need,
+        "an explicitly targeted plan carries the resolved commit as from"
+    );
+    assert_eq!(
+        plan.with,
+        vec![job::WithRef {
+            name: "archive/prior-42".into(),
+            commit: archive.clone(),
+        }],
+        "the extra keeps its name and carries its branch tip"
+    );
+    assert_ne!(archive, need, "the branches hold different commits");
+}
+
+#[test]
+fn git_start_refuses_an_unknown_from_before_any_submission() {
+    let (_dir, url, ..) = origin_with_branches();
+    let mut plan = plan_with(&[]);
+    plan.read_only = true;
+    plan.refs.from = "needs/nope".into();
+
+    let err = git_start(
+        &url,
+        &mut plan,
+        &DispatchFlags::default(),
+        &Progress::silent(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("no branch or tag \"needs/nope\""), "{err}");
+}
+
+#[test]
+fn git_start_refuses_an_unknown_extra_ref_before_any_submission() {
+    let (_dir, url, ..) = origin_with_branches();
+    let mut plan = plan_with(&["archive/nope"]);
+    plan.read_only = true;
+    plan.refs.from = "needs/42".into();
+
+    let err = git_start(
+        &url,
+        &mut plan,
+        &DispatchFlags::default(),
+        &Progress::silent(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("no branch or tag \"archive/nope\""), "{err}");
+}
+
 /// A finished dispatch record, the way `dispatch` builds one: the `with`
 /// entries already carry their resolved commit, cut to 12 hex digits.
 fn record(with: &[String]) -> vivi::pool::record::DispatchRecord {

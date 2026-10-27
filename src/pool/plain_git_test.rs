@@ -99,9 +99,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A bare remote with `main`, a `feature` branch one commit ahead, and an
-/// annotated tag `v1` on `main`; returns its `file://` address and commits.
-fn remote() -> (tempfile::TempDir, String, String, String) {
+/// A bare remote with `main`, a `feature` branch one commit ahead, the
+/// slash-containing branches `needs/42` and `archive/prior-42` each on their
+/// own commit, and an annotated tag `v1` on `main`; returns its `file://`
+/// address and the branch commits.
+fn remote() -> (tempfile::TempDir, String, String, String, String, String) {
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     let bare = dir.path().join("remote.git");
@@ -113,6 +115,15 @@ fn remote() -> (tempfile::TempDir, String, String, String) {
     git(&work, &["checkout", "-q", "-b", "feature"]);
     git(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
     let feature = git(&work, &["rev-parse", "HEAD"]);
+    git(&work, &["checkout", "-q", "-b", "needs/42", "main"]);
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "need work"]);
+    let need = git(&work, &["rev-parse", "HEAD"]);
+    git(&work, &["checkout", "-q", "-b", "archive/prior-42", "main"]);
+    git(
+        &work,
+        &["commit", "-q", "--allow-empty", "-m", "prior work"],
+    );
+    let archive = git(&work, &["rev-parse", "HEAD"]);
     git(
         dir.path(),
         &[
@@ -125,12 +136,12 @@ fn remote() -> (tempfile::TempDir, String, String, String) {
     );
     git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let url = format!("file://{}", bare.display());
-    (dir, url, main, feature)
+    (dir, url, main, feature, need, archive)
 }
 
 #[test]
 fn refs_resolve_against_a_real_remote() {
-    let (_dir, url, main, feature) = remote();
+    let (_dir, url, main, feature, ..) = remote();
     assert_eq!(default_branch(&url).unwrap(), "main");
     assert_eq!(resolve_base(&url, None).unwrap(), main);
     assert_eq!(resolve_base(&url, Some("main")).unwrap(), main);
@@ -147,8 +158,27 @@ fn refs_resolve_against_a_real_remote() {
 }
 
 #[test]
+fn slash_containing_branch_names_resolve_against_a_real_remote() {
+    let (_dir, url, main, _feature, need, archive) = remote();
+    assert_ne!(need, main);
+    assert_ne!(archive, main);
+    assert_eq!(resolve_base(&url, Some("needs/42")).unwrap(), need);
+    assert_eq!(
+        resolve_base(&url, Some("archive/prior-42")).unwrap(),
+        archive
+    );
+    let unknown = resolve_base(&url, Some("needs/nope"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unknown.contains("no branch or tag \"needs/nope\""),
+        "{unknown}"
+    );
+}
+
+#[test]
 fn unknown_abbreviated_and_unsafe_refs_are_refused() {
-    let (_dir, url, main, _) = remote();
+    let (_dir, url, main, ..) = remote();
     let unknown = resolve_base(&url, Some("nope")).unwrap_err().to_string();
     assert!(unknown.contains("no branch or tag \"nope\""), "{unknown}");
     let short = resolve_base(&url, Some(&main[..12]))
