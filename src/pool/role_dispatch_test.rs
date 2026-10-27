@@ -817,3 +817,299 @@ fn a_role_value_that_is_neither_band_nor_harness_model_is_refused() {
     assert!(message.contains("nope/model"), "got: {message}");
     assert!(message.contains("harness.models"), "got: {message}");
 }
+
+/// Resolve through the two steps: normalize first, selection second.
+fn through_intent(config: &PoolConfig, input: &Input) -> Resolved {
+    let intent = normalize(config, "bridge", input).unwrap();
+    resolve_intent(config, "bridge", &intent).unwrap()
+}
+
+#[test]
+fn normalization_without_selection() {
+    let config = pool();
+
+    // A band draw: the intent names the band and no pair is chosen yet.
+    let hand = role("lane-3", Some("hand"), Some("P2-S0"));
+    let intent = normalize(
+        &config,
+        "bridge",
+        &input(Some(&hand), &band_body("P1"), None, false),
+    )
+    .unwrap();
+    assert_eq!(intent.selection, Selection::Draw { band: 1 });
+    assert_eq!(intent.band, Some(1));
+    assert!(!intent.read_only);
+    assert_eq!(intent.role.as_deref(), Some("lane-3"));
+
+    // Normalizing the same request again gives the same intent: no draw,
+    // no randomness, no live I/O in normalization.
+    let again = normalize(
+        &config,
+        "bridge",
+        &input(Some(&hand), &band_body("P1"), None, false),
+    )
+    .unwrap();
+    assert_eq!(intent, again);
+
+    // A pinned model fixes the pair at normalization time and keeps the
+    // band it was requested with as metadata.
+    let pinned = normalize(
+        &config,
+        "bridge",
+        &input(
+            Some(&hand),
+            &band_body("P1"),
+            Some("zai/glm-5.3-flash"),
+            false,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pinned.selection,
+        Selection::Pin {
+            model: "zai/glm-5.3-flash".into(),
+            reasoning: Some("xhigh".into()),
+        }
+    );
+    assert_eq!(pinned.band, Some(1));
+
+    // A pin keeps the role band even when the pool does not serve it.
+    let unserved = role("lane-3", Some("hand"), Some("P4"));
+    let pinned_unserved = normalize(
+        &config,
+        "bridge",
+        &input(Some(&unserved), "build it", Some("other/model"), false),
+    )
+    .unwrap();
+    assert_eq!(
+        pinned_unserved.selection,
+        Selection::Pin {
+            model: "other/model".into(),
+            reasoning: None,
+        }
+    );
+    assert_eq!(pinned_unserved.band, Some(4));
+
+    // A slug role pins without any band at all.
+    let slugger = slug_role("other/model", Some("high"));
+    let pinned_slug = normalize(
+        &config,
+        "bridge",
+        &input(Some(&slugger), "build it", None, false),
+    )
+    .unwrap();
+    assert_eq!(
+        pinned_slug.selection,
+        Selection::Pin {
+            model: "other/model".into(),
+            reasoning: Some("high".into()),
+        }
+    );
+    assert_eq!(pinned_slug.band, None);
+
+    // The role's read-only mode rides along with the draw.
+    let auditor = role("reviewer", Some("auditor"), Some("P1-S0"));
+    let audit = normalize(
+        &config,
+        "bridge",
+        &input(Some(&auditor), "review it", None, false),
+    )
+    .unwrap();
+    assert_eq!(audit.selection, Selection::Draw { band: 1 });
+    assert!(audit.read_only);
+    assert_eq!(audit.role.as_deref(), Some("reviewer"));
+}
+
+#[test]
+fn resolve_intent_refuses_a_hand_built_draw_from_an_unserved_band() {
+    let intent = Intent {
+        selection: Selection::Draw { band: 3 },
+        band: Some(3),
+        read_only: false,
+        role: None,
+    };
+    let err = resolve_intent(&pool(), "bridge", &intent)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("band P3"), "got: {err}");
+    assert!(err.contains("bridge"), "got: {err}");
+}
+
+#[test]
+fn invalid_intent_is_independent_of_availability() {
+    // Every fault resolve refuses that does not depend on availability is
+    // already refused by normalize, with the same message, before any
+    // selection runs.
+    fn same_fault(config: &PoolConfig, input: &Input) {
+        let resolve_err = resolve(config, "bridge", input).unwrap_err().to_string();
+        let normalize_err = normalize(config, "bridge", input).unwrap_err().to_string();
+        assert_eq!(resolve_err, normalize_err);
+    }
+
+    let config = pool();
+    // An unparseable body band.
+    let hand = role("lane-3", Some("hand"), Some("P1"));
+    same_fault(&config, &input(Some(&hand), &band_body("P9"), None, false));
+    // A role band that is neither a band nor a harness model.
+    let scribe = role("scribe", Some("hand"), Some("S1"));
+    same_fault(&config, &input(Some(&scribe), "write it", None, false));
+    // No model intent at all, with and without a role.
+    let empty = role("scribe", Some("hand"), None);
+    same_fault(&config, &input(Some(&empty), "write it", None, false));
+    same_fault(&config, &plain("write it"));
+    // A band draw from a band the pool does not serve.
+    same_fault(&config, &plain(&band_body("P3")));
+    // An explicit model the harness does not offer.
+    same_fault(
+        &config,
+        &input(Some(&hand), "build it", Some("mystery/model"), false),
+    );
+
+    // A band draw whose candidate the harness does not offer.
+    let unknown_candidate = pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["zai/glm-5.3-flash"]
+[[bands.P1]]
+model = "mystery/model"
+reasoning = "low"
+[local]
+root = "~/lanes"
+"#,
+    );
+    same_fault(
+        &unknown_candidate,
+        &input(Some(&hand), "build it", None, false),
+    );
+    let message = resolve(
+        &unknown_candidate,
+        "bridge",
+        &input(Some(&hand), "build it", None, false),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(message.contains("mystery/model"), "got: {message}");
+}
+
+#[test]
+fn normalize_then_resolve_intent_matches_resolve_for_single_entry_precedence() {
+    let config = pool();
+    let multi = multi_band_pool();
+    let body_band_p1 = band_body("P1");
+    let auditor = role("reviewer", Some("auditor"), Some("P1-S0"));
+    let hand_p1 = role("lane-3", Some("hand"), Some("P1"));
+    let hand_p2 = role("lane-3", Some("hand"), Some("P2-S0"));
+    let unserved = role("lane-3", Some("hand"), Some("P4"));
+    let slugger = slug_role("other/model", Some("high"));
+    let bare_slugger = slug_role("other/model", None);
+
+    for (name, config, role, body, model, read_only) in [
+        (
+            "auditor band",
+            &config,
+            Some(&auditor),
+            "review it",
+            None,
+            false,
+        ),
+        (
+            "body band beats role band",
+            &config,
+            Some(&hand_p2),
+            &body_band_p1,
+            None,
+            false,
+        ),
+        (
+            "role band alone",
+            &config,
+            Some(&hand_p2),
+            "build it",
+            None,
+            false,
+        ),
+        (
+            "flag with matching band reasoning",
+            &config,
+            Some(&auditor),
+            "review it",
+            Some("zai/glm-5.3-flash"),
+            false,
+        ),
+        (
+            "flag without a reasoning match",
+            &config,
+            Some(&auditor),
+            "review it",
+            Some("other/model"),
+            false,
+        ),
+        (
+            "flag overrides an unserved band",
+            &config,
+            Some(&unserved),
+            "build it",
+            Some("other/model"),
+            false,
+        ),
+        (
+            "later-entry reasoning is deterministic",
+            &multi,
+            Some(&hand_p2),
+            "build it",
+            Some("second/model"),
+            false,
+        ),
+        (
+            "slug role with thinking",
+            &config,
+            Some(&slugger),
+            "build it",
+            None,
+            false,
+        ),
+        (
+            "slug role without thinking",
+            &config,
+            Some(&bare_slugger),
+            "build it",
+            None,
+            false,
+        ),
+        (
+            "flag equal to the slug keeps the role thinking",
+            &config,
+            Some(&slugger),
+            "build it",
+            Some("other/model"),
+            false,
+        ),
+        (
+            "read-only flag wins",
+            &config,
+            Some(&hand_p1),
+            "build it",
+            None,
+            true,
+        ),
+        (
+            "no role, flag only",
+            &config,
+            None,
+            "nothing",
+            Some("zai/glm-5.3-flash"),
+            false,
+        ),
+    ] {
+        let input = input(role, body, model, read_only);
+        assert_eq!(
+            resolve(config, "bridge", &input).unwrap(),
+            through_intent(config, &input),
+            "{name}"
+        );
+    }
+}

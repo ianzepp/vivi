@@ -21,6 +21,15 @@
 //!    first band entry (P0 to P5, any position) that names the slug, else
 //!    none.
 //!
+//! The rules live once, in [`normalize`]: it reduces the flags, the role and
+//! the body to an owned [`Intent`] — a band draw or a pinned
+//! model-and-reasoning pair — refusing every configuration fault (a bad task
+//! or role band, no model intent, an unknown slug, and, for a band draw, an
+//! unserved band) before any selection runs. [`resolve_intent`] then
+//! performs the configuration-only selection: a draw takes the pair
+//! [`choose`] serves for the band, exactly once; a pin runs as normalized.
+//! [`resolve`] is the two steps back to back.
+//!
 //! There is no failover, no health tracking and no retry on another model.
 //! [`standing_prompt`] builds the worker's standing prompt: the role's
 //! charter above the pool rules, with a note on how the slot reaches the
@@ -107,26 +116,116 @@ pub struct Resolved {
 /// `--model` nor any band names a model, when the pool has nothing for the
 /// band, or when the chosen model is not one the pool harness offers.
 pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolved, VivariumError> {
+    resolve_intent(config, pool, &normalize(config, pool, input)?)
+}
+
+/// The normalized request for one dispatch: which model-and-reasoning pair
+/// serves the job — a band draw or a pinned pair — plus the band metadata,
+/// the read-only mode and the role it serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Intent {
+    /// The band draw, or the pinned model-and-reasoning pair.
+    pub selection: Selection,
+    /// The band the request carries, when any: a draw's band, or the band
+    /// metadata a pin keeps (even one the pool does not serve).
+    pub band: Option<u8>,
+    /// Whether the job publishes nothing.
+    pub read_only: bool,
+    /// The role the job serves, when the task has one.
+    pub role: Option<String>,
+}
+
+/// What selects the model-and-reasoning pair: a draw from a band's list at
+/// resolution time, or a pair fixed at normalization time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selection {
+    /// Draw the pair from the band's list when the intent resolves.
+    Draw {
+        /// The band to draw from.
+        band: u8,
+    },
+    /// Run this model at this reasoning effort.
+    Pin {
+        /// Model slug the harness is run with.
+        model: String,
+        /// Reasoning effort the harness is run at, when one is known.
+        reasoning: Option<String>,
+    },
+}
+
+/// Reduce one dispatch's flags, role and body to an owned [`Intent`]:
+/// either a band draw or a pinned model-and-reasoning pair, with the band
+/// metadata, the read-only mode and the role carried alongside.
+/// Configuration-only: no draw, no live I/O. Every fault that does not
+/// depend on availability is refused here — an unparseable task or role
+/// band, no model intent at all, a model slug the harness does not offer,
+/// and, for a band draw, an unserved band or one whose candidates the
+/// harness does not all offer.
+///
+/// # Errors
+/// Returns the same configuration errors [`resolve`] does, before any
+/// selection runs.
+pub fn normalize(config: &PoolConfig, pool: &str, input: &Input) -> Result<Intent, VivariumError> {
     let band = resolve_band(config, input)?;
     let slug = role_slug(config, input.role);
-    let (model, reasoning) = match input.model_flag {
-        Some(slug_flag) if slug.is_some_and(|role| role.0 == slug_flag) => {
-            (slug_flag.to_string(), slug_reasoning(config, slug))
-        }
-        Some(flag) => (flag.to_string(), matching_reasoning(config, band, flag)),
+    let selection = match input.model_flag {
+        Some(slug_flag) if slug.is_some_and(|(model, _)| model == slug_flag) => Selection::Pin {
+            model: slug_flag.to_string(),
+            reasoning: slug_reasoning(config, slug),
+        },
+        Some(flag) => Selection::Pin {
+            model: flag.to_string(),
+            reasoning: matching_reasoning(config, band, flag),
+        },
         None => match (band, slug) {
-            (Some(band), _) => choose_pair(config, pool, band)?,
-            (None, Some(role)) => (role.0.to_string(), slug_reasoning(config, Some(role))),
+            (Some(band), _) => {
+                check_draw(config, pool, band)?;
+                Selection::Draw { band }
+            }
+            (None, Some(role)) => Selection::Pin {
+                model: role.0.to_string(),
+                reasoning: slug_reasoning(config, Some(role)),
+            },
             (None, None) => return Err(no_model(input.role)),
         },
     };
-    check_model(config, &model)?;
-    Ok(Resolved {
-        model,
-        reasoning,
+    if let Selection::Pin { model, .. } = &selection {
+        check_model(config, model)?;
+    }
+    Ok(Intent {
+        selection,
         band,
         read_only: is_read_only(input),
         role: input.role.map(|role| role.name.clone()),
+    })
+}
+
+/// Perform one normalized intent's selection: a band draw takes the
+/// model-and-reasoning pair [`choose`] serves for the band — exactly one
+/// draw, and never a draw for a pin, which runs as normalized. `pool` is
+/// read only to name it in a refusal of a hand-built intent.
+///
+/// # Errors
+/// Returns an error when a band draw finds the pool has nothing for the
+/// band.
+pub fn resolve_intent(
+    config: &PoolConfig,
+    pool: &str,
+    intent: &Intent,
+) -> Result<Resolved, VivariumError> {
+    let (model, reasoning) = match &intent.selection {
+        Selection::Draw { band } => {
+            let choice = choose(config, pool, *band)?;
+            (choice.model, Some(choice.reasoning))
+        }
+        Selection::Pin { model, reasoning } => (model.clone(), reasoning.clone()),
+    };
+    Ok(Resolved {
+        model,
+        reasoning,
+        band: intent.band,
+        read_only: intent.read_only,
+        role: intent.role.clone(),
     })
 }
 
@@ -266,16 +365,6 @@ fn slug_reasoning(config: &PoolConfig, slug: Option<(&str, &RoleFacts)>) -> Opti
     })
 }
 
-/// The pool's model and reasoning for `band`.
-fn choose_pair(
-    config: &PoolConfig,
-    pool: &str,
-    band: u8,
-) -> Result<(String, Option<String>), VivariumError> {
-    let choice = choose(config, pool, band)?;
-    Ok((choice.model, Some(choice.reasoning)))
-}
-
 /// The reasoning of the first entry of the requested band's list that names
 /// the explicitly requested model, else none. The lookup walks the band list
 /// in its stored order, so it never depends on which band choice is
@@ -306,6 +395,39 @@ fn check_model(config: &PoolConfig, model: &str) -> Result<(), VivariumError> {
         "model \"{model}\" is not in harness.models ({})",
         harness.models.join(", ")
     )))
+}
+
+/// The band-draw's configuration check, run before any selection: the band's
+/// list must be served and non-empty, and every candidate on it must be a
+/// model the harness offers, so a later availability filter never has to
+/// rediscover a configuration fault mid-draw.
+fn check_draw(config: &PoolConfig, pool: &str, band: u8) -> Result<(), VivariumError> {
+    let key = format!("P{band}");
+    let Some(candidates) = config.bands.entries.get(&key) else {
+        return Err(unserved(config, pool, &key));
+    };
+    if candidates.is_empty() {
+        return Err(unserved(config, pool, &key));
+    }
+    for choice in candidates {
+        check_model(config, &choice.model)?;
+    }
+    Ok(())
+}
+
+/// The same refusal [`super::bands`] raises for a draw from an unserved
+/// band, formatted here so normalization needs no selection.
+fn unserved(config: &PoolConfig, pool: &str, key: &str) -> VivariumError {
+    let serves = if config.bands.entries.is_empty() {
+        String::from("it serves no bands")
+    } else {
+        let names: Vec<&str> = config.bands.entries.keys().map(String::as_str).collect();
+        format!("it serves {}", names.join(", "))
+    };
+    VivariumError::Config(format!(
+        "pool {pool} has no model for band {key} ({serves}); \
+         send this job to a pool that serves {key}, or pass --model"
+    ))
 }
 
 fn bad_role_band(config: &PoolConfig, role: &str, band: &str) -> VivariumError {
