@@ -6,8 +6,14 @@
 //! neither resolution nor session orchestration lives in this module. Every
 //! count and deadline below is already scoped to the one pool the snapshot
 //! was taken for: nothing here crosses pools.
+//!
+//! Folding recorded evidence into a snapshot is [`Availability::from_evidence`];
+//! gathering that evidence live is I/O that belongs to [`super::live`].
 
 use std::collections::BTreeMap;
+
+use crate::pool::record::OpenDispatch;
+use crate::pool::slot::SlotStatus;
 
 /// The answer to one dispatch-selection question.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +76,63 @@ pub struct Availability {
     pub provider_until: BTreeMap<String, u64>,
     /// The instant the snapshot was taken at, in epoch seconds.
     pub now: u64,
+}
+
+impl Availability {
+    /// Fold one pool's authoritative evidence into a snapshot: every open
+    /// dispatch record of `pool` counts its model, every census slot claimed
+    /// by a task with no matching open record counts as an unresolved claim,
+    /// and the provider deadlines and `now` are kept as given.
+    ///
+    /// Counts never filter on role or kind, target, band or reasoning: a
+    /// model's cap is spent by the model alone, and pools never share caps —
+    /// only records naming `pool` count. A claimed census slot whose task
+    /// holds no matching open record (a dispatch recorded by a binary too
+    /// old to write one, or a lost record) is an unresolved occupancy,
+    /// counted conservatively against every capped model later. A recorded
+    /// open job stays counted even when the census does not list its slot.
+    ///
+    /// `deadlines` carry each provider's cooldown end, keyed by
+    /// [`super::cooldown::provider_key`]. This folds evidence only: the
+    /// caller passes a successful census and must never substitute an empty
+    /// one for a listing that failed.
+    #[must_use]
+    pub fn from_evidence(
+        pool: &str,
+        open: &[OpenDispatch],
+        slots: &[SlotStatus],
+        deadlines: BTreeMap<String, u64>,
+        now: u64,
+    ) -> Self {
+        let mut model_counts: BTreeMap<String, u64> = BTreeMap::new();
+        for dispatch in open.iter().filter(|d| d.record.pool == pool) {
+            *model_counts
+                .entry(dispatch.record.model.clone())
+                .or_default() += 1;
+        }
+        let unresolved_claims = slots
+            .iter()
+            .filter(|slot| slot.pool == pool && slot.task.is_some())
+            .filter(|slot| !claim_is_recorded(open, pool, slot))
+            .count() as u64;
+        Self {
+            model_counts,
+            unresolved_claims,
+            provider_until: deadlines,
+            now,
+        }
+    }
+}
+
+/// True when an open record of `pool` is the recorded side of this claimed
+/// census slot: same pool, same machine, same task. Such a claim is that
+/// dispatch, already counted in its model's occupancy — never twice.
+fn claim_is_recorded(open: &[OpenDispatch], pool: &str, slot: &SlotStatus) -> bool {
+    open.iter().any(|d| {
+        d.record.pool == pool
+            && d.record.machine == slot.id
+            && Some(d.task.as_str()) == slot.task.as_deref()
+    })
 }
 
 #[cfg(test)]
