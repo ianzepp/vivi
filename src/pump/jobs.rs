@@ -14,6 +14,7 @@ use crate::pump::host::Ctx;
 
 mod brief;
 mod dispatcher;
+pub mod execution_receipt;
 pub mod merge_main;
 mod receipts;
 mod recovery;
