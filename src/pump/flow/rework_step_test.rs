@@ -7,7 +7,7 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{Registry, shipped};
@@ -75,11 +75,15 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    let mut mail = FakeMail::new("mind");
+    // A strict read of the original need needs its letter under NEED; the
+    // legacy absent target keeps the synthesized `default` resolution.
+    mail.store_need(NEED, None);
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,
@@ -391,4 +395,66 @@ fn rework_brief(rig: &Rig) -> Result<String, VivariumError> {
         return Err(VivariumError::Other("rework1 did not start a job".into()));
     };
     Ok(job.body.clone())
+}
+
+/// One unscoped workspace configuration: the workspace main stays `main`, and
+/// the explicit `vivi` and `other` targets carry their own mains. No
+/// `default` target exists, so only the need's own target can select the
+/// checkout: an untargeted job would fail instead of falling back.
+fn target_workspace() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("main");
+    for (id, main) in [("vivi", "vivi/main"), ("other", "other/main")] {
+        cfg.targets.insert(
+            String::from(id),
+            PumpTarget {
+                main: String::from(main),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    cfg
+}
+
+#[test]
+fn rework_job_uses_need_target_main() -> R {
+    let mut rig = rig_with(target_workspace())?;
+    // The need branch was cut on the vivi target: the row must name a target
+    // the workspace config knows, or the brief's branch range read fails.
+    rig.store
+        .upsert_need_branch(&NeedBranchRow {
+            need: NEED.into(),
+            branch: format!("vivi/need/{NEED}"),
+            base: Some(BASE.into()),
+            status: "live".into(),
+            run: 1,
+            target: "vivi".into(),
+            priors: Vec::new(),
+        })?;
+    rig.seed()?;
+    rig.mail.store_need(NEED, Some("vivi"));
+
+    let job = shipped_rework_job(&rig)?;
+
+    assert_eq!(job.target.as_deref(), Some("vivi"));
+    assert_eq!(job.from_ref.as_deref(), Some("vivi/main"));
+    assert!(job.read_only);
+    assert_eq!(
+        job.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
+    Ok(())
+}
+
+#[test]
+fn rework_start_propagates_an_invalid_need_letter() -> R {
+    let mut rig = rig()?;
+    rig.seed()?;
+    let letter = rig.mail.tasks.get_mut(NEED).expect("stored need");
+    letter.body = String::from("plain prose, no front matter");
+
+    let err = shipped_rework_job(&rig).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Message(_)), "{err}");
+    Ok(())
 }

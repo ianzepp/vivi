@@ -6,9 +6,10 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use super::CtoStart;
+use crate::error::VivariumError;
 use crate::letter::records::NoteWord;
 use crate::mailspace::pump_note::note_body;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -1009,4 +1010,65 @@ fn attempt_records_are_capped_independently_and_utf8_safely() {
         section.find(&short_header) > section.find(&two_header),
         "{section}"
     );
+}
+
+/// One unscoped workspace configuration: the workspace main stays `main`, and
+/// the explicit `vivi` and `other` targets carry their own mains. No
+/// `default` target exists, so only the need's own target can select the
+/// checkout: an untargeted job would fail instead of falling back.
+fn target_workspace() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("main");
+    for (id, main) in [("vivi", "vivi/main"), ("other", "other/main")] {
+        cfg.targets.insert(
+            String::from(id),
+            PumpTarget {
+                main: String::from(main),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    cfg
+}
+
+#[test]
+fn cto_job_uses_need_target_main() {
+    let mut f = fixture_with(target_workspace());
+    // The original need letter targets `vivi`: the checkout follows it, not
+    // the workspace main or any effective default.
+    f.mail.store_need(NEED, Some("vivi"));
+    let run = two_runs(&f, "defects");
+    let spec = start(&f, &run);
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert!(spec.read_only);
+    assert_eq!(
+        spec.extra_targets,
+        crate::pump::flow::step_inputs::targets(&f.ctx)
+    );
+}
+
+#[test]
+fn cto_start_propagates_an_invalid_need_letter() {
+    let mut f = fixture();
+    let letter = f.mail.tasks.get_mut(NEED).expect("stored need");
+    letter.body = String::from("plain prose, no front matter");
+    let run = two_runs(&f, "defects");
+    let def = load(FlowKind::Build).expect("build flow");
+    let cx = StartCx {
+        ctx: &f.ctx,
+        store: &f.store,
+        mail: &f.mail,
+        run: &run,
+        def: &def,
+    };
+    let step = StepRow {
+        run: run.run,
+        node: "cto".into(),
+        task: "t-cto".into(),
+        state: StepState::Waiting,
+        verdict: None,
+    };
+    let err = CtoStart.start(&cx, &step).unwrap_err();
+    assert!(matches!(err, VivariumError::Message(_)), "{err}");
 }

@@ -13,7 +13,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::need_branch;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
-use crate::pump::flow::step_inputs::make_read_only;
+use crate::pump::flow::step_inputs::{make_read_only, need_target};
 use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
 use crate::pump::host::Ctx;
 use crate::pump::jobs::JobStore;
@@ -63,6 +63,7 @@ impl StepHandler for CtoStart {
             HEAD_CTO_ROLE,
             &brief,
         );
+        spec.target = need_target(cx.mail, &cx.run.need)?;
         make_read_only(cx.ctx, &mut spec)?;
         Ok(StartAction::Job(Box::new(spec)))
     }
