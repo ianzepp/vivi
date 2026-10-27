@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 
 use super::{KIND, Mode, RESLICE_NODE_PREFIX, request};
 use crate::error::VivariumError;
-use crate::letter::fixture::task_body;
+use crate::letter::fixture::task_body_with;
+use crate::letter::work::TaskFront;
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::fixture::project;
 use crate::pump::flow::advance::start::start;
@@ -69,7 +70,13 @@ fn a_repeated_request_with_multi_line_input_sends_nothing() -> R {
         PUMP,
         PUMP,
         "slice a",
-        &task_body("slice body\nsecond line"),
+        &task_body_with(
+            &TaskFront {
+                target: Some(String::from("default")),
+                ..TaskFront::step(&need, run.run, "slice:a")
+            },
+            "slice body\nsecond line",
+        ),
         &[],
     )?;
     let slice = StepRow {
