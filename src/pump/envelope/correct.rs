@@ -5,6 +5,7 @@ use super::EnvelopeError;
 use super::roles::RoleKind;
 use crate::error::VivariumError;
 use crate::pump::flow::index::StepJobRow;
+use crate::pump::flow::recovery;
 use crate::pump::jobs::{self, JobSpec, JobStore, PoolJob};
 use crate::pump::store::PumpStore;
 
@@ -22,26 +23,41 @@ pub fn resumable(_job: &PoolJob) -> bool {
     false
 }
 
-/// How many corrections lie behind a job id: `0` for an original job, `n`
-/// for `<id>-c<n>`.
+/// The correction suffix of the job-id grammar shared with
+/// `flow::recovery`: `<base>[-tr<n>][-c<n>]`. A transient retry advances
+/// the `-tr` ordinal of the step input; a correction of that retry appends
+/// its own `-c` ordinal. Suffixes never stack.
+const CORRECTION_SUFFIX: &str = "-c";
+
+/// How many corrections lie behind a job id: `0` for an original job or a
+/// plain transient retry (`<id>-tr<n>`), `n` for a trailing `-c<n>`.
 #[must_use]
 pub fn correction_n(job_id: &str) -> u32 {
     split_id(job_id).1
 }
 
-/// The id of the job a correction chain started from.
+/// The id of the job a correction chain corrects: the chain base with any
+/// transient-retry segment retained. A correction of a retried role
+/// request (`j-tr1-c1`) resolves to that retried request (`j-tr1`) — the
+/// job whose broken reply and machine facts the chain carries — never to
+/// an older execution (`j`). Recovery reads the same id from the step
+/// input's side (`flow::recovery::base_id` strips the retry too).
 #[must_use]
 pub fn base_id(job_id: &str) -> &str {
     split_id(job_id).0
 }
 
+/// Split a job id into its correction-chain base and correction ordinal:
+/// the correction-coordinate mirror of `flow::recovery::split_id`. Only a
+/// trailing well-formed `-c<n>` counts, so a retry segment stays in the
+/// base here while recovery sees through it to the step input; a malformed
+/// or stacked tail (`j-c`, `j-tr1-tr2`, `j-c1-tr1`) leaves an ordinary
+/// job.
 fn split_id(job_id: &str) -> (&str, u32) {
-    if let Some((base, tail)) = job_id.rsplit_once("-c")
-        && let Ok(n) = tail.parse::<u32>()
-    {
-        return (base, n);
+    match job_id.rsplit_once(CORRECTION_SUFFIX) {
+        Some((base, tail)) => tail.parse().map_or((job_id, 0), |n| (base, n)),
+        None => (job_id, 0),
     }
-    (job_id, 0)
 }
 
 /// The correction job number `n` for the broken output of `original`.
@@ -88,7 +104,24 @@ pub fn spec(
     spec.model.clone_from(&original.model);
     spec.read_only = true;
     spec.budget = budget;
+    carry_step_input_provenance(&mut spec.payload, original);
     spec
+}
+
+/// Carry the source job's step-input recovery provenance onto the
+/// correction payload. A correction of a transiently retried job — or of a
+/// correction of one — runs on the same step input, so it inherits the
+/// source's `recovery` metadata and the transient-retry allowance already
+/// spent stays spent: `flow::recovery::retries_spent` is unchanged across
+/// the correction chain, and a correction never reads as a fresh input
+/// minting a second autonomous allowance. A source without recovery
+/// metadata leaves the payload untouched; this writes no classifier input
+/// and touches no correction ordinal, so execution and correction budget
+/// semantics are the ordinary ones.
+fn carry_step_input_provenance(payload: &mut serde_json::Value, source: &PoolJob) {
+    if let Some(meta) = recovery::metadata(&source.payload) {
+        recovery::stamp_metadata(payload, &meta);
+    }
 }
 
 /// Queue the correction job and record it as a job of the step. The row
