@@ -166,6 +166,10 @@ fn the_run_4_alarm_names_each_earlier_cto_answer_and_new_fact() {
     assert!(line.contains("r1 no CTO answer"), "{line}");
     assert!(line.contains("r2 rework (F2)"), "{line}");
     assert!(line.contains("r3 failed (no new fact)"), "{line}");
+    // Ownership: run four asks the mind to dispose; the operator is not
+    // addressed on a mere repeat run.
+    assert!(line.contains("mind: dispose of this repeat run"), "{line}");
+    assert!(!line.contains("operator"), "{line}");
 }
 
 #[test]

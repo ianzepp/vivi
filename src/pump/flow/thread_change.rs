@@ -3,10 +3,12 @@
 //! A reply from anyone but the pump identity, newer than the run's start post,
 //! is the operator changing the question. In a live or parked run that has not
 //! started `merge-main` or a merge, the run restarts at `plan` (the prior
-//! branch stays readable). In a locked run, or once a merge-main or merge step
-//! has started, the pump raises `flow-thread-changed` once and restarts
-//! nothing: the merge is under way and the operator decides. No path holds a
-//! change in silence.
+//! branch stays readable). In a locked run, or once a merge-main or merge
+//! step has started, the pump raises `flow-thread-changed` once and restarts
+//! nothing: the disposition belongs to the mind, and the remedies are the
+//! supported pump actions — a lock is freed only by an explicit `unlock`, and
+//! a merge under way is never restarted by a reply. No path holds a change in
+//! silence.
 //!
 //! Assumption: a thread date has one-second resolution, so a reply in the same
 //! second as the run's start post is not newer. Lifecycle events, pump record
@@ -110,7 +112,9 @@ fn check_run<M: FlowMail>(
         let unit = format!("{} r{} {}", run.need, run.run, change.message_id);
         let text = format!(
             "need {} run r{}: a reply from {} arrived on the thread ({}) while the run holds \
-             a lock or has started a merge; no restart. Operator: replan or answer the step",
+             a lock or has started a merge; no restart. Mind: choose a supported pump action \
+             — `vivi pump unlock <need> [entry]` is the only lock release, and a merge under \
+             way is never restarted by a reply",
             run.need, run.run, change.from, change.message_id
         );
         raise_once(ctx, THREAD_CHANGED, &unit, &text);

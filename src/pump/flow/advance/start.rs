@@ -130,8 +130,10 @@ where
 /// The longest `new_fact` the run-4 alarm quotes (the exception text is cut at 600).
 const NEW_FACT_CAP: usize = 120;
 
-/// The run-4 alarm text: the need, the run count and each earlier run's CTO
-/// answer with its `new_fact`, in run order.
+/// The run-4 alarm text: the need, the run count, the call for a mind
+/// disposition, and each earlier run's CTO answer with its `new_fact`, in run
+/// order. The human operator is not addressed: a repeat run is the mind's to
+/// dispose, and policy escalation stays reserved for human-only requests.
 fn run4_text(store: &PumpStore, need: &str, number: u32) -> Result<String, VivariumError> {
     let rows = store.step_payloads_of_need(need)?;
     let earlier: Vec<String> = (1..number)
@@ -153,7 +155,8 @@ fn run4_text(store: &PumpStore, need: &str, number: u32) -> Result<String, Vivar
         })
         .collect();
     Ok(format!(
-        "need {need} is on run {number} (expected at most 3 runs before an operator looks; actual: {number}); earlier CTO answers: {}",
+        "need {need} is on run {number} (expected at most 3 runs; actual: {number}); \
+         mind: dispose of this repeat run; earlier CTO answers: {}",
         earlier.join("; ")
     ))
 }
