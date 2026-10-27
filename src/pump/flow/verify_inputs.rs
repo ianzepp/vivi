@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VivariumError;
+use crate::pump::flow::fanout::{SLICE_NODE_PREFIX, VERDICT_MERGED, VERDICT_NO_DEFECT};
+use crate::pump::flow::index::StepState;
 use crate::pump::flow::need_branch;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::store::PumpStore;
@@ -162,6 +164,117 @@ pub(crate) fn admitted_plan(
     Ok(None)
 }
 
+/// One retained slice outcome: the run it belonged to, the slice id (the
+/// step node without the `slice:` prefix) and the slice task's handle.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct RetainedSlice {
+    pub run: u32,
+    pub slice: String,
+    pub task: String,
+}
+
+/// The durable retained-work inventory of a need: completed merges and
+/// no-defect closes across every branch generation, plus the boundary that
+/// separates the active generation from legacy archived ones.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct RetainedWork {
+    /// Every completed merge, oldest first, across all generations.
+    pub merged: Vec<RetainedSlice>,
+    /// Every no-defect close, oldest first, across all generations.
+    pub no_defect: Vec<RetainedSlice>,
+    /// The first run of the active generation; runs below were archived.
+    active_from: u32,
+}
+
+impl RetainedWork {
+    /// The merged slices of the active branch generation, oldest first.
+    #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn active_merged(&self) -> &[RetainedSlice] {
+        let split = self
+            .merged
+            .partition_point(|row| row.run < self.active_from);
+        &self.merged[split..]
+    }
+
+    /// The no-defect closes of the active branch generation, oldest first.
+    #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn active_no_defect(&self) -> &[RetainedSlice] {
+        let split = self
+            .no_defect
+            .partition_point(|row| row.run < self.active_from);
+        &self.no_defect[split..]
+    }
+}
+
+/// The retained work a need's history holds, read from the flow index and
+/// the need branch row alone — no remote probes, so checkout availability
+/// can reuse it without recursion. A slice counts when its step closed done
+/// with verdict `merged` (implementation) or `no-defect`; every other
+/// outcome — failed, exhausted, pending, replaced, superseded, withdrawn —
+/// is excluded. Completed slices survive a superseded containing run, but a
+/// merge from a run archived under a prior branch name never proves
+/// integration into the newly initialized active branch.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn retained_work(store: &PumpStore, need: &str) -> Result<RetainedWork, VivariumError> {
+    let mut work = RetainedWork {
+        active_from: active_from(store, need)?,
+        ..RetainedWork::default()
+    };
+    for run in store.runs_of(need)? {
+        for step in store.steps_of(need, run.run)? {
+            let Some(slice) = step.node.strip_prefix(SLICE_NODE_PREFIX) else {
+                continue;
+            };
+            if step.state != StepState::Done {
+                continue;
+            }
+            let entry = RetainedSlice {
+                run: run.run,
+                slice: slice.to_string(),
+                task: step.task,
+            };
+            match step.verdict.as_deref() {
+                Some(VERDICT_MERGED) => work.merged.push(entry),
+                Some(VERDICT_NO_DEFECT) => work.no_defect.push(entry),
+                _ => {}
+            }
+        }
+    }
+    Ok(work)
+}
+
+/// The first run of a need's active branch generation. A prior branch name
+/// `vivi/need-prior/<need>-r<run>` ends one archived generation at `run`, so
+/// the newest such name bounds it; runs of a need without a row or priors
+/// are all active.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the store cannot be read.
+fn active_from(store: &PumpStore, need: &str) -> Result<u32, VivariumError> {
+    let Some(row) = store.need_branch(need)? else {
+        return Ok(1);
+    };
+    Ok(row
+        .priors
+        .iter()
+        .filter_map(|name| match name.rsplit_once("-r") {
+            Some((_, tail)) => match tail.parse::<u32>() {
+                Ok(run) => Some(run),
+                Err(_) => None,
+            },
+            None => None,
+        })
+        .max()
+        .map_or(1, |run| run.saturating_add(1)))
+}
+
 /// The need branch row and its current tip.
 ///
 /// # Errors
@@ -292,3 +405,7 @@ pub(crate) fn capped(text: &str, max: usize) -> String {
 #[cfg(test)]
 #[path = "verify_inputs_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "verify_inputs_retained_test.rs"]
+mod retained_tests;
