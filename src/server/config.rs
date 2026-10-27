@@ -7,7 +7,7 @@
 //! port = 8080                 # default
 //! send_rate_per_minute = 0    # default 30; 0 is unlimited
 //! hosted_default_identity = "operator"
-//! log = "vivi::server=info,tower_http=info"
+//! log = "vivi::server=info,vivi::pump=info,tower_http=info"
 //! data_dir = "data"           # relative paths are under $VIVI_HOME/server
 //! projects_root = "projects"
 //! lanes_root = "lanes"
@@ -126,7 +126,7 @@ impl ServerConfig {
             },
             log: file
                 .log
-                .unwrap_or_else(|| "vivi::server=info,tower_http=info".into()),
+                .unwrap_or_else(|| "vivi::server=info,vivi::pump=info,tower_http=info".into()),
             home: home.to_path_buf(),
         })
     }

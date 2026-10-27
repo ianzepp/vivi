@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod board_command;
 mod config_command;
@@ -363,9 +363,26 @@ pub enum KeyCommand {
     Show,
 }
 
+/// `vivi server pump` actions.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ServerPumpAction {
+    /// Stop every project pump and skip each pass until resumed
+    Pause,
+    /// Let project pumps run again (each project's own control still decides)
+    Resume,
+    /// Print paused or running
+    Status,
+}
+
 /// `vivi server` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ServerSubcommand {
+    /// Pause or resume every project pump this server supervises
+    Pump {
+        #[arg(value_enum)]
+        action: ServerPumpAction,
+    },
+
     /// Make the server home ($VIVI_HOME/server): starter config.toml, creds/
     /// with fresh secrets, data/projects/lanes directories. Keeps what exists.
     Init {

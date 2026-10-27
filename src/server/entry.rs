@@ -95,6 +95,11 @@ async fn serve(config: ServerConfig) {
     let _hosted = crate::server::hosted::start(state.projects.clone(), state.identities.clone());
     // Keep each hosted project's transport index current with its mailspace.
     let _indexer = crate::server::hosted::start_indexer(state.projects.clone());
+    // Supervise each registered project's pump as its own child process.
+    // It hears the same stop signal as the HTTP server and stops every child;
+    // the process waits for that below before it exits.
+    let pump_state = config.home.join("pump-state");
+    let supervisor = tokio::spawn(crate::pump::service::supervise_in_server(pump_state));
     let app = crate::server::router(state).route("/healthz", get(healthz));
 
     match config.send_rate_per_minute {
@@ -112,6 +117,10 @@ async fn serve(config: ServerConfig) {
         .await
     {
         die(1, &format!("server error: {err}"));
+    }
+    match tokio::time::timeout(Duration::from_secs(30), supervisor).await {
+        Ok(_) => tracing::info!("project pumps stopped; server exiting"),
+        Err(_) => tracing::warn!("project pumps did not stop within 30s; server exiting anyway"),
     }
 }
 

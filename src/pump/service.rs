@@ -272,6 +272,87 @@ pub async fn run() -> Result<(), VivariumError> {
     ServiceRuntime::default().run().await
 }
 
+/// How a server-run supervisor ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Supervised {
+    /// A shutdown signal arrived; every child was stopped.
+    Shutdown,
+    /// Another pump service holds the lock; this server supervises nothing.
+    NotOwner,
+}
+
+/// Supervise project pumps inside `vivi server run`.
+///
+/// The same per-project child processes as `pump service run`, with two
+/// differences:
+/// - every registered project is a candidate; its own pump control state
+///   (running, paused, stopped) decides whether a child runs. A project with
+///   no pump database yet counts as stopped and nothing is written to it.
+/// - `state_file` (`$VIVI_HOME/server/pump-state`) holding `paused` stops
+///   every child and skips each pass until it says `running` again.
+///
+/// The registry's `pump = false` is retired: on start it is moved into the
+/// project's control state (stopped) once, and the entry is marked migrated.
+pub async fn supervise_in_server(state_file: PathBuf) -> Supervised {
+    let lock = match take_service_lock() {
+        Ok(lock) => lock,
+        Err(error) => {
+            tracing::warn!(%error, "server is not supervising pumps: a separate pump service owns them");
+            return Supervised::NotOwner;
+        }
+    };
+    migrate_registry_pump_flags();
+    let runtime = ServiceRuntime {
+        server_state: Some(state_file),
+        ..ServiceRuntime::default()
+    };
+    if let Err(error) = runtime.run().await {
+        tracing::error!(%error, "pump supervisor stopped");
+    }
+    drop(lock);
+    Supervised::Shutdown
+}
+
+/// `paused` or `running` (the default when the file is absent or unreadable).
+#[must_use]
+pub fn server_pump_paused(state_file: &Path) -> bool {
+    fs::read_to_string(state_file).is_ok_and(|text| text.trim() == "paused")
+}
+
+/// Move each registry `pump = false` into the project's own control state.
+fn migrate_registry_pump_flags() {
+    let entries = match registry::load() {
+        Ok(registry) => registry.entries(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read the registry to migrate pump flags");
+            return;
+        }
+    };
+    for entry in entries.into_iter().filter(|entry| !entry.flags.pump) {
+        let root = entry.root;
+        if let Ok(home) = super::control::project_home(&root)
+            && home.join(super::store::DB_FILENAME).exists()
+            && let Ok((_, control)) = super::control::initialize_project(&root)
+            && control.mode != super::control::PumpMode::Stopped
+        {
+            match super::control::set_project_mode(&root, super::control::PumpMode::Stopped) {
+                Ok(()) => tracing::info!(project = %root.display(), "registry pump = false moved to the project's pump control: stopped"),
+                Err(error) => {
+                    tracing::warn!(project = %root.display(), %error, "could not stop pump while migrating; left as is");
+                    continue;
+                }
+            }
+        }
+        let serve = entry.flags.serve;
+        if let Err(error) = registry::update(|registry| {
+            registry.set(root.clone(), Flags { pump: true, serve });
+            Ok(())
+        }) {
+            tracing::warn!(project = %root.display(), %error, "could not mark registry entry migrated");
+        }
+    }
+}
+
 /// Per-project child pump processes and the bookkeeping that governs their
 /// restart. All maps are keyed by project root.
 #[derive(Default)]
@@ -280,6 +361,10 @@ struct ServiceRuntime {
     retry_after: BTreeMap<PathBuf, Instant>,
     observed_modes: BTreeMap<PathBuf, super::control::PumpMode>,
     stopping: BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
+    /// Set when run inside the server: the server-wide pause file.
+    server_state: Option<PathBuf>,
+    /// Whether the paused state was already logged.
+    paused_logged: bool,
 }
 
 impl ServiceRuntime {
@@ -311,7 +396,29 @@ impl ServiceRuntime {
     }
 
     async fn reconcile(&mut self) -> Result<(), VivariumError> {
-        let desired = registry::load()?.pumped();
+        let desired = match &self.server_state {
+            Some(state) => {
+                if server_pump_paused(state) {
+                    if !self.paused_logged {
+                        tracing::info!("server pump is paused; stopping every project pump");
+                        self.paused_logged = true;
+                    }
+                    self.reap_stopping().await;
+                    self.stop_all_quietly("server pump paused");
+                    return Ok(());
+                }
+                if self.paused_logged {
+                    tracing::info!("server pump resumed");
+                    self.paused_logged = false;
+                }
+                registry::load()?
+                    .entries()
+                    .into_iter()
+                    .map(|entry| entry.root)
+                    .collect()
+            }
+            None => registry::load()?.pumped(),
+        };
         self.reap_stopping().await;
         self.stop_removed(&desired);
         self.reap_exited();
@@ -338,6 +445,20 @@ impl ServiceRuntime {
                 );
             }
             self.retry_after.remove(&project);
+        }
+    }
+
+    /// Stop every child without waiting, logging `reason` once per child.
+    fn stop_all_quietly(&mut self, reason: &'static str) {
+        for (project, child) in std::mem::take(&mut self.children) {
+            let path = project.clone();
+            self.stopping.insert(
+                project,
+                tokio::spawn(async move {
+                    stop_pump(&path, child).await;
+                    tracing::info!(project = %path.display(), "stopped pump: {reason}");
+                }),
+            );
         }
     }
 
@@ -398,6 +519,16 @@ impl ServiceRuntime {
             if let Err(error) = crate::mailspace::inherit::refuse_base(project) {
                 tracing::warn!(project = %project.display(), %error, "registered root is a base config; not pumped");
                 continue;
+            }
+            // In the server every registered root is a candidate: one that has
+            // no pump config or no pump database yet is simply not pumped, and
+            // nothing is created in it.
+            if self.server_state.is_some() {
+                let has_db = super::control::project_home(project)
+                    .is_ok_and(|home| home.join(super::store::DB_FILENAME).exists());
+                if !has_db {
+                    continue;
+                }
             }
             let (home, control) = match super::control::initialize_project(project) {
                 Ok(project) => project,

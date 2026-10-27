@@ -92,6 +92,32 @@ fn main() {
         return;
     }
     if let Command::Server {
+        command: ServerSubcommand::Pump { action },
+    } = cli.command
+    {
+        let file = match vivi::home::server_home() {
+            Ok(home) => home.join("pump-state"),
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        };
+        let write = |state: &str| {
+            if let Err(e) = std::fs::write(&file, format!("{state}\n")) {
+                eprintln!("error: cannot write {}: {e}", file.display());
+                process::exit(1);
+            }
+        };
+        match action {
+            vivi::cli::ServerPumpAction::Pause => write("paused"),
+            vivi::cli::ServerPumpAction::Resume => write("running"),
+            vivi::cli::ServerPumpAction::Status => {}
+        }
+        let paused = vivi::pump::service::server_pump_paused(&file);
+        println!("server pump {}", if paused { "paused" } else { "running" });
+        return;
+    }
+    if let Command::Server {
         command: ServerSubcommand::Init { port },
     } = cli.command
     {
