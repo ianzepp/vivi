@@ -1,7 +1,10 @@
 //! Exhausted-slice attempt diagnostics through the real mailspace: the
 //! attempt record the pump stored on the slice task (not invented data) is
-//! what the head-cto brief carries, and a slice task whose thread cannot be
-//! read fails the cto start instead of passing silently.
+//! what the head-cto brief carries whole (even when the hand fences a pasted
+//! document with lookalike headings inside its final message), the same
+//! delivered note stays report-readable through `report::data::read`, and a
+//! slice task whose thread cannot be read fails the cto start instead of
+//! passing silently.
 
 use std::fs;
 use std::sync::Arc;
@@ -11,7 +14,7 @@ use crate::error::VivariumError;
 use crate::letter::fixture::task_body_with;
 use crate::letter::records::NoteWord;
 use crate::letter::work::TaskFront;
-use crate::pump::fixture::{Project, project};
+use crate::pump::fixture::{Project, T0, project};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -28,27 +31,56 @@ type R<T> = Result<T, VivariumError>;
 /// The pump identity of the default config's `reply_from`.
 const PUMP: &str = "mind";
 
-/// The pool receipt of the failed last attempt: a nonzero agent exit, a short
-/// provider-error excerpt (status 429, code 1302) and the hand's own final
-/// message.
-const RECEIPT: &str = concat!(
+/// The pool summary of the failed last attempt: a nonzero agent exit, its
+/// agent seconds and the dispatch epoch.
+const RECEIPT_HEAD: &str = concat!(
     "pool result j1: finished\n",
     "pool p  slot s1  model m\n",
     "from next  default\n",
     "push: none\n",
     "agent exit 1 in 12s, job 20s, started from 1234567890\n",
-    "\n--- receipt\n",
+);
+
+/// The hand's final message inside the receipt: a refusal, then a pasted
+/// document fenced with blank-line-separated lookalike headings, then a
+/// closing line after the end heading. Short on purpose: well under the
+/// 1500-character record cap, so any loss is a defect, not truncation.
+const FINAL_MESSAGE: &str = concat!(
     "PROVIDER REFUSED THE ATTEMPT; no changes were made\n",
-    "\n--- stderr tail\n",
+    "\n",
+    "--- Begin document ---\n",
+    "attempt-context.md\n",
+    "The hand fenced a pasted document into its final message; the whole\n",
+    "block, headings and all, has to survive the attempt record.\n",
+    "\n",
+    "--- End document ---\n",
+    "The document above is verbatim; this closing line travels with it.",
+);
+
+const _: () = assert!(
+    FINAL_MESSAGE.len() < 1500,
+    "keep the final message under the record cap"
+);
+
+/// The genuine trailing sections after the final message: the provider-error
+/// excerpt stays in its own stderr section, never inside the message.
+const RECEIPT_TAIL: &str = concat!(
+    "\n\n--- stderr tail\n",
     "post to provider failed: status 429\n",
     "upstream error code 1302: rate limited\n",
     "\n--- runner log tail\n",
     "log line",
 );
 
+/// The full receipt: summary head, the fenced final message, then the
+/// stderr and runner-log tails.
+fn receipt() -> String {
+    format!("{RECEIPT_HEAD}\n--- receipt\n{FINAL_MESSAGE}{RECEIPT_TAIL}")
+}
+
 /// A real mailspace project with its pump context, fake host, index and port.
 struct Rig {
-    _project: Project,
+    project: Project,
     ctx: Ctx,
     host: Arc<FakeHost>,
     store: PumpStore,
@@ -65,7 +97,7 @@ fn rig() -> R<Rig> {
     };
     Ok(Rig {
         host: p.host.clone(),
-        _project: p,
+        project: p,
         ctx,
         store,
         port,
@@ -103,7 +135,7 @@ fn failed_job(task: &str) -> PoolJob {
     job.outcome = Some(JobOutcome {
         state: "finished".into(),
         detail: String::new(),
-        receipt: RECEIPT.into(),
+        receipt: receipt(),
         at: 0,
     });
     job
@@ -137,6 +169,11 @@ fn deliver_recorded_attempt(rig: &Rig, task: &str) -> R<()> {
     Ok(())
 }
 
+/// `text` with two spaces per line, as the record indents the final message.
+fn indented(text: &str) -> String {
+    text.lines().map(|line| format!("  {line}\n")).collect()
+}
+
 /// How starting the cto step of `run` over the real port comes out.
 fn start_cto(rig: &Rig, run: &RunRow) -> R<StartAction> {
     let def = load(FlowKind::Build)?;
@@ -168,8 +205,8 @@ fn cto_job(rig: &Rig, run: &RunRow) -> R<JobSpec> {
 #[test]
 fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
     let rig = rig()?;
-    let need = "need-diag";
-    let run = build_run(need, 2);
+    let need = rig.project.need("slice attempt diagnostics round trip");
+    let run = build_run(&need, 2);
     rig.store.insert_run(&run)?;
 
     let task = rig.port.send_step(
@@ -179,7 +216,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         &task_body_with(
             &TaskFront {
                 target: Some("vivi".into()),
-                ..TaskFront::step(need, 2, "slice:a")
+                ..TaskFront::step(&need, 2, "slice:a")
             },
             "",
         ),
@@ -192,7 +229,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         state: StepState::Running,
         verdict: None,
     };
-    rig.store.insert_step(need, &slice)?;
+    rig.store.insert_step(&need, &slice)?;
 
     let mut st = State::default();
     let retried = retry(
@@ -200,7 +237,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         &mut st,
         &rig.store,
         &rig.port,
-        need,
+        &need,
         &slice,
         &failed_job(&task),
         MAX_ATTEMPTS,
@@ -213,6 +250,29 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
     deliver_recorded_attempt(&rig, &task)?;
     let stored = rig.port.notes(&task, NoteWord::Attempt)?;
     assert_eq!(stored.len(), 1, "one attempt record on the task");
+    let (_, note) = &stored[0];
+    assert_eq!(
+        note.pump.reference.as_deref(),
+        Some("agent failed: hand failed"),
+        "the record's typed outcome travels in the note front"
+    );
+    let parsed = crate::pump::attempt_read::parse_record(&note.prose)
+        .expect("the delivered attempt note parses to typed fields");
+    let expected_block = format!("hand's final message:\n{}", indented(FINAL_MESSAGE))
+        .trim_end()
+        .to_owned();
+    assert!(
+        note.prose.contains(&expected_block),
+        "the stored note keeps the whole final message, not a prefix: {}",
+        note.prose
+    );
+    assert!(
+        note.prose
+            .trim_end()
+            .ends_with("this closing line travels with it."),
+        "the line after the end heading survives: {}",
+        note.prose
+    );
 
     let spec = cto_job(&rig, &run)?;
     assert_eq!(spec.role, "head-cto");
@@ -233,12 +293,45 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         spec.body
     );
     assert!(
-        spec.body.contains(concat!(
-            "hand's final message:\n",
-            "  PROVIDER REFUSED THE ATTEMPT; no changes were made\n",
-        )),
-        "{}",
+        spec.body.contains(&expected_block),
+        "the brief keeps the whole final message, not a prefix: {}",
         spec.body
+    );
+
+    // The same delivered note must stay report-readable. Hold the mailspace's
+    // own connection open across the read so the read-only report reader
+    // finds the WAL sidecar it refuses to create itself.
+    let keep_alive = rig.project.mailspace.storage()?;
+    let data = crate::report::data::read(rig.project.root())?;
+    drop(keep_alive);
+    assert_eq!(
+        data.attempts.len(),
+        1,
+        "the delivered note is the only report attempt"
+    );
+    let reported = &data.attempts[0];
+    assert_eq!(
+        reported,
+        &crate::report::model::AttemptRecord::from(&parsed),
+        "the report record is the delivered note's typed record"
+    );
+    assert_eq!(reported.attempt, format!("{task}-a{MAX_ATTEMPTS}"));
+    assert_eq!(reported.task.as_deref(), Some(task.as_str()));
+    assert_eq!(
+        reported.start,
+        Some(1_234_567_890),
+        "dispatch epoch from the receipt"
+    );
+    assert_eq!(
+        reported.agent_seconds,
+        Some(12),
+        "agent seconds from the receipt"
+    );
+    assert_eq!(reported.end, Some(T0), "the controlled host clock");
+    assert_eq!(reported.outcome, "agent failed: hand failed");
+    assert!(
+        data.needs.iter().any(|window| window.need == need),
+        "the real need thread survives the report round trip"
     );
     Ok(())
 }
