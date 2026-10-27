@@ -58,11 +58,9 @@ pub(super) fn call_for(request: &ActionRequest) -> Result<Call, String> {
         Action::SetRoleModel => role_model_call(&project, request)?,
         Action::SetPoolCap => pool_cap_call(&project, request)?,
         Action::SetPoolBand => pool_band_call(&project, request)?,
-        Action::FileNeed
-        | Action::FileFixNeed
-        | Action::DispatchNeed
-        | Action::Upgrade
-        | Action::SelfRelease => return Err(not_wired(request.kind)),
+        Action::FileNeed | Action::FileFixNeed => filing_call(&project, request)?,
+        Action::DispatchNeed => pump_send_call(&project, request)?,
+        Action::Upgrade | Action::SelfRelease => return Err(not_wired(request.kind)),
     })
 }
 
@@ -137,6 +135,75 @@ fn priority_call(project: &str, request: &ActionRequest) -> Result<Call, String>
             "level": request.priority,
         })),
     ))
+}
+
+/// The filing: one `send` of `kind=need` carrying the recipient, the
+/// subject, the prose body, the done-when clauses and the target, with
+/// the write scope left out when the action names none. No `from`
+/// travels: the server's authentication owns authorship. Filing stays
+/// one observable action: no priority and no dispatch follow the send —
+/// a later turn consumes the returned handle first.
+fn filing_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    let scope = if request.write_scope.is_empty() {
+        None
+    } else {
+        Some(&request.write_scope)
+    };
+    Ok((
+        "send",
+        without_unset(json!({
+            "project": project,
+            "kind": "need",
+            "to": to_of(request)?,
+            "subject": subject_of(request)?,
+            "body": body_of(request)?,
+            "done_when": request.done_when,
+            "target": target_of(request)?,
+            "write_scope": scope,
+        })),
+    ))
+}
+
+/// The dispatch: one `pump_send` naming the need, with the note as the
+/// record's body when the action carries one and no sender override —
+/// the server's own dispatch identity decides.
+fn pump_send_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "pump_send",
+        without_unset(json!({
+            "project": project,
+            "need": need_of(request)?,
+            "body": request.note.as_deref(),
+        })),
+    ))
+}
+
+fn to_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .to
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no to"))
+}
+
+fn subject_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .subject
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no subject"))
+}
+
+fn body_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .body
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no body"))
+}
+
+fn target_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .target
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no target"))
 }
 
 fn role_of(request: &ActionRequest) -> Result<&str, String> {
