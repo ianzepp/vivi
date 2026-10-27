@@ -356,6 +356,81 @@ fn a_model_override_needs_no_band_and_ignores_a_band_the_pool_does_not_serve() {
     assert_eq!(resolved.reasoning, None);
 }
 
+/// A pool whose `P2` band lists three candidate models, so an explicit
+/// `--model` can name a later entry; the harness offers all three.
+fn multi_band_pool() -> PoolConfig {
+    pool_config(
+        r#"
+provider = "local"
+slots = 4
+[harness]
+name = "pi"
+run = "pi --model {model}"
+models = ["first/model", "second/model", "third/model"]
+[[bands.P2]]
+model = "first/model"
+reasoning = "low"
+[[bands.P2]]
+model = "second/model"
+reasoning = "high"
+[[bands.P2]]
+model = "third/model"
+reasoning = "xhigh"
+[local]
+root = "~/lanes"
+"#,
+    )
+}
+
+#[test]
+fn explicit_model_uses_matching_later_entry_reasoning() {
+    let hand = role("lane-3", Some("hand"), Some("P2"));
+    let resolved = resolve(
+        &multi_band_pool(),
+        "bridge",
+        &input(Some(&hand), "build it", Some("second/model"), false),
+    )
+    .unwrap();
+    assert_eq!(resolved.model, "second/model");
+    assert_eq!(resolved.band, Some(2));
+    assert_eq!(resolved.reasoning, Some("high".to_string()));
+}
+
+#[test]
+fn explicit_model_reasoning_is_not_random() {
+    let hand = role("lane-3", Some("hand"), Some("P2"));
+    let candidates = [
+        ("first/model", "low"),
+        ("second/model", "high"),
+        ("third/model", "xhigh"),
+    ];
+    for _ in 0..10 {
+        for (model, reasoning) in candidates {
+            let resolved = resolve(
+                &multi_band_pool(),
+                "bridge",
+                &input(Some(&hand), "build it", Some(model), false),
+            )
+            .unwrap();
+            assert_eq!(resolved.model, model);
+            assert_eq!(resolved.reasoning, Some(reasoning.to_string()));
+        }
+    }
+    // A role slug keeps its `thinking` even when band entries name the same
+    // model: role thinking first, never the band list's reasoning.
+    let slugger = slug_role("second/model", Some("mid"));
+    for _ in 0..10 {
+        let resolved = resolve(
+            &multi_band_pool(),
+            "bridge",
+            &input(Some(&slugger), "build it", Some("second/model"), false),
+        )
+        .unwrap();
+        assert_eq!(resolved.model, "second/model");
+        assert_eq!(resolved.reasoning, Some("mid".to_string()));
+    }
+}
+
 #[test]
 fn a_model_the_harness_does_not_offer_is_refused_naming_the_model() {
     let hand = role("lane-3", Some("hand"), Some("P1"));
