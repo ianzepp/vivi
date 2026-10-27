@@ -509,58 +509,64 @@ impl ServiceRuntime {
             }
         };
         for project in desired {
-            if self.children.contains_key(project)
-                || self.stopping.contains_key(project)
-                || self
-                    .retry_after
-                    .get(project)
-                    .is_some_and(|until| *until > Instant::now())
-            {
-                continue;
+            self.start_project(&executable, project).await;
+        }
+    }
+
+    /// Start one project's pump when it is wanted and not already running,
+    /// backing off, or stopped by its control state.
+    async fn start_project(&mut self, executable: &Path, project: &PathBuf) {
+        if self.children.contains_key(project)
+            || self.stopping.contains_key(project)
+            || self
+                .retry_after
+                .get(project)
+                .is_some_and(|until| *until > Instant::now())
+        {
+            return;
+        }
+        if let Err(error) = crate::mailspace::inherit::refuse_base(project) {
+            tracing::warn!(project = %project.display(), %error, "registered root is a base config; not pumped");
+            return;
+        }
+        // In the server every registered root is a candidate: one that has
+        // no pump config or no pump database yet is simply not pumped, and
+        // nothing is created in it.
+        if self.server_state.is_some() {
+            let has_db = super::control::project_home(project)
+                .is_ok_and(|home| home.join(super::store::DB_FILENAME).exists());
+            if !has_db {
+                return;
             }
-            if let Err(error) = crate::mailspace::inherit::refuse_base(project) {
-                tracing::warn!(project = %project.display(), %error, "registered root is a base config; not pumped");
-                continue;
+        }
+        let (home, control) = match super::control::initialize_project(project) {
+            Ok(project) => project,
+            Err(error) => {
+                tracing::warn!(project = %project.display(), %error, "could not read project pump control state");
+                self.retry_after
+                    .insert(project.clone(), Instant::now() + RESTART_DELAY);
+                return;
             }
-            // In the server every registered root is a candidate: one that has
-            // no pump config or no pump database yet is simply not pumped, and
-            // nothing is created in it.
-            if self.server_state.is_some() {
-                let has_db = super::control::project_home(project)
-                    .is_ok_and(|home| home.join(super::store::DB_FILENAME).exists());
-                if !has_db {
-                    continue;
-                }
-            }
-            let (home, control) = match super::control::initialize_project(project) {
-                Ok(project) => project,
-                Err(error) => {
-                    tracing::warn!(project = %project.display(), %error, "could not read project pump control state");
-                    self.retry_after
-                        .insert(project.clone(), Instant::now() + RESTART_DELAY);
-                    continue;
-                }
-            };
-            if self.observed_modes.insert(project.clone(), control.mode) != Some(control.mode) {
+        };
+        if self.observed_modes.insert(project.clone(), control.mode) != Some(control.mode) {
+            self.retry_after.remove(project);
+        }
+        if control.mode == super::control::PumpMode::Stopped {
+            return;
+        }
+        if control.shutdown_requested && shutdown_is_pending(project, &home) {
+            return;
+        }
+        match spawn_pump(&executable, project).await {
+            Ok(child) => {
+                tracing::info!(project = %project.display(), pid = ?child.id(), "started project pump");
+                self.children.insert(project.clone(), child);
                 self.retry_after.remove(project);
             }
-            if control.mode == super::control::PumpMode::Stopped {
-                continue;
-            }
-            if control.shutdown_requested && shutdown_is_pending(project, &home) {
-                continue;
-            }
-            match spawn_pump(&executable, project).await {
-                Ok(child) => {
-                    tracing::info!(project = %project.display(), pid = ?child.id(), "started project pump");
-                    self.children.insert(project.clone(), child);
-                    self.retry_after.remove(project);
-                }
-                Err(error) => {
-                    tracing::warn!(project = %project.display(), %error, "could not start project pump");
-                    self.retry_after
-                        .insert(project.clone(), Instant::now() + RESTART_DELAY);
-                }
+            Err(error) => {
+                tracing::warn!(project = %project.display(), %error, "could not start project pump");
+                self.retry_after
+                    .insert(project.clone(), Instant::now() + RESTART_DELAY);
             }
         }
     }

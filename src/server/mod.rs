@@ -142,9 +142,9 @@ pub fn app_state(
     })
 }
 
-/// The v1 routes over `state`.
-pub fn router(state: AppState) -> Router {
-    let mut router = Router::new()
+/// The project routes: creation, identities, tokens, directory, keys and pump health.
+fn project_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         .route("/v1/projects", post(projects_api::create_project_handler))
         .route(
             "/v1/projects/{id}/identities/challenge",
@@ -174,6 +174,11 @@ pub fn router(state: AppState) -> Router {
             "/v1/projects/{id}/pump/health",
             get(pump_health::pump_health_handler),
         )
+}
+
+/// The server endpoints: MCP, machine sign-in, job tickets and git.
+fn service_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         // Chat rooms only. Project and host MCP are `POST /v1/mcp`.
         .route("/v1/rooms/{id}/mcp", post(mcp::rooms_mcp_handler))
         // One server endpoint: a server key (or the host operator token)
@@ -195,6 +200,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::any(git_http::git_handler)
                 .layer(DefaultBodyLimit::max(git_http::BODY_LIMIT)),
         )
+}
+
+/// Letters (items) and chat rooms.
+fn item_and_room_routes(router: Router<AppState>) -> Router<AppState> {
+    router
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(
@@ -218,7 +228,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/rooms/{id}/messages",
             post(rooms::send_handler).get(rooms::poll_handler),
-        );
+        )
+}
+
+/// The v1 routes over `state`.
+pub fn router(state: AppState) -> Router {
+    let mut router = item_and_room_routes(service_routes(project_routes(Router::new())));
     // Disabled (unregistered) when no moderation token is configured.
     if state.moderation_token.is_some() {
         router = router.route("/v1/_health", get(admin::health_handler));

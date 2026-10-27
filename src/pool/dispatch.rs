@@ -87,6 +87,39 @@ pub fn new_job_id(task: &str, nanos: u128, pid: u32) -> String {
 /// configured, the model
 /// is not allowed, `from`/`branch` are missing or malformed, or the budget is
 /// out of range.
+fn plan_committer(config: &PoolConfig, pool: &str) -> Result<PoolCommitter, VivariumError> {
+    match (&config.committer, config.provider.as_str()) {
+        (Some(committer), _) => Ok(committer.clone()),
+        // The server fills in the project's [pump] committer.
+        (None, "ticket") => Ok(PoolCommitter {
+            name: String::new(),
+            email: String::new(),
+            unknown: std::collections::BTreeMap::new(),
+        }),
+        (None, _) => Err(VivariumError::Config(format!(
+            "[pools.{pool}.committer] (name, email) is required to dispatch"
+        ))),
+    }
+}
+
+/// The pool's harness and the reasoning level for it; none for a job that
+/// runs its own command.
+fn plan_harness<'a>(
+    config: &'a PoolConfig,
+    pool: &str,
+    flags: &DispatchFlags,
+) -> Result<(Option<&'a super::config::PoolHarness>, Option<String>), VivariumError> {
+    if flags.command.is_some() {
+        return Ok((None, None));
+    }
+    let harness = config.harness.as_ref().ok_or_else(|| {
+        VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
+    })?;
+    let reasoning = plan_reasoning(pool, &harness.run, flags)?;
+    job::check_model(&flags.model, &harness.models)?;
+    Ok((Some(harness), reasoning))
+}
+
 pub fn plan_job(
     config: &PoolConfig,
     pool: &str,
@@ -97,31 +130,8 @@ pub fn plan_job(
 ) -> Result<JobPlan, VivariumError> {
     let (handle, _, body) = task;
     validate_source(config, pool)?;
-    let committer = match (&config.committer, config.provider.as_str()) {
-        (Some(committer), _) => committer.clone(),
-        // The server fills in the project's [pump] committer.
-        (None, "ticket") => PoolCommitter {
-            name: String::new(),
-            email: String::new(),
-            unknown: std::collections::BTreeMap::new(),
-        },
-        (None, _) => {
-            return Err(VivariumError::Config(format!(
-                "[pools.{pool}.committer] (name, email) is required to dispatch"
-            )));
-        }
-    };
-    let (harness, reasoning) = match flags.command {
-        Some(_) => (None, None),
-        None => {
-            let harness = config.harness.as_ref().ok_or_else(|| {
-                VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
-            })?;
-            let reasoning = plan_reasoning(pool, &harness.run, flags)?;
-            job::check_model(&flags.model, &harness.models)?;
-            (Some(harness), reasoning)
-        }
-    };
+    let committer = plan_committer(config, pool)?;
+    let (harness, reasoning) = plan_harness(config, pool, flags)?;
     validate_publish_flags(flags)?;
     check_task_letter(handle, body)?;
     let refs = plan_refs(flags, body)?;

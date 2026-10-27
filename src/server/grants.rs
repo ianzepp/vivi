@@ -247,16 +247,15 @@ impl ServerKeyStore {
     }
 
     /// The mint itself, under the caller's lock.
-    fn mint_locked(
-        &self,
+    /// The position of `principal` in the file, created with `grants` when
+    /// absent; an existing one gains the grants it lacks.
+    fn principal_slot(
         state: &mut StoreState,
-        principal: String,
+        principal: &str,
         host: bool,
         grants: Vec<GrantRecord>,
-        label: String,
-        created_by: &str,
-    ) -> Result<MintedServerKey, GrantsError> {
-        let pos = match state
+    ) -> Result<usize, GrantsError> {
+        match state
             .file
             .principals
             .iter()
@@ -280,19 +279,31 @@ impl ServerKeyStore {
                         existing.grants.push(grant);
                     }
                 }
-                pos
+                Ok(pos)
             }
             None => {
                 state.file.principals.push(PrincipalRecord {
-                    principal: principal.clone(),
+                    principal: principal.to_owned(),
                     host,
                     keys: Vec::new(),
                     grants,
                     machine_keys: Vec::new(),
                 });
-                state.file.principals.len() - 1
+                Ok(state.file.principals.len() - 1)
             }
-        };
+        }
+    }
+
+    fn mint_locked(
+        &self,
+        state: &mut StoreState,
+        principal: String,
+        host: bool,
+        grants: Vec<GrantRecord>,
+        label: String,
+        created_by: &str,
+    ) -> Result<MintedServerKey, GrantsError> {
+        let pos = Self::principal_slot(state, &principal, host, grants)?;
         let minted = mint_token().map_err(|err| match err {
             AuthError::Entropy => GrantsError::Storage("entropy unavailable".into()),
             _ => GrantsError::Storage("key mint failed".into()),

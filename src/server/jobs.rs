@@ -141,8 +141,27 @@ fn load(state: &AppState, job_id: &str) -> Option<JobRecord> {
     if !valid_job_id(job_id) {
         return None;
     }
-    let bytes = std::fs::read(jobs_dir(state).join(format!("{job_id}.json"))).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    read_record(&jobs_dir(state).join(format!("{job_id}.json")))
+}
+
+/// One job file. A missing file is no job; an unreadable or corrupt one is
+/// also no job, but is logged so a damaged record is not silent.
+fn read_record(path: &std::path::Path) -> Option<JobRecord> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!("cannot read job file {}: {e}", path.display());
+            return None;
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(record) => Some(record),
+        Err(e) => {
+            tracing::warn!("job file {} is not a job record: {e}", path.display());
+            None
+        }
+    }
 }
 
 /// Atomic write, mode 600.
@@ -151,7 +170,8 @@ fn store(state: &AppState, record: &JobRecord) -> Result<(), String> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let dir = jobs_dir(state);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("cannot restrict {}: {e}", dir.display()))?;
     let id = &record.manifest.job_id;
     let tmp = dir.join(format!(".{id}.tmp"));
     let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
@@ -176,8 +196,7 @@ fn all(state: &AppState) -> Vec<JobRecord> {
     let mut jobs: Vec<JobRecord> = entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| std::fs::read(e.path()).ok())
-        .filter_map(|b| serde_json::from_slice(&b).ok())
+        .filter_map(|e| read_record(&e.path()))
         .collect();
     jobs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     jobs
@@ -234,25 +253,18 @@ fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("{key} is required"))
 }
 
-/// `job_create`. Blocking.
-pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
-    let project_arg = required(args, "project")?;
-    let target = required(args, "target")?;
-    let branch = required(args, "branch")?;
-    let task = required(args, "task")?;
-    let harness = required(args, "harness")?;
-    let gate = text(args, "gate")?.filter(|g| !g.trim().is_empty());
-    let timeout_s = match args.get("timeout_s") {
-        None | Some(Value::Null) => DEFAULT_TIMEOUT_S,
-        Some(v) => v
-            .as_u64()
-            .filter(|t| *t > 0)
-            .ok_or("timeout_s must be a positive integer")?,
+/// The project a job is for: hosted here, not archived. With its mailspace root.
+fn live_project(
+    state: &AppState,
+    project_arg: &str,
+) -> Result<(crate::server::projects::ProjectMeta, std::path::PathBuf), String> {
+    let meta = match hosted_entry(state, project_arg) {
+        Some(meta) => meta,
+        None => state
+            .projects
+            .load_meta_including_retired(project_arg)
+            .map_err(|_| format!("no such project: {project_arg}"))?,
     };
-
-    let meta = hosted_entry(state, project_arg)
-        .or_else(|| state.projects.load_meta_including_retired(project_arg).ok())
-        .ok_or_else(|| format!("no such project: {project_arg}"))?;
     if meta.is_archived() || state.projects.is_retired(&meta.project_id) {
         return Err(format!("project {project_arg} is archived"));
     }
@@ -260,11 +272,11 @@ pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
         .mailspace_root
         .clone()
         .ok_or("the project is not hosted here")?;
-    let project =
-        crate::server::mcp::server::hosted_name(&meta).unwrap_or_else(|| meta.project_id.clone());
-    let (lane, main) = lane_for(&root, target)?;
-    let main = short(&main).to_owned();
+    Ok((meta, root))
+}
 
+/// A job pushes a work branch, never a protected one.
+fn check_work_branch(branch: &str, main: &str) -> Result<(), String> {
     if !valid_branch(branch) {
         return Err(format!("branch {branch:?} is not a usable branch name"));
     }
@@ -273,38 +285,75 @@ pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
             "branch {branch} is a protected branch; name a work branch"
         ));
     }
-    // Default base: the target's main; until the pump has created it (a
-    // fresh lane holds only the upstream branch), the lane's default branch.
-    let base = match text(args, "base")?.filter(|b| !b.trim().is_empty()) {
-        Some(base) => base.to_owned(),
-        None if lane_has_branch(&lane, &main) => main.clone(),
-        None => lane_default_branch(&lane).unwrap_or_else(|| main.clone()),
-    };
+    Ok(())
+}
 
-    let committer = match args.get("committer").filter(|c| !c.is_null()) {
-        Some(c) => Committer {
+/// The base to branch from. Default: the target's main; until the pump has
+/// created it (a fresh lane holds only the upstream branch), the lane's
+/// default branch.
+fn job_base(args: &Value, lane: &std::path::Path, main: &str) -> Result<String, String> {
+    Ok(match text(args, "base")?.filter(|b| !b.trim().is_empty()) {
+        Some(base) => base.to_owned(),
+        None if lane_has_branch(lane, main) => main.to_owned(),
+        None => lane_default_branch(lane).unwrap_or_else(|| main.to_owned()),
+    })
+}
+
+/// The committer: the one passed, else the project's `[pump]` committer.
+fn job_committer(args: &Value, root: &std::path::Path) -> Result<Committer, String> {
+    if let Some(c) = args.get("committer").filter(|c| !c.is_null()) {
+        return Ok(Committer {
             name: required(c, "name")
                 .map_err(|e| format!("committer.{e}"))?
                 .to_owned(),
             email: required(c, "email")
                 .map_err(|e| format!("committer.{e}"))?
                 .to_owned(),
-        },
-        None => {
-            let pump = Mailspace::open_root(root.clone())
-                .map_err(|e| format!("cannot open the project mailspace: {e:?}"))?
-                .config
-                .pump
-                .ok_or("the project has no [pump] table; pass committer")?;
-            if pump.committer_name.trim().is_empty() || pump.committer_email.trim().is_empty() {
-                return Err("the project's [pump] has no committer; pass committer".to_owned());
-            }
-            Committer {
-                name: pump.committer_name,
-                email: pump.committer_email,
-            }
-        }
-    };
+        });
+    }
+    let pump = Mailspace::open_root(root.to_path_buf())
+        .map_err(|e| format!("cannot open the project mailspace: {e:?}"))?
+        .config
+        .pump
+        .ok_or("the project has no [pump] table; pass committer")?;
+    if pump.committer_name.trim().is_empty() || pump.committer_email.trim().is_empty() {
+        return Err("the project's [pump] has no committer; pass committer".to_owned());
+    }
+    Ok(Committer {
+        name: pump.committer_name,
+        email: pump.committer_email,
+    })
+}
+
+fn timeout_arg(args: &Value) -> Result<u64, String> {
+    match args.get("timeout_s") {
+        None | Some(Value::Null) => Ok(DEFAULT_TIMEOUT_S),
+        Some(v) => v
+            .as_u64()
+            .filter(|t| *t > 0)
+            .ok_or_else(|| "timeout_s must be a positive integer".to_owned()),
+    }
+}
+
+/// `job_create`. Blocking.
+pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
+    let project_arg = required(args, "project")?;
+    let target = required(args, "target")?;
+    let branch = required(args, "branch")?;
+    let task = required(args, "task")?;
+    let harness = required(args, "harness")?;
+    let gate = text(args, "gate")?.filter(|g| !g.trim().is_empty());
+    let timeout_s = timeout_arg(args)?;
+
+    let (meta, root) = live_project(state, project_arg)?;
+    let project =
+        crate::server::mcp::server::hosted_name(&meta).unwrap_or_else(|| meta.project_id.clone());
+    let (lane, main) = lane_for(&root, target)?;
+    let main = short(&main).to_owned();
+
+    check_work_branch(branch, &main)?;
+    let base = job_base(args, &lane, &main)?;
+    let committer = job_committer(args, &root)?;
 
     let job_id = format!("job_{}", random_hex(8)?);
     let ticket = format!("{TICKET_PREFIX}{}", random_hex(32)?);
@@ -450,12 +499,18 @@ fn lane_has_branch(lane: &std::path::Path, branch: &str) -> bool {
 }
 
 fn lane_default_branch(lane: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
+    let out = match std::process::Command::new("git")
         .arg("--git-dir")
         .arg(lane)
         .args(["symbolic-ref", "--short", "HEAD"])
         .output()
-        .ok()?;
+    {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("cannot run git in {}: {e}", lane.display());
+            return None;
+        }
+    };
     let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (out.status.success() && !name.is_empty() && lane_has_branch(lane, &name)).then_some(name)
 }

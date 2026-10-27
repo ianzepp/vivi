@@ -91,16 +91,13 @@ fn read_slots(worker: &Path) -> Result<u32, Failure> {
         .map_err(|e| usage(format!("{}: {e}", path.display())))?;
     match table.get("slots") {
         None => Ok(DEFAULT_SLOTS),
-        Some(value) => value
-            .as_integer()
-            .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| *n > 0)
-            .ok_or_else(|| {
-                usage(format!(
-                    "{}: slots must be a positive integer",
-                    path.display()
-                ))
-            }),
+        Some(value) => match value.as_integer().map(u32::try_from) {
+            Some(Ok(n)) if n > 0 => Ok(n),
+            _ => Err(usage(format!(
+                "{}: slots must be a positive integer",
+                path.display()
+            ))),
+        },
     }
 }
 
@@ -342,18 +339,18 @@ impl Job<'_> {
             return (125, "cannot open the job log".into());
         };
         let start = log.seek(SeekFrom::End(0)).unwrap_or(0);
-        let _ = writeln!(log, "\n$ {describe}");
-        let Ok(out) = log.try_clone() else {
+        note(&mut log, &format!("\n$ {describe}"));
+        let (Ok(out), Ok(err)) = (log.try_clone(), log.try_clone()) else {
             return (125, "cannot open the job log".into());
         };
         command
             .stdin(Stdio::null())
             .stdout(out)
-            .stderr(log.try_clone().expect("log handle"))
+            .stderr(err)
             .process_group(0);
         let code = match command.spawn() {
             Err(e) => {
-                let _ = writeln!(log, "[cannot start: {e}]");
+                note(&mut log, &format!("[cannot start: {e}]"));
                 127
             }
             Ok(mut child) => wait_limited(&mut child, limit, &mut log),
@@ -384,6 +381,14 @@ impl Job<'_> {
     }
 }
 
+/// Append one line to the job log. The log is the worker's record, not its
+/// result: a write that fails is reported on stderr and the job goes on.
+fn note(log: &mut File, line: &str) {
+    if let Err(e) = writeln!(log, "{line}") {
+        eprintln!("warning: cannot write the job log: {e}");
+    }
+}
+
 /// Wait for the child, killing its whole process group at the limit (code 124).
 fn wait_limited(child: &mut std::process::Child, limit: Duration, log: &mut File) -> i32 {
     let deadline = Instant::now() + limit;
@@ -394,27 +399,34 @@ fn wait_limited(child: &mut std::process::Child, limit: Duration, log: &mut File
             Err(_) => return 125,
         }
         if Instant::now() >= deadline {
-            let _ = writeln!(log, "\n[timeout after {}s]", limit.as_secs());
+            note(log, &format!("\n[timeout after {}s]", limit.as_secs()));
             let pid = i32::try_from(child.id()).unwrap_or(0);
             if pid > 0 {
                 // SAFETY: signalling the process group of a child we started.
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
             }
-            let _ = child.wait();
+            if let Err(e) = child.wait() {
+                eprintln!("warning: cannot reap the timed-out step: {e}");
+            }
             return 124;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
+fn read_since(log: &Path, start: u64) -> std::io::Result<String> {
+    let mut f = File::open(log)?;
+    f.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn tail_since(log: &Path, start: u64) -> String {
-    let mut text = String::new();
-    if let Ok(mut f) = File::open(log) {
-        let _ = f.seek(SeekFrom::Start(start));
-        let mut bytes = Vec::new();
-        let _ = f.read_to_end(&mut bytes);
-        text = String::from_utf8_lossy(&bytes).into_owned();
-    }
+    let text = read_since(log, start).unwrap_or_else(|e| {
+        eprintln!("warning: cannot read the job log tail: {e}");
+        String::new()
+    });
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(15)..].join("\n")
 }
@@ -453,6 +465,22 @@ fn hostname() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
+/// The environment of git's network subprocesses: the ticket as an extra
+/// header, and nothing from the user's or the system's git config.
+fn git_env(ticket: &str) -> Vec<(String, String)> {
+    vec![
+        ("GIT_CONFIG_COUNT".into(), "1".into()),
+        ("GIT_CONFIG_KEY_0".into(), "http.extraHeader".into()),
+        (
+            "GIT_CONFIG_VALUE_0".into(),
+            format!("Authorization: Bearer {ticket}"),
+        ),
+        ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ]
+}
+
 fn run_job(server: &str, job_id: &str, ticket: &str, job_dir: &Path) -> Result<i32, Failure> {
     let manifest = fetch_manifest(server, job_id, ticket)?;
     let task_file = job_dir.join("task.md");
@@ -466,21 +494,12 @@ fn run_job(server: &str, job_id: &str, ticket: &str, job_dir: &Path) -> Result<i
         log: job_dir.join("log.txt"),
         started: Instant::now(),
         steps: Map::new(),
-        git_env: vec![
-            ("GIT_CONFIG_COUNT".into(), "1".into()),
-            ("GIT_CONFIG_KEY_0".into(), "http.extraHeader".into()),
-            (
-                "GIT_CONFIG_VALUE_0".into(),
-                format!("Authorization: Bearer {ticket}"),
-            ),
-            ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
-            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
-            ("GIT_TERMINAL_PROMPT".into(), "0".into()),
-        ],
+        git_env: git_env(ticket),
     };
     // A rerun in the same job dir starts clean.
     if job.checkout.exists() {
-        let _ = fs::remove_dir_all(&job.checkout);
+        fs::remove_dir_all(&job.checkout)
+            .map_err(|e| usage(format!("{}: {e}", job.checkout.display())))?;
     }
     let mut commit: Option<String> = None;
     let result = pipeline(&mut job, &task_file, &mut commit);
@@ -503,66 +522,118 @@ fn run_job(server: &str, job_id: &str, ticket: &str, job_dir: &Path) -> Result<i
         receipt["tail"] = json!(outcome.tail);
     }
     let body = serde_json::to_vec_pretty(&receipt).unwrap_or_default();
-    let _ = fs::write(job_dir.join("receipt.json"), &body);
+    if let Err(e) = fs::write(job_dir.join("receipt.json"), &body) {
+        eprintln!("warning: cannot keep a local copy of the receipt: {e}");
+    }
     println!("{}", String::from_utf8_lossy(&body));
     post_receipt(server, job_id, ticket, &body)?;
-    let _ = fs::remove_file(job_dir.join("ticket"));
+    if let Err(e) = fs::remove_file(job_dir.join("ticket")) {
+        eprintln!("warning: cannot remove the stored ticket: {e}");
+    }
     Ok(if result.is_ok() { 0 } else { EXIT_FAILED })
 }
 
 fn pipeline(job: &mut Job, task_file: &Path, commit: &mut Option<String>) -> Result<(), Outcome> {
-    let m = job.manifest;
-    let checkout = job.checkout.clone();
-    let job_dir = job.job_dir.to_path_buf();
+    clone_step(job)?;
+    branch_step(job)?;
+
+    let harness = job.sh(&job.manifest.harness, task_file);
     let limit = job.remaining();
+    let describe = format!("sh -c {:?}", job.manifest.harness);
+    job.step("harness", harness, &describe, limit)?;
 
-    let mut clone = job.git_net(&job_dir);
-    clone.args(["clone", "-q", &m.git_url]).arg(&checkout);
-    job.step("clone", clone, &format!("git clone {}", m.git_url), limit)?;
+    commit_step(job)?;
+    *commit = head_commit(job);
 
-    // The base is a ref (taken from origin) or a commit.
-    let base = {
-        let remote = format!("origin/{}", m.base);
-        let probe = job
-            .git()
-            .args([
-                "rev-parse",
-                "--verify",
-                "-q",
-                &format!("{remote}^{{commit}}"),
-            ])
-            .output();
-        match probe {
-            Ok(out) if out.status.success() => remote,
-            _ => m.base.clone(),
-        }
-    };
+    if let Some(gate) = &job.manifest.gate {
+        let cmd = job.sh(gate, task_file);
+        let limit = job.remaining();
+        job.step("gate", cmd, &format!("sh -c {gate:?}"), limit)?;
+    }
+
+    push_with_retry(job)
+}
+
+fn clone_step(job: &mut Job) -> Result<(), Outcome> {
+    let url = job.manifest.git_url.clone();
+    let mut clone = job.git_net(job.job_dir);
+    clone.args(["clone", "-q", &url]).arg(&job.checkout);
+    let limit = job.remaining();
+    job.step("clone", clone, &format!("git clone {url}"), limit)
+}
+
+/// The base is a ref (taken from origin) or a commit.
+fn resolve_base(job: &Job) -> String {
+    let base = &job.manifest.base;
+    let remote = format!("origin/{base}");
+    let probe = job
+        .git()
+        .args([
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{remote}^{{commit}}"),
+        ])
+        .output();
+    match probe {
+        Ok(out) if out.status.success() => remote,
+        _ => base.clone(),
+    }
+}
+
+fn branch_step(job: &mut Job) -> Result<(), Outcome> {
+    let base = resolve_base(job);
+    let branch_name = job.manifest.branch.clone();
     let mut branch = job.git();
-    branch.args(["switch", "-q", "-c", &m.branch, &base]);
+    branch.args(["switch", "-q", "-c", &branch_name, &base]);
     let limit = job.remaining();
     job.step(
         "branch",
         branch,
-        &format!("git switch -c {} {base}", m.branch),
+        &format!("git switch -c {branch_name} {base}"),
         limit,
-    )?;
+    )
+}
 
-    let harness = job.sh(&m.harness, task_file);
-    let limit = job.remaining();
-    job.step("harness", harness, &format!("sh -c {:?}", m.harness), limit)?;
+/// A failure of the commit stage before any git step is recorded.
+fn stage_failure(step: &str, code: i32, tail: impl Into<String>) -> Outcome {
+    Outcome {
+        failed_step: step.into(),
+        code,
+        tail: tail.into(),
+    }
+}
 
-    // Commit whatever the harness changed.
-    let _ = job.git().args(["add", "-A"]).output();
+/// Stage whatever the harness changed.
+fn stage_all(job: &Job) -> Result<(), Outcome> {
+    match job.git().args(["add", "-A"]).output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err(stage_failure(
+                "stage",
+                out.status.code().unwrap_or(1),
+                format!("git add -A failed: {}", stderr.trim()),
+            ))
+        }
+        Err(e) => Err(stage_failure(
+            "stage",
+            127,
+            format!("cannot run git add: {e}"),
+        )),
+    }
+}
+
+/// Commit whatever the harness changed.
+fn commit_step(job: &mut Job) -> Result<(), Outcome> {
+    stage_all(job)?;
     let staged = job.git().args(["diff", "--cached", "--quiet"]).status();
     if staged.is_ok_and(|s| s.success()) {
         job.steps
             .insert("commit".into(), json!({"code": 1, "seconds": 0.0}));
-        return Err(Outcome {
-            failed_step: "commit".into(),
-            code: 1,
-            tail: "the harness made no changes".into(),
-        });
+        return Err(stage_failure("commit", 1, "the harness made no changes"));
     }
+    let m = job.manifest;
     let subject = format!(
         "Work {}: {}",
         job.job_id,
@@ -582,18 +653,17 @@ fn pipeline(job: &mut Job, task_file: &Path, commit: &mut Option<String>) -> Res
         .arg(format!("user.email={}", m.committer_email))
         .args(["commit", "-q", "-m", subject.trim_end()]);
     let limit = job.remaining();
-    job.step("commit", commit_cmd, "git commit", limit)?;
-    if let Ok(out) = job.git().args(["rev-parse", "HEAD"]).output() {
-        *commit = Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
-    }
+    job.step("commit", commit_cmd, "git commit", limit)
+}
 
-    if let Some(gate) = &m.gate {
-        let cmd = job.sh(gate, task_file);
-        let limit = job.remaining();
-        job.step("gate", cmd, &format!("sh -c {gate:?}"), limit)?;
+fn head_commit(job: &Job) -> Option<String> {
+    match job.git().args(["rev-parse", "HEAD"]).output() {
+        Ok(out) => Some(String::from_utf8_lossy(&out.stdout).trim().to_string()),
+        Err(e) => {
+            eprintln!("warning: cannot read the committed HEAD: {e}");
+            None
+        }
     }
-
-    push_with_retry(job)
 }
 
 /// Push the branch; a transient failure is retried with backoff for up to an

@@ -52,9 +52,9 @@ use local_mailspace_command::run_mailspace_command;
 fn main() {
     quiet_pipe::install();
 
-    // The server must start single-threaded (it hardens the process and
-    // takes its secrets out of the environment before building its own
-    // runtime), so it is dispatched before vivi's runtime exists: by name
+    // The server must start single-threaded (it hardens the process before
+    // building its own runtime), so it is dispatched before vivi's runtime
+    // exists: by name
     // (a `vivi-server` link to this binary) or as `vivi server run`.
     let mut argv = std::env::args();
     let invoked_as = argv.next().unwrap_or_default();
@@ -67,80 +67,9 @@ fn main() {
         return;
     }
 
-    let cli = Cli::parse();
-    if let Command::Server {
-        command: ServerSubcommand::Run { args },
-    } = cli.command
-    {
-        vivi::server::entry::run(args);
+    let Some(cli) = run_before_runtime(Cli::parse()) else {
         return;
-    }
-    if let Command::Pool {
-        command: vivi::cli::PoolSubcommand::Run(run),
-    } = &cli.command
-    {
-        process::exit(local_pool_run_command::run(run));
-    }
-    if let Command::Key {
-        command: vivi::cli::KeyCommand::Show,
-    } = cli.command
-    {
-        match vivi::machine_key::MachineKey::load_or_create() {
-            Ok(key) => {
-                println!("public_key  {}", key.public_key());
-                println!("fingerprint {}", key.fingerprint());
-                println!("file        {}", key.path().display());
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
-        }
-        return;
-    }
-    if let Command::Key {
-        command: vivi::cli::KeyCommand::GitCredential { action },
-    } = &cli.command
-    {
-        git_credential(action);
-        return;
-    }
-    if let Command::Server {
-        command: ServerSubcommand::Pump { action },
-    } = cli.command
-    {
-        let file = match vivi::home::server_home() {
-            Ok(home) => home.join("pump-state"),
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
-        };
-        let write = |state: &str| {
-            if let Err(e) = std::fs::write(&file, format!("{state}\n")) {
-                eprintln!("error: cannot write {}: {e}", file.display());
-                process::exit(1);
-            }
-        };
-        match action {
-            vivi::cli::ServerPumpAction::Pause => write("paused"),
-            vivi::cli::ServerPumpAction::Resume => write("running"),
-            vivi::cli::ServerPumpAction::Status => {}
-        }
-        let paused = vivi::pump::service::server_pump_paused(&file);
-        println!("server pump {}", if paused { "paused" } else { "running" });
-        return;
-    }
-    if let Command::Server {
-        command: ServerSubcommand::Init { port },
-    } = cli.command
-    {
-        if let Err(e) = vivi::server::init::run(port) {
-            eprintln!("error: {e}");
-            process::exit(1);
-        }
-        return;
-    }
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -150,6 +79,80 @@ fn main() {
             process::exit(1);
         });
     runtime.block_on(async_main(cli));
+}
+
+/// The commands that need no async runtime. `None` when one ran; the parsed
+/// command line back when it still needs the runtime.
+fn run_before_runtime(cli: Cli) -> Option<Cli> {
+    match &cli.command {
+        Command::Server {
+            command: ServerSubcommand::Run { args },
+        } => vivi::server::entry::run(args.clone()),
+        Command::Pool {
+            command: vivi::cli::PoolSubcommand::Run(run),
+        } => process::exit(local_pool_run_command::run(run)),
+        Command::Key {
+            command: vivi::cli::KeyCommand::Show,
+        } => key_show(),
+        Command::Key {
+            command: vivi::cli::KeyCommand::GitCredential { action },
+        } => git_credential(action),
+        Command::Server {
+            command: ServerSubcommand::Pump { action },
+        } => server_pump(action),
+        Command::Server {
+            command: ServerSubcommand::Init { port },
+        } => server_init(*port),
+        _ => return Some(cli),
+    }
+    None
+}
+
+/// `vivi key show`: this machine's public key, fingerprint and key file.
+fn key_show() {
+    match vivi::machine_key::MachineKey::load_or_create() {
+        Ok(key) => {
+            println!("public_key  {}", key.public_key());
+            println!("fingerprint {}", key.fingerprint());
+            println!("file        {}", key.path().display());
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+/// `vivi server pump <pause|resume|status>`.
+fn server_pump(action: &vivi::cli::ServerPumpAction) {
+    let file = match vivi::home::server_home() {
+        Ok(home) => home.join("pump-state"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let write = |state: &str| {
+        if let Err(e) = std::fs::write(&file, format!("{state}\n")) {
+            eprintln!("error: cannot write {}: {e}", file.display());
+            process::exit(1);
+        }
+    };
+    match action {
+        vivi::cli::ServerPumpAction::Pause => write("paused"),
+        vivi::cli::ServerPumpAction::Resume => write("running"),
+        vivi::cli::ServerPumpAction::Status => {}
+    }
+    let paused = vivi::pump::service::server_pump_paused(&file);
+    println!("server pump {}", if paused { "paused" } else { "running" });
+}
+
+/// `vivi server init`.
+fn server_init(port: Option<u16>) {
+    if let Err(e) = vivi::server::init::run(port) {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
 }
 
 async fn async_main(cli: Cli) {
@@ -239,7 +242,10 @@ fn run_update_check() -> Result<(), VivariumError> {
 fn git_credential(action: &str) {
     use std::io::Read;
     let mut input = String::new();
-    let _ = std::io::stdin().read_to_string(&mut input);
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("error: cannot read git's credential request: {e}");
+        process::exit(1);
+    }
     let field = |name: &str| {
         input
             .lines()
@@ -271,7 +277,9 @@ fn git_credential(action: &str) {
             }
         },
         "erase" => {
-            let _ = vivi::machine_key::forget(&server, false);
+            if let Err(e) = vivi::machine_key::forget(&server, false) {
+                eprintln!("warning: cannot forget the cached session: {e}");
+            }
         }
         _ => {}
     }

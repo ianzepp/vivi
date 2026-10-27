@@ -40,6 +40,38 @@ pub(crate) async fn project_register(
     .await
 }
 
+/// Whether the project at `root` (or with `project_id`) is archived.
+fn is_archived(state: &AppState, root: &Path, project_id: &str) -> bool {
+    hosted_metas(state).into_iter().any(|meta| {
+        meta.archived
+            .as_ref()
+            .is_some_and(|a| a.root == root || a.root.canonicalize().is_ok_and(|a| a == root))
+            || (meta.project_id == project_id && meta.is_archived())
+    })
+}
+
+/// Put `root` in the host registry with `serve` on.
+fn mark_served(root: &Path) -> Result<(), ToolError> {
+    registry::update(|registry| {
+        // `pump = true` marks the entry as already migrated: the server
+        // decides pumping from the mailspace's own control state, and a new
+        // pump database starts stopped.
+        let flags = registry.get(root).unwrap_or(Flags {
+            pump: true,
+            serve: true,
+        });
+        registry.set(
+            root.to_path_buf(),
+            Flags {
+                serve: true,
+                ..flags
+            },
+        );
+        Ok(())
+    })
+    .map_err(|e| ToolError::new(format!("the host registry could not be updated: {e}")))
+}
+
 fn register(state: &AppState, given: &Path) -> Result<Value, ToolError> {
     if !given.join(".vivi").join("mailspace.toml").is_file() {
         return Err(ToolError::new(format!(
@@ -54,36 +86,13 @@ fn register(state: &AppState, given: &Path) -> Result<Value, ToolError> {
     let mailspace = Mailspace::open_root(root.clone())
         .map_err(|e| ToolError::new(format!("cannot open its mailspace: {e}")))?;
     let project_id = hosted::resolve_project_id(&mailspace).map_err(ToolError::new)?;
-    let archived = hosted_metas(state).into_iter().any(|meta| {
-        meta.archived
-            .as_ref()
-            .is_some_and(|a| a.root == root || a.root.canonicalize().is_ok_and(|a| a == root))
-            || (meta.project_id == project_id && meta.is_archived())
-    });
-    if archived {
+    if is_archived(state, &root, &project_id) {
         return Err(ToolError::new(format!(
             "{} is an archived project; restore_project brings it back",
             root.display()
         )));
     }
-    registry::update(|registry| {
-        // `pump = true` marks the entry as already migrated: the server
-        // decides pumping from the mailspace's own control state, and a new
-        // pump database starts stopped.
-        let flags = registry.get(&root).unwrap_or(Flags {
-            pump: true,
-            serve: true,
-        });
-        registry.set(
-            root.clone(),
-            Flags {
-                serve: true,
-                ..flags
-            },
-        );
-        Ok(())
-    })
-    .map_err(|e| ToolError::new(format!("the host registry could not be updated: {e}")))?;
+    mark_served(&root)?;
     let report = hosted::reconcile_registry(&state.projects, &state.identities);
     let (served, refusal) = report.map_or((false, None), |report| {
         (

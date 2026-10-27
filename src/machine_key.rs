@@ -183,10 +183,13 @@ pub fn sign_in(server: &str, as_host: bool) -> Result<String, VivariumError> {
         &format!("{server}/v1/auth/machine/challenge"),
         &json!({ "public_key": key.public_key() }),
     )?;
-    let nonce = challenge["nonce"]
-        .as_str()
-        .and_then(|n| b64().decode(n).ok())
-        .ok_or_else(|| err("challenge has no nonce"))?;
+    let nonce = b64()
+        .decode(
+            challenge["nonce"]
+                .as_str()
+                .ok_or_else(|| err("challenge has no nonce"))?,
+        )
+        .map_err(|e| err(format!("challenge nonce is not base64: {e}")))?;
     let verified = post_json(
         &format!("{server}/v1/auth/machine/verify"),
         &json!({
@@ -227,8 +230,13 @@ fn cache_path(server: &str, as_host: bool, key: &MachineKey) -> Result<PathBuf, 
 pub fn forget(server: &str, as_host: bool) -> Result<(), VivariumError> {
     let server = server.trim_end_matches('/');
     let key = MachineKey::load_or_create()?;
-    let _ = fs::remove_file(cache_path(server, as_host, &key)?);
-    Ok(())
+    let path = cache_path(server, as_host, &key)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        // No cached session is the state this function asks for.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(err(format!("cannot remove {}: {e}", path.display()))),
+    }
 }
 
 /// Whether an error text reads as a refused bearer.

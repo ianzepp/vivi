@@ -616,11 +616,19 @@ fn available_memory(_provider: &LocalProvider) -> u64 {
 
 impl PoolProvider for LocalProvider {
     fn local_root(&self) -> Option<PathBuf> {
-        self.site.as_ref().ok().map(|site| site.root.clone())
+        // A site that failed to resolve has no root; `site()` reports why
+        // whenever the provider is used for real work.
+        match &self.site {
+            Ok(site) => Some(site.root.clone()),
+            Err(_) => None,
+        }
     }
 
     fn local_pool_dir(&self) -> Option<PathBuf> {
-        self.site.as_ref().ok().map(|site| site.pool_dir.clone())
+        match &self.site {
+            Ok(site) => Some(site.pool_dir.clone()),
+            Err(_) => None,
+        }
     }
 
     fn ramdisk_job_settings(&self) -> Option<(u64, Vec<(String, String)>)> {

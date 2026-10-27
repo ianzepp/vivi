@@ -42,14 +42,14 @@ pub fn run(port: Option<u16>) -> Result<(), String> {
     fs::set_permissions(&creds, fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("cannot chmod {}: {e}", creds.display()))?;
     secret(&creds, "STORE_ENCRYPTION_KEY", || {
-        base64::engine::general_purpose::STANDARD.encode(random::<32>())
+        Ok(base64::engine::general_purpose::STANDARD.encode(random::<32>()?))
     })?;
-    secret(&creds, "MODERATION_TOKEN", || hex::encode(random::<24>()))?;
-    secret(
-        &creds,
-        "HOST_OPERATOR_TOKEN",
-        || hex::encode(random::<24>()),
-    )?;
+    secret(&creds, "MODERATION_TOKEN", || {
+        Ok(hex::encode(random::<24>()?))
+    })?;
+    secret(&creds, "HOST_OPERATOR_TOKEN", || {
+        Ok(hex::encode(random::<24>()?))
+    })?;
 
     add_host_key(&home)?;
 
@@ -96,25 +96,30 @@ fn add_host_key(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn secret(creds: &Path, name: &str, make: impl FnOnce() -> String) -> Result<(), String> {
+fn secret(
+    creds: &Path,
+    name: &str,
+    make: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
     let path = creds.join(name);
     if path.exists() {
         println!("kept    {}", path.display());
         return Ok(());
     }
+    let value = make()?;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&path)
         .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    writeln!(file, "{}", make()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    writeln!(file, "{value}").map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!("secret  {}", path.display());
     Ok(())
 }
 
-fn random<const N: usize>() -> [u8; N] {
+fn random<const N: usize>() -> Result<[u8; N], String> {
     let mut raw = [0u8; N];
-    getrandom::fill(&mut raw).expect("the OS random source is available");
-    raw
+    getrandom::fill(&mut raw).map_err(|e| format!("cannot read the OS random source: {e}"))?;
+    Ok(raw)
 }

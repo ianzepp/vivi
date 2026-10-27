@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use super::config::PoolConfig;
 use super::doctor::Check;
-use super::job::AGENT_BRIEF;
+use super::job::{AGENT_BRIEF, JobPlan};
 use super::provider::{
     CreateSpec, ExecOutput, Hold, MachineRecord, OpenedSlot, PoolProvider, SlotLifetime,
     TicketRequest,
@@ -60,6 +60,28 @@ pub struct TicketProvider {
     ctx: HostContext,
 }
 
+/// The `job_create` arguments for one dispatch.
+fn job_create_arguments(project: &str, target: &str, plan: &JobPlan) -> Value {
+    // The worker takes the commit subject from the task's first line: lead
+    // with the task's subject. The pool's standing rules are not carried.
+    let task = format!("{}\n\n{}", plan.subject.trim(), plan.brief);
+    let mut arguments = json!({
+        "project": project,
+        "target": target,
+        "branch": plan.refs.branch,
+        "base": plan.refs.from,
+        "task": task,
+        // The worker runs the harness with the task in WORK_TASK_FILE.
+        "harness": plan.harness_cmd.replace(AGENT_BRIEF, "\"$WORK_TASK_FILE\""),
+        "timeout_s": plan.budget,
+    });
+    if !plan.committer.name.is_empty() && !plan.committer.email.is_empty() {
+        arguments["committer"] =
+            json!({ "name": plan.committer.name, "email": plan.committer.email });
+    }
+    arguments
+}
+
 impl TicketProvider {
     #[must_use]
     pub fn new(config: &PoolConfig, ctx: &HostContext) -> Self {
@@ -78,7 +100,22 @@ impl TicketProvider {
     }
 
     fn read_entry(&self, id: &str) -> Option<Entry> {
-        serde_json::from_str(&fs::read_to_string(self.entry_path(id)).ok()?).ok()
+        let path = self.entry_path(id);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!("cannot read ticket entry {}: {e}", path.display());
+                return None;
+            }
+        };
+        match serde_json::from_str(&text) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                tracing::warn!("ticket entry {} is not an entry: {e}", path.display());
+                None
+            }
+        }
     }
 
     fn entries(&self) -> Vec<(String, Entry)> {
@@ -86,9 +123,18 @@ impl TicketProvider {
             return Vec::new();
         };
         let mut found: Vec<(String, Entry)> = dir
-            .filter_map(Result::ok)
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    tracing::warn!("cannot list a ticket entry: {e}");
+                    None
+                }
+            })
             .filter_map(|e| {
-                let name = e.file_name().into_string().ok()?;
+                // A name that is not UTF-8 is not one of ours.
+                let Ok(name) = e.file_name().into_string() else {
+                    return None;
+                };
                 let id = name.strip_suffix(".json")?.to_string();
                 let entry = self.read_entry(&id)?;
                 Some((id, entry))
@@ -181,9 +227,14 @@ impl TicketProvider {
             VivariumError::Config(format!("[ticket] server {server:?} is no URL"))
         })?;
         let authority = rest.split('/').next().unwrap_or_default();
-        let port = authority
+        // A suffix that is not a number (an IPv6 literal, say) is no port.
+        let explicit = authority
             .rsplit_once(':')
-            .and_then(|(_, p)| p.parse::<u16>().ok())
+            .and_then(|(_, p)| match p.parse::<u16>() {
+                Ok(port) => Some(port),
+                Err(_) => None,
+            });
+        let port = explicit
             .or(match scheme {
                 "http" => Some(80),
                 "https" => Some(443),
@@ -455,8 +506,13 @@ impl PoolProvider for TicketProvider {
             // SAFETY: ends the ssh process this host started for the job.
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
-        let _ = fs::remove_file(self.entry_path(id));
-        Ok(())
+        match fs::remove_file(self.entry_path(id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(VivariumError::Message(format!(
+                "cannot forget the files of job {id}: {e}"
+            ))),
+        }
     }
 
     fn destroy_command(&self, id: &str) -> String {
@@ -588,25 +644,7 @@ impl TicketProvider {
         }
         let project = self.project()?;
         let target = self.target()?;
-        // The worker takes the commit subject from the task's first line:
-        // lead with the task's subject. The pool's standing rules are not
-        // carried.
-        let task = format!("{}\n\n{}", plan.subject.trim(), plan.brief);
-        let mut arguments = json!({
-            "project": project,
-            "target": target,
-            "branch": plan.refs.branch,
-            "base": plan.refs.from,
-            "task": task,
-            // The worker runs the harness with the task in WORK_TASK_FILE.
-            "harness": plan.harness_cmd.replace(AGENT_BRIEF, "\"$WORK_TASK_FILE\""),
-            "timeout_s": plan.budget,
-        });
-        if !plan.committer.name.is_empty() && !plan.committer.email.is_empty() {
-            arguments["committer"] =
-                json!({ "name": plan.committer.name, "email": plan.committer.email });
-        }
-        let created = self.call("job_create", &arguments)?;
+        let created = self.call("job_create", &job_create_arguments(&project, &target, plan))?;
         let field = |key: &str| {
             created
                 .get(key)

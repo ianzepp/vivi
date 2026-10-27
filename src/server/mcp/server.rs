@@ -35,7 +35,7 @@ use std::hash::{Hash, Hasher};
 use crate::server::AppState;
 use crate::server::audit::{AuditEvent, AuditOutcome};
 use crate::server::auth::constant_time_eq;
-use crate::server::grants::{GrantLevel, GrantRecord, GrantsError};
+use crate::server::grants::{GrantLevel, GrantRecord};
 use crate::server::identities::IdentityRecord;
 use crate::server::keys::Caller;
 use crate::server::projects::ProjectMeta;
@@ -46,6 +46,8 @@ use crate::server::safety::RateLimiter;
 use super::tools::{ToolError, opt_str, req_str};
 use super::{Surface, respond, tool, tool_result};
 
+mod host_tools;
+mod key_admin;
 mod write_classification;
 
 /// The built-in principal behind `HOST_OPERATOR_TOKEN`.
@@ -68,6 +70,21 @@ pub(crate) struct ServerPrincipal {
     pub(crate) grants: Vec<GrantRecord>,
 }
 
+/// The hops this request has already taken through other servers. An absent
+/// header is none; a malformed one counts as none too.
+fn request_hops(headers: &HeaderMap) -> u32 {
+    let Some(value) = headers.get("x-vivi-hops") else {
+        return 0;
+    };
+    match value.to_str().map(|v| v.trim().parse::<u32>()) {
+        Ok(Ok(hops)) => hops,
+        _ => {
+            tracing::debug!("ignoring a malformed x-vivi-hops header");
+            0
+        }
+    }
+}
+
 /// `POST /v1/mcp` — Streamable HTTP MCP (JSON-RPC 2.0) for the whole
 /// server, authenticated by a server key or the host operator token.
 pub async fn server_mcp_handler(
@@ -84,11 +101,7 @@ pub async fn server_mcp_handler(
                 &Surface::Server {
                     state: &state,
                     auth: &auth,
-                    hops: headers
-                        .get("x-vivi-hops")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0),
+                    hops: request_hops(&headers),
                 },
                 &headers,
                 body,
@@ -385,7 +398,7 @@ pub(super) async fn call_tool(
     hops: u32,
 ) -> Result<Value, Response> {
     if HOST_TOOLS.contains(&name) {
-        return host_tool(state, auth, name, arguments).await;
+        return host_tools::host_tool(state, auth, name, arguments).await;
     }
     if name == "projects" {
         return Ok(tool_result(projects_answer(state, auth).await?, false));
@@ -455,7 +468,7 @@ async fn project_tool(
     };
     // The unlimited limiter: this route counts writes itself, keyed by
     // key, so the inner per-identity check must not double-count.
-    match super::dispatch_tool(
+    let outcome = super::dispatch_tool(
         state,
         RateLimiter::new(None),
         &project_id,
@@ -464,35 +477,11 @@ async fn project_tool(
         arguments,
         hops,
     )
-    .await
-    {
-        Ok(Ok(value)) => {
-            if write {
-                audit(
-                    state,
-                    auth,
-                    Some(&project_id),
-                    name,
-                    AuditOutcome::Ok,
-                    &summarize_ok(name, &value),
-                )
-                .await;
-            }
-            Ok(tool_result(value, false))
-        }
-        Ok(Err(err)) => {
-            if write {
-                audit(
-                    state,
-                    auth,
-                    Some(&project_id),
-                    name,
-                    AuditOutcome::Refused,
-                    &err.message,
-                )
-                .await;
-            }
-            Ok(tool_result(json!({ "error": err.message }), true))
+    .await;
+    match outcome {
+        Ok(outcome) => {
+            let outcome = outcome.map_err(|err| err.message);
+            Ok(settle(state, auth, Some(&project_id), name, write, outcome).await)
         }
         Err(response) => {
             if write {
@@ -668,430 +657,6 @@ async fn projects_answer(state: &AppState, auth: &ServerPrincipal) -> Result<Val
 
 // ------------------------------------------------------------- host tools
 
-async fn host_tool(
-    state: &AppState,
-    auth: &ServerPrincipal,
-    name: &str,
-    arguments: Value,
-) -> Result<Value, Response> {
-    // The read host tools: `key_list` names keys, the two D4 reads answer
-    // server facts; none is audited or rate limited.
-    let write = !matches!(
-        name,
-        "key_list" | "server_version" | "project_list" | "job_show" | "job_list"
-    );
-    if !auth.host {
-        let message = format!("{name} is a host tool; this key is not a host principal");
-        if write {
-            audit(state, auth, None, name, AuditOutcome::Refused, &message).await;
-        }
-        return Ok(tool_result(json!({ "error": message }), true));
-    }
-    if name == "server_version" {
-        return Ok(tool_result(super::host::server_version(), false));
-    }
-    if name == "project_list" {
-        let list_state = state.clone();
-        return match tokio::task::spawn_blocking(move || super::host::project_list(&list_state))
-            .await
-        {
-            Ok(value) => Ok(tool_result(value, false)),
-            Err(err) => Err(internal(state, auth, None, name, write, err).await),
-        };
-    }
-    if matches!(name, "job_show" | "job_list") {
-        let job_state = state.clone();
-        let owned = name.to_owned();
-        return match tokio::task::spawn_blocking(move || {
-            if owned == "job_show" {
-                crate::server::jobs::show(&job_state, &arguments)
-            } else {
-                crate::server::jobs::list(&job_state, &arguments)
-            }
-        })
-        .await
-        {
-            Ok(Ok(value)) => Ok(tool_result(value, false)),
-            Ok(Err(message)) => Ok(tool_result(json!({ "error": message }), true)),
-            Err(err) => Err(internal(state, auth, None, name, write, err).await),
-        };
-    }
-    if name == "job_create" {
-        if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
-            return Ok(refused(state, auth, None, name, true, &message).await);
-        }
-        let job_state = state.clone();
-        return match tokio::task::spawn_blocking(move || {
-            crate::server::jobs::create(&job_state, &arguments)
-        })
-        .await
-        {
-            Ok(Ok(value)) => {
-                audit(
-                    state,
-                    auth,
-                    None,
-                    name,
-                    AuditOutcome::Ok,
-                    &summarize_ok(name, &value),
-                )
-                .await;
-                Ok(tool_result(value, false))
-            }
-            Ok(Err(message)) => {
-                audit(state, auth, None, name, AuditOutcome::Refused, &message).await;
-                Ok(tool_result(json!({ "error": message }), true))
-            }
-            Err(err) => Err(internal(state, auth, None, name, true, err).await),
-        };
-    }
-    if matches!(
-        name,
-        "create_project"
-            | "lane_create"
-            | "archive_project"
-            | "project_register"
-            | "project_unregister"
-            | "restore_project"
-            | "purge_project"
-    ) {
-        if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
-            return Ok(refused(state, auth, None, name, true, &message).await);
-        }
-        let outcome = match name {
-            "create_project" => super::host::create_project(state, &arguments).await,
-            "lane_create" => super::host::lane::lane_create(state, &arguments).await,
-            "archive_project" => {
-                super::host::archive_project(state, &auth.principal, &arguments).await
-            }
-            "project_register" => super::host::project_register(state, &arguments).await,
-            "project_unregister" => super::host::project_unregister(state, &arguments).await,
-            "restore_project" => super::host::restore_project(state, &arguments).await,
-            _ => super::host::purge_project(state, &arguments).await,
-        };
-        return match outcome {
-            Ok(value) => {
-                audit(
-                    state,
-                    auth,
-                    None,
-                    name,
-                    AuditOutcome::Ok,
-                    &summarize_ok(name, &value),
-                )
-                .await;
-                Ok(tool_result(value, false))
-            }
-            Err(err) => {
-                audit(state, auth, None, name, AuditOutcome::Refused, &err.message).await;
-                Ok(tool_result(json!({ "error": err.message }), true))
-            }
-        };
-    }
-    if write && let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
-        return Ok(refused(state, auth, None, name, write, &message).await);
-    }
-    let admin_state = state.clone();
-    let owned_name = name.to_owned();
-    let result =
-        match tokio::task::spawn_blocking(move || key_admin(&admin_state, &owned_name, &arguments))
-            .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                let message = format!("key admin task failed: {err}");
-                if write {
-                    audit(state, auth, None, name, AuditOutcome::Error, &message).await;
-                }
-                return Err(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "storage failure",
-                ));
-            }
-        };
-    match result {
-        Ok(value) => {
-            if write {
-                audit(
-                    state,
-                    auth,
-                    None,
-                    name,
-                    AuditOutcome::Ok,
-                    &summarize_ok(name, &value),
-                )
-                .await;
-            }
-            Ok(tool_result(value, false))
-        }
-        Err(err) => {
-            if write {
-                audit(state, auth, None, name, AuditOutcome::Refused, &err.message).await;
-            }
-            Ok(tool_result(json!({ "error": err.message }), true))
-        }
-    }
-}
-
-/// The key and grant admin tools over the one key store. A revocation
-/// also retires the per-project mirror of a self-service key (rooms auth
-/// and the letter wire read that file with no grant check), in every
-/// project the key's principal is granted on.
-fn key_admin(state: &AppState, name: &str, arguments: &Value) -> Result<Value, ToolError> {
-    let store = &state.server_keys;
-    match name {
-        "key_mint" => {
-            let host = opt_bool(arguments, "host", false)?;
-            let principal = match opt_str(arguments, "principal")? {
-                Some(principal) => principal.to_owned(),
-                None if host => HOST_PRINCIPAL.to_owned(),
-                None => {
-                    return Err(ToolError::new(
-                        "principal is required (or host: true for a host key)",
-                    ));
-                }
-            };
-            let label = opt_str(arguments, "label")?
-                .unwrap_or("server key")
-                .to_owned();
-            let grants = parse_grants(arguments.get("grants"))?;
-            let minted = store
-                .mint(&principal, host, grants, &label, HOST_PRINCIPAL)
-                .map_err(grants_error)?;
-            Ok(json!({
-                "principal": minted.principal,
-                "key_id": minted.key_id,
-                "key": minted.key,
-                "label": minted.label,
-                "host": minted.host,
-                "grants": minted.grants,
-                "created_at": minted.created_at,
-                "note": "shown once; the server keeps only a digest",
-            }))
-        }
-        "key_list" => Ok(json!({ "principals": store.list() })),
-        "key_revoke" => {
-            let key_id = req_str(arguments, "key_id")?;
-            // The mirror dies with the key, first: a storage failure then
-            // leaves the key live everywhere rather than live in the
-            // mirror alone.
-            if let Some((_, projects)) = store.holder_of_key(key_id) {
-                for project in projects {
-                    state
-                        .keys
-                        .revoke_mirrored(&project, &[key_id])
-                        .map_err(mirror_error)?;
-                }
-            }
-            store.revoke_key(key_id).map_err(grants_error)?;
-            Ok(json!({ "revoked": key_id }))
-        }
-        "machine_add" => {
-            let principal = req_str(arguments, "principal")?;
-            let raw = req_str(arguments, "public_key")?;
-            let key = crate::server::machine_auth::decode_key(raw)
-                .ok_or_else(|| ToolError::new("public_key must be base64 of 32 bytes"))?;
-            let encoded = {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD.encode(key)
-            };
-            let added = store
-                .add_machine_key(principal, &encoded)
-                .map_err(grants_error)?;
-            Ok(json!({
-                "principal": principal,
-                "fingerprint": crate::server::machine_auth::fingerprint(&key),
-                "added": added,
-            }))
-        }
-        "grant_add" => {
-            let principal = req_str(arguments, "principal")?;
-            let raw = arguments
-                .get("grant")
-                .ok_or_else(|| ToolError::new("a grant object is required"))?;
-            let grant = parse_grant(&resolve_new_grant(state, raw)?)?;
-            store
-                .add_grant(principal, grant.clone())
-                .map_err(grants_error)?;
-            Ok(json!({ "principal": principal, "grant": grant }))
-        }
-        "grant_remove" => {
-            let principal = req_str(arguments, "principal")?;
-            let project_id = req_str(arguments, "project_id")?;
-            // This project's mirror entries of the principal's keys die
-            // with the grant, first (same failure order as `key_revoke`);
-            // other projects' mirrors are untouched. The project id is
-            // normalized exactly as `remove_grant` normalizes it.
-            if let Some(key_ids) = store.key_ids_of_principal(principal) {
-                let ids: Vec<&str> = key_ids.iter().map(String::as_str).collect();
-                state
-                    .keys
-                    .revoke_mirrored(project_id.trim(), &ids)
-                    .map_err(mirror_error)?;
-            }
-            store
-                .remove_grant(principal, project_id)
-                .map_err(|err| match err {
-                    GrantsError::NotFound => {
-                        ToolError::new(format!("{principal} holds no grant on {project_id}"))
-                    }
-                    other => grants_error(other),
-                })?;
-            Ok(json!({ "principal": principal, "removed": project_id }))
-        }
-        other => Err(ToolError::new(format!("unknown tool '{other}'"))),
-    }
-}
-
-/// Complete a `grant_add` grant object: `project_id` may be a project id
-/// or a hosted project's name (resolved to the id), and `member` may be
-/// omitted when the project has exactly one registered member identity.
-/// A member that is not registered on the project is refused here, naming
-/// the registered ones, rather than at the grant's first use.
-fn resolve_new_grant(state: &AppState, raw: &Value) -> Result<Value, ToolError> {
-    let Some(object) = raw.as_object() else {
-        return Err(ToolError::new("a grant must be an object"));
-    };
-    let named = object
-        .get("project_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::new("a grant needs a project_id"))?;
-    let project_id = match state.projects.load_meta_including_retired(named) {
-        Ok(meta) => meta.project_id,
-        Err(_) => super::host::hosted_entry(state, named)
-            .map(|meta| meta.project_id)
-            .ok_or_else(|| ToolError::new(format!("no project with id or name '{named}'")))?,
-    };
-    let names: Vec<String> = state
-        .identities
-        .list(&project_id)
-        .into_iter()
-        .map(|identity| identity.name)
-        .collect();
-    let member = match object.get("member") {
-        None | Some(Value::Null) => match names.as_slice() {
-            [only] => only.clone(),
-            [] => {
-                return Err(ToolError::new(format!(
-                    "project {project_id} has no registered member identities"
-                )));
-            }
-            many => {
-                return Err(ToolError::new(format!(
-                    "project {project_id} has several registered members; name one of: {}",
-                    many.join(", ")
-                )));
-            }
-        },
-        Some(Value::String(member)) => {
-            if !names.iter().any(|name| name == member) {
-                return Err(ToolError::new(format!(
-                    "'{member}' is not a registered member on {project_id}; registered members: {}",
-                    if names.is_empty() {
-                        "(none)".to_owned()
-                    } else {
-                        names.join(", ")
-                    }
-                )));
-            }
-            member.clone()
-        }
-        Some(_) => return Err(ToolError::new("grant member must be a string")),
-    };
-    let mut resolved = object.clone();
-    resolved.insert("project_id".into(), Value::String(project_id));
-    resolved.insert("member".into(), Value::String(member));
-    Ok(Value::Object(resolved))
-}
-
-/// A per-project mirror revocation failure: the storage error is logged
-/// and the caller sees the shared refusal.
-fn mirror_error(err: crate::server::keys::KeyError) -> ToolError {
-    if let crate::server::keys::KeyError::Storage(message) = &err {
-        tracing::error!("api key mirror failure: {message}");
-    }
-    ToolError::new("storage failure".to_owned())
-}
-
-fn grants_error(err: GrantsError) -> ToolError {
-    let message = match err {
-        GrantsError::InvalidPrincipal => {
-            "principal must be 1-64 characters of letters, digits, '.', '-', '_' or '@'".to_owned()
-        }
-        GrantsError::InvalidLabel => {
-            "label must be 1-64 characters with no control characters".to_owned()
-        }
-        GrantsError::InvalidGrant => {
-            "a grant must name a project id and a member (1-64 characters), an optional \
-             identity, and a level of member or operator"
-                .to_owned()
-        }
-        GrantsError::HostWithGrants => "a host principal carries no project grants".to_owned(),
-        GrantsError::HostMismatch => "that principal exists with a different host flag".to_owned(),
-        GrantsError::PrincipalCollision(message) => message,
-        GrantsError::LimitReached => "that principal already has 32 live keys".to_owned(),
-        GrantsError::NotFound => "no such principal or key".to_owned(),
-        GrantsError::Storage(message) => {
-            tracing::error!("server key storage failure: {message}");
-            "storage failure".to_owned()
-        }
-    };
-    ToolError::new(message)
-}
-
-fn opt_bool(arguments: &Value, name: &str, default: bool) -> Result<bool, ToolError> {
-    match arguments.get(name) {
-        None | Some(Value::Null) => Ok(default),
-        Some(Value::Bool(flag)) => Ok(*flag),
-        Some(_) => Err(ToolError::new(format!("{name} must be true or false"))),
-    }
-}
-
-/// One grant from tool arguments.
-fn parse_grant(value: &Value) -> Result<GrantRecord, ToolError> {
-    let Some(object) = value.as_object() else {
-        return Err(ToolError::new("a grant must be an object"));
-    };
-    let project_id = object
-        .get("project_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::new("a grant needs a project_id"))?;
-    let member = object
-        .get("member")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::new("a grant needs a member"))?;
-    let identity = match object.get("identity") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(identity)) => Some(identity.clone()),
-        Some(_) => return Err(ToolError::new("grant identity must be a string")),
-    };
-    let level = match object.get("level") {
-        None | Some(Value::Null) => GrantLevel::Member,
-        Some(Value::String(level)) => match level.to_ascii_lowercase().as_str() {
-            "member" => GrantLevel::Member,
-            "operator" => GrantLevel::Operator,
-            _ => return Err(ToolError::new("grant level must be member or operator")),
-        },
-        Some(_) => return Err(ToolError::new("grant level must be member or operator")),
-    };
-    Ok(GrantRecord {
-        project_id: project_id.to_owned(),
-        member: member.to_owned(),
-        identity,
-        level,
-    })
-}
-
-/// Grants from tool arguments (`key_mint`): absent means none.
-fn parse_grants(value: Option<&Value>) -> Result<Vec<GrantRecord>, ToolError> {
-    match value {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items.iter().map(parse_grant).collect(),
-        Some(_) => Err(ToolError::new("grants must be an array of grant objects")),
-    }
-}
-
 // -------------------------------------------------------- audit and limits
 
 /// Count one write against (project-or-`host`, key).
@@ -1113,6 +678,35 @@ fn allow_write(state: &AppState, bucket: &str, auth: &ServerPrincipal) -> Result
 }
 
 /// A refused tool call: a tool error, audited when the call is a write.
+/// Settle a tool's result: audit it when it is a write, then answer. A
+/// success is the tool's value; a failure is the tool's own message.
+async fn settle(
+    state: &AppState,
+    auth: &ServerPrincipal,
+    project_id: Option<&str>,
+    tool: &str,
+    write: bool,
+    outcome: Result<Value, String>,
+) -> Value {
+    match outcome {
+        Ok(value) => {
+            if write {
+                audit(
+                    state,
+                    auth,
+                    project_id,
+                    tool,
+                    AuditOutcome::Ok,
+                    &summarize_ok(tool, &value),
+                )
+                .await;
+            }
+            tool_result(value, false)
+        }
+        Err(message) => refused(state, auth, project_id, tool, write, &message).await,
+    }
+}
+
 async fn refused(
     state: &AppState,
     auth: &ServerPrincipal,

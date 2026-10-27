@@ -74,10 +74,19 @@ fn b64() -> base64::engine::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
-fn random32() -> [u8; 32] {
+fn random32() -> Result<[u8; 32], getrandom::Error> {
     let mut raw = [0u8; 32];
-    getrandom::fill(&mut raw).expect("the OS random source is available");
-    raw
+    getrandom::fill(&mut raw)?;
+    Ok(raw)
+}
+
+/// The refusal for a failed read of the OS random source.
+fn entropy_failed(error: &getrandom::Error) -> Response {
+    tracing::error!("the OS random source failed: {error}");
+    refuse(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the server cannot read the OS random source",
+    )
 }
 
 fn refuse(status: StatusCode, message: &str) -> Response {
@@ -97,8 +106,10 @@ pub async fn challenge_handler(Json(req): Json<ChallengeRequest>) -> Response {
             "public_key must be base64 of 32 bytes",
         );
     };
-    let id = hex::encode(random32());
-    let nonce = random32();
+    let (id, nonce) = match (random32(), random32()) {
+        (Ok(id), Ok(nonce)) => (hex::encode(id), nonce),
+        (Err(e), _) | (_, Err(e)) => return entropy_failed(&e),
+    };
     let mut book = CHALLENGES.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     book.retain(|_, c| c.expires > now);
@@ -125,6 +136,58 @@ pub async fn challenge_handler(Json(req): Json<ChallengeRequest>) -> Response {
     Json(json!({ "challenge_id": id, "nonce": b64().encode(nonce) })).into_response()
 }
 
+/// That `signature` signs the challenge's nonce with the challenge's key.
+fn check_signature(challenge: &Challenge, signature: &str) -> Result<(), Response> {
+    let Ok(sig_bytes) = b64().decode(signature.trim()) else {
+        return Err(refuse(StatusCode::BAD_REQUEST, "signature must be base64"));
+    };
+    let Ok(signature) = Signature::from_slice(&sig_bytes) else {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "signature must be 64 bytes",
+        ));
+    };
+    let Ok(key) = VerifyingKey::from_bytes(&challenge.public_key) else {
+        return Err(refuse(StatusCode::BAD_REQUEST, "not an ed25519 public key"));
+    };
+    let mut message = MESSAGE_PREFIX.to_vec();
+    message.extend_from_slice(&challenge.nonce);
+    if key.verify(&message, &signature).is_err() {
+        return Err(refuse(
+            StatusCode::UNAUTHORIZED,
+            "signature does not verify",
+        ));
+    }
+    Ok(())
+}
+
+/// The principal a verified key signs in as, and whether it is the host:
+/// the host when asked for and listed in `host_keys`, else the principal the
+/// key was admitted under.
+fn sign_in_principal(
+    state: &AppState,
+    encoded: &str,
+    print: &str,
+    as_host: bool,
+) -> Result<(String, bool), Response> {
+    if as_host {
+        if !host_keys().iter().any(|k| k == encoded) {
+            return Err(refuse(
+                StatusCode::FORBIDDEN,
+                &format!("{print} is not listed in the server's host_keys"),
+            ));
+        }
+        return Ok((crate::server::mcp::server::HOST_PRINCIPAL.to_owned(), true));
+    }
+    match state.server_keys.machine_principal(encoded) {
+        Some(principal) => Ok((principal, false)),
+        None => Err(refuse(
+            StatusCode::FORBIDDEN,
+            &format!("{print} is not admitted on this server (host tool machine_add)"),
+        )),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct VerifyRequest {
     challenge_id: String,
@@ -146,42 +209,20 @@ pub async fn verify_handler(
     let Some(challenge) = challenge.filter(|c| c.expires > Instant::now()) else {
         return refuse(StatusCode::UNAUTHORIZED, "unknown or expired challenge");
     };
-    let Ok(sig_bytes) = b64().decode(req.signature.trim()) else {
-        return refuse(StatusCode::BAD_REQUEST, "signature must be base64");
-    };
-    let Ok(signature) = Signature::from_slice(&sig_bytes) else {
-        return refuse(StatusCode::BAD_REQUEST, "signature must be 64 bytes");
-    };
-    let Ok(key) = VerifyingKey::from_bytes(&challenge.public_key) else {
-        return refuse(StatusCode::BAD_REQUEST, "not an ed25519 public key");
-    };
-    let mut message = MESSAGE_PREFIX.to_vec();
-    message.extend_from_slice(&challenge.nonce);
-    if key.verify(&message, &signature).is_err() {
-        return refuse(StatusCode::UNAUTHORIZED, "signature does not verify");
+    if let Err(refusal) = check_signature(&challenge, &req.signature) {
+        return refusal;
     }
     let encoded = b64().encode(challenge.public_key);
     let print = fingerprint(&challenge.public_key);
-    let (principal, host) = if req.as_host {
-        if !host_keys().iter().any(|k| *k == encoded) {
-            return refuse(
-                StatusCode::FORBIDDEN,
-                &format!("{print} is not listed in the server's host_keys"),
-            );
-        }
-        (crate::server::mcp::server::HOST_PRINCIPAL.to_owned(), true)
-    } else {
-        match state.server_keys.machine_principal(&encoded) {
-            Some(principal) => (principal, false),
-            None => {
-                return refuse(
-                    StatusCode::FORBIDDEN,
-                    &format!("{print} is not admitted on this server (host tool machine_add)"),
-                );
-            }
-        }
+    let (principal, host) = match sign_in_principal(&state, &encoded, &print, req.as_host) {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
     };
-    let token = format!("{TOKEN_PREFIX}{}", hex::encode(random32()));
+    let secret = match random32() {
+        Ok(secret) => secret,
+        Err(e) => return entropy_failed(&e),
+    };
+    let token = format!("{TOKEN_PREFIX}{}", hex::encode(secret));
     let digest = hex::encode(Sha256::digest(token.as_bytes()));
     let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
@@ -222,7 +263,15 @@ pub fn session(bearer: &str) -> Option<Session> {
 /// Base64 of 32 bytes, or `None`.
 #[must_use]
 pub fn decode_key(text: &str) -> Option<[u8; 32]> {
-    b64().decode(text.trim()).ok()?.try_into().ok()
+    let Ok(bytes) = b64().decode(text.trim()) else {
+        return None;
+    };
+    // Any length but 32 is simply not a key.
+    if let Ok(key) = bytes.try_into() {
+        Some(key)
+    } else {
+        None
+    }
 }
 
 /// The keys listed in `$VIVI_HOME/server/host_keys`, normalized to base64.

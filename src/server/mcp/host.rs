@@ -77,7 +77,9 @@ static CURRENT: std::sync::OnceLock<HostConfig> = std::sync::OnceLock::new();
 impl HostConfig {
     /// Record the layout loaded at boot.
     pub fn set_current(config: Self) {
-        let _ = CURRENT.set(config);
+        if CURRENT.set(config).is_err() {
+            tracing::warn!("the host layout is already set; keeping the first one");
+        }
     }
 
     /// The layout loaded at boot (empty before boot, as in tests).

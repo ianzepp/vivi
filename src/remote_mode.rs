@@ -78,9 +78,8 @@ pub(crate) fn run(command: &Command, remote: &RemoteConfig) -> Result<(), Vivari
     }
     .map_err(|e| VivariumError::Other(format!("remote {server} {tool}: {e}")))?;
     let text = client::result_text(&result);
-    let embedded_error = serde_json::from_str::<Value>(&text)
-        .ok()
-        .is_some_and(|v| v.get("error").is_some());
+    let embedded_error =
+        serde_json::from_str::<Value>(&text).is_ok_and(|v| v.get("error").is_some());
     if client::result_is_error(&result) || embedded_error {
         eprintln!("{text}");
         std::process::exit(1);
@@ -129,85 +128,97 @@ fn command_project(command: &Command) -> Option<&Path> {
 
 type Args = Map<String, Value>;
 
+/// The arguments of `need send`.
+fn put_need_send(c: &vivi::cli::NeedSendCommand, a: &mut Args) -> Result<(), VivariumError> {
+    a.insert("kind".into(), json!("need"));
+    a.insert("to".into(), json!(c.send.to));
+    a.insert("subject".into(), json!(c.send.subject));
+    a.insert(
+        "body".into(),
+        json!(read_body(
+            c.send.body.as_deref(),
+            c.send.body_file.as_deref()
+        )?),
+    );
+    put_list(a, "done_when", &c.done_when);
+    put_list(a, "depends_on", &c.depends_on);
+    put_list(a, "write_scope", &c.write_scope);
+    put(a, "target", c.target.as_deref());
+    put(a, "serves", c.serves.as_deref());
+    put(a, "explores", c.explores.as_deref());
+    if c.dispatch {
+        a.insert("dispatch".into(), json!(true));
+    }
+    if let Some(p) = c.priority {
+        a.insert("priority".into(), json!(p));
+    }
+    Ok(())
+}
+
+/// The `need` subcommands: the tool and its arguments.
+fn translate_need(command: &NeedCommand, a: &mut Args) -> Result<&'static str, VivariumError> {
+    let tool = match command {
+        NeedCommand::Send(c) => {
+            put_need_send(c, a)?;
+            "send"
+        }
+        NeedCommand::List {
+            for_identity,
+            from,
+            to,
+            status,
+            marks,
+            origin,
+            ..
+        } => {
+            a.insert("kind".into(), json!("need"));
+            put(a, "origin", origin.as_deref());
+            put(a, "for", for_identity.as_deref());
+            put(a, "from", from.as_deref());
+            put(a, "to", to.as_deref());
+            a.insert("status".into(), json!(status_word(status)));
+            put_list(a, "marks", marks);
+            "list"
+        }
+        NeedCommand::Show { handle, .. } => {
+            a.insert("handle".into(), json!(handle));
+            "show"
+        }
+        NeedCommand::Done {
+            handle,
+            for_identity,
+            note,
+            branch,
+            commit,
+            ..
+        } => {
+            a.insert("handle".into(), json!(handle));
+            a.insert("for".into(), json!(for_identity));
+            put(a, "note", note.as_deref());
+            put(a, "branch", branch.as_deref());
+            put(a, "commit", commit.as_deref());
+            "done"
+        }
+        NeedCommand::Reopen {
+            handle,
+            for_identity,
+            note,
+            ..
+        } => {
+            a.insert("handle".into(), json!(handle));
+            a.insert("for".into(), json!(for_identity));
+            put(a, "note", note.as_deref());
+            "reopen"
+        }
+        _ => return Err(unmapped(command_name(command))),
+    };
+    Ok(tool)
+}
+
 fn translate(command: &Command) -> Result<(&'static str, Args), VivariumError> {
     let mut a = Args::new();
     let tool = match command {
-        Command::Need { command } => match command {
-            NeedCommand::Send(c) => {
-                a.insert("kind".into(), json!("need"));
-                a.insert("to".into(), json!(c.send.to));
-                a.insert("subject".into(), json!(c.send.subject));
-                a.insert(
-                    "body".into(),
-                    json!(read_body(
-                        c.send.body.as_deref(),
-                        c.send.body_file.as_deref()
-                    )?),
-                );
-                put_list(&mut a, "done_when", &c.done_when);
-                put_list(&mut a, "depends_on", &c.depends_on);
-                put_list(&mut a, "write_scope", &c.write_scope);
-                put(&mut a, "target", c.target.as_deref());
-                put(&mut a, "serves", c.serves.as_deref());
-                put(&mut a, "explores", c.explores.as_deref());
-                if c.dispatch {
-                    a.insert("dispatch".into(), json!(true));
-                }
-                if let Some(p) = c.priority {
-                    a.insert("priority".into(), json!(p));
-                }
-                "send"
-            }
-            NeedCommand::List {
-                for_identity,
-                from,
-                to,
-                status,
-                marks,
-                origin,
-                ..
-            } => {
-                a.insert("kind".into(), json!("need"));
-                put(&mut a, "origin", origin.as_deref());
-                put(&mut a, "for", for_identity.as_deref());
-                put(&mut a, "from", from.as_deref());
-                put(&mut a, "to", to.as_deref());
-                a.insert("status".into(), json!(status_word(status)));
-                put_list(&mut a, "marks", marks);
-                "list"
-            }
-            NeedCommand::Show { handle, .. } => {
-                a.insert("handle".into(), json!(handle));
-                "show"
-            }
-            NeedCommand::Done {
-                handle,
-                for_identity,
-                note,
-                branch,
-                commit,
-                ..
-            } => {
-                a.insert("handle".into(), json!(handle));
-                a.insert("for".into(), json!(for_identity));
-                put(&mut a, "note", note.as_deref());
-                put(&mut a, "branch", branch.as_deref());
-                put(&mut a, "commit", commit.as_deref());
-                "done"
-            }
-            NeedCommand::Reopen {
-                handle,
-                for_identity,
-                note,
-                ..
-            } => {
-                a.insert("handle".into(), json!(handle));
-                a.insert("for".into(), json!(for_identity));
-                put(&mut a, "note", note.as_deref());
-                "reopen"
-            }
-            _ => return Err(unmapped(command_name(command))),
-        },
+        Command::Need { command } => translate_need(command, &mut a)?,
         Command::Mail { command } => match command {
             MailCommand::Reply(c) => {
                 a.insert("handle".into(), json!(c.handle));
