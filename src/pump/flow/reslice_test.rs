@@ -191,6 +191,128 @@ fn one_request_sends_a_bound_task_a_row_a_link_and_a_job() -> R {
     Ok(())
 }
 
+// ---- source slice targets ----
+
+/// Replace the rig's source slice with a task whose body is `body`, planted
+/// like the rig's own slice: a Running step row and a fanout link.
+fn replant_slice(rig: &mut Rig, body: &str) -> R {
+    let task = rig.mail.send_step("pump", "pump", "s2", body, &[])?;
+    let row = step("slice:b", &task);
+    rig.store.insert_step(NEED, &row)?;
+    rig.store.link_slice(&SliceLink {
+        task: task.clone(),
+        need: NEED.into(),
+        run: 1,
+        fanout: Some("fan1".into()),
+        deps: Vec::new(),
+    })?;
+    rig.slice = row;
+    Ok(())
+}
+
+fn slice_with_target(target: Option<&str>) -> String {
+    task_body_with(
+        &TaskFront {
+            target: target.map(String::from),
+            ..TaskFront::step(NEED, 1, "slice:b")
+        },
+        "slice body text",
+    )
+}
+
+/// A refused new request changed nothing: no new mail, no extra indexed
+/// step, the source link kept, no job, no booked attempt.
+fn assert_untouched(rig: &Rig, calls: usize, steps: usize) -> R {
+    assert_eq!(rig.mail.calls.len(), calls);
+    assert_eq!(rig.store.steps_of(NEED, 1)?.len(), steps);
+    assert!(rig.jobs.jobs.is_empty());
+    assert_eq!(rig.store.last_attempt(&rig.slice.task)?, 0);
+    let link = rig.store.slice_link(&rig.slice.task)?.expect("source link");
+    assert_eq!(link.fanout.as_deref(), Some("fan1"));
+    Ok(())
+}
+
+#[test]
+fn a_slice_on_an_explicit_configured_target_reslices() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("vivi"), PumpTarget::default());
+    let mut rig = rig_with(cfg)?;
+
+    let task = ask(&mut rig, Mode::Split, "too big")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.payload["slice"], rig.slice.task);
+    Ok(())
+}
+
+#[test]
+fn a_slice_on_the_legacy_synthetic_default_reslices() -> R {
+    // The plain rig is legacy configuration with no explicit targets, so its
+    // slice carries the synthetic `default` target.
+    let mut rig = rig()?;
+
+    let task = ask(&mut rig, Mode::Rework, "redo it")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.payload["slice"], rig.slice.task);
+    Ok(())
+}
+
+#[test]
+fn a_slice_on_a_configured_non_primary_target_reslices() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.targets
+        .insert(String::from("default"), PumpTarget::default());
+    cfg.targets
+        .insert(String::from("vivi"), PumpTarget::default());
+    let mut rig = rig_with(cfg)?;
+    assert_eq!(rig.ctx.cfg.primary_target().as_deref(), Some("default"));
+    replant_slice(&mut rig, &slice_with_target(Some("vivi")))?;
+
+    let task = ask(&mut rig, Mode::Split, "too big")?;
+
+    let job = &rig.jobs.jobs[&format!("reslice-{task}-a1")];
+    assert_eq!(job.payload["slice"], rig.slice.task);
+    Ok(())
+}
+
+#[test]
+fn a_malformed_source_slice_is_refused() -> R {
+    let mut rig = rig()?;
+    replant_slice(&mut rig, "slice body text")?;
+    let (calls, steps) = (rig.mail.calls.len(), rig.store.steps_of(NEED, 1)?.len());
+
+    let error = ask(&mut rig, Mode::Split, "too big").expect_err("refused");
+
+    assert!(matches!(error, VivariumError::Message(_)), "{error}");
+    assert_untouched(&rig, calls, steps)
+}
+
+#[test]
+fn a_targetless_source_slice_is_refused() -> R {
+    let mut rig = rig()?;
+    replant_slice(&mut rig, &slice_with_target(None))?;
+    let (calls, steps) = (rig.mail.calls.len(), rig.store.steps_of(NEED, 1)?.len());
+
+    let error = ask(&mut rig, Mode::Split, "too big").expect_err("refused");
+
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+    assert_untouched(&rig, calls, steps)
+}
+
+#[test]
+fn an_unknown_target_source_slice_is_refused() -> R {
+    let mut rig = rig()?;
+    replant_slice(&mut rig, &slice_with_target(Some("nowhere")))?;
+    let (calls, steps) = (rig.mail.calls.len(), rig.store.steps_of(NEED, 1)?.len());
+
+    let error = ask(&mut rig, Mode::Split, "too big").expect_err("refused");
+
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+    assert_untouched(&rig, calls, steps)
+}
+
 #[test]
 fn the_same_request_again_sends_nothing() -> R {
     let mut rig = rig()?;
