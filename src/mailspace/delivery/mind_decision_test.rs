@@ -7,6 +7,8 @@ use crate::storage::{MessageIngestRequest, StoredMessageView};
 const KEY: &str = "need:b67c125b run:4 wait:slice-6cc93604-a1";
 const SENDER: &str = "pump";
 const BODY: &str = "decide the parked slice";
+/// The folder a sender's own copy is filed under.
+const SENT: &str = "sent";
 
 fn space() -> (tempfile::TempDir, Mailspace) {
     let tmp = tempfile::tempdir().unwrap();
@@ -49,8 +51,12 @@ fn step_parent(mailspace: &Mailspace) -> String {
 }
 
 fn evidence(mailspace: &Mailspace) -> super::DecisionEvidence {
+    evidence_as(mailspace, SENDER, "mind")
+}
+
+fn evidence_as(mailspace: &Mailspace, sender: &str, recipient: &str) -> super::DecisionEvidence {
     let storage = mailspace.storage().unwrap();
-    find_decision_evidence(&storage, KEY, SENDER, "mind").unwrap()
+    find_decision_evidence(&storage, KEY, sender, recipient).unwrap()
 }
 
 fn header_value(bytes: &[u8], name: &str) -> Option<String> {
@@ -118,28 +124,56 @@ fn message_id_of(mailspace: &Mailspace, handle: &str) -> String {
         .to_string()
 }
 
-/// A marked recipient copy planted straight into storage: no events, no sent
-/// copy, no link — incomplete evidence a send must not pass as success.
-fn raw_recipient_copy(mailspace: &Mailspace) -> String {
+/// The stored message id behind a handle.
+fn storage_id(mailspace: &Mailspace, handle: &str) -> String {
+    mailspace
+        .storage()
+        .unwrap()
+        .resolve_message_token(handle)
+        .unwrap()
+}
+
+/// The content id behind a handle.
+fn content_id_of(mailspace: &Mailspace, handle: &str) -> String {
+    mailspace
+        .storage()
+        .unwrap()
+        .read_message(&storage_id(mailspace, handle))
+        .map(|bytes| {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(bytes))
+        })
+        .unwrap()
+}
+
+/// A marked copy planted straight into storage: no events, no link, and no
+/// other copy — the durable shape of an interrupted send. `reply_to` plants
+/// the thread headers a real notice carries. The same bytes planted for two
+/// sides share one content id, as the two copies of one send do.
+fn raw_copy(mailspace: &Mailspace, account: &str, role: &str, reply_to: Option<&str>) -> String {
     let marker = decision_marker(KEY).unwrap();
+    let reply_headers = reply_to
+        .map(|id| format!("In-Reply-To: {id}\r\nReferences: {id}\r\n"))
+        .unwrap_or_default();
     let eml = format!(
         "From: {SENDER}@vivi.local\r\nTo: mind@vivi.local\r\n\
          Subject: mind decision: {KEY}\r\n\
          Message-ID: <decision-raw@vivi.local>\r\n\
          Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         {reply_headers}\
          {DECISION_MARKER_HEADER}: {marker}\r\n\r\nbody\r\n"
     );
     let storage = mailspace.storage().unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {
-                account: "mind".into(),
-                local_role: "inbox".into(),
-                read_state: false,
+                account: account.into(),
+                local_role: role.into(),
+                read_state: role == SENT,
                 starred: false,
                 message_id_hint: None,
                 presented_id: None,
-                seed_hint: "decision-send-test\0raw".into(),
+                seed_hint: format!("decision-recovery-test\0{account}\0{role}"),
                 remote: None,
             },
             eml.as_bytes(),
@@ -264,24 +298,227 @@ fn a_complete_notice_is_success_that_stores_nothing() {
     assert_eq!(marked_copies(&mailspace).len(), 2);
 }
 
+/// The post-recipient/pre-sent boundary state of an interrupted send: one
+/// durable mind copy, no sent copy, no link, no events. Recovery — from a
+/// freshly reopened mailspace, against durable state alone — keeps the
+/// recipient copy byte-for-byte and makes the sent and thread evidence
+/// durable, without redelivering the notice.
 #[test]
-fn an_incomplete_notice_is_delivered_again_not_reported_complete() {
-    let (_tmp, mailspace) = space();
+fn recipient_only_decision_notice_is_reconciled() {
+    let (tmp, mailspace) = space();
     let parent = step_parent(&mailspace);
-    let planted = raw_recipient_copy(&mailspace);
-    let fresh = mailspace
+    let planted = raw_copy(&mailspace, "mind", "inbox", None);
+    let before = mailspace
+        .storage()
+        .unwrap()
+        .read_message(&storage_id(&mailspace, &planted))
+        .unwrap();
+    drop(mailspace);
+    let reopened = Mailspace::init(Some(tmp.path())).unwrap();
+    let recovered = reopened
         .send_mind_decision(SENDER, &parent, KEY, BODY)
         .unwrap();
-    assert!(!fresh.already_complete);
+    assert!(!recovered.already_complete);
+    assert_eq!(recovered.recipient_handle, planted);
+    assert_eq!(marked_copies(&reopened).len(), 2);
+    let found = evidence(&reopened);
+    assert!(found.complete());
+    let recipient = found.recipient.unwrap();
+    // The mind copy is untouched: same identity, same bytes, same folder.
+    assert_eq!(recipient.handle, planted);
+    assert_eq!(recipient.local_role, "inbox");
+    let storage = reopened.storage().unwrap();
+    assert_eq!(storage.read_message(&recipient.message_id).unwrap(), before);
+    // The sent copy and the thread link are newly durable.
+    let sent_copy = found.sent.unwrap();
+    assert_eq!(sent_copy.account, SENDER);
+    assert_eq!(sent_copy.local_role, SENT);
+    assert_eq!(sent_copy.content_id, recipient.content_id);
+    assert_eq!(
+        found.step_parent_link.unwrap().parent_content_id,
+        content_id_of(&reopened, &parent)
+    );
+    assert_eq!(event_types(&reopened, &recipient.message_id), ["delivered"]);
+    assert_eq!(
+        event_types(&reopened, &sent_copy.message_id),
+        ["sent_copy_created"]
+    );
+    assert!(
+        event_types(&reopened, &storage_id(&reopened, &parent)).contains(&"replied".to_string())
+    );
+}
+
+/// Sent-only evidence — a boundary state before the recipient copy was
+/// stored — recovers the mind seat's copy from the sent bytes.
+#[test]
+fn sent_only_evidence_is_reconciled_from_the_sent_bytes() {
+    let (_tmp, mailspace) = space();
+    let parent = step_parent(&mailspace);
+    let planted = raw_copy(&mailspace, SENDER, SENT, None);
+    let recovered = mailspace
+        .send_mind_decision(SENDER, &parent, KEY, BODY)
+        .unwrap();
+    assert!(!recovered.already_complete);
+    assert_eq!(recovered.sent_handle, planted);
+    assert_eq!(marked_copies(&mailspace).len(), 2);
     let found = evidence(&mailspace);
     assert!(found.complete());
-    // The evidence is the fresh complete delivery, not the planted partial.
+    let sent_copy = found.sent.unwrap();
+    assert_eq!(sent_copy.handle, planted);
     assert_eq!(
-        found.recipient.as_ref().unwrap().handle,
-        fresh.recipient_handle
+        event_types(&mailspace, &sent_copy.message_id),
+        ["sent_copy_created"]
     );
-    assert_ne!(found.recipient.as_ref().unwrap().handle, planted);
-    assert_eq!(marked_copies(&mailspace).len(), 3);
+    let recipient = found.recipient.unwrap();
+    assert_eq!(recipient.account, "mind");
+    assert_eq!(recipient.local_role, "inbox");
+    assert_eq!(recipient.content_id, sent_copy.content_id);
+    let storage = mailspace.storage().unwrap();
+    assert_eq!(
+        storage.read_message(&recipient.message_id).unwrap(),
+        storage.read_message(&sent_copy.message_id).unwrap()
+    );
+    assert_eq!(
+        event_types(&mailspace, &recipient.message_id),
+        ["delivered"]
+    );
+}
+
+/// Both copies on file but no step-thread link: recovery adds the link and
+/// the missing events — and nothing else; a second pass is a no-op success.
+#[test]
+fn both_copies_without_a_link_gain_only_the_link_and_missing_events() {
+    let (_tmp, mailspace) = space();
+    let parent = step_parent(&mailspace);
+    raw_copy(&mailspace, "mind", "inbox", None);
+    raw_copy(&mailspace, SENDER, SENT, None);
+    let recovered = mailspace
+        .send_mind_decision(SENDER, &parent, KEY, BODY)
+        .unwrap();
+    assert!(!recovered.already_complete);
+    assert_eq!(marked_copies(&mailspace).len(), 2);
+    let found = evidence(&mailspace);
+    assert!(found.complete());
+    assert!(found.step_parent_link_present());
+    let recipient = found.recipient.unwrap();
+    let sent_copy = found.sent.unwrap();
+    assert_eq!(
+        event_types(&mailspace, &recipient.message_id),
+        ["delivered"]
+    );
+    assert_eq!(
+        event_types(&mailspace, &sent_copy.message_id),
+        ["sent_copy_created"]
+    );
+    let again = mailspace
+        .send_mind_decision(SENDER, &parent, KEY, BODY)
+        .unwrap();
+    assert!(again.already_complete);
+    assert_eq!(again.recipient_handle, recipient.handle);
+    assert_eq!(again.sent_handle, sent_copy.handle);
+    assert_eq!(marked_copies(&mailspace).len(), 2);
+    assert_eq!(
+        event_types(&mailspace, &recipient.message_id),
+        ["delivered"]
+    );
+    assert_eq!(
+        event_types(&mailspace, &sent_copy.message_id),
+        ["sent_copy_created"]
+    );
+}
+
+/// A recipient copy a move filed away is still the delivery evidence: it is
+/// recovered in place, folder and bytes unchanged.
+#[test]
+fn a_moved_recipient_copy_is_recovered_in_place() {
+    let (_tmp, mailspace) = space();
+    let parent = step_parent(&mailspace);
+    let planted = raw_copy(&mailspace, "mind", "inbox", None);
+    mailspace
+        .move_item("mind", &planted, "done", None, "close", None)
+        .unwrap();
+    let recovered = mailspace
+        .send_mind_decision(SENDER, &parent, KEY, BODY)
+        .unwrap();
+    assert!(!recovered.already_complete);
+    assert_eq!(recovered.recipient_handle, planted);
+    let found = evidence(&mailspace);
+    assert!(found.complete());
+    let recipient = found.recipient.unwrap();
+    assert_eq!(recipient.handle, planted);
+    assert_eq!(recipient.local_role, "done");
+    assert_eq!(marked_copies(&mailspace).len(), 2);
+    let events = event_types(&mailspace, &recipient.message_id);
+    assert!(events.contains(&"delivered".to_string()), "{events:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.as_str() == "delivered")
+            .count(),
+        1
+    );
+}
+
+/// Sender and seat are both mind: recovery still keeps two distinct copies —
+/// the inbox delivery and the sent filing — with one event each.
+#[test]
+fn sender_equal_to_mind_recovers_two_distinct_copies() {
+    let (_tmp, mailspace) = space();
+    let parent = step_parent(&mailspace);
+    let planted = raw_copy(&mailspace, "mind", "inbox", None);
+    let recovered = mailspace
+        .send_mind_decision("mind", &parent, KEY, BODY)
+        .unwrap();
+    assert!(!recovered.already_complete);
+    assert_eq!(recovered.recipient_handle, planted);
+    let found = evidence_as(&mailspace, "mind", "mind");
+    assert!(found.complete());
+    let recipient = found.recipient.unwrap();
+    let sent_copy = found.sent.unwrap();
+    assert_eq!(recipient.handle, planted);
+    assert_eq!(recipient.local_role, "inbox");
+    assert_eq!(sent_copy.account, "mind");
+    assert_eq!(sent_copy.local_role, SENT);
+    assert_ne!(recipient.message_id, sent_copy.message_id);
+    assert_eq!(recipient.content_id, sent_copy.content_id);
+    assert_eq!(
+        event_types(&mailspace, &recipient.message_id),
+        ["delivered"]
+    );
+    assert_eq!(
+        event_types(&mailspace, &sent_copy.message_id),
+        ["sent_copy_created"]
+    );
+    assert_eq!(marked_copies(&mailspace).len(), 2);
+}
+
+/// A recovery failure rolls the whole batch back and leaves the delivery
+/// retryable: nothing it wrote survives, and the store takes the next try.
+#[test]
+fn a_failed_recovery_rolls_back_and_stays_retryable() {
+    let (_tmp, mailspace) = space();
+    // The step letter itself carries the marker, so recovery would have to
+    // link the notice to its own content — a refused write, mid-recovery.
+    let marker = decision_marker(KEY).unwrap();
+    let parent = mailspace
+        .send_with_extras(
+            request(SENDER, "mind", None),
+            &[(DECISION_MARKER_HEADER.into(), marker)],
+        )
+        .unwrap()
+        .sent;
+    let copies_before = marked_copies(&mailspace).len();
+    let failed = mailspace.send_mind_decision(SENDER, &parent, KEY, BODY);
+    assert!(failed.is_err());
+    let found = evidence(&mailspace);
+    assert!(!found.step_parent_link_present());
+    assert!(found.required_events_present());
+    assert_eq!(marked_copies(&mailspace).len(), copies_before);
+    // The retry fails the same way and still stores nothing: the batch
+    // boundary, not the store, is what stopped.
+    let retried = mailspace.send_mind_decision(SENDER, &parent, KEY, BODY);
+    assert!(retried.is_err());
+    assert_eq!(marked_copies(&mailspace).len(), copies_before);
 }
 
 #[test]

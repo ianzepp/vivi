@@ -10,9 +10,13 @@
 //! step-parent link, and the required send events are all present.
 //! [`Mailspace::send_mind_decision`] is the decision-specific send: it
 //! rechecks the evidence inside one write transaction, lands every part of
-//! the delivery whole or not at all, and treats a notice whose evidence is
-//! already complete as a success that stores nothing. Ordinary
-//! [`Mailspace::send`](crate::mailspace::Mailspace::send) is unchanged.
+//! the delivery whole or not at all, treats a notice whose evidence is
+//! already complete as a success that stores nothing, and recovers an
+//! interrupted attempt from the copies it left behind — the stored bytes and
+//! copy identity are the recovery source, and only the missing parts are
+//! written, so a notice is never redelivered that a past attempt already
+//! stored. Ordinary [`Mailspace::send`](crate::mailspace::Mailspace::send)
+//! is unchanged.
 
 // The pump decision phase that consumes this send lands next; until that
 // caller exists only the companion tests read these items.
@@ -28,11 +32,10 @@ use super::super::reply::resolve_reply_parent;
 use super::ingest::{ingest_for_recipients, ingest_sent_copy};
 use crate::error::VivariumError;
 use crate::mailspace::SendRequest;
-use crate::storage::{Storage, StoredMessageView};
+use crate::storage::{MailspaceEventInput, Storage, StoredMessageView};
 
 mod evidence;
 
-#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use evidence::{DecisionCopy, DecisionEvents, DecisionEvidence, find_decision_evidence};
 
 /// The transport header that marks every copy of a mind decision letter.
@@ -63,6 +66,20 @@ const MIND_SEAT: &str = "mind";
 /// The folder a delivered decision notice is filed under in the seat's
 /// mailbox, and the role the send events carry.
 const NOTICE_ROLE: &str = "inbox";
+
+/// The folder a sender's own copy is filed under, and the recovery role for
+/// a sent copy an interrupted attempt never wrote.
+const SENT_ROLE: &str = "sent";
+
+/// The event type a send logs on each local recipient's copy, and the one
+/// recovery appends when an earlier attempt never logged it.
+const DELIVERED_EVENT: &str = "delivered";
+
+/// The event type a send logs on the sender's copy.
+const SENT_COPY_CREATED_EVENT: &str = "sent_copy_created";
+
+/// The event type a send logs on the step letter's copies.
+const REPLIED_EVENT: &str = "replied";
 
 /// One mind decision delivery: the handles of the two stored copies and
 /// whether the notice had already been fully delivered.
@@ -103,8 +120,10 @@ impl Mailspace {
     /// first, so a failure at any stage, commit included, leaves no partial
     /// notice and a retry completes the delivery whole. A notice whose
     /// evidence is already complete is a success that stores nothing;
-    /// incomplete evidence is never passed off as success — the send runs
-    /// and lands a fresh complete delivery.
+    /// incomplete evidence is never passed off as success — when a past
+    /// attempt left a durable copy, the send recovers the delivery from it
+    /// without composing the letter again, and when nothing survived it
+    /// lands a fresh complete delivery.
     ///
     /// # Errors
     /// Returns an error for an empty decision key, a missing or non-mind
@@ -185,7 +204,12 @@ impl Mailspace {
             if evidence.complete() {
                 return Ok(existing_delivery(&evidence));
             }
-            deliver_fresh(&storage, &request, &eml, &parent, seam)
+            match evidence.recipient.as_ref().or(evidence.sent.as_ref()) {
+                Some(source) => {
+                    reconcile_mind_decision(&storage, &evidence, source, &request, &parent)
+                }
+                None => deliver_fresh(&storage, &request, &eml, &parent, seam),
+            }
         })
     }
 
@@ -247,6 +271,246 @@ fn deliver_fresh(
         sent_handle: storage.display_handle(&sent.message_id)?,
         already_complete: false,
     })
+}
+
+/// Recover an incomplete delivery from the durable copy `source` a past
+/// attempt left behind, inside the caller's open batch. The notice is never
+/// recomposed and an existing copy is never ingested twice: only the missing
+/// parts — the mind seat's copy, the sender's sent copy, the step-thread
+/// link, and the send's events — are written, each from the letter's exact
+/// stored bytes so every copy keeps one content identity. A failure leaves
+/// the batch rolled back and the delivery retryable.
+///
+/// # Errors
+/// Returns a storage failure; the caller rolls the batch back.
+fn reconcile_mind_decision(
+    storage: &Storage,
+    evidence: &DecisionEvidence,
+    source: &DecisionCopy,
+    request: &SendRequest,
+    parent: &StoredMessageView,
+) -> Result<MindDecisionDelivery, VivariumError> {
+    let seed = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    let eml = notice_bytes(source)?;
+    let recipient = repair_recipient_copy(storage, evidence, request, eml, seed)?;
+    let sent = repair_sent_copy(storage, evidence, request, eml, seed)?;
+    repair_step_link(storage, evidence, &source.content_id, parent)?;
+    repair_send_events(
+        storage,
+        request,
+        parent,
+        &recipient,
+        &sent,
+        evidence.required_events,
+    )?;
+    Ok(MindDecisionDelivery {
+        recipient_handle: storage.display_handle(&recipient.message_id)?,
+        sent_handle: storage.display_handle(&sent.message_id)?,
+        already_complete: false,
+    })
+}
+
+/// The letter bytes of the recovery source, used exactly as stored so the
+/// repaired copies keep the notice's original content identity.
+///
+/// # Errors
+/// Returns an error when the stored bytes are not valid UTF-8: they cannot
+/// be re-filed as the same letter without rewriting them.
+fn notice_bytes(source: &DecisionCopy) -> Result<&str, VivariumError> {
+    std::str::from_utf8(&source.bytes).map_err(|_| {
+        VivariumError::Message(
+            "the stored decision letter bytes are not valid UTF-8, so the \
+             incomplete delivery cannot be recovered from them"
+                .into(),
+        )
+    })
+}
+
+/// The mind seat's copy after repair: the copy found on file, kept exactly
+/// as it stands, or the letter re-filed into the seat's mailbox when no
+/// recipient copy survived the interrupted attempt.
+fn repair_recipient_copy(
+    storage: &Storage,
+    evidence: &DecisionEvidence,
+    request: &SendRequest,
+    eml: &str,
+    seed: i64,
+) -> Result<DecisionCopy, VivariumError> {
+    if let Some(found) = evidence.recipient.as_ref() {
+        return Ok(found_copy(found));
+    }
+    let delivered =
+        ingest_for_recipients(storage, recipients_of(request), &request.role, eml, seed)?;
+    let stored = delivered.first().ok_or_else(|| {
+        VivariumError::Message("the recovered decision notice was not delivered".into())
+    })?;
+    Ok(DecisionCopy {
+        handle: storage.display_handle(&stored.message_id)?,
+        message_id: stored.message_id.clone(),
+        content_id: stored.content_id.clone(),
+        account: stored.identity.clone(),
+        local_role: request.role.clone(),
+        bytes: eml.as_bytes().to_vec(),
+    })
+}
+
+/// The sender's copy after repair: the copy found on file, or the letter
+/// re-filed under `sent` in the sender's account when no sent copy survived.
+fn repair_sent_copy(
+    storage: &Storage,
+    evidence: &DecisionEvidence,
+    request: &SendRequest,
+    eml: &str,
+    seed: i64,
+) -> Result<DecisionCopy, VivariumError> {
+    if let Some(found) = evidence.sent.as_ref() {
+        return Ok(found_copy(found));
+    }
+    let stored = ingest_sent_copy(storage, &request.from, eml, seed)?;
+    Ok(DecisionCopy {
+        handle: storage.display_handle(&stored.message_id)?,
+        message_id: stored.message_id,
+        content_id: stored.content_id,
+        account: request.from.clone(),
+        local_role: SENT_ROLE.into(),
+        bytes: eml.as_bytes().to_vec(),
+    })
+}
+
+/// A found copy, carried through the repairs unchanged.
+fn found_copy(found: &DecisionCopy) -> DecisionCopy {
+    DecisionCopy {
+        handle: found.handle.clone(),
+        message_id: found.message_id.clone(),
+        content_id: found.content_id.clone(),
+        account: found.account.clone(),
+        local_role: found.local_role.clone(),
+        bytes: found.bytes.clone(),
+    }
+}
+
+/// The step-thread link after repair: captured from the notice's content to
+/// the step letter when the interrupted attempt never linked them.
+fn repair_step_link(
+    storage: &Storage,
+    evidence: &DecisionEvidence,
+    content_id: &str,
+    parent: &StoredMessageView,
+) -> Result<(), VivariumError> {
+    if evidence.step_parent_link_present() {
+        return Ok(());
+    }
+    storage.link_mailspace_content(content_id, &parent.content_id, "captured")
+}
+
+/// Append exactly the send events the interrupted attempt never logged: the
+/// delivered receipt on the mind seat's copy, the sent receipt on the
+/// sender's copy, and the replied receipt on the step letter. An event
+/// already on the log is never written twice.
+fn repair_send_events(
+    storage: &Storage,
+    request: &SendRequest,
+    parent: &StoredMessageView,
+    recipient: &DecisionCopy,
+    sent: &DecisionCopy,
+    required: DecisionEvents,
+) -> Result<(), VivariumError> {
+    if !required.delivered {
+        append_send_event(
+            storage,
+            DELIVERED_EVENT,
+            &recipient.account,
+            recipient,
+            request,
+            &request.role,
+        )?;
+    }
+    if !required.sent_copy_created {
+        append_send_event(
+            storage,
+            SENT_COPY_CREATED_EVENT,
+            &sent.account,
+            sent,
+            request,
+            SENT_ROLE,
+        )?;
+    }
+    repair_replied_events(storage, request, parent)
+}
+
+/// One send event on one copy, in the shape the ordinary send logs. The
+/// command is always `mail send`: the notice role is fixed, so this is what
+/// the ordinary send's role-derived command yields.
+fn append_send_event(
+    storage: &Storage,
+    event_type: &str,
+    account: &str,
+    copy: &DecisionCopy,
+    request: &SendRequest,
+    to_role: &str,
+) -> Result<(), VivariumError> {
+    storage
+        .append_mailspace_event(&MailspaceEventInput {
+            command: "mail send".into(),
+            event_type: event_type.into(),
+            actor_identity: Some(request.from.clone()),
+            account: account.into(),
+            message_id: copy.message_id.clone(),
+            content_id: copy.content_id.clone(),
+            from_role: None,
+            to_role: Some(to_role.into()),
+            from_identity: Some(request.from.clone()),
+            to_identity: Some(account.into()),
+            subject: request.subject.clone(),
+            note: None,
+        })
+        .map(|_| ())
+}
+
+/// The step letter's `replied` receipts after repair: one per stored copy of
+/// the step letter, appended only when this decision's receipt is missing.
+/// The receipt is recognized by its note — the notice subject — so another
+/// decision's receipt on the same step never stands in for this one.
+fn repair_replied_events(
+    storage: &Storage,
+    request: &SendRequest,
+    parent: &StoredMessageView,
+) -> Result<(), VivariumError> {
+    let mut ids = storage.message_ids_by_content(&parent.content_id)?;
+    if !ids.iter().any(|id| id == &parent.message_id) {
+        ids.push(parent.message_id.clone());
+    }
+    ids.sort();
+    ids.dedup();
+    let logged = storage.list_mailspace_events_for_messages(&ids)?;
+    let present = logged.values().any(|events| {
+        events.iter().any(|event| {
+            event.event_type == REPLIED_EVENT
+                && event.note.as_deref() == Some(request.subject.as_str())
+        })
+    });
+    if present {
+        return Ok(());
+    }
+    // Always `mail reply`: a lifecycle command such as `task send` would
+    // rekind the parent in dump/kind inference and hide it from mail dump.
+    for message_id in &ids {
+        storage.append_mailspace_event(&MailspaceEventInput {
+            command: "mail reply".into(),
+            event_type: REPLIED_EVENT.into(),
+            actor_identity: Some(request.from.clone()),
+            account: parent.account.clone(),
+            message_id: message_id.clone(),
+            content_id: parent.content_id.clone(),
+            from_role: None,
+            to_role: Some(parent.local_role.clone()),
+            from_identity: Some(request.from.clone()),
+            to_identity: Some(parent.account.clone()),
+            subject: parent.subject.clone(),
+            note: Some(request.subject.clone()),
+        })?;
+    }
+    Ok(())
 }
 
 /// The success reported when the durable evidence already shows a complete
