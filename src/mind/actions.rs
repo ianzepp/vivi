@@ -286,7 +286,9 @@ fn check(
 impl ActionRequest {
     /// The existing `vivi` command line this request maps to, without the
     /// binary name. `None` for letters and stubs, which do not map to a pump
-    /// control.
+    /// control. The unlock control carries `--entry` and its value when the
+    /// request names the entry to restart at; the flow's default first
+    /// entry otherwise.
     #[must_use]
     pub fn argv(&self) -> Option<Vec<String>> {
         let project = self.project.as_deref()?;
@@ -295,7 +297,14 @@ impl ActionRequest {
             Action::ResumePump => words(&["pump", "resume"]),
             Action::Requeue => with(&["pump", "requeue"], &[self.step.as_deref()?]),
             Action::Replan => with(&["pump", "replan"], &[self.need.as_deref()?]),
-            Action::Unlock => with(&["pump", "unlock"], &[self.need.as_deref()?]),
+            Action::Unlock => {
+                let mut parts = with(&["pump", "unlock"], &[self.need.as_deref()?]);
+                if let Some(entry) = self.entry.as_deref() {
+                    parts.push(String::from("--entry"));
+                    parts.push(entry.to_string());
+                }
+                parts
+            }
             Action::Answer => with(
                 &["pump", "answer"],
                 &[self.step.as_deref()?, self.word.as_deref()?],
@@ -341,24 +350,245 @@ pub struct DryRun {
 
 impl Actuator for DryRun {
     fn apply(&mut self, request: &ActionRequest) -> Result<String, String> {
-        let line = request.argv().map_or_else(
-            || {
-                format!(
-                    "would send {:?} (letter or stub) project={} need={} note={:?}",
-                    request.kind,
-                    request
-                        .project
-                        .as_deref()
-                        .map_or_else(|| String::from("-"), |path| path.display().to_string()),
-                    request.need.as_deref().unwrap_or("-"),
-                    request.note.as_deref().unwrap_or_default(),
-                )
-            },
-            |argv| format!("would run vivi {}", argv.join(" ")),
-        );
+        let line = describe(request);
         self.applied.push(line.clone());
         Ok(line)
     }
+}
+
+/// The intended MCP operation one permitted request maps to, as a dry run
+/// records it: the server tool and the arguments that matter, with the
+/// project and note context. A pure description — nothing here calls a
+/// tool or writes to a project — and the not-yet-wired filing, dispatch
+/// and release kinds say so rather than imply a run.
+fn describe(request: &ActionRequest) -> String {
+    let mut line = describe_read(request)
+        .or_else(|| describe_view(request))
+        .or_else(|| describe_letter(request))
+        .or_else(|| describe_control(request))
+        .or_else(|| describe_move(request))
+        .or_else(|| describe_tuning(request))
+        .unwrap_or_default();
+    let project = request
+        .project
+        .as_deref()
+        .map_or_else(|| String::from("-"), |path| path.display().to_string());
+    line.push_str(" project=");
+    line.push_str(&project);
+    if let Some(note) = request.note.as_deref() {
+        line.push_str(&format!(" note={note:?}"));
+    }
+    line
+}
+
+/// The pump's own records: the records-only status read and the log read.
+fn describe_read(request: &ActionRequest) -> Option<String> {
+    match request.kind {
+        Action::ReadStatus => Some(op(
+            "would read pump records via pump_list",
+            &[
+                ("need", request.need.as_deref()),
+                ("status", request.status.as_deref()),
+                ("limit", number(request.limit).as_deref()),
+            ],
+        )),
+        Action::ReadLog => Some(op(
+            "would read the pump log via pump_log",
+            &[
+                ("file", request.file.as_deref()),
+                ("lines", number(request.lines).as_deref()),
+                ("filter", request.filter.as_deref()),
+            ],
+        )),
+        _ => None,
+    }
+}
+
+/// The project-state views: need and task diagnostics and the flow,
+/// config and pool reads.
+fn describe_view(request: &ActionRequest) -> Option<String> {
+    match request.kind {
+        Action::ReadNeed => Some(op(
+            "would show one need via need_show",
+            &[("need", request.need.as_deref())],
+        )),
+        Action::ReadNeedThread => Some(op(
+            "would read a need's thread via need_thread",
+            &[
+                ("need", request.need.as_deref()),
+                ("limit", number(request.limit).as_deref()),
+                ("before", request.before.as_deref()),
+            ],
+        )),
+        Action::ReadTaskThread => Some(op(
+            "would read a task's thread via task_thread",
+            &[
+                ("step", request.step.as_deref()),
+                ("limit", number(request.limit).as_deref()),
+                ("before", request.before.as_deref()),
+            ],
+        )),
+        Action::ReadFlow => Some(op(
+            "would show a flow via flow_show",
+            &[
+                ("flow", request.flow.as_deref()),
+                ("need", request.need.as_deref()),
+            ],
+        )),
+        Action::ReadConfig => Some(op(
+            "would read the mailspace configuration via config_show",
+            &[],
+        )),
+        Action::ReadPool => Some(op(
+            "would show one pool via pool_show",
+            &[("pool", request.pool.as_deref())],
+        )),
+        _ => None,
+    }
+}
+
+/// The letters and thread replies: `send` to the operator, whose subject
+/// names the need when the letter carries one, and `reply` on a need's
+/// thread, whose body is the note.
+fn describe_letter(request: &ActionRequest) -> Option<String> {
+    match request.kind {
+        Action::LetterToOperator => Some(op(
+            "would send the operator a letter via send",
+            &[("need", request.need.as_deref())],
+        )),
+        Action::Escalate => Some(op(
+            "would send the operator an escalation via send",
+            &[("need", request.need.as_deref())],
+        )),
+        Action::ReplyNeed => Some(op(
+            "would reply on a need's thread via reply",
+            &[("need", request.need.as_deref())],
+        )),
+        _ => None,
+    }
+}
+
+/// The pump controls and actions: `pump_control` for pause and resume,
+/// `pump_action` for the moves one need or step takes.
+fn describe_control(request: &ActionRequest) -> Option<String> {
+    match request.kind {
+        Action::PausePump => Some(op("would pause the pump via pump_control", &[])),
+        Action::ResumePump => Some(op("would resume the pump via pump_control", &[])),
+        Action::Requeue => Some(op(
+            "would requeue a step via pump_action",
+            &[("step", request.step.as_deref())],
+        )),
+        Action::Replan => Some(op(
+            "would ask for a replan via pump_action",
+            &[("need", request.need.as_deref())],
+        )),
+        Action::Answer => Some(op(
+            "would answer an operator question via pump_action",
+            &[
+                ("step", request.step.as_deref()),
+                ("word", request.word.as_deref()),
+            ],
+        )),
+        Action::Unlock => Some(op(
+            "would unlock a stuck need via pump_action",
+            &[
+                ("need", request.need.as_deref()),
+                ("entry", request.entry.as_deref()),
+            ],
+        )),
+        Action::WithdrawNeed => Some(op(
+            "would withdraw a need via pump_action",
+            &[("need", request.need.as_deref())],
+        )),
+        _ => None,
+    }
+}
+
+/// Priority, dispatch and filing. Filing, dispatch and the release stubs
+/// are not wired to the server's tools yet: the description says so
+/// instead of implying a call would run.
+fn describe_move(request: &ActionRequest) -> Option<String> {
+    match request.kind {
+        Action::SetPriority => Some(op(
+            "would set a need's priority via pump_priority action=set",
+            &[
+                ("need", request.need.as_deref()),
+                ("level", number(request.priority).as_deref()),
+            ],
+        )),
+        Action::DispatchNeed => Some(op(
+            "would dispatch a need to the pump (dispatch is not wired to the server yet)",
+            &[("need", request.need.as_deref())],
+        )),
+        Action::FileNeed => Some(op(
+            "would file a new need (filing is not wired to the server yet)",
+            &[],
+        )),
+        Action::FileFixNeed => Some(op(
+            "would file a fix need (filing is not wired to the server yet)",
+            &[],
+        )),
+        Action::Upgrade => Some(op(
+            "would take the operator's release (upgrade is not wired to the server yet)",
+            &[],
+        )),
+        Action::SelfRelease => Some(op(
+            "would cut a release (self-release is not wired to the server yet)",
+            &[],
+        )),
+        _ => None,
+    }
+}
+
+/// The typed role/pool tuning: `role_set` for a role's model, the narrow
+/// per-model `config_set` key for a pool cap, and one guarded
+/// `pool_bands action=set` replacing a band's whole choice entry.
+fn describe_tuning(request: &ActionRequest) -> Option<String> {
+    match request.kind {
+        Action::SetRoleModel => Some(op(
+            "would retune a role's model via role_set",
+            &[
+                ("role", request.role.as_deref()),
+                ("model", request.model.as_deref()),
+            ],
+        )),
+        Action::SetPoolCap => Some(op(
+            "would set a pool's per-model cap via config_set",
+            &[
+                ("pool", request.pool.as_deref()),
+                ("model", request.model.as_deref()),
+                ("cap", number(request.cap).as_deref()),
+            ],
+        )),
+        Action::SetPoolBand => Some(op(
+            "would set a pool's model band via pool_bands action=set",
+            &[
+                ("pool", request.pool.as_deref()),
+                ("band", request.band.as_deref()),
+                ("model", request.model.as_deref()),
+                ("reasoning", request.reasoning.as_deref()),
+            ],
+        )),
+        _ => None,
+    }
+}
+
+/// One description line: the operation head, then ` key=value` for each
+/// argument the request carries. Absent arguments stay out, the way the
+/// real call leaves unset arguments out.
+fn op(head: &str, fields: &[(&str, Option<&str>)]) -> String {
+    let mut line = String::from(head);
+    for &(key, value) in fields {
+        if let Some(value) = value {
+            line.push_str(&format!(" {key}={value}"));
+        }
+    }
+    line
+}
+
+/// A numeric argument as description text, absent when the request has none.
+fn number(value: Option<i64>) -> Option<String> {
+    value.map(|value| value.to_string())
 }
 
 #[cfg(test)]
