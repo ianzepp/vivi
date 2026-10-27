@@ -8,7 +8,7 @@ This file is the flow contract: what starts a run, what each step receives and a
 
 ## Control and tick
 
-**run** takes the pump-home lock, loads state, recovers dispatched pool jobs, then runs ticks until control is stopped or shutdown is requested. **once** performs one tick under the same single-writer lock. **pause**, **resume**, **stop** and **start** update durable control state in pump.db. A fresh pump.db starts **stopped**: run **vivi pump start** to enable it (a registered service starts it). A stop request lets the current tick finish. Stop does not cancel or drain pool jobs.
+**run** takes the pump-home lock, loads state, recovers dispatched pool jobs, then runs ticks until control is stopped or shutdown is requested. **once** performs one tick under the same single-writer lock. **pause**, **resume**, **stop** and **start** update durable control state in pump.db. A fresh pump.db starts **stopped**: run **vivi pump start** to enable it. A supervisor (**vivi server run** or **vivi pump service run**) starts a pump process for a project only while its control is running or paused. A stop request lets the current tick finish. Stop does not cancel or drain pool jobs.
 
 A tick applies operator actions, collects finished pool jobs, advances every live flow run, then (unless paused) queues cadence work and dispatches pending jobs. A paused tick still collects and advances runs, but dispatches nothing new.
 

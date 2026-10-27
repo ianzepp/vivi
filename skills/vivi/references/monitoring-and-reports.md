@@ -2,7 +2,7 @@
 
 ## Live lane monitor
 
-`vivi monitor` reads the pump-service registry and combines those project roots
+`vivi monitor` reads the host project registry (`$VIVI_HOME/server/registry.toml`) and combines those project roots
 with any roots passed to `--project`. Repeat `--project` for several extra
 roots; duplicate canonical paths are removed. It does not claim, stop, or
 change work. Snapshot rows use persisted pump and pool metadata; they do not

@@ -1,6 +1,6 @@
 ---
 name: vivi
-description: Use the Vivi CLI for project mailspaces, roles and need delegation, goals and work graphs, lane pools, read-only diagnostics, live pump monitoring and reports, structured delivery, the unattended pump, the local model proxy, and self-update.
+description: Use the Vivi CLI for project mailspaces, roles and need delegation, goals and work graphs, lane pools, read-only diagnostics, live pump monitoring and reports, structured delivery, the unattended pump, the hosted project server with machine keys and remote mode, the local model proxy, and self-update.
 ---
 
 # Vivi
@@ -68,11 +68,11 @@ are front matter: a done or reopened event carries its verdict, branch,
 commit and repos there, a report note carries them in a `[close]` table, a
 pool result note carries `[pool]`, a memo carries `tags`, a rule carries
 `scope` and `supersedes`. A front with no keys stores the prose as written,
-with no `+++` fence. The content headers vivi once wrote for these facts
-(`X-Vivi-Verdict`, `-Repo`, `-Branch`, `-Commit`, `-Tag`, `-Rule-Scope`,
-`-Supersedes`) are gone; headers carry transport only. A format-1 letter
-carrying one is refused at parse, and legacy letters stay readable as
-history with those headers ignored. Send flags build the front matter:
+with no `+++` fence. Headers carry transport only: a format-1 letter
+carrying a content header (`X-Vivi-Verdict`, `-Repo`, `-Branch`, `-Commit`,
+`-Tag`, `-Rule-Scope`, `-Supersedes`) is refused at parse. A letter without
+format-1 front matter stays readable, with those headers ignored. Send flags
+build the front matter:
 
 ```sh
 vivi need send --from mind --to hand-1 --subject "Add a greeting" \
@@ -166,7 +166,8 @@ project sets only what is its own.
 
 - **Opt-in.** An ancestor without `base = true` is ignored; an unreadable one
   ends the walk quietly. A base may be config-only (no `mail.sqlite`), and
-  `vivi pump service add` and `vivi pump run` refuse a base root.
+  `vivi pump service add` and `vivi pump run` refuse a base root, and so
+  does the server's `project_register`.
 - **Inherited:** `pump`, `pools`, roles (`[[identities]]`, merged by name),
   `judgment`, `probes`, `absorb`, `memo`. **Never inherited:** `id`, `name`,
   `description`, `archive`, `sync`, mail and the store.
@@ -197,8 +198,9 @@ makes a whole pumped project in one step: `L/<name>/` with the first
 target's bare repo, a mailspace at `P/<name>` (with the starter `[pump]`
 unless a base supplies one), the first target's checkout and
 `[pump.targets.<target>]` entry (`remote_url` set, and `main = "vivi/main"`: see
-the branch model below), the project's own values, and a host-registry entry (pump and serve on unless `--no-pump` /
-`--no-serve`). Both roots must already exist.
+the branch model below), the project's own values, and an entry in the host
+registry, `$VIVI_HOME/server/registry.toml` (pump and serve on unless
+`--no-pump` / `--no-serve`). Both roots must already exist.
 
 - `--target <id>` names the first target (default: the project name, which
   must then be a valid target id: lowercase letters, digits and hyphens).
@@ -223,6 +225,28 @@ Checkouts are cloned from the lane's local path, then `origin` is pointed at
 the lane URL, so creating a project never needs the network. The library
 entry point is `vivi::project_create::create`; it prints nothing.
 
+A running server does the same through host tools (see [Server](#server)):
+
+- `create_project {name, target?, branch?, pool?, initial_commit?, source?,
+  pump?, serve?, rungs?}` uses the server's `projects_root`, `lanes_root`,
+  `git_url_prefix` and `default_pool` from `config.toml`, so it takes no
+  paths. `pump` (default true) also sets the new project's pump control to
+  running, `serve` (default true) serves it at once, and `rungs`
+  (`task`, `need`, `main`, `release`, `timeout`, `pools`) seeds `[pump.rungs]`.
+  The answer carries the project id, the paths, the readiness list and an
+  `operator_key`, shown once. A name that exists, or belongs to an archived
+  project, is refused.
+- `project_register {root}` serves a mailspace that already exists: `root` is
+  an absolute path holding `.vivi/mailspace.toml`; a base config and an
+  archived project's root are refused. It adds the root to the registry with
+  `serve` on and answers `root`, `project_id`, `name` and `served`. Nothing on
+  disk changes, and whether the project pumps stays the mailspace's own pump
+  control. `project_unregister {root}` takes a registered root out again.
+- `lane_create {name, target, git_url_prefix?, seed?, source?}` is `lane add`
+  for a hosted project; `archive_project`, `restore_project` and
+  `purge_project` retire and bring back a hosted project by name, and
+  `project_list` lists the hosted ones.
+
 ### Branch model
 
 A target made by `project create` or `lane add` keeps the upstream branch
@@ -245,7 +269,7 @@ Every lane vivi makes (`project create`, `lane add`) sets
 `uploadpack.allowReachableSHA1InWant = true`: pool jobs fetch their start
 commit by SHA, and once the pump moves the integration branch past it a lane
 without the setting refuses the commit, so the job fails with `fetch_failed`.
-A lane made before 22.0.0 needs it set by hand, once:
+A lane made by other means needs it set by hand, once:
 `git -C <lane>.git config uploadpack.allowReachableSHA1InWant true`.
 
 `vivi project lane add <project-root> <id> --lanes-root L [--git-url-prefix U]
@@ -274,7 +298,7 @@ A need that lands records the branch and commit it landed on its done event
 `vivi project delete <name> --projects-root P --lanes-root L --confirm <name>`
 removes the host registration, `P/<name>` and `L/<name>/` with every lane in
 it. The confirmation repeats the name. The registration goes first: the pump
-service stops a project's pump and a server stops serving it once it is
+supervisor stops a project's pump and a server stops serving it once it is
 unregistered. While a pump still holds the project's lock the call stops
 after unregistering and says so; run it again once that pump has exited. A
 repeated call finishes what an earlier one left. The library entry point is
@@ -1043,7 +1067,7 @@ not only verdict flags.
 `vivi pool` manages a pool of preseeded remote machines ("slots") and hands a
 Vivi task to one of them. A mailspace holds any number of **named pools**
 (`[pools.<name>]` in `.vivi/mailspace.toml`); each is complete on its own.
-Five machine hosts exist, chosen by each pool's `provider`: `fly` (the default; Fly Machines, billed by the second),
+Seven machine hosts exist, chosen by each pool's `provider`: `fly` (the default; Fly Machines, billed by the second),
 `docker` (containers on a Docker daemon: the local one, or a remote one over
 SSH; see "Docker provider" below) and `ssh` (a plain Linux host reached over
 SSH, each slot a directory, no isolation; a minimal form, not the recommended
@@ -1051,11 +1075,15 @@ one; see "SSH provider" below) and `local` (this machine: each slot a
 directory, the worker a process Vivi launches as you, no isolation, optionally
 a Git worktree of a local repository; see "Local provider" below) and `runpod`
 (rented GPU pods, one short-lived pod per dispatch and no resting slots; see
-"RunPod provider" below).
-`[pools.<name>.fly]`, `[pools.<name>.docker]`, `[pools.<name>.ssh]` and
-`[pools.<name>.local]` and `[pools.<name>.runpod]` hold the host-specific
-settings. Everything else in this section works the same on all five, except
-that a `runpod` pool has no resting slots (`create` and scale-up do not apply). In-place reseed, other hosts,
+"RunPod provider" below) and `worker` (a bounded workspace built per job on a
+machine reached over SSH; see "Worker provider") and `ticket` (a job ticket
+from a vivi server, run by `vivi pool run` on an SSH host; no machines of its
+own; see "Ticket provider").
+`[pools.<name>.fly]`, `[pools.<name>.docker]`, `[pools.<name>.ssh]`,
+`[pools.<name>.local]`, `[pools.<name>.runpod]`, `[pools.<name>.worker]` and
+`[pools.<name>.ticket]` hold the host-specific
+settings. Everything else in this section works the same on all seven, except
+that `runpod`, `worker` and `ticket` pools have no resting slots (`create` and scale-up do not apply). In-place reseed, other hosts,
 shared defaults between pools do not exist; do not invent them. Which work
 goes to which pool is the role's `pool` assignment (`vivi role pool` /
 `vivi config show`). Durable role jobs follow the pool's optional
@@ -1084,6 +1112,7 @@ vivi pool clean [--pool <name>] [--dry-run] [--base <branch>] [--porcelain]
 vivi pool reset [<slot>] [--pool <name>] [--base <branch>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
+vivi pool run <server-url> --job <job-id> [--detach]   # the worker end of a job ticket; not a pool command (see Job tickets under Server)
 ```
 
 `pool add` makes the pool even when its provider still needs a setting that
@@ -1178,9 +1207,8 @@ vivi pool unset glm image
 - A pool is a `[pools.<name>]` table. The name is the table key: lowercase
   letters, digits and dashes, starting and ending with a letter or digit, and
   not ending in `-doctor` (the self-test pool is `<pool>-doctor`). There is no
-  `name` setting. The old top-level `[pool]` table is gone (a clean break):
-  a mailspace that still has one gets an error naming `[pools.<name>]` on the
-  first `vivi pool` command; nothing is rewritten.
+  `name` setting. A top-level `[pool]` table is an error naming
+  `[pools.<name>]` on the first `vivi pool` command; nothing is rewritten.
 - Every pool table is complete on its own. There are no defaults shared between
   pools: write `repo`, `github`, `harness` and `committer` again in each pool
   that needs them. (A whole pool table can still come from a base mailspace
@@ -1211,9 +1239,9 @@ vivi pool unset glm image
   `<space-key>-<pool>-slot-<n>`. SSH and absolute or `~/` local roots use
   `<root>/<space-key>/<pool>/slot-<n>/`; a project-relative local root uses
   `<project>/<root>/<pool>/slot-<n>/`. The slot id in status is
-  `<space-key>/<pool>/slot-<n>`. Slots made with an older bare-slug or
-  slug-plus-short-id key are not migrated or adopted under the UUID key; inspect
-  old provider resources separately if they need cleanup.
+  `<space-key>/<pool>/slot-<n>`. A slot or provider resource not named under
+  the mailspace's UUID key is not adopted; inspect it separately if it needs
+  cleanup.
 - **`build_dir` is optional and has no default.** A pool without one has no
   memory disk, no pack or restore, and the runner's clean names no directory.
   The clean is `git clean -fd` (no `-x`) on every provider: it deletes
@@ -1241,9 +1269,13 @@ vivi pool unset glm image
   eligible configured fallback accepts it. There is no SSD fallback on that
   slot. Teardown verifies the device against the job marker (`ramdisk` or
   `apfs` on the slot root) and preserves unknown or mismatched disks with a
-  warning. Pump startup sweeps orphaned mailspace APFS volumes (which survive
-  a reboot) and then RAM disks, preserves disks owned by live pool jobs, and
-  never ejects an APFS volume.
+  warning. Pump startup sweeps this mailspace's APFS volumes (which survive a
+  reboot) and then its RAM disks, and asks each disk's slot record whether to
+  keep it: a live `boot.pid` keeps the disk, so a restart of the pump or the
+  server never pulls a disk from a running local-pool job; an `exit_code` or a
+  dead `boot.pid` removes it; a disk under no pool slot has no owner and is
+  removed; an ambiguous slot keeps its disk with one warning line. An orphaned
+  APFS volume is deleted, never ejected.
 - **A pool with only provider settings.** `repo`, `github`, `harness` and
   `committer` are optional in a pool table (`github` goes with `repo`). Such a
   pool is for testing the provider: `status`, `destroy`, `reconcile`, `wait`,
@@ -1773,7 +1805,7 @@ slots = 4
   local repository, made with `git worktree add --detach` at the base. No repo,
   GitHub App, token or network. The job result is a commit on `branch` in that
   repository: outcome `committed <branch> <sha>` (not `pushed`); `no_changes`
-  and the failure outcomes are as before. Nothing is pushed anywhere.
+  and the failure outcomes are the same as on any local pool. Nothing is pushed anywhere.
 - **Branch rules (worktree mode).** Nothing is forced (no `-B`, `--force`,
   `branch -f`); an existing branch is never moved or reset. Decided at dispatch,
   before a slot is claimed:
@@ -2229,6 +2261,67 @@ size_gib = 12                 # required for apfs and ram
   SSH needs Remote Login's "Allow full disk access for remote users".
 - Design and measurements: `docs/worker-driver-protocol.md`.
 
+### Ticket provider
+
+`provider = "ticket"` is not the `worker` provider. A `worker` pool builds a
+slot on a machine and ships it the repository and a Git token; a `ticket` pool
+has no machines, no slots and no repository of its own. A dispatch asks a vivi
+server for a job ticket (see Job tickets under [Server](#server)) and starts
+`vivi pool run` for it on an SSH host, which pulls the job, the project's lane
+and its ticket-scoped Git access from the server and pushes one branch back.
+
+```toml
+[pools.studio]
+provider = "ticket"
+slots = 2                     # most open jobs at once; NO `image`
+
+[pools.studio.ticket]
+host = "studio"               # required; anything `ssh` accepts, reached with BatchMode
+server = "http://hub:8080"    # required; the URL THIS machine uses for its vivi server
+# tunnel = true               # default: ssh -R forwards the server's port to the worker
+# worker_server = "https://hub.example"   # required when tunnel = false: the worker's own URL
+# vivi = "vivi"               # the vivi binary on the host; letters, digits and _ . / ~ - $ only
+# worker_home = "~/.vivi"     # VIVI_HOME for the worker on the host; same character rule
+# project = "app"             # default: this mailspace's name (what a hosted project is called)
+# target = "default"          # default: the only pump target, else `default`
+```
+
+- **Sign-in.** The dispatching machine calls `job_create`, `job_show` and
+  `job_list` as host: its key must be listed in the server's `host_keys`.
+  `repo`, `remote_url`, `[github]`, `image`, `setup`, `seed`, `requires` and
+  `facts` do not apply; the committer is optional (the server fills in the
+  project's `[pump]` committer).
+- **Dispatch** mints a ticket for `branch` (the dispatch branch) from `base`
+  (`--from`), with the task's subject and brief as the task text, the pool's
+  harness command (`{brief}` becomes `"$WORK_TASK_FILE"`) and the dispatch
+  budget as `timeout_s`. It then starts, detached, `ssh -T -o BatchMode=yes
+  [-R <port>:127.0.0.1:<port>] -- <host> '[VIVI_HOME=<worker_home>] <vivi> pool
+  run <url> --job <id>'` with the ticket on its stdin. With `tunnel` the worker
+  reaches the server on its own loopback through the reverse forward, so the
+  dispatcher opens no inbound port. It is refused when `slots` jobs are already
+  open, and for `--read-only`.
+- **Per-job files** sit under `<mailspace>/.vivi/ticket/<pool>/`:
+  `<job_id>.json` (the dispatch's job name, task, branch, base and the local
+  `ssh` pid) and `<job_id>.log` (the carrier's output). The ticket is never
+  written there. The job id is the slot name and the machine id.
+- **Status, wait, reconcile** read the job back with `job_show`. A job is
+  `running` while it is open and its `ssh` lives, `stopped` once a receipt is
+  in, and `failed` when it expired or when its `ssh` ended with no receipt (no
+  free worker slot, a lost connection). `pool status` lists the open jobs.
+  `pool wait` turns the receipt into the usual result: `pushed` (ok with a
+  commit), `no_changes`, `gate_failed`, `agent_timeout`, `provider_busy`,
+  `agent_failed`, or `push_failed` for any other class. The receipt is kept as
+  the agent output and its `tail` as the worker tail.
+- **`pool create` and scale-up refuse** (no resting slots). `pool destroy`
+  ends the local `ssh` of a job and forgets its files; the ticket itself ends
+  with its receipt or its expiry. `pool doctor` checks that `ssh -o
+  BatchMode=yes <host> true` succeeds and has no live test.
+- **Known gaps.** The pool's standing rules (`{rules}`) and the MCP bridge
+  (`{mcp_config}`) are not carried to the worker. Read-only dispatch is
+  refused. A ticket cannot be cancelled: one minted before a failed `ssh`
+  launch stays open until it expires. The harness's environment comes from the
+  worker host itself.
+
 ### SSH provider
 
 `provider = "ssh"` is the minimal form: a host reachable by SSH where each slot
@@ -2317,14 +2410,14 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
 Config is one `[pools.<name>]` table per pool in `.vivi/mailspace.toml`.
 Everything provider neutral sits in the pool table; the Fly settings sit in
 `[pools.<name>.fly]`, the Docker settings in `[pools.<name>.docker]`, the SSH
-settings in `[pools.<name>.ssh]`, the local settings in `[pools.<name>.local]` and the RunPod settings in `[pools.<name>.runpod]` (shown under "RunPod provider"). Only the table of the chosen `provider` is
+settings in `[pools.<name>.ssh]`, the local settings in `[pools.<name>.local]`, the RunPod settings in `[pools.<name>.runpod]` (shown under "RunPod provider"), the worker settings in `[pools.<name>.worker]` and the ticket settings in `[pools.<name>.ticket]`. Only the table of the chosen `provider` is
 used and checked beyond its key names. A top-level `[pool]` table is rejected.
 Everything below is per pool; pools share nothing with each other (a base
 mailspace can still supply whole pool tables):
 
 ```toml
 [pools.lanes]
-# provider = "fly"            # default; or "docker", "ssh", "local", "runpod" or "worker"
+# provider = "fly"            # default; or "docker", "ssh", "local", "runpod", "worker" or "ticket"
 repo = "owner/name"           # optional for a provider-only test pool; needed by create/scale-up/dispatch (with [github])
 # remote_url = "git@gitbox:owner/repo.git"   # instead of repo + [github]: a plain Git source (see Plain Git source)
 slots = 4                     # required; maximum pool size
@@ -2597,7 +2690,8 @@ is refused while the pump runs (a paused pump still holds the lock and is
 refused too), and the next tick re-ingests every open pump record.
 
 A fresh **pump.db** starts stopped: run **vivi pump start** to enable the
-pump (the service starts it when registered). **pump target add|remove** and
+pump. A supervisor (see Supervising pumps) starts a pump for a project only
+while its control is running or paused. **pump target add|remove** and
 **pump rungs set** are config writes: they are refused while the pump runs
 (**vivi pump pause** first) and keep a **mailspace.toml.bak.&lt;stamp&gt;** backup.
 A rung runs on **[pump.rungs] pools** (or the target's own rung pools), and
@@ -2672,7 +2766,8 @@ echoed only when requested, and **pump.need** names the canonical need the
 record and any priority row key on. The need itself may be addressed to
 **hand** or anyone else: it is the record, not the need, that targets the
 pump identity, so the server dispatch needs no recipient rule. Dispatch
-takes the operator's API key, the same authority as **pump send**; a
+takes operator authority (the operator's API key, or a machine grant whose
+member is the operator), the same authority as **pump send**; a
 requested priority needs the configured **[pump]** table. The
 **pump_priority** tool sets, clears and lists levels exactly as `vivi
 pump priority` does, in the configured pump home. A failure after the
@@ -2937,7 +3032,40 @@ Unavailable historical timestamps remain unavailable, never zero. See
 [monitoring and reports](references/monitoring-and-reports.md) for schemas and
 measure definitions.
 
-A pump service can supervise registered mailspaces:
+### Supervising pumps
+
+`vivi server run` supervises the pumps of the projects in the host registry:
+every 5 seconds it reconciles one child process (`vivi pump run
+--service-child`) per registered project. Every registered project is a
+candidate and the project's own pump control (`running`, `paused` or
+`stopped`, set by `vivi pump start|pause|stop`) decides: `running` and
+`paused` get a child, `stopped` does not. A project with no pump database, or
+no `[pump]` config, counts as stopped and nothing is written to it. A child
+that exits is started again after 15 seconds, and a stalled project stalls
+only its own child.
+
+```sh
+vivi server pump pause     # stop every child; skip each pass until resumed
+vivi server pump resume    # let each project's own control decide again
+vivi server pump status    # prints "server pump paused" or "server pump running"
+```
+
+The server-wide switch is the file `$VIVI_HOME/server/pump-state` (`paused` or
+`running`; absent means running). It does not change any project's control.
+The server takes the pump-service lock: while a separate `vivi pump service
+run` holds it, the server logs a warning and supervises nothing. On shutdown
+the server stops its children and waits up to 30 seconds for them.
+
+The registry is `$VIVI_HOME/server/registry.toml`, shared with the pump service
+(`vivi::registry`). Each `[[project]]` entry has `root`, `pump` and `serve`
+(default false: a server hosts it). The server does not choose projects by
+`pump`: every entry is a candidate. An entry with `pump = false` has its
+project's control set to stopped once when the server starts, and is rewritten
+with `pump = true`. Entries the server writes (`create_project`,
+`project_register`) carry `pump = true`.
+
+A **pump service** is the supervisor for a host that pumps without a server
+(or serves with another process):
 
 ```sh
 vivi pump service add <project-root>
@@ -2951,20 +3079,16 @@ vivi pump service uninstall
 vivi pump service run
 ```
 
-The service starts registered projects in running or paused mode, restarts
-exited children after a delay, and stops a project's child when it is removed.
-A project lock arbitrates against a manually started pump.
-
-The service registry is the host's project registry,
-`<config_dir>/vivi/pump-service.toml` (`VIVI_CONFIG_DIR` overrides
-`<config_dir>`), shared with servers that link the library (`vivi::registry`).
-Each `[[project]]` entry has `root`, `pump` (default true: the supervisor runs
-a pump) and `serve` (default false: a server hosts it). `add` registers with
-`pump=true serve=false`; on an existing entry it changes only the flags given,
-so `add <root> --serve` serves a pumped project and `add <root> --no-pump
---serve` registers a serve-only one (no `[pump]` config needed); `--pump` and
-`--no-serve` reverse them. `list` shows
-the flags.
+The service runs a pump for each registry entry with `pump = true`, again
+only for a project whose control is running or paused, restarts exited
+children after a delay, and stops a project's child when it is removed. A
+project lock arbitrates against a manually started pump. `install`, `status`
+and `uninstall` manage a macOS LaunchAgent; elsewhere run `service run` under
+your own service manager. `add` registers with `pump=true
+serve=false`; on an existing entry it changes only the flags given, so `add
+<root> --serve` serves a pumped project and `add <root> --no-pump --serve`
+registers a serve-only one (no `[pump]` config needed); `--pump` and
+`--no-serve` reverse them. `list` shows the flags.
 
 ## Delivery
 
@@ -2997,25 +3121,274 @@ see [close provenance](#close-provenance).
 
 ## Server
 
-The hosted project server (formerly the separate `vivi-server` binary) is part
-of vivi: one release ships both.
+`vivi server` is the hosted project server: it serves project mailspaces, an
+MCP endpoint, rooms and Git over HTTP, and it supervises one pump per project
+it serves. One release ships it with the CLI.
 
 ```sh
-vivi server run              # foreground, for an OS service manager
-vivi server run --help       # the environment variables it reads
+vivi server init [--port N]    # make the server home; keeps what exists
+vivi server run                # foreground, for an OS service manager
+vivi server run --help         # the config.toml keys and credential files
 vivi server run --version
+vivi server pump pause|resume|status   # see Supervising pumps under Pump
 ```
 
-It is configured only by environment variables (`BIND`, `PORT`, `DATA_DIR`,
-`STORE_ENCRYPTION_KEY`, `MODERATION_TOKEN`, `HOST_OPERATOR_TOKEN`, the
-`HOST_*` settings, `RUST_LOG`); the three secrets may instead come from
-systemd credentials (`LoadCredential=`). It starts single-threaded, before
-vivi's own runtime: it makes itself non-dumpable and takes its secrets out of
-the environment first. A link named `vivi-server` to the `vivi` binary runs
-the server too, so a unit or script that called the old binary keeps working.
-Its log target is `vivi::server` (the default filter is
-`vivi::server=info,tower_http=info`). The wire contract, design notes and
-changelog are under `docs/server/`, the smoke scripts under `scripts/server/`.
+The server starts single-threaded, before vivi's own runtime, and makes itself
+non-dumpable on Linux. A link named `vivi-server` to the `vivi` binary runs
+the server too. The wire contract is `docs/server/contract.md`.
+
+### Setting up a server
+
+```sh
+# 1. On the server machine: make the home. This also lists this machine's key
+#    as a host key. The server listens on 127.0.0.1 only; for other machines
+#    to reach it, set `bind` in ~/.vivi/server/config.toml to the LAN address
+#    (or "0.0.0.0"). Ticket workers do not need this: they reach the server
+#    through the dispatcher's ssh tunnel.
+vivi server init --port 8080
+vivi server run                     # leave it running (or put it under a service manager)
+
+# 2. Make a project, or serve a mailspace that already exists. Host tools run
+#    as host with --host.
+vivi mcp --host call create_project '{"name":"app"}'       # the answer shows operator_key once
+vivi mcp --host call project_register '{"root":"/abs/path/to/project"}'
+
+# 3. On another machine, print its key ...
+vivi key show
+# ... then admit it on the server and give it the project.
+vivi mcp --host call machine_add '{"principal":"laptop","public_key":"<public_key>"}'
+vivi mcp --host call grant_add '{"principal":"laptop","grant":{"project_id":"app"}}'
+```
+
+```toml
+# 4. On the other machine, in the project's .vivi/mailspace.toml: remote mode.
+[remote]
+server = "http://server:8080"
+project = "app"
+```
+
+`vivi need send`, `vivi board` and the other mapped commands in that directory
+now run on the server (see Remote mode under Project Sync). `vivi mcp` and
+`vivi key git-credential` use the same key (see below).
+
+### Server home
+
+The home is `$VIVI_HOME/server`. `VIVI_HOME` defaults to `~/.vivi`; a relative
+value is taken from the current directory. It is the only environment
+variable the server reads, and it also holds this machine's other vivi files
+(`keys/`, `worker/`). The server reads one file and one directory:
+
+- **`config.toml`**, every key optional; relative paths are under the home:
+
+  | Key | Meaning (default) |
+  |---|---|
+  | `bind` | listen address (`127.0.0.1`) |
+  | `port` | listen port (`8080`) |
+  | `send_rate_per_minute` | writes per minute per identity (`30`; `0` is unlimited) |
+  | `hosted_default_identity` | identity an API key without its own acts as on a hosted project (`operator`) |
+  | `log` | log filter (`vivi::server=info,vivi::pump=info,tower_http=info`) |
+  | `data_dir` | data directory (`data`) |
+  | `projects_root` | where `create_project` puts project roots (`projects`) |
+  | `lanes_root` | where it puts lane repositories (`lanes`) |
+  | `git_url_prefix` | lane URL prefix (`file://<lanes_root>/`) |
+  | `default_pool` | pool a new project is given |
+
+  An unknown key is an error.
+- **`creds/`**, one file per secret: `STORE_ENCRYPTION_KEY` (standard base64
+  of exactly 32 bytes; it must not change for an existing data directory),
+  `MODERATION_TOKEN` (enables `/v1/_health`) and `HOST_OPERATOR_TOKEN` (a
+  built-in host bearer on `POST /v1/mcp`). The server refuses a `creds/` or a
+  secret that other users can read and names the fix: `chmod 700 creds &&
+  chmod 600 creds/*`.
+
+`registry.toml` (the host project registry), `host_keys` and `pump-state` live
+beside them. `host_keys` lists the machine keys that may act as host: one
+base64 public key per line, `#` starts a comment, and a name after the key is
+allowed. A server with no `host_keys` warns that no machine can act as host.
+
+`vivi server init` writes a starter `config.toml` (`bind`, `port`) only when
+none exists, makes `creds/` (mode 700) with each missing secret (mode 600,
+fresh random; an existing secret is never replaced and none is printed), lists
+this machine's key in `host_keys` unless it is there, and makes the data,
+projects and lanes directories. Run it again at will.
+
+### Machine keys
+
+Every machine has one ed25519 key, `$VIVI_HOME/keys/machine.ed25519` (a 32-byte
+seed, mode 600, made on first use). `vivi key show` prints the public key
+(base64), its fingerprint and the file. A key file, or a `keys/` directory,
+that group or others can reach is refused with the `chmod` that fixes it.
+
+Sign-in is a challenge: `POST /v1/auth/machine/challenge {public_key}` returns
+a nonce, and `POST /v1/auth/machine/verify {challenge_id, signature, as_host?}`
+returns a session token (`vivims_...`) that lasts one hour and is the bearer
+for `/v1/mcp` and the Git route. A challenge lives two minutes; the server holds
+at most 8 per public key and 4096 in all (HTTP 429). The client caches the
+token under `$VIVI_HOME/keys/sessions/` until a minute before it expires.
+Challenges and sessions live in memory, so a server restart signs every
+machine out. Remote mode, `vivi mcp tools|call` and project-origin forwards
+sign in again once when the server refuses a cached session; the stdio
+`vivi mcp` bridge does not (see MCP bridge).
+
+Who a key is:
+
+- **Host.** The client asks to sign in `as_host` (`vivi mcp --host`; the
+  `ticket` pool provider) and the key is listed in `host_keys`. A key that is
+  not listed is refused (403) when it asks.
+- **A principal.** Without `as_host`, the key signs in as the principal that
+  holds it, or is refused (403, naming its fingerprint) when it is not
+  admitted. Listing a key in `host_keys` does not admit it.
+
+The host admits machines with host tools. A grant is read again on every
+request, so removing a key or a grant takes effect at once.
+
+```sh
+vivi mcp --host call machine_add '{"principal":"laptop","public_key":"<base64>"}'
+vivi mcp --host call grant_add '{"principal":"laptop","grant":{"project_id":"app","member":"<identity>","level":"member"}}'
+vivi mcp --host call grant_remove '{"principal":"laptop","project_id":"<project id>"}'
+```
+
+- `machine_add {principal, public_key}` attaches a machine key to a principal,
+  creating the principal when absent. A key another principal already holds is
+  refused naming that principal.
+- `grant_add {principal, grant}` takes `project_id` as a project id or a hosted
+  project's name. `member` must be an identity registered on the project, and
+  may be left out when the project has exactly one; an unregistered member is
+  refused with the registered ones listed. `level` is `member` or `operator`.
+- `grant_remove {principal, project_id}` removes one grant.
+- `projects` (any principal) lists the projects a principal may reach.
+
+Two other bearers work on `/v1/mcp`. A **server key** (`vivi_...`) is
+minted by the host tool `key_mint {principal, grants, host?, label?}` and
+shown once; `key_list` and `key_revoke {key_id}` manage them. A client sends
+one from `VIVI_MCP_API_KEY` or a `[remote]` `key_file`. The
+`HOST_OPERATOR_TOKEN` secret is a host bearer. Project API keys
+(`vivi sync api-key mint`) are the member-level keys inside one project.
+
+### Git over HTTP
+
+The server serves each target's lane at `/git/<project>/<target>.git`, where
+`<project>` is a project id or a hosted name and `<target>` is a
+`[pump.targets.<id>]` of that project. It runs `git http-backend`, so `git`
+must be on the server. The credential is a session token, as the Basic
+password or a Bearer.
+
+```sh
+git config --global credential.http://server:8080.helper ''
+git config --global --add credential.http://server:8080.helper '!vivi key git-credential'
+git clone http://server:8080/git/app/default.git
+```
+
+Configure the helper for one server URL, with the empty first entry to drop
+every other helper: a keychain helper would keep an old token. The helper
+signs in with this machine's key on every `get` (username `vivi`), so a
+restarted server never strands git on a dead token. It signs in as the
+machine's admitted principal, never as host.
+
+- **Access.** A principal needs a grant on the project; a host session
+  reaches every project. A clone-time refusal (no grant, unknown target,
+  archived project) is a git `remote error: vivi: ...`.
+- **Pushes.** `main`, `vivi/main` and the target's own `main` are refused to
+  anyone but a host session: git prints `! [remote rejected] <ref> (push to
+  <ref> refused: only the host may update ...; push a work branch and let the
+  pump land it)`. Any other branch may be pushed. Signed pushes are refused.
+- **Job tickets** (below) reach the same route, limited to their own project,
+  target and branch.
+
+### Job tickets
+
+A job ticket lets a worker machine run one job with no credential of its own.
+The host tool `job_create` mints it.
+
+```sh
+vivi mcp --host call job_create '{"project":"app","target":"default","branch":"work/need-1234","task":"Add a greeting.","harness":"pi -p @\"$WORK_TASK_FILE\"","gate":"cargo test","timeout_s":1800}'
+vivi mcp --host call job_show '{"job_id":"job_..."}'
+vivi mcp --host call job_list '{"status":"open"}'
+```
+
+- `job_create {project, target, branch, task, harness, gate?, base?,
+  timeout_s?, committer?}`. `branch` must not be `main`, `vivi/main` or the
+  target's main. `base` defaults to the target's main, or the lane's default
+  branch until the pump has made it. `committer {name, email}` defaults to the
+  project's `[pump]` committer. `timeout_s` defaults to 1800. The answer is
+  `{job_id, ticket, expires_at, git_path, manifest_path}`; the ticket
+  (`vivijt_` and 64 hex digits) is shown once and the server keeps only its
+  SHA-256 digest in `<data_dir>/jobs/<job_id>.json`. It expires `timeout_s`
+  plus a day after creation, so results can arrive late.
+- `job_show` answers the manifest, `status` (`open`, `done` once a receipt is
+  in, `expired`), the times and the receipt. `job_list` takes `status`
+  `open|done|all` (default all).
+- The ticket reads the manifest at `GET /v1/jobs/<job_id>`, fetches the
+  target's lane, pushes exactly `refs/heads/<branch>`, and posts one receipt
+  at `POST /v1/jobs/<job_id>/receipt` (a JSON object with a boolean `ok`; `200
+  {"accepted":true}`, `409` for a second one). Once the receipt is in, git
+  refuses the ticket; once it expires, nothing accepts it.
+
+The worker end is `vivi pool run <server-url> --job <job_id> [--detach]` on the
+worker machine. It reads the ticket as one line on stdin; the ticket never
+appears in argv or in the harness's environment.
+
+- **Slots.** `$VIVI_HOME/worker/config.toml` `slots = N` (default 2) bounds
+  concurrent jobs. A job holds a lock on `$VIVI_HOME/worker/slots/<n>.lock`;
+  with none free it exits `75` (`busy`) before doing anything, with no receipt.
+- **`--detach`** stores the ticket (mode 600) in the job directory, starts
+  itself again in a new session with output in `log.txt`, prints `started
+  <job_id> pid <pid>` and returns at once.
+- **Steps**, in `$VIVI_HOME/worker/jobs/<job_id>/`: `clone` the lane
+  (`<server><git_path>`) into `checkout/`; `branch` (`git switch -c <branch>`
+  from `origin/<base>`, or `<base>` as given); `harness` (`sh -c`, working
+  directory the checkout, `WORK_TASK_FILE` naming `task.md` and `WORK_JOB_ID`
+  set); commit everything as the committer (nothing changed is the
+  `no_change` class); `gate` (`sh -c`, when set); `push`
+  `HEAD:refs/heads/<branch>`. Git sees the ticket only through
+  `GIT_CONFIG_*` environment variables. All steps share the manifest's
+  `timeout_s`. A transient push failure is retried with backoff for up to an
+  hour; a refusal (`denied`, `rejected`, `403`, `protected`) is not.
+- **Receipt**: `{ok, job_id, branch, commit, host, seconds, steps:
+  {<name>: {code, seconds}}, failed_step, class, tail}`, also written to
+  `receipt.json`. `class` is `timeout`, `provider_busy` (the failed step's
+  tail mentions 429, rate limit, overloaded or throttling), else by the failed
+  step: `agent` (harness), `gate_red` (gate), `no_change` (commit), `infra`
+  (anything else). A failed post is retried for up to an hour.
+- **Exit status**: `0` the job succeeded and the receipt is posted; `1` the
+  job failed (receipt posted), or the receipt could not be posted; `2` usage,
+  manifest or authentication error; `75` busy.
+
+The `ticket` pool provider drives this from a dispatch (see Ticket provider
+under Remote lane pool).
+
+### Project origin
+
+A hosted project may name an upstream project on another server, in its own
+`mailspace.toml`:
+
+```toml
+[origin]
+server = "http://upstream:8080"
+project = "up"
+```
+
+Every item belongs to one server and operations go to the owner; nothing is
+copied.
+
+- **By handle.** `show`, `thread`, `reply`, `done`, `reopen`, `mark`, `unmark`
+  and `depend` on a handle this project does not hold are forwarded to the
+  origin as the same call; the answer carries `"origin": <url>`. A handle held
+  here, or an ambiguous one, is answered here. `send` always stays local.
+- **Lists.** `list` and `board` take an `origin` argument: absent or `false`
+  is this server only, `true` or `"origin"` the upstream only, `"all"` both.
+  Each `list` item carries `source` (`local` or `origin`). `board` answers
+  `{local, origin}`. With `"all"` and an unreachable origin the local items
+  still come back, with `origin_error` beside them. In remote mode:
+  `vivi need list --origin origin|all` (refused where there is no `[remote]`).
+  A project with no `[origin]` refuses the argument.
+- **Sign-in.** The server signs in to its origin with its own machine key
+  (`$VIVI_HOME/keys/machine.ed25519` on the machine running `vivi server run`),
+  as a principal: that key must be admitted (`machine_add`) and granted on the
+  origin project (`grant_add`). A refused session is signed in again once.
+- **Limits.** Each forward carries `X-Vivi-Hops`; a chain of 4 is refused as a
+  loop. An unreachable origin fails that call naming its URL, and local items
+  keep working.
 
 ## Proxy
 
@@ -3147,6 +3520,11 @@ flags with `vivi sync --help`.
 A mailspace works with no `[sync]` and no server, and its state is a pure
 function of the letters it holds. Sync only moves letters; `pull` applies the
 state, mark, bind, and absorb events among them (see State as letters).
+
+Two other ways to reach a server keep no local copy of the work. **Remote
+mode** (`[remote]`, below) sends the ordinary CLI commands to the server's
+project. **Project origin** (`[origin]`, under [Server](#server)) lets a
+hosted project route handles it does not hold to an upstream project.
 
 ```sh
 vivi sync                # push, then pull (the pull runs even when the push stopped)
@@ -3363,7 +3741,7 @@ name = "this-checkout"
 send = "addressed"
 ```
 
-`all` sends every letter, as before the key existed. `addressed` sends only
+`all` sends every letter. `addressed` sends only
 letters a `To` or `Cc` address in another mailspace's domain names — a domain
 other than this mailspace's own `<prefix>.local` or the bare `local`; an
 address with no domain counts as local — plus event letters (state, mark,
@@ -3408,7 +3786,7 @@ is fetched.
 carried by new remote bindings. When it changes, the next pull says
 `server epoch changed (A -> B)`, resets the cursor and floor, and re-reads
 from sequence 0, filing nothing twice; a pull gives up after 2 resets in one
-run. A server that sends no epoch behaves as before, and `vivi sync status`
+run. A server that sends no epoch triggers no reset, and `vivi sync status`
 shows the epoch. Wire contract: the list response carries a field named
 `epoch`, an integer from 1 to 4294967295, in the same JSON object as
 `records`, `next_cursor`, and `has_more`, and the server must change it
@@ -3447,6 +3825,43 @@ or `--drain`. Any other stop exits non-zero, and the next run resumes. Mail is
 visible only to its sender and the addressed mailspace; work items and mail to
 `postmaster` are visible to every member.
 
+### Remote mode
+
+A `[remote]` table in the nearest `.vivi/mailspace.toml` (from the command's
+`--project`, else the current directory, walking up) sends the mapped CLI
+commands to a server's project instead of a local store.
+
+```toml
+[remote]
+server = "http://server:8080"
+project = "app"
+# key_file = "~/.vivi/app.key"   # optional: a bearer (a server key) read from a file
+```
+
+Each mapped command becomes one server MCP call with `project` set to the
+table's project, and prints the server's answer. A tool error (an `{"error"}`
+reply) goes to stderr and exits 1.
+
+| Command | Server tool |
+|---|---|
+| `need send` (`--to`, `--subject`, `--body`/`--body-file`, `--done-when`, `--depends-on`, `--write-scope`, `--target`, `--serves`, `--explores`, `--dispatch`, `--priority`) | `send` |
+| `need list` (`--for`, `--from`, `--to`, `--status`, `--mark`, `--origin`) | `list` |
+| `need show`, `need done`, `need reopen` | `show`, `done`, `reopen` |
+| `mail reply`, `mail thread` | `reply`, `thread` |
+| `board` (`--for`) | `board` |
+| `boot` | `overview` |
+
+Any other mailspace command run under a `[remote]` mailspace is refused by name (`remote
+mode: <name> has no remote mapping yet`); nothing falls back to a local store.
+`vivi mcp` and `vivi key` ignore `[remote]`. `--from` is not sent: the server
+acts as the grant's member.
+
+Without `key_file`, remote mode signs in with this machine's key (see Machine
+keys under Server) as the principal the host admitted with `machine_add` and
+gave the project with `grant_add`; it signs in again once when a restarted
+server refuses its cached session. With `key_file`, that bearer is sent as it
+is.
+
 ### MCP bridge
 
 `vivi mcp` is a thin stdio bridge to the server's MCP endpoint
@@ -3456,13 +3871,16 @@ each message to that endpoint unchanged. It is a pass-through: it does not
 know the tool list, so `tools/list` and `tools/call` go to the server as they
 are, and new server tools need no new bridge. Nothing but protocol messages is
 written to stdout; diagnostics go to stderr; a notification gets no reply. A
-pool slot needs only the binary, a server URL, and an API key (a project id
+pool slot needs only the binary, a server URL, and a credential (a project id
 is optional): no local mailspace, no sync, and the bridge never creates
 `.vivi/`. The bridge sends the project id as the `project` argument of the
-tools that declare one, filling it into a call that leaves it out. There is no
-renewal: when the server refuses a request, a 401 is final, and the bridge
-answers that request with a JSON-RPC error (code `-32000`,
-`data.http_status`) instead of hanging, and keeps serving.
+tools that declare one, filling it into a call that leaves it out. The
+bridge's credential is fixed when it starts and is never renewed: when the
+server refuses a request, a 401 is final, and the bridge answers that request
+with a JSON-RPC error (code `-32000`, `data.http_status`) instead of hanging,
+and keeps serving. A machine-key session lasts one hour and a restarted
+server forgets it, so a long-lived bridge on a machine key needs a restart
+after either; a key in `VIVI_MCP_API_KEY` does not expire that way.
 
 `vivi mcp tools` prints the server's live tool set. A tool failure is a result
 with `isError: true`.
@@ -3493,17 +3911,39 @@ object, which is refused before any request. Credentials are never printed.
 
 **Flags and environment.** `--server <URL>` and `--project-id <ID>`, each
 with a variable: `VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`. A flag beats its
-variable, a variable beats the `[sync]` table (`server`, `project`). The
-global `--project <ROOT>` names a mailspace root (used only to find a `[sync]`
-table); it is not the server project id.
+variable. Without either, the server comes from the nearest mailspace's
+`[remote]` `server`, then its `[sync]` `server`, then the local server home
+(`http://<bind>:<port>` from `$VIVI_HOME/server/config.toml`; a wildcard bind
+reads as `127.0.0.1`), and the project from `[remote]` `project`, then
+`[sync]` `project`. The mailspace is the one holding the nearest
+`.vivi/mailspace.toml` above the current directory, or the one the global
+`--project <ROOT>` names; it is not the server project id. Its tables are read
+straight from the file and nothing is written to it. With no `--project-id`
+and no table, a tool that takes `project` must be given it in its arguments.
 
-**Credential.** A project API key in `VIVI_MCP_API_KEY`, read from the
-environment only (there is no flag, so it does not show in a process list). It
-is sent as the bearer as it is. Mint one with `vivi sync api-key mint`; without
-it the command is refused before any request. There is no member credential
-and no mailspace-key fallback.
+**Credential.** With `VIVI_MCP_API_KEY` unset or empty, `vivi mcp` signs in
+with this machine's key (see Machine keys under Server) as the principal the
+host admitted with `machine_add`; `--host` signs in as host instead, which
+needs the key in the server's `host_keys`. A token is cached and reused until
+a minute before it expires. `vivi mcp tools` and `call` drop a signed-in
+session the server no longer knows (it restarted) and sign in again once; any
+other failure is reported as it is.
 
-**Client configuration.** Claude Code takes a JSON file via `--mcp-config`:
+A key in `VIVI_MCP_API_KEY` is sent as the bearer as it is, with no sign-in:
+a project API key (`vivi sync api-key mint`) or a server key (`key_mint`). It
+is read from the environment only (there is no flag, so it does not show in a
+process list), and a failure with it is reported, never retried by signing
+in. There is no member credential and no mailspace-key fallback.
+
+**Client configuration.** Claude Code takes a JSON file via `--mcp-config`.
+On an admitted machine inside a `[remote]` or `[sync]` mailspace the entry
+needs no environment at all:
+
+```json
+{"mcpServers":{"vivi":{"command":"vivi","args":["mcp"]}}}
+```
+
+With an API key, name everything in the environment:
 
 ```json
 {"mcpServers":{"vivi":{"command":"vivi","args":["mcp"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>","VIVI_MCP_API_KEY":"<key from vivi sync api-key mint>"}}}}
