@@ -101,6 +101,19 @@ fn plan(f: &Fixture) {
             },
         )
         .unwrap();
+    // The admission evidence: a completed admitter that answered `admitted`.
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run: 1,
+                node: "admit1".into(),
+                task: "t-admit".into(),
+                state: StepState::Done,
+                verdict: Some("admitted".into()),
+            },
+        )
+        .unwrap();
     payload(f, "t-plan", "plan", "planner", json!({"body": "PLAN TEXT"}));
 }
 
@@ -172,6 +185,41 @@ fn a_first_pass_is_a_read_only_auditor_job_with_range_and_plan() {
     assert!(spec.body.contains("reply-1-r0"));
     assert!(spec.body.contains("in parallel"));
     assert!(!spec.body.contains("Second pass"));
+}
+
+#[test]
+fn without_an_admission_the_brief_reports_no_plan() {
+    let f = fixture();
+    with_branch(&f);
+    // The run's planner planned, but no admitter admitted it.
+    f.store
+        .insert_step(
+            NEED,
+            &StepRow {
+                run: 1,
+                node: "plan".into(),
+                task: "t-plan".into(),
+                state: StepState::Done,
+                verdict: Some("planned".into()),
+            },
+        )
+        .unwrap();
+    payload(
+        &f,
+        "t-plan",
+        "plan",
+        "planner",
+        json!({"body": "PLAN TEXT"}),
+    );
+
+    let spec = start(&f, "audit1").unwrap();
+
+    assert!(!spec.body.contains("PLAN TEXT"), "{}", spec.body);
+    assert!(
+        spec.body.contains("(no admitted plan recorded)"),
+        "{}",
+        spec.body
+    );
 }
 
 #[test]

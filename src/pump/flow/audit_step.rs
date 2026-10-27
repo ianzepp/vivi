@@ -72,8 +72,8 @@ fn brief(
     );
     out.push_str("\nThe need rung runs in parallel with this audit. There is no thread-freshness refusal: a change to the need thread restarts the run elsewhere.\n");
     out.push_str("\n## Admitted plan\n\n");
-    match admitted_plan(cx.store, need)? {
-        Some(plan) => out.push_str(&capped(&plan, PLAN_CAP)),
+    match admitted_plan(cx.store, need, cx.run.run, cx.def)? {
+        Some(plan) => out.push_str(&capped(&plan.document, PLAN_CAP)),
         None => out.push_str("(no admitted plan recorded)"),
     }
     out.push_str("\n\n## Need thread\n\n");

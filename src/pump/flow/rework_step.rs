@@ -51,7 +51,7 @@ impl StepHandler for ReworkStart {
 fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     let need = &cx.run.need;
     let range = branch_range(cx.ctx, cx.store, need)?;
-    let plan = admitted_plan(cx.store, need)?;
+    let plan = admitted_plan(cx.store, need, cx.run.run, cx.def)?;
     let (context_run, rows) = audit_context(cx.store, need, cx.run.run)?;
     let mut text = format!(
         "mode: rework\nneed: {need}\ntarget: {}\nneed branch: {}\n\n",
@@ -68,7 +68,7 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     );
     text.push_str("## Admitted plan\n\n");
     match plan {
-        Some(plan) => text.push_str(&capped(&plan, PLAN_CAP)),
+        Some(plan) => text.push_str(&capped(&plan.document, PLAN_CAP)),
         None => text.push_str("(no admitted plan recorded)"),
     }
     text.push_str("\n\n## Slices already merged on the need branch\n\n");

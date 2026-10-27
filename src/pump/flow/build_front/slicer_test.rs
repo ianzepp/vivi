@@ -10,12 +10,11 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
-use crate::pump::flow::step_inputs::POOL_RESULT_MARKER;
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::JobSpec;
 use crate::pump::state::State;
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::RoutedRole;
 
@@ -81,17 +80,56 @@ fn row(node: &str, task: &str, state: StepState) -> StepRow {
     }
 }
 
-/// A Done planner step `node` whose task holds one pool result with `plan`.
-fn planner_done(rig: &mut Rig, node: &str, plan: Option<&str>) -> R {
-    let task = rig.mail.send_step("pump", "pump", node, "body", &[])?;
-    if let Some(plan) = plan {
-        let text = format!(
-            "{POOL_RESULT_MARKER}j-{node}: finished\npool p  slot 1  model m\n\n--- receipt\n{plan}"
-        );
-        rig.mail.reply(&task, &text)?;
-    }
-    rig.store
-        .insert_step(NEED, &row(node, &task, StepState::Done))
+/// A completed planner step whose stored payload body is `document`, and a
+/// completed admitter that admitted it, both in run `run`.
+fn admission(
+    rig: &Rig,
+    run: u32,
+    plan_node: &str,
+    admit_node: &str,
+    plan_task: &str,
+    admit_task: &str,
+    document: &str,
+) -> R {
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run,
+            node: plan_node.into(),
+            task: plan_task.into(),
+            state: StepState::Done,
+            verdict: Some(String::from("planned")),
+        },
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run,
+            node: admit_node.into(),
+            task: admit_task.into(),
+            state: StepState::Done,
+            verdict: Some(String::from("admitted")),
+        },
+    )?;
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run,
+        node: plan_node.into(),
+        class: String::from("planner"),
+        task: plan_task.into(),
+        payload: serde_json::json!({ "body": document }),
+    })?;
+    Ok(())
+}
+
+/// The admitted plan of run 1, sliced by a run 2 that entered at `slice`.
+fn restarted_rig() -> Result<Rig, VivariumError> {
+    let rig = rig()?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
+    let mut run = rig.run.clone();
+    run.run = 2;
+    run.entry = String::from("slice");
+    Ok(Rig { run, ..rig })
 }
 
 fn start(rig: &Rig) -> Result<JobSpec, VivariumError> {
@@ -102,7 +140,15 @@ fn start(rig: &Rig) -> Result<JobSpec, VivariumError> {
         run: &rig.run,
         def: &rig.def,
     };
-    match SliceStep.start(&cx, &row("slice", "ts", StepState::Waiting))? {
+    let step = if rig.run.run == 1 {
+        row("slice", "ts", StepState::Waiting)
+    } else {
+        StepRow {
+            run: rig.run.run,
+            ..row("slice", "ts", StepState::Waiting)
+        }
+    };
+    match SliceStep.start(&cx, &step)? {
         StartAction::Job(spec) => Ok(*spec),
         other => Err(VivariumError::Other(format!("not a job: {other:?}"))),
     }
@@ -110,8 +156,8 @@ fn start(rig: &Rig) -> Result<JobSpec, VivariumError> {
 
 #[test]
 fn start_is_a_read_only_slicer_job_with_the_plan_and_default_minutes() -> R {
-    let mut rig = rig()?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    let rig = rig()?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
 
     let spec = start(&rig)?;
 
@@ -132,6 +178,29 @@ fn start_is_a_read_only_slicer_job_with_the_plan_and_default_minutes() -> R {
         "{}",
         spec.body
     );
+    // The provenance is frozen into the brief next to the document.
+    assert!(
+        spec.body
+            .contains("admitted plan source: run 1 planner task t-plan admitter task t-admit"),
+        "{}",
+        spec.body
+    );
+    Ok(())
+}
+
+#[test]
+fn the_job_payload_freezes_the_admitted_plan_provenance() -> R {
+    let rig = rig()?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
+
+    let spec = start(&rig)?;
+
+    assert_eq!(
+        spec.payload,
+        serde_json::json!({ "admitted_plan": {
+            "run": 1, "planner": "t-plan", "admitter": "t-admit",
+        } })
+    );
     Ok(())
 }
 
@@ -139,8 +208,8 @@ fn start_is_a_read_only_slicer_job_with_the_plan_and_default_minutes() -> R {
 fn configured_minutes_set_the_slice_size() -> R {
     let mut cfg = PumpConfig::default();
     cfg.slice.minutes = Some(6);
-    let mut rig = rig_with(cfg)?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    let rig = rig_with(cfg)?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
 
     let spec = start(&rig)?;
 
@@ -157,8 +226,8 @@ fn configured_minutes_set_the_slice_size() -> R {
 fn slice_budgets_follow_a_nondefault_dispatch_fallback() -> R {
     let mut cfg = PumpConfig::default();
     cfg.dispatch.budget = 222;
-    let mut rig = rig_with(cfg)?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    let rig = rig_with(cfg)?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
 
     let spec = start(&rig)?;
 
@@ -188,8 +257,8 @@ fn slice_budget_overrides_do_not_touch_the_slice_size_guidance() -> R {
     // Other kinds configured: none of them may reach the slice node.
     cfg.dispatch.step_budgets.judge = Some(88);
     cfg.dispatch.step_budgets.planner = Some(66);
-    let mut rig = rig_with(cfg)?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    let rig = rig_with(cfg)?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
 
     let spec = start(&rig)?;
 
@@ -211,19 +280,77 @@ fn slice_budget_overrides_do_not_touch_the_slice_size_guidance() -> R {
 
 #[test]
 fn the_revised_plan_wins_over_the_first() -> R {
-    let mut rig = rig()?;
-    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
-    planner_done(&mut rig, "plan2", Some("PLAN-TWO"))?;
+    let rig = rig()?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
+    admission(
+        &rig, 1, "plan2", "admit2", "t-plan2", "t-admit2", "PLAN-TWO",
+    )?;
 
     let spec = start(&rig)?;
 
     assert!(spec.body.contains("PLAN-TWO"), "{}", spec.body);
     assert!(!spec.body.contains("PLAN-ONE"), "{}", spec.body);
+    assert!(
+        spec.body
+            .contains("planner task t-plan2 admitter task t-admit2"),
+        "{}",
+        spec.body
+    );
     Ok(())
 }
 
 #[test]
-fn no_done_planner_step_is_an_error() -> R {
+fn unadmitted_newer_plan_does_not_replace_admitted_source() -> R {
+    let rig = rig()?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
+    // A later revision that planned but was never admitted.
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            node: "plan2".into(),
+            task: "t-plan2".into(),
+            state: StepState::Done,
+            verdict: Some(String::from("planned")),
+            ..row("plan2", "t-plan2", StepState::Done)
+        },
+    )?;
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: NEED.into(),
+        run: 1,
+        node: "plan2".into(),
+        class: "planner".into(),
+        task: "t-plan2".into(),
+        payload: serde_json::json!({ "body": "PLAN-TWO" }),
+    })?;
+
+    let spec = start(&rig)?;
+
+    assert!(spec.body.contains("PLAN-ONE"), "{}", spec.body);
+    assert!(!spec.body.contains("PLAN-TWO"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn slice_restart_uses_admitted_revision() -> R {
+    // Run 1 ended admitting its plan revision; run 2 entered at slice and has
+    // no planner or admitter of its own.
+    let rig = restarted_rig()?;
+
+    let spec = start(&rig)?;
+
+    assert!(spec.body.contains("PLAN-ONE"), "{}", spec.body);
+    assert!(
+        spec.body
+            .contains("admitted plan source: run 1 planner task t-plan admitter task t-admit"),
+        "{}",
+        spec.body
+    );
+    assert_eq!(spec.payload["admitted_plan"]["run"], 1, "{}", spec.payload);
+    Ok(())
+}
+
+#[test]
+fn no_admitted_plan_is_an_error_naming_the_need() -> R {
     let rig = rig()?;
 
     let err = start(&rig).unwrap_err();
@@ -233,13 +360,54 @@ fn no_done_planner_step_is_an_error() -> R {
 }
 
 #[test]
-fn a_planner_step_without_a_reply_is_an_error() -> R {
-    let mut rig = rig()?;
-    planner_done(&mut rig, "plan", None)?;
+fn a_planner_without_an_admitter_is_not_a_sliceable_source() -> R {
+    let rig = rig()?;
+    admission(&rig, 1, "plan", "admit1", "t-plan", "t-admit", "PLAN-ONE")?;
+    // A fresh plan that planned after the admission has no admitter yet.
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            node: "plan2".into(),
+            task: "t-plan2".into(),
+            state: StepState::Done,
+            verdict: Some(String::from("planned")),
+            ..row("plan2", "t-plan2", StepState::Done)
+        },
+    )?;
+
+    let spec = start(&rig)?;
+
+    assert!(spec.body.contains("PLAN-ONE"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn an_admission_without_a_stored_planner_payload_is_an_error() -> R {
+    let rig = rig()?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            node: "plan".into(),
+            task: "t-plan".into(),
+            state: StepState::Done,
+            verdict: Some(String::from("planned")),
+            ..row("plan", "t-plan", StepState::Done)
+        },
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            node: "admit1".into(),
+            task: "t-admit".into(),
+            state: StepState::Done,
+            verdict: Some(String::from("admitted")),
+            ..row("admit1", "t-admit", StepState::Done)
+        },
+    )?;
 
     let err = start(&rig).unwrap_err();
 
-    assert!(err.to_string().contains("no reply"), "{err}");
+    assert!(err.to_string().contains("t-plan"), "{err}");
     Ok(())
 }
 
