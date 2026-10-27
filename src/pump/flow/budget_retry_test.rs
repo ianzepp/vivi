@@ -98,6 +98,10 @@ fn budget_kill_is_machine_evidence_only() {
     let killed_legacy =
         format!("{KILL_SUMMARY}\nhand's final message:\nI saw agent exit 124 in a log line.");
     assert!(is_budget_kill(&finished(&killed_legacy)));
+    // An unknown heading does not bound the summary: the pool renders no
+    // such section, so a genuine summary timeout stays visible under it.
+    let unknown = format!("{KILL_SUMMARY}\n--- notes\nnoise\nagent exit 124 again");
+    assert!(is_budget_kill(&finished(&unknown)));
 }
 
 #[test]
@@ -112,6 +116,10 @@ fn budget_kill_never_reads_section_text_or_other_statuses() {
     // the receipt section, is not a kill.
     let absent_summary = "unit a1 done\n--- receipt\nagent exit 124";
     assert!(!is_budget_kill(&finished(absent_summary)));
+    // Section-local exit 124 stays excluded with no summary exit line even
+    // under a single-newline heading in a different section.
+    let tight_absent = "unit a1 done\n--- stderr tail\nagent exit 124 after 600s";
+    assert!(!is_budget_kill(&finished(tight_absent)));
     // Child-command output in the stderr and runner-log tails never counts.
     let tails = "unit a1\nagent exit 0 in 8s\n\n--- stderr tail\n\
         `cargo test` exited: agent exit 124\n\n--- runner log tail\n\
