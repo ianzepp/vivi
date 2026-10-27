@@ -28,7 +28,10 @@
 //! its source, and publishes or adopts the matching need-thread ruling note
 //! ([`NoteWord::ScopeRuling`]) before any scope is mutated, so permission
 //! evidence exists before a grant takes effect. [`effective_scopes`] renders
-//! the reader's facts grouped per target for runtime briefs.
+//! the reader's facts grouped per target for runtime briefs. After a
+//! published or adopted allowed ruling, [`continue_role`] regenerates the
+//! asking role's job at the same attempt through its registered handler, so
+//! the next dispatch reads the widened authoritative scope.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,9 +46,14 @@ use crate::pump::config::ScopePath;
 use crate::pump::envelope::correct;
 use crate::pump::flow::slice_dispatch::SliceMail;
 
+mod continuation;
 mod publish;
 mod request;
 
+// The slice collector calls this after a published or adopted allowed
+// ruling; the call site lands with that slice.
+#[allow(unused_imports)]
+pub(crate) use continuation::continue_role;
 pub use publish::{ScopeAsk, ScopePublication, authorize_request};
 pub use request::{
     RequestTarget, ScopeClassification, ScopeContext, ScopeRequest, TargetScope, classify,
