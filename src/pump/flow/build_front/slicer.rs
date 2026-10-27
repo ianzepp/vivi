@@ -83,3 +83,7 @@ pub(super) fn register<S: JobStore, M: FlowMail>(registry: &mut Registry<S, M>) 
 #[cfg(test)]
 #[path = "slicer_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "slicer_restart_test.rs"]
+mod restart_tests;

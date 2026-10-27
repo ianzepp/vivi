@@ -19,6 +19,7 @@ use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::jobs::JobStatus;
 use crate::pump::store::NeedBranchRow;
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
@@ -37,6 +38,10 @@ const LOCK_ALARM: &str = "flow-need-locked";
 const SLICED: &str = "+++\nanswer = \"sliced\"\nmode = \"rework\"\n\n[[slice]]\nid = \"fix-1\"\n\
                       title = 'Fix it'\nbrief = 'fix the finding'\ntarget = \"default\"\n\
                       write_scope = [\"src/a.rs\"]\n+++\ncut one rework slice";
+/// A slice-mode sliced envelope for the restarted run's slicer.
+const SLICE_TWO: &str = "+++\nanswer = \"sliced\"\n\n[[slice]]\nid = \"fix-a\"\n\
+                        title = 'Fix it again'\nbrief = 'fix the finding'\ntarget = \"default\"\n\
+                        write_scope = [\"src/a.rs\"]\n+++\ncut one slice of the restarted run";
 const BLOCK_RANGE: &str = "+++\nanswer = \"block_range\"\n+++\nthe range is still broken";
 const CLEAN: &str = "+++\nanswer = \"clean_pass\"\n+++\nclean";
 
@@ -197,10 +202,75 @@ fn a_cto_plan_answer_restarts_the_need_at_plan() -> R {
     restarts_at(&mut rig, "plan", "plan")
 }
 
+/// Seeds run 1 with an admitted plan beside its rework rows: a completed
+/// planner step with its stored payload body, and the admitter that admitted
+/// it. The restarted run's slicer consumes this admission.
+fn admit_plan(rig: &Rig) -> R {
+    for (node, task, verdict) in [
+        ("plan", "t-plan", "planned"),
+        ("admit1", "t-admit", "admitted"),
+    ] {
+        rig.store.insert_step(
+            &rig.need,
+            &StepRow {
+                run: 1,
+                node: node.into(),
+                task: task.into(),
+                state: StepState::Done,
+                verdict: Some(verdict.into()),
+            },
+        )?;
+    }
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: rig.need.clone(),
+        run: 1,
+        node: "plan".into(),
+        class: String::from("planner"),
+        task: "t-plan".into(),
+        payload: serde_json::json!({ "body": "PLAN-FROM-RUN-ONE" }),
+    })?;
+    Ok(())
+}
+
 #[test]
 fn a_cto_slice_answer_restarts_the_need_at_slice() -> R {
     let mut rig = build()?;
-    restarts_at(&mut rig, "slice", "slice")
+    restarts_at(&mut rig, "slice", "slice")?;
+    // Run 1 had admitted a plan; the restarted run's slice step starts for
+    // real and its slicer job freezes that admission as its source.
+    admit_plan(&rig)?;
+    rig.tick_until("the run 2 slicer job", |rig| {
+        rig.open_job("slice").is_some()
+    })?;
+    let job = rig
+        .open_job("slice")
+        .ok_or_else(|| VivariumError::Message("no run 2 slicer job".into()))?;
+    assert_eq!(
+        job.payload["admitted_plan"],
+        serde_json::json!({"run": 1, "planner": "t-plan", "admitter": "t-admit"})
+    );
+    assert!(
+        job.body
+            .contains("admitted plan source: run 1 planner task t-plan admitter task t-admit"),
+        "{}",
+        job.body
+    );
+    assert!(
+        job.body.contains("admitted plan:\nPLAN-FROM-RUN-ONE"),
+        "{}",
+        job.body
+    );
+    // The sliced reply advances the restarted run: build2 is built at once
+    // and the second pass opens.
+    rig.finish(&job.id, JobStatus::Finished, &agent_receipt(0, SLICE_TWO))?;
+    rig.tick_until("run 2's second pass", |rig| {
+        rig.row("build2")
+            .is_ok_and(|row| row.is_some_and(|row| row.verdict.as_deref() == Some("built")))
+    })?;
+    let slice = rig.row("slice")?.map(|row| (row.state, row.verdict));
+    assert_eq!(slice, Some((StepState::Done, Some(String::from("sliced")))));
+    assert!(rig.row("audit2")?.is_some(), "the second pass opened");
+    Ok(())
 }
 
 #[test]
