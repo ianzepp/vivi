@@ -3,7 +3,10 @@ use chrono::TimeZone;
 
 use crate::letter::fixture::{need_body_with, want_body};
 use crate::letter::work::NeedFront;
+use crate::mailspace::RoleUpdate;
 use crate::mailspace::SendRequest;
+use crate::pump::config::{PumpConfig, PumpTarget};
+use crate::pump::host::test_ctx;
 
 fn scan(name: &str, kind: Option<&str>, status: &str, cadence: Option<&str>) -> RoleScan {
     RoleScan {
@@ -221,7 +224,8 @@ fn cadence_spec_is_read_only_without_a_branch_for_writable_roles() {
             String::from("cadence"),
             String::from("subject"),
             String::from("body"),
-        );
+        )
+        .unwrap();
         assert!(spec.read_only, "{kind}");
         assert!(spec.branch.is_none(), "{kind}");
         assert!(spec.target.is_none(), "{kind}");
@@ -291,4 +295,115 @@ fn open_want_count_skips_wants_whose_serving_needs_are_all_done() {
 
     close(&mailspace, &plain);
     assert_eq!(open_want_count(&mailspace, "mind").unwrap(), 1);
+}
+
+/// An explicit-target configuration over the default workspace main `main`.
+fn target_config(targets: &[(&str, &str)]) -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    for (id, main) in targets {
+        cfg.targets.insert(
+            (*id).to_string(),
+            PumpTarget {
+                main: (*main).to_string(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    cfg
+}
+
+#[test]
+fn cadence_and_digest_specs_start_from_the_sole_targets_main() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = target_config(&[("vivi", "vivi/main")]);
+    cfg.dispatch.budget = 600;
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    assert_eq!(ctx.cfg.main, "main");
+    let mut role = head_role("writer");
+    role.cadence = Some(String::from("4h"));
+
+    role.kind = Some(String::from("hand"));
+    let hand_scan = scan("writer", Some("hand"), "active", Some("4h"));
+    let spec = job_spec(&ctx, &role, &hand_scan, 1, 1_000).unwrap();
+    assert_eq!(spec.kind, "cadence");
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert!(spec.read_only, "cadence stays read-only");
+    assert!(spec.branch.is_none(), "cadence stays branchless");
+    assert!(
+        spec.extra_targets.is_empty(),
+        "cadence gains no extra targets"
+    );
+    assert_eq!(spec.budget, 600, "the dispatch budget is unchanged");
+
+    role.kind = Some(String::from("digest"));
+    let digest_scan = scan("writer", Some("digest"), "active", Some("24h"));
+    let spec = job_spec(&ctx, &role, &digest_scan, 1, 1_000).unwrap();
+    assert_eq!(spec.kind, "digest");
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert!(spec.read_only, "digest stays read-only");
+    assert!(spec.branch.is_none(), "digest stays branchless");
+    assert!(
+        spec.extra_targets.is_empty(),
+        "digest gains no extra targets"
+    );
+    assert_eq!(spec.budget, 600, "the dispatch budget is unchanged");
+}
+
+#[test]
+fn cadence_spec_starts_from_the_explicit_default_targets_main() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = target_config(&[("beta", "vivi/main-beta"), ("default", "vivi/main-default")]);
+    cfg.dispatch.budget = 900;
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    assert_eq!(ctx.cfg.main, "main");
+    let mut role = head_role("writer");
+    role.kind = Some(String::from("hand"));
+    role.cadence = Some(String::from("4h"));
+    let scan = scan("writer", Some("hand"), "active", Some("4h"));
+    let spec = job_spec(&ctx, &role, &scan, 1, 1_000).unwrap();
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main-default"));
+    assert!(spec.read_only);
+    assert!(spec.branch.is_none());
+    assert!(spec.extra_targets.is_empty());
+    assert_eq!(spec.budget, 900);
+}
+
+#[test]
+fn cadence_without_a_default_is_not_enqueued() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace
+        .add_role(
+            "watcher",
+            RoleUpdate {
+                kind: Some(Some(String::from("mind"))),
+                cadence: Some(Some(String::from("4h"))),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    // Prove the role lookup succeeds: the assertions below must fail for
+    // the ambiguous-target reason, not an unknown-role early return.
+    let role = mailspace.role_view("watcher").unwrap();
+    assert_eq!(role.cadence.as_deref(), Some("4h"));
+
+    let mut cfg = target_config(&[("alpha", "vivi/main-alpha"), ("beta", "vivi/main-beta")]);
+    cfg.dispatch.budget = 600;
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let scan = scan("watcher", Some("mind"), "active", Some("4h"));
+    let error = job_spec(&ctx, &role, &scan, 1, 1_000).unwrap_err();
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+
+    let mut st = State::default();
+    let mut cadence = CadenceState::default();
+    enqueue_due(&ctx, &mut st, &mailspace, &mut cadence, &scan, 1_000);
+    assert!(st.jobs.is_empty(), "no job may be enqueued");
+    assert!(
+        cadence.runs.is_empty(),
+        "no running cadence may be recorded"
+    );
 }
