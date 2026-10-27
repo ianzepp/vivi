@@ -154,10 +154,14 @@ fn begin_wake(
     Ok(record)
 }
 
-/// Turn the first reply into actions, run them, and while the actuator
-/// returns real answers show them to the session so it can check its work:
-/// each follow-up turn may name more actions, up to `follow_ups` times. The
-/// wake ends after the last turn returns.
+/// Turn the first reply into actions, run them, and while the turn left
+/// something to tell the session about — executed results, gate refusals,
+/// or a parse failure — and the actuator feeds back, show it on a
+/// follow-up turn so the session can check its work: each follow-up turn
+/// may name more actions, up to `follow_ups` times. A valid empty envelope
+/// ends the wake. The wake ends after the last turn returns, keeping as
+/// the next wake's pending report whatever was never delivered; a
+/// follow-up that fails leaves the report it was carrying outstanding.
 async fn settle_wake<P: PiSession, Q: Probe>(
     shared: &Shared<P>,
     cx: &TickContext<'_, Q>,
@@ -191,15 +195,14 @@ async fn settle_wake<P: PiSession, Q: Probe>(
         };
         log_line(&config.paths.log, &format!("{label}:\n{}", summary.text));
         let outcome = run_envelope(cx, &summary.text, watched, actuator)?;
-        let ran = outcome.planned.iter().any(|item| item.executed.is_some());
-        if ran && actuator.feeds_back() && round < max_follow_ups {
+        // The outcome stays outstanding until a later turn succeeds and
+        // replaces it, so a failed follow-up cannot drop its report.
+        all.extend(outcome.planned.clone());
+        unreported = outcome;
+        if actuator.feeds_back() && round < max_follow_ups && !unreported.is_empty() {
             round += 1;
-            turn = prompt_once(shared, prompt::plan_report(&outcome)).await;
-            all.extend(outcome.planned);
-            unreported = EnvelopeOutcome::default();
+            turn = prompt_once(shared, prompt::plan_report(&unreported)).await;
         } else {
-            unreported = outcome.clone();
-            all.extend(outcome.planned);
             break;
         }
     }
