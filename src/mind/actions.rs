@@ -47,6 +47,9 @@ pub struct ActionRequest {
     pub word: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// The edge build (12-hex commit) a `rollback-edge` names.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -135,6 +138,7 @@ fn drop_blank_fields(mut request: ActionRequest) -> ActionRequest {
         &mut request.step,
         &mut request.word,
         &mut request.note,
+        &mut request.build,
     ] {
         if field
             .as_deref()
@@ -191,7 +195,7 @@ fn check(
     ledger: &authority::Ledger,
 ) -> Result<(), Refusal> {
     validate_fields(request)?;
-    if request.kind.mutates() {
+    if request.kind.mutates() && !request.kind.hub_wide() {
         let project = request
             .project
             .as_deref()
@@ -226,6 +230,15 @@ fn validate_fields(request: &ActionRequest) -> Result<(), Refusal> {
     }
     if request.kind == Action::Answer && request.word.is_none() {
         return Err(Refusal::MissingField("word"));
+    }
+    if request.kind == Action::RollbackEdge {
+        let build = request
+            .build
+            .as_deref()
+            .ok_or(Refusal::MissingField("build"))?;
+        if !super::edge::is_build(build) {
+            return Err(Refusal::BadHandle("build"));
+        }
     }
     Ok(())
 }

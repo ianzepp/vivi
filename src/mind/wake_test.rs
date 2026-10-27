@@ -26,6 +26,7 @@ fn inputs<'a>(last: Option<&'a WakeRecord>, signals: &'a [ProjectSignals]) -> Wa
         max_wakes_per_hour: 6,
         paused: false,
         signals,
+        hub: &[],
     }
 }
 

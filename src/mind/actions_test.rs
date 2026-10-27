@@ -152,6 +152,7 @@ fn argv_maps_onto_existing_pump_commands() {
         step: Some("s1".into()),
         word: Some("failed".into()),
         note: None,
+        build: None,
     };
     assert_eq!(
         answer.argv().unwrap(),
@@ -182,10 +183,32 @@ fn a_dry_run_letter_names_its_project_need_and_note() {
         step: None,
         word: None,
         note: Some("locked at the operator gate".into()),
+        build: None,
     };
     let line = DryRun::default().apply(&request).unwrap();
     assert_eq!(
         line,
         "would send Escalate (letter or stub) project=/w/app need=3f9a1c2e note=\"locked at the operator gate\""
     );
+}
+
+const ROLLBACK: &str = "+++\n[[action]]\nkind = \"rollback-edge\"\nbuild = \"1a2b3c4d5e6f\"\n+++\n";
+
+#[test]
+fn rollback_edge_is_hub_wide_and_opens_at_unstick() {
+    let (planned, ledger) = run(AuthorityStage::Unstick, ROLLBACK);
+    assert_eq!(planned[0].verdict, Ok(()));
+    assert!(ledger.is_empty());
+    let (planned, _) = run(AuthorityStage::Observe, ROLLBACK);
+    assert!(matches!(planned[0].verdict, Err(Refusal::Gate(_))));
+}
+
+#[test]
+fn rollback_edge_needs_a_plain_build() {
+    let missing = "+++\n[[action]]\nkind = \"rollback-edge\"\n+++\n";
+    let (planned, _) = run(AuthorityStage::Unstick, missing);
+    assert_eq!(planned[0].verdict, Err(Refusal::MissingField("build")));
+    let bad = "+++\n[[action]]\nkind = \"rollback-edge\"\nbuild = \"../../etc\"\n+++\n";
+    let (planned, _) = run(AuthorityStage::Unstick, bad);
+    assert_eq!(planned[0].verdict, Err(Refusal::BadHandle("build")));
 }
