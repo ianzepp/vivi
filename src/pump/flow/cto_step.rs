@@ -46,7 +46,8 @@ const WORDS: &str = "## Your words\n\n\
 - plan: restart the need at the plan entry\n\
 - slice: restart the need at the slice entry\n\
 - rework: restart the need at the rework1 entry on the existing need branch\n\
-- lock: lock the need for the operator\n";
+- lock: lock the need for the mind; the operator is woken only by a \
+  configured human-only escalation, never by this word alone\n";
 
 /// Starts a cto step as a head-cto job.
 struct CtoStart;

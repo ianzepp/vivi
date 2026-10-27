@@ -17,6 +17,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::Ctx;
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 type R = Result<(), VivariumError>;
@@ -215,6 +216,7 @@ fn an_unlock_still_releases_the_lock_after_the_alarm_was_raised() -> R {
     assert_eq!(log.matches(NEED_LOCKED).count(), 1, "{log}");
     assert!(log.contains("reached without a CTO answer"), "{log}");
     assert!(log.contains(&rig.need), "{log}");
+    assert_lock_alarm_names_the_mind_and_explicit_release(&log);
 
     rig.post(None)?;
     apply_pending(&rig.ctx, &rig.store, &mut rig.mail)?;
@@ -224,5 +226,64 @@ fn an_unlock_still_releases_the_lock_after_the_alarm_was_raised() -> R {
     assert_eq!(rig.runs()?.len(), 2);
     assert_eq!(rig.runs()?[1].state, "live");
     assert!(!rig.exceptions().contains(UNLOCK_REFUSED));
+    Ok(())
+}
+
+/// The lock alarm hands the decision to the mind and renders the real CLI: the
+/// deliberate `unlock` with its `--entry` flag, never an operator decision or a
+/// positional `[entry]` placeholder, and never a mere reply.
+fn assert_lock_alarm_names_the_mind_and_explicit_release(log: &str) {
+    assert!(log.contains("expected a mind decision"), "{log}");
+    assert!(!log.contains("operator"), "{log}");
+    assert!(
+        log.contains("release with `vivi pump unlock"),
+        "no explicit release wording: {log}"
+    );
+    assert!(log.contains("--entry <entry>"), "{log}");
+    assert!(!log.contains("[entry]"), "{log}");
+}
+
+/// A CTO answer's reason and new_fact survive into the lock alarm, next to the
+/// mind-ownership and explicit-release wording.
+#[test]
+fn the_lock_alarm_keeps_the_cto_reason_and_new_fact_and_names_the_mind() -> R {
+    let mut rig = rig(true)?;
+    rig.store
+        .record_step_payload(&StepPayloadRow {
+            need: rig.need.clone(),
+            run: 1,
+            node: "cto".into(),
+            class: "cto".into(),
+            task: "t-cto".into(),
+            payload: serde_json::json!({
+                "front": {
+                    "answer": "lock",
+                    "reason": "scope outgrew the run",
+                    "new_fact": "main is red on main-rung"
+                }
+            }),
+        })
+        .unwrap();
+    let def = load(FlowKind::Build)?;
+    let run = rig.runs()?.remove(0);
+    let step = rig.row(1, "locked")?;
+    let cx = StartCx {
+        ctx: &rig.ctx,
+        store: &rig.store,
+        mail: &rig.mail,
+        run: &run,
+        def: &def,
+    };
+
+    assert_eq!(LockWait.poll(&cx, &step)?, None);
+
+    let log = rig.exceptions();
+    assert_eq!(log.matches(NEED_LOCKED).count(), 1, "{log}");
+    assert!(
+        log.contains("the CTO answered `lock`: scope outgrew the run"),
+        "{log}"
+    );
+    assert!(log.contains("new_fact: main is red on main-rung"), "{log}");
+    assert_lock_alarm_names_the_mind_and_explicit_release(&log);
     Ok(())
 }

@@ -191,6 +191,36 @@ fn the_job_is_head_cto_with_run_count_and_step_verdicts() {
 }
 
 #[test]
+fn the_lock_word_names_the_mind_and_configured_human_only_escalation() {
+    let f = fixture();
+    let run = two_runs(&f, "defects");
+    let spec = start(&f, &run);
+    // Ownership: the lock belongs to the mind, not the operator.
+    assert!(
+        spec.body.contains("- lock: lock the need for the mind"),
+        "{}",
+        spec.body
+    );
+    assert!(!spec.body.contains("for the operator"), "{}", spec.body);
+    // The operator hears only through a configured human-only escalation.
+    assert!(
+        spec.body.contains("configured human-only escalation"),
+        "{}",
+        spec.body
+    );
+    // The word list itself and its sibling entries are unchanged.
+    assert!(spec.body.contains("## Your words"));
+    assert!(
+        spec.body
+            .contains("- research: restart the need at the research entry")
+    );
+    assert!(
+        spec.body
+            .contains("- rework: restart the need at the rework1 entry")
+    );
+}
+
+#[test]
 fn a_block_ship_audit_brings_its_full_body() {
     let f = fixture();
     let run = two_runs(&f, "block_ship");

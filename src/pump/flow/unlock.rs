@@ -1,10 +1,15 @@
 //! The lock handler and the unlock tick phase. N5 holds a lock step until its release condition is met, then advances it.
 //!
-//! A lock step waits for the operator and nothing else: no reply and no poll
-//! frees it. `vivi pump unlock` posts an `unlock` action
-//! ([`crate::mailspace::PumpActionRequest::unlock`]); each tick the
-//! [`Unlocks`] phase closes the need's locked step `unlocked` and restarts the
-//! run at the letter's entry (the flow's first entry when none is named).
+//! A lock step waits for the mind and nothing else: no reply and no poll
+//! frees it, and disposition belongs to the mind — the human operator receives
+//! only what a configured human-only escalation routes to them. Release is a
+//! deliberate action: an explicit `unlock`
+//! ([`crate::mailspace::PumpActionRequest::unlock`]) at a validated entry, or
+//! another supported deliberate action; an ordinary reply on the need never
+//! releases a lock. `vivi pump unlock <need> [--entry <entry>]` posts the
+//! action; each tick the [`Unlocks`] phase closes the need's locked step
+//! `unlocked` and restarts the run at the letter's entry (the flow's first
+//! entry when none is named).
 //!
 //! Every unlock letter is applied or refused exactly once: its id goes into
 //! `applied_actions` either way, and a refusal raises [`UNLOCK_REFUSED`].
@@ -46,9 +51,9 @@ impl StepHandler for LockWait {
         let runs = cx.store.runs_of(&cx.run.need)?.len();
         let why = cto_why(&cx.store.step_payloads_of_run(&cx.run.need, cx.run.run)?);
         let text = format!(
-            "need {need} r{run} is locked (run count {runs}): {why}; expected an operator \
+            "need {need} r{run} is locked (run count {runs}): {why}; expected a mind \
              decision; actual: the run waits at `{node}`; release with \
-             `vivi pump unlock {need} [entry]`",
+             `vivi pump unlock {need}` or `vivi pump unlock {need} --entry <entry>`",
             need = cx.run.need,
             run = cx.run.run,
             node = step.node,
