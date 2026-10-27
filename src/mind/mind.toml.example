@@ -1,11 +1,14 @@
-# EXAMPLE `mind.toml` for the `vivi mind` spike. It lives beside the host
-# registry: <config_dir>/vivi/mind.toml (VIVI_CONFIG_DIR overrides
-# <config_dir>). Every key is optional; no file at all is `observe` with the
-# defaults below. Unknown keys are refused.
+# EXAMPLE `mind.toml` for `vivi mind`, the persistent hub-wide supervisor.
+# It lives beside the host registry: <config_dir>/vivi/mind.toml
+# (VIVI_CONFIG_DIR overrides <config_dir>). Every key is optional; no file
+# at all is `observe` with the defaults below. Unknown keys are refused.
 
-# What the mind may do: observe | unstick | file-fixes. Permitted actions run
-# through the server named in [mcp] below; with no [mcp] they are a dry run
-# that only logs what would run.
+# What the mind may do: observe | unstick | file-fixes. Each stage keeps
+# every power of the stages below it. The later upgrade-on-approval and
+# self-release stages have settled names but are refused by this build's
+# loader. Permitted actions run through the server named in [mcp] below,
+# one MCP tool call per action; with no [mcp] they are a deliberate dry
+# run that only logs what would run.
 authority = "observe"
 
 # Wake at least this often with nobody attached (role_schedule durations).
@@ -30,15 +33,23 @@ pi_command = "pi"
 # session_dir = "/var/lib/vivi/mind/sessions"
 
 [budgets]
-per_need_actions = 3       # unstick actions per need per window
+# One window rule over two buckets: need-scoped moves (requeue, replan,
+# answer, unlock, reply-need, set-priority, withdraw-need, dispatch-need)
+# count against the bare need handle; filing (file-need, file-fix-need)
+# and role/pool tuning (set-role-model, set-pool-cap, set-pool-band) share
+# one per-project window. Reads, letters, pause and resume are unbudgeted.
+per_need_actions = 3       # actions per need, or per project bucket
 per_need_window = "24h"
 max_wakes_per_hour = 6
 
-# The server the mind acts through, the way any MCP client does: it calls the
-# server's tools (pump_control, pump_action, pump_list, pump_log, send) with a
-# server key, and the server decides what the key may do. Without this table
-# every permitted action is a dry run.
+# The server the mind acts through, the way any MCP client does: it calls
+# the server's tools (pump_control, pump_action, pump_list, pump_log,
+# send, reply, need_show, the thread and flow reads, role_set, config_set,
+# pool_bands, pump_priority, pump_send) with a server key, and the server
+# re-checks per call that the key carries the project's operator grant.
+# Without this table every permitted action stays a dry run.
 # [mcp]
 # server = "http://127.0.0.1:18190"
 # key_file = "/var/lib/vivi/mind/mcp.key"   # default: <mind home>/mcp.key
 # follow_ups = 3    # turns after one that ran actions, to see the results
+#                   # (0 ends the wake after the first turn; at most 8)

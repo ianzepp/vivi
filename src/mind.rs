@@ -1,15 +1,19 @@
 //! `vivi mind`: one persistent, hub-wide supervisor over every registered pump.
 //!
-//! EXPLORATORY SPIKE. See `docs/design-vivi-mind.md` for the design, what is
-//! real, what is stubbed, and the open questions.
-//!
 //! The mind is a long-lived service, independent of every pump: it is not a
 //! pump cadence job, so a deadlocked or crashed pump cannot take it down. It
 //! wakes on a heartbeat and on pump signals, judges what it sees inside one
-//! persistent pi harness session, and acts only through letters and the pump
-//! controls the pump already accepts, gated by an operator-chosen
-//! [`config::AuthorityStage`]. An operator attaches with `vivi mind` through
-//! a Unix socket whose file permissions are the access gate.
+//! persistent pi harness session, and acts only through the mail server's
+//! MCP tools — one tool call per permitted action, each gated by an
+//! operator-chosen [`config::AuthorityStage`] and a per-need or per-project
+//! budget. Without an `[mcp]` server in `mind.toml`, execution is
+//! deliberately a dry run that only logs what would run. This build opens
+//! the `observe`, `unstick` and `file-fixes` stages; the later
+//! `upgrade-on-approval` and `self-release` stages parse but are refused by
+//! the config loader. An operator attaches with `vivi mind` through a Unix
+//! socket whose file permissions are the access gate. See
+//! `docs/design-vivi-mind.md` for the action contract and what remains
+//! stubbed.
 
 pub mod actions;
 pub mod authority;
