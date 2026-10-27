@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::bands::cooldown;
 use super::collect::{Collected, DISCARDED_PATH_PREFIX, JobResult, Outcome, RESTORED_PATH_PREFIX};
 use super::facts;
 use super::job::WITH_LIMIT;
@@ -190,9 +191,19 @@ pub fn fold_open(events: &[PoolEventRow]) -> Vec<OpenDispatch> {
     open
 }
 
-/// The JSON note of a `pool_collected` event.
+/// The note key of typed provider-cooldown evidence. Reserved: no runner
+/// result field may write it, so a job cannot forge or overwrite the
+/// cooldown metadata a collection records.
+const BAND_COOLDOWN_KEY: &str = "band_cooldown";
+
+/// The JSON note of a `pool_collected` event, recorded at `collected_at`
+/// (epoch seconds). A finished failure whose stderr or receipt carries
+/// provider-error-shaped evidence of rate limiting or quota exhaustion (see
+/// [`cooldown::classify`]) adds the typed `band_cooldown` evidence for the
+/// dispatch model's provider; every other note is unchanged by the
+/// collection time.
 #[must_use]
-pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
+pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome, collected_at: u64) -> String {
     let record = &dispatch.record;
     let mut note = serde_json::json!({
         "job": record.job,
@@ -205,7 +216,8 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
     }
     if let Outcome::Finished(done) = outcome {
         for (key, value) in &done.result.fields {
-            if !key.starts_with(DISCARDED_PATH_PREFIX)
+            if key != BAND_COOLDOWN_KEY
+                && !key.starts_with(DISCARDED_PATH_PREFIX)
                 && !key.starts_with(RESTORED_PATH_PREFIX)
                 && !key.starts_with(facts::KEY_PREFIX)
             {
@@ -223,6 +235,12 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
         let restored = done.result.restored_paths();
         if !restored.is_empty() {
             note["restored"] = serde_json::json!(restored);
+        }
+        let secs = i64::try_from(collected_at).unwrap_or(i64::MAX);
+        if let Some(evidence) = chrono::DateTime::from_timestamp(secs, 0)
+            .and_then(|at| cooldown::classify(&record.model, outcome, at))
+        {
+            note[BAND_COOLDOWN_KEY] = serde_json::json!(evidence);
         }
     }
     note.to_string()
