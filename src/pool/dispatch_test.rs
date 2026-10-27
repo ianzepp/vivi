@@ -437,6 +437,121 @@ fn harness_and_committer_are_required() {
     );
 }
 
+fn request(flags: &DispatchFlags) -> Result<(), VivariumError> {
+    validate_request(
+        &config(),
+        "p",
+        ("abcd1234", "Subject line", &body_text()),
+        flags,
+    )
+}
+
+#[test]
+fn validate_request_refuses_bad_requests_without_a_chosen_model() {
+    // No model has been drawn: request validation cannot need one.
+    let no_model = DispatchFlags {
+        model: String::new(),
+        ..flags("m/ok")
+    };
+    let err = request(&DispatchFlags {
+        from: None,
+        ..no_model.clone()
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("no from"), "{err}");
+    let err = request(&DispatchFlags {
+        budget: Some(0),
+        ..no_model.clone()
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("budget"), "{err}");
+    let err = request(&DispatchFlags {
+        publish_ref: Some("main".into()),
+        ..no_model.clone()
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("valid refs/heads branch"), "{err}");
+    let err = request(&DispatchFlags {
+        publish_expect: Some("a".repeat(40)),
+        ..no_model
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("--publish-ref"), "{err}");
+}
+
+#[test]
+fn a_valid_request_passes_without_a_chosen_model_or_reasoning() {
+    // The template needs a reasoning level and the allow-list is empty:
+    // neither is a request-level problem, so admission can hold the request
+    // before any availability wait and refuse the pair only after a draw.
+    let mut config = reasoning_config("fake --model {model} --thinking {reasoning}");
+    config.harness.as_mut().unwrap().models.clear();
+    let no_model = DispatchFlags {
+        model: String::new(),
+        ..flags("m/ok")
+    };
+    validate_request(&config, "p", ("t", "s", &body_text()), &no_model).unwrap();
+    let err = validate_pair(&config, "p", "m/ok", None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no reasoning level was chosen"), "{err}");
+    assert!(validate_pair(&config, "p", "m/nope", Some("high")).is_err());
+}
+
+#[test]
+fn validate_request_names_missing_harness_and_committer_and_skips_them_for_commands() {
+    let mut no_harness = config();
+    no_harness.harness = None;
+    let err = request_on(&no_harness, &flags("m/ok"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("[pools.lanes.harness]"), "{err}");
+    let command = DispatchFlags {
+        command: Some("true".into()),
+        ..flags("")
+    };
+    request_on(&no_harness, &command).unwrap();
+    let mut no_committer = config();
+    no_committer.committer = None;
+    let err = request_on(&no_committer, &flags("m/ok"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("[pools.lanes.committer]"), "{err}");
+}
+
+fn request_on(config: &PoolConfig, flags: &DispatchFlags) -> Result<(), VivariumError> {
+    validate_request(config, "lanes", ("t", "s", &body_text()), flags)
+}
+
+#[test]
+fn validate_pair_holds_the_pinned_reasoning_and_model_without_provider_access() {
+    let run = "fake --model {model} --thinking {reasoning}";
+    let err = validate_pair(&reasoning_config(run), "p", "m/ok", None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no reasoning level was chosen"), "{err}");
+    for bad in ["x; rm -rf", "thirty-three-characters-long-thing!!"] {
+        assert!(
+            validate_pair(&reasoning_config(run), "p", "m/ok", Some(bad)).is_err(),
+            "{bad}"
+        );
+    }
+    // The standing config's template has no {reasoning}: no level is needed.
+    validate_pair(&config(), "p", "m/ok", None).unwrap();
+    validate_pair(&config(), "p", "m/ok", Some("xhigh")).unwrap();
+    let err = validate_pair(&config(), "p", "m/nope", Some("xhigh"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not in [harness].models"), "{err}");
+    let mut no_harness = config();
+    no_harness.harness = None;
+    assert!(validate_pair(&no_harness, "p", "m/ok", None).is_err());
+}
+
 #[test]
 fn job_ids_are_twelve_hex_digits_and_differ() {
     let a = new_job_id("t", 1, 1);
