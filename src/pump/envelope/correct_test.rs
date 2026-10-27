@@ -8,6 +8,7 @@ use super::{KIND, base_id, correction_n, enqueue, resumable, spec};
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::index::StepJobRow;
+use crate::pump::flow::recovery::{self, PROVIDER, RecoveryMeta};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -187,4 +188,119 @@ fn enqueue_records_the_job_under_the_steps_own_task_and_attempt() {
 #[test]
 fn a_job_is_never_resumable() {
     assert!(!resumable(&original("j1", "x")));
+}
+
+#[test]
+fn correction_parsing_covers_the_recovery_vocabulary() {
+    // Ordinary ids: originals and correction chains.
+    assert_eq!(base_id("j1"), "j1");
+    assert_eq!(correction_n("j1"), 0);
+    assert_eq!(base_id("j1-c1"), "j1");
+    assert_eq!(correction_n("j1-c1"), 1);
+    assert_eq!(base_id("j1-c12"), "j1");
+    assert_eq!(correction_n("j1-c12"), 12);
+    // Retry ids: a transient retry of the work is an original job to the
+    // correction loop.
+    assert_eq!(base_id("j1-tr1"), "j1-tr1");
+    assert_eq!(correction_n("j1-tr1"), 0);
+    // A correction of a retried role request chains off the retry, so it
+    // resolves to the retried request, not to the older execution.
+    assert_eq!(base_id("j1-tr1-c1"), "j1-tr1");
+    assert_eq!(correction_n("j1-tr1-c1"), 1);
+    // A retried correction advances the retry ordinal and retains the
+    // correction ordinal.
+    assert_eq!(base_id("j1-tr2-c1"), "j1-tr2");
+    assert_eq!(correction_n("j1-tr2-c1"), 1);
+    assert_eq!(base_id("j1-tr2-c7"), "j1-tr2");
+    assert_eq!(correction_n("j1-tr2-c7"), 7);
+    // Repeated suffixes are never minted; only a trailing well-formed
+    // ordinal counts, and the rest is base text — the same read recovery
+    // takes of the same id.
+    assert_eq!(base_id("j1-tr1-tr2"), "j1-tr1-tr2");
+    assert_eq!(correction_n("j1-tr1-tr2"), 0);
+    assert_eq!(base_id("j1-c1-c2"), "j1-c1");
+    assert_eq!(correction_n("j1-c1-c2"), 2);
+    // The grammar puts the correction ordinal last, so a stacked
+    // correction-then-retry id is not a correction here.
+    assert_eq!(base_id("j1-c1-tr1"), "j1-c1-tr1");
+    assert_eq!(correction_n("j1-c1-tr1"), 0);
+    // Malformed suffixes leave an ordinary job.
+    assert_eq!(base_id("j1-c"), "j1-c");
+    assert_eq!(correction_n("j1-c"), 0);
+    assert_eq!(base_id("j1-tr"), "j1-tr");
+    assert_eq!(correction_n("j1-tr"), 0);
+    assert_eq!(base_id("j1-trx-c1"), "j1-trx");
+    assert_eq!(correction_n("j1-trx-c1"), 1);
+    assert_eq!(base_id("j1-tr1-cx"), "j1-tr1-cx");
+    assert_eq!(correction_n("j1-tr1-cx"), 0);
+}
+
+#[test]
+fn correction_transient_retry_preserves_provenance() {
+    // A source that is itself a transient retry already carrying one
+    // correction and one spent transient allowance.
+    let mut source = original("j1-tr1-c1", "the broken reply");
+    recovery::stamp_metadata(
+        &mut source.payload,
+        &RecoveryMeta {
+            input: "t1".to_owned(),
+            retry: 1,
+            class: PROVIDER.to_owned(),
+        },
+    );
+    let source_row = row("j1-tr1-c1", 3);
+    let n = correction_n(&source.id) + 1;
+    let got = spec(
+        "n1",
+        &source_row,
+        "planner",
+        RoleKind::Planner,
+        &source,
+        &EnvelopeError::Unclosed,
+        n,
+        300,
+    );
+    // The ordinal is retained, never reset: the next correction is c2 of
+    // the same retried request, spending one more correction of the same
+    // budget, not a fresh allowance.
+    assert_eq!(got.id, "j1-tr1-c2");
+    assert_eq!(correction_n(&got.id), correction_n(&source.id) + 1);
+    // Machine facts resolve to the actual retried role request, never the
+    // older execution j1.
+    assert_eq!(base_id(&got.id), "j1-tr1");
+    // The transient allowance is unchanged: the correction inherits the
+    // source's step-input recovery metadata, so the chain still reports
+    // exactly the retries already spent.
+    assert_eq!(
+        recovery::metadata(&got.payload),
+        recovery::metadata(&source.payload)
+    );
+    assert_eq!(recovery::retries_spent(&got.payload), 1);
+    // The provenance survives the enqueue stamping alongside the step
+    // identity fields.
+    let dir = tempdir().unwrap();
+    let store = PumpStore::open(&dir.path().join(DB_FILENAME)).unwrap();
+    let mut jobs = Store::default();
+    enqueue(&mut jobs, &store, "n1", &source_row, got).unwrap();
+    let payload = &jobs.jobs["j1-tr1-c2"].payload;
+    assert_eq!(recovery::retries_spent(payload), 1);
+    assert_eq!(payload["attempt"], 3);
+    assert_eq!(payload["task"], "t1");
+}
+
+#[test]
+fn a_correction_of_an_unretried_source_carries_no_recovery_metadata() {
+    let got = spec(
+        "n1",
+        &row("j1", 1),
+        "planner",
+        RoleKind::Planner,
+        &original("j1", "x"),
+        &EnvelopeError::NoOpening,
+        1,
+        300,
+    );
+    assert_eq!(got.id, "j1-c1");
+    assert_eq!(recovery::retries_spent(&got.payload), 0);
+    assert!(got.payload.get(recovery::PAYLOAD_KEY).is_none());
 }
