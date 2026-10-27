@@ -153,6 +153,24 @@ fn argv_maps_onto_existing_pump_commands() {
         word: Some("failed".into()),
         note: None,
         build: None,
+        to: None,
+        subject: None,
+        body: None,
+        done_when: Vec::new(),
+        target: None,
+        write_scope: Vec::new(),
+        priority: None,
+        cap: None,
+        role: None,
+        pool: None,
+        model: None,
+        band: None,
+        reasoning: None,
+        offset: None,
+        limit: None,
+        file: None,
+        lines: None,
+        filter: None,
     };
     assert_eq!(
         answer.argv().unwrap(),
@@ -184,6 +202,24 @@ fn a_dry_run_letter_names_its_project_need_and_note() {
         word: None,
         note: Some("locked at the operator gate".into()),
         build: None,
+        to: None,
+        subject: None,
+        body: None,
+        done_when: Vec::new(),
+        target: None,
+        write_scope: Vec::new(),
+        priority: None,
+        cap: None,
+        role: None,
+        pool: None,
+        model: None,
+        band: None,
+        reasoning: None,
+        offset: None,
+        limit: None,
+        file: None,
+        lines: None,
+        filter: None,
     };
     let line = DryRun::default().apply(&request).unwrap();
     assert_eq!(
@@ -211,4 +247,115 @@ fn rollback_edge_needs_a_plain_build() {
     let bad = "+++\n[[action]]\nkind = \"rollback-edge\"\nbuild = \"../../etc\"\n+++\n";
     let (planned, _) = run(AuthorityStage::Unstick, bad);
     assert_eq!(planned[0].verdict, Err(Refusal::BadHandle("build")));
+}
+
+#[test]
+fn every_added_field_parses_with_its_declared_type() {
+    let reply = concat!(
+        "+++\n[[action]]\nkind = \"escalate\"\nproject = \"/w/app\"\n",
+        "to = \"operator\"\nsubject = \"status\"\nbody = \"the body\"\n",
+        "done_when = [\"tests pass\", \"docs updated\"]\n",
+        "target = \"/w/app/plan.md\"\nwrite_scope = [\"src/a.rs\", \"docs\"]\n",
+        "priority = 2\ncap = 3\n",
+        "role = \"hand\"\npool = \"studio\"\nmodel = \"m1\"\nband = \"b\"\nreasoning = \"low\"\n",
+        "offset = 0\nlimit = 10\nfile = \"src/a.rs\"\nlines = 5\nfilter = \"todo\"\n+++\n",
+    );
+    let request = &parse_envelope(reply).unwrap()[0];
+    assert_eq!(request.to.as_deref(), Some("operator"));
+    assert_eq!(request.subject.as_deref(), Some("status"));
+    assert_eq!(request.body.as_deref(), Some("the body"));
+    assert_eq!(request.done_when, ["tests pass", "docs updated"]);
+    assert_eq!(request.target.as_deref(), Some("/w/app/plan.md"));
+    assert_eq!(request.write_scope, ["src/a.rs", "docs"]);
+    assert_eq!(request.priority, Some(2));
+    assert_eq!(request.cap, Some(3));
+    assert_eq!(request.role.as_deref(), Some("hand"));
+    assert_eq!(request.pool.as_deref(), Some("studio"));
+    assert_eq!(request.model.as_deref(), Some("m1"));
+    assert_eq!(request.band.as_deref(), Some("b"));
+    assert_eq!(request.reasoning.as_deref(), Some("low"));
+    assert_eq!(request.offset, Some(0));
+    assert_eq!(request.limit, Some(10));
+    assert_eq!(request.file.as_deref(), Some("src/a.rs"));
+    assert_eq!(request.lines, Some(5));
+    assert_eq!(request.filter.as_deref(), Some("todo"));
+}
+
+#[test]
+fn an_envelope_without_the_new_fields_leaves_them_absent() {
+    let request = &parse_envelope("+++\n[[action]]\nkind = \"escalate\"\n+++\n").unwrap()[0];
+    assert_eq!(request.to, None);
+    assert_eq!(request.subject, None);
+    assert_eq!(request.body, None);
+    assert!(request.done_when.is_empty());
+    assert_eq!(request.target, None);
+    assert!(request.write_scope.is_empty());
+    assert_eq!(request.priority, None);
+    assert_eq!(request.cap, None);
+    assert_eq!(request.role, None);
+    assert_eq!(request.pool, None);
+    assert_eq!(request.model, None);
+    assert_eq!(request.band, None);
+    assert_eq!(request.reasoning, None);
+    assert_eq!(request.offset, None);
+    assert_eq!(request.limit, None);
+    assert_eq!(request.file, None);
+    assert_eq!(request.lines, None);
+    assert_eq!(request.filter, None);
+}
+
+#[test]
+fn numeric_fields_are_integer_only_and_keep_negatives() {
+    let reply = "+++\n[[action]]\nkind = \"escalate\"\npriority = 0\ncap = 0\n\
+                 offset = -1\nlimit = -2\nlines = -3\n+++\n";
+    let request = &parse_envelope(reply).unwrap()[0];
+    assert_eq!(request.priority, Some(0));
+    assert_eq!(request.cap, Some(0));
+    // Negatives survive for the typed range validation; no unsigned wrap.
+    assert_eq!(request.offset, Some(-1));
+    assert_eq!(request.limit, Some(-2));
+    assert_eq!(request.lines, Some(-3));
+    let float = "+++\n[[action]]\nkind = \"escalate\"\npriority = 1.5\n+++\n";
+    assert!(parse_envelope(float).is_err());
+}
+
+#[test]
+fn blank_new_fields_and_blank_collection_entries_are_absent() {
+    let reply = concat!(
+        "+++\n[[action]]\nkind = \"escalate\"\n",
+        "to = \" \"\nsubject = \"\"\nbody = \"   \"\ntarget = \"\\t\"\n",
+        "done_when = [\"\", \"  \", \"tests pass\"]\n",
+        "write_scope = [\"src/a.rs\", \" \"]\n",
+        "role = \"\"\npool = \" \"\nmodel = \"\"\nband = \" \"\nreasoning = \"\"\n",
+        "file = \" \"\nfilter = \"\"\n+++\n",
+    );
+    let request = &parse_envelope(reply).unwrap()[0];
+    assert_eq!(request.to, None);
+    assert_eq!(request.subject, None);
+    assert_eq!(request.body, None);
+    assert_eq!(request.target, None);
+    assert_eq!(request.done_when, ["tests pass"]);
+    assert_eq!(request.write_scope, ["src/a.rs"]);
+    assert_eq!(request.role, None);
+    assert_eq!(request.pool, None);
+    assert_eq!(request.model, None);
+    assert_eq!(request.band, None);
+    assert_eq!(request.reasoning, None);
+    assert_eq!(request.file, None);
+    assert_eq!(request.filter, None);
+    // A collection of only blank entries is absent, not a default entry.
+    let blank = "+++\n[[action]]\nkind = \"escalate\"\
+                 \ndone_when = [\"\", \" \"]\nwrite_scope = [\"\"]\n+++\n";
+    let request = &parse_envelope(blank).unwrap()[0];
+    assert!(request.done_when.is_empty());
+    assert!(request.write_scope.is_empty());
+}
+
+#[test]
+fn nonblank_body_prose_is_not_rewritten() {
+    let reply = "+++\n[[action]]\nkind = \"escalate\"\
+                 \nbody = \"  keep this  \"\ndone_when = [\"  keep \"]\n+++\n";
+    let request = &parse_envelope(reply).unwrap()[0];
+    assert_eq!(request.body.as_deref(), Some("  keep this  "));
+    assert_eq!(request.done_when, ["  keep "]);
 }

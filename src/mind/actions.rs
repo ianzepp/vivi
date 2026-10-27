@@ -50,6 +50,49 @@ pub struct ActionRequest {
     /// The edge build (12-hex commit) a `rollback-edge` names.
     #[serde(default)]
     pub build: Option<String>,
+    /// Mail addressee a letter names, e.g. `operator`.
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Completion conditions, one clause per entry.
+    #[serde(default)]
+    pub done_when: Vec<String>,
+    /// The path a file-scoped request targets.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Paths the executor may write, one entry per path.
+    #[serde(default)]
+    pub write_scope: Vec<String>,
+    /// Filing, dispatch and paging knobs. Signed integers on purpose:
+    /// out-of-range negatives survive to the typed range validation that
+    /// follows instead of wrapping into an unsigned value.
+    #[serde(default)]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub cap: Option<i64>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub pool: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub band: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub lines: Option<i64>,
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -139,6 +182,17 @@ fn drop_blank_fields(mut request: ActionRequest) -> ActionRequest {
         &mut request.word,
         &mut request.note,
         &mut request.build,
+        &mut request.to,
+        &mut request.subject,
+        &mut request.body,
+        &mut request.target,
+        &mut request.role,
+        &mut request.pool,
+        &mut request.model,
+        &mut request.band,
+        &mut request.reasoning,
+        &mut request.file,
+        &mut request.filter,
     ] {
         if field
             .as_deref()
@@ -146,6 +200,9 @@ fn drop_blank_fields(mut request: ActionRequest) -> ActionRequest {
         {
             *field = None;
         }
+    }
+    for entries in [&mut request.done_when, &mut request.write_scope] {
+        entries.retain(|entry| !entry.trim().is_empty());
     }
     if request
         .project
