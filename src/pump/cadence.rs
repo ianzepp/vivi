@@ -316,7 +316,13 @@ fn enqueue_due(
         return;
     };
     let attempt = next_attempt(cadence.runs.get(&scan.name));
-    let spec = job_spec(ctx, &role, scan, attempt, now);
+    let spec = match job_spec(ctx, &role, scan, attempt, now) {
+        Ok(spec) => spec,
+        Err(error) => {
+            ctx.log(&format!("cadence spec {} failed: {error}", scan.name));
+            return;
+        }
+    };
     let job_id = spec.id.clone();
     if let Err(error) = jobs::enqueue(st, spec) {
         ctx.log(&format!("cadence enqueue {} failed: {error}", scan.name));
@@ -342,7 +348,13 @@ fn enqueue_due(
     ctx.log(&format!("cadence queued {} attempt {attempt}", scan.name));
 }
 
-fn job_spec(ctx: &Ctx, role: &RoleView, scan: &RoleScan, attempt: u32, now: u64) -> JobSpec {
+fn job_spec(
+    ctx: &Ctx,
+    role: &RoleView,
+    scan: &RoleScan,
+    attempt: u32,
+    now: u64,
+) -> Result<JobSpec, VivariumError> {
     let is_digest = role
         .kind
         .as_deref()
@@ -379,11 +391,11 @@ fn finish_cadence_spec(
     kind: String,
     subject: String,
     body: String,
-) -> JobSpec {
+) -> Result<JobSpec, VivariumError> {
     let mut spec = JobSpec::new(id, kind, role.name.clone(), subject, body);
     spec.budget = ctx.cfg.dispatch.budget;
     spec.read_only = true;
-    spec.from_ref = Some(ctx.cfg.main.clone());
+    spec.start_from_target_main(&ctx.cfg)?;
     spec.payload = serde_json::json!({
         "cadence": role.cadence,
         "scheduled_at": now,
@@ -391,7 +403,7 @@ fn finish_cadence_spec(
         "open_wants": scan.open_wants,
         "open_needs": scan.open_needs,
     });
-    spec
+    Ok(spec)
 }
 
 fn digest_job(
