@@ -123,6 +123,84 @@ fn a_valid_planner_parses_and_reason_is_conditional() {
     assert!(matches!(err, EnvelopeError::Toml { .. }), "{err:?}");
 }
 
+#[test]
+fn a_valid_planner_scope_request_uses_operator_with_both_fields() {
+    let ok = hand(
+        "answer = \"operator\"\nreason = 'the plan needs a shared store'\n\
+         scope_paths = [\"src/store.rs\", \"src/store_test.rs\"]\nscope_target = \"app\"\n",
+    );
+    let parsed = parse_for(RoleKind::Planner, &ok).unwrap();
+    assert_eq!(parsed.answer, "operator");
+    assert_eq!(parsed.front["scope_paths"][0], "src/store.rs");
+    assert_eq!(parsed.front["scope_target"], "app");
+    assert_eq!(parsed.front["reason"], "the plan needs a shared store");
+}
+
+#[test]
+fn incomplete_planner_scope_requests_are_refused() {
+    let paths_only =
+        hand("answer = \"operator\"\nreason = 'r'\nscope_paths = [\"src/store.rs\"]\n");
+    let err = parse_for(RoleKind::Planner, &paths_only).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_target")),
+        "{err:?}"
+    );
+
+    let target_only = hand("answer = \"operator\"\nreason = 'r'\nscope_target = \"app\"\n");
+    let err = parse_for(RoleKind::Planner, &target_only).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_paths")),
+        "{err:?}"
+    );
+
+    let blank_target = hand(
+        "answer = \"operator\"\nreason = 'r'\nscope_paths = [\"src/store.rs\"]\n\
+         scope_target = '  '\n",
+    );
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &blank_target),
+        Err(EnvelopeError::Invalid(_))
+    ));
+
+    let blank_path = hand(
+        "answer = \"operator\"\nreason = 'r'\nscope_paths = [\"src/a.rs\", '']\n\
+         scope_target = \"app\"\n",
+    );
+    assert!(matches!(
+        parse_for(RoleKind::Planner, &blank_path),
+        Err(EnvelopeError::Invalid(_))
+    ));
+}
+
+#[test]
+fn planner_scope_fields_are_refused_on_other_answers() {
+    for word in ["planned", "delivered", "hold", "design"] {
+        let text = hand(&format!(
+            "answer = \"{word}\"\nreason = 'r'\n\
+             scope_paths = [\"src/store.rs\"]\nscope_target = \"app\"\n"
+        ));
+        let err = parse_for(RoleKind::Planner, &text).unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::Invalid(ref m) if m.contains("operator")),
+            "{word}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn historical_planner_forms_keep_their_meaning() {
+    let held =
+        parse_for(RoleKind::Planner, &hand("answer = \"operator\"\nreason = 'waiting'\n"))
+            .unwrap();
+    assert_eq!(held.answer, "operator");
+    assert_eq!(held.front["scope_paths"], serde_json::json!([]));
+    assert_eq!(held.front["scope_target"], serde_json::Value::Null);
+
+    let planned = parse_for(RoleKind::Planner, &hand("answer = \"planned\"\n")).unwrap();
+    assert_eq!(planned.front["scope_paths"], serde_json::json!([]));
+    assert_eq!(planned.front["scope_target"], serde_json::Value::Null);
+}
+
 const SLICE: &str = "[[slice]]\nid = \"S1\"\ntitle = \"t\"\nbrief = 'b'\ntarget = \"src\"\n\
                      write_scope = [\"src/a.rs\"]\ndeps = []\n";
 

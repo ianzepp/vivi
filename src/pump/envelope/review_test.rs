@@ -72,6 +72,87 @@ fn admitter_conditional_rules() {
     );
 }
 
+#[test]
+fn a_valid_admitter_scope_request_uses_escalate_with_both_fields() {
+    let ok = "answer = \"escalate\"\nreason = 'the slice needs a shared store'\n\
+              scope_paths = [\"src/store.rs\"]\nscope_target = \"app\"\n";
+    let parsed = parse_for(RoleKind::Admitter, &env(ok)).unwrap();
+    assert_eq!(parsed.answer, "escalate");
+    assert_eq!(parsed.front["scope_paths"][0], "src/store.rs");
+    assert_eq!(parsed.front["scope_target"], "app");
+}
+
+#[test]
+fn incomplete_admitter_scope_requests_are_refused() {
+    let paths_only =
+        env("answer = \"escalate\"\nreason = 'r'\nscope_paths = [\"src/store.rs\"]\n");
+    let err = parse_for(RoleKind::Admitter, &paths_only).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_target")),
+        "{err:?}"
+    );
+
+    let target_only = env("answer = \"escalate\"\nreason = 'r'\nscope_target = \"app\"\n");
+    let err = parse_for(RoleKind::Admitter, &target_only).unwrap_err();
+    assert!(
+        matches!(err, EnvelopeError::Invalid(ref m) if m.contains("scope_paths")),
+        "{err:?}"
+    );
+
+    let blank_target = env(
+        "answer = \"escalate\"\nreason = 'r'\nscope_paths = [\"src/store.rs\"]\n\
+         scope_target = '  '\n",
+    );
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &blank_target),
+        Err(EnvelopeError::Invalid(_))
+    ));
+
+    let blank_path = env(
+        "answer = \"escalate\"\nreason = 'r'\nscope_paths = ['']\nscope_target = \"app\"\n",
+    );
+    assert!(matches!(
+        parse_for(RoleKind::Admitter, &blank_path),
+        Err(EnvelopeError::Invalid(_))
+    ));
+}
+
+#[test]
+fn admitter_scope_fields_are_refused_on_other_answers() {
+    for word in ["admitted", "revise"] {
+        let tail = if word == "revise" {
+            "required_changes = ['c']\n"
+        } else {
+            ""
+        };
+        let text = env(&format!(
+            "answer = \"{word}\"\n{tail}scope_paths = [\"src/store.rs\"]\nscope_target = \"app\"\n"
+        ));
+        let err = parse_for(RoleKind::Admitter, &text).unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::Invalid(ref m) if m.contains("escalate")),
+            "{word}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn an_admitter_scope_request_keeps_its_review_obligations() {
+    let both = "answer = \"escalate\"\nreason = 'needs the store beyond the slice'\n\
+                required_changes = ['name the file that owns the counter']\n\
+                findings = ['the second phase repeats the first']\n\
+                scope_paths = [\"src/store.rs\"]\nscope_target = \"app\"\n";
+    let parsed = parse_for(RoleKind::Admitter, &env(both)).unwrap();
+    assert_eq!(parsed.answer, "escalate");
+    assert_eq!(parsed.front["required_changes"][0], "name the file that owns the counter");
+    assert_eq!(parsed.front["findings"][0], "the second phase repeats the first");
+    assert_eq!(parsed.front["scope_target"], "app");
+
+    let historical =
+        answer(RoleKind::Admitter, "answer = \"escalate\"\nreason = 'needs a design'\n");
+    assert_eq!(historical, "escalate");
+}
+
 const AUDIT: &str = "answer = \"residual\"\nraise_rung = \"main\"\n\n\
     [[requirement]]\nid = \"R1\"\ntext = 'A closed run stops.'\nstatus = \"NOT_APPLICABLE\"\n\
     evidence = [\"src/run.rs:210\"]\n\n\

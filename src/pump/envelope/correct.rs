@@ -143,10 +143,15 @@ fn fields(kind: RoleKind) -> &'static str {
             "researcher: answer = \"READY\" | \"NOT READY\" | \"NEEDS FURTHER REVIEW\"; open_questions (list)"
         }
         RoleKind::Planner => {
-            "planner: answer = \"planned\" | \"delivered\" | \"operator\" | \"hold\" | \"design\"; reason (string, required unless planned)"
+            "planner: answer = \"planned\" | \"delivered\" | \"operator\" | \"hold\" | \"design\"; \
+             reason (string, required unless planned); scope_paths (list) and scope_target \
+             (string, non-blank), both together or neither, only for operator (a scope request)"
         }
         RoleKind::Admitter => {
-            "admitter: answer = \"admitted\" | \"revise\" | \"escalate\"; required_changes (list, non-empty for revise); findings (list); reason (string, required for escalate)"
+            "admitter: answer = \"admitted\" | \"revise\" | \"escalate\"; required_changes (list, \
+             non-empty for revise); findings (list); reason (string, required for escalate); \
+             scope_paths (list) and scope_target (string, non-blank), both together or neither, \
+             only for escalate (a scope request; required_changes and findings stay beside it)"
         }
         RoleKind::Slicer => {
             "slicer: answer = \"sliced\" | \"escalate\"; mode = \"slice\" | \"rework\" | \"split\"; [[slice]] {id, title, brief, target, write_scope (list), deps (list)}, at least one for sliced and none for escalate; reason (string, required for escalate)"

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::Validate;
-use super::roles::Check;
+use super::roles::{Check, validate_scope_fields};
 
 fn missing(text: &Option<String>) -> bool {
     text.as_deref().is_none_or(|t| t.trim().is_empty())
@@ -77,6 +77,15 @@ pub struct Admitter {
     pub findings: Vec<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// A scope request: the files the admitter would grant beyond the
+    /// slice's write scope, and the target that owns them. The review
+    /// fields above stay available beside it: a scope request carrying
+    /// required changes is still ordinary review work for the collector,
+    /// never an automatic grant.
+    #[serde(default)]
+    pub scope_paths: Vec<String>,
+    #[serde(default)]
+    pub scope_target: Option<String>,
 }
 
 impl Validate for Admitter {
@@ -89,7 +98,13 @@ impl Validate for Admitter {
                 Err("answer \"escalate\" requires a `reason`".to_string())
             }
             _ => Ok(()),
-        }
+        }?;
+        validate_scope_fields(
+            self.answer == AdmitterAnswer::Escalate,
+            "escalate",
+            &self.scope_paths,
+            self.scope_target.as_deref(),
+        )
     }
 }
 

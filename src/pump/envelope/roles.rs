@@ -172,6 +172,36 @@ fn blank(text: &str) -> bool {
     text.trim().is_empty()
 }
 
+/// The scope-request rule shared by the planner (`operator`) and the admitter
+/// (`escalate`): `scope_paths` and `scope_target` are accepted only on the
+/// scope answer, only together, and with no blank entries. A reply with
+/// neither field is a historical form and keeps its meaning. Whether the
+/// named target exists in configuration is the collector's check, not this
+/// parser's.
+pub(crate) fn validate_scope_fields(
+    on_scope_answer: bool,
+    scope_word: &str,
+    scope_paths: &[String],
+    scope_target: Option<&str>,
+) -> Result<(), String> {
+    if scope_paths.is_empty() && scope_target.is_none_or(blank) {
+        return Ok(());
+    }
+    if !on_scope_answer {
+        return Err(format!("scope fields require answer \"{scope_word}\""));
+    }
+    if scope_paths.is_empty() || scope_target.is_none_or(blank) {
+        return Err(format!(
+            "answer \"{scope_word}\" with scope fields requires a non-empty `scope_paths` \
+             and a non-blank `scope_target`"
+        ));
+    }
+    if scope_paths.iter().any(|path| blank(path)) {
+        return Err("a scope request takes no blank `scope_paths` entries".to_string());
+    }
+    Ok(())
+}
+
 // ---- hand ----------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +335,13 @@ pub struct Planner {
     pub answer: PlannerAnswer,
     #[serde(default)]
     pub reason: Option<String>,
+    /// A scope request: the files the planner needs beyond the slice's write
+    /// scope, and the target that owns them. Kept as `Vec` + `Option` so an
+    /// explicit half-request stays visible to validation.
+    #[serde(default)]
+    pub scope_paths: Vec<String>,
+    #[serde(default)]
+    pub scope_target: Option<String>,
 }
 
 impl Validate for Planner {
@@ -312,7 +349,12 @@ impl Validate for Planner {
         if self.answer != PlannerAnswer::Planned && self.reason.as_deref().is_none_or(blank) {
             return Err("every planner answer except \"planned\" requires a `reason`".to_string());
         }
-        Ok(())
+        validate_scope_fields(
+            self.answer == PlannerAnswer::Operator,
+            "operator",
+            &self.scope_paths,
+            self.scope_target.as_deref(),
+        )
     }
 }
 
