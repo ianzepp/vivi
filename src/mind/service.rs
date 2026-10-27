@@ -28,6 +28,16 @@ use super::wake::{self, WakeDecision, WakeInputs, WakeReason, WakeRecord};
 /// How often the loop re-evaluates wakes. Heartbeats are coarser than this.
 pub const TICK: Duration = Duration::from_secs(60);
 
+/// What one envelope turn produced: the actions it planned with their
+/// verdicts, and the report the session should see about them, when there
+/// is anything to report. A reply with no envelope plans nothing and
+/// reports nothing, so it stays a no-op.
+#[derive(Debug, Clone)]
+struct EnvelopeOutcome {
+    planned: Vec<Planned>,
+    report: Option<String>,
+}
+
 /// What one tick did.
 #[derive(Debug)]
 pub enum TickOutcome {
@@ -188,7 +198,7 @@ async fn settle_wake<P: PiSession, Q: Probe>(
     let mut turn = first;
     let mut all = Vec::new();
     let mut round = 0;
-    let mut unreported = Vec::new();
+    let mut unreported = Option::<String>::None;
     loop {
         let summary = match turn {
             Ok(summary) => summary,
@@ -207,16 +217,18 @@ async fn settle_wake<P: PiSession, Q: Probe>(
             "follow-up turn"
         };
         log_line(&config.paths.log, &format!("{label}:\n{}", summary.text));
-        let planned = run_envelope(cx, &summary.text, watched, actuator)?;
-        let ran = planned.iter().any(|item| item.executed.is_some());
+        let outcome = run_envelope(cx, &summary.text, watched, actuator)?;
+        let ran = outcome.planned.iter().any(|item| item.executed.is_some());
         if ran && actuator.feeds_back() && round < max_follow_ups {
             round += 1;
-            turn = prompt_once(shared, prompt::plan_report(&planned)).await;
+            let EnvelopeOutcome { planned, report } = outcome;
+            let report = report.unwrap_or_else(|| prompt::plan_report(&planned));
+            turn = prompt_once(shared, report).await;
             all.extend(planned);
-            unreported.clear();
+            unreported = None;
         } else {
-            unreported = planned.clone();
-            all.extend(planned);
+            unreported = outcome.report;
+            all.extend(outcome.planned);
             break;
         }
     }
@@ -224,7 +236,7 @@ async fn settle_wake<P: PiSession, Q: Probe>(
     store::update_at(&config.paths.state, |state| {
         wake::finish(&mut record, true, ended);
         state.last_wake = Some(record);
-        state.pending_report = (!unreported.is_empty()).then(|| prompt::plan_report(&unreported));
+        state.pending_report = unreported;
         Ok(())
     })?;
     Ok(TickOutcome::Woke { planned: all })
@@ -246,13 +258,16 @@ fn fail_wake<Q: Probe>(
 }
 
 /// Parse a reply's envelope, gate it, run what is permitted, and log each
-/// line.
+/// line. Returns the outcome: the planned actions and, when there is
+/// something to tell the session, the rendered report for them. A
+/// malformed envelope is logged and reported but plans nothing, so it
+/// never reaches the actuator or the budget.
 fn run_envelope<Q: Probe>(
     cx: &TickContext<'_, Q>,
     reply: &str,
     watched: &[PathBuf],
     actuator: &mut dyn Actuator,
-) -> Result<Vec<Planned>, VivariumError> {
+) -> Result<EnvelopeOutcome, VivariumError> {
     let config = cx.config;
     let now = cx.clock.now();
     store::update_at(&config.paths.state, |state| {
@@ -267,12 +282,18 @@ fn apply_envelope(
     watched: &[PathBuf],
     now: u64,
     actuator: &mut dyn Actuator,
-) -> Vec<Planned> {
+) -> EnvelopeOutcome {
     let requests = match actions::parse_envelope(reply) {
         Ok(requests) => requests,
         Err(error) => {
             log_line(&config.paths.log, &format!("envelope refused: {error}"));
-            return Vec::new();
+            return EnvelopeOutcome {
+                planned: Vec::new(),
+                report: Some(format!(
+                    "- envelope: unparseable\n{}",
+                    prompt::fence("envelope-parse", &error)
+                )),
+            };
         }
     };
     let gate = Gate {
@@ -297,7 +318,8 @@ fn apply_envelope(
         };
         log_line(&config.paths.log, &line);
     }
-    planned
+    let report = (!planned.is_empty()).then(|| prompt::plan_report(&planned));
+    EnvelopeOutcome { planned, report }
 }
 
 /// Append one timestamped line to the mind log. Logging never fails the
