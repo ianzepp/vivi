@@ -1,5 +1,8 @@
 use super::MailspacePort;
-use crate::letter::fixture::{body_with_deps, task_body};
+use crate::letter::fixture::{body_with_deps, need_body, task_body};
+use crate::letter::records::NoteWord;
+use crate::mailspace::pump_note::note_body;
+use crate::mailspace::{Mailspace, Recipient, SendRequest};
 use crate::pump::fixture::{Project, project};
 
 fn port(p: &Project) -> MailspacePort {
@@ -173,4 +176,87 @@ fn a_reply_on_a_pump_to_pump_step_is_stored_and_readable_as_marked() {
     let replies = port.marked_replies(&task, "pool result ").unwrap();
     assert_eq!(replies.len(), 1, "{replies:?}");
     assert_eq!(replies[0].1, "pool result j1: finished");
+}
+
+/// A need sent from the pump identity to the pump identity (plus `cc`), as a
+/// run post would be when nobody else holds the need; the delivered handle.
+fn self_need(p: &Project, cc: &[&str], subject: &str) -> String {
+    p.mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["mind".into()],
+            cc: cc.iter().map(|who| (*who).to_string()).collect(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            body: need_body(&["it works"], ""),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle
+}
+
+/// The sorted local identities in the To header of every reply on `need`.
+fn reply_to_identities(p: &Project, need: &str) -> Vec<String> {
+    let storage = p.mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(need).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    let mut found = Vec::new();
+    for child in storage.reply_child_contents(&view.content_id).unwrap() {
+        let row = storage.message_by_content_id(&child).unwrap().unwrap();
+        let text = String::from_utf8_lossy(&storage.read_listed_blob(&row.blob_relpath).unwrap())
+            .into_owned();
+        let parsed = mail_parser::MessageParser::default()
+            .parse(text.as_bytes())
+            .unwrap_or_else(|| panic!("reply on {need} does not parse"));
+        for address in parsed.to().into_iter().flatten() {
+            let Some(value) = address.address.as_deref() else {
+                continue;
+            };
+            if let Ok(Recipient::Local(identity)) = p.mailspace.classify_recipient(value) {
+                found.push(identity);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn audience_post_self_addresses_when_empty() {
+    use crate::pump::flow::slice_dispatch::SliceMail;
+
+    let p = project();
+    let port = port(&p);
+    let body = note_body(
+        NoteWord::Attempt,
+        Some("src/pump/flow/mail/send.rs"),
+        "note",
+    )
+    .unwrap();
+
+    // From mind to mind with nobody else on it: the post is self-addressed
+    // and still stored as one logical note on the thread.
+    let alone = self_need(&p, &[], "audience of one");
+    port.post_to_need_audience(&alone, &body).unwrap();
+    let notes = port.notes_from(&alone, NoteWord::Attempt, "mind").unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(
+        notes[0].1.pump.reference.as_deref(),
+        Some("src/pump/flow/mail/send.rs")
+    );
+    assert_eq!(reply_to_identities(&p, &alone), vec!["mind"]);
+
+    // An ordinary nonempty audience keeps its recipient: the sender.
+    let plain = p.need("plain audience");
+    port.post_to_need_audience(&plain, &body).unwrap();
+    assert_eq!(reply_to_identities(&p, &plain), vec!["operator"]);
+
+    // A Cc-only audience is still promoted from Cc to To.
+    let cc_only = self_need(&p, &["elsewhere"], "cc audience");
+    port.post_to_need_audience(&cc_only, &body).unwrap();
+    assert_eq!(reply_to_identities(&p, &cc_only), vec!["elsewhere"]);
 }

@@ -74,7 +74,9 @@ impl MailspacePort {
     /// Post a plain note on the need `need`, addressed to the need's own
     /// recipient set (its `From`, `To` and `Cc`, minus the pump identity), so
     /// every member that holds the need receives it. [`MailspacePort::reply`]
-    /// goes to the sender only. A need with no one else on it gets no post.
+    /// goes to the sender only. A need whose whole audience is the pump is
+    /// posted self-addressed: the To list is the pump identity alone, so the
+    /// note is still stored as a reply on the need's thread.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the need does not resolve, cannot be
@@ -85,7 +87,10 @@ impl MailspacePort {
             std::mem::swap(&mut to, &mut cc);
         }
         if to.is_empty() {
-            return Ok(());
+            // Self-addressed: the explicit pump To keeps the note stored on
+            // the thread; an empty list would fall back to recipient
+            // inference, which a post must never depend on.
+            to.push(self.pump_identity.clone());
         }
         self.mailspace
             .reply(need, &self.pump_identity, to, cc, None, body.into())?;
