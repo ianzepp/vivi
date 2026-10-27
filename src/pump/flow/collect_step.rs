@@ -225,7 +225,17 @@ where
             self.decide,
         )?;
         if let Some(reason) = advanced.routed.rejected {
-            let held = format!("{reason}; held for vivi pump answer {} <word>", step.task);
+            // The hold waits for the mind, not the operator: the mind owns
+            // the disposition — recover the evidence, then pick one of the
+            // supported answer words or requeue the step. A human steps in
+            // only when the configured escalation genuinely requires one; a
+            // rejected word alone never does.
+            let held = format!(
+                "{reason}; held for mind disposition: recover the evidence, then answer \
+                 vivi pump answer {} <word> or requeue the step; a human steps in only when \
+                 the pump's escalation is configured to require one",
+                step.task
+            );
             self.ctx.exception(WORD_REJECTED, &step.task, &held);
             self.store
                 .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))?;
@@ -234,7 +244,11 @@ where
     }
 
     /// The worker could not run the agent of a role step: alarm once and hold
-    /// the step for the operator. No word, rerun, correction or attempt.
+    /// the step for mind disposition — the mind recovers the evidence and
+    /// picks one of the supported answer words or requeues the step; a human
+    /// steps in only when the configured escalation genuinely requires one,
+    /// never merely because a tool or other evidence is missing. No word,
+    /// rerun, correction or attempt.
     pub(crate) fn hold_role_env(
         &mut self,
         job: &PoolJob,
@@ -250,7 +264,9 @@ where
             &job.id,
             &format!(
                 "{class} job {} for step {} task {} on worker {}: expected the agent to run; \
-                 actual: {:?}, tool {}: {}; answer with vivi pump answer {} <word>",
+                 actual: {:?}, tool {}: {}; held for mind disposition: recover the evidence, \
+                 then answer vivi pump answer {} <word> or requeue the step; a human steps in \
+                 only when the pump's escalation is configured to require one",
                 job.id,
                 step.node,
                 step.task,
@@ -378,12 +394,23 @@ where
                 )
             }
             SideEffect::Unclear { reason } => {
+                // Git cannot settle the side effect: the mind owns the
+                // disposition — recover the git evidence, then pick one of
+                // the supported answer words or requeue the step. A human
+                // steps in only when the configured escalation genuinely
+                // requires one; unclear evidence alone never summons one.
                 self.ctx.exception(
                     SIDE_EFFECT_UNCLEAR,
                     &step.task,
                     &format!(
-                        "step {} task {} job {} ref {remote_ref}: {reason}; answer with `vivi pump answer`",
-                        step.node, step.task, job.id
+                        "step {} task {} job {} ref {remote_ref}: {reason}; held for mind \
+                         disposition: recover the git evidence, then answer `vivi pump answer \
+                         {task} <word>` or requeue the step; a human steps in only when the \
+                         pump's escalation is configured to require one",
+                        step.node,
+                        step.task,
+                        job.id,
+                        task = step.task
                     ),
                 );
                 self.store

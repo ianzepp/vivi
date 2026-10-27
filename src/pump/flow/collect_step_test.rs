@@ -103,7 +103,7 @@ impl Rig {
 }
 
 #[test]
-fn a_word_outside_the_node_class_holds_the_step_for_the_operator() -> R {
+fn a_word_outside_the_node_class_holds_the_step_for_mind_disposition() -> R {
     let mut rig = rig()?;
     let step = rig.plan_step()?;
     let run = rig.store.runs_of(NEED)?.remove(0);
@@ -125,7 +125,11 @@ fn a_word_outside_the_node_class_holds_the_step_for_the_operator() -> R {
     assert_eq!(held.verdict.as_deref(), Some(OPERATOR_HOLD));
     let log = rig.exceptions();
     assert_eq!(log.matches(WORD_REJECTED).count(), 1);
-    assert!(log.contains("held for vivi pump answer"), "{log}");
+    // The hold asks the mind for the disposition, not the operator.
+    assert!(log.contains("held for mind disposition"), "{log}");
+    // The answer routing and the task handle survive the rewording.
+    assert!(log.contains("vivi pump answer"), "{log}");
+    assert!(log.contains(&step.task), "{log}");
     Ok(())
 }
 
@@ -524,6 +528,12 @@ fn a_planner_job_with_agent_exit_127_holds_the_step_and_queues_no_attempt() -> R
     let lines = env_lines(&rig);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("planner job plan-j1"), "{lines:?}");
+    // The hold asks the mind for the disposition, not the operator, and
+    // keeps the step, task, job and failure evidence in the message.
+    assert!(lines[0].contains("held for mind disposition"), "{lines:?}");
+    assert!(lines[0].contains("vivi pump answer"), "{lines:?}");
+    assert!(lines[0].contains(&step.task), "{lines:?}");
+    assert!(lines[0].contains("agent exit 127"), "{lines:?}");
     assert_eq!(rig.jobs.jobs.len(), 1);
     assert!(rig.store.step_job("plan-j1-a2")?.is_none());
     Ok(())
