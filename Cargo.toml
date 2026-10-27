@@ -54,7 +54,7 @@ getrandom = "0.4"
 subtle = "2"
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

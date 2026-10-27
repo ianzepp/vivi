@@ -38,6 +38,8 @@ pub enum PoolSubcommand {
     Unset(PoolUnsetCommand),
     /// Remove a pool table
     Remove(PoolRemoveCommand),
+    /// Run one job from a vivi server on this machine: clone, run the harness, gate, push the branch, post the receipt
+    Run(PoolRunCommand),
     /// Set or clear a pool band choice
     Bands {
         #[command(subcommand)]
@@ -547,4 +549,18 @@ pub enum PoolBandsCommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct PoolRunCommand {
+    /// Base URL of the vivi server that issued the job
+    pub server_url: String,
+
+    /// The job to run (`job_<hex>`); the job ticket is read from stdin
+    #[arg(long)]
+    pub job: String,
+
+    /// Store the ticket, start the job in its own session, print its pid and return at once
+    #[arg(long)]
+    pub detach: bool,
 }

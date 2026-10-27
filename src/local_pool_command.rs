@@ -42,6 +42,10 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Set(c) => crate::local_pool_config_command::set(c),
         PoolSubcommand::Unset(c) => crate::local_pool_config_command::unset(c),
         PoolSubcommand::Remove(c) => crate::local_pool_config_command::remove(c),
+        PoolSubcommand::Run(c) => Err(VivariumError::Message(format!(
+            "pool run {} is handled before the runtime starts",
+            c.job
+        ))),
         PoolSubcommand::Bands { command } => crate::local_pool_config_command::bands(command),
     }
 }

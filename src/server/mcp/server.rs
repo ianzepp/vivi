@@ -146,7 +146,7 @@ pub(crate) fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrinc
 
 // ------------------------------------------------------------------ tools
 
-const HOST_TOOLS: [&str; 15] = [
+const HOST_TOOLS: [&str; 18] = [
     "create_project",
     "lane_create",
     "archive_project",
@@ -160,6 +160,9 @@ const HOST_TOOLS: [&str; 15] = [
     "grant_add",
     "grant_remove",
     "machine_add",
+    "job_create",
+    "job_show",
+    "job_list",
     "server_version",
     "project_list",
 ];
@@ -274,6 +277,54 @@ pub(super) fn tools_list() -> Value {
                 "public_key": { "type": "string" }
             },
             "required": ["principal", "public_key"],
+            "additionalProperties": false
+        }),
+    ));
+    tools.push(tool(
+        "job_create",
+        "Host only. Create a job ticket for a worker machine: a `vivijt_` bearer that reads the job \
+         manifest, fetches the target's lane, pushes only refs/heads/<branch>, and posts one receipt. \
+         `base` defaults to the target's main; `branch` must not be main, vivi/main or the target's \
+         main; `committer` defaults to the project's [pump] committer. Returns {job_id, ticket, \
+         expires_at, git_path, manifest_path}; the ticket is shown once.",
+        json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string" },
+                "target": { "type": "string" },
+                "branch": { "type": "string" },
+                "base": { "type": "string" },
+                "task": { "type": "string" },
+                "harness": { "type": "string" },
+                "gate": { "type": "string" },
+                "timeout_s": { "type": "integer", "default": 1800 },
+                "committer": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" }, "email": { "type": "string" } },
+                    "required": ["name", "email"],
+                    "additionalProperties": false
+                }
+            },
+            "required": ["project", "target", "branch", "task", "harness"],
+            "additionalProperties": false
+        }),
+    ));
+    tools.push(tool(
+        "job_show",
+        "Host only. One job: manifest, status (open|done|expired), created_at, expires_at, receipt.",
+        json!({
+            "type": "object",
+            "properties": { "job_id": { "type": "string" } },
+            "required": ["job_id"],
+            "additionalProperties": false
+        }),
+    ));
+    tools.push(tool(
+        "job_list",
+        "Host only. List jobs, optionally only `open` or `done` ones.",
+        json!({
+            "type": "object",
+            "properties": { "status": { "type": "string", "enum": ["open", "done", "all"] } },
             "additionalProperties": false
         }),
     ));
@@ -617,7 +668,10 @@ async fn host_tool(
 ) -> Result<Value, Response> {
     // The read host tools: `key_list` names keys, the two D4 reads answer
     // server facts; none is audited or rate limited.
-    let write = !matches!(name, "key_list" | "server_version" | "project_list");
+    let write = !matches!(
+        name,
+        "key_list" | "server_version" | "project_list" | "job_show" | "job_list"
+    );
     if !auth.host {
         let message = format!("{name} is a host tool; this key is not a host principal");
         if write {
@@ -635,6 +689,44 @@ async fn host_tool(
         {
             Ok(value) => Ok(tool_result(value, false)),
             Err(err) => Err(internal(state, auth, None, name, write, err).await),
+        };
+    }
+    if matches!(name, "job_show" | "job_list") {
+        let job_state = state.clone();
+        let owned = name.to_owned();
+        return match tokio::task::spawn_blocking(move || {
+            if owned == "job_show" {
+                crate::server::jobs::show(&job_state, &arguments)
+            } else {
+                crate::server::jobs::list(&job_state, &arguments)
+            }
+        })
+        .await
+        {
+            Ok(Ok(value)) => Ok(tool_result(value, false)),
+            Ok(Err(message)) => Ok(tool_result(json!({ "error": message }), true)),
+            Err(err) => Err(internal(state, auth, None, name, write, err).await),
+        };
+    }
+    if name == "job_create" {
+        if let Err(message) = allow_write(state, HOST_PRINCIPAL, auth) {
+            return Ok(refused(state, auth, None, name, true, &message).await);
+        }
+        let job_state = state.clone();
+        return match tokio::task::spawn_blocking(move || {
+            crate::server::jobs::create(&job_state, &arguments)
+        })
+        .await
+        {
+            Ok(Ok(value)) => {
+                audit(state, auth, None, name, AuditOutcome::Ok, &summarize_ok(name, &value)).await;
+                Ok(tool_result(value, false))
+            }
+            Ok(Err(message)) => {
+                audit(state, auth, None, name, AuditOutcome::Refused, &message).await;
+                Ok(tool_result(json!({ "error": message }), true))
+            }
+            Err(err) => Err(internal(state, auth, None, name, true, err).await),
         };
     }
     if matches!(
@@ -1128,6 +1220,10 @@ fn summarize_ok(tool: &str, value: &Value) -> String {
         "archive_project" => format!(
             "archived {}",
             value.get("name").and_then(Value::as_str).unwrap_or("?")
+        ),
+        "job_create" => format!(
+            "created {}",
+            value.get("job_id").and_then(Value::as_str).unwrap_or("?")
         ),
         "project_register" => format!(
             "registered {}",

@@ -29,6 +29,7 @@ mod local_monitor_command;
 mod local_pool_command;
 mod local_pool_config_command;
 mod local_pool_doctor_command;
+mod local_pool_run_command;
 mod local_pool_scale_command;
 mod local_pool_work_command;
 mod local_project_command;
@@ -73,6 +74,12 @@ fn main() {
     {
         vivi::server::entry::run(args);
         return;
+    }
+    if let Command::Pool {
+        command: vivi::cli::PoolSubcommand::Run(run),
+    } = &cli.command
+    {
+        process::exit(local_pool_run_command::run(run));
     }
     if let Command::Key {
         command: vivi::cli::KeyCommand::Show,

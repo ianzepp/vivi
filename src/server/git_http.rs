@@ -21,6 +21,7 @@ use base64::Engine;
 use tokio::io::AsyncWriteExt;
 
 use crate::server::AppState;
+use crate::server::jobs::{self, JobRecord};
 use crate::server::mcp::host::hosted_entry;
 use crate::server::mcp::live::target_git::lane_for;
 use crate::server::mcp::server::{ServerPrincipal, authenticate, resolve_grant};
@@ -190,6 +191,39 @@ fn resolve_lane(
             .load_meta_including_retired(&resolved.project_id)
             .map_err(|_| plain(StatusCode::NOT_FOUND, "no such project"))?
     };
+    lane_of(state, meta, route)
+}
+
+/// A job ticket's lane: only its own project and target.
+fn resolve_job_lane(
+    state: &AppState,
+    job: &JobRecord,
+    route: &Route,
+) -> Result<Lane, Response> {
+    if !job.is_project(&route.project) || route.target != job.manifest.target {
+        return Err(plain(
+            StatusCode::FORBIDDEN,
+            "this job ticket reaches only its own project and target",
+        ));
+    }
+    if !job.live() {
+        return Err(plain(
+            StatusCode::FORBIDDEN,
+            &format!("this job is {}; its ticket no longer reaches git", job.status()),
+        ));
+    }
+    let meta = state
+        .projects
+        .load_meta_including_retired(&job.manifest.project_id)
+        .map_err(|_| plain(StatusCode::NOT_FOUND, "no such project"))?;
+    lane_of(state, meta, route)
+}
+
+fn lane_of(
+    state: &AppState,
+    meta: crate::server::projects::ProjectMeta,
+    route: &Route,
+) -> Result<Lane, Response> {
     if meta.is_archived() || state.projects.is_retired(&meta.project_id) {
         return Err(plain(StatusCode::FORBIDDEN, "project is archived"));
     }
@@ -267,8 +301,32 @@ pub async fn git_handler(
     let Some(token) = presented_token(&headers) else {
         return unauthorized("credentials required");
     };
-    let Ok(auth) = authenticate(&state, &token) else {
-        return unauthorized("invalid or expired token");
+    let job: Option<JobRecord> = if token.starts_with(jobs::TICKET_PREFIX) {
+        let (lookup_state, lookup_token) = (state.clone(), token.clone());
+        let found = tokio::task::spawn_blocking(move || {
+            jobs::authenticate_ticket(&lookup_state, &lookup_token, None)
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(found) = found else {
+            return unauthorized("invalid or expired token");
+        };
+        Some(found)
+    } else {
+        None
+    };
+    let auth = match &job {
+        Some(job) => ServerPrincipal {
+            principal: format!("job:{}", job.manifest.job_id),
+            key_id: None,
+            host: false,
+            grants: Vec::new(),
+        },
+        None => match authenticate(&state, &token) {
+            Ok(auth) => auth,
+            Err(_) => return unauthorized("invalid or expired token"),
+        },
     };
     let Some(route) = parse_path(&path) else {
         return plain(
@@ -287,8 +345,14 @@ pub async fn git_handler(
     };
 
     let lane = {
-        let (state, auth_for, route_for) = (state.clone(), auth.clone(), route.clone());
-        match tokio::task::spawn_blocking(move || resolve_lane(&state, &auth_for, &route_for)).await {
+        let (state, auth_for, route_for, job_for) =
+            (state.clone(), auth.clone(), route.clone(), job.clone());
+        match tokio::task::spawn_blocking(move || match &job_for {
+            Some(job) => resolve_job_lane(&state, job, &route_for),
+            None => resolve_lane(&state, &auth_for, &route_for),
+        })
+        .await
+        {
             Ok(Ok(lane)) => lane,
             Ok(Err(response)) => {
                 log(&auth, &route, service, response.status());
@@ -325,7 +389,17 @@ pub async fn git_handler(
                 return plain(StatusCode::BAD_REQUEST, &message);
             }
         };
-        if let Some(name) = refs.iter().find(|name| lane.protected.contains(name)) {
+        if let Some(job) = &job {
+            let allowed = format!("refs/heads/{}", job.manifest.branch);
+            if refs.is_empty() || refs.iter().any(|name| *name != allowed) {
+                log(&auth, &route, service, StatusCode::FORBIDDEN);
+                return push_refusal(
+                    &body,
+                    &refs,
+                    &format!("a job ticket may push only {allowed}"),
+                );
+            }
+        } else if let Some(name) = refs.iter().find(|name| lane.protected.contains(name)) {
             log(&auth, &route, service, StatusCode::FORBIDDEN);
             return push_refusal(
                 &body,

@@ -15,6 +15,7 @@ pub mod grants;
 pub mod hardening;
 pub mod hosted;
 pub mod init;
+pub mod jobs;
 pub mod machine_auth;
 pub mod identities;
 pub mod ids;
@@ -48,6 +49,8 @@ use safety::RateLimiter;
 /// audit log for `/v1/mcp`, and the moderation token.
 #[derive(Clone)]
 pub struct AppState {
+    /// The server data directory (`jobs/` lives here).
+    pub data_dir: PathBuf,
     pub projects: ProjectStore,
     pub identities: IdentityRegistry,
     pub keys: ApiKeyRegistry,
@@ -121,6 +124,7 @@ pub fn app_state(
         );
     }
     Ok(AppState {
+        data_dir: data_dir.clone(),
         projects: ProjectStore::new(&data_dir),
         identities: IdentityRegistry::new(&data_dir),
         keys: ApiKeyRegistry::new(&data_dir),
@@ -180,6 +184,8 @@ pub fn router(state: AppState) -> Router {
             post(machine_auth::challenge_handler),
         )
         .route("/v1/auth/machine/verify", post(machine_auth::verify_handler))
+        .route("/v1/jobs/{id}", get(jobs::manifest_handler))
+        .route("/v1/jobs/{id}/receipt", post(jobs::receipt_handler))
         // Git smart HTTP over each project's lanes: /git/<project>/<target>.git/...
         .route(
             "/git/{*path}",
