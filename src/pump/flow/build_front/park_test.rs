@@ -119,10 +119,12 @@ fn park_after_a_hold_alarms_once_with_the_word_and_reason() -> R {
         "need n1 r1 parked at parked",
         "expected the planner to answer planned",
         "actual: hold: waiting on the schema decision",
-        "vivi pump answer t-park",
+        "the mind owns this decision",
+        "resume at plan with `vivi pump replan n1`",
     ] {
         assert!(text.contains(needle), "missing {needle}: {text}");
     }
+    assert!(!text.contains("pump answer"), "no answer route: {text}");
     Ok(())
 }
 
