@@ -55,6 +55,20 @@ fn a_dispatched_task_reads_open_with_task_info() {
     assert!(events.finished.is_empty());
 }
 
+/// Remove the shared-memory sidecar of `db` when one is left behind. Only
+/// for mailspace writers that are already closed: never drop a live
+/// connection's sidecar.
+fn remove_shm_sidecar(db: &Path) {
+    let mut sidecar = db.as_os_str().to_os_string();
+    sidecar.push("-shm");
+    let shm = std::path::PathBuf::from(sidecar);
+    match fs::remove_file(&shm) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("failed to remove {}: {error}", shm.display()),
+    }
+}
+
 #[test]
 fn a_legacy_dispatch_uses_only_a_recorded_need_source_handle() {
     let (_tmp, space, handle) = space_with_task();
@@ -81,8 +95,11 @@ fn a_legacy_dispatch_uses_only_a_recorded_need_source_handle() {
         )
         .unwrap();
     drop(storage);
+    let db = space.dir.join("mail.sqlite");
+    drop(space);
+    remove_shm_sidecar(&db);
 
-    let events = read(&space.dir.join("mail.sqlite"), 8).unwrap();
+    let events = read(&db, 8).unwrap();
     assert_eq!(events.open[0].record.need, None);
     assert_eq!(events.open[0].record.kind, None);
     assert_eq!(events.task_info[&handle].need.as_deref(), Some("need5678"));
@@ -126,23 +143,23 @@ fn read_missing_db_is_empty() {
 }
 
 #[test]
-fn read_only_wal_events_skip_when_shm_is_missing_without_creating_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let _storage = Storage::open_mailspace(tmp.path()).unwrap();
-    drop(_storage);
-    let db = tmp.path().join("mail.sqlite");
-    let shm = tmp.path().join("mail.sqlite-shm");
-    let wal = tmp.path().join("mail.sqlite-wal");
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+fn read_only_owner_access_reads_events_without_a_shm_sidecar() {
+    let (_tmp, space, handle) = space_with_task();
+    space
+        .record_pool_note(&handle, "pool_dispatched", DISPATCH, "dispatched")
         .unwrap();
-    drop(conn);
-    let _ = fs::remove_file(&shm);
-    let _ = fs::remove_file(&wal);
+    let db = space.dir.join("mail.sqlite");
+    drop(space);
+    remove_shm_sidecar(&db);
     let before = fs::read(&db).unwrap();
 
-    let error = read(&db, 8).err().unwrap().to_string();
-    assert!(error.contains("mail.sqlite-shm"), "{error}");
-    assert!(!shm.exists(), "the monitor created the missing sidecar");
-    assert_eq!(fs::read(&db).unwrap(), before);
+    let events = read(&db, 8).unwrap();
+    assert_eq!(events.open.len(), 1);
+    assert_eq!(events.open[0].task, handle);
+    assert_eq!(events.open[0].record.need.as_deref(), Some("need1234"));
+    assert_eq!(
+        fs::read(&db).unwrap(),
+        before,
+        "reading never rewrites the database"
+    );
 }
