@@ -23,8 +23,12 @@
 //! request's target is resolved against the configured targets, the need's
 //! explicit target and its branch row, and the paths the request does not
 //! already hold are classified atomically against the target's live policy
-//! and its own checkout. [`effective_scopes`] renders the reader's facts
-//! grouped per target for runtime briefs.
+//! and its own checkout. The authorization operation collectors call is
+//! [`authorize_request`]: it classifies the whole request, journals it under
+//! its source, and publishes or adopts the matching need-thread ruling note
+//! ([`NoteWord::ScopeRuling`]) before any scope is mutated, so permission
+//! evidence exists before a grant takes effect. [`effective_scopes`] renders
+//! the reader's facts grouped per target for runtime briefs.
 
 use serde::{Deserialize, Serialize};
 
@@ -39,8 +43,10 @@ use crate::pump::config::ScopePath;
 use crate::pump::envelope::correct;
 use crate::pump::flow::slice_dispatch::SliceMail;
 
+mod publish;
 mod request;
 
+pub use publish::{ScopeAsk, ScopePublication, authorize_request};
 pub use request::{
     RequestTarget, ScopeClassification, ScopeContext, ScopeRequest, TargetScope, classify,
     effective_scopes,
