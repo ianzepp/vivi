@@ -7,14 +7,15 @@ use tempfile::{TempDir, tempdir};
 
 use super::CtoStart;
 use crate::letter::records::NoteWord;
+use crate::letter::work::NeedFront;
 use crate::mailspace::pump_note::note_body;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::JobSpec;
@@ -23,6 +24,9 @@ use crate::pump::store::step_payload::StepPayloadRow;
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 
 const NEED: &str = "need-1";
+
+/// The non-primary named target the seeded need root letters.
+const NEED_TARGET: &str = "vivi";
 
 struct Fixture {
     _dir: TempDir,
@@ -37,17 +41,62 @@ fn fixture() -> Fixture {
 }
 
 /// A fixture over `cfg`, so tests can shape the dispatch budgets.
-fn fixture_with(cfg: PumpConfig) -> Fixture {
+fn fixture_with(mut cfg: PumpConfig) -> Fixture {
+    // Two named targets: the primary `default` at the workspace main and the
+    // non-primary `vivi` at its own main. The seeded need root letters
+    // `vivi`, so the cto job must start from vivi/main, not the workspace
+    // main.
+    cfg.targets.insert(
+        String::from("default"),
+        PumpTarget {
+            main: cfg.main.clone(),
+            ..PumpTarget::default()
+        },
+    );
+    cfg.targets.insert(
+        String::from(NEED_TARGET),
+        PumpTarget {
+            main: format!("{NEED_TARGET}/main"),
+            ..PumpTarget::default()
+        },
+    );
     let dir = tempdir().expect("tempdir");
     let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail, Some(NEED_TARGET));
     Fixture {
         _dir: dir,
         ctx,
         host,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
     }
+}
+
+/// A valid readable need root under the need handle, so the cto's
+/// need-target read finds a body; `target` names the `target:` it carries.
+fn seed_need_root(mail: &mut FakeMail, target: Option<&str>) {
+    let mut front = NeedFront::new(vec![String::from("it works")]);
+    front.target = target.map(str::to_owned);
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: "mind".into(),
+            to: "mind".into(),
+            subject: "Need".into(),
+            body: crate::letter::fixture::need_body_with(&front, "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
 }
 
 fn run_row(number: u32, entry: &str, state: &str) -> RunRow {
@@ -172,7 +221,10 @@ fn the_job_is_head_cto_with_run_count_and_step_verdicts() {
     let spec = start(&f, &run);
     assert_eq!(spec.role, "head-cto");
     assert!(spec.read_only);
-    assert_eq!(spec.from_ref.as_deref(), Some(f.ctx.cfg.main.as_str()));
+    // The need's own non-primary target wins over the primary selection and
+    // carries its own main as the start ref.
+    assert_eq!(spec.target.as_deref(), Some(NEED_TARGET));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
     assert_eq!(
         spec.extra_targets,
         crate::pump::flow::step_inputs::targets(&f.ctx)

@@ -7,12 +7,14 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::letter::work::NeedFront;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
+use crate::pump::flow::mail::{TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::jobs::{JobSpec, JobStore, PoolJob};
@@ -22,6 +24,8 @@ use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 type R = Result<(), VivariumError>;
 
 const NEED: &str = "n1";
+/// The non-primary named target the seeded need root letters.
+const NEED_TARGET: &str = "vivi";
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
 
 #[derive(Default)]
@@ -62,7 +66,25 @@ fn rig() -> Result<Rig, VivariumError> {
     rig_with(PumpConfig::default())
 }
 
-fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
+fn rig_with(mut cfg: PumpConfig) -> Result<Rig, VivariumError> {
+    // Two named targets: the primary `default` at the workspace main and the
+    // non-primary `vivi` at its own main. The seeded need root letters
+    // `vivi`, so a rework job must start from vivi/main, not the workspace
+    // main; the need-branch row stays on the primary `default` repository.
+    cfg.targets.insert(
+        String::from("default"),
+        PumpTarget {
+            main: cfg.main.clone(),
+            ..PumpTarget::default()
+        },
+    );
+    cfg.targets.insert(
+        String::from(NEED_TARGET),
+        PumpTarget {
+            main: format!("{NEED_TARGET}/main"),
+            ..PumpTarget::default()
+        },
+    );
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
@@ -75,11 +97,13 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail, Some(NEED_TARGET));
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,
@@ -90,6 +114,31 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
             state: "live".into(),
         },
     })
+}
+
+/// A valid readable need root under the need handle, so the rework
+/// need-target read finds a body; `target` names the `target:` it carries.
+fn seed_need_root(mail: &mut FakeMail, target: Option<&str>) {
+    let mut front = NeedFront::new(vec![String::from("it works")]);
+    front.target = target.map(str::to_owned);
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: "mind".into(),
+            to: "mind".into(),
+            subject: "Need".into(),
+            body: crate::letter::fixture::need_body_with(&front, "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
 }
 
 fn step(node: &str, task: &str, verdict: Option<&str>) -> StepRow {
@@ -208,7 +257,10 @@ fn the_shipped_registry_picks_the_override_for_rework1_and_not_for_slice() -> R 
     };
     assert_eq!(job.role, "slicer");
     assert!(job.read_only);
-    assert_eq!(job.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    // The need's own non-primary target wins over the primary selection and
+    // carries its own main as the start ref.
+    assert_eq!(job.target.as_deref(), Some(NEED_TARGET));
+    assert_eq!(job.from_ref.as_deref(), Some("vivi/main"));
     assert_eq!(
         job.extra_targets,
         crate::pump::flow::step_inputs::targets(&rig.ctx)
