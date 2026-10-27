@@ -45,12 +45,14 @@ The envelope has these fields. Use no other keys.
 | `required_changes` | list of strings | Required for `revise` and non-empty there. Leave it out for the other words. |
 | `findings` | list of strings | Optional with any word. Leave it out when you have none. |
 | `reason` | string | Required for `escalate`. A literal string. |
+| `scope_target` | string | Only with `escalate`, together with `scope_paths`: the configured pump target the requested paths live in. |
+| `scope_paths` | list | Only with `escalate`, together with `scope_target`: the literal repo-relative paths to add. Nonempty, no blank entries. |
 
 Answer words:
 
 - `admitted`: the plan is faithful, grounded and consistent, and the slicer can cut it. Open findings are allowed.
 - `revise`: the plan can be made ready by changing it. List every required change in `required_changes`; the planner will answer each one.
-- `escalate`: revision will not fix it. The need itself is contradictory, the thread rests on a ruling nobody has made, the plan asks for something the code or a standing rule forbids, or the planner has already been given the same required change and did not meet it. Say why in `reason`.
+- `escalate`: revision will not fix it. The need itself is contradictory, the thread rests on a ruling nobody has made, the plan asks for something the code or a standing rule forbids, or the planner has already been given the same required change and did not meet it. Say why in `reason`. When the plan is ready except for paths the need does not delegate, `escalate` also carries the scope fields described under "Escalating for path permission" below.
 
 Write free text as TOML literal strings, `'...'`, which need no escapes. A literal string cannot contain a single quote, so rephrase the sentence if it would. Do not use `"..."` for free text.
 
@@ -79,6 +81,29 @@ Below the envelope, write the review as a short Markdown document with these hea
 - `## Verdict`: one or two sentences giving the reason for your answer word.
 
 Write `None.` under a heading with nothing to report. Every required change and every finding listed in the envelope appears in the review under the heading it belongs to. Do not repeat the envelope in the review, and do not wrap it in a code fence in your real reply.
+
+## Escalating for path permission
+
+`escalate` is also how you ask for path permission alone: the plan is ready except that it must write paths the need does not delegate, and no plan change can fix that. Answer `escalate`, keep the `reason` that says what the work needs and why, and add both scope fields. The fields are refused on every other answer, and they are refused apart: `scope_target` without `scope_paths`, or the other way around, does not parse.
+
+- `scope_target`: the configured pump target the paths live in. It must agree with the need's explicit target and with the target of the need's branch, when it has one. When neither names a target, the plan's target stands for this request alone and creates no branch.
+- `scope_paths`: the paths to add, as literal repo-relative paths. No globs, no absolute paths, no `..`; a directory path ends with `/`.
+
+An ordinary escalation — a contradiction the thread cannot settle, work the code or a standing rule forbids, a required change the planner already missed — omits both fields and says why in `reason` alone. A grant of paths is permission to write, never a decision and never slice ownership: keep asking for the missing decision itself when the plan also needs one.
+
+Judge a path request against the effective-scope block of your brief, which shows what the need already holds per target. The block is authoritative even where the letter's original `write_scope` text has gone stale, because the original signed need letter is never rewritten. The settled ruling is recorded on the need thread as a `scope-ruling` note, and a grant widens the need's effective scope for the work that follows.
+
+```
++++
+answer = "escalate"
+reason = 'The plan must also edit src/retry.rs, which the need does not delegate.'
+scope_target = "default"
+scope_paths = ["src/retry.rs"]
++++
+The review above finds the plan ready except for the path request in the envelope.
+```
+
+This charter ships inside the pump binary, and an installed copy is intentionally not overwritten by an upgrade. The brief therefore repeats the scope request contract itself, and that runtime text is what governs when an installed charter is older than the running pump. Older pump binaries cannot be relied upon to honor the scope fields, or the note word that records the ruling.
 
 ## Finish
 
