@@ -9,6 +9,7 @@ use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::PoolTask;
+use vivi::pool::bands::live::{self, Admission};
 use vivi::pool::bands::runtime::{Decision, Wait};
 use vivi::pool::bridge;
 use vivi::pool::collect::{ErrorWatch, Pacing};
@@ -45,7 +46,10 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
     }
 }
 
-/// What the plan phase decided: everything that can refuse a dispatch for good.
+/// What the plan phase decided: everything that can refuse a dispatch for
+/// good, plus the live admission a `Ready` model job holds — guard and
+/// snapshot — until its job is recorded. `None` for a `--command` job, which
+/// runs outside model admission.
 struct Planned {
     selected: Option<dispatch::target::Resolved>,
     ready_timeout: Option<u64>,
@@ -53,12 +57,37 @@ struct Planned {
     role_line: String,
     plan: job::JobPlan,
     job_id: String,
+    admission: Option<Admission>,
+}
+
+/// The permanent half of one dispatch request: everything that can refuse it
+/// before any availability question is asked, with the model selection left
+/// open. The pair is chosen later, from a live snapshot under the pool's
+/// dispatch guard.
+struct Prepared {
+    /// The request's flags, the model-and-reasoning pair still empty and the
+    /// read-only mode already resolved from the role.
+    flags: DispatchFlags,
+    /// The standing rules text the job delivers.
+    rules: String,
+    /// The normalized model intent, when this is a model job; `None` for a
+    /// `--command` job.
+    intent: Option<role_dispatch::Intent>,
+    /// The role the job serves, when it has one: the human line names it
+    /// once the pair is resolved.
+    role: Option<RoleFacts>,
 }
 
 /// Decide the job without claiming a slot or touching a remote. `Ready`
-/// carries the plan; `Waiting` names a temporary block and is a successful
-/// answer, not an error. Every permanent check runs before either arm, so a
-/// wait never hides a configuration fault.
+/// carries the plan and, for a model job, the live admission whose guard
+/// stays held until the job is recorded; `Waiting` names a temporary block
+/// and is a successful answer, not an error. Every permanent check runs
+/// before either arm, so a wait never hides a configuration fault: the
+/// intent is normalized and pair-checked and the request itself validated,
+/// and only then is live admission acquired ([`live::acquire`], on the
+/// pool's own identity) and the model-and-reasoning pair selected exactly
+/// once from its snapshot ([`role_dispatch::resolve_available`]) — still
+/// before any claim, bridge grant, worktree start or remote start.
 fn plan_phase(
     command: &PoolDispatchCommand,
     space: &Mailspace,
@@ -74,11 +103,7 @@ fn plan_phase(
         dispatch::check_ready_timeout(handle.provider.slot_lifetime(), command.ready_timeout)?;
     let job_id = fresh_job_id(&task.handle);
     let rules_text = load_rules(config, space)?;
-    let planned = resolve_dispatch(command, config, pool, space, task, rules_text)?;
-    let (flags, rules, role_line) = match planned {
-        Decision::Ready(planned) => planned,
-        Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
-    };
+    let prepared = resolve_dispatch(command, config, pool, space, task, rules_text)?;
     // The request-level checks plan_job runs, ahead of any availability
     // decision: a later wait can only ever be about capacity.
     let letter = (
@@ -86,8 +111,25 @@ fn plan_phase(
         task.subject.as_str(),
         task.body.as_str(),
     );
-    dispatch::validate_request(config, pool, letter, &flags)?;
-    let mut plan = dispatch::plan_job(config, pool, letter, &flags, rules, job_id.clone())?;
+    dispatch::validate_request(config, pool, letter, &prepared.flags)?;
+    let mut flags = prepared.flags;
+    let (admission, role_line) = match prepared.intent {
+        // A --command job runs outside model admission: no guard, no
+        // snapshot, no wait.
+        None => (None, String::new()),
+        Some(intent) => {
+            let (admission, resolved) =
+                match admit_and_select(space, task, handle, config, pool, &intent)? {
+                    Decision::Ready(found) => found,
+                    Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
+                };
+            let line = role_line(command, prepared.role.as_ref(), &resolved);
+            flags = carry_resolved(flags, &resolved);
+            (Some(admission), line)
+        }
+    };
+    let mut plan =
+        dispatch::plan_job(config, pool, letter, &flags, prepared.rules, job_id.clone())?;
     plan.target = selected.as_ref().map(|selected| selected.target.clone());
     if config.provider == "local" {
         plan.publish_remote = selected
@@ -101,7 +143,52 @@ fn plan_phase(
         role_line,
         plan,
         job_id,
+        admission,
     }))
+}
+
+/// Acquire the pool's live admission and select the model-and-reasoning
+/// pair from its snapshot, exactly once ([`role_dispatch::resolve_available`]
+/// over the [`live::acquire`] evidence). Contention (`DispatchBusy`), a
+/// failed census (`BandUnavailable`) and an exhausted band or pin all answer
+/// a typed wait with the guard released on the way out; only a `Ready`
+/// selection keeps the admission — guard and snapshot — alive, for the
+/// caller to hold until the job is recorded. The same-task-open check, run
+/// before planning without the guard, is repeated here: holding the guard
+/// closes the very race that check exists for.
+fn admit_and_select(
+    space: &Mailspace,
+    task: &PoolTask,
+    handle: &pools::PoolHandle,
+    config: &PoolConfig,
+    pool: &str,
+    intent: &role_dispatch::Intent,
+) -> Result<Decision<(Admission, role_dispatch::Resolved)>, VivariumError> {
+    let admission = match live::acquire(
+        space,
+        handle.provider.as_ref(),
+        &handle.id,
+        work::epoch_secs(),
+    )? {
+        Decision::Ready(admission) => admission,
+        Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
+    };
+    refuse_second_dispatch(space, &task.handle)?;
+    let resolved =
+        match role_dispatch::resolve_available(config, pool, intent, &admission.availability)? {
+            Decision::Ready(resolved) => resolved,
+            Decision::Waiting(wait) => return Ok(Decision::Waiting(wait)),
+        };
+    Ok(Decision::Ready((admission, resolved)))
+}
+
+/// Carry the selected model-and-reasoning pair — and the read-only mode it
+/// repeats — into the request's flags.
+fn carry_resolved(mut flags: DispatchFlags, resolved: &role_dispatch::Resolved) -> DispatchFlags {
+    flags.model = resolved.model.clone();
+    flags.reasoning = resolved.reasoning.clone();
+    flags.read_only = resolved.read_only;
+    flags
 }
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
@@ -121,6 +208,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         role_line,
         mut plan,
         job_id,
+        admission,
     } = match plan_phase(command, &space, &task, &handle).inspect_err(|e| {
         if command.porcelain {
             println!("{}", porcelain::refused(&task.handle, &e.to_string()));
@@ -175,6 +263,11 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         &progress,
         ready_timeout,
     )?;
+    // The job is recorded (or the failure has already undone its grant), so
+    // the pool's dispatch guard can go: a later dispatch of this pool is
+    // judged by the record, not the lock. Every error path before this
+    // releases the guard the same way, by dropping the admission.
+    drop(admission);
     note_last_branch(provider, &made.machine, &plan.refs.branch);
     note_uncollected(provider, config, ready_timeout, &made, &progress);
     if command.porcelain {
@@ -336,19 +429,16 @@ fn refuse_second_dispatch(space: &Mailspace, handle: &str) -> Result<(), Vivariu
     Ok(())
 }
 
-/// The flags, rules text and human suffix of one dispatch, with the role the
-/// task is addressed to folded in before anything is claimed: the role's
-/// band, kind and charter and the operator's flags go through
-/// `role_dispatch::resolve` against the pool's band table, so every refusal
-/// there costs nothing. The rules gain the role's charter as a standing
-/// prompt whose pool note follows the pool's bridge: with the bridge on it
-/// names the server's vivi tools, without it the receipt ending. A role with
-/// no charter, or no role, gets the pool rules followed by the project rules.
-/// The model intent is normalized once ([`role_dispatch::normalize`]) and
-/// every candidate pair is checked ([`validate_pairs`]) before the
-/// configuration-only draw ([`role_dispatch::resolve_intent`]); `Waiting` is
-/// reserved for the availability decision that follows planning and is never
-/// an error here.
+/// The permanent half of one dispatch: the flags, rules and normalized model
+/// intent that every availability question presupposes. A `--command` job
+/// skips model admission entirely: no standing prompt, no model and no
+/// intent ([`resolve_command_dispatch`]). A model job keeps its `--model`
+/// pre-check ([`job::check_model`], whose refusal wording the CLI pins),
+/// normalizes the intent once ([`role_dispatch::normalize`]) and checks
+/// every candidate pair ([`validate_pairs`]). The selection itself no longer
+/// happens here: [`role_dispatch::resolve_available`] runs later, under the
+/// pool's dispatch guard, so a wait can only ever be about capacity — and
+/// the guard outlives this function, riding in the [`Prepared`] intent.
 fn resolve_dispatch(
     command: &PoolDispatchCommand,
     config: &PoolConfig,
@@ -356,9 +446,9 @@ fn resolve_dispatch(
     space: &Mailspace,
     task: &PoolTask,
     pool_rules: String,
-) -> Result<Decision<(DispatchFlags, String, String)>, VivariumError> {
+) -> Result<Prepared, VivariumError> {
     if command.command.is_some() {
-        return resolve_command_dispatch(command, space, task, pool_rules).map(Decision::Ready);
+        return resolve_command_dispatch(command, space, task, pool_rules);
     }
     if let Some(slug) = &command.model {
         if let Some(harness) = &config.harness {
@@ -377,7 +467,6 @@ fn resolve_dispatch(
         },
     )?;
     validate_pairs(config, pool, &intent)?;
-    let resolved = role_dispatch::resolve_intent(config, pool, &intent)?;
     let rules = match role.as_ref() {
         Some(role) => role_dispatch::standing_prompt(
             &role.name,
@@ -391,15 +480,19 @@ fn resolve_dispatch(
             &role_dispatch::project_rules_snapshot(space)?,
         ),
     };
-    let role_line = role_line(command, role.as_ref(), &resolved);
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
     let flags = DispatchFlags {
-        model: resolved.model,
-        read_only: resolved.read_only,
-        reasoning: resolved.reasoning,
+        model: String::new(),
+        read_only: intent.read_only,
+        reasoning: None,
         ..base_flags(command, need, kind)
     };
-    Ok(Decision::Ready((flags, rules, role_line)))
+    Ok(Prepared {
+        flags,
+        rules,
+        intent: Some(intent),
+        role,
+    })
 }
 
 /// The permanent model-and-reasoning checks of one normalized intent, run
@@ -496,19 +589,25 @@ fn configured_mains(space: &Mailspace) -> Vec<String> {
     })
 }
 
-/// The flags of a no-model dispatch (`--command`): no role resolution, no
-/// standing prompt and no model. `validate_publish` still runs so a
-/// merge-role task can publish.
+/// The permanent half of a no-model dispatch (`--command`): no role
+/// resolution beyond the publish checks, no standing prompt, no model and no
+/// model admission — the job takes no dispatch guard and draws from no
+/// snapshot, so pool contention and caps cannot make it wait.
+/// `validate_publish` still runs so a merge-role task can publish.
 fn resolve_command_dispatch(
     command: &PoolDispatchCommand,
     space: &Mailspace,
     task: &PoolTask,
     pool_rules: String,
-) -> Result<(DispatchFlags, String, String), VivariumError> {
+) -> Result<Prepared, VivariumError> {
     let role = dispatch_role(command, space, task)?;
     let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
-    let flags = base_flags(command, need, kind);
-    Ok((flags, pool_rules, String::new()))
+    Ok(Prepared {
+        flags: base_flags(command, need, kind),
+        rules: pool_rules,
+        intent: None,
+        role,
+    })
 }
 
 /// Resolve the need and kind carried by one dispatch command.
