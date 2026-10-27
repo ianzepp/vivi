@@ -17,11 +17,11 @@ use crate::letter::fixture::step_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::fanout::slice_node;
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
-use crate::pump::flow::mail::{MailReader, MailWriter, TaskStatus};
+use crate::pump::flow::mail::{MailReader, MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, test_ctx};
@@ -90,6 +90,29 @@ fn config() -> PumpConfig {
     cfg
 }
 
+/// A valid readable need root in the mailspace, so strict need reads (the
+/// judge's need target) find a body and not only the host `need show` reply.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.tasks.insert(
+        NEED.to_string(),
+        FakeTask {
+            from: "mind".into(),
+            to: "mind".into(),
+            subject: "Need".into(),
+            body: crate::letter::fixture::need_body(&["it works"], "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
 /// A build need with a live need branch and a run started at `entry`.
 fn rig(entry: &str) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
@@ -110,6 +133,7 @@ fn rig(entry: &str) -> Result<Rig, VivariumError> {
     );
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail);
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),

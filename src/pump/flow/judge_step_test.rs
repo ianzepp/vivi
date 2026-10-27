@@ -5,11 +5,13 @@ use tempfile::{TempDir, tempdir};
 
 use super::JudgeStart;
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::letter::work::NeedFront;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::FlowKind;
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
+use crate::pump::flow::mail::{TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, test_ctx};
 use crate::pump::store::step_payload::StepPayloadRow;
@@ -34,11 +36,13 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail, None);
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,
@@ -49,6 +53,31 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
             state: "live".into(),
         },
     })
+}
+
+/// A valid readable need root in the mailspace, so the judge's need-target
+/// read finds a body; `target` names the `target:` the root carries.
+fn seed_need_root(mail: &mut FakeMail, target: Option<&str>) {
+    let mut front = NeedFront::new(vec![String::from("it works")]);
+    front.target = target.map(str::to_owned);
+    mail.tasks.insert(
+        NEED.into(),
+        FakeTask {
+            from: "mind".into(),
+            to: "mind".into(),
+            subject: "Need".into(),
+            body: crate::letter::fixture::need_body_with(&front, "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
 }
 
 fn store_row(rig: &Rig, class: &str, payload: serde_json::Value) -> Result<(), VivariumError> {
@@ -110,6 +139,30 @@ fn judge_job_is_a_read_only_auditor_with_audit_and_rung() -> Result<(), Vivarium
     assert!(spec.body.contains("AUDIT-ANSWER-TEXT"));
     assert!(spec.body.contains("vivi::pump::flow::a_test"));
     assert!(spec.body.contains("exit: 101"));
+    Ok(())
+}
+
+#[test]
+fn a_targeted_need_starts_the_judge_from_its_target_main() -> Result<(), VivariumError> {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("workspace-main");
+    for (id, main) in [("default", "workspace-main"), ("vivi", "vivi-main")] {
+        cfg.targets.insert(
+            id.to_owned(),
+            PumpTarget {
+                main: main.to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let mut rig = rig_with(cfg)?;
+    seed_need_root(&mut rig.mail, Some("vivi"));
+    store_audit_and_rung(&rig)?;
+    let StartAction::Job(spec) = start(&rig)? else {
+        return Err(VivariumError::Other("not a job".into()));
+    };
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi-main"));
     Ok(())
 }
 
