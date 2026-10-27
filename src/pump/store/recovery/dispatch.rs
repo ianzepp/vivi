@@ -96,6 +96,50 @@ impl PumpStore {
         Ok(())
     }
 
+    /// Record dispatch-start evidence from plain fields, for callers outside
+    /// this module tree that cannot name [`DispatchStart`]. The first record
+    /// wins: a later write for the same job keeps the original start evidence.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written.
+    pub(crate) fn save_dispatch_start(
+        &self,
+        job: &str,
+        at: u64,
+        evidence_json: &str,
+    ) -> Result<(), VivariumError> {
+        self.record_dispatch_start(&DispatchStart {
+            job: job.to_owned(),
+            at,
+            evidence_json: evidence_json.to_owned(),
+        })
+    }
+
+    /// Record the associations a pool accepted from plain fields, for callers
+    /// outside this module tree that cannot name [`DispatchAccept`]. The
+    /// newest acceptance wins.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written.
+    pub(crate) fn save_dispatch_accept(
+        &self,
+        job: &str,
+        task: Option<&str>,
+        pool: Option<&str>,
+        slot: Option<&str>,
+        pool_job: Option<&str>,
+        snapshot_json: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        self.record_dispatch_accept(&DispatchAccept {
+            job: job.to_owned(),
+            task: task.map(str::to_owned),
+            pool: pool.map(str::to_owned),
+            slot: slot.map(str::to_owned),
+            pool_job: pool_job.map(str::to_owned),
+            snapshot_json: snapshot_json.map(str::to_owned),
+        })
+    }
+
     /// Read one pump job's dispatch-start evidence, or `None` when the job
     /// never started.
     ///

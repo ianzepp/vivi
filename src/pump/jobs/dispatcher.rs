@@ -6,13 +6,17 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
-use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
+use super::{JobStatus, JobStore, PoolJob, brief, tail};
 use crate::error::VivariumError;
-use crate::letter::records::NoteWord;
 use crate::letter::work::{JobFront, TaskFront};
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::par::map_bounded;
+
+mod evidence;
+#[cfg(test)]
+#[path = "dispatcher_test.rs"]
+mod tests;
 
 /// Dispatch every pending job that has a free pool slot.
 ///
@@ -200,7 +204,8 @@ fn payload_priority(value: &serde_json::Value, priorities: &BTreeMap<String, i64
 
 /// What the concurrent half of one job dispatch learned.
 enum Sent {
-    /// The brief could not be written.
+    /// The brief could not be written, or the dispatch start could not be
+    /// recorded.
     Failed(VivariumError),
     /// The task could not be created.
     NoTask,
@@ -212,7 +217,6 @@ enum Sent {
     Dispatched {
         task: String,
         fresh: bool,
-        code: i32,
         text: String,
     },
 }
@@ -234,11 +238,17 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
             Err(error) => return Sent::Failed(error),
         },
     };
+    if let Err(error) = evidence::record_start(ctx, snapshot, pool, &task) {
+        ctx.log(&format!(
+            "job {} dispatch start evidence failed: {error}",
+            snapshot.id
+        ));
+        return Sent::Failed(error);
+    }
     let output = ctx.vivi(&command_for(ctx, snapshot, pool, &task), 240);
     Sent::Dispatched {
         task,
         fresh,
-        code: output.code,
         text: output.text,
     }
 }
@@ -248,18 +258,7 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
 /// brief note for this job id is left alone, so a deferred dispatch retried on
 /// the next tick posts nothing new.
 fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError> {
-    let thread = ctx.vivi(
-        &format!("mail thread {} --limit 1000 --json", shell_quote(task)),
-        60,
-    );
-    if thread.code == 0
-        && recovery::bodies_of(&thread.text).iter().any(|body| {
-            crate::mailspace::pump_note::note_of(body).is_some_and(|note| {
-                note.pump.note == NoteWord::Brief
-                    && note.job.is_some_and(|front| front.id == job.id)
-            })
-        })
-    {
+    if evidence::brief_present(ctx, task, &job.id) {
         return Ok(());
     }
     let dir = ctx.home.join("job-briefs");
@@ -291,51 +290,76 @@ fn apply_dispatch(
     sent: Sent,
     free: &mut BTreeMap<String, u32>,
 ) -> Result<bool, VivariumError> {
-    let (task, fresh, code, text) = match sent {
+    let (task, fresh, text) = match sent {
         Sent::Failed(error) => return Err(error),
         Sent::NoTask | Sent::BriefUnsent => return Ok(false),
         Sent::Dispatched {
             task,
             fresh,
-            code,
             text,
-        } => (task, fresh, code, text),
+        } => (task, fresh, text),
     };
     if fresh && let Some(job) = st.jobs_mut().get_mut(&snapshot.id) {
         job.task = Some(task.clone());
     }
-    if code != 0 || !text.contains("dispatched") {
-        if text.contains("no free slot") {
-            free.insert(pool.to_owned(), 0);
-        }
-        let latest = crate::pump::collect::receipt_full(ctx, &task);
-        recovery::recover_task(ctx, st, &snapshot.id, &task, &latest);
-        if st
-            .jobs()
-            .get(&snapshot.id)
-            .is_some_and(|job| job.status != JobStatus::Pending)
-        {
-            return Ok(true);
-        }
+    if let Some(accepted) = evidence::accepted_line(&text) {
+        evidence::persist_accept(
+            ctx,
+            snapshot,
+            &accepted.task,
+            &accepted.pool,
+            &accepted.slot,
+            &accepted.pool_job,
+        )?;
+        adopt_accepted(ctx, st, snapshot, pool, &task, &accepted)?;
+        free.entry(pool.to_owned())
+            .and_modify(|count| *count = count.saturating_sub(1));
+        return Ok(true);
+    }
+    if text.contains("no free slot") {
+        free.insert(pool.to_owned(), 0);
+    }
+    if crate::pool::porcelain::refused_reason(&text).is_some() {
         defer(ctx, st, snapshot, pool, &text);
         return Ok(false);
     }
-    let job = st.jobs_mut().get_mut(&snapshot.id).ok_or_else(|| {
-        VivariumError::Message(format!(
+    match evidence::resolve_uncertain(ctx, st, snapshot, &task)? {
+        evidence::Resolved::Adopted => Ok(true),
+        evidence::Resolved::Unstarted => {
+            defer(ctx, st, snapshot, pool, &text);
+            Ok(false)
+        }
+        evidence::Resolved::Ambiguous(reason) => {
+            hold_ambiguous(ctx, st, snapshot, &task, &reason);
+            Ok(false)
+        }
+    }
+}
+
+/// Apply a parsed `dispatched` line to the job map: a pool accepted. The
+/// association was persisted before this runs; here the job itself moves.
+fn adopt_accepted(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    snapshot: &PoolJob,
+    pool: &str,
+    task: &str,
+    accepted: &evidence::Accepted,
+) -> Result<(), VivariumError> {
+    let Some(job) = st.jobs_mut().get_mut(&snapshot.id) else {
+        return Err(VivariumError::Message(format!(
             "pump job {:?} disappeared during dispatch",
             snapshot.id
-        ))
-    })?;
+        )));
+    };
     job.pool = Some(pool.to_owned());
     job.dispatched_at = Some(ctx.now());
     job.status = JobStatus::Dispatched;
-    free.entry(pool.to_owned())
-        .and_modify(|count| *count = count.saturating_sub(1));
     ctx.log(&format!(
-        "job dispatched {} role={} pool={pool} task={task}",
-        snapshot.id, snapshot.role
+        "job dispatched {} role={} pool={pool} task={task} pool_job={}",
+        snapshot.id, snapshot.role, accepted.pool_job
     ));
-    Ok(true)
+    Ok(())
 }
 
 /// Log a deferred dispatch; a `refused` porcelain line also counts a refusal.
@@ -360,16 +384,54 @@ fn note_refusal(ctx: &Ctx, st: &mut impl JobStore, snapshot: &PoolJob, pool: &st
     if job.dispatch_refusals < REFUSAL_LIMIT || job.held.is_some() {
         return;
     }
+    let release = release_hint(job);
     job.held = Some(reason.to_owned());
-    let release = match job.payload["task"].as_str() {
-        Some(step) => format!("vivi pump requeue {step}"),
-        None => format!("vivi pump requeue --job {}", snapshot.id),
-    };
     ctx.exception(
         "job-dispatch-refused",
         &snapshot.id,
         &format!(
             "pool {pool} refused job {} {REFUSAL_LIMIT} times: {reason}; fix the cause, then run `{release}` to release it, or `vivi pump withdraw <need>`",
+            snapshot.id
+        ),
+    );
+}
+
+/// The command that releases a held job: its step task when the payload
+/// names one, else the job itself.
+fn release_hint(job: &PoolJob) -> String {
+    match job.payload["task"].as_str() {
+        Some(step) => format!("vivi pump requeue {step}"),
+        None => format!("vivi pump requeue --job {}", job.id),
+    }
+}
+
+/// Hold a job whose dispatch cannot be told apart from other dispatches on
+/// its task: ownership is unresolved, so neither another pool nor a second
+/// dispatch may run the work again.
+fn hold_ambiguous(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    snapshot: &PoolJob,
+    task: &str,
+    reason: &str,
+) {
+    let Some(job) = st.jobs_mut().get_mut(&snapshot.id) else {
+        return;
+    };
+    if job.held.is_some() {
+        return;
+    }
+    let release = release_hint(job);
+    job.held = Some(String::from("dispatch receipt ambiguous"));
+    ctx.log(&format!(
+        "job dispatch ambiguous {} on {task}: {reason}",
+        snapshot.id
+    ));
+    ctx.exception(
+        "flow-job-receipt-ambiguous",
+        &snapshot.id,
+        &format!(
+            "job {} dispatch on {task} cannot be attributed to one execution: {reason}; fix the cause, then run `{release}` to release it",
             snapshot.id
         ),
     );
