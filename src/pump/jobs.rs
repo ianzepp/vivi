@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::VivariumError;
+use crate::pump::config::PumpConfig;
 use crate::pump::host::Ctx;
 
 mod brief;
@@ -138,6 +139,47 @@ impl JobSpec {
             payload: serde_json::Value::Object(serde_json::Map::new()),
             task: None,
         }
+    }
+
+    /// Start the job at its target's main: resolve the effective target (an
+    /// existing `target` wins, else the configuration's primary target) and
+    /// set `from_ref` to that target's main through [`PumpConfig::for_target`].
+    /// `dispatch.from` is never consulted: a job starts from the target's
+    /// main, not the unit-dispatch intake branch. With explicit targets the
+    /// selected target is persisted together with its main; a legacy
+    /// configuration without explicit targets resolves its synthetic default
+    /// and leaves `target` absent.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError::Config`] when the spec names an unknown
+    /// target, or names none while the configuration has several explicit
+    /// targets and no `default`. Either failure leaves the spec unchanged.
+    pub fn start_from_target_main(&mut self, cfg: &PumpConfig) -> Result<(), VivariumError> {
+        let explicit = !cfg.targets.is_empty();
+        let id = match self.target.clone().or_else(|| cfg.primary_target()) {
+            Some(id) => id,
+            // A legacy configuration without explicit targets synthesizes a
+            // `default` target from its single-repository fields.
+            None if !explicit => String::from("default"),
+            None => {
+                return Err(VivariumError::Config(format!(
+                    "pump job {:?} names no target; the configuration has several targets and no \
+                     default",
+                    self.id
+                )));
+            }
+        };
+        let resolved = cfg.for_target(&id).ok_or_else(|| {
+            VivariumError::Config(format!(
+                "pump job {:?} names unknown repository target {id:?}",
+                self.id
+            ))
+        })?;
+        if explicit {
+            self.target = Some(id);
+        }
+        self.from_ref = Some(resolved.main);
+        Ok(())
     }
 }
 

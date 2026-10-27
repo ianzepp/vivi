@@ -7,6 +7,7 @@ use super::{
     dispatch_order, dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
     release_held_after_reload, send_task,
 };
+use crate::error::VivariumError;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::fixture::ProbeHost;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -1085,4 +1086,106 @@ fn a_job_with_a_target_keeps_it() {
         command.contains("--target other") && !command.contains("--target app"),
         "{command}"
     );
+}
+
+/// A workspace whose main is `main`, whose targets carry distinct mains, and
+/// whose `dispatch.from` differs from every main: a spec that starts from a
+/// target's main must never pick up the dispatch intake branch.
+fn target_config(targets: &[(&str, &str)]) -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.from = Some(String::from("dispatch-start"));
+    for (id, main) in targets {
+        cfg.targets.insert(
+            (*id).to_string(),
+            PumpTarget {
+                main: (*main).to_string(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    cfg
+}
+
+#[test]
+fn start_from_target_main_honors_an_explicit_target() {
+    let cfg = target_config(&[
+        ("default", "vivi/main-default"),
+        ("alpha", "vivi/main-alpha"),
+    ]);
+    let mut job = spec("review-1");
+    job.target = Some(String::from("alpha"));
+    job.budget = 600;
+    job.branch = Some(String::from("work"));
+    job.publish_ref = Some(String::from("refs/heads/work"));
+    job.publish_expect = Some(String::from("abc123"));
+    job.extra_targets = vec![String::from("gamma")];
+    job.start_from_target_main(&cfg).unwrap();
+    assert_eq!(job.target.as_deref(), Some("alpha"));
+    assert_eq!(job.from_ref.as_deref(), Some("vivi/main-alpha"));
+    assert_eq!(job.budget, 600, "selection must not alter the budget");
+    assert_eq!(job.branch.as_deref(), Some("work"));
+    assert_eq!(job.publish_ref.as_deref(), Some("refs/heads/work"));
+    assert_eq!(job.publish_expect.as_deref(), Some("abc123"));
+    assert_eq!(job.extra_targets, ["gamma"]);
+}
+
+#[test]
+fn start_from_target_main_falls_back_to_the_sole_target() {
+    let cfg = target_config(&[("alpha", "vivi/main-alpha")]);
+    let mut job = spec("cadence-1");
+    job.start_from_target_main(&cfg).unwrap();
+    assert_eq!(
+        job.target.as_deref(),
+        Some("alpha"),
+        "the target is persisted"
+    );
+    assert_eq!(job.from_ref.as_deref(), Some("vivi/main-alpha"));
+}
+
+#[test]
+fn start_from_target_main_falls_back_to_the_explicit_default() {
+    let cfg = target_config(&[("beta", "vivi/main-beta"), ("default", "vivi/main-default")]);
+    let mut job = spec("cadence-1");
+    job.start_from_target_main(&cfg).unwrap();
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.from_ref.as_deref(), Some("vivi/main-default"));
+}
+
+#[test]
+fn start_from_target_main_resolves_the_legacy_default_without_a_target() {
+    let mut cfg = PumpConfig::default();
+    cfg.dispatch.from = Some(String::from("dispatch-start"));
+    let mut job = spec("cadence-1");
+    job.start_from_target_main(&cfg).unwrap();
+    assert_eq!(
+        job.target, None,
+        "a legacy configuration leaves the target absent"
+    );
+    assert_eq!(
+        job.from_ref.as_deref(),
+        Some("main"),
+        "the workspace main starts the job, never dispatch.from"
+    );
+}
+
+#[test]
+fn start_from_target_main_rejects_an_unknown_target_without_changes() {
+    let cfg = target_config(&[("alpha", "vivi/main-alpha")]);
+    let mut job = spec("review-1");
+    job.target = Some(String::from("nope"));
+    job.from_ref = Some(String::from("keep"));
+    let before = job.clone();
+    let err = job.start_from_target_main(&cfg).unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert_eq!(job, before, "a failed resolution leaves the spec unchanged");
+}
+
+#[test]
+fn start_from_target_main_rejects_an_untargeted_ambiguous_configuration() {
+    let cfg = target_config(&[("alpha", "vivi/main-alpha"), ("beta", "vivi/main-beta")]);
+    let mut job = spec("cadence-1");
+    let before = job.clone();
+    let err = job.start_from_target_main(&cfg).unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert_eq!(job, before, "a failed resolution leaves the spec unchanged");
 }
