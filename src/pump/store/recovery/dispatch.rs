@@ -146,4 +146,70 @@ impl PumpStore {
             .optional()
             .map_err(db_err("read recovery dispatch accept"))
     }
+
+    /// Record dispatch-start evidence from plain fields, for callers that
+    /// cannot name the private [`DispatchStart`] type. See
+    /// [`Self::record_dispatch_start`]: the first record for a job wins.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written.
+    pub(crate) fn save_dispatch_start(
+        &self,
+        job: &str,
+        at: u64,
+        evidence_json: &str,
+    ) -> Result<(), VivariumError> {
+        self.record_dispatch_start(&DispatchStart {
+            job: job.to_owned(),
+            at,
+            evidence_json: evidence_json.to_owned(),
+        })
+    }
+
+    /// Record accepted associations from plain fields, for callers that
+    /// cannot name the private [`DispatchAccept`] type. See
+    /// [`Self::record_dispatch_accept`]: the newest acceptance wins.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the row cannot be written.
+    pub(crate) fn save_dispatch_accept(
+        &self,
+        job: &str,
+        task: Option<&str>,
+        pool: Option<&str>,
+        slot: Option<&str>,
+        pool_job: Option<&str>,
+        snapshot_json: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        self.record_dispatch_accept(&DispatchAccept {
+            job: job.to_owned(),
+            task: task.map(str::to_owned),
+            pool: pool.map(str::to_owned),
+            slot: slot.map(str::to_owned),
+            pool_job: pool_job.map(str::to_owned),
+            snapshot_json: snapshot_json.map(str::to_owned),
+        })
+    }
+
+    /// The pool job ids accepted on `task`, oldest first: every dispatch
+    /// identity the pump has already observed there. These are the prior
+    /// identities a later execution must never adopt as its own.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the table cannot be read.
+    pub(crate) fn dispatch_pool_jobs_on_task(&self, task: &str) -> Result<Vec<String>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT pool_job FROM recovery_dispatch_accepts
+                 WHERE task = ?1 AND pool_job IS NOT NULL AND pool_job != ''
+                 ORDER BY rowid",
+            )
+            .map_err(db_err("read recovery dispatch accepts of task"))?;
+        let rows = stmt
+            .query_map([task], |row| row.get::<_, String>(0))
+            .map_err(db_err("read recovery dispatch accepts of task"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(db_err("read recovery dispatch accepts of task"))
+    }
 }

@@ -6,13 +6,18 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
-use super::{JobStatus, JobStore, PoolJob, brief, recovery, tail};
+use super::{JobOutcome, JobStatus, JobStore, PoolJob, brief, recovery, tail};
 use crate::error::VivariumError;
 use crate::letter::records::NoteWord;
 use crate::letter::work::{JobFront, TaskFront};
 use crate::pump::flow::rank::{self, RankKey};
 use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::jobs::execution_receipt::{
+    ExecutionReceipt, SelectedDispatch, SelectedResult,
+};
 use crate::pump::par::map_bounded;
+
+mod evidence;
 
 /// Dispatch every pending job that has a free pool slot.
 ///
@@ -212,13 +217,13 @@ enum Sent {
     Dispatched {
         task: String,
         fresh: bool,
-        code: i32,
         text: String,
     },
 }
 
 /// The remote half of dispatching one job, with no state writes: create its
-/// task when it has none, then run `pool dispatch` for it on `pool`.
+/// task when it has none, record the dispatch-start evidence, then run
+/// `pool dispatch` for it on `pool`.
 fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
     let (task, fresh) = match &snapshot.task {
         Some(task) => {
@@ -234,11 +239,16 @@ fn send_and_dispatch(ctx: &Ctx, snapshot: &PoolJob, pool: &str) -> Sent {
             Err(error) => return Sent::Failed(error),
         },
     };
+    // The start evidence anchors every later ownership decision for this
+    // dispatch: without it the receipt reader must stay ambiguous, so a job
+    // is never offered to a pool that cannot be booked first.
+    if let Err(error) = evidence::record_start(ctx, snapshot, pool, &task) {
+        return Sent::Failed(error);
+    }
     let output = ctx.vivi(&command_for(ctx, snapshot, pool, &task), 240);
     Sent::Dispatched {
         task,
         fresh,
-        code: output.code,
         text: output.text,
     }
 }
@@ -282,7 +292,9 @@ fn post_brief(ctx: &Ctx, job: &PoolJob, task: &str) -> Result<(), VivariumError>
 
 /// Apply one [`Sent`] to the job store: the state writes of a job dispatch.
 /// Returns `true` when the job left `pending` (dispatched, or settled by
-/// recovery), `false` to try the job's next pool.
+/// recovery), `false` to try the job's next pool. The pool's acceptance is
+/// recorded durably before the job map moves, so a crash after the pool took
+/// the job never loses who owns it.
 fn apply_dispatch(
     ctx: &Ctx,
     st: &mut impl JobStore,
@@ -291,35 +303,49 @@ fn apply_dispatch(
     sent: Sent,
     free: &mut BTreeMap<String, u32>,
 ) -> Result<bool, VivariumError> {
-    let (task, fresh, code, text) = match sent {
+    let (task, fresh, text) = match sent {
         Sent::Failed(error) => return Err(error),
         Sent::NoTask | Sent::BriefUnsent => return Ok(false),
-        Sent::Dispatched {
-            task,
-            fresh,
-            code,
-            text,
-        } => (task, fresh, code, text),
+        Sent::Dispatched { task, fresh, text } => (task, fresh, text),
     };
     if fresh && let Some(job) = st.jobs_mut().get_mut(&snapshot.id) {
         job.task = Some(task.clone());
     }
-    if code != 0 || !text.contains("dispatched") {
-        if text.contains("no free slot") {
-            free.insert(pool.to_owned(), 0);
-        }
-        let latest = crate::pump::collect::receipt_full(ctx, &task);
-        recovery::recover_task(ctx, st, &snapshot.id, &task, &latest);
-        if st
-            .jobs()
-            .get(&snapshot.id)
-            .is_some_and(|job| job.status != JobStatus::Pending)
-        {
-            return Ok(true);
-        }
-        defer(ctx, st, snapshot, pool, &text);
-        return Ok(false);
+    if text.contains("no free slot") {
+        free.insert(pool.to_owned(), 0);
     }
+    match evidence::classify(&task, &text) {
+        evidence::Answer::Dispatched { slot, pool_job } => {
+            accept(ctx, st, snapshot, pool, &task, &slot, &pool_job, free)
+        }
+        evidence::Answer::Refused => {
+            defer(ctx, st, snapshot, pool, &text);
+            Ok(false)
+        }
+        evidence::Answer::Uncertain => uncertain(ctx, st, snapshot, pool, &task, &text),
+    }
+}
+
+/// Book an accepted dispatch: the accepted association is written to the
+/// recovery store first, then the job map moves to dispatched.
+#[allow(clippy::too_many_arguments)]
+fn accept(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    snapshot: &PoolJob,
+    pool: &str,
+    task: &str,
+    slot: &str,
+    pool_job: &str,
+    free: &mut BTreeMap<String, u32>,
+) -> Result<bool, VivariumError> {
+    if st.jobs().get(&snapshot.id).is_none() {
+        return Err(VivariumError::Message(format!(
+            "pump job {:?} disappeared during dispatch",
+            snapshot.id
+        )));
+    }
+    evidence::record_accept(ctx, snapshot, task, pool, slot, pool_job)?;
     let job = st.jobs_mut().get_mut(&snapshot.id).ok_or_else(|| {
         VivariumError::Message(format!(
             "pump job {:?} disappeared during dispatch",
@@ -332,10 +358,121 @@ fn apply_dispatch(
     free.entry(pool.to_owned())
         .and_modify(|count| *count = count.saturating_sub(1));
     ctx.log(&format!(
-        "job dispatched {} role={} pool={pool} task={task}",
+        "job dispatched {} role={} pool={pool} slot={slot} pool job={pool_job} task={task}",
         snapshot.id, snapshot.role
     ));
     Ok(true)
+}
+
+/// A response that reads as neither acceptance nor refusal: the saved
+/// dispatch evidence decides what the task already records. An unresolved
+/// receipt holds the job instead of risking another dispatch of work a pool
+/// may already be running.
+fn uncertain(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    snapshot: &PoolJob,
+    pool: &str,
+    task: &str,
+    text: &str,
+) -> Result<bool, VivariumError> {
+    match evidence::select_receipt(ctx, &snapshot.id, task)? {
+        ExecutionReceipt::Terminal(result) => {
+            adopt_terminal(ctx, st, snapshot, task, &result);
+            Ok(true)
+        }
+        ExecutionReceipt::Dispatched(dispatch) => {
+            adopt_dispatched(ctx, st, snapshot, task, &dispatch);
+            Ok(true)
+        }
+        ExecutionReceipt::Ambiguous(reason) => {
+            evidence::hold_ambiguous(ctx, st, snapshot, task, &reason);
+            Ok(true)
+        }
+        ExecutionReceipt::Unstarted | ExecutionReceipt::Absent => {
+            defer(ctx, st, snapshot, pool, text);
+            Ok(false)
+        }
+    }
+}
+
+/// Settle the job from a collected result its saved evidence attributes to
+/// it, exactly as a startup recovery from the same evidence would.
+fn adopt_terminal(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    snapshot: &PoolJob,
+    task: &str,
+    result: &SelectedResult,
+) {
+    let Some(job) = st.jobs_mut().get_mut(&snapshot.id) else {
+        return;
+    };
+    if job.task.is_none() {
+        job.task = Some(task.to_owned());
+    }
+    job.pool = Some(result.dispatch.pool.clone());
+    job.status = status_of(&result.outcome).unwrap_or(JobStatus::Dispatched);
+    job.outcome = Some(JobOutcome {
+        state: result.outcome.clone(),
+        detail: detail_of(&result.note, &result.outcome),
+        receipt: result.note.clone(),
+        at: ctx.now(),
+    });
+    ctx.log(&format!(
+        "job {} settled from task {task}: {}",
+        snapshot.id, result.outcome
+    ));
+}
+
+/// Mark the job dispatched from a dispatch its saved evidence attributes to
+/// it: the pool took the job, only the answer was lost.
+fn adopt_dispatched(
+    ctx: &Ctx,
+    st: &mut impl JobStore,
+    snapshot: &PoolJob,
+    task: &str,
+    dispatch: &SelectedDispatch,
+) {
+    let Some(job) = st.jobs_mut().get_mut(&snapshot.id) else {
+        return;
+    };
+    if job.task.is_none() {
+        job.task = Some(task.to_owned());
+    }
+    job.pool = Some(dispatch.pool.clone());
+    job.status = JobStatus::Dispatched;
+    job.dispatched_at.get_or_insert_with(|| ctx.now());
+    ctx.log(&format!(
+        "job {} dispatched on pool {} (pool job {}) read back from task {task}",
+        snapshot.id, dispatch.pool, dispatch.pool_job
+    ));
+}
+
+/// The job status a collected outcome word names, if it is terminal.
+fn status_of(outcome: &str) -> Option<JobStatus> {
+    match outcome {
+        "finished" => Some(JobStatus::Finished),
+        "timeout" => Some(JobStatus::Timeout),
+        "lost" => Some(JobStatus::Lost),
+        _ => None,
+    }
+}
+
+/// The short detail of a collected note: its `push` or `result` field, or
+/// the outcome word when the note carries neither.
+fn detail_of(note: &str, outcome: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(note)
+        .ok()
+        .and_then(|value| {
+            ["push", "result"].iter().find_map(|key| {
+                value
+                    .get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+        })
+        .unwrap_or_else(|| outcome.to_owned())
 }
 
 /// Log a deferred dispatch; a `refused` porcelain line also counts a refusal.
@@ -566,3 +703,7 @@ pub fn candidate_pools(
     }
     pools
 }
+
+#[cfg(test)]
+#[path = "dispatcher_test.rs"]
+mod tests;
