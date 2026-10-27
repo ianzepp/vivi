@@ -66,6 +66,18 @@ fn bare_status() -> ActionRequest {
     bare
 }
 
+/// A tuning request with every field the three retune actions can name.
+fn tuning(kind: Action) -> ActionRequest {
+    let mut ask = request(kind);
+    ask.role = Some("hand".into());
+    ask.model = Some("vendor/model.v1".into());
+    ask.pool = Some("build".into());
+    ask.cap = Some(2);
+    ask.band = Some("P1".into());
+    ask.reasoning = Some("high".into());
+    ask
+}
+
 fn run(request: &ActionRequest) -> (Result<String, String>, Vec<(String, Value)>) {
     let mut actuator = McpActuator::new(Recorder::default());
     let result = actuator.apply(request);
@@ -184,6 +196,163 @@ fn set_priority_sends_the_level_even_when_it_is_zero() {
     level.priority = Some(3);
     let (_, calls) = run(&level);
     assert_eq!(calls[0].1["level"], 3);
+}
+
+#[test]
+fn set_role_model_names_the_role_and_the_model_alone() {
+    let (result, calls) = run(&tuning(Action::SetRoleModel));
+    assert_eq!(result, Ok("role_set: role_set ok".into()));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0],
+        (
+            "role_set".to_string(),
+            json!({ "project": "app", "role": "hand", "model": "vendor/model.v1" })
+        )
+    );
+    // No other field travels, whatever the request carries: the call is
+    // exactly the three keys, so no other configuration field can move.
+    let mut noisy = tuning(Action::SetRoleModel);
+    noisy.note = Some("retune the hand".into());
+    noisy.pool = Some("build".into());
+    let (_, calls) = run(&noisy);
+    assert_eq!(
+        calls[0].1,
+        json!({ "project": "app", "role": "hand", "model": "vendor/model.v1" })
+    );
+}
+
+#[test]
+fn set_pool_cap_sends_one_quoted_key_with_the_cap_as_toml_text() {
+    let (result, calls) = run(&tuning(Action::SetPoolCap));
+    assert_eq!(result, Ok("config_set: config_set ok".into()));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "config_set");
+    assert_eq!(calls[0].1["project"], "app");
+    let key = calls[0].1["key"].as_str().unwrap();
+    let value = calls[0].1["value"].as_str().unwrap();
+    assert_eq!(value, "2");
+    // Parsed as TOML, the key lands at pools.<pool>.caps.<model> with
+    // the dotted, slashed model one quoted segment, and the cap an
+    // integer, not a string.
+    let parsed: toml::Table = format!("{key} = {value}").parse().unwrap();
+    assert_eq!(
+        parsed["pools"]["build"]["caps"]["vendor/model.v1"].as_integer(),
+        Some(2)
+    );
+    // Zero is a real cap and travels as TOML text too.
+    let mut zero = tuning(Action::SetPoolCap);
+    zero.cap = Some(0);
+    let (_, calls) = run(&zero);
+    let key = calls[0].1["key"].as_str().unwrap();
+    let value = calls[0].1["value"].as_str().unwrap();
+    assert_eq!(value, "0");
+    let parsed: toml::Table = format!("{key} = {value}").parse().unwrap();
+    assert_eq!(
+        parsed["pools"]["build"]["caps"]["vendor/model.v1"].as_integer(),
+        Some(0)
+    );
+}
+
+#[test]
+fn set_pool_band_calls_pool_bands_set_once() {
+    let mut band = tuning(Action::SetPoolBand);
+    band.pool = Some("main".into());
+    band.model = Some("other/model".into());
+    let (result, calls) = run(&band);
+    assert_eq!(result, Ok("pool_bands: pool_bands ok".into()));
+    // One call: the guarded editor's set, with the typed fields and
+    // nothing else.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0],
+        (
+            "pool_bands".to_string(),
+            json!({
+                "project": "app",
+                "action": "set",
+                "pool": "main",
+                "band": "P1",
+                "model": "other/model",
+                "reasoning": "high"
+            })
+        )
+    );
+    // Unrelated fields never travel, whatever the request carries.
+    band.note = Some("fast lane for P1".into());
+    band.need = Some("3f9a1c2e".into());
+    let (_, calls) = run(&band);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].1,
+        json!({
+            "project": "app",
+            "action": "set",
+            "pool": "main",
+            "band": "P1",
+            "model": "other/model",
+            "reasoning": "high"
+        })
+    );
+    // An absent reasoning stays out rather than travelling as a null, so
+    // the server's own default holds.
+    band.reasoning = None;
+    let (_, calls) = run(&band);
+    assert!(calls[0].1.get("reasoning").is_none());
+}
+
+#[test]
+fn a_tuning_action_missing_a_field_calls_nothing() {
+    let mut no_role = tuning(Action::SetRoleModel);
+    no_role.role = None;
+    let (result, calls) = run(&no_role);
+    assert_eq!(result, Err("the action names no role".into()));
+    assert!(calls.is_empty());
+
+    let mut no_model = tuning(Action::SetRoleModel);
+    no_model.model = None;
+    let (result, calls) = run(&no_model);
+    assert_eq!(result, Err("the action names no model".into()));
+    assert!(calls.is_empty());
+
+    let mut no_pool = tuning(Action::SetPoolCap);
+    no_pool.pool = None;
+    let (result, calls) = run(&no_pool);
+    assert_eq!(result, Err("the action names no pool".into()));
+    assert!(calls.is_empty());
+
+    let mut no_band = tuning(Action::SetPoolBand);
+    no_band.band = None;
+    let (result, calls) = run(&no_band);
+    assert_eq!(result, Err("the action names no band".into()));
+    assert!(calls.is_empty());
+
+    let mut no_cap = tuning(Action::SetPoolCap);
+    no_cap.cap = None;
+    let (result, calls) = run(&no_cap);
+    assert_eq!(result, Err("the action names no cap".into()));
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn a_server_refusal_on_a_tuning_action_is_the_failure_text() {
+    for (kind, tool) in [
+        (Action::SetRoleModel, "role_set"),
+        (Action::SetPoolCap, "config_set"),
+        (Action::SetPoolBand, "pool_bands"),
+    ] {
+        let mut actuator = McpActuator::new(Recorder {
+            fail_with: Some("the pump is running; the write is refused".into()),
+            ..Recorder::default()
+        });
+        let error = actuator.apply(&tuning(kind)).unwrap_err();
+        assert_eq!(
+            error,
+            format!("{tool}: the pump is running; the write is refused")
+        );
+        // One call, and no retry or second tool after the refusal.
+        assert_eq!(actuator.caller.calls.borrow().len(), 1);
+    }
 }
 
 #[test]
