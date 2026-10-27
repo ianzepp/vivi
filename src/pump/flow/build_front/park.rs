@@ -1,11 +1,11 @@
-//! Park handling for the build flow: the step that holds a run for the operator.
+//! Park handling for the build flow: the step that holds a run for the mind.
 //!
 //! The router opens a park row already Waiting, so the tick never calls
 //! `start` for it; the alarm is raised from `poll`, which runs for waiting
-//! rows (as the lock step does). The step raises one alarm naming the need and
-//! why the planner parked it, and keeps waiting: a reply on the need's thread
-//! restarts a parked run at `plan` (the `thread-change` phase), and an operator
-//! answer on the step routes it.
+//! rows (as the lock step does). The step raises one alarm naming the need,
+//! why the planner parked it, and who owns the decision: the mind. Resuming a
+//! parked run is the explicit `vivi pump replan <need>`, which restarts it at
+//! `plan`; answering the completed planner or the parked step routes nothing.
 
 use crate::error::VivariumError;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -31,8 +31,8 @@ impl StepHandler for ParkStep {
         let actual = actual_text(cx, step)?;
         let text = format!(
             "need {} r{} parked at {}: expected the planner to answer planned; actual: {actual}; \
-             a reply on the need thread restarts it at plan, or answer with `vivi pump answer {}`",
-            cx.run.need, cx.run.run, step.node, step.task
+             the mind owns this decision: resume at plan with `vivi pump replan {}`",
+            cx.run.need, cx.run.run, step.node, cx.run.need
         );
         raise_once(cx.ctx, NEED_PARKED, &step.task, &text);
         Ok(None)

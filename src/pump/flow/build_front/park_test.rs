@@ -116,13 +116,16 @@ fn park_after_a_hold_alarms_once_with_the_word_and_reason() -> R {
     let text = exceptions(&rig);
     assert_eq!(count(&text), 1, "{text}");
     for needle in [
+        NEED_PARKED,
         "need n1 r1 parked at parked",
         "expected the planner to answer planned",
         "actual: hold: waiting on the schema decision",
-        "vivi pump answer t-park",
+        "the mind owns this decision",
+        "vivi pump replan n1",
     ] {
         assert!(text.contains(needle), "missing {needle}: {text}");
     }
+    assert!(!text.contains("vivi pump answer"), "{text}");
     Ok(())
 }
 
