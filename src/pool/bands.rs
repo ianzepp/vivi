@@ -7,6 +7,11 @@
 //! `[pools.<name>.bands]` table (see [`super::config_bands`]) says which
 //! choice serves which band; the `S` speed axis is parsed and ignored.
 
+pub mod cooldown;
+pub mod guard;
+pub mod live;
+pub mod runtime;
+
 use super::config::PoolConfig;
 use super::config_bands::PoolBands;
 use crate::error::VivariumError;
