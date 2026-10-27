@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use super::bridge::bridge_brief;
 use super::claim::{Claim, claim_slot, open_slot, unclaim};
 use super::collect::Pacing;
-use super::config::{PoolCommitter, PoolConfig};
+use super::config::{PoolCommitter, PoolConfig, PoolHarness};
 use super::github::Secret;
 use super::job::{self, JOB_ARCHIVE, JobPlan, build_bundle};
 use super::progress::Progress;
@@ -77,6 +77,129 @@ pub fn new_job_id(task: &str, nanos: u128, pid: u32) -> String {
     hex::encode(digest)[..12].to_string()
 }
 
+/// The selection-independent parts of a dispatch, resolved once by
+/// [`prepare_request`] and consumed by `plan_job`.
+struct PreparedRequest {
+    committer: PoolCommitter,
+    refs: job::Refs,
+    with: Vec<job::WithRef>,
+    budget: u64,
+}
+
+/// Validate everything about a dispatch that does not depend on the chosen
+/// model or reasoning level: the pool's source, its committer and (for a model
+/// job) its harness, the task letter, the publication/cleanup guards, the
+/// `from`/`branch` and extra refs, and the budget. Pure config-and-letter
+/// checks: no machine is contacted and no model is drawn, so admission can
+/// run these permanent checks before any temporary availability wait. A
+/// `--command` job skips the harness check; it still needs the rest.
+///
+/// # Errors
+/// Returns the same errors [`plan_job`] returns for these parts.
+pub fn validate_request(
+    config: &PoolConfig,
+    pool: &str,
+    task: (&str, &str, &str),
+    flags: &DispatchFlags,
+) -> Result<(), VivariumError> {
+    prepare_request(config, pool, task, flags).map(|_| ())
+}
+
+fn prepare_request(
+    config: &PoolConfig,
+    pool: &str,
+    task: (&str, &str, &str),
+    flags: &DispatchFlags,
+) -> Result<PreparedRequest, VivariumError> {
+    let (handle, _, body) = task;
+    validate_source(config, pool)?;
+    let committer = request_committer(config, pool)?;
+    if flags.command.is_none() {
+        request_harness(config, pool)?;
+    }
+    validate_publish_flags(flags)?;
+    check_task_letter(handle, body)?;
+    let refs = plan_refs(flags, body)?;
+    let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
+        .into_iter()
+        .map(|name| job::WithRef {
+            name,
+            commit: String::new(),
+        })
+        .collect();
+    let budget = request_budget(flags)?;
+    Ok(PreparedRequest {
+        committer,
+        refs,
+        with,
+        budget,
+    })
+}
+
+fn request_committer(config: &PoolConfig, pool: &str) -> Result<PoolCommitter, VivariumError> {
+    config.committer.clone().ok_or_else(|| {
+        VivariumError::Config(format!(
+            "[pools.{pool}.committer] (name, email) is required to dispatch"
+        ))
+    })
+}
+
+fn request_harness<'a>(
+    config: &'a PoolConfig,
+    pool: &str,
+) -> Result<&'a PoolHarness, VivariumError> {
+    config.harness.as_ref().ok_or_else(|| {
+        VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
+    })
+}
+
+fn request_budget(flags: &DispatchFlags) -> Result<u64, VivariumError> {
+    let budget = flags.budget.unwrap_or(DEFAULT_BUDGET_SECS);
+    if !BUDGET_RANGE.contains(&budget) {
+        return Err(VivariumError::Message(format!(
+            "budget must be between {} and {} seconds",
+            BUDGET_RANGE.start(),
+            BUDGET_RANGE.end()
+        )));
+    }
+    Ok(budget)
+}
+
+/// Validate the chosen model and reasoning level against the pool's harness:
+/// the harness must exist, the model must be on its allow-list and, when the
+/// harness template uses `{reasoning}`, a level must be chosen and held to a
+/// safe charset. Pure checks with no provider access; a `--command` job has
+/// no pair and its caller skips this.
+///
+/// # Errors
+/// Returns the same errors [`plan_job`] returns for the pair.
+pub fn validate_pair(
+    config: &PoolConfig,
+    pool: &str,
+    model: &str,
+    reasoning: Option<&str>,
+) -> Result<(), VivariumError> {
+    check_pair(config, pool, model, reasoning).map(|_| ())
+}
+
+/// The harness and the resolved reasoning level a validated pair runs with.
+struct CheckedPair<'a> {
+    harness: &'a PoolHarness,
+    reasoning: Option<String>,
+}
+
+fn check_pair<'a>(
+    config: &'a PoolConfig,
+    pool: &str,
+    model: &str,
+    reasoning: Option<&str>,
+) -> Result<CheckedPair<'a>, VivariumError> {
+    let harness = request_harness(config, pool)?;
+    let reasoning = plan_reasoning(pool, &harness.run, reasoning)?;
+    job::check_model(model, &harness.models)?;
+    Ok(CheckedPair { harness, reasoning })
+}
+
 /// Validate everything that can be checked without touching a machine and
 /// assemble the job. `rules` is the standing-rules text to deliver. With the
 /// pool's bridge enabled the brief is a pointer at the task on the server
@@ -95,42 +218,14 @@ pub fn plan_job(
     rules: String,
     job: String,
 ) -> Result<JobPlan, VivariumError> {
-    let (handle, _, body) = task;
-    validate_source(config, pool)?;
-    let committer = config.committer.clone().ok_or_else(|| {
-        VivariumError::Config(format!(
-            "[pools.{pool}.committer] (name, email) is required to dispatch"
-        ))
-    })?;
+    let prepared = prepare_request(config, pool, task, flags)?;
     let (harness, reasoning) = match flags.command {
         Some(_) => (None, None),
         None => {
-            let harness = config.harness.as_ref().ok_or_else(|| {
-                VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
-            })?;
-            let reasoning = plan_reasoning(pool, &harness.run, flags)?;
-            job::check_model(&flags.model, &harness.models)?;
-            (Some(harness), reasoning)
+            let pair = check_pair(config, pool, &flags.model, flags.reasoning.as_deref())?;
+            (Some(pair.harness), pair.reasoning)
         }
     };
-    validate_publish_flags(flags)?;
-    check_task_letter(handle, body)?;
-    let refs = plan_refs(flags, body)?;
-    let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
-        .into_iter()
-        .map(|name| job::WithRef {
-            name,
-            commit: String::new(),
-        })
-        .collect();
-    let budget = flags.budget.unwrap_or(DEFAULT_BUDGET_SECS);
-    if !BUDGET_RANGE.contains(&budget) {
-        return Err(VivariumError::Message(format!(
-            "budget must be between {} and {} seconds",
-            BUDGET_RANGE.start(),
-            BUDGET_RANGE.end()
-        )));
-    }
     Ok(assemble_job_plan(
         config,
         task,
@@ -139,11 +234,11 @@ pub fn plan_job(
         job,
         harness,
         ResolvedJob {
-            refs,
-            with,
-            budget,
+            refs: prepared.refs,
+            with: prepared.with,
+            budget: prepared.budget,
             reasoning,
-            committer,
+            committer: prepared.committer,
         },
     ))
 }
@@ -301,18 +396,18 @@ fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError>
 }
 
 /// The reasoning level a job runs at, when the harness template asks for
-/// one: `flags.reasoning`. Checked inside `plan_job`, before any plan is
-/// returned, so a refusal costs nothing. The value lands in a shell command,
-/// so it is held to a safe charset.
+/// one: the pinned `reasoning`. Checked by [`validate_pair`], before any
+/// plan is returned, so a refusal costs nothing. The value lands in a shell
+/// command, so it is held to a safe charset.
 fn plan_reasoning(
     pool: &str,
     run: &str,
-    flags: &DispatchFlags,
+    reasoning: Option<&str>,
 ) -> Result<Option<String>, VivariumError> {
     if !job::uses_reasoning(run) {
         return Ok(None);
     }
-    let Some(level) = flags.reasoning.as_deref() else {
+    let Some(level) = reasoning else {
         return Err(VivariumError::Message(format!(
             "harness.run uses {{reasoning}} but no reasoning level was chosen for this job; \
              dispatch by band (the `band` key in the task front matter, or a role with a band) or remove \
