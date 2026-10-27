@@ -9,6 +9,7 @@ use super::{
 };
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::fixture::ProbeHost;
+use crate::pump::flow::step_inputs::make_read_only;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
@@ -1085,4 +1086,79 @@ fn a_job_with_a_target_keeps_it() {
         command.contains("--target other") && !command.contains("--target app"),
         "{command}"
     );
+}
+
+/// Every value that follows `flag` as an exact token of `command`, so `--target`
+/// is never confused with `--also-target`.
+fn flag_values<'a>(command: &'a str, flag: &str) -> Vec<&'a str> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    tokens
+        .windows(2)
+        .filter(|pair| pair[0] == flag)
+        .map(|pair| pair[1])
+        .collect()
+}
+
+fn read_only_dispatch_is_read_only_and_has_no_branch(command: &str) {
+    assert!(
+        command
+            .split_whitespace()
+            .any(|token| token == "--read-only"),
+        "{command}"
+    );
+    assert_eq!(flag_values(command, "--branch"), Vec::<&str>::new());
+}
+
+#[test]
+fn read_only_dispatch_keeps_target_and_start_ref_paired() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("main");
+    for (id, main) in [("default", "default-main"), ("vivi", "vivi-main")] {
+        cfg.targets.insert(
+            id.to_owned(),
+            PumpTarget {
+                main: main.to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+
+    let mut store = Store::default();
+    for (id, target) in [("review-default-1", "default"), ("review-vivi-1", "vivi")] {
+        let mut job = spec(id);
+        job.target = Some(String::from(target));
+        make_read_only(&ctx, &mut job).unwrap();
+        enqueue(&mut store, job).unwrap();
+    }
+
+    // The primary-target job: exactly its own target and that target's main.
+    let command = command_for(&ctx, &store.jobs["review-default-1"], "local", "t1");
+    assert_eq!(flag_values(&command, "--target"), ["default"]);
+    assert_eq!(flag_values(&command, "--from"), ["default-main"]);
+    read_only_dispatch_is_read_only_and_has_no_branch(&command);
+    assert_eq!(flag_values(&command, "--also-target"), ["default", "vivi"]);
+
+    // The non-primary job inherits neither the primary target nor the
+    // workspace main.
+    let command = command_for(&ctx, &store.jobs["review-vivi-1"], "local", "t1");
+    assert_eq!(flag_values(&command, "--target"), ["vivi"]);
+    assert_eq!(flag_values(&command, "--from"), ["vivi-main"]);
+    read_only_dispatch_is_read_only_and_has_no_branch(&command);
+
+    // A legacy job without targets keeps the pool repository selection: no
+    // `--target` at all, and `--from` is the configured non-default main.
+    let legacy_dir = tempfile::tempdir().unwrap();
+    let mut legacy_cfg = PumpConfig::default();
+    legacy_cfg.main = String::from("trunk-legacy");
+    let (legacy_ctx, _host) = test_ctx(legacy_dir.path(), legacy_cfg);
+    let mut legacy = spec("review-legacy-1");
+    make_read_only(&legacy_ctx, &mut legacy).unwrap();
+    enqueue(&mut store, legacy).unwrap();
+
+    let command = command_for(&legacy_ctx, &store.jobs["review-legacy-1"], "local", "t1");
+    assert_eq!(flag_values(&command, "--target"), Vec::<&str>::new());
+    assert_eq!(flag_values(&command, "--from"), ["trunk-legacy"]);
+    read_only_dispatch_is_read_only_and_has_no_branch(&command);
 }
