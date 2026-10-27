@@ -54,7 +54,7 @@ impl StepHandler for JudgeStart {
             AUDITOR_ROLE,
             &brief,
         );
-        make_read_only(cx.ctx, &mut spec);
+        make_read_only(cx.ctx, &mut spec)?;
         spec.builtin_role = Some(AUDITOR_ROLE.to_owned());
         Ok(StartAction::Job(Box::new(spec)))
     }

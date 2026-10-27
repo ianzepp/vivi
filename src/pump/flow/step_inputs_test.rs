@@ -9,7 +9,7 @@ use super::{
 use crate::error::VivariumError;
 use crate::letter::fixture::need_body_with;
 use crate::letter::work::NeedFront;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
@@ -296,12 +296,162 @@ fn make_read_only_sets_read_only_from_ref_and_all_targets() -> R {
     assert!(!spec.read_only);
     assert!(spec.from_ref.is_none());
 
-    make_read_only(&rig.ctx, &mut spec);
+    make_read_only(&rig.ctx, &mut spec)?;
 
     assert!(spec.read_only);
     assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
     assert_eq!(spec.extra_targets, targets(&rig.ctx));
     Ok(())
+}
+
+#[test]
+fn need_target_reads_the_original_typed_need() -> R {
+    let mut mail = FakeMail::new("pump");
+    mail.store_need("n-targeted", Some("vivi"));
+    mail.store_need("n-plain", None);
+    stored_body(&mut mail, "n-broken", "+++\ndone_when = [\n+++\nprose");
+
+    assert_eq!(need_target(&mail, "n-targeted")?, Some("vivi".to_string()));
+    assert_eq!(need_target(&mail, "n-plain")?, None);
+    assert!(matches!(
+        need_target(&mail, "n-missing").unwrap_err(),
+        VivariumError::Message(_)
+    ));
+    assert!(matches!(
+        need_target(&mail, "n-broken").unwrap_err(),
+        VivariumError::Message(_)
+    ));
+    Ok(())
+}
+
+#[test]
+fn make_read_only_starts_from_an_explicit_target_over_the_primary() -> R {
+    let rig = rig_with(target_config(&[
+        ("default", "vivi/main-default"),
+        ("alpha", "vivi/main-alpha"),
+    ]))?;
+    let mut spec = spec_for(&rig);
+    spec.target = Some(String::from("alpha"));
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main-alpha"));
+    assert_eq!(spec.target.as_deref(), Some("alpha"));
+    assert_eq!(
+        spec.extra_targets,
+        vec!["alpha".to_string(), "default".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn make_read_only_falls_back_to_the_sole_target() -> R {
+    let rig = rig_with(target_config(&[("alpha", "vivi/main-alpha")]))?;
+    let mut spec = spec_for(&rig);
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main-alpha"));
+    assert_eq!(spec.target.as_deref(), Some("alpha"));
+    Ok(())
+}
+
+#[test]
+fn make_read_only_falls_back_to_the_explicit_default() -> R {
+    let rig = rig_with(target_config(&[
+        ("beta", "vivi/main-beta"),
+        ("default", "vivi/main-default"),
+    ]))?;
+    let mut spec = spec_for(&rig);
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main-default"));
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    Ok(())
+}
+
+#[test]
+fn make_read_only_resolves_the_legacy_default_without_a_target() -> R {
+    let rig = rig()?;
+    let mut spec = spec_for(&rig);
+
+    make_read_only(&rig.ctx, &mut spec)?;
+
+    assert!(spec.read_only);
+    assert_eq!(spec.target, None, "a legacy configuration leaves it absent");
+    assert_eq!(spec.from_ref.as_deref(), Some(rig.ctx.cfg.main.as_str()));
+    assert_eq!(spec.extra_targets, vec![String::from("default")]);
+    Ok(())
+}
+
+#[test]
+fn make_read_only_refuses_an_unknown_target_without_changes() -> R {
+    let rig = rig_with(target_config(&[("alpha", "vivi/main-alpha")]))?;
+    let mut spec = spec_for(&rig);
+    spec.target = Some(String::from("nope"));
+
+    let err = make_read_only(&rig.ctx, &mut spec).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(!spec.read_only, "a failed resolution leaves it unchanged");
+    assert!(spec.from_ref.is_none());
+    assert!(spec.extra_targets.is_empty());
+    assert_eq!(spec.target.as_deref(), Some("nope"));
+    Ok(())
+}
+
+#[test]
+fn make_read_only_refuses_an_untargeted_ambiguous_configuration() -> R {
+    let rig = rig_with(target_config(&[
+        ("alpha", "vivi/main-alpha"),
+        ("beta", "vivi/main-beta"),
+    ]))?;
+    let mut spec = spec_for(&rig);
+
+    let err = make_read_only(&rig.ctx, &mut spec).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    assert!(!spec.read_only, "a failed resolution leaves it unchanged");
+    assert!(spec.from_ref.is_none());
+    assert!(spec.extra_targets.is_empty());
+    assert_eq!(spec.target, None);
+    Ok(())
+}
+
+/// Explicit repository targets, each carrying its own literal main.
+fn target_config(targets: &[(&str, &str)]) -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets = targets
+        .iter()
+        .map(|(id, main)| {
+            (
+                (*id).to_string(),
+                PumpTarget {
+                    main: (*main).to_string(),
+                    ..PumpTarget::default()
+                },
+            )
+        })
+        .collect();
+    cfg
+}
+
+/// The plain role job the read-only builders start from.
+fn spec_for(rig: &Rig) -> crate::pump::jobs::JobSpec {
+    let step = row("plan", "t1", StepState::Running);
+    role_job(
+        &rig.ctx,
+        &rig.run,
+        &step,
+        "flow-x",
+        RoleKind::Planner,
+        "pump-planner",
+        "the brief",
+    )
 }
 
 #[test]
