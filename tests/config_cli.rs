@@ -143,6 +143,55 @@ pools = ["glm"]
     assert_eq!(flow.split_whitespace().count(), 5, "{shown}");
 }
 
+const WEIGHTED_BANDS: &str = r#"
+name = "demo"
+id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+model = "P2-S0"
+[pools.glm]
+provider = "local"
+slots = 2
+[pools.glm.harness]
+name = "fake"
+run = "fake --model {model} @{brief}"
+models = ["m/ok"]
+[pools.glm.bands]
+P2 = [
+  { model = "m/ok", reasoning = "high", weight = 3 },
+  { model = "m/ok", reasoning = "low" },
+]
+"#;
+
+#[test]
+fn config_validate_accepts_positive_band_weights() {
+    let dir = project_with(WEIGHTED_BANDS);
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_success(&out);
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(!text.contains("invalid-band-weight"), "{text}");
+}
+
+#[test]
+fn config_validate_refuses_an_invalid_band_weight_with_the_config_exit_status() {
+    for weight in ["0", "-1", "1.5", "\"3\"", "true", "4294967296"] {
+        let raw = WEIGHTED_BANDS.replace(
+            "{ model = \"m/ok\", reasoning = \"high\", weight = 3 }",
+            &format!("{{ model = \"m/ok\", reasoning = \"high\", weight = {weight} }}"),
+        );
+        let dir = project_with(&raw);
+        let root = dir.path().to_str().unwrap();
+        let out = vivi(&["config", "validate", "--project", root]);
+        assert_eq!(out.status.code(), Some(1), "{weight}: {}", stdout(&out));
+        let text = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(text.contains("invalid-band-weight"), "{weight}: {text}");
+        assert!(text.contains("[pools.glm] bands.P2"), "{weight}: {text}");
+    }
+}
+
 #[test]
 fn config_validate_fails_on_unknown_pool() {
     let dir = project_with(

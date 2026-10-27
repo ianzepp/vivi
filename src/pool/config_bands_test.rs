@@ -116,6 +116,98 @@ fn a_band_model_the_harness_does_not_offer_is_refused() {
 }
 
 #[test]
+fn omitted_band_weight_is_one() {
+    let config = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\n{TAIL}"
+    ));
+    let choice = &config.bands.entries["P1"][0];
+    assert!(choice.unknown.get("weight").is_none());
+    assert_eq!(choice.weight(), 1);
+    config.validate(&id()).unwrap();
+}
+
+#[test]
+fn explicit_band_weight_roundtrips() {
+    let config = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\nweight = 3\n\
+         [[bands.P2]]\nmodel = \"other/model\"\nreasoning = \"low\"\nweight = 4294967295\n{TAIL}"
+    ));
+    assert_eq!(config.bands.entries["P1"][0].weight(), 3);
+    assert_eq!(config.bands.entries["P2"][0].weight(), u32::MAX);
+    config.validate(&id()).unwrap();
+    let text = toml::to_string(&config).unwrap();
+    assert!(text.contains("weight = 3"), "{text}");
+    assert!(text.contains("weight = 4294967295"), "{text}");
+    let again: PoolConfig = toml::from_str(&text).unwrap();
+    assert_eq!(again.bands.entries["P1"][0].weight(), 3);
+    assert_eq!(again.bands.entries["P2"][0].weight(), u32::MAX);
+}
+
+#[test]
+fn an_absent_weight_stays_absent_through_a_roundtrip() {
+    let config = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\n{TAIL}"
+    ));
+    let text = toml::to_string(&config).unwrap();
+    assert!(!text.contains("weight"), "{text}");
+    let again: PoolConfig = toml::from_str(&text).unwrap();
+    assert!(again.bands.entries["P1"][0].unknown.get("weight").is_none());
+    assert_eq!(again.bands.entries["P1"][0].weight(), 1);
+}
+
+#[test]
+fn invalid_band_weights_are_config_errors() {
+    for weight in [
+        "0",
+        "-1",
+        "1.5",
+        "\"3\"",
+        "true",
+        "4294967296",
+        "9223372036854775807",
+    ] {
+        let config = pool(&format!(
+            "provider = \"local\"\nslots = 4\n{HARNESS}\
+             [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\
+             \nweight = {weight}\n{TAIL}"
+        ));
+        let err = config.validate(&id()).unwrap_err().to_string();
+        assert!(err.contains("invalid-band-weight"), "{weight}: {err}");
+        assert!(err.contains("bands.P1"), "{weight}: {err}");
+    }
+}
+
+#[test]
+fn unknown_band_choice_fields_still_fail() {
+    let config = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\neffort = 3\n{TAIL}"
+    ));
+    let err = config.validate(&id()).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field \"effort\" in [pools.main.bands.P1]"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn an_unknown_field_besides_a_weight_is_still_refused() {
+    let config = pool(&format!(
+        "provider = \"local\"\nslots = 4\n{HARNESS}\
+         [[bands.P1]]\nmodel = \"zai/glm-5.3-flash\"\nreasoning = \"low\"\
+         \nweight = 2\neffort = 3\n{TAIL}"
+    ));
+    let err = config.validate(&id()).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field \"effort\" in [pools.main.bands.P1]"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn an_unknown_field_in_a_band_choice_is_refused() {
     let config = pool(&format!(
         "provider = \"local\"\nslots = 4\n{HARNESS}\
