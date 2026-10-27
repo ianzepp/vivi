@@ -113,8 +113,8 @@ impl TicketProvider {
         let server = self.server();
         let bearer = crate::machine_key::sign_in(server, true)?;
         let upstream = HttpUpstream::new(server);
-        let mut client =
-            Client::connect(&upstream, &bearer).map_err(|e| fail(format!("cannot connect: {e}")))?;
+        let mut client = Client::connect(&upstream, &bearer)
+            .map_err(|e| fail(format!("cannot connect: {e}")))?;
         let result = client
             .call_tool(tool, arguments)
             .map_err(|e| fail(e.to_string()))?;
@@ -177,9 +177,9 @@ impl TicketProvider {
             return Ok((url.trim_end_matches('/').to_string(), None));
         }
         let server = self.server();
-        let (scheme, rest) = server
-            .split_once("://")
-            .ok_or_else(|| VivariumError::Config(format!("[ticket] server {server:?} is no URL")))?;
+        let (scheme, rest) = server.split_once("://").ok_or_else(|| {
+            VivariumError::Config(format!("[ticket] server {server:?} is no URL"))
+        })?;
         let authority = rest.split('/').next().unwrap_or_default();
         let port = authority
             .rsplit_once(':')
@@ -209,9 +209,20 @@ impl TicketProvider {
             settings.vivi_or_default()
         ));
         let mut ssh = Command::new("ssh");
-        ssh.args(["-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes"])
-            .args(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"])
-            .args(["-o", "ConnectTimeout=15", "-o", "RemoteCommand=none"]);
+        ssh.args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+        ])
+        .args([
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=4",
+        ])
+        .args(["-o", "ConnectTimeout=15", "-o", "RemoteCommand=none"]);
         if let Some(port) = forward {
             ssh.arg("-R").arg(format!("{port}:127.0.0.1:{port}"));
         }
@@ -449,7 +460,10 @@ impl PoolProvider for TicketProvider {
     }
 
     fn destroy_command(&self, id: &str) -> String {
-        format!("kill the ssh process of {id} (its pid is in {})", self.entry_path(id).display())
+        format!(
+            "kill the ssh process of {id} (its pid is in {})",
+            self.entry_path(id).display()
+        )
     }
 
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
@@ -561,7 +575,8 @@ impl TicketProvider {
         let plan = request.plan;
         if plan.read_only || plan.refs.branch.is_empty() {
             return Err(VivariumError::Message(
-                "a ticket pool runs jobs that push a branch; read-only jobs are not supported".into(),
+                "a ticket pool runs jobs that push a branch; read-only jobs are not supported"
+                    .into(),
             ));
         }
         let live = self.list()?.len();
@@ -612,7 +627,10 @@ impl TicketProvider {
             pid,
         };
         fs::create_dir_all(self.home())?;
-        fs::write(self.entry_path(&job_id), serde_json::to_vec(&entry).unwrap_or_default())?;
+        fs::write(
+            self.entry_path(&job_id),
+            serde_json::to_vec(&entry).unwrap_or_default(),
+        )?;
         Ok(OpenedSlot {
             id: job_id.clone(),
             name: job_id,

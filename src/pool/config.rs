@@ -623,7 +623,10 @@ impl PoolConfig {
     }
 
     fn validate_image(&self) -> Result<(), VivariumError> {
-        if matches!(self.provider.as_str(), "ssh" | "local" | "worker" | "ticket") {
+        if matches!(
+            self.provider.as_str(),
+            "ssh" | "local" | "worker" | "ticket"
+        ) {
             return if self.image.is_empty() {
                 Ok(())
             } else {

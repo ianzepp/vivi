@@ -14,12 +14,12 @@ pub mod git_http;
 pub mod grants;
 pub mod hardening;
 pub mod hosted;
-pub mod init;
-pub mod jobs;
-pub mod machine_auth;
 pub mod identities;
 pub mod ids;
+pub mod init;
+pub mod jobs;
 pub mod keys;
+pub mod machine_auth;
 pub mod mcp;
 pub mod project_wake;
 pub mod projects;
@@ -183,7 +183,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/auth/machine/challenge",
             post(machine_auth::challenge_handler),
         )
-        .route("/v1/auth/machine/verify", post(machine_auth::verify_handler))
+        .route(
+            "/v1/auth/machine/verify",
+            post(machine_auth::verify_handler),
+        )
         .route("/v1/jobs/{id}", get(jobs::manifest_handler))
         .route("/v1/jobs/{id}/receipt", post(jobs::receipt_handler))
         // Git smart HTTP over each project's lanes: /git/<project>/<target>.git/...

@@ -60,7 +60,9 @@ pub(super) fn take_reach(arguments: &mut Value) -> Result<Reach, ToolError> {
         Some(Value::Bool(true)) => Ok(Reach::Origin),
         Some(Value::String(s)) if s == "origin" => Ok(Reach::Origin),
         Some(Value::String(s)) if s == "all" => Ok(Reach::All),
-        Some(_) => Err(ToolError::new("origin must be true, false, \"origin\" or \"all\"")),
+        Some(_) => Err(ToolError::new(
+            "origin must be true, false, \"origin\" or \"all\"",
+        )),
     }
 }
 
@@ -122,7 +124,12 @@ pub(super) fn forward(
 pub(super) fn merge_list(local: Value, remote: Result<Value, ToolError>) -> Value {
     let mut out = local;
     let tag = |items: &mut Vec<Value>, from: &str, source: &Value| {
-        for item in source.get("items").and_then(Value::as_array).into_iter().flatten() {
+        for item in source
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let mut item = item.clone();
             if let Some(object) = item.as_object_mut() {
                 // `source` says which server owns the item; `from` stays the

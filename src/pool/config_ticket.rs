@@ -64,7 +64,10 @@ impl PoolTicket {
     /// Returns a configuration error naming the first problem.
     pub fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         reject_unknown(pool, ".ticket", &self.unknown)?;
-        for (field, value) in [("server", &self.server), ("worker_server", &self.worker_server)] {
+        for (field, value) in [
+            ("server", &self.server),
+            ("worker_server", &self.worker_server),
+        ] {
             if let Some(url) = value
                 && !(url.starts_with("http://") || url.starts_with("https://"))
             {

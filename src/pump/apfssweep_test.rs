@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::{sweep_apfs, sweep_apfs_with};
-use crate::pump::ramsweep::SlotState;
 use crate::pool::ramdisk::Runner;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::ramsweep::SlotState;
 
 /// Volumes as `(device, name, quota bytes)`, and `(device, mount)` rows.
 struct Disks {
@@ -166,7 +166,11 @@ fn a_live_slot_keeps_its_volume() {
     let (ctx, _host) = ctx_with("here", &scratch);
 
     let lines = sweep_apfs_with(&ctx, &disks, |candidate| {
-        if candidate == slot { SlotState::Running } else { SlotState::Ended }
+        if candidate == slot {
+            SlotState::Running
+        } else {
+            SlotState::Ended
+        }
     });
 
     assert!(disks.deletes().is_empty(), "{lines:?}");

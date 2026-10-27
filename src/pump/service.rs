@@ -336,7 +336,9 @@ fn migrate_registry_pump_flags() {
             && control.mode != super::control::PumpMode::Stopped
         {
             match super::control::set_project_mode(&root, super::control::PumpMode::Stopped) {
-                Ok(()) => tracing::info!(project = %root.display(), "registry pump = false moved to the project's pump control: stopped"),
+                Ok(()) => {
+                    tracing::info!(project = %root.display(), "registry pump = false moved to the project's pump control: stopped")
+                }
                 Err(error) => {
                     tracing::warn!(project = %root.display(), %error, "could not stop pump while migrating; left as is");
                     continue;

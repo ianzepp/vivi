@@ -139,7 +139,10 @@ fn translate(command: &Command) -> Result<(&'static str, Args), VivariumError> {
                 a.insert("subject".into(), json!(c.send.subject));
                 a.insert(
                     "body".into(),
-                    json!(read_body(c.send.body.as_deref(), c.send.body_file.as_deref())?),
+                    json!(read_body(
+                        c.send.body.as_deref(),
+                        c.send.body_file.as_deref()
+                    )?),
                 );
                 put_list(&mut a, "done_when", &c.done_when);
                 put_list(&mut a, "depends_on", &c.depends_on);
@@ -264,7 +267,10 @@ fn read_body(body: Option<&str>, file: Option<&Path>) -> Result<String, Vivarium
 
 fn command_name(command: &impl std::fmt::Debug) -> String {
     let text = format!("{command:?}");
-    text.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("?").to_string()
+    text.split(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or("?")
+        .to_string()
 }
 
 fn unmapped(name: String) -> VivariumError {

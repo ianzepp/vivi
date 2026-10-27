@@ -95,9 +95,7 @@ pub(crate) async fn archive_project(
         let lanes_root = super::require_lanes(&state.host, "archive_project")?;
         let lanes_dir = lanes_root
             .canonicalize()
-            .map_err(|e| {
-                ToolError::new(format!("could not resolve {}: {e}", "lanes_root"))
-            })?
+            .map_err(|e| ToolError::new(format!("could not resolve {}: {e}", "lanes_root")))?
             .join(&name);
         // Read the registry before any metadata write: a registry that
         // cannot be read aborts the archive with nothing changed.

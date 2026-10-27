@@ -727,7 +727,15 @@ async fn host_tool(
         .await
         {
             Ok(Ok(value)) => {
-                audit(state, auth, None, name, AuditOutcome::Ok, &summarize_ok(name, &value)).await;
+                audit(
+                    state,
+                    auth,
+                    None,
+                    name,
+                    AuditOutcome::Ok,
+                    &summarize_ok(name, &value),
+                )
+                .await;
                 Ok(tool_result(value, false))
             }
             Ok(Err(message)) => {

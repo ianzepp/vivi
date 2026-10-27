@@ -42,7 +42,11 @@ fn plain(status: StatusCode, message: &str) -> Response {
 /// `ERR <message>`, which git reports as `remote error: <message>`. A bare
 /// HTTP 403 would only show "RPC failed; HTTP 403".
 fn git_refusal(service: &str, advertisement: bool, message: &str) -> Response {
-    let kind = if advertisement { "advertisement" } else { "result" };
+    let kind = if advertisement {
+        "advertisement"
+    } else {
+        "result"
+    };
     let text = format!("ERR vivi: {message}\n");
     let packet = format!("{:04x}{text}", text.len() + 4);
     (
@@ -92,7 +96,10 @@ fn push_capabilities(body: &[u8]) -> Vec<String> {
 /// the client did not ask for a report.
 fn push_refusal(body: &[u8], refs: &[String], reason: &str) -> Response {
     let caps = push_capabilities(body);
-    if !caps.iter().any(|c| c == "report-status" || c == "report-status-v2") {
+    if !caps
+        .iter()
+        .any(|c| c == "report-status" || c == "report-status-v2")
+    {
         return git_refusal("git-receive-pack", false, reason);
     }
     let mut report = pkt(b"unpack ok\n");
@@ -100,8 +107,15 @@ fn push_refusal(body: &[u8], refs: &[String], reason: &str) -> Response {
         report.extend(pkt(format!("ng {name} {reason}\n").as_bytes()));
     }
     report.extend_from_slice(b"0000");
-    let body = if caps.iter().any(|c| c == "side-band-64k" || c == "side-band") {
-        let chunk = if caps.iter().any(|c| c == "side-band-64k") { 65515 } else { 995 };
+    let body = if caps
+        .iter()
+        .any(|c| c == "side-band-64k" || c == "side-band")
+    {
+        let chunk = if caps.iter().any(|c| c == "side-band-64k") {
+            65515
+        } else {
+            995
+        };
         let mut out = pkt(format!("\u{2}vivi: {reason}\n").as_bytes());
         for part in report.chunks(chunk) {
             let mut band = vec![1u8];
@@ -144,7 +158,8 @@ fn presented_token(headers: &HeaderMap) -> Option<String> {
         .decode(encoded.trim())
         .ok()?;
     let text = String::from_utf8(decoded).ok()?;
-    text.split_once(':').map(|(_, password)| password.to_owned())
+    text.split_once(':')
+        .map(|(_, password)| password.to_owned())
 }
 
 #[derive(Clone)]
@@ -157,7 +172,10 @@ struct Route {
 fn parse_path(path: &str) -> Option<Route> {
     let mut parts = path.trim_start_matches('/').splitn(3, '/');
     let project = parts.next().filter(|p| !p.is_empty())?;
-    let target = parts.next()?.strip_suffix(".git").filter(|t| !t.is_empty())?;
+    let target = parts
+        .next()?
+        .strip_suffix(".git")
+        .filter(|t| !t.is_empty())?;
     let rest = parts.next()?;
     let ok = |s: &str| !s.contains("..") && !s.contains('\\') && !s.contains('\0');
     (ok(project) && ok(target) && ok(rest)).then(|| Route {
@@ -174,14 +192,15 @@ struct Lane {
 }
 
 /// Project id, or hosted name, to its lane. Blocking.
-fn resolve_lane(
-    state: &AppState,
-    auth: &ServerPrincipal,
-    route: &Route,
-) -> Result<Lane, Response> {
+fn resolve_lane(state: &AppState, auth: &ServerPrincipal, route: &Route) -> Result<Lane, Response> {
     let meta = if auth.host {
         hosted_entry(state, &route.project)
-            .or_else(|| state.projects.load_meta_including_retired(&route.project).ok())
+            .or_else(|| {
+                state
+                    .projects
+                    .load_meta_including_retired(&route.project)
+                    .ok()
+            })
             .ok_or_else(|| plain(StatusCode::NOT_FOUND, "no such project"))?
     } else {
         let resolved = resolve_grant(state, &auth.grants, &route.project)
@@ -195,11 +214,7 @@ fn resolve_lane(
 }
 
 /// A job ticket's lane: only its own project and target.
-fn resolve_job_lane(
-    state: &AppState,
-    job: &JobRecord,
-    route: &Route,
-) -> Result<Lane, Response> {
+fn resolve_job_lane(state: &AppState, job: &JobRecord, route: &Route) -> Result<Lane, Response> {
     if !job.is_project(&route.project) || route.target != job.manifest.target {
         return Err(plain(
             StatusCode::FORBIDDEN,
@@ -209,7 +224,10 @@ fn resolve_job_lane(
     if !job.live() {
         return Err(plain(
             StatusCode::FORBIDDEN,
-            &format!("this job is {}; its ticket no longer reaches git", job.status()),
+            &format!(
+                "this job is {}; its ticket no longer reaches git",
+                job.status()
+            ),
         ));
     }
     let meta = state
@@ -230,8 +248,8 @@ fn lane_of(
     let root = meta
         .mailspace_root
         .ok_or_else(|| plain(StatusCode::NOT_FOUND, "the project is not hosted here"))?;
-    let (path, main) = lane_for(&root, &route.target)
-        .map_err(|message| plain(StatusCode::NOT_FOUND, &message))?;
+    let (path, main) =
+        lane_for(&root, &route.target).map_err(|message| plain(StatusCode::NOT_FOUND, &message))?;
     let main_ref = if main.starts_with("refs/") {
         main
     } else {
@@ -451,10 +469,16 @@ async fn run_backend(
         lane.path.parent(),
         lane.path.file_name().and_then(|n| n.to_str()),
     ) else {
-        return plain(StatusCode::INTERNAL_SERVER_ERROR, "the lane path has no parent");
+        return plain(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the lane path has no parent",
+        );
     };
     let Some(backend) = backend_path().await else {
-        return plain(StatusCode::INTERNAL_SERVER_ERROR, "git-http-backend not found");
+        return plain(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "git-http-backend not found",
+        );
     };
     let header = |name: &str| {
         headers

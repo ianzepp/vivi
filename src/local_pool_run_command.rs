@@ -63,9 +63,7 @@ fn run_inner(command: &PoolRunCommand) -> Result<i32, Failure> {
     if !server.starts_with("http://") && !server.starts_with("https://") {
         return Err(usage(format!("{server:?} is not an http(s) server URL")));
     }
-    let worker = vivi::home::vivi_home()
-        .map_err(usage)?
-        .join("worker");
+    let worker = vivi::home::vivi_home().map_err(usage)?.join("worker");
     let job_dir = worker.join("jobs").join(job_id);
     let slots = read_slots(&worker)?;
 
@@ -97,7 +95,12 @@ fn read_slots(worker: &Path) -> Result<u32, Failure> {
             .as_integer()
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n > 0)
-            .ok_or_else(|| usage(format!("{}: slots must be a positive integer", path.display()))),
+            .ok_or_else(|| {
+                usage(format!(
+                    "{}: slots must be a positive integer",
+                    path.display()
+                ))
+            }),
     }
 }
 
@@ -522,7 +525,12 @@ fn pipeline(job: &mut Job, task_file: &Path, commit: &mut Option<String>) -> Res
         let remote = format!("origin/{}", m.base);
         let probe = job
             .git()
-            .args(["rev-parse", "--verify", "-q", &format!("{remote}^{{commit}}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("{remote}^{{commit}}"),
+            ])
             .output();
         match probe {
             Ok(out) if out.status.success() => remote,
@@ -532,7 +540,12 @@ fn pipeline(job: &mut Job, task_file: &Path, commit: &mut Option<String>) -> Res
     let mut branch = job.git();
     branch.args(["switch", "-q", "-c", &m.branch, &base]);
     let limit = job.remaining();
-    job.step("branch", branch, &format!("git switch -c {} {base}", m.branch), limit)?;
+    job.step(
+        "branch",
+        branch,
+        &format!("git switch -c {} {base}", m.branch),
+        limit,
+    )?;
 
     let harness = job.sh(&m.harness, task_file);
     let limit = job.remaining();
@@ -553,7 +566,13 @@ fn pipeline(job: &mut Job, task_file: &Path, commit: &mut Option<String>) -> Res
     let subject = format!(
         "Work {}: {}",
         job.job_id,
-        m.task.lines().next().unwrap_or("").chars().take(60).collect::<String>()
+        m.task
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(60)
+            .collect::<String>()
     );
     let mut commit_cmd = job.git();
     commit_cmd
@@ -585,14 +604,32 @@ fn push_with_retry(job: &mut Job) -> Result<(), Outcome> {
     let mut wait = Duration::from_secs(2);
     loop {
         let mut push = job.git_net(&job.checkout.clone());
-        push.args(["push", "-q", "origin", &format!("HEAD:refs/heads/{}", m.branch)]);
+        push.args([
+            "push",
+            "-q",
+            "origin",
+            &format!("HEAD:refs/heads/{}", m.branch),
+        ]);
         let limit = job.remaining().max(MIN_PUSH_TIME);
-        let result = job.step("push", push, &format!("git push origin HEAD:refs/heads/{}", m.branch), limit);
+        let result = job.step(
+            "push",
+            push,
+            &format!("git push origin HEAD:refs/heads/{}", m.branch),
+            limit,
+        );
         let Err(outcome) = result else { return Ok(()) };
         let text = outcome.tail.to_lowercase();
-        let refused = ["denied", "rejected", "refused", "403", "401", "not found", "protected"]
-            .iter()
-            .any(|w| text.contains(w));
+        let refused = [
+            "denied",
+            "rejected",
+            "refused",
+            "403",
+            "401",
+            "not found",
+            "protected",
+        ]
+        .iter()
+        .any(|w| text.contains(w));
         if refused || begin.elapsed() + wait > RETRY_FOR {
             return Err(outcome);
         }
@@ -615,8 +652,7 @@ fn post_receipt(server: &str, job_id: &str, ticket: &str, body: &[u8]) -> Result
             Ok(r) if matches!(r.status, 400 | 401 | 403 | 404) => {
                 return Err(usage(format!(
                     "receipt refused: HTTP {}; kept {}",
-                    r.status,
-                    "the job directory"
+                    r.status, "the job directory"
                 )));
             }
             Ok(r) => format!("HTTP {}", r.status),
@@ -625,10 +661,15 @@ fn post_receipt(server: &str, job_id: &str, ticket: &str, body: &[u8]) -> Result
         if begin.elapsed() + wait > RETRY_FOR {
             return Err(Failure {
                 code: EXIT_FAILED,
-                message: format!("receipt not posted after an hour ({problem}); job directory kept"),
+                message: format!(
+                    "receipt not posted after an hour ({problem}); job directory kept"
+                ),
             });
         }
-        eprintln!("receipt post failed ({problem}); retrying in {}s", wait.as_secs());
+        eprintln!(
+            "receipt post failed ({problem}); retrying in {}s",
+            wait.as_secs()
+        );
         std::thread::sleep(wait);
         wait = (wait * 2).min(RETRY_CAP);
     }

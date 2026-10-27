@@ -45,7 +45,11 @@ pub fn run(port: Option<u16>) -> Result<(), String> {
         base64::engine::general_purpose::STANDARD.encode(random::<32>())
     })?;
     secret(&creds, "MODERATION_TOKEN", || hex::encode(random::<24>()))?;
-    secret(&creds, "HOST_OPERATOR_TOKEN", || hex::encode(random::<24>()))?;
+    secret(
+        &creds,
+        "HOST_OPERATOR_TOKEN",
+        || hex::encode(random::<24>()),
+    )?;
 
     add_host_key(&home)?;
 

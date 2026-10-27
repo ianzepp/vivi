@@ -47,8 +47,8 @@ pub use monitor_command::MonitorCommand;
 pub use pool_command::{
     PoolAddCommand, PoolBandsCommand, PoolCleanCommand, PoolConfigSetCommand, PoolCreateCommand,
     PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand, PoolListCommand,
-    PoolReconcileCommand, PoolRemoveCommand, PoolResetCommand, PoolScaleCommand, PoolShowCommand,
-    PoolRunCommand, PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
+    PoolReconcileCommand, PoolRemoveCommand, PoolResetCommand, PoolRunCommand, PoolScaleCommand,
+    PoolShowCommand, PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
 };
 pub use project_command::{
     ProjectCommand, ProjectCreateCommand, ProjectDeleteCommand, ProjectLaneAddCommand,

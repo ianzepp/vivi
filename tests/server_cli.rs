@@ -90,10 +90,7 @@ fn an_unknown_argument_exits_2_without_serving() {
 fn an_address_already_in_use_exits_1_before_the_data_dir_is_touched() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = taken.local_addr().expect("local addr").port().to_string();
-    let home = scratch_home(
-        "taken",
-        &format!("bind = \"127.0.0.1\"\nport = {port}\n"),
-    );
+    let home = scratch_home("taken", &format!("bind = \"127.0.0.1\"\nport = {port}\n"));
     let out = wait(&[], &home);
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8_lossy(&out.stderr);

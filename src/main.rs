@@ -243,7 +243,10 @@ fn git_credential(action: &str) {
     let field = |name: &str| {
         input
             .lines()
-            .find_map(|line| line.strip_prefix(name).and_then(|rest| rest.strip_prefix('=')))
+            .find_map(|line| {
+                line.strip_prefix(name)
+                    .and_then(|rest| rest.strip_prefix('='))
+            })
             .unwrap_or_default()
             .to_owned()
     };

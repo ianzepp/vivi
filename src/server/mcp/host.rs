@@ -58,9 +58,9 @@ use super::tools::{ToolError, opt_str, req_str};
 
 /// The lifecycle handlers, dispatched by the sibling `server` module.
 pub(super) use self::archive::archive_project;
-pub(super) use self::register::{project_register, project_unregister};
 pub(super) use self::archive::purge::purge_project;
 pub(super) use self::archive::restore::restore_project;
+pub(super) use self::register::{project_register, project_unregister};
 
 /// Where the host tools put things. A field left unset makes a tool answer
 /// with a configuration error naming every unset variable.

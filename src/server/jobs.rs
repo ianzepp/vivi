@@ -260,8 +260,8 @@ pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
         .mailspace_root
         .clone()
         .ok_or("the project is not hosted here")?;
-    let project = crate::server::mcp::server::hosted_name(&meta)
-        .unwrap_or_else(|| meta.project_id.clone());
+    let project =
+        crate::server::mcp::server::hosted_name(&meta).unwrap_or_else(|| meta.project_id.clone());
     let (lane, main) = lane_for(&root, target)?;
     let main = short(&main).to_owned();
 
@@ -269,7 +269,9 @@ pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
         return Err(format!("branch {branch:?} is not a usable branch name"));
     }
     if branch == "main" || branch == "vivi/main" || branch == main {
-        return Err(format!("branch {branch} is a protected branch; name a work branch"));
+        return Err(format!(
+            "branch {branch} is a protected branch; name a work branch"
+        ));
     }
     // Default base: the target's main; until the pump has created it (a
     // fresh lane holds only the upstream branch), the lane's default branch.
@@ -281,8 +283,12 @@ pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
 
     let committer = match args.get("committer").filter(|c| !c.is_null()) {
         Some(c) => Committer {
-            name: required(c, "name").map_err(|e| format!("committer.{e}"))?.to_owned(),
-            email: required(c, "email").map_err(|e| format!("committer.{e}"))?.to_owned(),
+            name: required(c, "name")
+                .map_err(|e| format!("committer.{e}"))?
+                .to_owned(),
+            email: required(c, "email")
+                .map_err(|e| format!("committer.{e}"))?
+                .to_owned(),
         },
         None => {
             let pump = Mailspace::open_root(root.clone())
@@ -303,7 +309,8 @@ pub fn create(state: &AppState, args: &Value) -> Result<Value, String> {
     let job_id = format!("job_{}", random_hex(8)?);
     let ticket = format!("{TICKET_PREFIX}{}", random_hex(32)?);
     let now = Utc::now();
-    let expires = now + Duration::seconds(i64::try_from(timeout_s.min(1 << 40)).unwrap_or(0) + GRACE_S);
+    let expires =
+        now + Duration::seconds(i64::try_from(timeout_s.min(1 << 40)).unwrap_or(0) + GRACE_S);
     let manifest = Manifest {
         job_id: job_id.clone(),
         git_path: format!("/git/{project}/{target}.git"),
@@ -422,7 +429,11 @@ pub async fn receipt_handler(
     record.receipt = Some(receipt);
     if let Err(message) = store(&state, &record) {
         tracing::error!("job {id}: {message}");
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", "storage failure");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "storage failure",
+        );
     }
     tracing::info!("job {id}: receipt accepted");
     Json(json!({ "accepted": true })).into_response()

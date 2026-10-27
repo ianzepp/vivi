@@ -214,7 +214,9 @@ fn cache_path(server: &str, as_host: bool, key: &MachineKey) -> Result<PathBuf, 
     let tag = hex::encode(Sha256::digest(
         format!("{server}\n{as_host}\n{}", key.public_key()).as_bytes(),
     ));
-    Ok(keys_dir()?.join("sessions").join(format!("{}.json", &tag[..16])))
+    Ok(keys_dir()?
+        .join("sessions")
+        .join(format!("{}.json", &tag[..16])))
 }
 
 /// Drop the cached session for `server` (the server refused it, for

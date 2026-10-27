@@ -92,7 +92,10 @@ pub struct ChallengeRequest {
 /// `POST /v1/auth/machine/challenge` `{public_key}` → `{challenge_id, nonce}`.
 pub async fn challenge_handler(Json(req): Json<ChallengeRequest>) -> Response {
     let Some(public_key) = decode_key(&req.public_key) else {
-        return refuse(StatusCode::BAD_REQUEST, "public_key must be base64 of 32 bytes");
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "public_key must be base64 of 32 bytes",
+        );
     };
     let id = hex::encode(random32());
     let nonce = random32();
@@ -132,7 +135,10 @@ pub struct VerifyRequest {
 
 /// `POST /v1/auth/machine/verify` `{challenge_id, signature, as_host?}` →
 /// `{token, expires_in, principal, host, fingerprint}`.
-pub async fn verify_handler(State(state): State<AppState>, Json(req): Json<VerifyRequest>) -> Response {
+pub async fn verify_handler(
+    State(state): State<AppState>,
+    Json(req): Json<VerifyRequest>,
+) -> Response {
     let challenge = {
         let mut book = CHALLENGES.lock().unwrap_or_else(|e| e.into_inner());
         book.remove(&req.challenge_id)

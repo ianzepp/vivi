@@ -99,7 +99,11 @@ impl ServerConfig {
         };
         let under = |value: Option<PathBuf>, default: &str| {
             let value = value.unwrap_or_else(|| PathBuf::from(default));
-            if value.is_absolute() { value } else { home.join(value) }
+            if value.is_absolute() {
+                value
+            } else {
+                home.join(value)
+            }
         };
         let lanes_root = under(file.lanes_root, "lanes");
         let git_url_prefix = file

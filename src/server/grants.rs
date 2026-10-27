@@ -519,18 +519,22 @@ impl ServerKeyStore {
     pub fn add_machine_key(&self, principal: &str, public_key: &str) -> Result<bool, GrantsError> {
         let principal = validate_principal(principal)?;
         let mut state = self.state();
-        if let Some(other) = state
-            .file
-            .principals
-            .iter()
-            .find(|p| p.principal != principal && p.machine_keys.iter().any(|k| k == public_key))
+        if let Some(other) =
+            state.file.principals.iter().find(|p| {
+                p.principal != principal && p.machine_keys.iter().any(|k| k == public_key)
+            })
         {
             return Err(GrantsError::PrincipalCollision(format!(
                 "this machine key already belongs to principal {}",
                 other.principal
             )));
         }
-        let pos = match state.file.principals.iter().position(|p| p.principal == principal) {
+        let pos = match state
+            .file
+            .principals
+            .iter()
+            .position(|p| p.principal == principal)
+        {
             Some(pos) => pos,
             None => {
                 state.file.principals.push(PrincipalRecord {

@@ -55,9 +55,10 @@ fn register(state: &AppState, given: &Path) -> Result<Value, ToolError> {
         .map_err(|e| ToolError::new(format!("cannot open its mailspace: {e}")))?;
     let project_id = hosted::resolve_project_id(&mailspace).map_err(ToolError::new)?;
     let archived = hosted_metas(state).into_iter().any(|meta| {
-        meta.archived.as_ref().is_some_and(|a| {
-            a.root == root || a.root.canonicalize().is_ok_and(|a| a == root)
-        }) || (meta.project_id == project_id && meta.is_archived())
+        meta.archived
+            .as_ref()
+            .is_some_and(|a| a.root == root || a.root.canonicalize().is_ok_and(|a| a == root))
+            || (meta.project_id == project_id && meta.is_archived())
     });
     if archived {
         return Err(ToolError::new(format!(
@@ -73,7 +74,13 @@ fn register(state: &AppState, given: &Path) -> Result<Value, ToolError> {
             pump: true,
             serve: true,
         });
-        registry.set(root.clone(), Flags { serve: true, ..flags });
+        registry.set(
+            root.clone(),
+            Flags {
+                serve: true,
+                ..flags
+            },
+        );
         Ok(())
     })
     .map_err(|e| ToolError::new(format!("the host registry could not be updated: {e}")))?;

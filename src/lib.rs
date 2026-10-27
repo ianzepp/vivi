@@ -6,8 +6,6 @@
 //! wants, mail, memos, rules, goals, roles, and executable work graphs — plus the
 //! `vivi` binary.
 
-pub mod home;
-pub mod machine_key;
 pub mod b64;
 pub mod boot;
 pub mod cli;
@@ -15,8 +13,10 @@ pub mod doctor;
 pub mod duration;
 pub mod error;
 pub mod extract;
+pub mod home;
 pub mod judgment;
 pub mod letter;
+pub mod machine_key;
 pub mod mailspace;
 pub mod mcp;
 pub mod message;
