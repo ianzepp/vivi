@@ -45,6 +45,8 @@ Front matter for the planner:
 | --- | --- | --- |
 | `answer` | string | First key. Exactly one of the words below. |
 | `reason` | string | Required unless `answer` is `planned`. A literal string, `'...'`. |
+| `scope_target` | string | Only with `operator`, together with `scope_paths`: the configured pump target the requested paths live in. |
+| `scope_paths` | list | Only with `operator`, together with `scope_target`: the literal repo-relative paths to add. Nonempty, no blank entries. |
 
 No other keys are allowed. An unknown key is refused.
 
@@ -52,7 +54,7 @@ Answer words:
 
 - `planned`: there is work, and the document describes it.
 - `delivered`: nothing is left to do. The document names the commit or the code that shows it. Give `reason`.
-- `operator`: a decision is missing that belongs to the operator and cannot be answered or defaulted from the code, the thread or the rules. The document quotes the open question. A need that only records a ruling whose work is carried by another need is `delivered`, with that pointer. Give `reason`.
+- `operator`: a decision is missing that belongs to the operator and cannot be answered or defaulted from the code, the thread or the rules. The document quotes the open question. A need that only records a ruling whose work is carried by another need is `delivered`, with that pointer. Give `reason`. When the only missing decision is path permission, carry the structured scope request described under "Requesting path permission" below.
 - `hold`: it cannot be done here: it needs hardware or access this checkout lacks, belongs to a repository that is not an available target, or the thread says it is deferred. The document says which. Give `reason`.
 - `design`: the work is real but not settled enough to plan; the document says what is unsettled. Use this sparingly: if the ruling is clear and the work is merely large, answer `planned`. Size is the slicer's concern, not yours. Give `reason`.
 
@@ -86,6 +88,29 @@ reason = 'Commit 3f9a2c1 already adds the command and its test; nothing is left.
 +++
 Evidence for the claim above.
 ```
+
+## Requesting path permission
+
+A plan that is ready except that it must write paths the need does not delegate asks for permission alone: answer `operator`, keep the `reason` that says what the work needs and why, and add both scope fields. The fields are refused on every other answer, and they are refused apart: `scope_target` without `scope_paths`, or the other way around, does not parse.
+
+- `scope_target`: the configured pump target the paths live in. It must agree with the need's explicit target and with the target of the need's branch, when it has one. When neither names a target, yours stands for this request alone and creates no branch.
+- `scope_paths`: the paths to add, as literal repo-relative paths. No globs, no absolute paths, no `..`; a directory path ends with `/`.
+
+An ordinary operator question — a missing decision, a ruling nobody has made — and every `design` escalation omit both fields: they ask for a decision, not for paths. A grant of paths is permission to write, never the decision itself, and never slice ownership: `hold` remains the answer for work this checkout cannot reach, and `design` for work that is not settled enough to plan.
+
+The pump decides the request whole against the target's live policy: one path the policy refuses refuses every path asked, so ask only for what the plan needs. The settled ruling is recorded on the need thread as a `scope-ruling` note, and a grant widens the need's effective scope for the work that follows; the original signed need letter is never rewritten. The effective-scope block of your brief is authoritative for what is already delegated and granted, even where the letter's original `write_scope` text has gone stale.
+
+```
++++
+answer = "operator"
+reason = 'The plan must also edit src/retry.rs, which the need does not delegate.'
+scope_target = "default"
+scope_paths = ["src/retry.rs"]
++++
+The plan above is complete except for the path request in the envelope.
+```
+
+This charter ships inside the pump binary, and an installed copy is intentionally not overwritten by an upgrade. The brief therefore repeats the scope request contract itself, and that runtime text is what governs when an installed charter is older than the running pump. Older pump binaries cannot be relied upon to honor the scope fields, or the note word that records the ruling.
 
 ## Finish
 

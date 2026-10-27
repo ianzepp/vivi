@@ -204,7 +204,8 @@ The pump records its own progress as `mail` replies whose front matter has a
 
 The note words are `attempt` (one pool attempt of a job), `brief` (the job
 brief, see below), `deviations` (a hand's deviations), `follow-up` (a hand's
-follow-up items), `slice-env` (an environment failure of a slice, `ref` is the
+follow-up items), `scope-ruling` (a settled scope request on a need thread,
+see below), `slice-env` (an environment failure of a slice, `ref` is the
 hand job), `repair-attempt` and `repair-rung` (the repair flow), `main-red` (a
 red main reported on its repair need), `abandoned` (job ids a restarted run
 gave up) and `slice-merge` (why a slice merge failed, `ref` is the merge
@@ -219,6 +220,55 @@ t = 1761230000123456
 
 insert_row now takes the run id as its second argument.
 ```
+
+A `scope-ruling` note records how the pump settled one structured scope
+request: a planner `operator` reply or an admitter `escalate` reply that
+carried `scope_target` and `scope_paths` to ask for path permission alone.
+The note is posted on the need thread, to the need's audience, as the pump's
+reply role. Its `pump.ref` names the job that asked with only the
+envelope-correction suffix (`-c<n>`) stripped, so a replayed request
+recognizes the ruling already on the thread and never re-decides it against a
+reloaded policy. The prose is one strict TOML record with exactly these keys:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `need` | string | the need the ruling belongs to |
+| `target` | string | the configured pump target the decided paths live in |
+| `run` | integer | the run that asked, greater than zero |
+| `task` | string | the task handle of the slice that asked |
+| `paths` | list | the normalized literal paths the ruling decides about; never empty |
+| `reason` | string | one line of plain prose |
+| `decision` | `grant` or `operator-required` | what was decided |
+| `issue` | string | only on `operator-required`: why an operator was needed — `unknown-target`, `target-mismatch`, `invalid-path`, `denied`, `outside-allow` or `unverifiable-path` |
+
+```
++++
+[pump]
+note = "scope-ruling"
+t = 1761230000123457
+ref = "slice-9033a8cf-a1"
++++
+
+need = "e4ef1712"
+target = "default"
+run = 2
+task = "slice-9033a8cf"
+paths = ["src/retry.rs"]
+reason = "the requested path sits inside the target scope policy"
+decision = "grant"
+```
+
+Only a `decision = "grant"` posted by the pump's reply role widens the need's
+effective write scope: operator-required rulings, records for another need or
+target, malformed records and foreign notes grant nothing. Historical grants
+are durable facts and are not rechecked against later policy changes, and the
+original signed need letter is never rewritten: a grant widens the need's
+effective scope, not the letter. The effective need write scope that runtime
+briefs render from these facts is grouped by target and is authoritative over
+the letter's stale `write_scope` text. Permission is distinct from slice
+ownership: a grant lets a slice write the paths, it never gives a slice
+ownership — a hold waits and a design review remains as before. Older
+binaries cannot be relied upon to honor the `scope-ruling` note word.
 
 ### The `[job]` table
 
@@ -317,8 +367,8 @@ The `[[check]]` table is `{cmd, result, seconds}` with `result` one of `pass`,
 | Role | `answer` | Other fields | Prose body |
 | --- | --- | --- | --- |
 | researcher | `READY`, `NOT READY`, `NEEDS FURTHER REVIEW` | `open_questions` (list) | the analysis |
-| planner | `planned`, `delivered`, `operator`, `hold`, `design` | `reason` (string; required unless `planned`) | the plan document |
-| admitter | `admitted`, `revise`, `escalate` | `required_changes` (list; non-empty for `revise`), `findings` (list), `reason` (string; required for `escalate`) | the review |
+| planner | `planned`, `delivered`, `operator`, `hold`, `design` | `reason` (string; required unless `planned`); `scope_target` (string) and `scope_paths` (list; together, and only on `operator`: a request for path permission alone) | the plan document |
+| admitter | `admitted`, `revise`, `escalate` | `required_changes` (list; non-empty for `revise`), `findings` (list), `reason` (string; required for `escalate`); `scope_target` (string) and `scope_paths` (list; together, and only on `escalate`: a request for path permission alone) | the review |
 | slicer | `sliced`, `escalate` | `mode` = `slice`, `rework` or `split`; `[[slice]]` tables {`id`, `title`, `brief`, `target`, `write_scope` (list), `deps` (list)}, at least one for `sliced` and none for `escalate`; split ids are `<old id>.<n>`, two to four of them; `reason` (string; required for `escalate`) | notes |
 | auditor (verify) | `clean_pass`, `residual`, `block_range`, `block_ship` | `raise_rung` (`need`, `main` or `release`; optional); `[[requirement]]` tables {`id`, `text`, `status` = `SATISFIED`, `PARTIAL`, `MISSING`, `UNVERIFIED` or `NOT_APPLICABLE`, `evidence` (list)}; `[[finding]]` tables {`id`, `content`, `paths` (list), `recheck_trigger`} | the report |
 | judge (auditor, short mode) | `block`, `residual` | `reason` (string; required) | the reasons |
@@ -365,6 +415,19 @@ reason = 'Commit 3f9a2c1 already adds the command and its test; nothing is left.
 Evidence for the claim above.
 ```
 
+A permission-only request names the target and the paths beside its reason;
+the two scope fields are refused on every other answer:
+
+```
++++
+answer = "operator"
+reason = 'The plan must also edit src/retry.rs, which the need does not delegate.'
+scope_target = "default"
+scope_paths = ["src/retry.rs"]
++++
+The plan is complete except for the path request above.
+```
+
 ### Admitter
 
 ```
@@ -375,6 +438,19 @@ required_changes = [
   'State what the command prints when the run is closed.',
 ]
 findings = ['The second phase repeats work the first phase already delivers.']
++++
+The review follows.
+```
+
+A permission-only escalation carries the same two scope fields beside its
+required reason; they are refused on every other answer:
+
+```
++++
+answer = "escalate"
+reason = 'The plan must also edit src/retry.rs, which the need does not delegate.'
+scope_target = "default"
+scope_paths = ["src/retry.rs"]
 +++
 The review follows.
 ```
@@ -599,7 +675,8 @@ The pump checks the envelope before it acts on the reply. Refusals are:
 - an unknown key;
 - an `answer` word that is not one of the role's words;
 - a missing or mistyped field for that answer (a `slice` table with no `brief`,
-  `blocked-scope` with no `scope_paths`, and so on).
+  `blocked-scope` with no `scope_paths`, `scope_target` without `scope_paths`,
+  scope fields on an answer that does not take them, and so on).
 
 The pump then sends one correction that quotes the problem and asks for the
 same reply again, corrected. A correction does not use an attempt. If the next
