@@ -15,9 +15,9 @@ use super::{
     VALIDATED, tick_with,
 };
 use crate::error::VivariumError;
-use crate::letter::fixture::{record_body, step_body, task_body_with};
+use crate::letter::fixture::{need_body_with, record_body, step_body, task_body_with};
 use crate::letter::records::NoteWord;
-use crate::letter::work::TaskFront;
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::mailspace::pump_note::note_of;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::Slice;
@@ -85,6 +85,22 @@ fn seed_need_branch(store: &PumpStore) -> R {
     })
 }
 
+/// Register the root letter of the fixtures' need: a valid NeedFront on the
+/// fixture target, so reads of the need thread find a stored root.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.register_need_root(
+        NEED,
+        &need_body_with(
+            &NeedFront {
+                done_when: vec![String::from("the slices are merged")],
+                target: Some(String::from("default")),
+                ..NeedFront::default()
+            },
+            "Build the need.",
+        ),
+    );
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     rig_with("build")
 }
@@ -107,6 +123,7 @@ fn rig_with(kind: &str) -> Result<Rig, VivariumError> {
     seed_need_branch(&store)?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, kind))?;
+    seed_need_root(&mut mail);
     Ok(Rig {
         _dir: dir,
         ctx,

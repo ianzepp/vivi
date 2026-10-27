@@ -7,8 +7,9 @@ use tempfile::{TempDir, tempdir};
 
 use super::ReadySlices;
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
 use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::TickPhase;
@@ -88,14 +89,32 @@ fn rig() -> Result<Rig, VivariumError> {
         state: "live".into(),
     })?;
     store.upsert_need_branch(&branch_row(need_branch::LIVE, 1))?;
+    let mut mail = FakeMail::new("pump");
+    seed_need_root(&mut mail);
     Ok(Rig {
         _dir: dir,
         ctx,
         _host: host,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         jobs: Jobs::default(),
     })
+}
+
+/// Register the root letter of the fixtures' need: a valid NeedFront on the
+/// fixture target, so reads of the need thread find a stored root.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.register_need_root(
+        NEED,
+        &need_body_with(
+            &NeedFront {
+                done_when: vec![String::from("the slices are merged")],
+                target: Some(String::from("default")),
+                ..NeedFront::default()
+            },
+            "Build the need.",
+        ),
+    );
 }
 
 impl Rig {

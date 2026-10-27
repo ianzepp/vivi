@@ -7,9 +7,10 @@ use tempfile::{TempDir, tempdir};
 
 use super::register;
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
 use crate::letter::fixture::record_body;
 use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::collect_slice;
@@ -72,6 +73,22 @@ fn role(name: &str) -> RoutedRole {
     }
 }
 
+/// Register the root letter of the fixtures' need: a valid NeedFront on the
+/// fixture target, so reads of the need thread find a stored root.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.register_need_root(
+        NEED,
+        &need_body_with(
+            &NeedFront {
+                done_when: vec![String::from("the slices are merged")],
+                target: Some(String::from("default")),
+                ..NeedFront::default()
+            },
+            "Build the need.",
+        ),
+    );
+}
+
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let mut cfg = PumpConfig::default();
@@ -96,6 +113,7 @@ fn rig() -> Result<Rig, VivariumError> {
     host.reply("cat-file -e", 128, "fatal: Not a valid object name");
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
+    seed_need_root(&mut mail);
     let mut registry = Registry::<Jobs, FakeMail>::new();
     collect_slice::register_defaults(&mut registry);
     register(&mut registry);
