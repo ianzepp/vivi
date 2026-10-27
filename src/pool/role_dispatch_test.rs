@@ -1,7 +1,8 @@
 use super::*;
 use chrono::TimeZone;
 
-use crate::letter::work::TaskFront;
+use crate::letter::work::{JobFront, TaskFront};
+use crate::mailspace::PoolTask;
 use crate::pool::slot::PoolId;
 
 /// A task letter whose front matter sets `band`.
@@ -741,4 +742,116 @@ fn a_role_value_that_is_neither_band_nor_harness_model_is_refused() {
     assert!(message.contains("role slugger"), "got: {message}");
     assert!(message.contains("nope/model"), "got: {message}");
     assert!(message.contains("harness.models"), "got: {message}");
+}
+
+/// A lookup over explicit facts, standing in for the mailspace's role views.
+fn lookup_of(facts: Vec<RoleFacts>) -> impl Fn(&str) -> Option<RoleFacts> {
+    move |name| facts.iter().find(|role| role.name == name).cloned()
+}
+
+/// Facts that carry the canonical fields a role view hands over.
+fn facts(name: &str, kind: &str, thinking: Option<&str>) -> RoleFacts {
+    RoleFacts {
+        name: name.to_string(),
+        kind: Some(kind.to_string()),
+        band: None,
+        thinking: thinking.map(String::from),
+        charter: format!("{name} charter"),
+        read_only: None,
+    }
+}
+
+/// A pool task addressed to `addressee`, carrying `body`.
+fn addressed_task(addressee: Option<&str>, body: &str) -> PoolTask {
+    PoolTask {
+        handle: String::from("abcd1234"),
+        subject: String::from("step"),
+        body: body.to_string(),
+        addressee: addressee.map(String::from),
+    }
+}
+
+/// A task body whose front matter names the built-in auditor role.
+fn auditor_marker_body() -> String {
+    crate::letter::render(
+        &TaskFront {
+            job: Some(JobFront {
+                id: String::from("audit-1"),
+                kind: String::from("auditor:range"),
+                builtin_role: Some(String::from("auditor")),
+            }),
+            ..TaskFront::default()
+        },
+        "Audit this range.",
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_selector_prefers_the_named_role_over_the_task_addressee() {
+    let lookup = lookup_of(vec![
+        facts("pump", "pump", None),
+        facts("merge", "merge", None),
+    ]);
+    let task = addressed_task(Some("pump"), "build it");
+
+    let named = role_facts(&task, Some("merge"), &lookup).unwrap();
+    assert_eq!(named.name, "merge");
+    assert_eq!(named.kind.as_deref(), Some("merge"));
+
+    let default = role_facts(&task, None, &lookup).unwrap();
+    assert_eq!(default.name, "pump");
+    assert_eq!(default.kind.as_deref(), Some("pump"));
+}
+
+#[test]
+fn the_selector_trims_the_named_role_before_looking_it_up() {
+    let lookup = lookup_of(vec![facts("merge", "merge", None)]);
+    let task = addressed_task(Some("pump"), "build it");
+
+    let named = role_facts(&task, Some("  merge  "), &lookup).unwrap();
+    assert_eq!(named.name, "merge");
+    assert!(role_facts(&task, Some("   "), &lookup).is_none());
+}
+
+#[test]
+fn an_unknown_named_role_is_no_role_never_the_addressee() {
+    let lookup = lookup_of(vec![facts("pump", "pump", None)]);
+    let task = addressed_task(Some("pump"), "build it");
+    assert!(role_facts(&task, Some("nobody"), lookup).is_none());
+}
+
+#[test]
+fn the_addressee_resolves_when_no_role_is_named() {
+    let lookup = lookup_of(vec![facts("auditor", "auditor", Some("xhigh"))]);
+    let role = role_facts(&addressed_task(Some("auditor"), "build it"), None, lookup).unwrap();
+    assert_eq!(role.name, "auditor");
+    assert_eq!(role.kind.as_deref(), Some("auditor"));
+    assert_eq!(role.thinking.as_deref(), Some("xhigh"));
+    assert_eq!(role.charter, "auditor charter");
+
+    let unknown = lookup_of(vec![facts("pump", "pump", None)]);
+    assert!(role_facts(&addressed_task(Some("ghost"), "build it"), None, unknown).is_none());
+}
+
+#[test]
+fn the_builtin_auditor_marker_replaces_the_addressee_charter() {
+    let lookup = lookup_of(vec![facts("hand", "hand", None)]);
+    let task = addressed_task(Some("hand"), &auditor_marker_body());
+
+    let role = role_facts(&task, None, lookup).unwrap();
+    assert_eq!(role.kind.as_deref(), Some("auditor"));
+    assert!(role.read_only.unwrap_or(false));
+    assert!(role.charter.contains("# Auditor"));
+    assert!(!role.charter.contains("hand charter"));
+}
+
+#[test]
+fn the_builtin_auditor_marker_survives_an_unknown_named_role() {
+    let lookup = lookup_of(vec![facts("hand", "hand", None)]);
+    let task = addressed_task(Some("hand"), &auditor_marker_body());
+
+    let role = role_facts(&task, Some("nobody"), lookup).unwrap();
+    assert_eq!(role.name, "auditor");
+    assert_eq!(role.kind.as_deref(), Some("auditor"));
 }

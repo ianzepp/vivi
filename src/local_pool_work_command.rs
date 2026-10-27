@@ -9,6 +9,7 @@ use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::PoolTask;
+use vivi::mailspace::RoleView;
 use vivi::pool::bridge;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::config::RepoAccess;
@@ -416,7 +417,9 @@ fn dispatch_role(
     space: &Mailspace,
     task: &PoolTask,
 ) -> Result<Option<RoleFacts>, VivariumError> {
-    let role = role_facts(space, task, command.role.as_deref());
+    let role = role_dispatch::role_facts(task, command.role.as_deref(), |name| {
+        role_facts_named(space, name)
+    });
     role_dispatch::validate_publish(
         role.as_ref(),
         command.publish_ref.as_deref(),
@@ -475,41 +478,26 @@ fn dispatch_need_kind(
     Ok((need, kind))
 }
 
-/// Resolve the role a dispatch runs as: the `--role` name first (so a step
-/// task addressed to the pump identity still runs as the role it names),
-/// then the shipped Auditor charter named by an internal pump job when the
-/// mailspace has no auditor identity, then the task addressee. A name that is
-/// not a known local role is no role at all, never the addressee instead.
-fn role_facts(space: &Mailspace, task: &PoolTask, named: Option<&str>) -> Option<RoleFacts> {
-    let named = named.map(str::trim).filter(|name| !name.is_empty());
-    let known = |name: &str| match space.role_view(name) {
-        Ok(view) => Some(RoleFacts {
-            name: view.name,
-            kind: view.kind,
-            band: view.model,
-            thinking: view.thinking,
-            charter: view.charter,
-            read_only: view.read_only,
-        }),
+/// The canonical facts of a named role: its role view, or none when the
+/// name is not a known local role.
+fn role_facts_named(space: &Mailspace, name: &str) -> Option<RoleFacts> {
+    match space.role_view(name) {
+        Ok(view) => Some(role_facts_of_view(view)),
         Err(_) => None,
-    };
-    if let Some(facts) = named.and_then(known) {
-        return Some(facts);
     }
-    let builtin_auditor = match vivi::letter::read::task_of(&task.handle, &task.body) {
-        Ok(envelope) => envelope
-            .front
-            .job
-            .is_some_and(|job| job.builtin_role.as_deref() == Some("auditor")),
-        Err(_) => false,
-    };
-    if builtin_auditor {
-        return Some(RoleFacts::builtin_auditor());
+}
+
+/// The canonical facts of one role view: every field the view carries,
+/// including its thinking.
+fn role_facts_of_view(view: RoleView) -> RoleFacts {
+    RoleFacts {
+        name: view.name,
+        kind: view.kind,
+        band: view.model,
+        thinking: view.thinking,
+        charter: view.charter,
+        read_only: view.read_only,
     }
-    if named.is_some() {
-        return None;
-    }
-    task.addressee.as_deref().and_then(known)
 }
 
 fn source_need(space: &Mailspace, task: &str) -> Result<Option<String>, VivariumError> {

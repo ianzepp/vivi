@@ -5,6 +5,11 @@
 use super::*;
 use vivi::pool::config::PoolCommitter;
 
+/// A role lookup over the mailspace's canonical role views.
+fn facts_lookup(space: &Mailspace) -> impl Fn(&str) -> Option<RoleFacts> + '_ {
+    move |name| role_facts_named(space, name)
+}
+
 /// A repository with `main` and `review/aaa`; returns the directory and the
 /// repository path.
 fn repo_with_branch() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -113,7 +118,7 @@ fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
         addressee: Some(String::from("hand")),
     };
 
-    let role = role_facts(&space, &task, None).unwrap();
+    let role = role_dispatch::role_facts(&task, None, facts_lookup(&space)).unwrap();
 
     assert_eq!(role.kind.as_deref(), Some("auditor"));
     assert!(role.read_only.unwrap_or(false));
@@ -244,13 +249,13 @@ fn the_named_role_wins_over_the_task_addressee() {
         addressee: Some(String::from("pump")),
     };
 
-    let named = role_facts(&space, &task, Some("merge")).unwrap();
+    let named = role_dispatch::role_facts(&task, Some("merge"), facts_lookup(&space)).unwrap();
     assert_eq!(named.name, "merge");
     assert_eq!(named.kind.as_deref(), Some("merge"));
 
-    let default = role_facts(&space, &task, None).unwrap();
+    let default = role_dispatch::role_facts(&task, None, facts_lookup(&space)).unwrap();
     assert_eq!(default.name, "pump");
     assert_eq!(default.kind.as_deref(), Some("pump"));
 
-    assert!(role_facts(&space, &task, Some("nobody")).is_none());
+    assert!(role_dispatch::role_facts(&task, Some("nobody"), facts_lookup(&space)).is_none());
 }

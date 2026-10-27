@@ -2,9 +2,11 @@
 //! standing prompt, the read-only mode and the model from the role a task is
 //! addressed to.
 //!
-//! The dispatch command looks the task's addressee up with
-//! [`crate::mailspace::Mailspace::role_view`] and hands [`RoleFacts`] to
-//! [`resolve`] together with the operator's flags and the task body. The
+//! The dispatch command picks the role with [`role_facts`] -- the `--role`
+//! name, the built-in auditor marker, or the task addressee, through an
+//! injected lookup over [`crate::mailspace::Mailspace::role_view`] -- and
+//! hands the resulting [`RoleFacts`] to [`resolve`] together with the
+//! operator's flags and the task body. The
 //! rules, in order of precedence:
 //!
 //! 1. Read-only: the `--read-only` flag, or the role's kind is `auditor`,
@@ -25,7 +27,9 @@
 //! rules, with a note on how the slot reaches the mailspace.
 
 use crate::error::VivariumError;
+use crate::letter::read::task_of;
 use crate::mailspace::Mailspace;
+use crate::mailspace::PoolTask;
 use crate::routing::resolve_read_only;
 
 use super::bands::{self, choose, parse_band};
@@ -129,6 +133,39 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
         read_only: is_read_only(input),
         role: input.role.map(|role| role.name.clone()),
     })
+}
+
+/// The role a task's dispatch runs as, picked with an injected role lookup:
+/// the `--role` name first (so a step task addressed to the pump identity
+/// still runs as the role it names), then the shipped Auditor charter named
+/// by an internal pump job when the mailspace has no auditor identity, then
+/// the task addressee. A name that is not a known local role is no role at
+/// all, never the addressee instead. The lookup resolves a role name to its
+/// canonical facts from the role view -- including its `thinking` -- never
+/// from the task's lossy routing data.
+pub fn role_facts(
+    task: &PoolTask,
+    named: Option<&str>,
+    lookup: impl Fn(&str) -> Option<RoleFacts>,
+) -> Option<RoleFacts> {
+    let named = named.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(facts) = named.and_then(|name| lookup(name)) {
+        return Some(facts);
+    }
+    let builtin_auditor = match task_of(&task.handle, &task.body) {
+        Ok(envelope) => envelope
+            .front
+            .job
+            .is_some_and(|job| job.builtin_role.as_deref() == Some("auditor")),
+        Err(_) => false,
+    };
+    if builtin_auditor {
+        return Some(RoleFacts::builtin_auditor());
+    }
+    if named.is_some() {
+        return None;
+    }
+    task.addressee.as_deref().and_then(|name| lookup(name))
 }
 
 /// Require privileged publication to be explicitly addressed to merge/release
