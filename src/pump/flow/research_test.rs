@@ -6,7 +6,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{for_want, register};
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -59,7 +59,13 @@ fn researcher() -> RoutedRole {
 
 /// A need body that explores `want` (when given) over `prose`.
 fn need_body(want: Option<&str>, prose: &str) -> String {
+    targeted_need_body(None, want, prose)
+}
+
+/// A need body targeting `target`, exploring `want` (when given) over `prose`.
+fn targeted_need_body(target: Option<&str>, want: Option<&str>, prose: &str) -> String {
     let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    front.target = target.map(str::to_owned);
     front.explores = want.map(str::to_owned);
     crate::letter::fixture::need_body_with(&front, prose)
 }
@@ -94,13 +100,19 @@ fn rig_with(cfg: PumpConfig, body: &str, with_role: bool) -> Result<Rig, Vivariu
 }
 
 fn start_job(rig: &Rig) -> Result<JobSpec, VivariumError> {
+    start_job_on(rig, FlowKind::Research)
+}
+
+/// Start the research step through the `flow_kind` registration of the shared
+/// researcher handler.
+fn start_job_on(rig: &Rig, flow_kind: FlowKind) -> Result<JobSpec, VivariumError> {
     let run = RunRow {
         need: rig.need.clone(),
         run: 1,
-        flow: String::from("research"),
+        flow: flow_kind.name().to_owned(),
         flow_version: 2,
-        kind: String::from("research"),
-        entry: String::from("research"),
+        kind: flow_kind.name().to_owned(),
+        entry: flow_kind.name().to_owned(),
         state: String::from("live"),
     };
     let step = StepRow {
@@ -110,7 +122,7 @@ fn start_job(rig: &Rig) -> Result<JobSpec, VivariumError> {
         state: StepState::Pending,
         verdict: None,
     };
-    let def = load(FlowKind::Research)?;
+    let def = load(flow_kind)?;
     let mut registry: Registry<Jobs, FakeMail> = Registry::new();
     register(&mut registry);
     let node = def
@@ -119,7 +131,7 @@ fn start_job(rig: &Rig) -> Result<JobSpec, VivariumError> {
         .find(|node| node.id == "research")
         .ok_or_else(|| VivariumError::Message(String::from("no research node")))?;
     let handler = registry
-        .handler_for(FlowKind::Research, node)
+        .handler_for(flow_kind, node)
         .ok_or_else(|| VivariumError::Message(String::from("no handler")))?;
     let cx = StartCx {
         ctx: &rig.ctx,
@@ -263,5 +275,131 @@ fn a_long_thread_keeps_its_newest_text() -> R {
     assert!(spec.body.contains("NEWEST"), "len {}", spec.body.len());
     assert!(!spec.body.contains("OLDEST"));
     assert!(spec.body.contains("older text cut"));
+    Ok(())
+}
+
+/// Explicit repository targets, each carrying its own literal main.
+fn target_config(targets: &[(&str, &str)]) -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets = targets
+        .iter()
+        .map(|(id, main)| {
+            (
+                (*id).to_string(),
+                PumpTarget {
+                    main: (*main).to_string(),
+                    ..PumpTarget::default()
+                },
+            )
+        })
+        .collect();
+    cfg
+}
+
+#[test]
+fn a_research_job_starts_from_the_original_need_target_main() -> R {
+    // Workspace main "main"; the need's own repository main is "vivi/main".
+    let mut cfg = target_config(&[("vivi", "vivi/main"), ("default", "main")]);
+    cfg.main = String::from("main");
+    let rig = rig_with(
+        cfg,
+        &targeted_need_body(Some("vivi"), Some("w1"), "Look into it."),
+        true,
+    )?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+    rig.host.reply("want show", 0, "WANT-THREAD-TEXT");
+
+    let spec = start_job(&rig)?;
+
+    assert_eq!(spec.target.as_deref(), Some("vivi"), "{:?}", spec.target);
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert!(spec.read_only);
+    assert_eq!(
+        spec.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_build_flow_registration_starts_from_the_need_target_too() -> R {
+    let mut cfg = target_config(&[("vivi", "vivi/main"), ("default", "main")]);
+    cfg.main = String::from("main");
+    let rig = rig_with(
+        cfg,
+        &targeted_need_body(Some("vivi"), None, "Look into it."),
+        true,
+    )?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+
+    let spec = start_job_on(&rig, FlowKind::Build)?;
+
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert!(spec.read_only);
+    Ok(())
+}
+
+#[test]
+fn a_research_job_starts_from_an_explicit_other_repository_target() -> R {
+    let rig = rig_with(
+        target_config(&[("vivi", "vivi/main"), ("default", "main-default")]),
+        &targeted_need_body(Some("default"), None, "Look into it."),
+        true,
+    )?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+
+    let spec = start_job(&rig)?;
+
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some("main-default"));
+    assert!(spec.read_only);
+    Ok(())
+}
+
+#[test]
+fn an_unknown_original_need_target_fails_the_research_step() -> R {
+    let rig = rig_with(
+        target_config(&[("vivi", "vivi/main"), ("default", "main")]),
+        &targeted_need_body(Some("nope"), None, "Look into it."),
+        true,
+    )?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+
+    let error = start_job(&rig).err().map(|error| error.to_string());
+    let text = error.ok_or_else(|| VivariumError::Message(String::from("expected an error")))?;
+
+    assert!(text.contains("nope"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_malformed_need_letter_on_a_workspace_fails_instead_of_falling_back() -> R {
+    let rig = rig_with(
+        target_config(&[("vivi", "vivi/main"), ("default", "main")]),
+        "+++\ndone_when = [\n+++\nprose",
+        true,
+    )?;
+
+    let error = start_job(&rig).err().map(|error| error.to_string());
+    let text = error.ok_or_else(|| VivariumError::Message(String::from("expected an error")))?;
+
+    assert!(text.contains("front matter"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn an_untargeted_need_on_an_ambiguous_workspace_fails_instead_of_falling_back() -> R {
+    let rig = rig_with(
+        target_config(&[("alpha", "vivi/main-alpha"), ("beta", "vivi/main-beta")]),
+        &targeted_need_body(None, None, "Look into it."),
+        true,
+    )?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+
+    let error = start_job(&rig).err().map(|error| error.to_string());
+    let text = error.ok_or_else(|| VivariumError::Message(String::from("expected an error")))?;
+
+    assert!(text.contains("no target"), "{text}");
     Ok(())
 }
