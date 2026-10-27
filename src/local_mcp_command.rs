@@ -52,8 +52,21 @@ fn run_one_shot(command: &McpCommand, one_shot: &McpSubcommand) -> Result<i32, S
         } => Some(read_arguments(args_json.as_deref(), args_file.as_deref())?),
     };
     let config = bridge_config(command).map_err(|error| error.to_string())?;
+    let signed_in = std::env::var(resolve::ENV_API_KEY).map_or(true, |key| key.is_empty());
     let upstream = HttpUpstream::new(&config.server);
-    let mut mcp = Client::connect(&upstream, &config.api_key).map_err(|e| e.to_string())?;
+    let retry_key: String;
+    let mut mcp = match Client::connect(&upstream, &config.api_key) {
+        Ok(mcp) => mcp,
+        // A signed-in session the server no longer knows (it restarted):
+        // sign in again, once. Any other failure is reported as it is.
+        Err(error) if signed_in && vivi::machine_key::is_refused_bearer(&error.to_string()) => {
+            vivi::machine_key::forget(&config.server, command.host).map_err(|e| e.to_string())?;
+            retry_key = vivi::machine_key::sign_in(&config.server, command.host)
+                .map_err(|e| e.to_string())?;
+            Client::connect(&upstream, &retry_key).map_err(|e| e.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     match (one_shot, arguments) {
         (McpSubcommand::Tools { json }, _) => {
             let tools = mcp.tools().map_err(|error| error.to_string())?;
