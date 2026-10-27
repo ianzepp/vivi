@@ -12,8 +12,10 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
 use crate::letter::fixture::record_body;
 use crate::letter::fixture::step_body;
+use crate::letter::work::NeedFront;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
@@ -109,7 +111,12 @@ fn rig(entry: &str) -> Result<Rig, VivariumError> {
         .to_string(),
     );
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
-    let mut mail = FakeMail::new("mind");
+    let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    // The need's root letter, registered explicitly; its target matches the
+    // need branch's `default` target below.
+    let mut front = NeedFront::new(vec![String::from("it works")]);
+    front.target = Some(String::from("default"));
+    mail.register_need_root(NEED, &need_body_with(&front, "Build the thing"));
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),

@@ -7,6 +7,8 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
@@ -75,11 +77,17 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    // The need's root letter, registered explicitly; its target matches the
+    // need branch's `default` target above.
+    let mut front = NeedFront::new(vec![String::from("the range works")]);
+    front.target = Some(String::from("default"));
+    let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    mail.register_need_root(NEED, &need_body_with(&front, "prose"));
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,
