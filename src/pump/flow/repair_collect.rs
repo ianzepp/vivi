@@ -111,13 +111,14 @@ fn built<S: JobStore, M: FlowMail>(
     cx.advance_word(step, "built", payload)
 }
 
-/// The pool summary's `push: <word>` of a receipt: only the lines before the
-/// first section and before the hand's own text count. Empty when absent.
+/// The pool summary's `push: <word>` of a receipt: only the lines in the
+/// head [`split_sections`] carves off before the first rendered section of
+/// the result letter, and before the hand's own text. Empty when absent.
 fn push_word(receipt: &str) -> &str {
-    let summary = receipt
-        .split("\n\n--- ")
+    let (head, _) = crate::pool::record::split_sections(receipt);
+    let summary = head
+        .split("hand's final message:")
         .next()
-        .and_then(|head| head.split("hand's final message:").next())
         .unwrap_or_default();
     summary
         .lines()
