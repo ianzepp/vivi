@@ -55,10 +55,10 @@ pub(super) fn call_for(request: &ActionRequest) -> Result<Call, String> {
         Action::ReadConfig => config_show_call(&project),
         Action::ReadPool => pool_show_call(&project, request)?,
         Action::LetterToOperator | Action::Escalate => letter(&project, request),
-        Action::SetRoleModel
-        | Action::SetPoolCap
-        | Action::SetPoolBand
-        | Action::FileNeed
+        Action::SetRoleModel => role_model_call(&project, request)?,
+        Action::SetPoolCap => pool_cap_call(&project, request)?,
+        Action::SetPoolBand => pool_band_call(&project, request)?,
+        Action::FileNeed
         | Action::FileFixNeed
         | Action::DispatchNeed
         | Action::Upgrade
@@ -135,6 +135,77 @@ fn priority_call(project: &str, request: &ActionRequest) -> Result<Call, String>
             "action": "set",
             "need": need_of(request)?,
             "level": request.priority,
+        })),
+    ))
+}
+
+fn role_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .role
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no role"))
+}
+
+fn model_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .model
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no model"))
+}
+
+fn band_of(request: &ActionRequest) -> Result<&str, String> {
+    request
+        .band
+        .as_deref()
+        .ok_or_else(|| String::from("the action names no band"))
+}
+
+/// The role's model retune: one `role_set` naming the role and the model
+/// and nothing else, so no other configuration field can move with it.
+fn role_model_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "role_set",
+        json!({
+            "project": project,
+            "role": role_of(request)?,
+            "model": model_of(request)?,
+        }),
+    ))
+}
+
+/// The pool cap: one `config_set` on the pool's per-model cap key, the
+/// pool and the model each a quoted segment of its own so a model such as
+/// `vendor/model.v1` stays one segment. The already-checked integer cap
+/// travels as TOML text; zero is a real cap.
+fn pool_cap_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    let key = format!(
+        "pools.\"{}\".caps.\"{}\"",
+        pool_of(request)?,
+        model_of(request)?
+    );
+    let cap = request
+        .cap
+        .ok_or_else(|| String::from("the action names no cap"))?;
+    Ok((
+        "config_set",
+        json!({ "project": project, "key": key, "value": cap.to_string() }),
+    ))
+}
+
+/// The pool band: one guarded `pool_bands` `set` carrying the typed
+/// fields, which replaces that band's whole choice entry on the server.
+/// Never `config_set`, never an unset-then-set pair; an absent reasoning
+/// stays out so the server's own default holds.
+fn pool_band_call(project: &str, request: &ActionRequest) -> Result<Call, String> {
+    Ok((
+        "pool_bands",
+        without_unset(json!({
+            "project": project,
+            "action": "set",
+            "pool": pool_of(request)?,
+            "band": band_of(request)?,
+            "model": model_of(request)?,
+            "reasoning": request.reasoning,
         })),
     ))
 }
