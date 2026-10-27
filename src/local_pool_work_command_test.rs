@@ -3,6 +3,7 @@
 
 use super::*;
 use vivi::letter::work::TaskFront;
+use vivi::pool::bands::guard::DispatchGuard;
 use vivi::pool::bands::runtime::WaitReason;
 use vivi::pool::config::PoolCommitter;
 
@@ -113,6 +114,30 @@ email = 'bot@example.com'
     .unwrap()
 }
 
+/// `band_config` with a cap: `m/ok` may run once in this pool at a time.
+fn capped_config() -> PoolConfig {
+    let mut config = band_config();
+    config.caps.insert(String::from("m/ok"), 1);
+    config
+}
+
+/// Record one open dispatch of `model` in pool `p` on a task of its own —
+/// the live evidence an admission reads and its caps judge.
+fn seeded_open(space: &Mailspace, task: &str, model: &str) {
+    let made = vivi::pool::record::DispatchRecord {
+        model: model.into(),
+        ..record(&[])
+    };
+    space
+        .record_pool_note(
+            task,
+            "pool_dispatched",
+            &vivi::pool::record::dispatch_note(&made),
+            &vivi::pool::record::dispatch_text(&made),
+        )
+        .unwrap();
+}
+
 /// The dispatch flags of a `vivi pool dispatch` invocation, all flags unset.
 fn dispatch_command(task: &str) -> PoolDispatchCommand {
     PoolDispatchCommand {
@@ -142,14 +167,38 @@ fn dispatch_command(task: &str) -> PoolDispatchCommand {
     }
 }
 
-/// The `Ready` payload of a planning result; a wait or a refusal fails the test.
-fn ready(
-    result: Result<Decision<(DispatchFlags, String, String)>, VivariumError>,
-) -> (DispatchFlags, String, String) {
+/// The permanent prep of a dispatch request; a refusal fails the test.
+fn prep_of(result: Result<DispatchPrep, VivariumError>) -> DispatchPrep {
+    match result {
+        Ok(prep) => prep,
+        Err(e) => panic!("unexpected refusal: {e}"),
+    }
+}
+
+/// The `Ready` plan of a plan phase; a wait or a refusal fails the test.
+fn ready_plan(result: Result<Decision<Planned>, VivariumError>) -> Planned {
     match result {
         Ok(Decision::Ready(planned)) => planned,
         Ok(Decision::Waiting(wait)) => panic!("unexpected wait: {}", wait.reason.word()),
         Err(e) => panic!("unexpected refusal: {e}"),
+    }
+}
+
+/// The wait a plan phase answered; readiness or a refusal fails the test.
+fn wait_answer(result: Result<Decision<Planned>, VivariumError>) -> Wait {
+    match result {
+        Ok(Decision::Waiting(wait)) => wait,
+        Ok(Decision::Ready(_)) => panic!("unexpected readiness"),
+        Err(e) => panic!("unexpected refusal: {e}"),
+    }
+}
+
+/// The refusal a plan phase raised; readiness or a wait fails the test.
+fn refusal(result: Result<Decision<Planned>, VivariumError>) -> String {
+    match result {
+        Err(e) => e.to_string(),
+        Ok(Decision::Ready(_)) => panic!("unexpected readiness"),
+        Ok(Decision::Waiting(wait)) => panic!("unexpected wait: {}", wait.reason.word()),
     }
 }
 
@@ -359,12 +408,12 @@ fn the_named_role_wins_over_the_task_addressee() {
 }
 
 #[test]
-fn resolve_dispatch_normalizes_a_pinned_model_into_the_flags() {
+fn resolve_dispatch_normalizes_a_pinned_model_but_draws_nothing() {
     let (_tmp, space, task) = plain_task();
     let mut command = dispatch_command(&task.handle);
     command.model = Some("m/other".into());
 
-    let (flags, rules, role_line) = ready(resolve_dispatch(
+    let prep = prep_of(resolve_dispatch(
         &command,
         &band_config(),
         "p",
@@ -373,25 +422,29 @@ fn resolve_dispatch_normalizes_a_pinned_model_into_the_flags() {
         "pool rules".into(),
     ));
 
-    assert_eq!(flags.model, "m/other");
-    assert_eq!(flags.reasoning, None, "no band names the reasoning");
-    assert!(!flags.read_only);
-    assert_eq!(rules, "pool rules", "no charter, no project rules");
-    assert!(
-        role_line.contains("role pump band - -> m/other"),
-        "{role_line}"
+    let intent = prep.intent.as_ref().unwrap();
+    assert_eq!(
+        intent.selection,
+        role_dispatch::Selection::Pin {
+            model: "m/other".into(),
+            reasoning: None,
+        }
     );
+    assert_eq!(prep.flags.model, "", "the pair waits for the live admission");
+    assert!(!prep.flags.read_only);
+    assert_eq!(prep.rules, "pool rules", "no charter, no project rules");
+    assert!(prep.role_line.is_empty(), "the role line waits for the pair");
 }
 
 #[test]
-fn resolve_dispatch_resolves_a_band_draw_from_the_bands_table() {
+fn resolve_dispatch_defers_a_band_draw_to_the_live_snapshot() {
     let (_tmp, space, task) = stored_task_with(TaskFront {
         band: Some("P1".into()),
         ..TaskFront::default()
     });
     let command = dispatch_command(&task.handle);
 
-    let (flags, _rules, role_line) = ready(resolve_dispatch(
+    let prep = prep_of(resolve_dispatch(
         &command,
         &band_config(),
         "p",
@@ -401,14 +454,10 @@ fn resolve_dispatch_resolves_a_band_draw_from_the_bands_table() {
     ));
 
     assert_eq!(
-        flags.model, "m/ok",
-        "the draw takes the band's first choice"
+        prep.intent.map(|intent| intent.selection),
+        Some(role_dispatch::Selection::Draw { band: 1 })
     );
-    assert_eq!(flags.reasoning.as_deref(), Some("high"));
-    assert!(
-        role_line.contains("role pump band P1 -> m/ok high"),
-        "{role_line}"
-    );
+    assert_eq!(prep.flags.model, "", "no configuration-only draw");
 }
 
 #[test]
@@ -417,7 +466,7 @@ fn resolve_command_planning_stays_outside_model_selection() {
     let mut command = dispatch_command(&task.handle);
     command.command = Some("echo hi".into());
 
-    let (flags, rules, role_line) = ready(resolve_dispatch(
+    let prep = prep_of(resolve_dispatch(
         &command,
         &band_config(),
         "p",
@@ -426,11 +475,12 @@ fn resolve_command_planning_stays_outside_model_selection() {
         "pool rules".into(),
     ));
 
-    assert_eq!(flags.model, "", "a --command job names no model");
-    assert_eq!(flags.reasoning, None);
-    assert_eq!(flags.command.as_deref(), Some("echo hi"));
-    assert_eq!(rules, "pool rules", "the pool rules verbatim");
-    assert!(role_line.is_empty());
+    assert!(prep.intent.is_none(), "a --command job stays outside admission");
+    assert_eq!(prep.flags.model, "", "a --command job names no model");
+    assert_eq!(prep.flags.reasoning, None);
+    assert_eq!(prep.flags.command.as_deref(), Some("echo hi"));
+    assert_eq!(prep.rules, "pool rules", "the pool rules verbatim");
+    assert!(prep.role_line.is_empty());
 }
 
 #[test]
