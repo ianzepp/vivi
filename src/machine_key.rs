@@ -43,6 +43,31 @@ fn private_dir(path: &PathBuf) -> Result<(), VivariumError> {
     Ok(())
 }
 
+/// Refuse a key file or keys directory that group or others can reach.
+#[cfg(unix)]
+fn refuse_open_modes(dir: &PathBuf, path: &PathBuf) -> Result<(), VivariumError> {
+    if fs::metadata(dir)?.permissions().mode() & 0o077 != 0 {
+        return Err(err(format!(
+            "{} is accessible by group or others; fix with: chmod 700 {}",
+            dir.display(),
+            dir.display()
+        )));
+    }
+    if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
+        return Err(err(format!(
+            "{} is readable by group or others; fix with: chmod 600 {}",
+            path.display(),
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn refuse_open_modes(_dir: &PathBuf, _path: &PathBuf) -> Result<(), VivariumError> {
+    Ok(())
+}
+
 fn private_write(path: &PathBuf, bytes: &[u8]) -> Result<(), VivariumError> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, bytes)?;
@@ -67,6 +92,7 @@ impl MachineKey {
         let dir = keys_dir()?;
         let path = dir.join("machine.ed25519");
         if path.exists() {
+            refuse_open_modes(&dir, &path)?;
             let bytes = fs::read(&path)?;
             let seed: [u8; 32] = bytes
                 .as_slice()

@@ -35,6 +35,10 @@ pub const MESSAGE_PREFIX: &[u8] = b"vivi machine sign-in v1\n";
 /// Session token prefix, so a log line shows what kind of bearer it was.
 pub const TOKEN_PREFIX: &str = "vivims_";
 const CHALLENGE_SECS: u64 = 120;
+/// Live challenges one public key may hold.
+const MAX_CHALLENGES_PER_KEY: usize = 8;
+/// Live challenges the server holds in total.
+const MAX_CHALLENGES_TOTAL: usize = 4096;
 const SESSION_SECS: u64 = 3600;
 
 struct Challenge {
@@ -95,6 +99,18 @@ pub async fn challenge_handler(Json(req): Json<ChallengeRequest>) -> Response {
     let mut book = CHALLENGES.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     book.retain(|_, c| c.expires > now);
+    if book.len() >= MAX_CHALLENGES_TOTAL {
+        return refuse(
+            StatusCode::TOO_MANY_REQUESTS,
+            &format!("too many live challenges: the server holds at most {MAX_CHALLENGES_TOTAL}"),
+        );
+    }
+    if book.values().filter(|c| c.public_key == public_key).count() >= MAX_CHALLENGES_PER_KEY {
+        return refuse(
+            StatusCode::TOO_MANY_REQUESTS,
+            &format!("too many live challenges: at most {MAX_CHALLENGES_PER_KEY} per public key"),
+        );
+    }
     book.insert(
         id.clone(),
         Challenge {
