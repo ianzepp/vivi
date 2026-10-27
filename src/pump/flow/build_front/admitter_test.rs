@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body;
 use crate::mailspace::shipped::ADMITTER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::def::{FlowDef, FlowKind};
@@ -79,11 +80,15 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
+    // The need's root letter, registered explicitly: a need is not a task, so
+    // authoritative reads of its thread read this body.
+    let mut mail = FakeMail::new(&ctx.cfg.reply_from);
+    mail.register_need_root(NEED, &need_body(&["the range works"], "prose"));
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         run,
         def: load(FlowKind::Build)?,
     })
