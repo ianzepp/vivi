@@ -205,5 +205,9 @@ mod e2e_gate_repair_test;
 mod e2e_cross_need_test;
 
 #[cfg(test)]
+#[path = "flow/read_only_target_test.rs"]
+mod read_only_target_test;
+
+#[cfg(test)]
 #[path = "flow_test.rs"]
 mod tests;
