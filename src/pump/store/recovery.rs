@@ -16,6 +16,10 @@
 //! `IF NOT EXISTS` on every open and never touched by the `State` save or
 //! clear, so no schema version moves and no migration is needed.
 
+/// Parked origins waiting at their gates, and the continuation journals that
+/// replay them; [`pause::ensure_tables`] runs beside the intent tables below.
+pub mod pause;
+
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::error::VivariumError;
@@ -113,7 +117,8 @@ const COLUMNS: &str = "replacement_job, failed_job, need, run, node, task, input
 /// Create the recovery tables when they are missing.
 pub(super) fn ensure_tables(conn: &Connection) -> Result<(), VivariumError> {
     conn.execute_batch(DDL)
-        .map_err(db_err("create recovery intent tables"))
+        .map_err(db_err("create recovery intent tables"))?;
+    pause::ensure_tables(conn)
 }
 
 /// The optional step-job binding: `None` while the bind job column is null.
