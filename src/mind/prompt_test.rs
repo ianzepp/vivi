@@ -37,7 +37,7 @@ fn wake_prompt_fences_every_pump_string() {
             fingerprint: signals[0].fingerprint(),
         },
     ];
-    let text = wake_prompt(AuthorityStage::Unstick, &reasons, &signals);
+    let text = wake_prompt(AuthorityStage::Unstick, &reasons, &signals, None);
     assert!(text.contains("Authority stage: unstick."));
     assert!(text.contains("Reason: heartbeat (due)."));
     assert_eq!(text.matches(OPEN).count(), 2);
@@ -64,7 +64,7 @@ fn wake_prompt_marks_locked_needs_stuck_under_an_ok_verdict() {
             ..ProjectSignals::default()
         },
     ];
-    let text = wake_prompt(AuthorityStage::Observe, &[], &signals);
+    let text = wake_prompt(AuthorityStage::Observe, &[], &signals, None);
     assert!(text.contains("Project /w/demo verdict ok (STUCK)"));
     assert!(text.contains("Project /w/lib verdict ok (healthy)"));
     assert!(text.contains("locked = a need's run waits at an operator-only lock"));
@@ -75,8 +75,33 @@ fn wake_prompt_marks_locked_needs_stuck_under_an_ok_verdict() {
 fn wake_prompt_explains_envelope_at_and_blank_fields() {
     // A live model read `envelope_at=<unix time>` as "the last envelope
     // event" and filled unused fields with "" or prose.
-    let text = wake_prompt(AuthorityStage::Observe, &[], &[]);
+    let text = wake_prompt(AuthorityStage::Observe, &[], &[], None);
     assert!(text.contains("envelope_at = unix time of a role's newest failed reply envelope"));
     assert!(text.contains("need and step are bare handles such as 6c02e949"));
     assert!(text.contains("leave out every field the kind does not use"));
+}
+
+#[test]
+fn rollback_edge_is_offered_only_with_an_edge_channel() {
+    let text = wake_prompt(AuthorityStage::Unstick, &[], &[], None);
+    assert!(!text.contains("rollback-edge"));
+    let status = crate::mind::edge::parse(
+        "active=vivi-edge-1a2b3c4d5e6f\nedge=1a2b3c4d5e6f\nprevious=vivi-22.0.0\nswitched_at=1000\n",
+    );
+    let text = wake_prompt(
+        AuthorityStage::Unstick,
+        &[],
+        &[],
+        Some((&status, 1000 + 600)),
+    );
+    assert!(text.contains("rollback-edge"));
+    assert!(text.contains("Edge build 1a2b3c4d5e6f went live 10 minutes ago"));
+    let text = wake_prompt(
+        AuthorityStage::Unstick,
+        &[],
+        &[],
+        Some((&status, 1000 + 4 * 3600)),
+    );
+    assert!(text.contains("Hub binary: vivi-edge-1a2b3c4d5e6f"));
+    assert!(!text.contains("under watch"));
 }

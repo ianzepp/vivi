@@ -196,3 +196,15 @@ fn a_bad_mcp_table_is_refused() {
         assert!(said.contains(want), "{text:?}: {said}");
     }
 }
+
+#[test]
+fn edge_section_opens_the_channel_with_defaults() {
+    assert_eq!(parse("", paths()).unwrap().edge, None);
+    let config = parse("[edge]\n", paths()).unwrap();
+    let edge = config.edge.unwrap();
+    assert_eq!(edge.status, PathBuf::from("/var/lib/vivi-edge/status"));
+    assert_eq!(edge.request, PathBuf::from("/home/mind/edge-rollback"));
+    let config = parse("[edge]\nstatus = \"/tmp/s\"\n", paths()).unwrap();
+    assert_eq!(config.edge.unwrap().status, PathBuf::from("/tmp/s"));
+    assert!(parse("[edge]\nrequest = \"/etc/x\"\n", paths()).is_err());
+}

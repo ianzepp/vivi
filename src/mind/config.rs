@@ -18,6 +18,9 @@
 //! per_need_actions = 3           # unstick actions per need per window
 //! per_need_window = "24h"
 //! max_wakes_per_hour = 6
+//!
+//! [edge]                         # watch edge builds; opens rollback-edge
+//! # status = "/var/lib/vivi-edge/status"
 //! ```
 //!
 //! The mind holds no model keys: models are reached only through the hub's
@@ -31,6 +34,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::VivariumError;
 use crate::duration::parse_duration_secs;
+
+use super::edge::EdgeConfig;
 
 /// Config file name, next to `pump-service.toml`.
 pub const CONFIG_FILENAME: &str = "mind.toml";
@@ -119,6 +124,8 @@ pub struct MindConfig {
     /// The vivi-server the mind acts through; `None` leaves every permitted
     /// action a dry run.
     pub mcp: Option<McpConfig>,
+    /// The edge channel the mind watches; `None` when `[edge]` is absent.
+    pub edge: Option<EdgeConfig>,
     pub paths: MindPaths,
 }
 
@@ -182,6 +189,13 @@ struct FileFormat {
     #[serde(default)]
     budgets: BudgetsFormat,
     mcp: Option<McpFormat>,
+    edge: Option<EdgeFormat>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EdgeFormat {
+    status: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -291,6 +305,12 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
         model: file.model,
         budgets: budgets(file.budgets)?,
         mcp: mcp(file.mcp, &paths)?,
+        edge: file.edge.map(|edge| EdgeConfig {
+            status: edge
+                .status
+                .unwrap_or_else(|| PathBuf::from(super::edge::DEFAULT_STATUS)),
+            request: paths.home.join(super::edge::REQUEST_FILE),
+        }),
         paths,
     })
 }
