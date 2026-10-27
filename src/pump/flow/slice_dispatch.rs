@@ -726,13 +726,13 @@ struct Push<'a> {
 }
 
 /// Read the `push: <word> [<branch> <sha>]` summary line. Only the pool's
-/// summary lines count (everything before the first section), never the
-/// hand's own text.
+/// summary lines count — the head [`split_sections`] carves off before the
+/// first rendered section of the result letter — never the hand's own text.
 fn push_of(receipt: &str) -> Push<'_> {
-    let summary = receipt
-        .split("\n\n--- ")
+    let (head, _) = crate::pool::record::split_sections(receipt);
+    let summary = head
+        .split("hand's final message:")
         .next()
-        .and_then(|head| head.split("hand's final message:").next())
         .unwrap_or_default();
     let line = summary
         .lines()
