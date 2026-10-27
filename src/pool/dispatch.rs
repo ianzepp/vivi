@@ -12,7 +12,7 @@ use super::config::{PoolCommitter, PoolConfig};
 use super::github::Secret;
 use super::job::{self, JOB_ARCHIVE, JobPlan, build_bundle};
 use super::progress::Progress;
-use super::provider::{OpenRequest, PoolProvider, SlotLifetime};
+use super::provider::{Abandoned, OpenRequest, PoolProvider, SlotLifetime, TicketRequest};
 use super::record::DispatchRecord;
 use super::run::dispatch_spec;
 use super::slot::PoolId;
@@ -97,11 +97,20 @@ pub fn plan_job(
 ) -> Result<JobPlan, VivariumError> {
     let (handle, _, body) = task;
     validate_source(config, pool)?;
-    let committer = config.committer.clone().ok_or_else(|| {
-        VivariumError::Config(format!(
-            "[pools.{pool}.committer] (name, email) is required to dispatch"
-        ))
-    })?;
+    let committer = match (&config.committer, config.provider.as_str()) {
+        (Some(committer), _) => committer.clone(),
+        // The server fills in the project's [pump] committer.
+        (None, "ticket") => PoolCommitter {
+            name: String::new(),
+            email: String::new(),
+            unknown: std::collections::BTreeMap::new(),
+        },
+        (None, _) => {
+            return Err(VivariumError::Config(format!(
+                "[pools.{pool}.committer] (name, email) is required to dispatch"
+            )));
+        }
+    };
     let (harness, reasoning) = match flags.command {
         Some(_) => (None, None),
         None => {
@@ -294,6 +303,11 @@ fn valid_publish_ref(branch: &str) -> bool {
 }
 
 fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError> {
+    if config.provider == "ticket" {
+        // A ticket job's source is the vivi server's lane, not a repository
+        // this pool names.
+        return Ok(());
+    }
     if config.embedded.is_none() && config.worktree_source().is_none() {
         config.require_source(pool, "dispatch")?;
     }
@@ -490,6 +504,21 @@ pub fn dispatch(
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
     let plan = launch.plan;
+    let request = TicketRequest {
+        pool: id,
+        plan,
+        now,
+    };
+    if let Some(opened) = provider.submit_ticket(&request) {
+        let opened = opened?;
+        return Ok(record_of(
+            launch,
+            id,
+            now,
+            (opened.name, opened.id),
+            (opened.hardware, &opened.abandoned),
+        ));
+    }
     let claim = take_slot(provider, id, launch, now)?;
     if let Err(e) = deliver(provider, &claim, launch, pacing) {
         if let Err(undo) = unclaim(provider, &claim) {
@@ -497,14 +526,32 @@ pub fn dispatch(
         }
         return Err(e);
     }
-    Ok(DispatchRecord {
+    Ok(record_of(
+        launch,
+        id,
+        now,
+        (claim.slot.name, claim.slot.id),
+        (claim.hardware, &claim.abandoned),
+    ))
+}
+
+/// The record of a started dispatch on the slot `(name, machine)`.
+fn record_of(
+    launch: &Launch,
+    id: &PoolId,
+    now: u64,
+    (slot, machine): (String, String),
+    (hardware, abandoned): (String, &[Abandoned]),
+) -> DispatchRecord {
+    let plan = launch.plan;
+    DispatchRecord {
         target: plan.target.as_ref().map(|t| t.id.clone()),
         repository: plan.target.as_ref().map(|t| t.source.clone()),
         pool: id.pool.clone(),
         need: plan.need.clone(),
         kind: plan.kind.clone(),
-        slot: claim.slot.name,
-        machine: claim.slot.id,
+        slot,
+        machine,
         job: plan.job.clone(),
         model: plan.model.clone(),
         from: plan.refs.from.clone(),
@@ -518,10 +565,10 @@ pub fn dispatch(
         budget: plan.budget,
         at: now,
         read_only: plan.read_only,
-        hardware: claim.hardware,
-        abandoned: u32::try_from(claim.abandoned.len()).unwrap_or(u32::MAX),
-        abandoned_cost_micros: claim.abandoned.iter().filter_map(|a| a.cost_micros).sum(),
-    })
+        hardware,
+        abandoned: u32::try_from(abandoned.len()).unwrap_or(u32::MAX),
+        abandoned_cost_micros: abandoned.iter().filter_map(|a| a.cost_micros).sum(),
+    }
 }
 
 fn take_slot(

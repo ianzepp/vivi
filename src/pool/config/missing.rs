@@ -46,6 +46,7 @@ impl PoolConfig {
                 need("runpod.api_key_file", RUNPOD_KEY_REQUIRED);
             }
             "worker" => self.worker.missing(&mut need),
+            "ticket" => self.ticket.missing(&mut need),
             _ => {}
         }
         missing

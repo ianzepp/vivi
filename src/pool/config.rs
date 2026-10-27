@@ -32,7 +32,9 @@ pub use super::config_view::{BandRow, PoolRow, PoolShow, list_view, show_view};
 pub use super::config_allow::{harness_models, set_allow, validate_allow};
 
 /// Machine hosts the pool can run on.
-pub const PROVIDERS: [&str; 6] = ["fly", "docker", "ssh", "local", "runpod", "worker"];
+pub const PROVIDERS: [&str; 7] = [
+    "fly", "docker", "ssh", "local", "runpod", "worker", "ticket",
+];
 const DEFAULT_PROVIDER: &str = "fly";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
@@ -153,6 +155,9 @@ pub struct PoolConfig {
     /// Settings that belong to the `worker` machine host.
     #[serde(default)]
     pub worker: super::config_worker::PoolWorker,
+    /// Settings that belong to the `ticket` machine host.
+    #[serde(default)]
+    pub ticket: super::config_ticket::PoolTicket,
     /// MCP bridge settings (`[pools.<name>.bridge]`); off when absent. A
     /// dispatch on the pool then mints one project API key for the job.
     #[serde(default)]
@@ -412,7 +417,7 @@ impl PoolConfig {
         match self.provider.as_str() {
             "docker" => &self.docker.tmpfs,
             // A directory on a host has no memory disk.
-            "ssh" | "local" | "runpod" | "worker" => "",
+            "ssh" | "local" | "runpod" | "worker" | "ticket" => "",
             _ => &self.fly.tmpfs,
         }
     }
@@ -546,7 +551,7 @@ impl PoolConfig {
     fn validate_identity(&self, id: &PoolId) -> Result<(), VivariumError> {
         if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
-                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\", \"local\", \"runpod\" or \"worker\")",
+                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\", \"local\", \"runpod\", \"worker\" or \"ticket\")",
                 self.provider
             )));
         }
@@ -602,6 +607,7 @@ impl PoolConfig {
             "docker" => self.docker.validate()?,
             "ssh" => self.ssh.validate()?,
             "worker" => self.worker.validate(pool)?,
+            "ticket" => self.ticket.validate(pool)?,
             "local" => self.local.validate()?,
             "runpod" => self.runpod.validate(pool)?,
             _ => self.validate_fly_machine()?,
@@ -617,7 +623,7 @@ impl PoolConfig {
     }
 
     fn validate_image(&self) -> Result<(), VivariumError> {
-        if matches!(self.provider.as_str(), "ssh" | "local" | "worker") {
+        if matches!(self.provider.as_str(), "ssh" | "local" | "worker" | "ticket") {
             return if self.image.is_empty() {
                 Ok(())
             } else {

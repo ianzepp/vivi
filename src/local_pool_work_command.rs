@@ -141,6 +141,11 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (Some(path), false) => {
             worktree_start(&path, &mut plan, flags.allow_default_branch, &progress)?
         }
+        // A ticket pool has no repository: the job starts from `from` on the
+        // server's lane, which the server resolves when it makes the ticket.
+        (None, _) if config.provider == "ticket" => {
+            (Secret::new(String::new()), plan.refs.from.clone())
+        }
         (None, _) => remote_start(config, &id.pool, &mut plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
@@ -275,7 +280,7 @@ fn note_uncollected(
     made: &DispatchRecord,
     progress: &Progress,
 ) {
-    if provider.slot_lifetime() != SlotLifetime::PerDispatch {
+    if provider.slot_lifetime() != SlotLifetime::PerDispatch || config.provider != "runpod" {
         return;
     }
     let deadline = vivi::pool::runpod_open::dispatch_deadline(

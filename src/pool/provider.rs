@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use super::collect::STALE_CLAIM_SECS;
 use super::dispatch::target::JobTarget;
 use super::doctor::Check;
+use super::job::JobPlan;
 use super::progress::Progress;
 use super::slot::PoolId;
 use crate::error::VivariumError;
@@ -177,6 +178,14 @@ pub struct OpenedSlot {
     pub abandoned: Vec<Abandoned>,
 }
 
+/// What a ticket host needs to start the job of one dispatch.
+pub struct TicketRequest<'a> {
+    pub pool: &'a PoolId,
+    pub plan: &'a JobPlan,
+    /// Dispatch time, epoch seconds.
+    pub now: u64,
+}
+
 /// The answer of a host that has no local worktrees to a target that names one.
 fn refuse_local_source(target: &JobTarget) -> Result<(), VivariumError> {
     if target.local_source.is_some() {
@@ -263,6 +272,14 @@ pub trait PoolProvider {
         Err(VivariumError::Message(
             "this host keeps resting slots; there is nothing to make per dispatch".into(),
         ))
+    }
+
+    /// Start the job of one dispatch without any slot (hosts that hand the
+    /// job to a worker as a ticket). `None`: this host works with slots, and
+    /// the dispatch claims or opens one. `Some(Ok(slot))`: the job is
+    /// started; the slot names it (its id is the ticket's job id).
+    fn submit_ticket(&self, _request: &TicketRequest) -> Option<Result<OpenedSlot, VivariumError>> {
+        None
     }
 
     /// Seconds a claimed slot may exist with no dispatch recorded before it
