@@ -18,6 +18,7 @@ use crate::sync::{MAX_LETTER_BYTES, SyncSettings};
 mod compose;
 mod ingest;
 mod memo;
+mod mind_decision;
 mod moves;
 mod retention;
 
