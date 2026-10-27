@@ -18,6 +18,7 @@ use crate::pump::flow::fanout::{self, VERDICT_MERGED, VERDICT_NO_DEFECT, is_slic
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::mail::TaskStatus;
+use crate::pump::flow::need_scope::RulingDecision;
 use crate::pump::flow::reslice::{self, Mode};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
@@ -26,6 +27,7 @@ use crate::pump::flow::slice_dispatch::{self, AttemptResult, Retried};
 use crate::pump::flow::tick::{FOLLOW_UP, OPERATOR_HOLD, SCOPE_REWORK, raise_once};
 use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure, EnvKind};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
+use crate::pump::store::ScopeRequest;
 
 /// Characters of a timed-out hand's receipt passed to the split job.
 const RECEIPT_TAIL: usize = 2000;
@@ -181,7 +183,10 @@ where
                 Ok(())
             }
             AttemptResult::Correct { error } => self.correct(job, row, RoleKind::Hand, &error),
-            AttemptResult::BlockedScope(request) => self.blocked(step, row, &request),
+            AttemptResult::BlockedScope(request) => {
+                let target = hand.target.clone().unwrap_or_default();
+                self.blocked(step, row, &target, &request)
+            }
         }
     }
 
@@ -224,9 +229,24 @@ where
         &mut self,
         step: &StepRow,
         row: &StepJobRow,
+        target: &str,
         request: &BlockedScope,
     ) -> Result<(), VivariumError> {
-        let resolution = resolve(self.store, self.mail, self.run.run, &step.task, request)?;
+        let journal = ScopeRequest {
+            source: correct::base_id(&row.job).to_owned(),
+            need: self.run.need.clone(),
+            target: target.to_owned(),
+            run: self.run.run,
+            node: step.node.clone(),
+            task: step.task.clone(),
+            attempt: row.attempt,
+            paths: request.paths.clone(),
+            reason: request.reason.clone(),
+            design: request.design,
+            decision: RulingDecision::Grant,
+            issue: None,
+        };
+        let resolution = resolve(self.store, self.mail, &journal, request)?;
         match resolution {
             Resolution::Widen(_) => self.redispatch(step, row.attempt),
             Resolution::WaitOn(_) => {

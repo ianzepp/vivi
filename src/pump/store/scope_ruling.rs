@@ -678,6 +678,9 @@ impl PumpStore {
 }
 
 mod coordination;
+pub use coordination::{
+    ScopeCoordinationOutcome, ScopeCoordinationResult, ScopeCoordinationSnapshot,
+};
 
 #[cfg(test)]
 #[path = "scope_ruling_test.rs"]

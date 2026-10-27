@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::VivariumError;
 use crate::pump::flow::fanout::{self, SliceEdges};
-use crate::pump::store::PumpStore;
+use crate::pump::store::{
+    PumpStore, ScopeCoordinationResult, ScopeCoordinationSnapshot, ScopeRequest,
+};
 
 /// A request for more paths than this goes to the slicer.
 const MAX_REQUEST_PATHS: usize = 5;
@@ -115,10 +117,14 @@ pub fn finish_grant(store: &PumpStore, task: &str) -> Result<(), VivariumError> 
     store.set_scope_holders(task, &[])
 }
 
-/// True when a scope entry holds `path`: the same path, or a directory entry
-/// (ending in `/`) that is a prefix of it.
+/// True when a scope entry and a requested path overlap: the same path, or
+/// a directory entry (ending in `/`) that contains the other. Directory
+/// prefixes are component-aware (`src/pump/` never covers
+/// `src/pump-other/`); a file entry holds only itself.
 fn holds(entry: &str, path: &str) -> bool {
-    entry == path || (entry.ends_with('/') && path.starts_with(entry))
+    entry == path
+        || (entry.ends_with('/') && path.starts_with(entry))
+        || (path.ends_with('/') && entry.starts_with(path))
 }
 
 /// A request split by who holds its paths.
@@ -156,57 +162,104 @@ fn split_request(paths: &[String], others: &[(String, Vec<String>)]) -> Split {
     split
 }
 
-/// Settle a blocked-scope request from `task`, a slice of `run`.
+/// Settle the blocked-scope request `req` from `request.task`, a slice of
+/// run `request.run`, under the journal identity `request` (keyed by the
+/// asking job's original source id).
+///
+/// The first call for a source settles and records the coordination: the
+/// request counter, the holders record, the scope state and the journal
+/// entry move in one transaction; a wait's free paths are widened just
+/// before it, idempotently, because the typed commit carries no free half
+/// for a wait. A replay of the same source adopts the recorded resolution —
+/// no second request is counted, no holder is recomputed against changed
+/// scheduling state, nothing is re-widened — and only the external
+/// dependency writes run again, from the recorded holder set, so a failed
+/// mail write is recoverable.
 ///
 /// # Errors
-/// Returns [`VivariumError`] when the store or the mailspace fails.
+/// Returns [`VivariumError`] when the store, the journal or the mail fails.
 pub fn resolve(
     store: &PumpStore,
     mail: &mut impl SliceEdges,
-    run: u32,
-    task: &str,
+    request: &ScopeRequest,
     req: &BlockedScope,
 ) -> Result<Resolution, VivariumError> {
-    let requests = store.bump_scope_requests(task)?;
-    if requests >= 2 {
-        return Ok(Resolution::Rework(format!(
-            "second blocked-scope request on {task}"
-        )));
+    store.prepare_scope_request(request)?;
+    let settled = store
+        .scope_request(&request.source)?
+        .is_some_and(|row| row.coordination.is_some());
+    let snapshot = store.scope_coordination_snapshot(&request.task, request.run)?;
+    let candidate = candidate_for(&snapshot, &request.task, req);
+    if !settled && !candidate.free.is_empty() {
+        store.widen_slice_scope(&request.task, &candidate.free)?;
+    }
+    let result = store
+        .commit_scope_coordination(request, &candidate.result)?
+        .resolution()
+        .clone();
+    if let Resolution::WaitOn(holders) = &result.resolution {
+        fanout::wait_on(mail, &request.task, holders)?;
+    }
+    Ok(result.resolution)
+}
+
+/// What a fresh source settles into under `snapshot`'s scheduling state:
+/// the settled rules (a second request, more than [`MAX_REQUEST_PATHS`]
+/// paths, or a design question go to the slicer), else the free/held split
+/// of the requested paths. Committing `result` persists it; a replay
+/// discards it for the recorded resolution.
+fn candidate_for(
+    snapshot: &ScopeCoordinationSnapshot,
+    task: &str,
+    req: &BlockedScope,
+) -> Candidate {
+    let rework = |reason: String| Candidate {
+        result: ScopeCoordinationResult {
+            resolution: Resolution::Rework(reason),
+            held: Vec::new(),
+        },
+        free: Vec::new(),
+    };
+    if snapshot.requests >= 1 {
+        return rework(format!("second blocked-scope request on {task}"));
     }
     if req.paths.len() > MAX_REQUEST_PATHS {
-        return Ok(Resolution::Rework(format!(
+        return rework(format!(
             "{} paths requested; the limit is {MAX_REQUEST_PATHS}",
             req.paths.len()
-        )));
+        ));
     }
     if req.design {
-        return Ok(Resolution::Rework(format!(
-            "design question: {}",
-            req.reason
-        )));
+        return rework(format!("design question: {}", req.reason));
     }
-    let others = store.open_scopes_of_run(task, run)?;
     let Split {
         holders,
         free,
         held_paths,
-    } = split_request(&req.paths, &others);
-    if !free.is_empty() {
-        store.widen_slice_scope(task, &free)?;
-    }
+    } = split_request(&req.paths, &snapshot.others);
     if holders.is_empty() {
-        return Ok(Resolution::Widen(free));
+        return Candidate {
+            result: ScopeCoordinationResult {
+                resolution: Resolution::Widen(free),
+                held: Vec::new(),
+            },
+            free: Vec::new(),
+        };
     }
-    fanout::wait_on(mail, task, &holders)?;
-    let mut record = holders.clone();
-    record.extend(
-        held_paths
-            .iter()
-            .map(|path| format!("{HELD_PATH_PREFIX}{path}")),
-    );
-    store.set_scope_holders(task, &record)?;
-    store.set_scope_state(task, ScopeState::Wait)?;
-    Ok(Resolution::WaitOn(holders))
+    Candidate {
+        result: ScopeCoordinationResult {
+            resolution: Resolution::WaitOn(holders),
+            held: held_paths,
+        },
+        free,
+    }
+}
+
+/// A computed coordination and the free paths a wait must widen before its
+/// commit (the typed commit carries no free half for a wait).
+struct Candidate {
+    result: ScopeCoordinationResult,
+    free: Vec<String>,
 }
 
 #[cfg(test)]
