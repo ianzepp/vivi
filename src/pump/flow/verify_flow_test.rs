@@ -16,10 +16,10 @@ use crate::letter::fixture::record_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::handlers::{self, Registry};
 use crate::pump::flow::index::{StepRow, StepState};
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::tick::tick_with;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -84,6 +84,7 @@ fn rig() -> Result<Rig, VivariumError> {
     replies(&host)?;
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail);
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     store.upsert_need_branch(&NeedBranchRow {
         need: NEED.into(),
@@ -110,6 +111,29 @@ fn rig() -> Result<Rig, VivariumError> {
         jobs: Jobs::default(),
         registry,
     })
+}
+
+/// A valid readable need root in the mailspace, so strict need reads (the
+/// judge's need target) find a body and not only the host `need show` reply.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.tasks.insert(
+        NEED.to_string(),
+        FakeTask {
+            from: "mind".into(),
+            to: "mind".into(),
+            subject: "Need".into(),
+            body: crate::letter::fixture::need_body(&["it works"], "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
 }
 
 /// The remote tip of the need branch and the need thread.

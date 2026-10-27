@@ -7,7 +7,7 @@ use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
-use crate::pump::flow::step_inputs::make_read_only;
+use crate::pump::flow::step_inputs::{make_read_only, need_target};
 use crate::pump::flow::verify_inputs::{capped, latest_of_class, rung_report};
 use crate::pump::jobs::JobStore;
 
@@ -54,6 +54,7 @@ impl StepHandler for JudgeStart {
             AUDITOR_ROLE,
             &brief,
         );
+        spec.target = need_target(cx.mail, need)?;
         make_read_only(cx.ctx, &mut spec)?;
         spec.builtin_role = Some(AUDITOR_ROLE.to_owned());
         Ok(StartAction::Job(Box::new(spec)))

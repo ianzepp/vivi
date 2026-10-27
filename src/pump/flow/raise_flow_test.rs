@@ -18,10 +18,10 @@ use crate::letter::fixture::record_body;
 use crate::pump::config::{PumpConfig, RungsConfig};
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::handlers::{Registry, shipped};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
@@ -110,6 +110,29 @@ fn script_host(host: &Arc<FakeHost>) {
     );
 }
 
+/// A valid readable need root in the mailspace, so strict need reads (the
+/// judge's need target) find a body and not only the host `need show` reply.
+fn seed_need_root(mail: &mut FakeMail) {
+    mail.tasks.insert(
+        NEED.to_string(),
+        FakeTask {
+            from: "mind".into(),
+            to: "mind".into(),
+            subject: "Need".into(),
+            body: crate::letter::fixture::need_body(&["it works"], "Build the thing"),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
 /// A build run at entry `slice` over a live need branch, with `slice` waiting
 /// for its slicer reply.
 fn rig() -> Result<Rig, VivariumError> {
@@ -118,6 +141,7 @@ fn rig() -> Result<Rig, VivariumError> {
     script_host(&host);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
+    seed_need_root(&mut mail);
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     start(&ctx, &store, &mut mail, NEED, Some("slice"))?;
     store.upsert_need_branch(&NeedBranchRow {

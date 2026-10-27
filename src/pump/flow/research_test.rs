@@ -6,7 +6,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::{for_want, register};
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
@@ -172,6 +172,31 @@ fn a_research_step_with_a_want_gives_a_read_only_job_with_both_threads() -> R {
     assert!(spec.body.contains("NEED-THREAD-TEXT"), "{}", spec.body);
     assert!(spec.body.contains("WANT-THREAD-TEXT"), "{}", spec.body);
     assert!(spec.body.contains(&rig.need), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn a_targeted_need_starts_from_its_own_target_main_not_the_workspace_main() -> R {
+    let mut cfg = PumpConfig::default();
+    cfg.main = String::from("workspace-main");
+    for (id, main) in [("default", "workspace-main"), ("vivi", "vivi-main")] {
+        cfg.targets.insert(
+            id.to_owned(),
+            PumpTarget {
+                main: main.to_owned(),
+                ..PumpTarget::default()
+            },
+        );
+    }
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("answered")]);
+    front.explores = Some(String::from("w1"));
+    front.target = Some(String::from("vivi"));
+    let body = crate::letter::fixture::need_body_with(&front, "Look into it.");
+    let rig = rig_with(cfg, &body, true)?;
+    rig.host.reply("need show", 0, "NEED-THREAD-TEXT");
+    let spec = start_job(&rig)?;
+    assert_eq!(spec.target.as_deref(), Some("vivi"));
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi-main"));
     Ok(())
 }
 
