@@ -19,6 +19,7 @@ use crate::pump::flow::mail::{MailReader, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::jobs::JobStatus;
 use crate::pump::store::NeedBranchRow;
+use crate::pump::store::step_payload::StepPayloadRow;
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
@@ -142,6 +143,57 @@ fn merged_main() -> String {
     )
 }
 
+/// Routes a `slicer` role so the restarted run can start its slicer job.
+fn with_slicer(rig: &mut Rig) {
+    let mut routing = (*rig.ctx.routing).clone();
+    routing.roles.push(RoutedRole {
+        name: String::from("slicer"),
+        kind: Some(String::from("slicer")),
+        status: String::from("active"),
+        pool: Some(String::from("test-planner-pool")),
+        read_only: Some(true),
+        model: None,
+        models: Vec::new(),
+    });
+    rig.ctx = rig.ctx.clone().with_routing(routing);
+    rig.registry = shipped(&rig.ctx);
+}
+
+/// Seeds run 1 with the completed admission a restart at `slice` consumes: a
+/// planner step `planned` with its accepted `document`, and an admitter that
+/// answered `admitted`.
+fn seed_admission(rig: &Rig, document: &str) -> R {
+    rig.store.insert_step(
+        &rig.need,
+        &StepRow {
+            run: 1,
+            node: String::from("plan"),
+            task: String::from("t-plan"),
+            state: StepState::Done,
+            verdict: Some(String::from("planned")),
+        },
+    )?;
+    rig.store.insert_step(
+        &rig.need,
+        &StepRow {
+            run: 1,
+            node: String::from("admit1"),
+            task: String::from("t-admit"),
+            state: StepState::Done,
+            verdict: Some(String::from("admitted")),
+        },
+    )?;
+    rig.store.record_step_payload(&StepPayloadRow {
+        need: rig.need.clone(),
+        run: 1,
+        node: String::from("plan"),
+        class: String::from("planner"),
+        task: String::from("t-plan"),
+        payload: serde_json::json!({ "body": document }),
+    })?;
+    Ok(())
+}
+
 fn alarms(rig: &Rig) -> usize {
     rig.exceptions().matches(LOCK_ALARM).count()
 }
@@ -200,7 +252,35 @@ fn a_cto_plan_answer_restarts_the_need_at_plan() -> R {
 #[test]
 fn a_cto_slice_answer_restarts_the_need_at_slice() -> R {
     let mut rig = build()?;
-    restarts_at(&mut rig, "slice", "slice")
+    with_slicer(&mut rig);
+    // Run 1 carries a completed admission; the restart consumes it.
+    seed_admission(&rig, "PLAN-ONE")?;
+    restarts_at(&mut rig, "slice", "slice")?;
+    // The restarted slicer consumes run 1's admission: its job freezes the
+    // source identities and the accepted document, and run 2 opens no
+    // planner of its own.
+    rig.tick_until("the r2 slicer job", |rig| rig.open_job("slice").is_some())?;
+    let job = rig
+        .open_job("slice")
+        .ok_or_else(|| VivariumError::Message("no slicer job for run 2".into()))?;
+    assert!(
+        job.body
+            .contains("admitted plan source: run 1 planner task t-plan admitter task t-admit"),
+        "{}",
+        job.body
+    );
+    assert!(
+        job.body.contains("admitted plan:\nPLAN-ONE"),
+        "{}",
+        job.body
+    );
+    assert_eq!(
+        job.payload["admitted_plan"],
+        serde_json::json!({ "run": 1, "planner": "t-plan", "admitter": "t-admit" })
+    );
+    assert!(rig.open_job("plan").is_none());
+    assert!(rig.open_job("admit1").is_none());
+    Ok(())
 }
 
 #[test]
