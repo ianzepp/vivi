@@ -752,9 +752,11 @@ impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
     }
 
     fn task_body(&self, task: &str) -> Result<String, VivariumError> {
+        self.gate_thread_read(task)?;
         self.tasks
             .get(task)
-            .map(|task| task.body.clone())
+            .map(|found| found.body.clone())
+            .or_else(|| self.need_roots.get(task).cloned())
             .ok_or_else(|| VivariumError::Message(format!("fake mail: no task {task}")))
     }
 
@@ -783,21 +785,26 @@ impl SliceMail for crate::pump::flow::fake_mail::FakeMail {
 
     fn notes(&self, task: &str, word: NoteWord) -> Result<Vec<(String, Note)>, VivariumError> {
         use crate::pump::flow::fake_mail::Call;
-        let found = self
+        self.gate_thread_read(task)?;
+        let mut notes: Vec<(i64, String, Note)> = self
             .tasks
             .get(task)
-            .ok_or_else(|| VivariumError::Message(format!("fake mail: no task {task}")))?;
-        let mut notes: Vec<(i64, String, Note)> = found
-            .replies
-            .iter()
-            .filter_map(|reply| {
-                let note = note_of(reply).filter(|note| note.pump.note == word)?;
-                let at = self.position(
-                    |call| matches!(call, Call::Reply { handle, body } if handle == task && body == reply),
-                );
-                Some((note.pump.t, format!("{:08}", at.unwrap_or_default()), note))
+            .map(|found| {
+                found
+                    .replies
+                    .iter()
+                    .filter_map(|reply| {
+                        let note = note_of(reply).filter(|note| note.pump.note == word)?;
+                        let at = self.position(
+                            |call| matches!(call, Call::Reply { handle, body } if handle == task && body == reply),
+                        );
+                        Some((note.pump.t, format!("{:08}", at.unwrap_or_default()), note))
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
+        // Audience posts the pump identity made are thread messages too.
+        notes.extend(self.post_notes(task, word));
         notes.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
         Ok(notes
             .into_iter()

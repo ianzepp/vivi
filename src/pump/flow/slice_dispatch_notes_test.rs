@@ -153,3 +153,43 @@ fn the_fake_reads_notes_oldest_first_and_by_sender() {
             .is_empty()
     );
 }
+
+#[test]
+fn the_fake_reads_audience_posts_on_a_need_from_its_sender() {
+    let mut mail = FakeMail::new("mind");
+    mail.register_need_root("n1", "root of n1");
+    let note = |word, prose: &str| note_body(word, None, prose).unwrap();
+    mail.post_to_need_audience("n1", &note(NoteWord::Deviations, "first"))
+        .unwrap();
+    mail.post_to_need_audience("n1", &note(NoteWord::Attempt, "other word"))
+        .unwrap();
+    mail.post_to_need_audience("n1", &note(NoteWord::Deviations, "second"))
+        .unwrap();
+    mail.foreign_reply("n1", "operator", &note(NoteWord::Deviations, "theirs"));
+
+    let found = mail.notes("n1", NoteWord::Deviations).unwrap();
+    assert_eq!(prose_of(&found), ["first", "second"]);
+    assert!(
+        found
+            .windows(2)
+            .all(|pair| pair[0].1.pump.t < pair[1].1.pump.t)
+    );
+    assert_eq!(
+        prose_of(&mail.notes_from("n1", NoteWord::Deviations, "mind").unwrap()),
+        ["first", "second"]
+    );
+    assert_eq!(
+        prose_of(
+            &mail
+                .notes_from("n1", NoteWord::Deviations, "operator")
+                .unwrap()
+        ),
+        ["theirs"]
+    );
+    assert!(
+        mail.notes_from("n1", NoteWord::Deviations, "nobody")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(mail.task_body("n1").unwrap(), "root of n1");
+}
