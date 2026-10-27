@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::pool::record::{SECTION_RECEIPT, SECTION_STDERR, split_sections};
 use crate::pump::attempt_record::agent_exit;
 use crate::pump::jobs::{JobStatus, PoolJob};
 
@@ -141,24 +142,21 @@ pub(crate) fn env(kind: EnvKind, tool: Option<String>, evidence: &str) -> EnvFai
     }
 }
 
-/// The first missing-tool line in the receipt's stderr tail section: the tool
+/// The first missing-tool line in the pool's stderr tail section: the tool
 /// (when the line names it) and the line. Reads that section only, never the
-/// agent's own message.
+/// facts, the receipt, or the runner log; an unknown heading inside the
+/// section stays content, so evidence after it is still read.
 fn stderr_marker(receipt: &str) -> Option<(Option<String>, String)> {
-    let mut sections = receipt.split("\n\n--- ");
-    sections.next();
-    for section in sections {
-        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
-        if title.trim() != "stderr tail" {
-            continue;
+    let (_, mut sections) = split_sections(receipt);
+    let body = sections
+        .find(|(title, _)| *title == SECTION_STDERR)
+        .map(|(_, body)| body)?;
+    for line in body.lines().map(str::trim) {
+        if let Some(tool) = missing_tool_of(line) {
+            return Some((Some(tool), line.to_owned()));
         }
-        for line in body.lines().map(str::trim) {
-            if let Some(tool) = missing_tool_of(line) {
-                return Some((Some(tool), line.to_owned()));
-            }
-            if line.contains("command not found") {
-                return Some((None, line.to_owned()));
-            }
+        if line.contains("command not found") {
+            return Some((None, line.to_owned()));
         }
     }
     None
@@ -295,28 +293,22 @@ fn failing_ids(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Section headings `pool::record::collected_text` writes.
-const HEADINGS: [&str; 4] = [
-    "--- facts",
-    "--- receipt",
-    "--- stderr tail",
-    "--- runner log tail",
-];
-
-/// The receipt and stderr sections of a posted reply, joined; the whole text
-/// when it has no section headings.
+/// The receipt and stderr sections of a posted reply, joined in their
+/// rendered order; the whole text when no rendered section exists. Unknown
+/// and non-forward headings inside a selected section stay content and never
+/// truncate it; a sectioned reply with only facts or a runner log is empty.
 fn failure_text(text: &str) -> String {
-    if !text.lines().any(|line| HEADINGS.contains(&line)) {
-        return text.to_owned();
-    }
+    let (head, sections) = split_sections(text);
     let mut kept: Vec<&str> = Vec::new();
-    let mut keeping = false;
-    for line in text.lines() {
-        if HEADINGS.contains(&line) {
-            keeping = line == "--- receipt" || line == "--- stderr tail";
-        } else if keeping {
-            kept.push(line);
+    let mut sectioned = false;
+    for (title, body) in sections {
+        sectioned = true;
+        if title == SECTION_RECEIPT || title == SECTION_STDERR {
+            kept.push(body);
         }
+    }
+    if !sectioned {
+        return head.to_owned();
     }
     kept.join("\n")
 }
