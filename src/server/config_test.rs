@@ -4,7 +4,20 @@ fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("vivi-server-config-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("creds")).unwrap();
+    private(&dir.join("creds"), 0o700);
     dir
+}
+
+/// Set a mode: the server refuses secrets other users can read.
+fn private(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+fn write_secret(home: &Path, name: &str, text: &str) {
+    let path = home.join("creds").join(name);
+    std::fs::write(&path, text).unwrap();
+    private(&path, 0o600);
 }
 
 fn with_config(tag: &str, text: &str) -> PathBuf {
@@ -72,7 +85,7 @@ fn an_unknown_key_is_refused() {
 #[test]
 fn a_credential_file_is_read_and_trimmed() {
     let home = scratch("creds");
-    std::fs::write(home.join("creds/MODERATION_TOKEN"), "from-file\n").unwrap();
+    write_secret(&home, "MODERATION_TOKEN", "from-file\n");
     let config = ServerConfig::load_from(&home).unwrap();
     assert_eq!(config.moderation_token.as_deref(), Some("from-file"));
     let _ = std::fs::remove_dir_all(&home);
@@ -82,6 +95,7 @@ fn a_credential_file_is_read_and_trimmed() {
 fn an_unreadable_credential_is_an_error_not_a_fallback() {
     let home = scratch("unreadable");
     std::fs::create_dir(home.join("creds/STORE_ENCRYPTION_KEY")).unwrap();
+    private(&home.join("creds/STORE_ENCRYPTION_KEY"), 0o700);
     let err = ServerConfig::load_from(&home).unwrap_err();
     assert!(err.starts_with("cannot read credential"), "{err}");
     let _ = std::fs::remove_dir_all(&home);
@@ -90,7 +104,7 @@ fn an_unreadable_credential_is_an_error_not_a_fallback() {
 #[test]
 fn a_blank_operator_token_counts_as_unset() {
     let home = scratch("blank");
-    std::fs::write(home.join("creds/HOST_OPERATOR_TOKEN"), "\n").unwrap();
+    write_secret(&home, "HOST_OPERATOR_TOKEN", "\n");
     let config = ServerConfig::load_from(&home).unwrap();
     assert!(config.host_operator_token.is_none());
     let _ = std::fs::remove_dir_all(&home);
@@ -112,5 +126,21 @@ fn send_rate_zero_is_unlimited() {
     let home = with_config("rate", "send_rate_per_minute = 0\n");
     let config = ServerConfig::load_from(&home).unwrap();
     assert_eq!(config.send_rate_per_minute, None);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn secrets_other_users_can_read_are_refused() {
+    let home = scratch("open-file");
+    write_secret(&home, "MODERATION_TOKEN", "t\n");
+    private(&home.join("creds/MODERATION_TOKEN"), 0o644);
+    let err = ServerConfig::load_from(&home).unwrap_err();
+    assert!(err.contains("chmod"), "{err}");
+    let _ = std::fs::remove_dir_all(&home);
+
+    let home = scratch("open-dir");
+    private(&home.join("creds"), 0o755);
+    let err = ServerConfig::load_from(&home).unwrap_err();
+    assert!(err.contains("chmod"), "{err}");
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -47,6 +47,8 @@ pub fn run(port: Option<u16>) -> Result<(), String> {
     secret(&creds, "MODERATION_TOKEN", || hex::encode(random::<24>()))?;
     secret(&creds, "HOST_OPERATOR_TOKEN", || hex::encode(random::<24>()))?;
 
+    add_host_key(&home)?;
+
     // Read the config back so the directories match what `run` will use.
     let loaded = ServerConfig::load_from(&home)?;
     for dir in [
@@ -64,6 +66,29 @@ pub fn run(port: Option<u16>) -> Result<(), String> {
         "ready   vivi server run  (listens on {}:{})",
         loaded.bind, loaded.port
     );
+    Ok(())
+}
+
+/// List this machine's key in `host_keys` unless it is already there.
+fn add_host_key(home: &Path) -> Result<(), String> {
+    let key = crate::machine_key::MachineKey::load_or_create().map_err(|e| e.to_string())?;
+    let public = key.public_key();
+    let path = home.join("host_keys");
+    if crate::server::config::host_key_list(home).contains(&public) {
+        println!("kept    {}", path.display());
+        return Ok(());
+    }
+    let name = crate::role_status::local_host_name().unwrap_or_else(|| "this machine".into());
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let needs_newline = fs::read(&path).is_ok_and(|b| !b.is_empty() && !b.ends_with(b"\n"));
+    let prefix = if needs_newline { "\n" } else { "" };
+    writeln!(file, "{prefix}{public} {name} (added by vivi server init)")
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    println!("host    {} added to host_keys", key.fingerprint());
     Ok(())
 }
 

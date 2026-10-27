@@ -130,14 +130,23 @@ fn check_store_and_warn(config: &ServerConfig) {
         die(1, &format!("{err}; exiting"));
     }
     if cipher.is_none() {
-        tracing::warn!("STORE_ENCRYPTION_KEY not set; room storage will refuse to open (U5)");
+        tracing::warn!(
+            "creds/STORE_ENCRYPTION_KEY is missing; room storage will refuse to open; run `vivi server init`"
+        );
     }
     if config.moderation_token.is_none() {
-        tracing::warn!("MODERATION_TOKEN not set; /v1/_health disabled (U3)");
+        tracing::warn!(
+            "creds/MODERATION_TOKEN is missing; /v1/_health is disabled; run `vivi server init`"
+        );
     }
 
-    if config.host_operator_token.is_none() {
-        tracing::warn!("HOST_OPERATOR_TOKEN not set; /v1/mcp has no built-in host principal");
+    let hosts = crate::server::config::host_key_list(&config.home).len();
+    if hosts == 0 {
+        tracing::warn!(
+            "no host_keys: no machine can act as host; run `vivi server init` on this machine"
+        );
+    } else {
+        tracing::info!("host_keys lists {hosts} machine key(s)");
     }
 }
 

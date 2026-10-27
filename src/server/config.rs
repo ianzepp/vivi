@@ -149,11 +149,53 @@ fn hosted_identity(value: Option<String>) -> Result<Option<String>, String> {
 /// One secret: the file `creds/<name>`, or none.
 fn secret(creds: &Path, name: &str) -> Result<Option<String>, String> {
     let path = creds.join(name);
+    #[cfg(unix)]
+    {
+        check_private(creds, creds)?;
+        if path.exists() {
+            check_private(creds, &path)?;
+        }
+    }
     match std::fs::read_to_string(&path) {
         Ok(text) => Ok(Some(text.trim().to_owned())),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
         Err(err) => Err(format!("cannot read credential {}: {err}", path.display())),
     }
+}
+
+/// Refuse a credential path that group or others can read, like ssh does.
+#[cfg(unix)]
+fn check_private(creds: &Path, path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(());
+    };
+    if meta.permissions().mode() & 0o077 != 0 {
+        let creds = creds.display();
+        return Err(format!(
+            "{} is readable by other users; run: chmod 700 {creds} && chmod 600 {creds}/*",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The machine keys listed in `host_keys` of the server home `home`,
+/// normalized to base64. A missing file lists none.
+#[must_use]
+pub fn host_key_list(home: &Path) -> Vec<String> {
+    use base64::Engine;
+    let Ok(text) = std::fs::read_to_string(home.join("host_keys")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter_map(|line| {
+            line.split_whitespace()
+                .find_map(crate::server::machine_auth::decode_key)
+        })
+        .map(|key| base64::engine::general_purpose::STANDARD.encode(key))
+        .collect()
 }
 
 #[cfg(test)]
