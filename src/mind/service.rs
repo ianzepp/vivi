@@ -76,11 +76,13 @@ pub async fn tick<P: PiSession, Q: Probe>(
     let state = store::load_at(state_path)?;
     let watched = super::projects::watched_at(cx.registry, &state.ignored)?;
     let signals: Vec<ProjectSignals> = watched.iter().map(|root| cx.probe.probe(root)).collect();
-    let edge = cx
-        .config
-        .edge
-        .as_ref()
-        .map(|edge| edge::read(&edge.status).unwrap_or_default());
+    let edge = cx.config.edge.as_ref().map(|edge| {
+        edge::read(&edge.status).unwrap_or_else(|error| {
+            log_line(&cx.config.paths.log, &format!("edge status: {error}"));
+            None
+        })
+    });
+    let edge = edge.map(Option::unwrap_or_default);
     let hub = edge
         .as_ref()
         .map_or_else(Vec::new, |status| status.fingerprints(started));

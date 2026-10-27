@@ -94,3 +94,16 @@ fn other_actions_go_to_the_inner_actuator() {
     let line = actuator.apply(&request).unwrap();
     assert!(line.starts_with("would run vivi pump pause"), "{line}");
 }
+
+#[test]
+fn a_missing_status_is_no_channel_and_a_directory_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(read(&dir.path().join("absent")), Ok(None));
+    let error = read(dir.path()).unwrap_err();
+    assert!(error.contains("not an edge status file"), "{error}");
+}
+
+#[test]
+fn a_malformed_switch_time_is_skipped() {
+    assert_eq!(parse("switched_at=soon\n").switched_at, None);
+}

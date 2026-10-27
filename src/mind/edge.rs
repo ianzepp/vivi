@@ -71,22 +71,35 @@ pub fn parse(text: &str) -> EdgeStatus {
             "edge" => status.edge = Some(value.to_string()).filter(|sha| is_build(sha)),
             "previous" => status.previous = Some(value.to_string()).filter(|v| !v.is_empty()),
             "release" => status.release = Some(value.to_string()).filter(|v| !v.is_empty()),
-            "switched_at" => status.switched_at = value.parse().ok(),
+            "switched_at" => {
+                if let Ok(at) = value.parse() {
+                    status.switched_at = Some(at);
+                }
+            }
             _ => {}
         }
     }
     status
 }
 
-/// Read the status file. Missing, oversized or unreadable is `None`: no edge
-/// channel on this host.
-#[must_use]
-pub fn read(path: &Path) -> Option<EdgeStatus> {
-    let meta = fs::metadata(path).ok()?;
+/// Read the status file. A missing file is `None`: the root installer has not
+/// written one, so no edge channel runs on this host yet.
+///
+/// # Errors
+/// Returns the reason when the file exists but cannot be read, is not a
+/// regular file, or is longer than a status file can be.
+pub fn read(path: &Path) -> Result<Option<EdgeStatus>, String> {
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
     if !meta.is_file() || meta.len() > MAX_STATUS {
-        return None;
+        return Err(format!("{} is not an edge status file", path.display()));
     }
-    fs::read_to_string(path).ok().map(|text| parse(&text))
+    fs::read_to_string(path)
+        .map(|text| Some(parse(&text)))
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))
 }
 
 /// Whether `value` is an edge build name: a 12-character lowercase hex
@@ -158,7 +171,7 @@ impl Actuator for EdgeActuator {
             .build
             .as_deref()
             .ok_or_else(|| String::from("rollback-edge names no build"))?;
-        let status = read(&self.edge.status)
+        let status = read(&self.edge.status)?
             .ok_or_else(|| format!("no edge status at {}", self.edge.status.display()))?;
         if status.edge.as_deref() != Some(build) {
             return Err(format!(

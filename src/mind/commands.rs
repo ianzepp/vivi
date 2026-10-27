@@ -191,11 +191,18 @@ fn probe(config: &MindConfig, json: bool) -> Result<(), VivariumError> {
     let roots = projects::watched_at(&crate::registry::path()?, &state.ignored)?;
     let signals: Vec<ProjectSignals> = roots.iter().map(|root| HealthProbe.probe(root)).collect();
     let now = super::service::now();
-    let hub = config
+    let hub = match config
         .edge
         .as_ref()
-        .and_then(|edge| super::edge::read(&edge.status))
-        .map_or_else(Vec::new, |status| status.fingerprints(now));
+        .map(|edge| super::edge::read(&edge.status))
+    {
+        Some(Ok(Some(status))) => status.fingerprints(now),
+        Some(Err(error)) => {
+            eprintln!("edge status: {error}");
+            Vec::new()
+        }
+        Some(Ok(None)) | None => Vec::new(),
+    };
     let decision = wake::decide(&WakeInputs {
         now,
         heartbeat: &config.heartbeat,
