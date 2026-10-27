@@ -17,6 +17,7 @@
 //! pump is another process on the same files).
 
 mod config_write;
+mod origin;
 mod pool_bands;
 mod pump;
 mod pump_action;
@@ -214,8 +215,12 @@ pub(super) fn dispatch(
     requested: &str,
     name: &str,
     arguments: &Value,
+    hops: u32,
 ) -> Result<Value, ToolError> {
     let mut hosted = Hosted::open(root, requested)?;
+    if let Some(answer) = through_origin(&hosted, root, name, arguments, hops) {
+        return answer;
+    }
     // `done`, `reopen`, `mark`, `unmark` and `depend` take `--for <holder>` in the CLI:
     // the role the command runs as, which must hold the item. The library
     // applies the same authority rules to it as it does for the CLI.
@@ -245,6 +250,80 @@ pub(super) fn dispatch(
         "depend" => write::depend(&hosted, limiter, project_id, arguments),
         other => Err(ToolError::new(format!("unknown tool '{other}'"))),
     }
+}
+
+/// Tools that act on one handle: answered by the origin when this project does
+/// not hold the handle.
+fn is_handle_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "show" | "thread" | "reply" | "done" | "reopen" | "mark" | "unmark" | "depend"
+    )
+}
+
+/// Whether `handle` is held here. An ambiguous handle is held (the local tool
+/// reports the ambiguity); only a plain miss may go to the origin.
+fn held_here(hosted: &Hosted, handle: &str) -> bool {
+    let Ok(storage) = hosted.ms.storage() else {
+        return true;
+    };
+    match storage.resolve_message_token(handle) {
+        Ok(_) => true,
+        Err(error) => !error.to_string().contains("not found"),
+    }
+}
+
+/// The origin's answer when this call belongs there, else `None` (answer
+/// locally). Handle tools go to the origin on a local miss; `list` and
+/// `board` follow their `origin` argument.
+fn through_origin(
+    hosted: &Hosted,
+    root: &Path,
+    name: &str,
+    arguments: &Value,
+    hops: u32,
+) -> Option<Result<Value, ToolError>> {
+    if is_handle_tool(name) {
+        let handle = arguments.get("handle").and_then(Value::as_str)?;
+        if held_here(hosted, handle) {
+            return None;
+        }
+        return match origin::config(root) {
+            Ok(Some(upstream)) => Some(origin::forward(&upstream, name, arguments, hops)),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        };
+    }
+    if !matches!(name, "list" | "board") {
+        return None;
+    }
+    let mut args = arguments.clone();
+    let reach = match origin::take_reach(&mut args) {
+        Ok(origin::Reach::Local) => return None,
+        Ok(reach) => reach,
+        Err(error) => return Some(Err(error)),
+    };
+    let upstream = match origin::config(root) {
+        Ok(Some(upstream)) => upstream,
+        Ok(None) => {
+            return Some(Err(ToolError::new(
+                "this project has no [origin] in its mailspace.toml",
+            )));
+        }
+        Err(error) => return Some(Err(error)),
+    };
+    let remote = origin::forward(&upstream, name, &args, hops);
+    if matches!(reach, origin::Reach::Origin) {
+        return Some(remote);
+    }
+    let local = match name {
+        "list" => read::list(hosted, &args),
+        _ => read::board(hosted, &args),
+    };
+    Some(local.map(|local| match name {
+        "list" => origin::merge_list(local, remote),
+        _ => origin::merge_board(local, remote),
+    }))
 }
 
 /// The work kinds a handle can name.

@@ -275,6 +275,10 @@ pub enum NeedCommand {
         #[arg(long = "mark")]
         marks: Vec<String>,
 
+        /// Remote mode, project with an [origin]: `origin` lists the upstream only, `all` both
+        #[arg(long)]
+        origin: Option<String>,
+
         /// Output as JSON
         #[arg(long)]
         json: bool,

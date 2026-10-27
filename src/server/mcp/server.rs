@@ -84,6 +84,11 @@ pub async fn server_mcp_handler(
                 &Surface::Server {
                     state: &state,
                     auth: &auth,
+                    hops: headers
+                        .get("x-vivi-hops")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0),
                 },
                 &headers,
                 body,
@@ -377,6 +382,7 @@ pub(super) async fn call_tool(
     auth: &ServerPrincipal,
     name: &str,
     arguments: Value,
+    hops: u32,
 ) -> Result<Value, Response> {
     if HOST_TOOLS.contains(&name) {
         return host_tool(state, auth, name, arguments).await;
@@ -384,7 +390,7 @@ pub(super) async fn call_tool(
     if name == "projects" {
         return Ok(tool_result(projects_answer(state, auth).await?, false));
     }
-    project_tool(state, auth, name, arguments).await
+    project_tool(state, auth, name, arguments, hops).await
 }
 
 /// One grant the call resolved to, ready to dispatch.
@@ -400,6 +406,7 @@ async fn project_tool(
     auth: &ServerPrincipal,
     name: &str,
     arguments: Value,
+    hops: u32,
 ) -> Result<Value, Response> {
     let write = write_classification::is_write(name, &arguments);
     // (b) the project argument. A non-string counts as missing, as the
@@ -455,6 +462,7 @@ async fn project_tool(
         &caller,
         name,
         arguments,
+        hops,
     )
     .await
     {

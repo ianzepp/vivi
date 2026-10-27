@@ -161,9 +161,11 @@ fn translate(command: &Command) -> Result<(&'static str, Args), VivariumError> {
                 to,
                 status,
                 marks,
+                origin,
                 ..
             } => {
                 a.insert("kind".into(), json!("need"));
+                put(&mut a, "origin", origin.as_deref());
                 put(&mut a, "for", for_identity.as_deref());
                 put(&mut a, "from", from.as_deref());
                 put(&mut a, "to", to.as_deref());

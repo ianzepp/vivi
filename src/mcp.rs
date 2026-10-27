@@ -69,26 +69,39 @@ pub trait Upstream {
 /// The real upstream: one blocking [`send_raw`] per forwarded message.
 pub struct HttpUpstream<'a> {
     server: &'a str,
+    /// When set, sent as `X-Vivi-Hops` so a chain of origin forwards is bounded.
+    hops: Option<u32>,
 }
 
 impl<'a> HttpUpstream<'a> {
     /// Build the upstream for the project server at `server`.
     #[must_use]
     pub fn new(server: &'a str) -> Self {
-        Self { server }
+        Self { server, hops: None }
+    }
+
+    /// Mark every request as forwarded `hops` times already.
+    #[must_use]
+    pub fn with_hops(mut self, hops: u32) -> Self {
+        self.hops = Some(hops);
+        self
     }
 }
 
 impl Upstream for HttpUpstream<'_> {
     fn post(&self, bearer: &str, body: &[u8]) -> Result<RawResponse, VivariumError> {
+        let mut headers = vec![
+            ("Authorization", format!("Bearer {bearer}")),
+            ("Content-Type", "application/json".to_string()),
+            ("Accept", "application/json, text/event-stream".to_string()),
+        ];
+        if let Some(hops) = self.hops {
+            headers.push(("X-Vivi-Hops", hops.to_string()));
+        }
         send_raw(
             "POST",
             &server_mcp_url(self.server),
-            &[
-                ("Authorization", format!("Bearer {bearer}")),
-                ("Content-Type", "application/json".to_string()),
-                ("Accept", "application/json, text/event-stream".to_string()),
-            ],
+            &headers,
             Some(body.to_vec()),
         )
     }

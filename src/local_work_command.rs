@@ -24,7 +24,13 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             marks,
             json,
             project,
+            origin,
         } => {
+            if origin.is_some() {
+                return Err(VivariumError::Other(
+                    "--origin applies to a project with [remote] (remote mode)".into(),
+                ));
+            }
             vivi::mailspace::validate_marks_filter(marks)?;
             let mailspace = Mailspace::discover(project.as_deref())?;
             let held = crate::local_work_list::held_scope(for_identity.as_deref(), *held)?;

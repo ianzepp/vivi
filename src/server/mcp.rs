@@ -88,6 +88,8 @@ enum Surface<'a> {
     Server {
         state: &'a AppState,
         auth: &'a server::ServerPrincipal,
+        /// `X-Vivi-Hops` of the request: how many origin forwards led here.
+        hops: u32,
     },
 }
 
@@ -177,8 +179,8 @@ async fn handle_one(surface: &Surface<'_>, value: &Value) -> Result<Option<Value
                     project_id,
                     caller,
                 } => call_tool(state, project_id, caller, name, arguments).await?,
-                Surface::Server { state, auth } => {
-                    server::call_tool(state, auth, name, arguments).await?
+                Surface::Server { state, auth, hops } => {
+                    server::call_tool(state, auth, name, arguments, *hops).await?
                 }
             }
         }
@@ -205,6 +207,7 @@ async fn call_tool(
         caller,
         name,
         arguments,
+        0,
     )
     .await
     {
@@ -226,6 +229,7 @@ async fn dispatch_tool(
     caller: &Caller,
     name: &str,
     arguments: Value,
+    hops: u32,
 ) -> Result<Result<Value, tools::ToolError>, Response> {
     let store = state.projects.clone();
     let project_id = project_id.to_owned();
@@ -292,7 +296,15 @@ async fn dispatch_tool(
                 Some(named) => named.to_owned(),
                 None => live::fallback_actor(&root, &state_default, &identity),
             };
-            return live::dispatch(&limiter, &project_id, &root, &requested, &name, &arguments);
+            return live::dispatch(
+                &limiter,
+                &project_id,
+                &root,
+                &requested,
+                &name,
+                &arguments,
+                hops,
+            );
         }
         tools::dispatch(
             &store,
@@ -403,7 +415,8 @@ fn tools_list() -> Value {
                             { "type": "array", "items": { "type": "string" } }
                         ]
                     },
-                    "for": { "type": "string", "description": "Hosted projects: list this role's folders instead of the acting identity's, or `all` for every role" }
+                    "for": { "type": "string", "description": "Hosted projects: list this role's folders instead of the acting identity's, or `all` for every role" },
+                    "origin": { "oneOf": [ { "type": "boolean" }, { "type": "string", "enum": ["origin", "all"] } ], "description": "Hosted projects with an [origin]: absent/false = this server only; \"origin\" or true = the upstream only; \"all\" = both, each item tagged `source` (local or origin)"  }
                 },
                 "additionalProperties": false
             })),
@@ -834,7 +847,8 @@ fn tools_list() -> Value {
                     "graph_cap": { "type": "integer", "minimum": 1, "default": 25, "description": "With graph: nodes listed in each of ready, blocked and active; the full counts are ready_total, blocked_total and active_total" },
                     "notes": { "type": "boolean", "default": false, "description": "Keep each last event's whole note instead of a short preview" },
                     "full": { "type": "boolean", "default": false, "description": "No caps, whole notes and the graph's node table; an explicit cap still applies" },
-                    "graph": { "type": "boolean", "default": false }
+                    "graph": { "type": "boolean", "default": false },
+                    "origin": { "oneOf": [ { "type": "boolean" }, { "type": "string", "enum": ["origin", "all"] } ], "description": "Hosted projects with an [origin]: absent/false = this server only; \"origin\" or true = the upstream only; \"all\" = both, each item tagged `source` (local or origin)"  }
                 },
                 "additionalProperties": false
             })),
