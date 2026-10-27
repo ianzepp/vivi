@@ -2,14 +2,15 @@
 //! job and a scope rework goes to a rework job.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
-use crate::letter::fixture::record_body;
-use crate::letter::fixture::task_body_with;
-use crate::letter::work::TaskFront;
+use crate::letter::fixture::{need_body_with, record_body, task_body_with};
+use crate::letter::work::{NeedFront, TaskFront};
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
@@ -59,6 +60,30 @@ struct Rig {
     jobs: Jobs,
 }
 
+/// The legacy default target's integration checkout: a real tree, so scope
+/// authorization can verify what a requested path names.
+fn seed_target_checkout(project: &Path) -> R {
+    let repo = project.join(".vivi").join("pump").join("repo");
+    fs::create_dir_all(repo.join("src")).map_err(|e| VivariumError::Other(e.to_string()))?;
+    fs::write(repo.join("src").join("lib.rs"), "fn main() {}\n")
+        .map_err(|e| VivariumError::Other(e.to_string()))?;
+    Ok(())
+}
+
+/// The need's root letter: an immutable delegation of `src/a.rs`. Blocked-
+/// scope authorization reads it for the need's target and standing scope.
+fn seed_need_letter(mail: &mut FakeMail) -> R {
+    let front = NeedFront {
+        write_scope: vec![String::from("src/a.rs")],
+        ..NeedFront::new(vec![String::from("done")])
+    };
+    let sent = mail.send_step("mind", "hand", "the need", &need_body_with(&front, ""), &[])?;
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
+    Ok(())
+}
+
 fn role(name: &str, kind: &str, pool: &str) -> RoutedRole {
     RoutedRole {
         name: name.into(),
@@ -73,6 +98,7 @@ fn role(name: &str, kind: &str, pool: &str) -> RoutedRole {
 
 fn rig() -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    seed_target_checkout(&dir.path().join("project"))?;
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     let mut routing = (*ctx.routing).clone();
     routing.roles.retain(|r| r.name != SLICER_ROLE);
@@ -95,6 +121,7 @@ fn rig() -> Result<Rig, VivariumError> {
     })?;
     let mut mail = FakeMail::new("mind");
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
+    seed_need_letter(&mut mail)?;
     Ok(Rig {
         _dir: dir,
         ctx,

@@ -1,10 +1,13 @@
 //! Collecting slice hand jobs and the built-slice hooks.
 //!
 //! A finished slice job is classified (built, no defect, failed, correction,
-//! blocked scope) and acted on through the run's [`RunCx`]. A built slice
-//! runs every registered [`BuiltHook`] in registration order; the default
-//! hook posts the hand's deviations and follow-up work and leaves the slice
-//! open. Hooks are independent: none reads another's result.
+//! blocked scope) and acted on through the run's [`RunCx`]. A blocked-scope
+//! answer is authorized at need level first ([`authorize::authorize`]); only
+//! an allowed request reaches the run's slice-coordination settlement. A
+//! built slice runs every registered [`BuiltHook`] in registration order;
+//! the default hook posts the hand's deviations and follow-up work and
+//! leaves the slice open. Hooks are independent: none reads another's
+//! result.
 
 use serde::Serialize;
 
@@ -183,10 +186,7 @@ where
                 Ok(())
             }
             AttemptResult::Correct { error } => self.correct(job, row, RoleKind::Hand, &error),
-            AttemptResult::BlockedScope(request) => {
-                let target = hand.target.clone().unwrap_or_default();
-                self.blocked(step, row, &target, &request)
-            }
+            AttemptResult::BlockedScope(request) => self.blocked(step, row, &hand.id, &request)
         }
     }
 
@@ -225,28 +225,57 @@ where
             .set_step_state(&step.task, StepState::Waiting, Some(OPERATOR_HOLD))
     }
 
+    /// A blocked-scope request: authorize it at need level first, then
+    /// settle the run's slice coordination. A forbidden request holds the
+    /// slice for the operator and schedules nothing; a failed publication
+    /// schedules nothing either.
     pub(crate) fn blocked(
         &mut self,
         step: &StepRow,
         row: &StepJobRow,
+        source: &str,
+        request: &BlockedScope,
+    ) -> Result<(), VivariumError> {
+        match authorize::authorize(self, step, row, source, request)? {
+            authorize::Authorized::Allowed { target, paths } => {
+                self.coordinate(step, row, source, &target, paths, request)
+            }
+            authorize::Authorized::Forbidden => Ok(()),
+        }
+    }
+
+    /// The authorized request against the run's scheduling state: the
+    /// journaled Widen/WaitOn/Rework settlement, over the normalized paths
+    /// the need-level grant authorized.
+    fn coordinate(
+        &mut self,
+        step: &StepRow,
+        row: &StepJobRow,
+        source: &str,
         target: &str,
+        paths: Vec<String>,
         request: &BlockedScope,
     ) -> Result<(), VivariumError> {
         let journal = ScopeRequest {
-            source: correct::base_id(&row.job).to_owned(),
+            source: correct::base_id(source).to_owned(),
             need: self.run.need.clone(),
             target: target.to_owned(),
             run: self.run.run,
             node: step.node.clone(),
             task: step.task.clone(),
             attempt: row.attempt,
-            paths: request.paths.clone(),
+            paths,
             reason: request.reason.clone(),
             design: request.design,
             decision: RulingDecision::Grant,
             issue: None,
         };
-        let resolution = resolve(self.store, self.mail, &journal, request)?;
+        let scheduled = BlockedScope {
+            paths: journal.paths.clone(),
+            reason: request.reason.clone(),
+            design: request.design,
+        };
+        let resolution = resolve(self.store, self.mail, &journal, &scheduled)?;
         match resolution {
             Resolution::Widen(_) => self.redispatch(step, row.attempt, &journal.source),
             Resolution::WaitOn(_) => {
@@ -256,7 +285,7 @@ where
             Resolution::Rework(reason) => {
                 self.store.set_scope_state(&step.task, ScopeState::Rework)?;
                 self.ctx.exception(SCOPE_REWORK, &step.task, &reason);
-                self.rework(step, request)
+                self.rework(step, &scheduled)
             }
         }
     }
@@ -398,6 +427,7 @@ where
     }
 }
 
+mod authorize;
 mod scope_replay;
 
 #[cfg(test)]
