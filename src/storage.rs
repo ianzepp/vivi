@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 #[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,6 +32,8 @@ mod metadata;
 mod mutate;
 mod pending_deps;
 mod query;
+#[cfg(test)]
+mod read_only_test;
 pub(crate) mod schema;
 mod sync;
 #[cfg(test)]
@@ -151,6 +155,25 @@ pub struct MailspaceEvent {
     pub note: Option<String>,
 }
 
+/// Whether a read-only open may treat the database owner as permitted to
+/// trigger sidecar creation.
+///
+/// A read-only SQLite open never writes rows, but SQLite still maps the WAL
+/// index through a `<database>-shm` sidecar and will create that sidecar
+/// (plus `<database>-wal`) when it is missing and the process can write the
+/// directory. That is a filesystem write the reader did not announce, so the
+/// policy decides when it is tolerated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadOnlyWalPolicy {
+    /// Only open when the `-shm` sidecar already exists. A WAL-mode database
+    /// with no sidecar is refused instead of opened.
+    ExistingOnly,
+    /// Additionally allow the open when the reader's effective uid is proven
+    /// equal to the uid that owns the database file. Unknown identity or
+    /// unknown ownership never grants permission.
+    AllowDatabaseOwner,
+}
+
 pub struct Storage {
     mail_root: PathBuf,
     conn: RefCell<Connection>,
@@ -176,16 +199,34 @@ impl Storage {
     }
 
     /// Open an existing mailspace database without creating the database or
-    /// migrating its schema. If a WAL-mode database lacks `-shm`, opening it
-    /// read-only would create that sidecar, so the open refuses it instead.
-    /// Read operations work as usual; any attempted write is rejected by
-    /// SQLite's read-only connection.
+    /// migrating its schema. The connection is opened with plain
+    /// `SQLITE_OPEN_READ_ONLY` (never `immutable=1`): reads work as usual,
+    /// any attempted write is rejected by SQLite, and no migration,
+    /// initialization, checkpoint request, or application write happens on
+    /// this path. What the open may still do is create the WAL sidecars when
+    /// they are missing; [`ReadOnlyWalPolicy`] decides whether that is
+    /// tolerated. [`open_mailspace_read_only_with_policy`] selects a policy;
+    /// this form keeps the strict [`ReadOnlyWalPolicy::ExistingOnly`]
+    /// behavior.
     ///
     /// # Errors
     /// Returns an error when the database is missing, unreadable, or the
     /// connection cannot be configured.
     pub fn open_mailspace_read_only(mailspace_dir: &Path) -> Result<Self, VivariumError> {
-        let conn = Self::open_mailspace_connection_read_only(mailspace_dir)?;
+        Self::open_mailspace_read_only_with_policy(mailspace_dir, ReadOnlyWalPolicy::ExistingOnly)
+    }
+
+    /// Crate-visible form of [`Storage::open_mailspace_read_only`] that
+    /// names the WAL sidecar policy.
+    ///
+    /// # Errors
+    /// Returns an error when the database is missing, unreadable, the policy
+    /// refuses the WAL state, or the connection cannot be configured.
+    pub(crate) fn open_mailspace_read_only_with_policy(
+        mailspace_dir: &Path,
+        policy: ReadOnlyWalPolicy,
+    ) -> Result<Self, VivariumError> {
+        let conn = Self::open_mailspace_connection_read_only(mailspace_dir, policy)?;
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(|e| VivariumError::Other(format!("failed to set SQLite timeout: {e}")))?;
         Ok(Self {
@@ -205,12 +246,13 @@ impl Storage {
     /// require creating the WAL shared-memory sidecar.
     pub(crate) fn open_mailspace_connection_read_only(
         mailspace_dir: &Path,
+        policy: ReadOnlyWalPolicy,
     ) -> Result<Connection, VivariumError> {
         let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if Self::read_only_wal_index_missing(mailspace_dir) {
-            return Err(VivariumError::Other(
-                "read-only inspection unavailable: the WAL-mode mail store has no mail.sqlite-shm sidecar; refusing to create it".into(),
-            ));
+        if read_only_wal_index_refused(&db_path, policy, effective_reader_uid()) {
+            return Err(VivariumError::Other(format!(
+                "read-only inspection unavailable: the WAL-mode mail store has no {MAILSPACE_DB_FILENAME}-shm sidecar; refusing to create it",
+            )));
         }
         Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
             VivariumError::Other(format!("failed to open storage database read-only: {e}"))
@@ -218,21 +260,15 @@ impl Storage {
     }
 
     /// True when a read-only WAL open would need to create the missing
-    /// shared-memory index beside the database.
+    /// shared-memory index beside the database. Owner-blind: callers such as
+    /// the doctor only want the strict existence answer.
     #[must_use]
     pub(crate) fn read_only_wal_index_missing(mailspace_dir: &Path) -> bool {
-        let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if mailspace_dir
-            .join(format!("{MAILSPACE_DB_FILENAME}-shm"))
-            .exists()
-        {
-            return false;
-        }
-        let Ok(mut file) = fs::File::open(db_path) else {
-            return false;
-        };
-        let mut header = [0_u8; 20];
-        file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2
+        read_only_wal_index_refused(
+            &mailspace_dir.join(MAILSPACE_DB_FILENAME),
+            ReadOnlyWalPolicy::ExistingOnly,
+            None,
+        )
     }
 
     fn open_with_db(mail_root: &Path, db_path: &Path) -> Result<Self, VivariumError> {
@@ -266,6 +302,103 @@ impl Storage {
     fn invalidate_handle_index(&self) {
         *self.handle_index.borrow_mut() = None;
     }
+}
+
+// POSIX `geteuid(2)` on macOS, declared locally so only the Linux path
+// depends on the `libc` crate's binding.
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// Effective user id of the calling process, per POSIX `geteuid(2)`.
+    fn geteuid() -> u32;
+}
+
+/// Effective user id of this process, when the platform can prove it.
+///
+/// Linux reads `libc::geteuid`; macOS declares the same POSIX call locally;
+/// other platforms report unknown identity rather than guessing.
+#[must_use]
+pub(crate) fn effective_reader_uid() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `geteuid` takes no arguments, touches no memory of ours,
+        // and cannot fail.
+        Some(unsafe { libc::geteuid() })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `geteuid` takes no arguments, touches no memory of ours,
+        // and cannot fail; the declaration matches the POSIX prototype.
+        Some(unsafe { geteuid() })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Whether a read-only open of `db_path` under `policy` is refused because
+/// it would need to create the missing WAL shared-memory sidecar.
+///
+/// Existing sidecars and non-WAL databases never refuse. A WAL-mode database
+/// with no sidecar refuses under [`ReadOnlyWalPolicy::ExistingOnly`]; under
+/// [`ReadOnlyWalPolicy::AllowDatabaseOwner`] it refuses unless the supplied
+/// `reader_uid` is proven equal to the database file owner. Unknown identity
+/// or unknown ownership never grants permission. Evaluation only reads: no
+/// sidecar is ever created here.
+#[must_use]
+pub(crate) fn read_only_wal_index_refused(
+    db_path: &Path,
+    policy: ReadOnlyWalPolicy,
+    reader_uid: Option<u32>,
+) -> bool {
+    if wal_index_sidecar_path(db_path).exists() {
+        return false;
+    }
+    if !database_header_is_wal(db_path) {
+        return false;
+    }
+    match policy {
+        ReadOnlyWalPolicy::ExistingOnly => true,
+        ReadOnlyWalPolicy::AllowDatabaseOwner => match (reader_uid, file_owner_uid(db_path)) {
+            (Some(reader), Some(owner)) => reader != owner,
+            _ => true,
+        },
+    }
+}
+
+/// Path of the WAL shared-memory sidecar of `db_path`: the full file name
+/// with `-shm` appended (`pump.db` maps to `pump.db-shm`, not a re-extension).
+fn wal_index_sidecar_path(db_path: &Path) -> PathBuf {
+    let mut sidecar = db_path.as_os_str().to_os_string();
+    sidecar.push("-shm");
+    PathBuf::from(sidecar)
+}
+
+/// Whether the database header declares WAL journal mode: bytes 18 and 19
+/// both hold 2 in the SQLite file format. Unreadable or short files are not
+/// WAL databases.
+fn database_header_is_wal(db_path: &Path) -> bool {
+    let Ok(mut file) = fs::File::open(db_path) else {
+        return false;
+    };
+    let mut header = [0_u8; 20];
+    file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2
+}
+
+/// The uid that owns `db_path`, when the platform and the file both report
+/// it. Unreadable or absent files report unknown ownership.
+#[cfg(unix)]
+fn file_owner_uid(db_path: &Path) -> Option<u32> {
+    match fs::metadata(db_path) {
+        Ok(meta) => Some(meta.uid()),
+        Err(_) => None,
+    }
+}
+
+/// See the Unix version: no ownership is provable on this platform.
+#[cfg(not(unix))]
+fn file_owner_uid(_db_path: &Path) -> Option<u32> {
+    None
 }
 
 #[allow(clippy::cast_sign_loss)]
