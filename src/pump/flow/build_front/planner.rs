@@ -9,7 +9,7 @@ use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs::{
-    done_step, need_thread, read_only_job, step_replies, targets,
+    done_step, need_target, need_thread, read_only_job, step_replies, targets,
 };
 use crate::pump::jobs::JobStore;
 
@@ -35,7 +35,7 @@ impl StepHandler for PlannerStep {
             &NodeClass::Planner,
             PUMP_PLANNER_ROLE,
             &brief,
-            None,
+            need_target(cx.mail, &cx.run.need)?,
         )?;
         Ok(StartAction::Job(Box::new(spec)))
     }

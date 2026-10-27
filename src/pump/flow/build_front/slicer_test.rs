@@ -4,7 +4,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::SliceStep;
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowDef, FlowKind};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::{Registry, shipped};
@@ -33,6 +33,11 @@ struct Rig {
 }
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
+    rig_with_target(cfg, None)
+}
+
+/// A rig whose readable root need letter carries `target` in its front matter.
+fn rig_with_target(cfg: PumpConfig, target: Option<&str>) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
@@ -57,14 +62,28 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
+    let mut mail = FakeMail::new("pump");
+    seed_root(&mut mail, target)?;
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         run,
         def: load(FlowKind::Build)?,
     })
+}
+
+/// Stores a readable root need letter for `NEED`, optionally with a target.
+fn seed_root(mail: &mut FakeMail, target: Option<&str>) -> R {
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("build the widget")]);
+    front.target = target.map(String::from);
+    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let sent = mail.send_step("pump", "pump", "the need", &body, &[])?;
+    if let Some(task) = mail.tasks.remove(&sent) {
+        mail.tasks.insert(NEED.to_string(), task);
+    }
+    Ok(())
 }
 
 fn rig() -> Result<Rig, VivariumError> {
@@ -220,6 +239,66 @@ fn the_revised_plan_wins_over_the_first() -> R {
     assert!(spec.body.contains("PLAN-TWO"), "{}", spec.body);
     assert!(!spec.body.contains("PLAN-ONE"), "{}", spec.body);
     Ok(())
+}
+
+#[test]
+fn slice_pairs_the_root_need_target_with_its_main() -> R {
+    let mut rig = rig_with_target(two_target_cfg(), Some("vivi"))?;
+    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    planner_done(&mut rig, "plan2", Some("PLAN-TWO"))?;
+
+    let spec = start(&rig)?;
+
+    // The pairing comes from the root letter's target, not from the explicit
+    // `default` target the resolution would fall back to; the revised plan
+    // still feeds the brief.
+    assert_eq!(spec.target.as_deref(), Some("vivi"), "{}", spec.body);
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert_eq!(
+        spec.extra_targets,
+        vec![String::from("default"), String::from("vivi")]
+    );
+    assert!(spec.body.contains("PLAN-TWO"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn an_invalid_root_need_letter_fails_naming_the_need() -> R {
+    let mut rig = rig()?;
+    planner_done(&mut rig, "plan", Some("PLAN-ONE"))?;
+    let sent = rig
+        .mail
+        .send_step("pump", "pump", "the need", "Build the widget", &[])?;
+    if let Some(task) = rig.mail.tasks.remove(&sent) {
+        rig.mail.tasks.insert(NEED.to_string(), task);
+    }
+
+    let err = start(&rig).unwrap_err();
+
+    assert!(err.to_string().contains(NEED), "{err}");
+    assert!(err.to_string().contains("front matter"), "{err}");
+    Ok(())
+}
+
+/// A config with an explicit `default` target on another main and a
+/// non-primary `vivi` target on `vivi/main`.
+fn two_target_cfg() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("default"),
+        PumpTarget {
+            main: String::from("other-main"),
+            ..PumpTarget::default()
+        },
+    );
+    cfg.targets.insert(
+        String::from("vivi"),
+        PumpTarget {
+            main: String::from("vivi/main"),
+            ..PumpTarget::default()
+        },
+    );
+    cfg
 }
 
 #[test]

@@ -28,7 +28,7 @@ impl StepHandler for SliceStep {
             &NodeClass::Slicer,
             SLICER_ROLE,
             &brief,
-            None,
+            step_inputs::need_target(cx.mail, &cx.run.need)?,
         )?;
         Ok(StartAction::Job(Box::new(spec)))
     }

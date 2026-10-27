@@ -4,7 +4,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::error::VivariumError;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::{FlowKind, FlowNode, NodeClass};
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::shipped;
@@ -87,6 +87,38 @@ fn row(run: u32, node: &str, task: &str, state: StepState) -> StepRow {
         state,
         verdict: None,
     }
+}
+
+/// Resends the root need letter with `target` front matter and aims the run
+/// at the new handle.
+fn seed_root_with_target(rig: &mut Rig, target: Option<&str>) -> R {
+    let mut front = crate::letter::work::NeedFront::new(vec![String::from("build the widget")]);
+    front.target = target.map(String::from);
+    let body = crate::letter::fixture::need_body_with(&front, "prose");
+    let need = rig.mail.send_step("pump", "pump", "the need", &body, &[])?;
+    rig.run.need = need;
+    Ok(())
+}
+
+/// A config with an explicit `default` target on another main and a
+/// non-primary `vivi` target on `vivi/main`.
+fn two_target_cfg() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("default"),
+        PumpTarget {
+            main: String::from("other-main"),
+            ..PumpTarget::default()
+        },
+    );
+    cfg.targets.insert(
+        String::from("vivi"),
+        PumpTarget {
+            main: String::from("vivi/main"),
+            ..PumpTarget::default()
+        },
+    );
+    cfg
 }
 
 fn result(message: &str) -> String {
@@ -259,6 +291,27 @@ fn plan_and_plan2_budgets_follow_a_nondefault_dispatch_fallback() -> R {
         assert_eq!(spec.extra_targets, vec![String::from("default")]);
     }
     assert!(plan.body.contains("need: n1\nrun: r1\n"), "{}", plan.body);
+    Ok(())
+}
+
+#[test]
+fn plan_and_plan2_pair_the_root_need_target_with_its_main() -> R {
+    let mut rig = rig_with(two_target_cfg(), true, 1)?;
+    seed_root_with_target(&mut rig, Some("vivi"))?;
+
+    let plan = start(&rig, "plan")?;
+    let plan2 = start(&rig, "plan2")?;
+
+    // The pairing comes from the root letter's target, not from the explicit
+    // `default` target the resolution would fall back to.
+    for spec in [&plan, &plan2] {
+        assert_eq!(spec.target.as_deref(), Some("vivi"), "{}", spec.body);
+        assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+        assert_eq!(
+            spec.extra_targets,
+            vec![String::from("default"), String::from("vivi")]
+        );
+    }
     Ok(())
 }
 
