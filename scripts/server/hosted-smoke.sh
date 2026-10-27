@@ -16,10 +16,13 @@
 #   - a need created by the CLI is listed, shown and on the board over MCP,
 #     live, before any index pass;
 #   - done and reopen over MCP are the CLI's statuses;
-#   - the server never lays out a `.vivi` under DATA_DIR/projects/<id>;
+#   - the server never lays out a `.vivi` under its data_dir/projects/<id>;
 #   - removing the registry entry stops the server serving the project.
 #
-# Local only: boots `target/debug/vivi server run` from this repo on $PORT.
+# Local only: makes a throwaway server home (VIVI_HOME=$W/home, `vivi server
+# init --port $PORT`) and boots `target/debug/vivi server run` from this repo.
+# VIVI_HOME is the only variable the server reads; the host registry lives in
+# that home (`$VIVI_HOME/server/registry.toml`), so the CLI legs share it.
 #
 # Environment, all optional:
 #   SRV         this repo (default: the script's parent directory)
@@ -34,7 +37,7 @@ PORT=${PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.
 BASE=http://127.0.0.1:$PORT
 W=$(mktemp -d "${TMPDIR:-/tmp}/hosted-smoke.XXXXXX")
 HOST=$W/host
-DATA=$W/data
+DATA=$W/home/server/data
 PASS=0; FAIL=0
 SPID=""
 ok() { echo "PASS: $1"; PASS=$((PASS+1)); }
@@ -50,8 +53,8 @@ die() { bad "$1"; done_; }
 [ -x "$VIVI" ] || { echo "vivi binary not found at $VIVI (set VIVI)"; exit 1; }
 (cd "$SRV" && cargo build --bin vivi 2>&1 | tail -1)
 [ -x "$SRV/target/debug/vivi" ] || { echo "vivi-server binary not found under $SRV"; exit 1; }
-mkdir -p "$DATA" "$W/cfg"
-export VIVI_CONFIG_DIR=$W/cfg
+mkdir -p "$W/home"
+export VIVI_HOME=$W/home
 jget() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
 
 # --- the host mailspace, made with the CLI -----------------------------------
@@ -73,8 +76,9 @@ printf '\n[sync]\nserver = "%s"\nproject = "%s"\nname = "hub"\nsend = "addressed
   && ok "host registered with --no-pump --serve" || { cat "$W/registry.log"; die "registry add"; }
 
 # --- the server, on the same registry ----------------------------------------
-BIND=127.0.0.1 PORT=$PORT DATA_DIR=$DATA STORE_ENCRYPTION_KEY=$(openssl rand -base64 32) \
-  "$SRV/target/debug/vivi" server run >"$W/server.log" 2>&1 &
+"$SRV/target/debug/vivi" server init --port "$PORT" >"$W/init.log" 2>&1 \
+  || { cat "$W/init.log"; die "server init"; }
+"$SRV/target/debug/vivi" server run >"$W/server.log" 2>&1 &
 SPID=$!
 UP=0
 for _ in $(seq 1 40); do
@@ -194,7 +198,7 @@ mcp "$KEY_MIND" reopen "{\"handle\":\"$HANDLE\",\"note\":\"smoke reopen\"}" >"$W
 
 # --- the server's data dir holds no mailspace --------------------------------
 if [ -d "$DATA/projects/$PID" ] && [ -z "$(find "$DATA/projects/$PID" -name .vivi -print -quit)" ]; then
-  ok "no .vivi under DATA_DIR/projects/<id> ($(ls "$DATA/projects/$PID" | tr '\n' ' '))"
+  ok "no .vivi under data_dir/projects/<id> ($(ls "$DATA/projects/$PID" | tr '\n' ' '))"
 else
   bad ".vivi found (or no project dir) under $DATA/projects/$PID"
 fi

@@ -16,11 +16,14 @@ ok() { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 jget() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
 
-rm -rf "$W"; mkdir -p "$W/data"
+rm -rf "$W"; mkdir -p "$W"
 if [ "$LOCAL" = 1 ]; then
   (cd "$SRV" && cargo build --bin vivi 2>&1 | tail -1)
   [ -x "$SRV/target/debug/vivi" ] || { echo "vivi-server binary not found under $SRV"; exit 1; }
-  PORT=$PORT DATA_DIR="$W/data" "$SRV/target/debug/vivi" server run >"$W/server.log" 2>&1 &
+  # The server reads only VIVI_HOME; `server init` writes config.toml (port) and creds/.
+  export VIVI_HOME="$W/home"
+  "$SRV/target/debug/vivi" server init --port "$PORT" >"$W/init.log" 2>&1 || { cat "$W/init.log"; exit 1; }
+  "$SRV/target/debug/vivi" server run >"$W/server.log" 2>&1 &
   SPID=$!
   trap 'kill $SPID 2>/dev/null' EXIT
 fi

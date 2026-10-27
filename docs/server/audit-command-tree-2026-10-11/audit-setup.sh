@@ -1,4 +1,7 @@
 #!/bin/bash
+# SUPERSEDED: historical audit harness. It starts the server through environment
+# variables (PORT, DATA_DIR, STORE_ENCRYPTION_KEY), which `vivi server run` no
+# longer reads; see skills/vivi/SKILL.md, Server section, and scripts/server/.
 # audit-setup.sh WORKDIR PORT
 #
 # Boots a private local vivi-server on PORT and builds two synced checkouts of

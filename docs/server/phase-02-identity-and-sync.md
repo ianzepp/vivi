@@ -1,3 +1,5 @@
+> **Superseded configuration.** This document describes the server as configured when it was written (environment variables such as `PORT`, `DATA_DIR`, `STORE_ENCRYPTION_KEY`, `HOST_*`). `vivi server run` now reads no per-setting environment variables: see the Server section of `skills/vivi/SKILL.md` and `README.md` here. `DATA_DIR` below means the `data_dir` config key.
+
 # Phase 02 — Traveling identity and cross-mailspace sync
 
 Status: **DELIVERED** 2026-10-09, with P2-8 (optional) deferred. See

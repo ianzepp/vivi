@@ -8,10 +8,10 @@ tracked in [`docs/phase-02-identity-and-sync.md`](docs/phase-02-identity-and-syn
 Phase 03 is built (1.1.0), recorded in
 [`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md):
 the project, not the room, is the tenant, and a project is a real vivi
-mailspace on the server (`DATA_DIR/projects/<id>/.vivi/`) with a
+mailspace on the server (`<data_dir>/projects/<id>/.vivi/`) with a
 `transport.sqlite` index beside it. Rooms are lightweight chat on a chat-mode project (item 17, 1.3.0).
 Do not revive the seat/challenge rooms API or store chat under
-`DATA_DIR/rooms/`.
+`<data_dir>/rooms/`.
 
 Hosted projects (a mailspace already on the machine, served from its own
 `.vivi/` through the host registry) are built, recorded in
@@ -68,13 +68,17 @@ Release. Hosts verify the checksum before installing.
 - The hub (the operator's server) is tailnet-only and runs the installed
   binary as the `vivi` user under systemd. Installing or restarting it is the
   owner's call (see the `hub` skill for the host).
-- `BIND` sets the listen address (default `0.0.0.0`). A tailnet-only host sets
-  its tailnet IP so the server never listens on the LAN.
-- `STORE_ENCRYPTION_KEY` must not change for an existing data directory: the
-  boot verifier exits the process when the key does not match a sealed store.
-  Never put secret values in commits or docs.
-- `Dockerfile` and `railway.toml` remain in the tree but are unused. Deleting
-  them is the owner's call.
+- The server reads no per-setting environment variables: `VIVI_HOME` (default
+  `~/.vivi`) is the only one. Settings are in `$VIVI_HOME/server/config.toml`
+  and secrets in `$VIVI_HOME/server/creds/`; `vivi server init` creates both
+  (see README, Configuration). `bind` in `config.toml` (default `127.0.0.1`)
+  sets the listen address; a tailnet-only host sets its tailnet IP so the
+  server never listens on the LAN.
+- The `STORE_ENCRYPTION_KEY` credential must not change for an existing data
+  directory: the boot verifier exits the process when the key does not match a
+  sealed store. Never put secret values in commits or docs.
+- `deploy/server/Dockerfile` and `railway.toml` remain in the tree but are
+  unused. Deleting them is the owner's call.
 
 ## Checks
 
@@ -83,29 +87,29 @@ The merge gate, run before fast-forwarding `main`:
 ```sh
 cargo fmt --check
 cargo test
-VIVI=~/.local/bin/vivi scripts/project-sync-smoke.sh
-VIVI=~/.local/bin/vivi scripts/two-checkout-smoke.sh
-scripts/hosted-smoke.sh
+VIVI=~/.local/bin/vivi scripts/server/project-sync-smoke.sh
+VIVI=~/.local/bin/vivi scripts/server/two-checkout-smoke.sh
+scripts/server/hosted-smoke.sh
 ```
 
 All three smokes run against a LOCAL server that the script boots from
-`target/debug/vivi-server`; do not point them at a deployed server (there is
+`target/debug/vivi` (`vivi server init`, then `vivi server run`, in a throwaway `VIVI_HOME`); do not point them at a deployed server (there is
 none to point at). Use a `vivi` binary at the version `Cargo.toml` pins.
 
 Measured baselines (burgus, 18-core Mac, 2026-10-10, warm target):
 `cargo fmt --check` under 1 s, `cargo test` about 8 s. Cold builds are
-unmeasured; `scripts/hosted-smoke.sh` takes a few seconds; the two-checkout
+unmeasured; `scripts/server/hosted-smoke.sh` takes a few seconds; the two-checkout
 smoke takes about two minutes (the prune leg waits for a 1 m cutoff).
 
-`scripts/two-checkout-smoke.sh` is the release acceptance: the 1.3.0 rooms
+`scripts/server/two-checkout-smoke.sh` is the release acceptance: the 1.3.0 rooms
 wire over HTTP, then two checkouts and a third member syncing through a
 durable project with `vivi sync`, item events, MCP, and prune/resync.
-`scripts/project-sync-smoke.sh` is the project wire and store gate.
-`scripts/hosted-smoke.sh` checks that a hosted project is the host's own
+`scripts/server/project-sync-smoke.sh` is the project wire and store gate.
+`scripts/server/hosted-smoke.sh` checks that a hosted project is the host's own
 mailspace: a CLI-made host registered with `vivi pump service add --serve`,
 served by the local server, and driven over MCP and the CLI against the same
-files. Narrower scripts: `scripts/chat-room-smoke.sh` (rooms) and
-`scripts/mcp-smoke.sh` (MCP).
+files. Narrower scripts: `scripts/server/chat-room-smoke.sh` (rooms) and
+`scripts/server/mcp-smoke.sh` (MCP).
 
 ## Dependency on `vivi`
 

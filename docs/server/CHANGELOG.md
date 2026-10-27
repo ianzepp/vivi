@@ -5,7 +5,21 @@ vivi-server is part of vivi from vivi 22.0.0: `vivi server run` (or a
 release notes; this file keeps the record up to 2.4.0 and the work that
 was unreleased when the two were merged.
 
+> Entries below name the environment variables the server read at the time
+> (`PORT`, `BIND`, `DATA_DIR`, `STORE_ENCRYPTION_KEY`, `HOST_*`, ...). They are
+> history: `vivi server run` now reads no per-setting environment variables, only
+> `$VIVI_HOME/server/config.toml` and `creds/` (see the Server section of
+> `skills/vivi/SKILL.md`).
+
 ## Unreleased
+
+- **Configuration moves to the server home (breaking).** `vivi server run` reads
+  no per-setting environment variables. `VIVI_HOME` (default `~/.vivi`) is the
+  only one; settings are in `$VIVI_HOME/server/config.toml` and secrets in
+  `$VIVI_HOME/server/creds/` (mode 700/600). `vivi server init [--port N]`
+  creates the home. There is no `CREDENTIALS_DIRECTORY` / `LoadCredential`
+  path, no `VIVI_CONFIG_DIR`, and the registry is
+  `$VIVI_HOME/server/registry.toml`.
 
 A project made by `create_project` comes up with its pump running.
 

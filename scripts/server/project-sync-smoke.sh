@@ -42,7 +42,6 @@ B=$W/b
 C=$W/c
 D=$W/d
 PASS=0; FAIL=0
-SRVKEY=$(openssl rand -base64 32)
 ok() { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 
@@ -52,12 +51,14 @@ uuid4() { python3 -c 'import uuid; print(uuid.uuid4())'; }
 # --- build and boot ---------------------------------------------------------
 [ -d "$VIVI_REPO" ] && (cd "$VIVI_REPO" && cargo build --bin vivi 2>&1 | tail -1)
 [ -x "$VIVI" ] || { echo "vivi binary not found at $VIVI (set VIVI or VIVI_REPO)"; exit 1; }
-rm -rf "$W"; mkdir -p "$W/data" "$A" "$B" "$C" "$D"
+rm -rf "$W"; mkdir -p "$W" "$A" "$B" "$C" "$D"
 if [ "$LOCAL" = 1 ]; then
   (cd "$SRV" && cargo build --bin vivi 2>&1 | tail -1)
   [ -x "$SRV/target/debug/vivi" ] || { echo "vivi-server binary not found under $SRV"; exit 1; }
   for _ in $(seq 1 30); do curl -s -m 1 "$BASE/healthz" >/dev/null 2>&1 || break; sleep 1; done
-  PORT=$PORT DATA_DIR="$W/data" STORE_ENCRYPTION_KEY="$SRVKEY" "$SRV/target/debug/vivi" server run >"$W/server.log" 2>&1 &
+  # The server reads only VIVI_HOME; `server init` writes config.toml (port) and creds/.
+  VIVI_HOME="$W/home" "$SRV/target/debug/vivi" server init --port "$PORT" >"$W/init.log" 2>&1 || { cat "$W/init.log"; exit 1; }
+  VIVI_HOME="$W/home" "$SRV/target/debug/vivi" server run >"$W/server.log" 2>&1 &
   SPID=$!
   trap 'kill $SPID 2>/dev/null' EXIT
 fi

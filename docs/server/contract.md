@@ -12,7 +12,7 @@ All v1 routes live under `/v1/`.
 ## Lightweight chat rooms (1.3.0)
 
 A room is a **chat-mode project**: same mailspace and transport index as a
-durable project (`DATA_DIR/projects/<id>/`), with `mode=chat`, a TTL, and
+durable project (`<data_dir>/projects/<id>/`), with `mode=chat`, a TTL, and
 keyless admission. The room id is the project id (25 Crockford-base32,
 grouped `xxxxx-xxxxx-xxxxx-xxxxx-xxxxx`) and the shareable capability.
 
@@ -27,7 +27,7 @@ No key. `POST /v1/rooms` and `POST /v1/rooms/{id}/join` take `{name}`
 Stored hashed. Confined to chat projects. A guest cannot mint API keys.
 Durable projects keep challenge/sign.
 
-Member cap **64**. Rate limit **30 sends/min/identity** by default (a deployment may set `SEND_RATE_PER_MINUTE`; `0` is no limit). Body cap **64 KiB**.
+Member cap **64**. Rate limit **30 sends/min/identity** by default (a deployment may set `send_rate_per_minute` in config.toml; `0` is no limit). Body cap **64 KiB**.
 
 ### TTL
 
@@ -97,7 +97,7 @@ self-service server key leaves behind). `send` / `list` accept
 The remainder of this section is the frozen U1 seat/challenge contract,
 kept as the revision record. It is not served in 1.3.0.
 
-Storage per room *was* a mailspace at `DATA_DIR/rooms/<room_id>/.vivi/`
+Storage per room *was* a mailspace at `<data_dir>/rooms/<room_id>/.vivi/`
 (R2), opened through the vivi crate; messages were mail items sent
 via `Mailspace::send`.
 
@@ -224,21 +224,40 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 | 429 | `rate_limited` | over N sends/min/identity (N is the configured limit, default 30) |
 | 500 | `internal` | storage or unexpected failure (no internals leaked) |
 
-## Config (environment)
+## Config (server home)
 
-| Var | Meaning | Default |
+The server reads no per-setting environment variables. Its home is
+`$VIVI_HOME/server` (`VIVI_HOME` defaults to `~/.vivi`, and is the only
+variable read). `vivi server init [--port N]` creates the home; `vivi server run
+--help` lists every key. Relative paths are under the home.
+
+`config.toml` (every key optional):
+
+| Key | Meaning | Default |
 | --- | --- | --- |
-| `PORT` | listen port | `8080` |
-| `DATA_DIR` | room storage root (`DATA_DIR/rooms/<id>/.vivi/`, per R2) | `data` |
-| `STORE_ENCRYPTION_KEY` | AES-256-GCM key material for at-rest bodies | required before rooms open (U5 verifier; boot exits on mismatch/unreadable store) |
-| `MODERATION_TOKEN` | bearer for `/v1/_health` | unset disables `/v1/_health` |
+| `bind` | listen address | `127.0.0.1` |
+| `port` | listen port | `8080` |
+| `data_dir` | storage root (`<data_dir>/projects/<id>/`, `<data_dir>/rooms/<id>/.vivi/`, per R2) | `data` |
+| `send_rate_per_minute` | writes per minute per identity (`0` = none) | `30` |
+| `hosted_default_identity` | identity an API key without its own acts as on a hosted project | `operator` |
+| `log` | log filter | `vivi::server=info,vivi::pump=info,tower_http=info` |
+| `projects_root`, `lanes_root`, `git_url_prefix`, `default_pool` | host project tools (see Host tools) | `projects`, `lanes`, `file://<lanes_root>/`, unset |
+
+Secret files in `creds/` (the directory mode 700, each file mode 600; the server
+refuses group- or other-readable ones):
+
+| File | Meaning | If absent |
+| --- | --- | --- |
+| `STORE_ENCRYPTION_KEY` | AES-256-GCM key material for at-rest bodies (standard base64 of 32 bytes) | required before rooms open (U5 verifier; boot exits on mismatch/unreadable store) |
+| `MODERATION_TOKEN` | bearer for `/v1/_health` | `/v1/_health` is disabled |
+| `HOST_OPERATOR_TOKEN` | bearer for the built-in host principal on `/v1/mcp` | the principal does not exist |
 
 ## Hardening summary (authoritative for U3–U5)
 
 - sqlite files 0600 under the mailspace dir.
 - Challenge: single-use, 120 s TTL, 32 random bytes.
 - Token: SHA-256 digest only at rest, 1 h TTL, constant-time digest compare.
-- Send rate: 30/min/seat by default, configurable per deployment (`SEND_RATE_PER_MINUTE`, `0` = none); body cap 64 KiB.
+- Send rate: 30/min/seat by default, configurable per deployment (`send_rate_per_minute` in config.toml, `0` = none); body cap 64 KiB.
 - Boot with key mismatch or unreadable store → process exits, never serves.
 
 ## Revisions
@@ -252,7 +271,7 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   response.
 
 - **R2 (with VC-4, 2026-10-09): storage root + origin representation.**
-  The room mailspace root is `DATA_DIR/rooms/<room_id>/.vivi/` (the vivi
+  The room mailspace root is `<data_dir>/rooms/<room_id>/.vivi/` (the vivi
   crate's own layout, provisioned via `Mailspace::init` with per-seat-label
   identities); the U1-freeze root `rooms/<id>/mailspace/` is removed by the
   unification unit. Origin labels in v1: the poll response and sidecar
@@ -288,7 +307,7 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 
 - **R6 (with VC-5, 2026-10-09): moderation health auth.** `/v1/_health`
   failures are `403 moderator_unauthorized` (constant-time compare), and
-  the route is absent (404) when `MODERATION_TOKEN` is unset. Message
+  the route is absent (404) when the `MODERATION_TOKEN` credential file is absent. Message
   content is sealed at rest under `STORE_ENCRYPTION_KEY` (AES-256-GCM,
   per-record nonces; sealed canary verifier; boot exits on missing or
   mismatched key once a store is sealed; fresh keyless boot warns and
@@ -395,12 +414,12 @@ Method errors are JSON-RPC (`-32601`, …), not HTTP 4xx.
 Auth: `Authorization: Bearer`, one of:
 
 - **A server key** (`vivi_` + random) from the one key store at
-  `DATA_DIR/keys.json`. It resolves to its principal and that
+  `<data_dir>/keys.json`. It resolves to its principal and that
   principal's grants. Keys are SHA-256 digests at rest, 0600; the raw
   secret exists once, at mint.
-- **The host operator token** (`HOST_OPERATOR_TOKEN`): the built-in
+- **The host operator token** (the `creds/HOST_OPERATOR_TOKEN` file): the built-in
   host principal `host` (constant-time compare), which reaches only the
-  host tools. With the variable unset the principal does not exist and
+  host tools. Without that file the principal does not exist and
   only server keys authenticate.
 - Anything else is `401 unauthorized`. An identity token is told
   `identity tokens are not accepted on /v1/mcp; this endpoint needs a
@@ -628,10 +647,10 @@ kept — and purge only after the fixed delay.
 
 | Tool | Arguments | Effect |
 | --- | --- | --- |
-| `create_project` | `name`, `target?`, `branch?`, `pool?`, `initial_commit?`, `source?`, `pump?`, `serve?`, `rungs?` | Create a hosted project: `<HOST_LANES_ROOT>/<name>/` with the first target's (default: `name`) bare repository, the project with the first target's checkout and `[pump.targets.<target>]`, git URL `<HOST_GIT_URL_PREFIX><name>/<target>.git` and pool remote from the `HOST_*` configuration; the operator server key it shows once is the project's `operator` key. A supplied `source` must match `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`: local paths, `file://`, `ssh://`, scp-style `git@host:owner/repo`, other hosts, user info, a query and a fragment are refused, before anything is created. When `source` is omitted, creation is unchanged — an empty repository with one initial commit. The new project's pump control mode is set to running once the project is created and its `rungs` seeded, when the project is registered for the pump supervisor (`pump`, default true; with `pump: false` the mode is left alone); the answer carries it as `pump_mode` (and `pump_error` when it could not be set or read). `pump_mode` is the stored control mode read back — a string, or null when it could not be read — not a guarantee that a pump process is running or healthy; `pump_error` is additive and does not roll the project back or hide the one-time operator key |
-| `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?`, `source?` | `vivi project lane add` on `<HOST_PROJECTS_ROOT>/<name>`: makes the bare repository `<HOST_LANES_ROOT>/<name>/<target>.git` (with one empty seed commit when `seed`), clones it to `<project>/<target>` with `origin` at `<prefix><name>/<target>.git`, and adds `[pump.targets.<target>]` through the guarded config write (a running pump refuses). A supplied `source` must match `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`: local paths, `file://`, `ssh://`, scp-style `git@host:owner/repo`, other hosts, user info, a query and a fragment are refused, before the lane, checkout or guarded config write. When `source` is omitted, lane creation is unchanged, including `seed`; the rule applies to the import `source`, not to `git_url_prefix`, which still overrides `HOST_GIT_URL_PREFIX`. Success returns `{name, target_id, repo_path, checkout_path, git_url, initial_commit, readiness: {ready, missing}}`. A second add of the same target is the library's refusal |
-| `archive_project` | `name`, `confirm` | The retirement default: `confirm` must repeat `name`. Metadata-only — the project is retired in place, no file is touched and no pump lock is waited for: `archived {at, by, root, lanes_dir, pump, serve}` is stamped on the project's metadata and the root is taken out of the host registry, so the server stops serving it at once, even while a pump holds the project's lock mid-tick. The mailspace root, its lanes directory and the server's own project data all stay exactly where they lie, and every grant stays in place; the archived name stays taken (`create_project` refuses it). The stamp records the registry's exact pump/serve flags — a root absent from a readable registry records explicit `false`/`false` — and an unreadable registry aborts with nothing changed. A retry preserves the first record field for field, `at` included, and only brings the registry in line. The scope is intentionally metadata-only: a registry-only root this server never served (no `project.json`) is refused `no project <name> is hosted by this server`; deleting such a root stays the host CLI's job. Archive needs only `HOST_LANES_ROOT` — the recorded `lanes_dir` is its canonicalized `<root>/<name>`. Returns `{name, project_id, root, lanes_dir, unregistered, archived}` |
-| `restore_project` | `name` | Undo an archive. Needs no `HOST_*` configuration — the record carries everything: the recorded root is re-registered with the pump/serve flags saved at archive time, the archive record is cleared (which resets the purge clock), and the registry is reconciled so the project is hosted again. No operator key is minted again; the archive kept every grant. Refusals: `no hosted project named <name>`, `<name> is not archived: nothing to restore`, and `<name> is archived at <root>, which no longer exists; the record is unchanged` — that last one registers nothing and keeps the record. A serving failure after a successful restore is reported, not refused: `served` says what actually happened and `serve_error` carries the reconciliation's reason when serving was asked for and did not follow. Returns `{name, project_id, root, lanes_dir, pump, serve, restored: true, served}` (+ `serve_error`) |
+| `create_project` | `name`, `target?`, `branch?`, `pool?`, `initial_commit?`, `source?`, `pump?`, `serve?`, `rungs?` | Create a hosted project: `<lanes_root>/<name>/` with the first target's (default: `name`) bare repository, the project with the first target's checkout and `[pump.targets.<target>]`, git URL `<git_url_prefix><name>/<target>.git` and pool remote from the server's `projects_root`, `lanes_root`, `git_url_prefix` and `default_pool` config keys; the operator server key it shows once is the project's `operator` key. A supplied `source` must match `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`: local paths, `file://`, `ssh://`, scp-style `git@host:owner/repo`, other hosts, user info, a query and a fragment are refused, before anything is created. When `source` is omitted, creation is unchanged — an empty repository with one initial commit. The new project's pump control mode is set to running once the project is created and its `rungs` seeded, when the project is registered for the pump supervisor (`pump`, default true; with `pump: false` the mode is left alone); the answer carries it as `pump_mode` (and `pump_error` when it could not be set or read). `pump_mode` is the stored control mode read back — a string, or null when it could not be read — not a guarantee that a pump process is running or healthy; `pump_error` is additive and does not roll the project back or hide the one-time operator key |
+| `lane_create` | `name`, `target`, `git_url_prefix?`, `seed?`, `source?` | `vivi project lane add` on `<projects_root>/<name>`: makes the bare repository `<lanes_root>/<name>/<target>.git` (with one empty seed commit when `seed`), clones it to `<project>/<target>` with `origin` at `<prefix><name>/<target>.git`, and adds `[pump.targets.<target>]` through the guarded config write (a running pump refuses). A supplied `source` must match `^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$`: local paths, `file://`, `ssh://`, scp-style `git@host:owner/repo`, other hosts, user info, a query and a fragment are refused, before the lane, checkout or guarded config write. When `source` is omitted, lane creation is unchanged, including `seed`; the rule applies to the import `source`, not to `git_url_prefix`, which still overrides the `git_url_prefix` config key. Success returns `{name, target_id, repo_path, checkout_path, git_url, initial_commit, readiness: {ready, missing}}`. A second add of the same target is the library's refusal |
+| `archive_project` | `name`, `confirm` | The retirement default: `confirm` must repeat `name`. Metadata-only — the project is retired in place, no file is touched and no pump lock is waited for: `archived {at, by, root, lanes_dir, pump, serve}` is stamped on the project's metadata and the root is taken out of the host registry, so the server stops serving it at once, even while a pump holds the project's lock mid-tick. The mailspace root, its lanes directory and the server's own project data all stay exactly where they lie, and every grant stays in place; the archived name stays taken (`create_project` refuses it). The stamp records the registry's exact pump/serve flags — a root absent from a readable registry records explicit `false`/`false` — and an unreadable registry aborts with nothing changed. A retry preserves the first record field for field, `at` included, and only brings the registry in line. The scope is intentionally metadata-only: a registry-only root this server never served (no `project.json`) is refused `no project <name> is hosted by this server`; deleting such a root stays the host CLI's job. Archive needs only `lanes_root` — the recorded `lanes_dir` is its canonicalized `<root>/<name>`. Returns `{name, project_id, root, lanes_dir, unregistered, archived}` |
+| `restore_project` | `name` | Undo an archive. Needs no `projects_root`, `lanes_root` or `git_url_prefix` config — the record carries everything: the recorded root is re-registered with the pump/serve flags saved at archive time, the archive record is cleared (which resets the purge clock), and the registry is reconciled so the project is hosted again. No operator key is minted again; the archive kept every grant. Refusals: `no hosted project named <name>`, `<name> is not archived: nothing to restore`, and `<name> is archived at <root>, which no longer exists; the record is unchanged` — that last one registers nothing and keeps the record. A serving failure after a successful restore is reported, not refused: `served` says what actually happened and `serve_error` carries the reconciliation's reason when serving was asked for and did not follow. Returns `{name, project_id, root, lanes_dir, pump, serve, restored: true, served}` (+ `serve_error`) |
 | `purge_project` | `name`, `confirm` | The point of no return — the only destructive step. `confirm` must repeat `name`. Requires the archived state and the fixed 24-hour purge delay for every caller, the host not exempt: before `archived.at` + 24 h the refusal reports the instant purge becomes allowed; while a pump still holds the project's lock it refuses, naming the lock path, and keeps every file — stop the pump service and call again. Removal order makes a partially failed purge retryable: the recorded root leaves the host registry first, then the recorded root and lanes directory trees are removed (already-absent counts as removed), then every grant on the project is dropped — a principal left with none (the key `create_project` minted) has its keys revoked — and the server's own project data directory, which holds the archive record a retry needs, is removed last. Every path comes from the archive record, never the current `HOST_*` configuration. Returns `{name, project_id, project_root, lanes_dir, data_dir, ungranted, keys_revoked}` |
 | `key_mint` | `principal`, `grants?`, `host?`, `label?` | Mint a server key for `principal` (created when absent; grants not already held are added). `host: true` mints a host principal, which carries no grants and whose `principal` defaults to `host`. The raw `key` is shown once, `vivi_` + random; at most 32 live keys per principal |
 | `key_list` | — | Principals with their keys (digests only) and grants |
@@ -675,7 +694,7 @@ read), and a dispatched `send` stays one write: the nested pump record
 is no second line. The self-service key routes write the same shape themselves:
 `self_service_mint` on a successful `POST /v1/projects/{id}/keys` and
 `self_service_revoke` on a successful `DELETE /v1/projects/{id}/keys/
-{key_id}`, exactly one line each. The log is `DATA_DIR/audit.jsonl`: one
+{key_id}`, exactly one line each. The log is `<data_dir>/audit.jsonl`: one
 JSON object per line, 0600, append-only, no fsync, no read API yet. A
 line is, in wire order: `at` (RFC 3339), `key_id`, `principal`,
 `project_id` (null for host tools), `tool`, `outcome`
@@ -684,7 +703,7 @@ short description, capped at 200 chars).
 
 Writes are rate limited **per (project, key)** — `host` is the bucket
 for host tools — through the same limiter the other routes use
-(`SEND_RATE_PER_MINUTE`, default 30, `0` = none). A refusal reads
+(`send_rate_per_minute`, default 30, `0` = none). A refusal reads
 `over N writes/min for this key`.
 
 Tool failures are `isError: true` with a text body, HTTP 200.
@@ -716,7 +735,7 @@ possession), not another key.
   or someone else's key is `404 key_not_found`.
 
 The same secret is mirrored into the per-project registry
-(`DATA_DIR/projects/<id>/api_keys.json`) at mint, so rooms auth and the
+(`<data_dir>/projects/<id>/api_keys.json`) at mint, so rooms auth and the
 letter wire keep accepting it; the mirror is the only writer of new
 per-project keys. A mirror dies with what it mirrors: `key_revoke` on
 `/v1/mcp` revokes the entry in every project the key's principal is
@@ -729,8 +748,8 @@ bearer route, including the letter wire.
 #### One-time legacy retirement
 
 The first boot after the upgrade renames every
-`DATA_DIR/projects/<id>/api_keys.json` to `api_keys.json.retired` —
-pre-upgrade keys stay dead — and records `DATA_DIR/api_keys.retirement`.
+`<data_dir>/projects/<id>/api_keys.json` to `api_keys.json.retired` —
+pre-upgrade keys stay dead — and records `<data_dir>/api_keys.retirement`.
 Later boots leave live files alone: a self-service mint re-creates
 `api_keys.json` for the mirror, and a restart must not retire it.
 

@@ -294,7 +294,7 @@ and `tests/mind_cli.rs`.
 
 | Module | Role |
 | --- | --- |
-| `config` | `<config_dir>/vivi/mind.toml`, beside `pump-service.toml`: the authority stage enum, heartbeat, proxy URL (loopback only), pi command, model, budgets, and paths. `VIVI_MIND_HOME` overrides the home. |
+| `config` | `$VIVI_HOME/mind/mind.toml`: the authority stage enum, heartbeat, proxy URL (loopback only), pi command, model, budgets, and paths. `VIVI_HOME` moves it. |
 | `authority` | The action surface and `permit(gate, ledger, action, need)`, a pure gate over stage, pause and per-need budget. |
 | `wake` | `decide()` and `finish()`: heartbeat, backoff, in-flight block, rolling-hour cap, signal de-duplication. |
 | `probe` | `Probe` trait. `HealthProbe` = `pump::health` verdict plus the read-only `pump.db` reads and the `log.txt` tail described in Wakes. |
@@ -311,7 +311,7 @@ Real and unit-tested: config, the gate, the wake scheduler, registry
 reading, the state store, envelope parsing and argv, prompt fencing, the pi
 codec and `ProcessPi` against a scripted `sh` child, the socket server and
 client, one full `tick()` with fakes, the store reads of the probe, and the
-CLI surface (temp `VIVI_CONFIG_DIR` and `VIVI_MIND_HOME`).
+CLI surface (a temp `VIVI_HOME`).
 
 Exercised live on the e2e sandbox (pi 0.73.1, DeepSeek Flash through the
 proxy): `ProcessPi` (the RPC records were corrected in `2d47a516`),

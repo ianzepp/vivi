@@ -40,14 +40,12 @@ BASE=${SERVER_URL:-}
 BASE=${BASE%/}
 LOCAL=0
 if [ -z "$BASE" ]; then LOCAL=1; BASE="http://127.0.0.1:$PORT"; fi
-DATA=/tmp/vc8-data
+DATA=/tmp/vc8-data   # the server home ($VIVI_HOME); its data lives under $DATA/server/data
 A=/tmp/vc8-a
 B=/tmp/vc8-b
 C=/tmp/vc8-c
 K=/tmp/vc8-keys
 PASS=0; FAIL=0; SKIP=0
-# per-run throwaway key (VC-5: server validates base64 and refuses to boot without it)
-SRVKEY=$(openssl rand -base64 32)
 ok() { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 skip() { echo "SKIP: $1"; SKIP=$((SKIP+1)); }
@@ -65,7 +63,9 @@ clear_port() {
   port_free || { echo "FAIL: port $PORT still busy"; exit 1; }
 }
 boot_server() {
-  PORT=$PORT DATA_DIR="$DATA" STORE_ENCRYPTION_KEY="$SRVKEY" "$SRV/target/debug/vivi" server run >>/tmp/vc8-server.log 2>&1 &
+  # The server reads only VIVI_HOME; the home (config.toml, creds/) is made once
+  # by `server init` below and reused across restarts, so the store key is stable.
+  VIVI_HOME="$DATA" "$SRV/target/debug/vivi" server run >>/tmp/vc8-server.log 2>&1 &
   echo $! > /tmp/vc8-server.pid
   sleep 1
 }
@@ -86,6 +86,8 @@ mkdir -p "$DATA" "$A" "$B" "$C" "$K"
 if [ "$LOCAL" = 1 ]; then
   clear_port
   : >/tmp/vc8-server.log
+  VIVI_HOME="$DATA" "$SRV/target/debug/vivi" server init --port "$PORT" >/tmp/vc8-init.log 2>&1 \
+    || { cat /tmp/vc8-init.log; exit 1; }
   boot_server
 fi
 curl -s -m 15 "$BASE/healthz" | grep '"ok"' >/dev/null && ok "server up" || bad "server up"

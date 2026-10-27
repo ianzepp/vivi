@@ -1,3 +1,5 @@
+> **Superseded configuration.** This audit record describes the server as configured on 2026-10-11 (environment variables). `vivi server run` now reads no per-setting environment variables: see the Server section of `skills/vivi/SKILL.md`.
+
 # Audit: mail (mail subtree + mailspace subtree)
 
 Binary: `vivi 10.2.0` (debug build), private server `127.0.0.1:18142`, harness world

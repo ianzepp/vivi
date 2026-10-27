@@ -1,3 +1,5 @@
+> **Superseded configuration.** This document describes the server as configured when it was written (environment variables such as `PORT`, `DATA_DIR`, `STORE_ENCRYPTION_KEY`, `HOST_*`). `vivi server run` now reads no per-setting environment variables: see the Server section of `skills/vivi/SKILL.md` and `README.md` here. `DATA_DIR` below means the `data_dir` config key.
+
 # Phase 04: hosted projects
 
 This records what is built. Source of truth is the code: `src/hosted.rs`,

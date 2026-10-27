@@ -1,3 +1,5 @@
+> **Superseded configuration.** This audit record describes the server as configured on 2026-10-11 (environment variables). `vivi server run` now reads no per-setting environment variables: see the Server section of `skills/vivi/SKILL.md`.
+
 # Audit: work (need, task, want, trace)
 
 Binary: `vivi 10.2.0` (target/debug), local `vivi-server`, two synced checkouts A (alice) and B (bob).

@@ -1,3 +1,5 @@
+> **Superseded configuration.** This audit record describes the server as configured on 2026-10-11 (environment variables). `vivi server run` now reads no per-setting environment variables: see the Server section of `skills/vivi/SKILL.md`.
+
 # Vivi command tree against the project server — audit, 2026-10-11
 
 Scope: all 120 leaf commands of `vivi` (18 groups), exercised in a synced

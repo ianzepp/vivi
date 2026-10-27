@@ -1,12 +1,16 @@
-# Railway deploy config for vivi-server (VC-5). Secrets (STORE_ENCRYPTION_KEY,
-# MODERATION_TOKEN) are set as service variables, not here.
+# Railway deploy config for the vivi server. UNUSED leftover (Railway retired
+# 2026-10-21).
+#
+# No secrets or settings here: the image sets VIVI_HOME=/data and reads
+# /data/server/config.toml and /data/server/creds/* from the volume (see the
+# Dockerfile; `vivi server init` creates them).
 
 [build]
 builder = "DOCKERFILE"
 dockerfile_path = "Dockerfile"
 
 [deploy]
-startCommand = "vivi-server"
+startCommand = "vivi server run"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"

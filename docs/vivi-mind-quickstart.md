@@ -18,12 +18,11 @@ export SANDBOX=/path/to/sandbox
 export HOME=$SANDBOX/home                       # git identity, pi config for pump jobs
 export XDG_CONFIG_HOME=$SANDBOX/xdg/config XDG_DATA_HOME=$SANDBOX/xdg/data
 export XDG_STATE_HOME=$SANDBOX/xdg/state XDG_CACHE_HOME=$SANDBOX/xdg/cache
-export VIVI_CONFIG_DIR=$SANDBOX/xdg/config      # pump-service.toml and mind.toml under vivi/
+export VIVI_HOME=$SANDBOX/vivi                  # server/registry.toml, mind/ (mind.toml, state.json, mind.sock, sessions/, mind.log)
 export VIVI_PROXY_CONFIG=$SANDBOX/xdg/config/vivi/proxy.toml
-export VIVI_MIND_HOME=$SANDBOX/mind             # state.json, mind.sock, sessions/, mind.log
 ```
 
-`VIVI_MIND_HOME` is also pi's `HOME` when the mind starts it (see step 3).
+The mind's home, `$VIVI_HOME/mind`, is also pi's `HOME` when the mind starts it (see step 3).
 
 ## 1. Build vivi and install pi
 
@@ -63,7 +62,7 @@ instead), then `vivi proxy check openrouter`.
 
 pi reads custom providers from `~/.pi/agent/models.json`. The mind starts pi
 with a cleared environment and `HOME` set to the **mind home**, so the mind's
-pi reads `$VIVI_MIND_HOME/.pi/agent/models.json`, not your own. Pump jobs run
+pi reads `$VIVI_HOME/mind/.pi/agent/models.json`, not your own. Pump jobs run
 pi as you, so they read `$HOME/.pi/agent/models.json`. Write the same file in
 both places:
 
@@ -88,7 +87,7 @@ The `apiKey` is a placeholder pi requires; the proxy replaces it. Check it:
 ## 4. `mind.toml`
 
 Copy [`src/mind/mind.toml.example`](../src/mind/mind.toml.example) to
-`$VIVI_CONFIG_DIR/vivi/mind.toml` (beside `pump-service.toml`) and set at
+`$VIVI_HOME/mind/mind.toml` and set at
 least `model`, as pi's `<provider>/<id>`:
 
 ```toml
@@ -104,7 +103,7 @@ The mind adds `--mode rpc --no-tools --session-dir ...` itself, so
 ## 5. Projects for it to watch
 
 The mind watches every project in the host registry
-(`$VIVI_CONFIG_DIR/vivi/pump-service.toml`) with `pump = true`.
+(`$VIVI_HOME/server/registry.toml`) with `pump = true`, which the server writes for every project it registers.
 `vivi project create` registers one:
 
 ```sh
@@ -185,7 +184,7 @@ vivi mind                         # attach; lines are prompts
 Attach is a new socket connection to the one pi session each time, so
 `/quit` and attaching again (or restarting the mind) keeps the conversation:
 `/history` shows the earlier wakes and chats. The session id is in
-`state.json`; the session file is under `$VIVI_MIND_HOME/sessions/`.
+`state.json`; the session file is under `$VIVI_HOME/mind/sessions/`.
 
 `vivi mind stop` asks the mind to exit. Nothing restarts it unless a service
 manager does (`vivi mind service unit` prints an example systemd unit).
