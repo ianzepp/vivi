@@ -192,7 +192,7 @@ fn serve_root(
 }
 
 /// `[sync] project` when set, else the id derived from the mailspace id.
-fn resolve_project_id(mailspace: &Mailspace) -> Result<String, String> {
+pub(crate) fn resolve_project_id(mailspace: &Mailspace) -> Result<String, String> {
     let configured = mailspace
         .config
         .sync

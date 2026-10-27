@@ -48,6 +48,7 @@ use crate::server::projects::ProjectMeta;
 
 pub(super) mod archive;
 pub(crate) mod lane;
+mod register;
 mod rungs;
 mod source;
 
@@ -57,6 +58,7 @@ use super::tools::{ToolError, opt_str, req_str};
 
 /// The lifecycle handlers, dispatched by the sibling `server` module.
 pub(super) use self::archive::archive_project;
+pub(super) use self::register::{project_register, project_unregister};
 pub(super) use self::archive::purge::purge_project;
 pub(super) use self::archive::restore::restore_project;
 
@@ -182,6 +184,37 @@ pub(super) fn tools_list() -> Value {
             }),
         ),
         tool(
+            "project_register",
+            "Serve a mailspace that already exists on this host's disk: add its root to the host \
+             registry with serve on and reconcile at once. `root` must be an absolute path whose \
+             .vivi/mailspace.toml exists; a base config (`base = true`) and an archived project's \
+             root are refused. A new entry gets pump off; an existing entry keeps its pump flag. \
+             Nothing on disk changes. Returns root, project_id, name and served (plus serve_error \
+             when serving was refused). Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "root": { "type": "string", "description": "Absolute path of the project root that owns .vivi/" }
+                },
+                "required": ["root"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
+            "project_unregister",
+            "Take a project root out of the host registry so this server stops serving it. \
+             `root` must be an absolute path already in the registry; an unknown root is refused. \
+             Nothing on disk is deleted. Returns root and unregistered. Host principal only.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "root": { "type": "string", "description": "Absolute path of the registered project root" }
+                },
+                "required": ["root"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
             "restore_project",
             "Restore an archived project: re-register the root recorded at archive time with the \
              pump/serve flags saved then, clear the archive record (which resets the 24-hour \
@@ -251,7 +284,7 @@ pub(super) fn project_list(state: &AppState) -> Value {
 }
 
 /// Every hosted project's metadata in the store, retired ones included.
-fn hosted_metas(state: &AppState) -> Vec<ProjectMeta> {
+pub(super) fn hosted_metas(state: &AppState) -> Vec<ProjectMeta> {
     let Ok(entries) = std::fs::read_dir(state.projects.projects_root()) else {
         return Vec::new();
     };
