@@ -28,6 +28,7 @@ pub(crate) mod plan_check;
 pub mod planner_jobs;
 pub mod priority;
 pub mod proof;
+pub mod provider_backoff;
 pub mod quarantine;
 pub mod ramsweep;
 pub mod readiness;
@@ -166,3 +167,7 @@ mod proof_test;
 #[cfg(test)]
 #[path = "pump/ramsweep_test.rs"]
 mod ramsweep_test;
+
+#[cfg(test)]
+#[path = "pump/provider_backoff_test.rs"]
+mod provider_backoff_test;
