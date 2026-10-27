@@ -21,6 +21,54 @@ fn hand_message_reads_the_receipt_section_only() {
     assert_eq!(hand_message(receipt), "OUT-OF-SCOPE: docs/budget.toml");
 }
 
+/// A hand message that itself carries document headings and an unknown
+/// heading: real content before, between and after each one.
+fn documented_message() -> String {
+    String::from(
+        "before the document\n\
+         \n\
+         --- Begin document ---\n\
+         inside the document\n\
+         \n\
+         --- End document ---\n\
+         after the document\n\
+         \n\
+         --- unknown heading ---\n\
+         still the message",
+    )
+}
+
+#[test]
+fn hand_message_preserves_document_headings() {
+    let message = documented_message();
+
+    // The receipt section survives whole, headings and all: everything
+    // before, between and after them, and neither the stderr nor the
+    // runner-log tail leaks into it.
+    let text = receipt(1, &message, "error[E0308]: mismatched types");
+    assert_eq!(hand_message(&text), message);
+    assert!(!hand_message(&text).contains("error[E0308]"), "{text}");
+    assert!(!hand_message(&text).contains("log line"), "{text}");
+
+    // Raw unsectioned text is the message whole, headings and all.
+    assert_eq!(hand_message(&message), message);
+
+    // No `--- receipt` section: the summary head falls back to the message
+    // and the tail sections stay out of it.
+    let headless = "pool result j1: failed\nagent exit 1 in 2s, job 9s\n\n--- stderr tail\nboom";
+    assert_eq!(
+        hand_message(headless),
+        "pool result j1: failed\nagent exit 1 in 2s, job 9s"
+    );
+
+    // An explicitly empty receipt extracts to nothing.
+    assert_eq!(
+        hand_message("pool result j1: failed\n\n--- receipt\n\n"),
+        ""
+    );
+    assert_eq!(hand_message(""), "");
+}
+
 fn config() -> PumpConfig {
     PumpConfig {
         board: BoardConfig {
@@ -242,6 +290,21 @@ fn a_hand_failure_record_names_the_exit_the_stderr_excerpt_and_the_final_message
     assert!(
         text.trim_end()
             .ends_with("hand's final message:\n  I gave up on the borrow."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_hand_failure_record_keeps_the_whole_documented_message() {
+    let message = documented_message();
+    let text = failed_record(
+        "hand failed",
+        "finished/pushed unit/u-1-a1 abc",
+        Some(&receipt(1, &message, "error[E0308]: mismatched types")),
+    );
+    let indented: String = message.lines().map(|line| format!("  {line}\n")).collect();
+    assert!(
+        text.contains(&format!("hand's final message:\n{indented}")),
         "{text}"
     );
 }
