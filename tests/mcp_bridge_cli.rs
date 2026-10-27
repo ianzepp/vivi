@@ -432,21 +432,30 @@ fn member_credential_flags_are_gone() {
 }
 
 #[test]
-fn no_api_key_is_refused_before_any_request() {
+fn no_api_key_attempts_machine_sign_in_and_a_refusal_sends_no_tool_call() {
     let server = ProjectServer::start();
     let empty = tempfile::tempdir().expect("empty tempdir");
+    // A scratch VIVI_HOME, so no real machine key is read or created.
+    let home = tempfile::tempdir().expect("vivi home tempdir");
+    let home_path = home.path().to_str().expect("utf-8 home");
 
     let output = run_mcp(
         empty.path(),
         &["--server", &server.url(), "--project-id", server.project()],
-        &[],
+        &[("VIVI_HOME", home_path)],
     );
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty(), "stdout must stay empty");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("VIVI_MCP_API_KEY"), "{stderr}");
-    assert_eq!(server.requests_seen(), 0, "no request may reach the server");
+    assert!(
+        stderr.contains("/v1/auth/machine/challenge"),
+        "the error must name the sign-in URL: {stderr}"
+    );
+    assert!(
+        server.mcp_requests().is_empty(),
+        "no tool call may reach the server"
+    );
 }
 
 /// Spawn a bridge for `server` and `key` in an empty directory, with the

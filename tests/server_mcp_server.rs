@@ -434,7 +434,14 @@ async fn tools_list_requires_project_and_names_the_projects_tool() {
         "key_revoke",
         "grant_add",
         "grant_remove",
+        "project_register",
+        "project_unregister",
+        "machine_add",
+        "job_show",
+        "job_list",
     ];
+    // `job_create` is a host tool that also names its project, so it keeps
+    // the required `project` argument like the project tools.
     for tool in &tools {
         let name = tool["name"].as_str().unwrap();
         let schema = &tool["inputSchema"];
@@ -1107,6 +1114,12 @@ async fn key_admin_round_trip_mints_lists_revokes_and_audits() {
         state.host_operator_token = Some("host-tok".into());
     });
     let other = fx.second_project();
+    // grant_add refuses a member that is not a registered identity, so the
+    // second project registers `creator` too.
+    fx.state
+        .identities
+        .register(&other, "creator", &spki_pem(&key(2)), &mailspace_for("creator"))
+        .unwrap();
     let minted = call_ok(
         &fx.app,
         "host-tok",

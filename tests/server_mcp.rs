@@ -483,15 +483,41 @@ async fn initialize_and_tools_list() {
             "create_project",
             "lane_create",
             "archive_project",
+            "project_register",
+            "project_unregister",
             "restore_project",
             "purge_project",
             "key_mint",
             "key_list",
             "key_revoke",
             "grant_add",
+            "machine_add",
+            "job_create",
+            "job_show",
+            "job_list",
             "grant_remove",
         ]
     );
+    // `list` and `board` take an optional `origin`; it is never required.
+    for name in ["list", "board"] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert!(
+            tool["inputSchema"]["properties"]["origin"].is_object(),
+            "{name} declares origin"
+        );
+        assert!(
+            !tool["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("origin")),
+            "{name} origin is optional"
+        );
+    }
     let overview = listed["result"]["tools"]
         .as_array()
         .unwrap()
