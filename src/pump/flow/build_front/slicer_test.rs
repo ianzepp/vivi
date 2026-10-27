@@ -34,6 +34,9 @@ struct Rig {
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    // The run's original need carries the config's primary target when one
+    // is named, and no target for a legacy single-repository config.
+    let target = cfg.primary_target();
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let mut routing = (*ctx.routing).clone();
     routing.roles.push(RoutedRole {
@@ -57,11 +60,13 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
+    let mut mail = FakeMail::new("pump");
+    mail.store_need(NEED, target.as_deref());
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         run,
         def: load(FlowKind::Build)?,
     })

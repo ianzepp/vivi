@@ -64,6 +64,9 @@ fn rig() -> Result<Rig, VivariumError> {
 
 fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
+    // The run's original need carries the config's primary target when one
+    // is named, and no target for a legacy single-repository config.
+    let target = cfg.primary_target();
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     store.upsert_need_branch(&NeedBranchRow {
@@ -75,11 +78,13 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    let mut mail = FakeMail::new("mind");
+    mail.store_need(NEED, target.as_deref());
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,
