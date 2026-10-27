@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use crate::pool::ramdisk::Runner;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ramsweep::{sweep_ramdisks, sweep_ramdisks_with};
+use crate::pump::ramsweep::{
+    SlotState, classify_slot, slot_state, sweep_ramdisks, sweep_ramdisks_with,
+};
 
 /// One attached fake RAM disk: whole-disk device and mount point.
 type Attached = Vec<(String, String)>;
@@ -351,7 +353,7 @@ fn sweep_preserves_a_live_dispatched_pool_job_across_pump_restart() {
     let mount = scratch.pool_mount_point("vivi-here-slot-0-build", "build");
     let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]);
     let (ctx, host) = ctx_with("here", &scratch);
-    let lines = sweep_ramdisks_with(&ctx, &runner, |_| true);
+    let lines = sweep_ramdisks_with(&ctx, &runner, |_| SlotState::Running);
 
     assert!(runner.ejections().is_empty(), "live job disk stays mounted");
     assert!(
@@ -383,7 +385,7 @@ fn sweep_preserves_a_pool_mount_when_its_marker_names_another_device() {
     let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]);
     let (ctx, host) = ctx_with("here", &scratch);
 
-    let lines = sweep_ramdisks_with(&ctx, &runner, |_| false);
+    let lines = sweep_ramdisks_with(&ctx, &runner, |_| SlotState::Ended);
 
     assert!(runner.ejections().is_empty());
     assert!(removals(&host).is_empty());
@@ -496,5 +498,51 @@ fn sweep_skips_everything_when_the_apfs_listing_fails() {
         lines[0].contains("WARNING") && lines[0].contains("cannot list APFS"),
         "{}",
         lines[0]
+    );
+}
+
+#[test]
+fn classify_slot_keeps_running_and_ambiguous_and_removes_only_ended() {
+    // (alive, exit_code, boot.pid, ps readable)
+    assert_eq!(classify_slot(true, false, true, true), SlotState::Running);
+    assert_eq!(classify_slot(true, true, true, true), SlotState::Running);
+    assert_eq!(classify_slot(false, true, true, true), SlotState::Ended);
+    assert_eq!(classify_slot(false, true, false, false), SlotState::Ended);
+    assert_eq!(classify_slot(false, false, true, true), SlotState::Ended);
+    assert!(matches!(
+        classify_slot(false, false, true, false),
+        SlotState::Unknown(_)
+    ));
+    assert!(matches!(
+        classify_slot(false, false, false, true),
+        SlotState::Unknown(_)
+    ));
+}
+
+#[test]
+fn slot_state_reads_the_slot_files() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(matches!(slot_state(dir.path()), SlotState::Unknown(_)));
+    std::fs::write(dir.path().join("exit_code"), "0\n").unwrap();
+    assert_eq!(slot_state(dir.path()), SlotState::Ended);
+    std::fs::remove_file(dir.path().join("exit_code")).unwrap();
+    std::fs::write(dir.path().join("boot.pid"), "999999999\n").unwrap();
+    assert_eq!(slot_state(dir.path()), SlotState::Ended);
+}
+
+#[test]
+fn sweep_preserves_a_pool_disk_whose_slot_state_is_unknown() {
+    let scratch = Scratch::new("unknown-slot");
+    let mount = scratch.pool_mount_point("vivi-here-slot-0-build", "build");
+    let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]);
+    let (ctx, host) = ctx_with("here", &scratch);
+
+    let lines = sweep_ramdisks_with(&ctx, &runner, |_| SlotState::Unknown("test reason"));
+
+    assert!(runner.ejections().is_empty());
+    assert!(removals(&host).is_empty());
+    assert_eq!(
+        lines,
+        vec!["WARNING ramdisk sweep: preserving vivi-here-slot-0-build: test reason"]
     );
 }

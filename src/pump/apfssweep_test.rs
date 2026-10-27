@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::{sweep_apfs, sweep_apfs_with};
+use crate::pump::ramsweep::SlotState;
 use crate::pool::ramdisk::Runner;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -139,7 +140,7 @@ fn an_orphaned_pool_volume_loses_its_worktree_volume_and_marker() {
     );
     let (ctx, host) = ctx_with("here", &scratch);
 
-    let lines = sweep_apfs_with(&ctx, &disks, |_| false);
+    let lines = sweep_apfs_with(&ctx, &disks, |_| SlotState::Ended);
 
     assert_eq!(lines, vec!["apfs sweep: deleted vivi-here-pool-slot-1-j"]);
     assert_eq!(disks.deletes(), vec!["disk3s7"]);
@@ -164,7 +165,9 @@ fn a_live_slot_keeps_its_volume() {
     );
     let (ctx, _host) = ctx_with("here", &scratch);
 
-    let lines = sweep_apfs_with(&ctx, &disks, |candidate| candidate == slot);
+    let lines = sweep_apfs_with(&ctx, &disks, |candidate| {
+        if candidate == slot { SlotState::Running } else { SlotState::Ended }
+    });
 
     assert!(disks.deletes().is_empty(), "{lines:?}");
     assert!(lines[0].contains("preserving"), "{lines:?}");
@@ -204,4 +207,27 @@ fn nothing_is_said_when_there_is_nothing_to_sweep_or_no_apfs() {
         }
     }
     assert!(sweep_apfs(&ctx, &NoApfs).is_empty());
+}
+
+#[test]
+fn an_ambiguous_slot_or_a_pool_volume_without_a_marker_is_kept() {
+    let (_dir, scratch) = scratch("ambiguous");
+    let (slot, mount) = pool_mount(&scratch, "vivi-here-pool-slot-1-j");
+    let disks = Disks::new(
+        &[("disk3s7", "vivi-here-pool-slot-1-j", QUOTA)],
+        &[("/dev/disk3s7", &mount.to_string_lossy())],
+    );
+    let (ctx, _host) = ctx_with("here", &scratch);
+
+    let lines = sweep_apfs_with(&ctx, &disks, |_| SlotState::Unknown("test reason"));
+    assert!(disks.deletes().is_empty(), "{lines:?}");
+    assert_eq!(
+        lines,
+        vec!["WARNING apfs sweep: preserving vivi-here-pool-slot-1-j: test reason"]
+    );
+
+    std::fs::remove_file(slot.join("apfs")).unwrap();
+    let lines = sweep_apfs_with(&ctx, &disks, |_| SlotState::Ended);
+    assert!(disks.deletes().is_empty(), "{lines:?}");
+    assert!(lines[0].contains("marker is missing"), "{lines:?}");
 }

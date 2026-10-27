@@ -3,7 +3,21 @@
 //! Operator decision 7 (2026-10-19): a pump start sweeps orphaned
 //! `vivi-*` RAM disks. A job's disk is always torn down when the job ends, so
 //! a disk still attached at start belongs to a process that crashed, was
-//! killed, or rebooted away. Its worktree — `<mount>/repo` or `<mount>/w` —
+//! killed, or rebooted away.
+//!
+//! **Refinement of decision 7.** That premise holds after a crash but not
+//! after a deliberate restart: restarting the server restarts every pump
+//! while jobs on local-pool slots keep running detached. So a disk is removed
+//! only when its job has ended or its owner cannot be found, never because it
+//! is merely attached. The signal is the slot's own record
+//! ([`slot_state`]): a live `boot.pid` (matching `boot.start`) means the job
+//! runs and the disk is kept; an `exit_code` file, or a dead `boot.pid`,
+//! means the job ended and the disk goes. A disk that names no slot (not a
+//! pool mount) has no owner to ask and goes. Anything ambiguous — a pool
+//! mount whose marker does not match, a slot with no boot record, a process
+//! table that cannot be read — keeps the disk and says why; a stale disk
+//! costs space, a removed live one destroys work. Each disk gets one log
+//! line, kept or removed. Its worktree — `<mount>/repo` or `<mount>/w` —
 //! is registered with a repository outside the disk, and that registration
 //! survives the crash: removing the disk alone would leave a worktree entry
 //! pointing at a path that no longer exists.
@@ -31,16 +45,62 @@ const GIT_SECS: u64 = 120;
 /// swept and each line says the scope is off.
 #[must_use]
 pub fn sweep_ramdisks(ctx: &Ctx, runner: &dyn crate::pool::ramdisk::Runner) -> Vec<String> {
-    sweep_ramdisks_with(ctx, runner, crate::pool::local_proc::is_alive)
+    sweep_ramdisks_with(ctx, runner, slot_state)
 }
 
-/// The same sweep with the slot-liveness probe supplied by the caller. Kept
-/// private so tests can prove that live dispatched jobs keep their mounts
-/// without depending on a real process table.
+/// What a pool slot's own record says about its job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlotState {
+    /// The boot wrapper is alive: the job runs.
+    Running,
+    /// The job ended or its process is gone: the disk is an orphan.
+    Ended,
+    /// The record does not settle it; keep the disk. Carries the reason.
+    Unknown(&'static str),
+}
+
+/// Decide a slot's state from its facts: whether the boot wrapper is alive,
+/// whether `exit_code` and `boot.pid` exist, and whether the process table
+/// could be read. Pure, so the keep/remove rule is testable without a slot.
+pub(crate) fn classify_slot(
+    boot_alive: bool,
+    has_exit_code: bool,
+    has_boot_pid: bool,
+    ps_readable: bool,
+) -> SlotState {
+    if boot_alive {
+        SlotState::Running
+    } else if has_exit_code {
+        SlotState::Ended
+    } else if has_boot_pid {
+        if ps_readable {
+            SlotState::Ended
+        } else {
+            SlotState::Unknown("cannot read the process table")
+        }
+    } else {
+        SlotState::Unknown("its slot has no boot record")
+    }
+}
+
+/// The state of the job in `slot`, from the files and processes the local
+/// pool already keeps (`boot.pid`, `boot.start`, `exit_code`).
+pub(crate) fn slot_state(slot: &Path) -> SlotState {
+    use crate::pool::local_proc as proc;
+    let alive = proc::is_alive(slot);
+    let has_exit_code = slot.join(proc::EXIT_CODE).exists();
+    let has_boot_pid = slot.join(proc::BOOT_PID).exists();
+    let ps_readable = alive || has_exit_code || !has_boot_pid || proc::listing().is_ok();
+    classify_slot(alive, has_exit_code, has_boot_pid, ps_readable)
+}
+
+/// The same sweep with the slot-state probe supplied by the caller. Kept
+/// private so tests can prove that running jobs keep their mounts without
+/// depending on a real process table.
 pub(crate) fn sweep_ramdisks_with(
     ctx: &Ctx,
     runner: &dyn crate::pool::ramdisk::Runner,
-    mut slot_is_alive: impl FnMut(&Path) -> bool,
+    mut state_of: impl FnMut(&Path) -> SlotState,
 ) -> Vec<String> {
     let scope = scope_prefix(ctx);
     let mut lines = Vec::new();
@@ -80,14 +140,24 @@ pub(crate) fn sweep_ramdisks_with(
             ));
             continue;
         }
-        if let Some(owner) = &pool_owner
-            && slot_is_alive(&owner.slot)
-        {
-            lines.push(format!(
-                "ramdisk sweep: preserving {} for live dispatched job",
-                disk.volume
-            ));
-            continue;
+        if let Some(owner) = &pool_owner {
+            match state_of(&owner.slot) {
+                SlotState::Running => {
+                    lines.push(format!(
+                        "ramdisk sweep: preserving {} for live dispatched job",
+                        disk.volume
+                    ));
+                    continue;
+                }
+                SlotState::Unknown(why) => {
+                    lines.push(format!(
+                        "WARNING ramdisk sweep: preserving {}: {why}",
+                        disk.volume
+                    ));
+                    continue;
+                }
+                SlotState::Ended => {}
+            }
         }
         if ctx.mailspace.is_empty() {
             lines.push(format!(
