@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::pool::collect::{Collected, JobResult};
 
+/// The fixed collection instant of these records, epoch seconds.
+const COLLECTED_AT: u64 = 1_792_000_000;
+
 fn record(job: &str) -> DispatchRecord {
     DispatchRecord {
         target: None,
@@ -138,7 +141,8 @@ fn collected_records_carry_the_result_and_the_receipt() {
         task: "aaaa1111".into(),
         record: record("j1"),
     };
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), COLLECTED_AT)).unwrap();
     assert_eq!(note["outcome"], "finished");
     assert_eq!(note["push"], "pushed");
     assert_eq!(note["job"], "j1");
@@ -159,7 +163,7 @@ fn timeout_and_lost_say_what_happened() {
     assert!(collected_text(&d, &Outcome::Timeout).contains("slot was stopped"));
     assert!(collected_text(&d, &Outcome::Lost).contains("without writing a result"));
     let note: serde_json::Value =
-        serde_json::from_str(&collected_note(&d, &Outcome::Timeout)).unwrap();
+        serde_json::from_str(&collected_note(&d, &Outcome::Timeout, COLLECTED_AT)).unwrap();
     assert_eq!(note["outcome"], "timeout");
 }
 
@@ -218,7 +222,8 @@ fn an_unchanged_read_only_result_records_the_outcome_and_the_receipt() {
         record: read_only_record("j1"),
     };
     let outcome = read_only_outcome(&[("push", "read_only_unchanged")]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, COLLECTED_AT)).unwrap();
     assert_eq!(note["push"], "read_only_unchanged");
     assert_eq!(note["read_only"], true);
     assert!(note.get("discarded").is_none());
@@ -243,7 +248,8 @@ fn a_discarding_read_only_result_lists_the_paths_in_order() {
         ("discarded_path_2", "dir/b c.txt"),
         ("discarded_path_10", "z.txt"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, COLLECTED_AT)).unwrap();
     assert_eq!(note["push"], "read_only_discarded");
     assert_eq!(note["discarded_count"], "12");
     assert_eq!(
@@ -272,7 +278,8 @@ fn a_restoring_result_lists_the_paths_in_order_and_names_them_in_the_text() {
         ("restored_path_2", "dir/b c.txt"),
         ("restored_path_10", "z.txt"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, COLLECTED_AT)).unwrap();
     assert_eq!(note["restored_count"], "12");
     assert_eq!(
         note["restored"],
@@ -295,7 +302,8 @@ fn a_result_without_restored_paths_has_no_restored_key_or_line() {
         task: "aaaa1111".into(),
         record: record("j1"),
     };
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), COLLECTED_AT)).unwrap();
     assert!(note.get("restored").is_none());
     assert!(!collected_text(&d, &finished()).contains("restored"));
 }
@@ -394,7 +402,8 @@ fn the_note_keeps_the_extra_ref_keys_flat() {
         ("with_1_merge_base", &"2".repeat(40)),
         ("fetch_depth", "200"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, COLLECTED_AT)).unwrap();
     assert_eq!(note["with_count"], "1");
     assert_eq!(note["with_1_sha"], "1".repeat(40));
     assert_eq!(note["fetch_depth"], "200");
@@ -415,7 +424,8 @@ fn facts_are_in_the_json_note_and_shown_before_the_receipt_not_as_flat_keys() {
         ("fact_2_exit", "127"),
         ("fact_2_out", "missing-tool: not found"),
     ]);
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &outcome, COLLECTED_AT)).unwrap();
     assert_eq!(
         note["facts"],
         serde_json::json!([
@@ -439,9 +449,147 @@ fn a_result_without_facts_has_no_facts_key_and_no_heading() {
         task: "aaaa1111".into(),
         record: record("j1"),
     };
-    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    let note: serde_json::Value =
+        serde_json::from_str(&collected_note(&d, &finished(), COLLECTED_AT)).unwrap();
     assert!(note.get("facts").is_none());
     assert!(!collected_text(&d, &finished()).contains("--- facts"));
+}
+
+/// A finished outcome with the given exit status, stderr, receipt and extra
+/// `key=value` result fields.
+fn collected_failure(
+    agent_rc: &str,
+    stderr: &str,
+    receipt: &str,
+    extra: &[(&str, &str)],
+) -> Outcome {
+    let mut fields = BTreeMap::from([
+        ("job".to_string(), "j1".to_string()),
+        ("agent_rc".to_string(), agent_rc.to_string()),
+    ]);
+    fields.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    Outcome::Finished(Collected {
+        result: JobResult { fields },
+        receipt: receipt.into(),
+        stderr: stderr.into(),
+        log: String::new(),
+    })
+}
+
+/// A dispatch of `model`, everything else the ordinary record.
+fn dispatched_model(model: &str) -> OpenDispatch {
+    OpenDispatch {
+        task: "aaaa1111".into(),
+        record: DispatchRecord {
+            model: model.into(),
+            ..record("j1")
+        },
+    }
+}
+
+/// The `band_cooldown` value of a note, or none when the note carries none.
+fn cooldown_of(dispatch: &OpenDispatch, outcome: &Outcome, at: u64) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(&collected_note(dispatch, outcome, at))
+        .unwrap()
+        .get("band_cooldown")
+        .cloned()
+}
+
+/// The refusal whose shape the checked-in provider error excerpt uses.
+fn refused_stderr() -> &'static str {
+    "post to provider failed: status 429\nupstream error code 1302: rate limited\n"
+}
+
+#[test]
+fn rate_limit_and_quota_results_record_provider_cooldowns() {
+    let zai = dispatched_model("zai/glm-5.3-flash");
+    let refused = collected_failure("1", refused_stderr(), "", &[]);
+
+    // An HTTP 429 refusal records the provider, the absolute expiry one
+    // cooldown past the collection time, and the class.
+    assert_eq!(
+        cooldown_of(&zai, &refused, COLLECTED_AT),
+        Some(serde_json::json!({
+            "provider": "zai",
+            "until": 1_792_000_060u64,
+            "class": "rate-limit",
+        })),
+    );
+
+    // The Z.AI-style one-line JSON refusal body records the same way.
+    let one_line = collected_failure(
+        "1",
+        "post to provider failed: status 429: {\"code\":\"1302\",\"message\":\"rate limited\"}\n",
+        "",
+        &[],
+    );
+    assert_eq!(
+        cooldown_of(&zai, &one_line, COLLECTED_AT),
+        Some(serde_json::json!({
+            "provider": "zai",
+            "until": 1_792_000_060u64,
+            "class": "rate-limit",
+        })),
+    );
+
+    // Structured quota codes classify as quota for the slug's provider.
+    for (model, stderr) in [
+        (
+            "openrouter/qwen3-max",
+            r#"{"error":{"code":"insufficient_quota"}}"#,
+        ),
+        ("anthropic/claude", r#"{"code": "quota-exceeded"}"#),
+        ("glm-5.3-flash", r#"{"code":"usage_limit_reached"}"#),
+    ] {
+        let dispatch = dispatched_model(model);
+        let outcome = collected_failure("1", stderr, "", &[]);
+        let evidence = cooldown_of(&dispatch, &outcome, COLLECTED_AT).unwrap();
+        assert_eq!(evidence["class"], "quota", "{stderr}");
+        assert_eq!(
+            evidence["provider"],
+            cooldown::provider_key(model),
+            "{stderr}"
+        );
+        assert_eq!(evidence["until"], 1_792_000_060u64, "{stderr}");
+    }
+
+    // A successful run that mentions 429s, an ordinary failure, and a
+    // forged runner field on an unclassified result all stay neutral.
+    let mention = collected_failure("0", "", "report\nstatus 429\nrate limited\n", &[]);
+    let ordinary = collected_failure(
+        "1",
+        "error[E0308]: mismatched types\ntest result: FAILED\n",
+        "",
+        &[],
+    );
+    let forged_only = collected_failure("0", "", "", &[("band_cooldown", "forged evidence")]);
+    for outcome in [&mention, &ordinary, &forged_only] {
+        assert_eq!(
+            cooldown_of(&zai, outcome, COLLECTED_AT),
+            None,
+            "{outcome:?}"
+        );
+    }
+
+    // The explicit collection time sets the absolute expiry.
+    let evidence = cooldown_of(&zai, &refused, COLLECTED_AT + 300).unwrap();
+    assert_eq!(evidence["until"], 1_792_000_360u64);
+
+    // A runner result field cannot forge or overwrite the reserved key.
+    let collision = collected_failure(
+        "1",
+        refused_stderr(),
+        "",
+        &[("band_cooldown", "forged evidence")],
+    );
+    assert_eq!(
+        cooldown_of(&zai, &collision, COLLECTED_AT),
+        Some(serde_json::json!({
+            "provider": "zai",
+            "until": 1_792_000_060u64,
+            "class": "rate-limit",
+        })),
+    );
 }
 
 #[test]

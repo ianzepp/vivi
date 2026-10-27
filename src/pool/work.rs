@@ -96,7 +96,7 @@ pub fn recorder<'a>(
         space.record_pool_note(
             &dispatch.task,
             "pool_collected",
-            &record::collected_note(dispatch, outcome),
+            &record::collected_note(dispatch, outcome, epoch_secs()),
             &record::collected_text(dispatch, outcome),
         )?;
         revoke_bridge_key_of(space, dispatch, outcome, human);
