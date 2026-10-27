@@ -22,6 +22,12 @@ use crate::pump::jobs::{JobOutcome, PoolJob};
 /// The publication-safety gate a replacement must pass: [`safety::decide`].
 pub(crate) mod safety;
 
+/// Durable allocation and replay of bounded transient replacements; the
+/// frozen intent store is the wired collector's one allowance ledger.
+pub(crate) mod intent;
+#[allow(unused_imports)] // staged for the wired collector, like the module itself
+pub(crate) use intent::{Decision, Replay};
+
 // ---- the pure transient classifier ---------------------------------------
 
 /// The class for a runner fetch or checkout failure a rerun can fix.
