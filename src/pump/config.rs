@@ -14,6 +14,7 @@ mod migrate;
 mod origins;
 mod planner;
 mod rungs;
+mod scope_policy;
 mod show;
 pub mod targets;
 mod validate;
@@ -24,6 +25,11 @@ pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
 pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};
+/// Literal scope-path primitives and decision codes shared with
+/// `pump::flow::scope`; its call sites land in a later slice, so the
+/// re-export may sit unused until then.
+#[allow(dead_code, unused_imports)]
+pub(crate) use scope_policy::{ScopeDecision, ScopePath};
 pub use show::{ShowReport, show};
 pub use validate::{Findings, Missing, valid_target_id};
 
