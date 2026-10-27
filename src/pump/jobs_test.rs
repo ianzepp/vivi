@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, candidate_pools, command_for,
+    JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, REFUSAL_LIMIT, candidate_pools, command_for,
     dispatch_order, dispatch_pending, enqueue, mark_applied, pool_command, recover_dispatched,
     release_held_after_reload, send_task,
 };
@@ -938,6 +938,211 @@ fn only_the_porcelain_refused_line_counts_toward_a_hold() {
     assert!(job.held.is_none());
     assert!(pool_dispatch_calls(&host) >= 8, "the retry never stops");
     assert!(!ctx.home.join("exceptions.txt").exists());
+}
+
+#[test]
+fn temporary_band_wait_never_holds_job() {
+    for reason in [
+        "model-cap",
+        "provider-cooldown",
+        "band-unavailable",
+        "dispatch-busy",
+    ] {
+        let (_dir, ctx, host, mut store) = refusal_rig_for(
+            Some("t1"),
+            None,
+            0,
+            &format!("waiting t1 primary {reason} 123\n"),
+        );
+        // More than REFUSAL_LIMIT waits: the job stays pending, counts no
+        // refusal, is never held, and is offered again every tick.
+        for _ in 0..=REFUSAL_LIMIT {
+            assert!(
+                dispatch_pending(&ctx, &mut store).unwrap().is_empty(),
+                "{reason}"
+            );
+            let job = &store.jobs["m1"];
+            assert_eq!(job.status, JobStatus::Pending, "{reason}");
+            assert_eq!(job.dispatch_refusals, 0, "{reason}");
+            assert!(job.held.is_none(), "{reason}");
+            assert_eq!(job.pool, None, "{reason}");
+        }
+        assert!(
+            pool_dispatch_calls(&host) > REFUSAL_LIMIT as usize,
+            "{reason}"
+        );
+        assert!(!ctx.home.join("exceptions.txt").exists(), "{reason}");
+        assert!(
+            host.logs()
+                .iter()
+                .any(|line| line.contains(&format!(
+                    "job dispatch waiting m1 on primary: {reason}"
+                ))),
+            "{reason}"
+        );
+
+        // When the pool finally answers, the same task dispatches.
+        host.reply(
+            "pool dispatch",
+            0,
+            "dispatched t1 primary slot-1 model/default unit/task\n",
+        );
+        assert_eq!(
+            dispatch_pending(&ctx, &mut store).unwrap(),
+            ["m1"],
+            "{reason}"
+        );
+        let job = &store.jobs["m1"];
+        assert_eq!(job.status, JobStatus::Dispatched, "{reason}");
+        assert_eq!(job.task.as_deref(), Some("t1"), "{reason}");
+        assert_eq!(
+            pool_of(&store, "m1").as_deref(),
+            Some("primary"),
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn waiting_job_reuses_its_task() {
+    // No preset task: the first waiting tick creates one and keeps it.
+    let (_dir, ctx, host, mut store) =
+        refusal_rig_for(None, None, 0, "waiting a1b2c3d4 primary model-cap -\n");
+    for _ in 0..=REFUSAL_LIMIT {
+        assert!(dispatch_pending(&ctx, &mut store).unwrap().is_empty());
+        let job = &store.jobs["m1"];
+        assert_eq!(job.status, JobStatus::Pending);
+        assert_eq!(job.task.as_deref(), Some("a1b2c3d4"));
+        assert_eq!(job.model, None, "a wait persists no model draw");
+        assert_eq!(job.pool, None);
+    }
+    let commands = host.commands();
+    assert_eq!(
+        commands.iter().filter(|c| c.contains("task send")).count(),
+        1,
+        "{commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .filter(|c| c.contains("pool dispatch"))
+            .all(|c| c.contains("a1b2c3d4")),
+        "{commands:?}"
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("job dispatch waiting m1 on primary: model-cap"))
+    );
+
+    // A waiting line naming another task is not this job's wait: it falls
+    // through to the ordinary failed-dispatch handling.
+    host.reply("pool dispatch", 0, "waiting ffffffff primary model-cap -\n");
+    dispatch_pending(&ctx, &mut store).unwrap();
+    assert_eq!(store.jobs["m1"].dispatch_refusals, 0);
+    let logs = host.logs();
+    assert!(
+        logs.last()
+            .is_some_and(|line| line.contains("job dispatch deferred m1")),
+        "{logs:?}"
+    );
+
+    // A later successful dispatch still uses the same task.
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 primary slot-1 model/default unit/task\n",
+    );
+    assert_eq!(dispatch_pending(&ctx, &mut store).unwrap(), ["m1"]);
+    assert_eq!(store.jobs["m1"].status, JobStatus::Dispatched);
+    assert_eq!(store.jobs["m1"].task.as_deref(), Some("a1b2c3d4"));
+    assert_eq!(
+        host.commands()
+            .iter()
+            .filter(|c| c.contains("task send"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn waiting_primary_can_try_configured_pool_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    // Two pools, one slot each: m1's role chains primary→backup, m2's the
+    // reverse, so each wave-2 pick needs the slot the other's wait declined.
+    let pool = |fallback: Option<&str>| RoutedPool {
+        slots: 1,
+        provider: String::from("local"),
+        fallback: fallback.map(str::to_owned),
+        caps: BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    };
+    let role = |name: &'static str, pool: &'static str| RoutedRole {
+        name: String::from(name),
+        kind: Some(String::from(name)),
+        status: String::from("active"),
+        pool: Some(String::from(pool)),
+        read_only: Some(false),
+        model: None,
+        models: Vec::new(),
+    };
+    let ctx = ctx.with_routing(RoleRouting {
+        roles: vec![role("merge", "primary"), role("merge2", "backup")],
+        pools: BTreeMap::from([
+            (String::from("primary"), pool(Some("backup"))),
+            (String::from("backup"), pool(Some("primary"))),
+        ]),
+    });
+    host.reply(
+        "pool status",
+        0,
+        "slot primary bridge slot-1 free\nslot backup bridge slot-1 free\n",
+    );
+    host.reply("--pool primary t1", 0, "waiting t1 primary model-cap -\n");
+    host.reply(
+        "--pool backup t1",
+        0,
+        "dispatched t1 backup slot-1 model/default unit/task\n",
+    );
+    host.reply(
+        "--pool backup t2",
+        0,
+        "waiting t2 backup band-unavailable -\n",
+    );
+    host.reply(
+        "--pool primary t2",
+        0,
+        "dispatched t2 primary slot-1 model/default unit/task\n",
+    );
+    let mut store = Store::default();
+    for (id, role, task) in [("m1", "merge", "t1"), ("m2", "merge2", "t2")] {
+        let mut job = JobSpec::new(id, role, role, "integrate", "merge branches");
+        job.task = Some(String::from(task));
+        enqueue(&mut store, job).unwrap();
+    }
+
+    // Wave 1 waits both jobs out (m1 on primary, m2 on backup); wave 2 falls
+    // each over to its next configured pool in the same tick — possible only
+    // because a wait consumes no physical slot.
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        [String::from("m1"), String::from("m2")]
+    );
+    assert_eq!(pool_of(&store, "m1").as_deref(), Some("backup"));
+    assert_eq!(pool_of(&store, "m2").as_deref(), Some("primary"));
+    let logs = host.logs();
+    assert!(
+        logs.iter()
+            .any(|line| line.contains("job dispatch waiting m1 on primary: model-cap")),
+        "{logs:?}"
+    );
+    assert!(
+        logs.iter()
+            .any(|line| line.contains("job dispatch waiting m2 on backup: band-unavailable")),
+        "{logs:?}"
+    );
 }
 
 #[test]
