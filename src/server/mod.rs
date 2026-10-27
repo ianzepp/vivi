@@ -13,6 +13,8 @@ pub mod entry;
 pub mod grants;
 pub mod hardening;
 pub mod hosted;
+pub mod init;
+pub mod machine_auth;
 pub mod identities;
 pub mod ids;
 pub mod keys;
@@ -172,6 +174,11 @@ pub fn router(state: AppState) -> Router {
         // One server endpoint: a server key (or the host operator token)
         // reaches every granted project. `project` is required on project tools.
         .route("/v1/mcp", post(mcp::server::server_mcp_handler))
+        .route(
+            "/v1/auth/machine/challenge",
+            post(machine_auth::challenge_handler),
+        )
+        .route("/v1/auth/machine/verify", post(machine_auth::verify_handler))
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(

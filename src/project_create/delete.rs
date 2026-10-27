@@ -48,8 +48,7 @@ pub struct ProjectDeleted {
     pub lanes_dir: Option<PathBuf>,
 }
 
-/// Delete a project registered in the host registry (`VIVI_CONFIG_DIR` or
-/// the user config directory).
+/// Delete a project registered in the host registry (`$VIVI_HOME/server/registry.toml`).
 ///
 /// # Errors
 /// Fails on an invalid name, a confirmation that does not repeat it, a

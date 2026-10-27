@@ -81,6 +81,10 @@ pub struct PrincipalRecord {
     pub keys: Vec<ServerKeyRecord>,
     #[serde(default)]
     pub grants: Vec<GrantRecord>,
+    /// Machine public keys (standard base64 of the raw 32-byte ed25519
+    /// key) that sign in as this principal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machine_keys: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -284,6 +288,7 @@ impl ServerKeyStore {
                     host,
                     keys: Vec::new(),
                     grants,
+                    machine_keys: Vec::new(),
                 });
                 state.file.principals.len() - 1
             }
@@ -506,6 +511,68 @@ impl ServerKeyStore {
         Self::save(&self.path, &state.file).map_err(GrantsError::Storage)?;
         state.index = build_index(&state.file);
         Ok(())
+    }
+
+    /// Attach a machine public key to `principal`, creating a non-host
+    /// principal when absent. A key already held by another principal is
+    /// refused; re-adding the same pair changes nothing.
+    pub fn add_machine_key(&self, principal: &str, public_key: &str) -> Result<bool, GrantsError> {
+        let principal = validate_principal(principal)?;
+        let mut state = self.state();
+        if let Some(other) = state
+            .file
+            .principals
+            .iter()
+            .find(|p| p.principal != principal && p.machine_keys.iter().any(|k| k == public_key))
+        {
+            return Err(GrantsError::Storage(format!(
+                "machine key already belongs to {}",
+                other.principal
+            )));
+        }
+        let pos = match state.file.principals.iter().position(|p| p.principal == principal) {
+            Some(pos) => pos,
+            None => {
+                state.file.principals.push(PrincipalRecord {
+                    principal: principal.clone(),
+                    host: false,
+                    keys: Vec::new(),
+                    grants: Vec::new(),
+                    machine_keys: Vec::new(),
+                });
+                state.file.principals.len() - 1
+            }
+        };
+        let record = &mut state.file.principals[pos];
+        if record.machine_keys.iter().any(|k| k == public_key) {
+            return Ok(false);
+        }
+        record.machine_keys.push(public_key.to_owned());
+        Self::save(&self.path, &state.file).map_err(GrantsError::Storage)?;
+        state.index = build_index(&state.file);
+        Ok(true)
+    }
+
+    /// The principal a machine public key signs in as.
+    #[must_use]
+    pub fn machine_principal(&self, public_key: &str) -> Option<String> {
+        self.state()
+            .file
+            .principals
+            .iter()
+            .find(|p| p.machine_keys.iter().any(|k| k == public_key))
+            .map(|p| p.principal.clone())
+    }
+
+    /// A principal's host flag and grants as they stand now.
+    #[must_use]
+    pub fn principal_view(&self, principal: &str) -> Option<(bool, Vec<GrantRecord>)> {
+        self.state()
+            .file
+            .principals
+            .iter()
+            .find(|p| p.principal == principal)
+            .map(|p| (p.host, p.grants.clone()))
     }
 
     /// Remove the grant on `project_id` from `principal`. An unknown

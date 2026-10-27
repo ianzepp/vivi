@@ -128,7 +128,7 @@ impl Lane {
                 "target {target:?} has no remote_url naming its lane"
             ))
         })?;
-        let path = lane_path(url, &HostConfig::from_env()).ok_or_else(|| {
+        let path = lane_path(url, &HostConfig::current()).ok_or_else(|| {
             ToolError::new(format!("target {target:?}: lane {url} is not on this host"))
         })?;
         Ok(Self {

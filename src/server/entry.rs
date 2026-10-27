@@ -49,17 +49,14 @@ pub fn run(args: Vec<String>) {
             std::process::exit(2);
         }
     }
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vivi::server=info,tower_http=info".into()),
-        )
-        .init();
-
-    let config = match ServerConfig::from_env() {
+    let config = match ServerConfig::load() {
         Ok(c) => c,
         Err(err) => die(2, &err),
     };
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(&config.log))
+        .init();
+    tracing::info!("server home {}", config.home.display());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -91,7 +88,8 @@ async fn serve(config: ServerConfig) {
     }
     state.limiter = crate::server::safety::RateLimiter::new(config.send_rate_per_minute);
     state.host_operator_token = config.host_operator_token.as_deref().map(Into::into);
-    state.host = crate::server::mcp::host::HostConfig::from_env();
+    crate::server::mcp::host::HostConfig::set_current(config.host.clone());
+    state.host = config.host.clone();
     // Serve the projects the host registry lists, now and whenever it
     // changes. The first pass finishes before the server accepts a request.
     let _hosted = crate::server::hosted::start(state.projects.clone(), state.identities.clone());

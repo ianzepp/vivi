@@ -60,12 +60,6 @@ pub(super) use self::archive::archive_project;
 pub(super) use self::archive::purge::purge_project;
 pub(super) use self::archive::restore::restore_project;
 
-/// Environment variable names for the host's project layout.
-pub const ENV_PROJECTS_ROOT: &str = "HOST_PROJECTS_ROOT";
-pub const ENV_LANES_ROOT: &str = "HOST_LANES_ROOT";
-pub const ENV_GIT_URL_PREFIX: &str = "HOST_GIT_URL_PREFIX";
-pub const ENV_DEFAULT_POOL: &str = "HOST_DEFAULT_POOL";
-
 /// Where the host tools put things. A field left unset makes a tool answer
 /// with a configuration error naming every unset variable.
 #[derive(Clone, Debug, Default)]
@@ -76,17 +70,18 @@ pub struct HostConfig {
     pub default_pool: Option<String>,
 }
 
+static CURRENT: std::sync::OnceLock<HostConfig> = std::sync::OnceLock::new();
+
 impl HostConfig {
-    /// Read the `HOST_*` variables; a blank value counts as unset.
+    /// Record the layout loaded at boot.
+    pub fn set_current(config: Self) {
+        let _ = CURRENT.set(config);
+    }
+
+    /// The layout loaded at boot (empty before boot, as in tests).
     #[must_use]
-    pub fn from_env() -> Self {
-        let get = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-        Self {
-            projects_root: get(ENV_PROJECTS_ROOT).map(PathBuf::from),
-            lanes_root: get(ENV_LANES_ROOT).map(PathBuf::from),
-            git_url_prefix: get(ENV_GIT_URL_PREFIX),
-            default_pool: get(ENV_DEFAULT_POOL).map(|v| v.trim().to_owned()),
-        }
+    pub fn current() -> Self {
+        CURRENT.get().cloned().unwrap_or_default()
     }
 }
 
@@ -339,9 +334,9 @@ pub(super) fn require(
         (Some(projects), Some(lanes), Some(prefix)) => Ok((projects, lanes, prefix)),
         (projects, lanes, prefix) => {
             let unset: Vec<&str> = [
-                (projects.is_none(), ENV_PROJECTS_ROOT),
-                (lanes.is_none(), ENV_LANES_ROOT),
-                (prefix.is_none(), ENV_GIT_URL_PREFIX),
+                (projects.is_none(), "projects_root"),
+                (lanes.is_none(), "lanes_root"),
+                (prefix.is_none(), "git_url_prefix"),
             ]
             .into_iter()
             .filter_map(|(missing, var)| missing.then_some(var))
@@ -359,7 +354,7 @@ pub(super) fn require(
 pub(super) fn require_lanes(host: &HostConfig, tool: &str) -> Result<PathBuf, ToolError> {
     host.lanes_root.clone().ok_or_else(|| {
         ToolError::new(format!(
-            "{tool} is not configured on this host: {ENV_LANES_ROOT} not set"
+            "{tool} is not configured on this host: lanes_root not set"
         ))
     })
 }

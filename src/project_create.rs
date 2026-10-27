@@ -173,7 +173,7 @@ enum Step {
 }
 
 /// Create a project, registering it in the host registry
-/// (`VIVI_CONFIG_DIR` or the user config directory).
+/// (`$VIVI_HOME/server/registry.toml`).
 ///
 /// # Errors
 /// Fails on invalid input, a name that already exists (lanes directory,

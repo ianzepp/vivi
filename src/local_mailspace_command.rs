@@ -26,6 +26,9 @@ fn print_json(value: &impl Serialize) -> Result<(), VivariumError> {
 }
 
 pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumError> {
+    if let Some(remote) = crate::remote_mode::remote_config(command)? {
+        return crate::remote_mode::run(command, &remote);
+    }
     match command {
         Command::Mailspace { command } => handle_mailspace_command(command),
         Command::Board(command) => crate::local_board_command::handle_board_command(command),
@@ -52,6 +55,9 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         // main dispatches the server before any runtime starts; it never gets here.
         Command::Server { .. } => Err(VivariumError::Other(
             "vivi server run is dispatched by main before the runtime starts".into(),
+        )),
+        Command::Key { .. } => Err(VivariumError::Other(
+            "vivi key is dispatched by main before the runtime starts".into(),
         )),
         Command::Mind(_) => Err(VivariumError::Other(
             "vivi mind requires the async command entry point".into(),

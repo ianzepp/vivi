@@ -96,7 +96,7 @@ pub(crate) async fn archive_project(
         let lanes_dir = lanes_root
             .canonicalize()
             .map_err(|e| {
-                ToolError::new(format!("could not resolve {}: {e}", super::ENV_LANES_ROOT))
+                ToolError::new(format!("could not resolve {}: {e}", "lanes_root"))
             })?
             .join(&name);
         // Read the registry before any metadata write: a registry that

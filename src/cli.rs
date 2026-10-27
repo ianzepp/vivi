@@ -119,6 +119,12 @@ pub enum Command {
     /// Bridge MCP over stdio to a project server's MCP endpoint (a pass-through; needs no mailspace); `tools` and `call` are one-shot clients
     Mcp(McpCommand),
 
+    /// This machine's key ($VIVI_HOME/keys/machine.ed25519)
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
+
     /// Manage a project-local Vivi mailspace
     Mailspace {
         #[command(subcommand)]
@@ -350,12 +356,26 @@ pub enum DeliveryCommand {
     },
 }
 
+/// `vivi key` subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum KeyCommand {
+    /// Print the public key and fingerprint (makes the key on first use)
+    Show,
+}
+
 /// `vivi server` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ServerSubcommand {
-    /// Run the server in the foreground (for an OS service manager). It is
-    /// configured by environment variables only: `vivi server run --help`
-    /// lists them.
+    /// Make the server home ($VIVI_HOME/server): starter config.toml, creds/
+    /// with fresh secrets, data/projects/lanes directories. Keeps what exists.
+    Init {
+        /// Port for a newly written config.toml (default 8080)
+        #[arg(long)]
+        port: Option<u16>,
+    },
+
+    /// Run the server in the foreground. It reads $VIVI_HOME/server/config.toml:
+    /// `vivi server run --help` lists the keys.
     #[command(disable_help_flag = true, disable_version_flag = true)]
     Run {
         /// Passed to the server: `--help` or `--version`; anything else is refused

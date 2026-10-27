@@ -109,6 +109,23 @@ fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Respo
             grants: Vec::new(),
         });
     }
+    if let Some(session) = crate::server::machine_auth::session(bearer) {
+        let grants = if session.host {
+            Vec::new()
+        } else {
+            state
+                .server_keys
+                .principal_view(&session.principal)
+                .map(|(_, grants)| grants)
+                .unwrap_or_default()
+        };
+        return Ok(ServerPrincipal {
+            principal: session.principal,
+            key_id: None,
+            host: session.host,
+            grants,
+        });
+    }
     if let Some(verified) = state.server_keys.verify(bearer) {
         return Ok(ServerPrincipal {
             principal: verified.principal,
@@ -129,7 +146,7 @@ fn authenticate(state: &AppState, bearer: &str) -> Result<ServerPrincipal, Respo
 
 // ------------------------------------------------------------------ tools
 
-const HOST_TOOLS: [&str; 12] = [
+const HOST_TOOLS: [&str; 13] = [
     "create_project",
     "lane_create",
     "archive_project",
@@ -140,6 +157,7 @@ const HOST_TOOLS: [&str; 12] = [
     "key_revoke",
     "grant_add",
     "grant_remove",
+    "machine_add",
     "server_version",
     "project_list",
 ];
@@ -237,6 +255,21 @@ pub(super) fn tools_list() -> Value {
                 }
             },
             "required": ["principal", "grant"],
+            "additionalProperties": false
+        }),
+    ));
+    tools.push(tool(
+        "machine_add",
+        "Host only. Admit a machine key: attach `public_key` (base64 of the raw 32-byte ed25519 \
+         key, as `vivi key show` prints it) to `principal`, creating the principal when absent. \
+         The machine then signs in as that principal; give it projects with grant_add.",
+        json!({
+            "type": "object",
+            "properties": {
+                "principal": { "type": "string" },
+                "public_key": { "type": "string" }
+            },
+            "required": ["principal", "public_key"],
             "additionalProperties": false
         }),
     ));
@@ -733,6 +766,24 @@ fn key_admin(state: &AppState, name: &str, arguments: &Value) -> Result<Value, T
             }
             store.revoke_key(key_id).map_err(grants_error)?;
             Ok(json!({ "revoked": key_id }))
+        }
+        "machine_add" => {
+            let principal = req_str(arguments, "principal")?;
+            let raw = req_str(arguments, "public_key")?;
+            let key = crate::server::machine_auth::decode_key(raw)
+                .ok_or_else(|| ToolError::new("public_key must be base64 of 32 bytes"))?;
+            let encoded = {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(key)
+            };
+            let added = store
+                .add_machine_key(principal, &encoded)
+                .map_err(grants_error)?;
+            Ok(json!({
+                "principal": principal,
+                "fingerprint": crate::server::machine_auth::fingerprint(&key),
+                "added": added,
+            }))
         }
         "grant_add" => {
             let principal = req_str(arguments, "principal")?;

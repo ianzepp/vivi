@@ -1,7 +1,7 @@
 //! Host project registry shared by the pump supervisor and servers.
 //!
-//! The registry is one TOML file, `<config_dir>/vivi/pump-service.toml`
-//! (`VIVI_CONFIG_DIR` overrides `<config_dir>`). Each registered project root
+//! The registry is one TOML file, `$VIVI_HOME/server/registry.toml`
+//! (`VIVI_HOME` defaults to `~/.vivi`). Each registered project root
 //! carries two independent flags: `pump` (the pump supervisor runs a pump for
 //! it) and `serve` (a server hosts it).
 //!
@@ -28,9 +28,7 @@ use sha2::{Digest, Sha256};
 
 use crate::VivariumError;
 
-const CONFIG_DIRECTORY: &str = "vivi";
-const CONFIG_FILENAME: &str = "pump-service.toml";
-const ENV_CONFIG_DIR: &str = "VIVI_CONFIG_DIR";
+const REGISTRY_FILENAME: &str = "registry.toml";
 
 /// What the host does with a registered project.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -199,13 +197,9 @@ impl Registry {
 /// # Errors
 /// Fails when no config directory can be found.
 pub fn path() -> Result<PathBuf, VivariumError> {
-    let root = match std::env::var(ENV_CONFIG_DIR) {
-        Ok(value) if !value.is_empty() => PathBuf::from(value),
-        Ok(_) | Err(_) => dirs::config_dir().ok_or_else(|| {
-            VivariumError::Config("could not find the user's config directory".into())
-        })?,
-    };
-    Ok(root.join(CONFIG_DIRECTORY).join(CONFIG_FILENAME))
+    Ok(crate::home::server_home()
+        .map_err(VivariumError::Config)?
+        .join(REGISTRY_FILENAME))
 }
 
 /// Load the registry; a missing file is an empty registry.

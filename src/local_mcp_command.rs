@@ -153,15 +153,23 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
         project_id: command.project_id.clone(),
         project: command.project.clone(),
     };
+    const SIGN_IN: &str = "\u{0}machine-sign-in";
     let env_lookup = |name: &str| match std::env::var(name) {
         Ok(value) if !value.is_empty() => Some(value),
-        Ok(_) | Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_)) => None,
+        Ok(_) | Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_)) => {
+            (name == resolve::ENV_API_KEY).then(|| SIGN_IN.to_string())
+        }
     };
     let mailspace_lookup = || mailspace_source(command.project.as_deref());
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
+    let api_key = if resolved.api_key == SIGN_IN {
+        vivi::machine_key::sign_in(&resolved.server, command.host)?
+    } else {
+        resolved.api_key
+    };
     Ok(BridgeConfig {
         server: resolved.server,
-        api_key: resolved.api_key,
+        api_key,
         project: resolved.project,
     })
 }

@@ -27,6 +27,11 @@ pub struct McpCommand {
     /// (also accepted globally: vivi --project <ROOT> mcp); never created
     #[arg(long, global = true)]
     pub project: Option<PathBuf>,
+
+    /// With no VIVI_MCP_API_KEY, sign in with the machine key as the host
+    /// principal (the key must be in the server's host_keys)
+    #[arg(long, global = true)]
+    pub host: bool,
 }
 
 /// One-shot MCP client commands: no stdio session, one request, one answer.

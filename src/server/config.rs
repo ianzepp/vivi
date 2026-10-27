@@ -1,15 +1,27 @@
-//! The server's configuration: environment variables, plus systemd credential
-//! files for the three secrets.
+//! The server's configuration: one file, `$VIVI_HOME/server/config.toml`
+//! (`VIVI_HOME` defaults to `~/.vivi`). No other environment variable is
+//! read. Secrets are files in `$VIVI_HOME/server/creds/<NAME>`.
 //!
-//! A secret is read from `$CREDENTIALS_DIRECTORY/<NAME>` when that file
-//! exists (systemd `LoadCredential=NAME:/path`), and from the environment
-//! variable `NAME` otherwise. The credential file wins. A secret taken from
-//! the environment is removed from it after reading, so a child process the
-//! server starts does not inherit it.
+//! ```toml
+//! bind = "127.0.0.1"          # default
+//! port = 8080                 # default
+//! send_rate_per_minute = 0    # default 30; 0 is unlimited
+//! hosted_default_identity = "operator"
+//! log = "vivi::server=info,tower_http=info"
+//! data_dir = "data"           # relative paths are under $VIVI_HOME/server
+//! projects_root = "projects"
+//! lanes_root = "lanes"
+//! git_url_prefix = "file:///abs/lanes/"   # default: file://<lanes_root>/
+//! default_pool = "studio"
+//! ```
 
 use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::server::mcp::host::HostConfig;
 
 /// The variables that hold secrets: each may come from a credential file.
 pub const SECRET_NAMES: [&str; 3] = [
@@ -38,71 +50,86 @@ pub struct ServerConfig {
     /// `SEND_RATE_PER_MINUTE`: writes per minute per identity (default 30;
     /// `0` is unlimited, held as `None`).
     pub send_rate_per_minute: Option<u32>,
+    /// The host tools' layout (projects, lanes, git URL prefix, pool).
+    pub host: HostConfig,
+    /// Log filter (`log`).
+    pub log: String,
+    /// `$VIVI_HOME/server`.
+    pub home: PathBuf,
 }
+
+/// The file's shape. Every key is optional.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileConfig {
+    bind: Option<IpAddr>,
+    port: Option<u16>,
+    send_rate_per_minute: Option<u32>,
+    hosted_default_identity: Option<String>,
+    log: Option<String>,
+    data_dir: Option<PathBuf>,
+    projects_root: Option<PathBuf>,
+    lanes_root: Option<PathBuf>,
+    git_url_prefix: Option<String>,
+    default_pool: Option<String>,
+}
+
+pub use crate::home::vivi_home;
 
 impl ServerConfig {
-    /// Read the process environment and `$CREDENTIALS_DIRECTORY`, then remove
-    /// the secrets from the environment.
-    ///
-    /// Call it before any other thread exists: removing a variable is not
-    /// safe beside a thread that reads the environment.
+    /// Read `$VIVI_HOME/server/config.toml` and the credential files beside it.
+    /// A missing file means every default.
     ///
     /// # Errors
     /// Returns a message naming the first bad or unreadable setting.
-    pub fn from_env() -> Result<Self, String> {
-        let credentials = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
-        let config = Self::from_lookup(&|name| std::env::var(name).ok(), credentials.as_deref())?;
-        crate::server::hardening::scrub_env(&SECRET_NAMES);
-        Ok(config)
+    pub fn load() -> Result<Self, String> {
+        Self::load_from(&crate::home::server_home()?)
     }
 
-    /// Build the configuration from `get` (the environment) and the
-    /// credential directory, if any.
+    /// Read the configuration of the server home `home`.
     ///
     /// # Errors
     /// Returns a message naming the first bad or unreadable setting.
-    pub fn from_lookup(
-        get: &dyn Fn(&str) -> Option<String>,
-        credentials: Option<&Path>,
-    ) -> Result<Self, String> {
-        let port = match get("PORT") {
-            Some(v) => v.parse::<u16>().map_err(|_| format!("invalid PORT: {v}"))?,
-            None => 8080,
+    pub fn load_from(home: &Path) -> Result<Self, String> {
+        let path = home.join("config.toml");
+        let file: FileConfig = match std::fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+            Err(err) if err.kind() == ErrorKind::NotFound => FileConfig::default(),
+            Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
         };
-        let bind = match get("BIND") {
-            Some(v) => v
-                .parse::<IpAddr>()
-                .map_err(|_| format!("invalid BIND: {v}"))?,
-            None => IpAddr::from([127, 0, 0, 1]),
+        let under = |value: Option<PathBuf>, default: &str| {
+            let value = value.unwrap_or_else(|| PathBuf::from(default));
+            if value.is_absolute() { value } else { home.join(value) }
         };
-        let send_rate_per_minute =
-            crate::server::safety::parse_send_rate(get("SEND_RATE_PER_MINUTE").as_deref())?;
+        let lanes_root = under(file.lanes_root, "lanes");
+        let git_url_prefix = file
+            .git_url_prefix
+            .unwrap_or_else(|| format!("file://{}/", lanes_root.display()));
+        let creds = home.join("creds");
         Ok(Self {
-            bind,
-            port,
-            data_dir: data_dir(get("DATA_DIR"))?,
-            send_rate_per_minute,
-            store_encryption_key: secret("STORE_ENCRYPTION_KEY", get, credentials)?,
-            moderation_token: secret("MODERATION_TOKEN", get, credentials)?,
-            host_operator_token: secret("HOST_OPERATOR_TOKEN", get, credentials)?
+            bind: file.bind.unwrap_or(IpAddr::from([127, 0, 0, 1])),
+            port: file.port.unwrap_or(8080),
+            data_dir: under(file.data_dir, "data"),
+            send_rate_per_minute: crate::server::safety::parse_send_rate(
+                file.send_rate_per_minute.map(|n| n.to_string()).as_deref(),
+            )?,
+            store_encryption_key: secret(&creds, "STORE_ENCRYPTION_KEY")?,
+            moderation_token: secret(&creds, "MODERATION_TOKEN")?,
+            host_operator_token: secret(&creds, "HOST_OPERATOR_TOKEN")?
                 .filter(|t| !t.trim().is_empty()),
-            hosted_default_identity: hosted_identity(get("HOSTED_DEFAULT_IDENTITY"))?,
+            hosted_default_identity: hosted_identity(file.hosted_default_identity)?,
+            host: HostConfig {
+                projects_root: Some(under(file.projects_root, "projects")),
+                lanes_root: Some(lanes_root),
+                git_url_prefix: Some(git_url_prefix),
+                default_pool: file.default_pool.map(|v| v.trim().to_owned()),
+            },
+            log: file
+                .log
+                .unwrap_or_else(|| "vivi::server=info,tower_http=info".into()),
+            home: home.to_path_buf(),
         })
     }
-}
-
-fn data_dir(value: Option<String>) -> Result<PathBuf, String> {
-    let Some(value) = value.filter(|v| !v.trim().is_empty()) else {
-        return Err("DATA_DIR is required (an absolute path)".into());
-    };
-    let path = PathBuf::from(value);
-    if !path.is_absolute() {
-        return Err(format!(
-            "DATA_DIR must be an absolute path: {}",
-            path.display()
-        ));
-    }
-    Ok(path)
 }
 
 fn hosted_identity(value: Option<String>) -> Result<Option<String>, String> {
@@ -114,27 +141,19 @@ fn hosted_identity(value: Option<String>) -> Result<Option<String>, String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if value.len() > 64 || !plain {
-        return Err(format!("invalid HOSTED_DEFAULT_IDENTITY: {value}"));
+        return Err(format!("invalid hosted_default_identity: {value}"));
     }
     Ok(Some(value))
 }
 
-/// One secret: the credential file `name` when it exists, else the
-/// environment variable `name`.
-fn secret(
-    name: &str,
-    get: &dyn Fn(&str) -> Option<String>,
-    credentials: Option<&Path>,
-) -> Result<Option<String>, String> {
-    if let Some(dir) = credentials {
-        let path = dir.join(name);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => return Ok(Some(text.trim().to_owned())),
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => return Err(format!("cannot read credential {}: {err}", path.display())),
-        }
+/// One secret: the file `creds/<name>`, or none.
+fn secret(creds: &Path, name: &str) -> Result<Option<String>, String> {
+    let path = creds.join(name);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text.trim().to_owned())),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("cannot read credential {}: {err}", path.display())),
     }
-    Ok(get(name))
 }
 
 #[cfg(test)]

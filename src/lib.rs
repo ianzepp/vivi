@@ -6,6 +6,8 @@
 //! wants, mail, memos, rules, goals, roles, and executable work graphs — plus the
 //! `vivi` binary.
 
+pub mod home;
+pub mod machine_key;
 pub mod b64;
 pub mod boot;
 pub mod cli;

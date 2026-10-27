@@ -44,6 +44,7 @@ mod local_want_show;
 mod local_work_command;
 mod local_work_list;
 mod quiet_pipe;
+mod remote_mode;
 
 use local_mailspace_command::run_mailspace_command;
 
@@ -71,6 +72,33 @@ fn main() {
     } = cli.command
     {
         vivi::server::entry::run(args);
+        return;
+    }
+    if let Command::Key {
+        command: vivi::cli::KeyCommand::Show,
+    } = cli.command
+    {
+        match vivi::machine_key::MachineKey::load_or_create() {
+            Ok(key) => {
+                println!("public_key  {}", key.public_key());
+                println!("fingerprint {}", key.fingerprint());
+                println!("file        {}", key.path().display());
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Server {
+        command: ServerSubcommand::Init { port },
+    } = cli.command
+    {
+        if let Err(e) = vivi::server::init::run(port) {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
         return;
     }
 

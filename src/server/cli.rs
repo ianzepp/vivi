@@ -53,34 +53,33 @@ Public server hosting vivi project mailspaces and lightweight chat rooms.
 
 Usage: vivi server run [OPTIONS]   (or: vivi-server [OPTIONS])
 
-Running with no arguments starts the server. It is configured only by the
-environment variables below; there are no other options.
+Running with no arguments starts the server. Its home is $VIVI_HOME/server
+($VIVI_HOME defaults to ~/.vivi). It reads one file, config.toml there; no
+other environment variable is read.
 
 Options:
   -h, --help     Print this help and exit
   -V, --version  Print the version and exit
 
-Environment:
-  PORT                      Listen port (default 8080)
-  BIND                      Listen address (default 127.0.0.1)
-  DATA_DIR                  Data directory: required, an absolute path
+config.toml (every key optional; relative paths are under the server home):
+  bind                      Listen address (default 127.0.0.1)
+  port                      Listen port (default 8080)
+  send_rate_per_minute      Writes per minute per identity (default 30; 0 is
+                            unlimited)
+  hosted_default_identity   Identity an API key without its own acts as on a
+                            hosted project (default operator)
+  log                       Log filter (default vivi::server=info,tower_http=info)
+  data_dir                  Data directory (default data)
+  projects_root             Where host tools put project roots (default projects)
+  lanes_root                Where host tools put lane repositories (default lanes)
+  git_url_prefix            Git URL prefix for lanes (default file://<lanes_root>/)
+  default_pool              Pool a new project is given
+
+Secrets, one file each in creds/ under the server home:
   STORE_ENCRYPTION_KEY      Standard base64 of exactly 32 bytes. Must not change
                             for an existing data directory.
   MODERATION_TOKEN          Enables the /v1/_health endpoint
   HOST_OPERATOR_TOKEN       Built-in host principal on POST /v1/mcp
-  HOSTED_DEFAULT_IDENTITY   Identity an API key without its own acts as on a
-                            hosted project (default operator)
-  SEND_RATE_PER_MINUTE      Writes per minute per identity (default 30; 0 is
-                            unlimited)
-  HOST_PROJECTS_ROOT        Where host tools put project roots
-  HOST_LANES_ROOT           Where host tools put lane repositories
-  HOST_GIT_URL_PREFIX       Git URL prefix for lanes
-  HOST_DEFAULT_POOL         Pool a new project is given
-  RUST_LOG                  Log filter (default vivi::server=info,tower_http=info)
-  CREDENTIALS_DIRECTORY     Set by systemd. STORE_ENCRYPTION_KEY, MODERATION_TOKEN and
-                            HOST_OPERATOR_TOKEN are read from a file of that name here
-                            (LoadCredential=NAME:/path) before the environment, which
-                            keeps them out of the process environment.
 ",
         version = version_line()
     )
