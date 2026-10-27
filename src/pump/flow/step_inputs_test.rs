@@ -3,17 +3,19 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    POOL_RESULT_MARKER, done_step, make_read_only, need_thread, predecessor_step, read_only_job,
-    role_job, step_replies, targets,
+    POOL_RESULT_MARKER, done_step, make_read_only, need_target, need_thread, predecessor_step,
+    read_only_job, role_job, step_replies, targets,
 };
 use crate::error::VivariumError;
+use crate::letter::fixture::need_body_with;
+use crate::letter::work::NeedFront;
 use crate::pump::config::PumpConfig;
 use crate::pump::envelope::roles::RoleKind;
 use crate::pump::flow::def::{FlowKind, NodeClass};
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{FakeMail, FakeTask};
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::load::load;
-use crate::pump::flow::mail::MailWriter;
+use crate::pump::flow::mail::{MailWriter, TaskState, TaskStatus};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -104,6 +106,91 @@ fn need_thread_keeps_a_short_thread_and_cuts_a_long_one() -> R {
     rig.host.reply("need show", 0, &"x".repeat(40_001));
     let cut = need_thread(&rig.ctx, NEED)?;
     assert_eq!(cut, format!("{}\n[thread cut]", "x".repeat(40_000)));
+    Ok(())
+}
+
+/// Store `body` verbatim as the letter under `handle`: for bodies the
+/// store_need fixture cannot express (malformed TOML, legacy prose).
+fn stored_body(mail: &mut FakeMail, handle: &str, body: &str) {
+    mail.tasks.insert(
+        handle.to_string(),
+        FakeTask {
+            from: "pump".to_string(),
+            to: "hand".to_string(),
+            subject: "original need".to_string(),
+            body: body.to_string(),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: TaskState {
+                status: TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
+#[test]
+fn need_target_reads_the_typed_target_of_a_targeted_need() -> R {
+    let mut mail = FakeMail::new("pump");
+    mail.store_need(NEED, Some("vivi"));
+
+    assert_eq!(need_target(&mail, NEED)?, Some("vivi".to_string()));
+    Ok(())
+}
+
+#[test]
+fn need_target_is_none_for_a_valid_untargeted_need() -> R {
+    let mut mail = FakeMail::new("pump");
+    mail.store_need(NEED, None);
+
+    assert_eq!(need_target(&mail, NEED)?, None);
+    Ok(())
+}
+
+#[test]
+fn need_target_is_an_error_when_the_stored_body_is_missing() -> R {
+    let mail = FakeMail::new("pump");
+
+    let err = need_target(&mail, NEED).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Message(_)), "{err}");
+    Ok(())
+}
+
+#[test]
+fn need_target_is_an_error_on_malformed_toml() -> R {
+    let mut mail = FakeMail::new("pump");
+    stored_body(&mut mail, NEED, "+++\ndone_when = [\n+++\nprose");
+
+    let err = need_target(&mail, NEED).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Message(_)), "{err}");
+    Ok(())
+}
+
+#[test]
+fn need_target_is_an_error_on_invalid_typed_need_front_matter() -> R {
+    let mut mail = FakeMail::new("pump");
+    let blank = need_body_with(&NeedFront::new(vec!["  ".to_string()]), "prose");
+    stored_body(&mut mail, NEED, &blank);
+
+    let err = need_target(&mail, NEED).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Message(_)), "{err}");
+    Ok(())
+}
+
+#[test]
+fn need_target_is_an_error_on_a_legacy_body_without_front_matter() -> R {
+    let mut mail = FakeMail::new("pump");
+    stored_body(&mut mail, NEED, "plain prose, no front matter");
+
+    let err = need_target(&mail, NEED).unwrap_err();
+
+    assert!(matches!(err, VivariumError::Message(_)), "{err}");
     Ok(())
 }
 
