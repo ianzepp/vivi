@@ -1,9 +1,8 @@
 //! `mind.toml`: the mind's authority stage, wake heartbeat, and paths.
 //!
-//! The file sits next to the host registry, at
-//! `<config_dir>/vivi/mind.toml` (`VIVI_CONFIG_DIR` overrides
-//! `<config_dir>`, as for the registry). Every key is optional; a missing
-//! file is the default config, which is the `observe` stage.
+//! The file sits in the mind's home, `$VIVI_HOME/mind/mind.toml`, beside the
+//! mind's state, socket and sessions. Every key is optional; a missing file
+//! is the default config, which is the `observe` stage.
 //!
 //! ```toml
 //! authority = "observe"          # observe | unstick | file-fixes
@@ -37,7 +36,7 @@ use crate::duration::parse_duration_secs;
 
 use super::edge::EdgeConfig;
 
-/// Config file name, next to `pump-service.toml`.
+/// Config file name, in the mind home.
 pub const CONFIG_FILENAME: &str = "mind.toml";
 /// Default wake heartbeat.
 pub const DEFAULT_HEARTBEAT: &str = "30m";
@@ -45,8 +44,6 @@ pub const DEFAULT_HEARTBEAT: &str = "30m";
 pub const DEFAULT_PROXY_URL: &str = "http://127.0.0.1:18180";
 /// The pi harness executable.
 pub const DEFAULT_PI_COMMAND: &str = "pi";
-/// Environment override for the mind home (state, socket, sessions, log).
-pub const ENV_MIND_HOME: &str = "VIVI_MIND_HOME";
 
 /// How much the mind may do. Each stage is opened deliberately by the
 /// operator in `mind.toml`; a stage includes every power below it.
@@ -147,8 +144,8 @@ pub struct McpConfig {
 const MAX_FOLLOW_UPS: u32 = 8;
 const DEFAULT_FOLLOW_UPS: u32 = 3;
 
-/// Where the mind keeps its files. Everything lives under one home owned by
-/// the service user, apart from the config file.
+/// Where the mind keeps its files. Everything, the config file included,
+/// lives under one home (`$VIVI_HOME/mind`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MindPaths {
     pub config: PathBuf,
@@ -214,33 +211,23 @@ struct BudgetsFormat {
     max_wakes_per_hour: Option<u32>,
 }
 
-/// Path of `mind.toml`, beside the host registry.
+/// Path of `mind.toml`, in the mind home.
 ///
 /// # Errors
-/// Fails when no config directory can be found.
+/// Fails when the vivi home cannot be found.
 pub fn path() -> Result<PathBuf, VivariumError> {
-    let registry = crate::registry::path()?;
-    let dir = registry
-        .parent()
-        .ok_or_else(|| VivariumError::Config("registry path has no parent".into()))?;
-    Ok(dir.join(CONFIG_FILENAME))
+    Ok(default_home()?.join(CONFIG_FILENAME))
 }
 
-/// The default mind home: `VIVI_MIND_HOME`, else `<state_dir>/vivi/mind`,
-/// else `<data_local_dir>/vivi/mind`.
+/// The mind home: `$VIVI_HOME/mind` (`~/.vivi/mind` when `VIVI_HOME` is
+/// unset). It holds `mind.toml`, the state, socket, sessions and log.
 ///
 /// # Errors
-/// Fails when no state or data directory can be found.
+/// Fails when the vivi home cannot be found.
 pub fn default_home() -> Result<PathBuf, VivariumError> {
-    if let Ok(value) = std::env::var(ENV_MIND_HOME)
-        && !value.is_empty()
-    {
-        return Ok(PathBuf::from(value));
-    }
-    dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .map(|dir| dir.join("vivi").join("mind"))
-        .ok_or_else(|| VivariumError::Config("could not find a state directory".into()))
+    crate::home::vivi_home()
+        .map(|home| home.join("mind"))
+        .map_err(VivariumError::Config)
 }
 
 /// Load the config from its default location.

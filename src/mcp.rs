@@ -52,6 +52,11 @@ pub struct BridgeConfig {
     /// The project the bridge fills into tool calls that take one and
     /// carry none; `None` is a pure pass-through.
     pub project: Option<String>,
+    /// `Some(as_host)` when `api_key` is a machine-key session token the
+    /// bridge signed in for: a refused bearer then signs in again once and
+    /// the message is sent again. `None` for an explicit API key, which is
+    /// sent as it is.
+    pub machine_host: Option<bool>,
 }
 
 /// The upstream the bridge posts to. A trait so the engine is testable
@@ -123,15 +128,75 @@ pub fn serve(
     output: impl Write,
     diag: impl Write,
 ) -> Result<(), VivariumError> {
-    let upstream = HttpUpstream::new(&config.server);
+    let http = HttpUpstream::new(&config.server);
+    let signing;
+    let upstream: &dyn Upstream = match config.machine_host {
+        Some(as_host) => {
+            signing = SigningUpstream::new(http, &config.server, as_host, &config.api_key);
+            &signing
+        }
+        None => &http,
+    };
     serve_with_project(
-        &upstream,
+        upstream,
         &config.api_key,
         config.project.as_deref(),
         input,
         output,
         diag,
     )
+}
+
+/// An upstream for a machine-key session. It sends its own current session
+/// token (the bearer the caller passes is the initial one) and, when the
+/// server refuses that token (the session expired, or the server
+/// restarted), signs in again once and sends the same message again.
+struct SigningUpstream<'a> {
+    inner: HttpUpstream<'a>,
+    server: &'a str,
+    as_host: bool,
+    token: std::sync::Mutex<String>,
+}
+
+impl<'a> SigningUpstream<'a> {
+    fn new(inner: HttpUpstream<'a>, server: &'a str, as_host: bool, token: &str) -> Self {
+        Self {
+            inner,
+            server,
+            as_host,
+            token: std::sync::Mutex::new(token.to_string()),
+        }
+    }
+
+    fn token(&self) -> String {
+        self.token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Upstream for SigningUpstream<'_> {
+    fn post(&self, _bearer: &str, body: &[u8]) -> Result<RawResponse, VivariumError> {
+        let sent = self.token();
+        let response = self.inner.post(&sent, body)?;
+        let refused = response.status == UNAUTHORIZED
+            && crate::machine_key::is_refused_bearer(&format!(
+                "HTTP {} {}",
+                response.status,
+                String::from_utf8_lossy(&response.body)
+            ));
+        if !refused {
+            return Ok(response);
+        }
+        crate::machine_key::forget(self.server, self.as_host)?;
+        let fresh = crate::machine_key::sign_in(self.server, self.as_host)?;
+        *self
+            .token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh.clone();
+        self.inner.post(&fresh, body)
+    }
 }
 
 /// The engine behind [`serve`], against any [`Upstream`].

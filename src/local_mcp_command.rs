@@ -174,7 +174,8 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
     };
     let mailspace_lookup = || mailspace_source(command.project.as_deref());
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
-    let api_key = if resolved.api_key == SIGN_IN {
+    let machine_session = resolved.api_key == SIGN_IN;
+    let api_key = if machine_session {
         vivi::machine_key::sign_in(&resolved.server, command.host)?
     } else {
         resolved.api_key
@@ -183,6 +184,7 @@ fn bridge_config(command: &McpCommand) -> Result<BridgeConfig, VivariumError> {
         server: resolved.server,
         api_key,
         project: resolved.project,
+        machine_host: machine_session.then_some(command.host),
     })
 }
 

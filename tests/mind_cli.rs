@@ -36,7 +36,6 @@ fn vivi(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args(args)
         .env("VIVI_HOME", dir.join("home"))
-        .env("VIVI_MIND_HOME", dir.join("mind"))
         .output()
         .unwrap()
 }
@@ -56,7 +55,8 @@ fn pause_without_a_running_mind_records_it_in_the_temp_state() {
     let dir = tempfile::tempdir().unwrap();
     let output = vivi(dir.path(), &["mind", "pause"]);
     assert!(output.status.success(), "{output:?}");
-    let state = std::fs::read_to_string(dir.path().join("mind").join("state.json")).unwrap();
+    let state =
+        std::fs::read_to_string(dir.path().join("home").join("mind").join("state.json")).unwrap();
     assert!(state.contains("\"paused\": true"), "{state}");
 }
 
@@ -74,8 +74,8 @@ fn unit_prints_the_example_and_install_is_a_stub() {
 #[test]
 fn a_later_authority_stage_is_refused_at_load() {
     let dir = tempfile::tempdir().unwrap();
-    // mind.toml lives beside the host registry, under $VIVI_HOME/server.
-    let config = dir.path().join("home").join("server");
+    // mind.toml lives in the mind home, $VIVI_HOME/mind.
+    let config = dir.path().join("home").join("mind");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("mind.toml"), "authority = \"self-release\"\n").unwrap();
     let output = vivi(dir.path(), &["mind", "status"]);
@@ -91,5 +91,5 @@ fn probe_with_an_empty_registry_wakes_on_the_first_heartbeat_and_writes_nothing(
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["wake"], true);
     assert_eq!(value["projects"], serde_json::json!([]));
-    assert!(!dir.path().join("mind").exists());
+    assert!(!dir.path().join("home").join("mind").exists());
 }

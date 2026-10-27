@@ -1,7 +1,7 @@
-# EXAMPLE `mind.toml` for the `vivi mind` spike. It lives beside the host
-# registry: <config_dir>/vivi/mind.toml (VIVI_CONFIG_DIR overrides
-# <config_dir>). Every key is optional; no file at all is `observe` with the
-# defaults below. Unknown keys are refused.
+# EXAMPLE `mind.toml` for the `vivi mind` spike. It lives in the mind home:
+# $VIVI_HOME/mind/mind.toml (~/.vivi/mind/mind.toml when VIVI_HOME is unset).
+# Every key is optional; no file at all is `observe` with the defaults
+# below. Unknown keys are refused.
 
 # What the mind may do: observe | unstick | file-fixes. Permitted actions run
 # through the server named in [mcp] below; with no [mcp] they are a dry run
@@ -24,8 +24,7 @@ pi_command = "pi"
 # id (OpenRouter's latest aliases) is fine here.
 # model = "proxy/~deepseek/deepseek-flash-latest"
 
-# Defaults are under the mind home (VIVI_MIND_HOME, else
-# <state_dir>/vivi/mind): mind.sock and sessions/.
+# Defaults are under the mind home ($VIVI_HOME/mind): mind.sock and sessions/.
 # socket = "/var/lib/vivi/mind/mind.sock"
 # session_dir = "/var/lib/vivi/mind/sessions"
 

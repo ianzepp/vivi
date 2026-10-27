@@ -3227,8 +3227,8 @@ at most 8 per public key and 4096 in all (HTTP 429). The client caches the
 token under `$VIVI_HOME/keys/sessions/` until a minute before it expires.
 Challenges and sessions live in memory, so a server restart signs every
 machine out. Remote mode, `vivi mcp tools|call` and project-origin forwards
-sign in again once when the server refuses a cached session; the stdio
-`vivi mcp` bridge does not (see MCP bridge).
+sign in again once when the server refuses a cached session, as does the
+stdio `vivi mcp` bridge on a machine key (see MCP bridge).
 
 Who a key is:
 
@@ -3301,7 +3301,7 @@ A job ticket lets a worker machine run one job with no credential of its own.
 The host tool `job_create` mints it.
 
 ```sh
-vivi mcp --host call job_create '{"project":"app","target":"default","branch":"work/need-1234","task":"Add a greeting.","harness":"pi -p @\"$WORK_TASK_FILE\"","gate":"cargo test","timeout_s":1800}'
+vivi mcp --host call job_create '{"project":"app","target":"default","branch":"work/need-1234","task":"Add a greeting.","harness":"./run-agent.sh","gate":"cargo test","timeout_s":1800}'
 vivi mcp --host call job_show '{"job_id":"job_..."}'
 vivi mcp --host call job_list '{"status":"open"}'
 ```
@@ -3875,12 +3875,12 @@ pool slot needs only the binary, a server URL, and a credential (a project id
 is optional): no local mailspace, no sync, and the bridge never creates
 `.vivi/`. The bridge sends the project id as the `project` argument of the
 tools that declare one, filling it into a call that leaves it out. The
-bridge's credential is fixed when it starts and is never renewed: when the
-server refuses a request, a 401 is final, and the bridge answers that request
-with a JSON-RPC error (code `-32000`, `data.http_status`) instead of hanging,
-and keeps serving. A machine-key session lasts one hour and a restarted
-server forgets it, so a long-lived bridge on a machine key needs a restart
-after either; a key in `VIVI_MCP_API_KEY` does not expire that way.
+bridge on a machine key signs in again once and sends the message again when
+the server refuses its session (a session lasts one hour and a restarted
+server forgets it). A key in `VIVI_MCP_API_KEY` is never renewed: a 401 with
+it is final. Any request the server still refuses is answered with a JSON-RPC
+error (code `-32000`, `data.http_status`) instead of hanging, and the bridge
+keeps serving.
 
 `vivi mcp tools` prints the server's live tool set. A tool failure is a result
 with `isError: true`.

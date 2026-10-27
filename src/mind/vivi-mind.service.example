@@ -14,7 +14,7 @@ ExecStart=/usr/local/bin/vivi mind service run
 Restart=on-failure
 RestartSec=15
 # One home for state, socket, sessions and log; owner-only.
-Environment=VIVI_MIND_HOME=/var/lib/vivi/mind
+Environment=VIVI_HOME=/var/lib/vivi
 StateDirectory=vivi/mind
 StateDirectoryMode=0700
 UMask=0077

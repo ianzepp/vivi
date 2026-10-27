@@ -1,7 +1,7 @@
 //! Which projects the mind watches: the host registry's pumped roots, less
 //! any the operator told the mind to ignore.
 //!
-//! The registry is the pump supervisor's `<config_dir>/vivi/pump-service.toml`
+//! The registry is the pump supervisor's `$VIVI_HOME/server/registry.toml`
 //! (see [`crate::registry`]). The mind only reads it; `vivi mind service
 //! add|remove` changes the mind's own ignore list in its store, never the
 //! registry.

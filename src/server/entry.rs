@@ -25,12 +25,11 @@ fn die(code: i32, message: &str) -> ! {
     std::process::exit(code)
 }
 
-// The runtime is built by hand, after the configuration is read: reading
-// removes the secrets from the environment, which is only safe while this
-// is the one thread.
+// The runtime is built by hand, after the configuration is read, so the
+// boot path stays single-threaded until then.
 pub fn run(args: Vec<String>) {
     // Before anything is read: no same-user process may read this one's
-    // memory or environment.
+    // memory.
     if let Err(err) = crate::server::hardening::disable_dumping() {
         die(1, &format!("cannot make the process non-dumpable: {err}"));
     }

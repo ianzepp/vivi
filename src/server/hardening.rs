@@ -31,20 +31,3 @@ pub fn disable_dumping() -> std::io::Result<()> {
 pub fn disable_dumping() -> std::io::Result<()> {
     Ok(())
 }
-
-/// Remove each named variable from the process environment, so a child
-/// process does not inherit it. The environment block that
-/// `/proc/<pid>/environ` shows is not changed by this; see
-/// [`disable_dumping`].
-///
-/// Call it only while the process is single-threaded, before the async
-/// runtime exists: the environment is not safe to change beside a thread
-/// that reads it.
-pub fn scrub_env(names: &[&str]) {
-    for name in names {
-        // SAFETY: the caller runs this on the boot path before any other
-        // thread exists (see above), so nothing reads the environment
-        // concurrently.
-        unsafe { std::env::remove_var(name) };
-    }
-}
