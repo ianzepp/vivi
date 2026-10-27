@@ -6,9 +6,10 @@
 //! that a plain rerun can fix, or a model that ended without any final
 //! message — is worth one deterministic transient retry. This module owns
 //! the vocabulary every recovery side reads: the `-tr<N>` job-id suffix,
-//! the durable `recovery` payload object, and the class words the
-//! classifier returns. Whether a retry is allowed and which store intent
-//! freezes it is the wired collector's job, not this module's.
+//! the durable `recovery` payload object, the class words the classifier
+//! returns, and the publication-safety gate of [`safety`]. Whether a retry
+//! is allowed and which store intent freezes it is the wired collector's
+//! job, not this module's.
 //!
 //! Staged like `server::mcp::send_options`: the vocabulary ships whole, and
 //! the collector that consumes it lands in a later slice.
@@ -17,6 +18,9 @@
 use super::budget_retry;
 use crate::pump::attempt_record;
 use crate::pump::jobs::{JobOutcome, PoolJob};
+
+/// The publication-safety gate a replacement must pass: [`safety::decide`].
+pub(crate) mod safety;
 
 // ---- the pure transient classifier ---------------------------------------
 
