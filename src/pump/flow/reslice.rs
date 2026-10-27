@@ -106,6 +106,7 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
             return Ok(row.task.clone());
         }
     }
+    check_source(ctx, mail, slice)?;
     let node = format!("{prefix}{}", earlier.len() + 1);
     let body = render(&TaskFront::step(&run.need, run.run, &node), &tail)
         .map_err(|err| VivariumError::Message(format!("reslice body for {node}: {err}")))?;
@@ -127,6 +128,35 @@ pub(crate) fn request<S: JobStore, M: FlowMail>(
     let spec = job(ctx, run, &row, slice, mode, &brief)?;
     jobs::enqueue(st, spec)?;
     Ok(task)
+}
+
+/// Parse the source slice task and check its front-matter target against the
+/// effective pump configuration: a new reslice needs an explicit target the
+/// configuration names (any of them, not only the primary), and the primary
+/// or default target is never substituted for a missing or unknown one. Runs
+/// before a new request sends or writes anything.
+///
+/// # Errors
+/// Returns [`VivariumError::Message`] when the source body is not a valid
+/// task letter, and [`VivariumError::Config`] when it carries no target or a
+/// target the effective configuration does not name.
+fn check_source<M: FlowMail>(ctx: &Ctx, mail: &M, slice: &StepRow) -> Result<(), VivariumError> {
+    let body = mail.task_body(&slice.task)?;
+    let envelope = crate::letter::read::task_of(&slice.task, &body)
+        .map_err(|error| VivariumError::Message(format!("slice {}: {error}", slice.task)))?;
+    let Some(target) = envelope.front.target else {
+        return Err(VivariumError::Config(format!(
+            "slice {} has no target",
+            slice.task
+        )));
+    };
+    if !ctx.cfg.target_configs().contains_key(&target) {
+        return Err(VivariumError::Config(format!(
+            "slice {} targets unknown target {target}",
+            slice.task
+        )));
+    }
+    Ok(())
 }
 
 fn sentinel_task(rows: &[StepRow], run: &RunRow) -> Result<String, VivariumError> {
