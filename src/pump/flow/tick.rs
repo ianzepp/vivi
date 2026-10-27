@@ -34,10 +34,12 @@ use crate::pump::flow::kind;
 use crate::pump::flow::load::load;
 use crate::pump::flow::mail::{MailReader, MailWriter, MailspacePort, NeedStatus};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
+use crate::pump::flow::recovery_inputs;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::validate::validate;
 use crate::pump::host::Ctx;
 use crate::pump::jobs::{self, JobSpec, JobStatus, JobStore, PoolJob};
+use crate::pump::store::step_execution::{ExecutionKey, ExecutionRow};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// Verdict a step carries while it waits for `vivi pump answer`.
@@ -65,6 +67,9 @@ pub const WORD_REJECTED: &str = "flow-word-rejected";
 pub const JOB_ORPHANED: &str = "flow-job-orphaned";
 /// Exception kind: a finished step job is not its step's newest attempt.
 pub const STALE_ATTEMPT: &str = "flow-stale-attempt";
+/// Exception kind: a finished step job belongs to an execution that is no
+/// longer current: superseded, or its task has moved to another owning phase.
+pub const STALE_EXECUTION: &str = "flow-stale-execution";
 /// Exception kind: a run was stored under another flow version than the
 /// loaded definition.
 pub const FLOW_VERSION_STALE: &str = "flow-version-stale";
@@ -445,6 +450,11 @@ where
             );
             return Ok(());
         }
+        // A result may only apply through the execution it was activated on:
+        // a stale one is refused even at the newest attempt.
+        if self.refuse_stale_execution(id, row)? {
+            return Ok(());
+        }
         let step = self.store.step_by_task(&row.task)?;
         if let Some(step) = step.filter(|s| {
             matches!(
@@ -473,6 +483,33 @@ where
         }
         jobs::mark_applied(self.st, id, self.ctx.now());
         Ok(())
+    }
+
+    /// Whether the finished job `id` belongs to an execution that is no longer
+    /// current: superseded, or its task has moved to another owning phase. Such
+    /// a result is stale even at the newest attempt; it is marked applied
+    /// without routing and without changing the step, and `true` is returned so
+    /// the caller routes nothing. Jobs enqueued before executions existed have
+    /// no row here and keep the attempt check as their adoption path.
+    fn refuse_stale_execution(
+        &mut self,
+        id: &str,
+        row: &StepJobRow,
+    ) -> Result<bool, VivariumError> {
+        let Some(execution) = self.store.execution_by_job(id)? else {
+            return Ok(false);
+        };
+        if self.store.execution_is_current(&execution.execution)? {
+            return Ok(false);
+        }
+        jobs::mark_applied(self.st, id, self.ctx.now());
+        raise_once(
+            self.ctx,
+            STALE_EXECUTION,
+            id,
+            &stale_execution_text(id, row, &execution),
+        );
+        Ok(true)
     }
 
     /// The text of a step whose node the loaded flow does not have.
@@ -672,10 +709,45 @@ where
                 ),
             );
         }
+        self.capture_execution(step, &id, row.attempt)?;
         jobs::enqueue(self.st, spec)?;
         self.store.insert_step_job(&self.run.need, &row)?;
         self.store
             .set_step_state(&step.task, StepState::Running, None)
+    }
+
+    /// Register the execution a handler job belongs to and snapshot its
+    /// input checkpoint, before the job is queued and its result can apply.
+    /// The stable step task stays the execution's task; the owning phase is
+    /// the node's class. Registering is idempotent, so a repeat of the same
+    /// enqueue keeps the lineage and refreshes only the activation.
+    fn capture_execution(
+        &mut self,
+        step: &StepRow,
+        job: &str,
+        attempt: u32,
+    ) -> Result<(), VivariumError> {
+        let phase = self
+            .class_of(&step.node)
+            .map(|class| class.name())
+            .unwrap_or_else(|| "handler".to_string());
+        let key = ExecutionKey::new(&self.run.need, self.run.run, &step.task, &phase);
+        let execution = self.store.register_execution(&key)?;
+        self.store
+            .activate_job(&execution.execution, job, attempt)?;
+        let checkpoint = self.input_checkpoint()?;
+        self.store
+            .set_input_checkpoint(&execution.execution, &checkpoint)
+    }
+
+    /// The need-reply checkpoint of this run's need: the IDs of the eligible
+    /// need replies at capture time. No mailspace reads as an empty
+    /// checkpoint.
+    fn input_checkpoint(&self) -> Result<String, VivariumError> {
+        let Some(mailspace) = crate::pump::record::open_mailspace(self.ctx) else {
+            return Ok(String::new());
+        };
+        recovery_inputs::capture(&mailspace, &self.ctx.cfg.reply_from, &self.run.need)
     }
 
     /// Raise once when the need's marks no longer name the run's kind.
@@ -741,6 +813,15 @@ fn overdue_text(job: &PoolJob, row: &StepJobRow) -> String {
         job.pool.as_deref().unwrap_or("?"),
         job.dispatched_at.unwrap_or_default(),
         job.budget
+    )
+}
+
+/// The alarm text for a result whose execution is no longer current.
+fn stale_execution_text(id: &str, row: &StepJobRow, execution: &ExecutionRow) -> String {
+    format!(
+        "job {id} step {} attempt {}: expected its execution to be current; \
+         actual: {} superseded={} phase={}; result applied without routing",
+        row.task, row.attempt, execution.execution, execution.superseded, execution.phase
     )
 }
 
