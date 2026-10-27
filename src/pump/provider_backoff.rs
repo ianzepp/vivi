@@ -12,9 +12,17 @@
 //! serializable so state persistence can store it, and
 //! [`AdmissionSnapshot`] freezes the per-provider facts an admission
 //! decision was made from.
+//!
+//! The policy is fully deterministic: a distinct rate-limit observation
+//! halves the learned allowance (floored at one while capacity is
+//! enabled), every cooldown earns the exponential retry base plus the
+//! 0-14 second [`jitter`] spread, and after a 300-second quiet interval
+//! exactly one slot recovers. Running dispatches are never cancelled; the
+//! policy gates fresh starts only.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::transient::jitter;
 use serde::{Deserialize, Serialize};
 
 use crate::pool::config::PoolConfig;
@@ -23,6 +31,20 @@ use crate::pool::slot::PoolId;
 /// The concurrent-dispatch allowance a fresh bucket starts from: one
 /// dispatch at a time, until observations prove more is safe.
 pub const DEFAULT_ALLOWANCE: f64 = 1.0;
+
+/// The exponential retry base for the first rate-limit observation: the
+/// first cooldown waits 60 seconds, the next 120, and so on.
+pub const RETRY_BASE_SECS: u64 = 60;
+
+/// The ceiling any exponential retry base saturates at, before the
+/// deterministic 0-14 second [`jitter`] spread is added on top.
+pub const RETRY_CEILING_SECS: u64 = 900;
+
+/// The quiet interval between recoveries: once it has elapsed since the
+/// last observation, exactly one slot is recovered and another full
+/// interval is required for the next increment. Missed downtime is never
+/// replayed.
+pub const QUIET_RECOVERY_SECS: u64 = 300;
 
 /// The grouping key of one model provider, derived only from the executed
 /// model. A qualified model `zai/glm-5.3-flash` keys on its namespace (`zai`),
@@ -145,6 +167,11 @@ pub struct ProviderBucketState {
     /// Epoch second at which recovery may next raise the allowance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recover_at: Option<u64>,
+    /// How many consecutive rate-limit observations raised the retry
+    /// delay, so each cooldown waits exponentially longer; later feedback
+    /// on observed success may reset it.
+    #[serde(default)]
+    pub retry_step: u32,
 }
 
 fn default_allowance() -> f64 {
@@ -158,6 +185,7 @@ impl Default for ProviderBucketState {
             observation: None,
             cooldown_until: None,
             recover_at: None,
+            retry_step: 0,
         }
     }
 }
@@ -174,6 +202,124 @@ impl ProviderBucketState {
     pub fn cooling(&self, now: u64) -> bool {
         self.cooldown_until.is_some_and(|until| now < until)
     }
+}
+
+/// Whether an observation with `kind` and `detail` is distinct from the
+/// bucket's last recorded observation, and so halves the allowance when
+/// recorded. All inputs are explicit so the later feedback caller can
+/// deduplicate before building any record: only what was seen decides —
+/// a repeat at a later epoch second is still the same observation.
+#[must_use]
+pub fn observation_is_distinct(
+    previous: Option<&ProviderObservation>,
+    kind: &str,
+    detail: &str,
+) -> bool {
+    match previous {
+        None => true,
+        Some(prev) => prev.kind != kind || prev.detail != detail,
+    }
+}
+
+/// The exponential base of the retry delay for the `step`-th consecutive
+/// rate-limit observation: 60, 120, 240, ... seconds, saturating at the
+/// 900-second base ceiling.
+#[must_use]
+fn retry_delay_base(step: u32) -> u64 {
+    RETRY_BASE_SECS
+        .saturating_mul(1u64 << step.saturating_sub(1).min(31))
+        .min(RETRY_CEILING_SECS)
+}
+
+/// Record one authoritative rate-limit observation in `state` at epoch
+/// second `at`, and derive the cooldown it earns. A distinct observation
+/// (see [`observation_is_distinct`]) halves the allowance, rounding down,
+/// floored at one only while `ceiling` enables capacity. Every
+/// observation, distinct or repeated, resets the quiet-recovery interval
+/// and re-earns a cooldown: the exponential base for the next consecutive
+/// observation plus the deterministic 0-14 second [`jitter`] spread over
+/// `seed`, extending — never shortening — the existing cooldown. Running
+/// dispatches are never touched; only fresh starts are blocked while the
+/// bucket cools. Returns whether the observation was distinct, so the
+/// feedback caller can tell new learning from repetition.
+#[must_use = "the distinctness of the recorded observation drives the caller's feedback"]
+pub fn record_rate_limit(
+    state: &mut ProviderBucketState,
+    at: u64,
+    kind: &str,
+    detail: &str,
+    seed: &str,
+    ceiling: u32,
+) -> bool {
+    let distinct = observation_is_distinct(state.observation.as_ref(), kind, detail);
+    if distinct {
+        let floor = if ceiling == 0 { 0.0 } else { 1.0 };
+        state.allowance = (state.allowance / 2.0).floor().max(floor);
+    }
+    state.retry_step = state.retry_step.saturating_add(1);
+    let delay = retry_delay_base(state.retry_step).saturating_add(jitter(seed));
+    let candidate = at.saturating_add(delay);
+    state.cooldown_until = Some(
+        state
+            .cooldown_until
+            .map_or(candidate, |until| until.max(candidate)),
+    );
+    state.recover_at = Some(at.saturating_add(QUIET_RECOVERY_SECS));
+    state.observation = Some(ProviderObservation {
+        at: Some(at),
+        kind: kind.to_string(),
+        detail: detail.to_string(),
+    });
+    distinct
+}
+
+/// Recover at most one learned slot once the quiet interval has elapsed:
+/// exactly one slot per elapsed interval, the next interval counted from
+/// `now` so missed downtime never replays, and never past `ceiling`. A
+/// disabled provider (`ceiling` 0) never recovers. Returns whether a slot
+/// was recovered.
+#[must_use = "whether a slot was recovered decides the caller's next quiet check"]
+pub fn recover_one_slot(state: &mut ProviderBucketState, now: u64, ceiling: u32) -> bool {
+    if ceiling == 0 {
+        return false;
+    }
+    let Some(quiet_at) = state.recover_at else {
+        return false;
+    };
+    if now < quiet_at || state.allowance >= f64::from(ceiling) {
+        return false;
+    }
+    state.allowance = (state.allowance + 1.0).min(f64::from(ceiling));
+    state.recover_at = Some(now.saturating_add(QUIET_RECOVERY_SECS));
+    true
+}
+
+/// Clamp the learned allowance against the current configured capacity
+/// (the `slots`/`caps` a config reload brought): a tighter ceiling pulls
+/// the allowance down, a looser one leaves learned reductions in place.
+pub fn clamp_to_capacity(state: &mut ProviderBucketState, ceiling: u32) {
+    state.allowance = state.allowance.min(f64::from(ceiling));
+}
+
+/// The allowance admission may actually use now: the learned allowance
+/// clamped against the current configured capacity.
+#[must_use]
+pub fn effective_allowance(state: &ProviderBucketState, ceiling: u32) -> f64 {
+    state.allowance.min(f64::from(ceiling))
+}
+
+/// Whether a fresh start may enter the bucket at epoch second `now`: not
+/// while the provider cools — a cooldown blocks every fresh start — and
+/// only while fewer than the effective allowance are in flight. Running
+/// jobs are never cancelled by this policy; it gates fresh starts only.
+#[must_use]
+pub fn admits_fresh_start(
+    state: &ProviderBucketState,
+    now: u64,
+    in_flight: u32,
+    ceiling: u32,
+) -> bool {
+    !state.cooling(now) && f64::from(in_flight) < effective_allowance(state, ceiling)
 }
 
 /// One pool's providers: provider key -> bucket state. Serializable.
@@ -226,6 +372,7 @@ pub fn configured_provider_ceiling(
 /// from its distinct models. Reads only `slots`, `harness.models` and `caps`:
 /// `PoolConfig.provider` names the compute host, not a model provider, and
 /// credentials are never consulted.
+#[must_use]
 pub fn configured_provider_ceilings(config: &PoolConfig) -> BTreeMap<ProviderKey, u32> {
     let empty = Vec::new();
     let models = config.harness.as_ref().map_or(&empty, |h| &h.models);
