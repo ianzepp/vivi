@@ -13,11 +13,13 @@ use std::collections::BTreeMap;
 use crate::error::VivariumError;
 use crate::letter::fixture::{sentinel_body, step_body};
 use crate::letter::read::{record_of, step_of};
-use crate::letter::records::record_letter;
+use crate::letter::records::{NoteWord, record_letter};
 use crate::letter::work::StepFront;
+use crate::mailspace::pump_note::{Note, note_body, note_of};
 use crate::pump::flow::mail::{
     MailReader, MailWriter, NeedStatus, OpenRecords, TaskState, TaskStatus,
 };
+use crate::pump::flow::slice_dispatch::SliceMail;
 
 /// One recorded port call, in call order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +108,14 @@ pub(crate) struct FakeMail {
     prerequisites: BTreeMap<String, Vec<String>>,
     need_letter_errors: BTreeMap<String, String>,
     unreadable_actions: Vec<(String, String)>,
+    /// Root letter bodies of needs a test registered (a need is not a task).
+    pub need_roots: BTreeMap<String, String>,
+    /// Audience posts the pump identity made, per need, in post order.
+    pub need_posts: BTreeMap<String, Vec<String>>,
+    /// The error every authoritative thread read of a handle reports.
+    pub unreadable_threads: BTreeMap<String, String>,
+    /// Fail the next audience post after it commits, once.
+    pub fail_post_commit: bool,
     next: u32,
     opened_count: u32,
     /// Fail the write that would be recorded as call `n` (0-based), once.
@@ -154,6 +164,59 @@ impl FakeMail {
     pub fn add_unreadable_action(&mut self, handle: &str, text: &str) {
         self.unreadable_actions
             .push((handle.to_string(), text.to_string()));
+    }
+
+    /// Register the root letter body of `need` explicitly: a need a test
+    /// uses need not be a task, so nothing invents a root letter for it.
+    pub fn register_need_root(&mut self, need: &str, body: &str) {
+        self.need_roots.insert(need.to_string(), body.to_string());
+    }
+
+    /// Make every authoritative thread read of `handle` (its root body, its
+    /// notes) fail with `text`.
+    pub fn set_unreadable_thread(&mut self, handle: &str, text: &str) {
+        self.unreadable_threads
+            .insert(handle.to_string(), text.to_string());
+    }
+
+    /// Make the next audience post commit its post and its call record, then
+    /// still report failure to its caller, once.
+    pub fn fail_next_post_commit(&mut self) {
+        self.fail_post_commit = true;
+    }
+
+    /// The notes of `word` among the pump identity's audience posts on `key`,
+    /// each dated by the position of its recorded post call.
+    pub fn post_notes(&self, key: &str, word: NoteWord) -> Vec<(i64, String, Note)> {
+        self.need_posts
+            .get(key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|body| {
+                let note = note_of(body).filter(|note| note.pump.note == word)?;
+                let at = self.position(|call| {
+                    matches!(call, Call::PostToNeed { need, body: posted }
+                        if need == key && posted == body)
+                });
+                Some((note.pump.t, format!("{:08}", at.unwrap_or_default()), note))
+            })
+            .collect()
+    }
+
+    /// The gate every authoritative thread read of `key` passes.
+    ///
+    /// # Errors
+    /// Returns the injected read failure when one covers `key`, or a miss
+    /// when `key` names neither a task nor a registered need root.
+    pub fn gate_thread_read(&self, key: &str) -> Result<(), VivariumError> {
+        if let Some(text) = self.unreadable_threads.get(key) {
+            return Err(VivariumError::Message(text.clone()));
+        }
+        if self.tasks.contains_key(key) || self.need_roots.contains_key(key) {
+            return Ok(());
+        }
+        Err(VivariumError::Message(format!("fake mail: no task {key}")))
     }
 
     /// Set the handles a need depends on.
@@ -361,6 +424,18 @@ impl MailWriter for FakeMail {
             need: need.to_string(),
             body: body.to_string(),
         });
+        // The post is durable under the pump identity: readers of the need's
+        // thread see it even when this call goes on to report failure.
+        self.need_posts
+            .entry(need.to_string())
+            .or_default()
+            .push(body.to_string());
+        if self.fail_post_commit {
+            self.fail_post_commit = false;
+            return Err(VivariumError::Message(
+                "fake mail: post committed, then failed".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -748,5 +823,124 @@ fn sent_step_finds_the_newest_open_task_with_that_subject_and_step() -> R {
     mail.close_task(&second, "done", None, None)?;
     assert_eq!(mail.sent_step("s", &key("a"))?, Some(first));
     assert_eq!(mail.sent_step("s", &key("b"))?, None);
+    Ok(())
+}
+
+#[test]
+fn audience_posts_round_trip_through_the_need_thread() -> R {
+    let prose = |notes: &[(String, Note)]| -> Vec<String> {
+        notes
+            .iter()
+            .map(|(_, note)| note.prose.trim().to_owned())
+            .collect()
+    };
+    let note = |word: NoteWord, text: &str| note_body(word, None, text).unwrap();
+    let mut mail = FakeMail::new("pump");
+    mail.register_need_root("n1", "root of n1");
+    mail.post_to_need_audience("n1", "pump: run r1 started (research, entry a)")?;
+    mail.post_to_need_audience("n1", &note(NoteWord::Deviations, "first"))?;
+    mail.post_to_need_audience("n1", &note(NoteWord::Deviations, "second"))?;
+    mail.foreign_reply("n1", "operator", &note(NoteWord::Deviations, "theirs"));
+
+    assert_eq!(mail.task_body("n1")?, "root of n1".to_string());
+    // The post kept its own call record: no reply call was reused for it.
+    assert_eq!(
+        mail.position(|call| matches!(call, Call::PostToNeed { .. })),
+        Some(0)
+    );
+    assert_eq!(
+        mail.position(|call| matches!(call, Call::Reply { .. })),
+        None
+    );
+
+    let found = mail.notes("n1", NoteWord::Deviations)?;
+    assert_eq!(prose(&found), ["first".to_string(), "second".to_string()]);
+    assert!(
+        found
+            .windows(2)
+            .all(|pair| pair[0].1.pump.t < pair[1].1.pump.t)
+    );
+    assert_eq!(
+        prose(&mail.notes_from("n1", NoteWord::Deviations, "pump")?),
+        ["first".to_string(), "second".to_string()]
+    );
+    assert_eq!(
+        prose(&mail.notes_from("n1", NoteWord::Deviations, "operator")?),
+        ["theirs".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn fail_at_fails_an_audience_post_before_anything_commits() -> R {
+    let mut mail = FakeMail::new("pump");
+    mail.register_need_root("n1", "root of n1");
+    mail.fail_at = Some(0);
+    assert!(
+        mail.post_to_need_audience("n1", "pump: run r1 started")
+            .is_err()
+    );
+    assert_eq!(
+        mail.position(|call| matches!(call, Call::PostToNeed { .. })),
+        None
+    );
+    assert!(mail.notes("n1", NoteWord::Deviations)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_committed_audience_post_still_fails_its_caller_once() -> R {
+    let prose = |notes: &[(String, Note)]| -> Vec<String> {
+        notes
+            .iter()
+            .map(|(_, note)| note.prose.trim().to_owned())
+            .collect()
+    };
+    let mut mail = FakeMail::new("pump");
+    mail.register_need_root("n1", "root of n1");
+    mail.fail_next_post_commit();
+    let error = mail
+        .post_to_need_audience(
+            "n1",
+            &note_body(NoteWord::Deviations, None, "first").unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "message error: fake mail: post committed, then failed"
+    );
+    // The post is durable: the authoritative read still finds it.
+    assert_eq!(
+        prose(&mail.notes("n1", NoteWord::Deviations)?),
+        ["first".to_string()]
+    );
+    // The failure was once: the next post succeeds plainly.
+    mail.post_to_need_audience("n1", "pump: run r1 started")?;
+    assert_eq!(
+        mail.position(|call| matches!(call, Call::PostToNeed { .. })),
+        Some(0)
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_and_failed_need_reads_error_instead_of_reading_empty() -> R {
+    let mut mail = FakeMail::new("pump");
+    // A handle that names neither a task nor a registered need: the read misses.
+    assert!(mail.task_body("n9").is_err());
+    assert!(mail.notes("n9", NoteWord::Deviations).is_err());
+    // An injected readback failure beats any stored letter.
+    mail.register_need_root("n1", "root of n1");
+    mail.set_unreadable_thread("n1", "fake mail: readback failed");
+    assert_eq!(
+        mail.task_body("n1").unwrap_err().to_string(),
+        "message error: fake mail: readback failed"
+    );
+    assert_eq!(
+        mail.notes("n1", NoteWord::Deviations)
+            .unwrap_err()
+            .to_string(),
+        "message error: fake mail: readback failed"
+    );
     Ok(())
 }
