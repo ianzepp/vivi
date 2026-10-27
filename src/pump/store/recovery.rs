@@ -11,6 +11,14 @@
 //! [`PoolJob`](crate::pump::jobs::PoolJob) snapshot carries the dispatch's
 //! execution fields instead of duplicating them into columns.
 //!
+//! Replacement intents are the transactional half: scheduling one claims a
+//! trigger (first claim wins, so a repeated trigger returns its original
+//! intent), spends one unit of the owner-wide allowance, saves the intent,
+//! advances ownership to the next sequence and updates the flow rows the
+//! replacement touches — all in one transaction that rolls back on any
+//! failure. The claim key is the (collector, trigger) pair, so independent
+//! collectors never collide.
+//!
 //! Like the flow index, the tables are created with `IF NOT EXISTS` on every
 //! open and are not part of the [`State`](crate::pump::state::State) save, so
 //! `save(State::default())` and a reopen never touch them. The schema version
@@ -19,6 +27,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 mod dispatch;
+mod intents;
 mod owners;
 
 use rusqlite::Connection;
@@ -26,6 +35,7 @@ use rusqlite::Connection;
 use crate::error::VivariumError;
 
 pub(crate) use dispatch::{DispatchAccept, DispatchStart, snapshot_json};
+pub(crate) use intents::{ReplacementIntent, ReplacementRequest};
 pub(crate) use owners::ExecutionOwner;
 
 use super::db_err;
@@ -58,6 +68,28 @@ CREATE TABLE IF NOT EXISTS recovery_dispatch_accepts (
     pool_job TEXT,
     snapshot_json TEXT
 );
+CREATE TABLE IF NOT EXISTS recovery_intents (
+    intent TEXT PRIMARY KEY,
+    collector TEXT NOT NULL,
+    trigger_id TEXT NOT NULL,
+    need TEXT NOT NULL,
+    run INTEGER NOT NULL,
+    task TEXT NOT NULL,
+    node TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    deadline INTEGER NOT NULL DEFAULT 0,
+    inputs_json TEXT NOT NULL DEFAULT '{}',
+    tasks_json TEXT NOT NULL DEFAULT '[]',
+    source_settled INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    replay_seq INTEGER NOT NULL DEFAULT 0,
+    job TEXT,
+    at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (collector, trigger_id)
+);
+CREATE INDEX IF NOT EXISTS recovery_intents_run ON recovery_intents (need, run);
 ";
 
 /// Create the recovery tables when they are missing.
