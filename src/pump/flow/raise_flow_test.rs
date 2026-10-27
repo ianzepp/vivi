@@ -118,6 +118,9 @@ fn rig() -> Result<Rig, VivariumError> {
     script_host(&host);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
     let mut mail = FakeMail::new("mind");
+    // A strict read of the original need needs its letter under NEED; the
+    // legacy absent target keeps the synthesized `default` resolution.
+    mail.store_need(NEED, None);
     MailWriter::open_record(&mut mail, NEED, &record_body(NEED, "build"))?;
     start(&ctx, &store, &mut mail, NEED, Some("slice"))?;
     store.upsert_need_branch(&NeedBranchRow {

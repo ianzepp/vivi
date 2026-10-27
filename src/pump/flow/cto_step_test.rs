@@ -41,12 +41,16 @@ fn fixture_with(cfg: PumpConfig) -> Fixture {
     let dir = tempdir().expect("tempdir");
     let (ctx, host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME)).expect("open");
+    let mut mail = FakeMail::new("mind");
+    // A strict read of the original need needs its letter under NEED; the
+    // legacy absent target keeps the synthesized `default` resolution.
+    mail.store_need(NEED, None);
     Fixture {
         _dir: dir,
         ctx,
         host,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
     }
 }
 

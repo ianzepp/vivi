@@ -168,8 +168,10 @@ fn cto_job(rig: &Rig, run: &RunRow) -> R<JobSpec> {
 #[test]
 fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
     let rig = rig()?;
-    let need = "need-diag";
-    let run = build_run(need, 2);
+    // A real need: strict reads resolve the original letter, so the handle
+    // must exist in the mailspace.
+    let need = rig._project.need("diagnose the failed slice attempt");
+    let run = build_run(&need, 2);
     rig.store.insert_run(&run)?;
 
     let task = rig.port.send_step(
@@ -179,7 +181,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         &task_body_with(
             &TaskFront {
                 target: Some("vivi".into()),
-                ..TaskFront::step(need, 2, "slice:a")
+                ..TaskFront::step(&need, 2, "slice:a")
             },
             "",
         ),
@@ -192,7 +194,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         state: StepState::Running,
         verdict: None,
     };
-    rig.store.insert_step(need, &slice)?;
+    rig.store.insert_step(&need, &slice)?;
 
     let mut st = State::default();
     let retried = retry(
@@ -200,7 +202,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         &mut st,
         &rig.store,
         &rig.port,
-        need,
+        &need,
         &slice,
         &failed_job(&task),
         MAX_ATTEMPTS,
@@ -246,13 +248,15 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
 #[test]
 fn attempt_thread_read_errors_are_not_hidden() -> R<()> {
     let rig = rig()?;
-    let need = "need-broken-thread";
-    let early = build_run(need, 1);
-    let late = build_run(need, 2);
+    // The original need exists for real; the slice task stays nonexistent so
+    // the unreadable attempt thread remains the failure under assertion.
+    let need = rig._project.need("a need whose slice thread is unreadable");
+    let early = build_run(&need, 1);
+    let late = build_run(&need, 2);
     rig.store.insert_run(&early)?;
     rig.store.insert_run(&late)?;
     rig.store.insert_step(
-        need,
+        &need,
         &StepRow {
             run: 1,
             node: "slice:ghost".into(),
