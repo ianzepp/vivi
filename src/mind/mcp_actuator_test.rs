@@ -78,6 +78,26 @@ fn tuning(kind: Action) -> ActionRequest {
     ask
 }
 
+/// A filing request with every field the two filing actions can name:
+/// a plain recipient handle, prose, done-when clauses, a target and a
+/// write scope. No need, step or word: filing names no existing item.
+fn filing(kind: Action) -> ActionRequest {
+    let mut ask = request(kind);
+    ask.need = None;
+    ask.step = None;
+    ask.word = None;
+    ask.to = Some("4e5d6c7b".into());
+    ask.subject = Some("check the flaky gate".into());
+    ask.body = Some("The gate flakes on network timeouts; watch one run.".into());
+    ask.done_when = vec![
+        "one clean gate run".into(),
+        "the watch note is filed".into(),
+    ];
+    ask.target = Some("vivi".into());
+    ask.write_scope = vec!["src/gate.rs".into(), "src/gate_test.rs".into()];
+    ask
+}
+
 fn run(request: &ActionRequest) -> (Result<String, String>, Vec<(String, Value)>) {
     let mut actuator = McpActuator::new(Recorder::default());
     let result = actuator.apply(request);
@@ -630,10 +650,115 @@ fn the_server_refusing_a_call_is_the_failure_text() {
 }
 
 #[test]
+fn file_need_is_one_send_carrying_the_whole_filing() {
+    let (result, calls) = run(&filing(Action::FileNeed));
+    assert_eq!(result, Ok("send: send ok".into()));
+    // Exactly one call: the send, and nothing after it.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "send");
+    assert_eq!(
+        calls[0].1,
+        json!({
+            "project": "app",
+            "kind": "need",
+            "to": "4e5d6c7b",
+            "subject": "check the flaky gate",
+            "body": "The gate flakes on network timeouts; watch one run.",
+            "done_when": ["one clean gate run", "the watch note is filed"],
+            "target": "vivi",
+            "write_scope": ["src/gate.rs", "src/gate_test.rs"]
+        })
+    );
+    // Authorship is never sent: the server's authentication owns it.
+    assert!(calls[0].1.get("from").is_none());
+}
+
+#[test]
+fn a_filing_without_a_write_scope_leaves_the_key_out() {
+    let mut unscoped = filing(Action::FileNeed);
+    unscoped.write_scope = Vec::new();
+    let (_, calls) = run(&unscoped);
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.get("write_scope").is_none());
+}
+
+#[test]
+fn file_fix_need_files_the_fix_as_a_real_need_send() {
+    let (result, calls) = run(&filing(Action::FileFixNeed));
+    assert_eq!(result, Ok("send: send ok".into()));
+    // The fix is filed the ordinary way: one need send with the same
+    // fields, no aliasing and no local policy applied here — the vivi-only
+    // fix policy stays the field gate's business, run before the send.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "send");
+    assert_eq!(calls[0].1["kind"], "need");
+    assert_eq!(calls[0].1["target"], "vivi");
+    assert_eq!(
+        calls[0].1["done_when"],
+        json!(["one clean gate run", "the watch note is filed"])
+    );
+    assert!(calls[0].1.get("from").is_none());
+}
+
+#[test]
+fn dispatch_need_is_one_pump_send_with_the_note_as_body() {
+    let mut dispatch = request(Action::DispatchNeed);
+    dispatch.note = Some("run once the gate is green".into());
+    let (result, calls) = run(&dispatch);
+    assert_eq!(result, Ok("pump_send: pump_send ok".into()));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "pump_send");
+    assert_eq!(
+        calls[0].1,
+        json!({
+            "project": "app",
+            "need": "3f9a1c2e",
+            "body": "run once the gate is green"
+        })
+    );
+    // No sender override, and no implicit priority or dispatch rides
+    // along: a later turn consumes the handle first.
+    assert!(calls[0].1.get("from").is_none());
+}
+
+#[test]
+fn dispatch_need_without_a_note_omits_the_body() {
+    let (_, calls) = run(&request(Action::DispatchNeed));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, json!({ "project": "app", "need": "3f9a1c2e" }));
+    assert!(calls[0].1.get("body").is_none());
+}
+
+#[test]
+fn a_server_refusal_on_a_filing_or_dispatch_is_the_failure_text() {
+    for (kind, tool) in [
+        (Action::FileNeed, "send"),
+        (Action::FileFixNeed, "send"),
+        (Action::DispatchNeed, "pump_send"),
+    ] {
+        let mut actuator = McpActuator::new(Recorder {
+            fail_with: Some("the key is not an operator".into()),
+            ..Recorder::default()
+        });
+        let ask = if kind == Action::DispatchNeed {
+            request(kind)
+        } else {
+            filing(kind)
+        };
+        let error = actuator.apply(&ask).unwrap_err();
+        assert_eq!(error, format!("{tool}: the key is not an operator"));
+        // One call, and no retry or second tool after the refusal.
+        assert_eq!(actuator.caller.calls.borrow().len(), 1);
+    }
+}
+
+#[test]
 fn an_action_the_server_cannot_do_yet_is_an_error_that_calls_nothing() {
-    let (result, calls) = run(&request(Action::FileFixNeed));
-    assert!(result.unwrap_err().contains("not wired to the server yet"));
-    assert!(calls.is_empty());
+    for kind in [Action::Upgrade, Action::SelfRelease] {
+        let (result, calls) = run(&request(kind));
+        assert!(result.unwrap_err().contains("not wired to the server yet"));
+        assert!(calls.is_empty());
+    }
     let mut no_project = request(Action::PausePump);
     no_project.project = None;
     let (result, calls) = run(&no_project);
