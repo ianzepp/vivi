@@ -4,17 +4,25 @@
 //! A band is a model at an effort, never a model alone. A role's `model`
 //! field holds a band string such as `P2-S0`; a task body may carry a
 //! `band:` line that overrides the role's band for one assignment. A pool's
-//! `[pools.<name>.bands]` table (see [`super::config_bands`]) says which
-//! choice serves which band; the `S` speed axis is parsed and ignored.
+//! `[pools.<name>.bands]` table (see [`super::config_bands`]) lists the
+//! choices that serve each band, every listed entry taking a share of the
+//! work; the `S` speed axis is parsed and ignored.
 
 pub mod cooldown;
 pub mod guard;
 pub mod live;
 pub mod runtime;
 
+use rand_core::{OsRng, RngCore};
+
 use super::config::PoolConfig;
-use super::config_bands::PoolBands;
+use super::config_bands::{BandChoice, PoolBands};
 use crate::error::VivariumError;
+
+/// The most choices one band's list may hold. Mirrors the configuration cap
+/// (see [`super::config_bands`]): the sampler refuses a longer list rather
+/// than truncating it.
+const MAX_CHOICES: usize = 4;
 
 /// The speed suffixes a band string may carry. Parsed and ignored: the S
 /// axis does not yet change which model-and-reasoning pair serves a band.
@@ -57,27 +65,112 @@ pub struct Choice {
     pub reasoning: String,
 }
 
-/// The model-and-reasoning pair `pool` offers for `band`: one of the choices
-/// in the band's list in the pool's `[pools.<name>.bands]` table.
+/// The model-and-reasoning pair `pool` offers for `band`: sampled by
+/// relative weight over the complete list in the pool's
+/// `[pools.<name>.bands]` table, so every listed entry takes a share of the
+/// work and none is a primary with the rest as spares.
 ///
 /// # Errors
 /// Returns an error naming the band, the pool and the bands the pool does
 /// serve when the pool has nothing for the band: send the job to a pool that
-/// serves it, or pass `--model`.
+/// serves it, or pass `--model`. Returns an error too for a list the
+/// configuration cap refuses, and for an entropy failure of the system
+/// source of randomness.
 pub fn choose(config: &PoolConfig, pool: &str, band: u8) -> Result<Choice, VivariumError> {
-    let Some(entry) = config
+    let mut rng = OsRng;
+    sample_pair(config, pool, band, &mut rng)
+}
+
+/// [`choose`] with the source of randomness injected: the seam [`runtime`]
+/// and the tests share.
+///
+/// # Errors
+/// As [`choose`].
+pub(crate) fn sample_pair<R: RngCore>(
+    config: &PoolConfig,
+    pool: &str,
+    band: u8,
+    rng: &mut R,
+) -> Result<Choice, VivariumError> {
+    let key = format!("P{band}");
+    let list = config
         .bands
         .entries
-        .get(&format!("P{band}"))
-        .and_then(|list| list.first())
-    else {
-        return Err(not_served(pool, band, &config.bands));
-    };
+        .get(&key)
+        .filter(|list| !list.is_empty())
+        .ok_or_else(|| not_served(pool, band, &config.bands))?;
+    let entry = sample(&key, list, rng)?;
     Ok(Choice {
         band,
         model: entry.model.clone(),
         reasoning: entry.reasoning.clone(),
     })
+}
+
+/// Weighted sampling over the complete list of choices a band configures:
+/// every entry takes a share of the work sized by its `weight` (default 1),
+/// drawn by rejection sampling against the weight total, so no entry is a
+/// primary and none is a spare. A single entry returns its pair without
+/// consulting the source of randomness at all.
+///
+/// # Errors
+/// Returns a configuration error for a list longer than the configuration
+/// cap (refusing, not truncating) or an empty list, and passes through an
+/// entropy failure of the source of randomness.
+pub(crate) fn sample<'a, R: RngCore>(
+    key: &str,
+    choices: &'a [BandChoice],
+    rng: &mut R,
+) -> Result<&'a BandChoice, VivariumError> {
+    if choices.len() > MAX_CHOICES {
+        return Err(VivariumError::Config(format!(
+            "bands.{key} holds {} choices; at most {MAX_CHOICES} are allowed \
+             (every listed entry takes a share of the work)",
+            choices.len()
+        )));
+    }
+    let Some(first) = choices.first() else {
+        return Err(VivariumError::Config(format!(
+            "bands.{key} holds no choices; every band needs at least one model"
+        )));
+    };
+    if choices.len() == 1 {
+        return Ok(first);
+    }
+    let total: u64 = choices.iter().map(|c| u64::from(c.weight())).sum();
+    let zone = u64::MAX - u64::MAX % total;
+    loop {
+        let value = draw(rng)?;
+        if value >= zone {
+            continue;
+        }
+        // The entry whose share covers `value % total` wins. The shares sum
+        // past every target below the zone, so `first` is only a start
+        // value: the walk always lands inside some weight.
+        let mut picked = first;
+        let mut left = value % total;
+        for choice in choices {
+            let weight = u64::from(choice.weight());
+            if left < weight {
+                picked = choice;
+                break;
+            }
+            left -= weight;
+        }
+        return Ok(picked);
+    }
+}
+
+/// One uniform `u64` from the source of randomness: an entropy failure is
+/// an error, not a panic.
+fn draw<R: RngCore>(rng: &mut R) -> Result<u64, VivariumError> {
+    let mut bytes = [0u8; 8];
+    rng.try_fill_bytes(&mut bytes).map_err(|e| {
+        VivariumError::Message(format!(
+            "the band sampler lost its source of randomness: {e}"
+        ))
+    })?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 fn not_served(pool: &str, band: u8, bands: &PoolBands) -> VivariumError {
