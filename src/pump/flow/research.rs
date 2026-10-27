@@ -11,7 +11,7 @@ use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{self, StartAction, StartCx, StepHandler};
-use crate::pump::flow::step_inputs::make_read_only;
+use crate::pump::flow::step_inputs::{make_read_only, need_target};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::jobs::JobStore;
 
@@ -85,6 +85,8 @@ impl StepHandler for ResearcherStart {
             &role.name,
             &brief,
         );
+        // The job works on the original need's target, never a fallback.
+        spec.target = need_target(cx.mail, need)?;
         make_read_only(cx.ctx, &mut spec)?;
         Ok(StartAction::Job(Box::new(spec)))
     }

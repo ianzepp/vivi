@@ -5,7 +5,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::JudgeStart;
 use crate::error::VivariumError;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::flow::def::FlowKind;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -34,11 +34,15 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
     let dir = tempdir().map_err(|e| VivariumError::Other(e.to_string()))?;
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let store = PumpStore::open(&dir.path().join(DB_FILENAME))?;
+    let mut mail = FakeMail::new("mind");
+    // A strict read of the original need needs its letter under NEED; the
+    // legacy absent target keeps the synthesized `default` resolution.
+    mail.store_need(NEED, None);
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,
@@ -173,5 +177,118 @@ fn judge_without_an_audit_row_errors() -> Result<(), VivariumError> {
     let rig = rig()?;
     store_row(&rig, "rung-need", json!({"exit": 1, "failing": []}))?;
     assert!(start(&rig).is_err());
+    Ok(())
+}
+
+/// Explicit repository targets, each carrying its own literal main.
+fn target_config(targets: &[(&str, &str)]) -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.targets = targets
+        .iter()
+        .map(|(id, main)| {
+            (
+                (*id).to_string(),
+                PumpTarget {
+                    main: (*main).to_string(),
+                    ..PumpTarget::default()
+                },
+            )
+        })
+        .collect();
+    cfg
+}
+
+/// Store `body` verbatim as the letter under NEED: for bodies the
+/// `store_need` fixture cannot express (malformed TOML, legacy prose).
+fn stored_body(mail: &mut FakeMail, body: &str) {
+    mail.tasks.insert(
+        NEED.to_string(),
+        crate::pump::flow::fake_mail::FakeTask {
+            from: "pump".to_string(),
+            to: "pump".to_string(),
+            subject: "original need".to_string(),
+            body: body.to_string(),
+            depends_on: Vec::new(),
+            replies: Vec::new(),
+            state: crate::pump::flow::mail::TaskState {
+                status: crate::pump::flow::mail::TaskStatus::Open,
+                closer: None,
+                verdict: None,
+            },
+            branch: None,
+            commit: None,
+        },
+    );
+}
+
+#[test]
+fn judge_job_starts_from_the_original_need_target_main() -> Result<(), VivariumError> {
+    // Workspace main "main"; the need's own repository main is "vivi/main".
+    let mut cfg = target_config(&[("vivi", "vivi/main"), ("default", "main")]);
+    cfg.main = String::from("main");
+    let mut rig = rig_with(cfg)?;
+    rig.mail.store_need(NEED, Some("vivi"));
+    store_audit_and_rung(&rig)?;
+
+    let StartAction::Job(spec) = start(&rig)? else {
+        return Err(VivariumError::Other("not a job".into()));
+    };
+
+    assert_eq!(spec.target.as_deref(), Some("vivi"), "{:?}", spec.target);
+    assert_eq!(spec.from_ref.as_deref(), Some("vivi/main"));
+    assert!(spec.read_only);
+    assert_eq!(
+        spec.extra_targets,
+        crate::pump::flow::step_inputs::targets(&rig.ctx)
+    );
+    Ok(())
+}
+
+#[test]
+fn judge_job_starts_from_an_explicit_other_repository_target() -> Result<(), VivariumError> {
+    let mut rig = rig_with(target_config(&[
+        ("vivi", "vivi/main"),
+        ("default", "main-default"),
+    ]))?;
+    rig.mail.store_need(NEED, Some("default"));
+    store_audit_and_rung(&rig)?;
+
+    let StartAction::Job(spec) = start(&rig)? else {
+        return Err(VivariumError::Other("not a job".into()));
+    };
+
+    assert_eq!(spec.target.as_deref(), Some("default"));
+    assert_eq!(spec.from_ref.as_deref(), Some("main-default"));
+    assert!(spec.read_only);
+    Ok(())
+}
+
+#[test]
+fn an_unknown_original_need_target_is_an_error_not_a_fallback() -> Result<(), VivariumError> {
+    let mut rig = rig_with(target_config(&[("vivi", "vivi/main"), ("default", "main")]))?;
+    rig.mail.store_need(NEED, Some("nope"));
+    store_audit_and_rung(&rig)?;
+
+    let Err(error) = start(&rig) else {
+        return Err(VivariumError::Other("start succeeded".into()));
+    };
+
+    assert!(matches!(error, VivariumError::Config(_)), "{error}");
+    assert!(error.to_string().contains("nope"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn a_malformed_original_need_letter_is_an_error_not_a_fallback() -> Result<(), VivariumError> {
+    let mut rig = rig()?;
+    stored_body(&mut rig.mail, "+++\ndone_when = [\n+++\nprose");
+    store_audit_and_rung(&rig)?;
+
+    let Err(error) = start(&rig) else {
+        return Err(VivariumError::Other("start succeeded".into()));
+    };
+
+    assert!(matches!(error, VivariumError::Message(_)), "{error}");
+    assert!(error.to_string().contains(NEED), "{error}");
     Ok(())
 }
