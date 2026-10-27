@@ -3,6 +3,7 @@
 //! [`read_only_wal_index_refused`].
 
 use super::*;
+use rusqlite::config::DbConfig;
 
 /// Sidecar path of `db_path` (`pump.db` maps to `pump.db-shm`: `-shm` is
 /// appended to the full file name, never re-extending it).
@@ -166,6 +167,103 @@ fn allow_database_owner_opens_a_sidecarless_wal_database_for_its_owner() {
         .unwrap();
     assert_eq!(rows, 1);
     drop(conn);
+    drop(dir);
+}
+
+/// Whether `needle` appears anywhere in `haystack` bytes.
+fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+/// A committed record that lives only in the `-wal` file.
+const WAL_ONLY_SENTINEL: &str = "wal-only sentinel";
+
+/// A WAL-mode `mail.sqlite` carrying a committed sentinel that was never
+/// checkpointed into the main database: the writer disables automatic
+/// checkpoint-on-close (`SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`), establishes a
+/// `wal_checkpoint(TRUNCATE)` baseline, commits the sentinel, and closes.
+/// The `-shm` sidecar is removed after the writer is closed, while the
+/// committed `-wal` is left intact. Returns the directory, the database
+/// path, and the main-file bytes captured before the sentinel commit.
+#[cfg(unix)]
+fn uncheckpointed_wal_fixture() -> (tempfile::TempDir, PathBuf, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("mail.sqlite");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t (x TEXT);
+         INSERT INTO t VALUES ('committed row');
+         PRAGMA wal_checkpoint(TRUNCATE);",
+    )
+    .unwrap();
+    let baseline = fs::read(&db).unwrap();
+    conn.execute_batch(&format!("INSERT INTO t VALUES ('{WAL_ONLY_SENTINEL}');"))
+        .unwrap();
+    drop(conn);
+
+    // Checkpoint-on-close is disabled, so the committed sentinel survives
+    // in the WAL: present in the `-wal` bytes, absent from the main file,
+    // whose bytes still equal the pre-commit baseline.
+    let wal = fs::read(sidecar(&db, "-wal")).unwrap();
+    assert!(
+        bytes_contain(&wal, WAL_ONLY_SENTINEL.as_bytes()),
+        "sentinel missing from -wal bytes",
+    );
+    assert!(!bytes_contain(&baseline, WAL_ONLY_SENTINEL.as_bytes()));
+    assert_eq!(fs::read(&db).unwrap(), baseline);
+
+    let _ = fs::remove_file(sidecar(&db, "-shm"));
+    (dir, db, baseline)
+}
+
+/// The owner-granted reader sees committed data that exists only in the
+/// `-wal` file, through ordinary SQLite read-only access (never
+/// `immutable=1`), and never moves it into the main database.
+#[test]
+#[cfg(unix)]
+fn allow_database_owner_reads_committed_uncheckpointed_wal_data() {
+    let (dir, db, baseline) = uncheckpointed_wal_fixture();
+
+    // The strict public form still refuses the same database while the WAL
+    // index is missing, so the owner-granted open below succeeds only
+    // because of the proven owner identity. It creates nothing.
+    let error = Storage::open_mailspace_read_only(dir.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("mail.sqlite-shm"), "{error}");
+    assert!(!sidecar(&db, "-shm").exists());
+
+    let conn = Storage::open_mailspace_connection_read_only(
+        dir.path(),
+        ReadOnlyWalPolicy::AllowDatabaseOwner,
+    )
+    .unwrap();
+    let found: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM t WHERE x = 'wal-only sentinel'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(found, 1);
+    drop(conn);
+
+    // The read-only connection closed without checkpointing the WAL into
+    // the main database: its bytes still equal the pre-commit baseline,
+    // and the committed WAL remains in place.
+    assert_eq!(fs::read(&db).unwrap(), baseline);
+    assert!(sidecar(&db, "-wal").exists());
+    assert!(bytes_contain(
+        &fs::read(sidecar(&db, "-wal")).unwrap(),
+        WAL_ONLY_SENTINEL.as_bytes(),
+    ));
     drop(dir);
 }
 
