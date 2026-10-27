@@ -17,6 +17,7 @@ fn paths() -> MindPaths {
 fn empty_file_is_observe_with_defaults() {
     let config = parse("", paths()).unwrap();
     assert_eq!(config.authority, AuthorityStage::Observe);
+    assert_eq!(config.human_only, HUMAN_ONLY_CATEGORIES);
     assert_eq!(config.heartbeat, "30m");
     assert_eq!(config.heartbeat_secs, 1800);
     assert_eq!(config.proxy_url, DEFAULT_PROXY_URL);
@@ -63,6 +64,45 @@ fn full_file_parses() {
             max_wakes_per_hour: 4,
         }
     );
+}
+
+#[test]
+fn human_only_defaults_and_overrides() {
+    // Omitted: every category is human-only.
+    assert_eq!(
+        parse("", paths()).unwrap().human_only,
+        HUMAN_ONLY_CATEGORIES
+    );
+    // An explicit subset survives as written.
+    let config = parse("human_only = [\"releases\", \"product-intent\"]", paths()).unwrap();
+    assert_eq!(
+        config.human_only,
+        vec![
+            HumanOnlyCategory::Releases,
+            HumanOnlyCategory::ProductIntent,
+        ]
+    );
+    assert_eq!(config.human_only[0].as_str(), "releases");
+    // Empty is valid and asks the operator for nothing.
+    assert!(
+        parse("human_only = []", paths())
+            .unwrap()
+            .human_only
+            .is_empty()
+    );
+    // Unknown categories are refused.
+    let error = parse("human_only = [\"root\"]", paths())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown variant"), "{error}");
+    // Malformed values are refused.
+    for text in [
+        "human_only = \"credentials\"",
+        "human_only = [1]",
+        "human_only = [\"credentials\", 2]",
+    ] {
+        assert!(parse(text, paths()).is_err(), "{text}");
+    }
 }
 
 #[test]

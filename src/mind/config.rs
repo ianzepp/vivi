@@ -1,4 +1,5 @@
-//! `mind.toml`: the mind's authority stage, wake heartbeat, and paths.
+//! `mind.toml`: the mind's authority stage, the human-only policy, wake
+//! heartbeat, and paths.
 //!
 //! The file sits next to the host registry, at
 //! `<config_dir>/vivi/mind.toml` (`VIVI_CONFIG_DIR` overrides
@@ -7,6 +8,10 @@
 //!
 //! ```toml
 //! authority = "observe"          # observe | unstick | file-fixes
+//! # Action kinds the mind asks the human operator to perform. Omitted:
+//! # all five; `[]` asks for nothing. Loaded once; changes need a
+//! # service restart.
+//! # human_only = ["releases", "product-intent"]
 //! heartbeat = "30m"
 //! proxy_url = "http://127.0.0.1:18180"
 //! pi_command = "pi"
@@ -89,6 +94,49 @@ impl AuthorityStage {
     }
 }
 
+/// Which kinds of action the mind routes to the human operator instead of
+/// doing itself. Category membership permits asking for human action; it
+/// grants no authority to perform that action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HumanOnlyCategory {
+    /// Money movement and account administration.
+    SpendingAndAccounts,
+    /// Secrets, keys and access grants.
+    Credentials,
+    /// Root-level control of the host.
+    HostRoot,
+    /// Cutting and shipping releases.
+    Releases,
+    /// Product direction and roadmap.
+    ProductIntent,
+}
+
+impl HumanOnlyCategory {
+    /// The kebab-case name, as written in `mind.toml`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SpendingAndAccounts => "spending-and-accounts",
+            Self::Credentials => "credentials",
+            Self::HostRoot => "host-root",
+            Self::Releases => "releases",
+            Self::ProductIntent => "product-intent",
+        }
+    }
+}
+
+/// Every human-only category, in canonical order. Omitting `human_only`
+/// selects all of them: the mind asks, the human operator gets only what
+/// is theirs.
+pub const HUMAN_ONLY_CATEGORIES: &[HumanOnlyCategory] = &[
+    HumanOnlyCategory::SpendingAndAccounts,
+    HumanOnlyCategory::Credentials,
+    HumanOnlyCategory::HostRoot,
+    HumanOnlyCategory::Releases,
+    HumanOnlyCategory::ProductIntent,
+];
+
 /// Per-need action budgets and the wake rate cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Budgets {
@@ -114,6 +162,11 @@ impl Default for Budgets {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MindConfig {
     pub authority: AuthorityStage,
+    /// Which action kinds the mind asks the human operator to perform:
+    /// every category when `human_only` is absent, exactly as written
+    /// otherwise (`[]` asks for nothing). Loaded once; changes need a
+    /// service restart.
+    pub human_only: Vec<HumanOnlyCategory>,
     /// Heartbeat as written (`30m`), for the role schedule helpers.
     pub heartbeat: String,
     pub heartbeat_secs: u64,
@@ -180,6 +233,7 @@ impl MindPaths {
 #[serde(deny_unknown_fields)]
 struct FileFormat {
     authority: Option<AuthorityStage>,
+    human_only: Option<Vec<HumanOnlyCategory>>,
     heartbeat: Option<String>,
     proxy_url: Option<String>,
     pi_command: Option<String>,
@@ -269,7 +323,8 @@ pub fn load_at(path: &Path, home: &Path) -> Result<MindConfig, VivariumError> {
 ///
 /// # Errors
 /// Fails on invalid TOML, an unknown key, a bad duration, a non-loopback
-/// proxy, or an authority stage this build does not implement.
+/// proxy, an unknown or malformed `human_only` value, or an authority
+/// stage this build does not implement.
 pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumError> {
     let file: FileFormat = toml::from_str(text)
         .map_err(|error| VivariumError::Config(format!("invalid mind.toml: {error}")))?;
@@ -280,6 +335,9 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
             authority.as_str()
         )));
     }
+    let human_only = file
+        .human_only
+        .unwrap_or_else(|| HUMAN_ONLY_CATEGORIES.to_vec());
     let heartbeat = file
         .heartbeat
         .unwrap_or_else(|| DEFAULT_HEARTBEAT.to_string());
@@ -296,6 +354,7 @@ pub fn parse(text: &str, mut paths: MindPaths) -> Result<MindConfig, VivariumErr
     }
     Ok(MindConfig {
         authority,
+        human_only,
         heartbeat,
         heartbeat_secs,
         proxy_url,
