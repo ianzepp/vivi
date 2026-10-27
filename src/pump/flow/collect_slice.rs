@@ -248,7 +248,7 @@ where
         };
         let resolution = resolve(self.store, self.mail, &journal, request)?;
         match resolution {
-            Resolution::Widen(_) => self.redispatch(step, row.attempt),
+            Resolution::Widen(_) => self.redispatch(step, row.attempt, &journal.source),
             Resolution::WaitOn(_) => {
                 self.store
                     .set_step_state(&step.task, StepState::Waiting, None)
@@ -312,7 +312,12 @@ where
         .map(|_| ())
     }
 
-    pub(crate) fn redispatch(&mut self, step: &StepRow, attempt: u32) -> Result<(), VivariumError> {
+    pub(crate) fn redispatch(
+        &mut self,
+        step: &StepRow,
+        attempt: u32,
+        source: &str,
+    ) -> Result<(), VivariumError> {
         slice_dispatch::redispatch_scope(
             self.ctx,
             self.st,
@@ -321,6 +326,7 @@ where
             &self.run.need,
             step,
             attempt,
+            source,
         )
         .map(|_| ())
     }
@@ -343,7 +349,10 @@ where
         Ok(rows)
     }
 
-    /// A `scope-wait` slice whose holders all closed goes out again.
+    /// A `scope-wait` slice whose holders all closed goes out again. The wait
+    /// is retrieved as a request key first and only forgotten once the
+    /// continuation was enqueued and indexed: a crash in between resumes the
+    /// same request instead of losing it.
     pub(crate) fn release_one(&mut self, step: &StepRow) -> Result<(), VivariumError> {
         let mut all_closed = true;
         for holder in wait_holders(self.store, &step.task)? {
@@ -355,12 +364,23 @@ where
             all_closed &= state.status == TaskStatus::Done && landed;
         }
         if all_closed {
+            let source = self.wait_source(step)?;
             grant_held(self.store, &step.task)?;
             let attempt = self.current_attempt(&step.task)?;
-            self.redispatch(step, attempt)?;
+            self.redispatch(step, attempt, &source)?;
             finish_grant(self.store, &step.task)?;
         }
         Ok(())
+    }
+
+    /// The request key the slice's scope wait belongs to: the journal's
+    /// recorded waiting request when one exists, else the adopted source of a
+    /// pre-journal wait.
+    fn wait_source(&self, step: &StepRow) -> Result<String, VivariumError> {
+        if let Some(row) = self.store.waiting_scope_request(&step.task)? {
+            return Ok(row.source);
+        }
+        scope_replay::adopt_legacy_wait(self.store, self.st, &self.run.need, step)
     }
 
     /// The attempt of the newest job row of the slice `task`, from step_jobs.
@@ -377,6 +397,8 @@ where
         }
     }
 }
+
+mod scope_replay;
 
 #[cfg(test)]
 #[path = "collect_slice_test.rs"]
