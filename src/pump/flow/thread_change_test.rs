@@ -167,6 +167,16 @@ fn a_reply_in_a_locked_run_raises_once_and_starts_nothing() -> R {
     let raised = rig.exceptions();
     assert_eq!(raised.matches(THREAD_CHANGED).count(), 1, "{raised}");
     assert!(raised.contains(&rig.need), "{raised}");
+    // Ownership: the mind chooses the remedy, and lock release is an explicit
+    // unlock — not a step answer or an operator instruction.
+    assert!(
+        raised.contains("Mind: choose a supported pump action"),
+        "{raised}"
+    );
+    assert!(raised.contains("vivi pump unlock"), "{raised}");
+    assert!(raised.contains("is the only lock release"), "{raised}");
+    assert!(!raised.contains("Operator:"), "{raised}");
+    assert!(!raised.contains("answer the step"), "{raised}");
     Ok(())
 }
 
@@ -177,7 +187,16 @@ fn a_reply_after_merge_main_started_raises_and_does_not_restart() -> R {
     rig.reply_as("operator")?;
     rig.phase()?;
     assert_eq!(rig.runs()?, [(1, "plan".into(), "live".into())]);
-    assert_eq!(rig.exceptions().matches(THREAD_CHANGED).count(), 1);
+    let raised = rig.exceptions();
+    assert_eq!(raised.matches(THREAD_CHANGED).count(), 1);
+    // Ownership: the mind chooses; a merge under way is not presented as
+    // safely restartable by a reply.
+    assert!(
+        raised.contains("Mind: choose a supported pump action"),
+        "{raised}"
+    );
+    assert!(raised.contains("never restarted by a reply"), "{raised}");
+    assert!(!raised.contains("Operator:"), "{raised}");
     Ok(())
 }
 
