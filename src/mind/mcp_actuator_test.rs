@@ -1,4 +1,5 @@
-//! Turning each permitted action into its one server tool call.
+//! Turning each permitted action into its one server tool call, and the
+//! bounded, action-aware rendering of what comes back.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -6,6 +7,9 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use super::{HttpCaller, McpActuator, ToolCaller};
+use crate::letter::records::NoteWord;
+use crate::letter::work::JobFront;
+use crate::mailspace::pump_note::{brief_body, note_body};
 use crate::mind::actions::{ActionRequest, Actuator};
 use crate::mind::authority::Action;
 
@@ -805,4 +809,227 @@ fn the_key_file_is_read_trimmed_and_must_not_be_empty() {
     );
     std::fs::write(&key, "secret-key\n").unwrap();
     assert!(HttpCaller::from_key_file("http://x", &key).is_ok());
+}
+
+// --- rendering ---
+
+/// A caller that answers every call with one canned answer.
+struct Canned(String);
+
+impl ToolCaller for Canned {
+    fn call(&self, _tool: &str, _arguments: &Value) -> Result<String, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// Apply one action against a canned answer and return the receipt.
+fn rendered(kind: Action, answer: &str) -> String {
+    McpActuator::new(Canned(answer.to_string()))
+        .apply(&request(kind))
+        .unwrap()
+}
+
+/// A real attempt-record letter: a `pump.note = "attempt"` note whose
+/// prose carries the record's header, the failing command and an excerpt.
+fn attempt_letter(outcome: &str, filler: &str) -> String {
+    note_body(
+        NoteWord::Attempt,
+        Some(outcome),
+        &format!(
+            "pump: attempt record\n\
+             attempt: 3f9a1c2e-t1-a2\n\
+             need: 3f9a1c2e\n\
+             outcome: {outcome}\n\
+             failing command:\n\
+               cargo test --lib\n\
+             excerpt:\n\
+               assertion failed: gate green\n\
+             hand's final message:\n\
+               {filler}\n"
+        ),
+    )
+    .unwrap()
+}
+
+/// A real job-summary letter: a `pump.note = "brief"` note with a `[job]`
+/// table — never an attempt record.
+fn brief_letter() -> String {
+    brief_body(
+        JobFront {
+            id: "job-9".into(),
+            kind: "hand".into(),
+            builtin_role: None,
+        },
+        "the job started and said nothing",
+    )
+    .unwrap()
+}
+
+/// A `task_thread`-shaped answer: a very long root letter first, a long
+/// ordinary hand reply, then the newest attempt record.
+fn task_thread_answer(root_body: &str, hand_body: &str, attempt_body: &str) -> String {
+    json!({
+        "handle": "3f9a1c2e-t1",
+        "state": "active",
+        "event": {"state": "active", "event": "task-attempt", "heads": ["t1"]},
+        "messages": [
+            {"handle": "t1root", "kind": "task", "role": "pump",
+             "subject": "slice the gate", "body": root_body},
+            {"handle": "t1hand", "kind": "mail", "role": "hand",
+             "subject": "re: slice the gate", "body": hand_body},
+            {"handle": "t1att", "kind": "mail", "role": "pump",
+             "subject": "attempt-failed", "body": attempt_body}
+        ],
+        "total": 9,
+        "truncated": true,
+        "next_before": "t1root"
+    })
+    .to_string()
+}
+
+#[test]
+fn a_task_thread_render_puts_attempt_evidence_before_the_long_root() {
+    let root = format!("slice brief: {}", "root prose. ".repeat(900));
+    let hand = format!("progress: {}", "hand prose. ".repeat(900));
+    let answer = task_thread_answer(&root, &hand, &attempt_letter("failed", "it broke"));
+    let receipt = rendered(Action::ReadTaskThread, &answer);
+    // The page facts come first, before any body.
+    let anchor = receipt.find("handle: 3f9a1c2e-t1").unwrap();
+    assert!(receipt.contains("state: active"));
+    assert!(receipt.contains("event: state=active event=task-attempt heads=[\"t1\"]"));
+    assert!(receipt.contains("messages: 3 of 9 shown, older letters exist"));
+    assert!(receipt.contains("next_before: t1root (read older letters with before=t1root)"));
+    // The attempt record's evidence survives: handle, outcome, failing
+    // command, excerpt.
+    let attempt = receipt.find("attempt t1att outcome: failed").unwrap();
+    assert!(receipt.contains("failing command: cargo test --lib"));
+    assert!(receipt.contains("excerpt: assertion failed: gate green"));
+    // Attempts come before the long root and hand messages.
+    assert!(attempt < receipt.find("t1root task").unwrap());
+    assert!(attempt < receipt.find("t1hand mail").unwrap());
+    // Every available handle survives, the long bodies are visibly cut,
+    // and the whole receipt stays within the shared allowance.
+    assert!(receipt.contains("t1root"));
+    assert!(receipt.contains("t1hand"));
+    assert!(receipt.contains("[body cut:"));
+    assert!(receipt.chars().count() <= super::ACTION_RESULT_ALLOWANCE);
+    assert!(anchor < attempt);
+}
+
+#[test]
+fn a_complete_thread_render_carries_no_continuation_cursor() {
+    let answer = json!({
+        "handle": "n1",
+        "state": "done",
+        "event": null,
+        "messages": [
+            {"handle": "n1letter", "kind": "need", "role": "operator",
+             "subject": "filed", "body": "the need's own letter"}
+        ],
+        "total": 1,
+        "truncated": false
+    });
+    let receipt = rendered(Action::ReadNeedThread, &answer.to_string());
+    assert!(receipt.contains("messages: 1 of 1 shown, complete"));
+    assert!(receipt.contains("event: none"));
+    assert!(!receipt.contains("next_before"));
+    assert!(receipt.contains("n1letter need from=operator subject: filed"));
+    assert!(receipt.contains("the need's own letter"));
+    // A need thread has no attempt section: messages render plainly.
+    assert!(!receipt.contains("attempt "));
+}
+
+#[test]
+fn ordinary_replies_and_job_summaries_are_never_attempt_evidence() {
+    let answer = json!({
+        "handle": "3f9a1c2e-t1",
+        "state": "active",
+        "event": null,
+        "messages": [
+            {"handle": "t1brief", "kind": "mail", "role": "pump",
+             "subject": "brief", "body": brief_letter()},
+            {"handle": "t1said", "kind": "mail", "role": "hand",
+             "subject": "re: slice", "body": "a plain reply that only claims to be an attempt record"}
+        ],
+        "total": 2,
+        "truncated": false
+    });
+    let receipt = rendered(Action::ReadTaskThread, &answer.to_string());
+    // The brief (job summary) and the plain reply render as ordinary
+    // messages, never as attempt records.
+    assert!(!receipt.contains("attempt t1brief"));
+    assert!(!receipt.contains("attempt t1said"));
+    assert!(receipt.contains("t1brief mail from=pump subject: brief"));
+    assert!(receipt.contains("the job started and said nothing"));
+}
+
+#[test]
+fn a_large_successful_diagnostic_answer_stays_within_the_allowance() {
+    let answer = json!({"project": "app", "rows": "x".repeat(40_000)}).to_string();
+    let receipt = rendered(Action::ReadConfig, &answer);
+    assert!(receipt.starts_with("config_show: "));
+    assert!(receipt.chars().count() <= super::ACTION_RESULT_ALLOWANCE);
+    assert!(receipt.ends_with("[cut]"));
+}
+
+#[test]
+fn a_large_tool_failure_is_bounded_under_its_tool_name() {
+    let mut actuator = McpActuator::new(Recorder {
+        fail_with: Some("refused: ".repeat(2_000)),
+        ..Recorder::default()
+    });
+    let error = actuator
+        .apply(&request(Action::ReadNeedThread))
+        .unwrap_err();
+    assert!(error.starts_with("need_thread: refused: "));
+    assert!(error.ends_with("[cut]"));
+    assert!(error.chars().count() <= "need_thread: ".len() + 1500);
+}
+
+#[test]
+fn a_malformed_diagnostic_answer_is_bounded_text() {
+    let answer = format!("not json {{ {}", "y".repeat(30_000));
+    let receipt = rendered(Action::ReadTaskThread, &answer);
+    assert!(receipt.starts_with("task_thread: not json"));
+    assert!(receipt.chars().count() <= super::ACTION_RESULT_ALLOWANCE);
+    assert!(receipt.ends_with("[cut]"));
+}
+
+#[test]
+fn unicode_bodies_cut_on_characters_within_the_allowance() {
+    let body = "🦀é中".repeat(12_000);
+    let answer = json!({
+        "handle": "u1",
+        "state": "open",
+        "event": null,
+        "messages": [
+            {"handle": "u1letter", "kind": "need", "role": "operator",
+             "subject": "unicode", "body": body}
+        ],
+        "total": 1,
+        "truncated": false
+    });
+    let receipt = rendered(Action::ReadNeedThread, &answer.to_string());
+    assert!(receipt.contains("handle: u1"));
+    assert!(receipt.contains("[body cut:"));
+    assert!(receipt.chars().count() <= super::ACTION_RESULT_ALLOWANCE);
+}
+
+#[test]
+fn a_need_show_render_surfaces_identity_before_its_text() {
+    let answer = json!({
+        "item": {
+            "handle": "3f9a1c2e", "kind": "need", "status": "open",
+            "subject": "check the flaky gate"
+        },
+        "text": format!("need body {}", "detail. ".repeat(3_000))
+    });
+    let receipt = rendered(Action::ReadNeed, &answer.to_string());
+    let handle = receipt.find("handle: 3f9a1c2e").unwrap();
+    let status = receipt.find("kind: need  status: open").unwrap();
+    let subject = receipt.find("subject: check the flaky gate").unwrap();
+    let text = receipt.find("text:").unwrap();
+    assert!(handle < status && status < subject && subject < text);
+    assert!(receipt.contains("[body cut:"));
+    assert!(receipt.chars().count() <= super::ACTION_RESULT_ALLOWANCE);
 }
