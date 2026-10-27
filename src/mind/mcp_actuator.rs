@@ -8,6 +8,7 @@
 //! tool's error text, which the session sees on its next turn.
 
 mod calls;
+mod render;
 
 use std::path::Path;
 
@@ -17,8 +18,12 @@ use super::actions::{ActionRequest, Actuator};
 use crate::mcp::HttpUpstream;
 use crate::mcp::client::{Client, result_is_error, result_text};
 
-/// Longest tool answer kept in a receipt.
-const MAX_RECEIPT: usize = 1500;
+/// Shared action-result allowance, in characters: the longest action
+/// receipt kept for the prompt boundary. The diagnostic render budgets
+/// every read receipt to fit inside it, and the prompt's own action-result
+/// rendering reuses the same bound so a receipt is never cut twice by
+/// accident.
+pub(crate) const ACTION_RESULT_ALLOWANCE: usize = 16_000;
 
 /// One tool call: name and arguments.
 type Call = (&'static str, Value);
@@ -108,22 +113,13 @@ impl<C: ToolCaller> Actuator for McpActuator<C> {
         let answer = self
             .caller
             .call(tool, &arguments)
-            .map_err(|error| format!("{tool}: {error}"))?;
-        Ok(format!("{tool}: {}", clip(&answer)))
+            .map_err(|error| render::failure(tool, &error))?;
+        Ok(render::receipt(request.kind, tool, &answer))
     }
 
     fn feeds_back(&self) -> bool {
         true
     }
-}
-
-fn clip(text: &str) -> String {
-    let text = text.trim();
-    if text.chars().count() <= MAX_RECEIPT {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(MAX_RECEIPT).collect();
-    format!("{kept}\n[cut]")
 }
 
 #[cfg(test)]
