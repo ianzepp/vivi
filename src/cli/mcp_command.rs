@@ -12,14 +12,15 @@ pub struct McpCommand {
     #[command(subcommand)]
     pub command: Option<McpSubcommand>,
 
-    /// Base URL of the project server (default: VIVI_MCP_SERVER, then
-    /// [sync] server in mailspace.toml)
+    /// Base URL of the project server (default: VIVI_MCP_SERVER, then the
+    /// nearest mailspace's [remote] server, then its [sync] server, then the
+    /// local server in $VIVI_HOME/server/config.toml)
     #[arg(long, global = true, value_name = "URL")]
     pub server: Option<String>,
 
     /// The project id on the server, sent as the `project` argument of
     /// `vivi mcp call` when the tool takes one (default: VIVI_MCP_PROJECT_ID,
-    /// then [sync] project); it is not part of the URL
+    /// then [remote] project, then [sync] project); it is not part of the URL
     #[arg(long, global = true, value_name = "ID")]
     pub project_id: Option<String>,
 

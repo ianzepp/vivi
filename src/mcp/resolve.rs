@@ -94,8 +94,8 @@ pub fn resolve(
     let server = required(
         server,
         &mut missing,
-        "server: give --server <URL>, or set VIVI_MCP_SERVER, or set [sync] server in \
-         mailspace.toml",
+        "server: give --server <URL>, or set VIVI_MCP_SERVER, or set [remote] or [sync] \
+         server in mailspace.toml, or run vivi server init on this machine",
     );
     let api_key = required(
         api_key,

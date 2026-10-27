@@ -205,37 +205,62 @@ fn serve_quietly(config: &BridgeConfig) -> Result<(), VivariumError> {
 }
 
 /// What the mailspace named by `--project` (or the nearest ancestor of the
-/// current directory holding `.vivi/mailspace.toml`) offers. An absent
-/// mailspace is `None`, not an error: the bridge may run with no mailspace
-/// at all, and nothing is created here.
+/// current directory holding `.vivi/mailspace.toml`) offers: `[remote]`
+/// server and project, else `[sync]`, and for the server alone the local
+/// server home. An absent mailspace is not an error: the bridge may run with
+/// no mailspace at all, and nothing is created here.
 fn mailspace_source(project: Option<&Path>) -> Result<Option<MailspaceSource>, VivariumError> {
     let root = match project {
         Some(root) => Some(root.to_path_buf()),
         None => mailspace_root(std::env::current_dir()?),
     };
-    let Some(root) = root else {
+    let (mut server, mut project) = (None, None);
+    if let Some(root) = root {
+        // Read the values straight from the file: opening the mailspace
+        // would repair and rewrite it, and a read must not write.
+        #[derive(serde::Deserialize, Default)]
+        struct Table {
+            server: Option<String>,
+            project: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct File {
+            remote: Option<Table>,
+            sync: Option<Table>,
+        }
+        let path = root.join(".vivi").join("mailspace.toml");
+        let text = std::fs::read_to_string(&path)?;
+        let file: File = toml::from_str(&text)
+            .map_err(|e| VivariumError::Other(format!("{}: {e}", path.display())))?;
+        let remote = file.remote.unwrap_or_default();
+        let sync = file.sync.unwrap_or_default();
+        server = remote.server.or(sync.server);
+        project = remote.project.or(sync.project);
+    }
+    let server = server.or_else(local_server_url);
+    if server.is_none() && project.is_none() {
         return Ok(None);
-    };
-    // Read the two values straight from the file: opening the mailspace
-    // would repair and rewrite it, and a read must not write.
-    #[derive(serde::Deserialize, Default)]
-    struct Sync {
-        server: Option<String>,
-        project: Option<String>,
     }
+    Ok(Some(MailspaceSource { server, project }))
+}
+
+/// The URL of the server whose home is `$VIVI_HOME/server`, when its
+/// `config.toml` exists: `http://<bind>:<port>`, a wildcard bind meaning
+/// loopback. Only `bind` and `port` are read.
+fn local_server_url() -> Option<String> {
     #[derive(serde::Deserialize)]
-    struct File {
-        sync: Option<Sync>,
+    struct Config {
+        bind: Option<String>,
+        port: Option<u16>,
     }
-    let path = root.join(".vivi").join("mailspace.toml");
-    let text = std::fs::read_to_string(&path)?;
-    let file: File = toml::from_str(&text)
-        .map_err(|e| VivariumError::Other(format!("{}: {e}", path.display())))?;
-    let sync = file.sync.unwrap_or_default();
-    Ok(Some(MailspaceSource {
-        server: sync.server,
-        project: sync.project,
-    }))
+    let path = vivi::home::server_home().ok()?.join("config.toml");
+    let config: Config = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let bind = match config.bind.as_deref() {
+        None | Some("" | "0.0.0.0" | "::" | "[::]") => "127.0.0.1".to_string(),
+        Some(bind) if bind.contains(':') && !bind.starts_with('[') => format!("[{bind}]"),
+        Some(bind) => bind.to_string(),
+    };
+    Some(format!("http://{bind}:{}", config.port.unwrap_or(8080)))
 }
 
 /// The nearest ancestor of `start` holding `.vivi/mailspace.toml`.
