@@ -6,15 +6,16 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, branch, prior, record_base, register,
-    tip,
+    DELETING, FRESH, LIVE, PRUNED, RENAME_FAILED, RENAMING, branch, branch_ready, prior,
+    record_base, register, tip,
 };
+use crate::error::VivariumError;
 use crate::pump::config::PumpConfig;
 use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::RunRow;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::jobs::{JobOutcome, JobStatus, JobStore, PoolJob};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
 use crate::routing::RoutedRole;
 
@@ -201,17 +202,25 @@ fn with_merge_role(f: Fixture) -> Fixture {
     }
 }
 
+fn run_row(need: &str, run: u32, kind: &str, entry: &str) -> RunRow {
+    RunRow {
+        need: need.into(),
+        run,
+        flow: kind.into(),
+        flow_version: 2,
+        kind: kind.into(),
+        entry: entry.into(),
+        state: "live".into(),
+    }
+}
+
 fn start_run(f: &Fixture, run: u32, entry: &str) {
+    start_run_kind(f, run, "build", entry);
+}
+
+fn start_run_kind(f: &Fixture, run: u32, kind: &str, entry: &str) {
     f.store
-        .insert_run(&RunRow {
-            need: NEED.into(),
-            run,
-            flow: "build".into(),
-            flow_version: 2,
-            kind: "build".into(),
-            entry: entry.into(),
-            state: "live".into(),
-        })
+        .insert_run(&run_row(NEED, run, kind, entry))
         .unwrap();
 }
 
@@ -250,6 +259,38 @@ fn finish(jobs: &mut Jobs, id: &str, status: JobStatus, receipt: &str) {
     });
 }
 
+/// Seed the durable legacy of an interrupted move: the rename job exists and
+/// already finished, while the row still says `renaming`.
+fn seed_finished_rename(jobs: &mut Jobs) {
+    let mut spec = JobSpec::new(
+        format!("need-prior-{NEED}-r1"),
+        "need-branch-rename",
+        "merge",
+        "move the need branch to its prior name",
+        "move the need branch to its prior name.\n",
+    );
+    spec.command = Some(String::from("true"));
+    spec.target = Some("default".into());
+    spec.from_ref = Some(OLD_TIP.into());
+    spec.branch = Some(prior(NEED, 1));
+    spec.publish_ref = Some(format!("refs/heads/{}", prior(NEED, 1)));
+    spec.publish_expect = Some(OLD_TIP.into());
+    crate::pump::jobs::enqueue(jobs, spec).unwrap();
+    finish(
+        jobs,
+        &format!("need-prior-{NEED}-r1"),
+        JobStatus::Finished,
+        PUBLISHED,
+    );
+}
+
+fn ran_ls_remote(f: &Fixture) -> bool {
+    f.host
+        .commands()
+        .iter()
+        .any(|cmd| cmd.contains("ls-remote"))
+}
+
 fn alarms(f: &Fixture) -> usize {
     std::fs::read_to_string(f.ctx.home.join("exceptions.txt"))
         .unwrap_or_default()
@@ -283,11 +324,162 @@ fn a_rework_restart_keeps_the_branch_and_moves_the_run() {
     );
 }
 
+/// Any build entry adopts the row: run ownership moves, and branch, target,
+/// base and priors are preserved. No job is started, no alarm is raised and
+/// no remote is queried.
+fn assert_adopted(f: &Fixture, jobs: &Jobs, run: u32) {
+    let stored = f.store.need_branch(NEED).unwrap().unwrap();
+    assert_eq!(stored.need, NEED);
+    assert_eq!(stored.run, run);
+    assert_eq!(stored.status, LIVE);
+    assert_eq!(stored.branch, branch(NEED));
+    assert_eq!(stored.target, "default");
+    assert_eq!(stored.base.as_deref(), Some(MAIN_A));
+    assert_eq!(stored.priors, vec![prior(NEED, 1)]);
+    assert!(jobs.0.is_empty(), "a continuing run starts no jobs");
+    assert_eq!(alarms(f), 0);
+    assert!(!ran_ls_remote(f), "adoption queries no remote");
+}
+
 #[test]
-fn a_plan_restart_renames_the_branch_then_deletes_the_old_name() {
+fn plan_restart_preserves_merged_work() {
     let f = with_merge_role(fixture());
     f.store.upsert_need_branch(&live_row(1)).unwrap();
     start_run(&f, 2, "plan");
+    let mut jobs = Jobs::default();
+    tick(&f, &mut jobs);
+    tick(&f, &mut jobs);
+    assert_adopted(&f, &jobs, 2);
+    // The base of run 1 survives: a replacement main tip is never consulted.
+    main_tip(&f.host, MAIN_B);
+    assert_eq!(
+        record_base(&f.ctx, &f.store, NEED, 2, "default").unwrap(),
+        MAIN_A
+    );
+    assert_eq!(
+        f.store.need_branch(NEED).unwrap().unwrap().base.as_deref(),
+        Some(MAIN_A)
+    );
+}
+
+#[test]
+fn slice_restart_preserves_merged_work() {
+    let f = with_merge_role(fixture());
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    start_run(&f, 2, "slice");
+    let mut jobs = Jobs::default();
+    tick(&f, &mut jobs);
+    assert_adopted(&f, &jobs, 2);
+}
+
+#[test]
+fn a_research_entry_also_continues_the_branch() {
+    let f = with_merge_role(fixture());
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    start_run(&f, 2, "research");
+    let mut jobs = Jobs::default();
+    tick(&f, &mut jobs);
+    assert_adopted(&f, &jobs, 2);
+}
+
+#[test]
+fn repeated_restart_preserves_original_review_base() {
+    let f = with_merge_role(fixture());
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    let mut jobs = Jobs::default();
+    start_run(&f, 2, "plan");
+    tick(&f, &mut jobs);
+    start_run(&f, 3, "rework1");
+    tick(&f, &mut jobs);
+    tick(&f, &mut jobs);
+    assert_adopted(&f, &jobs, 3);
+    assert_eq!(
+        record_base(&f.ctx, &f.store, NEED, 3, "default").unwrap(),
+        MAIN_A
+    );
+}
+
+#[test]
+fn a_foreign_target_is_refused_before_any_mutation_or_base_return() {
+    let f = fixture();
+    // Ownership is already current, so the old code returned the base before
+    // ever looking at the target.
+    f.store.upsert_need_branch(&live_row(2)).unwrap();
+    let err = record_base(&f.ctx, &f.store, NEED, 2, "other").unwrap_err();
+    assert!(matches!(err, VivariumError::Config(_)), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("other") && text.contains("default"), "{text}");
+    assert_eq!(f.store.need_branch(NEED).unwrap().unwrap(), live_row(2));
+    assert!(!ran_ls_remote(&f));
+}
+
+#[test]
+fn a_stale_live_base_is_kept_and_recording_is_idempotent() {
+    let f = fixture();
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    main_tip(&f.host, MAIN_B);
+    assert_eq!(
+        record_base(&f.ctx, &f.store, NEED, 2, "default").unwrap(),
+        MAIN_A
+    );
+    assert_eq!(
+        record_base(&f.ctx, &f.store, NEED, 2, "default").unwrap(),
+        MAIN_A
+    );
+    assert_eq!(f.store.need_branch(NEED).unwrap().unwrap(), live_row(1));
+    assert!(!ran_ls_remote(&f));
+}
+
+#[test]
+fn branch_ready_gates_startup_on_the_row() {
+    let f = fixture();
+    let run = run_row(NEED, 2, "build", "plan");
+    assert!(
+        branch_ready(&f.store, &run).unwrap(),
+        "no row permits startup"
+    );
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    assert!(
+        !branch_ready(&f.store, &run).unwrap(),
+        "a stale live row waits"
+    );
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            status: RENAMING.into(),
+            ..live_row(2)
+        })
+        .unwrap();
+    assert!(!branch_ready(&f.store, &run).unwrap(), "renaming waits");
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            status: DELETING.into(),
+            ..live_row(2)
+        })
+        .unwrap();
+    assert!(!branch_ready(&f.store, &run).unwrap(), "deleting waits");
+    f.store.upsert_need_branch(&live_row(2)).unwrap();
+    assert!(
+        branch_ready(&f.store, &run).unwrap(),
+        "this run's row permits startup"
+    );
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            base: None,
+            status: FRESH.into(),
+            ..row(FRESH, 2)
+        })
+        .unwrap();
+    assert!(
+        branch_ready(&f.store, &run).unwrap(),
+        "a fresh row of this run permits startup"
+    );
+}
+
+#[test]
+fn a_release_restart_renames_the_branch_then_deletes_the_old_name() {
+    let f = with_merge_role(fixture());
+    f.store.upsert_need_branch(&live_row(1)).unwrap();
+    start_run_kind(&f, 2, "release", "wait");
     old_branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
 
@@ -342,11 +534,51 @@ fn a_plan_restart_renames_the_branch_then_deletes_the_old_name() {
     assert_eq!(jobs.0.len(), 2);
 }
 
+/// A build run that finds a seeded `renaming` row - a durable legacy
+/// transition - finishes the move instead of adopting the row.
 #[test]
-fn a_restart_with_no_remote_branch_resets_the_row_at_once() {
+fn a_build_run_finishes_a_seeded_legacy_move() {
+    let f = with_merge_role(fixture());
+    f.store
+        .upsert_need_branch(&NeedBranchRow {
+            status: RENAMING.into(),
+            ..live_row(1)
+        })
+        .unwrap();
+    start_run(&f, 2, "plan");
+    old_branch_at(&f, OLD_TIP);
+    let mut jobs = Jobs::default();
+    seed_finished_rename(&mut jobs);
+
+    tick(&f, &mut jobs);
+    let cut = &jobs.0["need-cut-abcd1234-r1"];
+    assert_eq!(
+        cut.delete_ref.as_deref(),
+        Some("refs/heads/vivi/need/abcd1234")
+    );
+    assert_eq!(cut.delete_expect.as_deref(), Some(OLD_TIP));
+    assert_eq!(f.store.need_branch(NEED).unwrap().unwrap().status, DELETING);
+
+    finish(
+        &mut jobs,
+        "need-cut-abcd1234-r1",
+        JobStatus::Finished,
+        DELETED,
+    );
+    tick(&f, &mut jobs);
+    let stored = f.store.need_branch(NEED).unwrap().unwrap();
+    assert_eq!((stored.run, stored.status.as_str()), (2, FRESH));
+    assert_eq!(stored.base, None);
+    assert_eq!(stored.priors, vec![prior(NEED, 1)]);
+    assert_eq!(jobs.0.len(), 2);
+    assert_eq!(alarms(&f), 0);
+}
+
+#[test]
+fn a_research_restart_with_no_remote_branch_resets_the_row_at_once() {
     let f = with_merge_role(fixture());
     f.store.upsert_need_branch(&live_row(1)).unwrap();
-    start_run(&f, 2, "research");
+    start_run_kind(&f, 2, "research", "research");
     f.host
         .reply("ls-remote origin refs/heads/vivi/need/", 0, "");
     let mut jobs = Jobs::default();
@@ -365,7 +597,7 @@ fn a_restart_with_no_remote_branch_resets_the_row_at_once() {
 fn a_failed_rename_raises_once_and_leaves_the_row() {
     let f = with_merge_role(fixture());
     f.store.upsert_need_branch(&live_row(1)).unwrap();
-    start_run(&f, 2, "slice");
+    start_run_kind(&f, 2, "research", "research");
     old_branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
@@ -386,7 +618,7 @@ fn a_failed_rename_raises_once_and_leaves_the_row() {
 fn a_restart_without_a_merge_role_raises_and_changes_nothing() {
     let f = fixture();
     f.store.upsert_need_branch(&live_row(1)).unwrap();
-    start_run(&f, 2, "plan");
+    start_run_kind(&f, 2, "research", "research");
     old_branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);
@@ -414,7 +646,7 @@ fn a_merge_role_without_a_pool_raises_and_enqueues_nothing() {
         ..f
     };
     f.store.upsert_need_branch(&live_row(1)).unwrap();
-    start_run(&f, 2, "plan");
+    start_run_kind(&f, 2, "research", "research");
     old_branch_at(&f, OLD_TIP);
     let mut jobs = Jobs::default();
     tick(&f, &mut jobs);

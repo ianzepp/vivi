@@ -5,9 +5,12 @@
 //! need), on one target: the row records the target of the need's first
 //! slice, and every later read uses that target.
 //!
-//! A restarted run keeps the need branch for a `rework1` entry; every other
-//! entry moves it to its prior name (publish the prior name, delete the old
-//! name) and cuts a fresh one. [`BranchRestarts`] does that over several ticks.
+//! A restarted build run adopts the row: only run ownership moves, so the
+//! branch, its target, its base and its priors survive and the merged slices
+//! of the prior run stay reachable to the new plan. A row still being moved
+//! (`renaming` or `deleting`, a durable legacy transition) finishes its move;
+//! a `live` row of any other flow moves to its prior name and cuts a fresh
+//! row. [`BranchRestarts`] does that over several ticks.
 
 use crate::error::VivariumError;
 use crate::pump::flow::handlers::{FlowMail, Registry, TickPhase};
@@ -29,8 +32,9 @@ pub const DELETING: &str = "deleting";
 /// The need landed and its refs were cleaned up.
 pub const PRUNED: &str = "pruned";
 
-/// The restart entry that keeps the need branch.
-const REWORK_ENTRY: &str = "rework1";
+/// The entries of the build flow (see `load::entries`); each of them
+/// continues the active branch instead of archiving it.
+const BUILD_ENTRIES: [&str; 4] = ["plan", "research", "slice", "rework1"];
 /// Exception kind for a need branch move that could not run or failed.
 pub(crate) const RENAME_FAILED: &str = "flow-need-branch-rename-failed";
 
@@ -58,14 +62,17 @@ fn ls_remote(target: &Ctx, remote_ref: &str) -> Result<Option<String>, VivariumE
 
 /// Record the base of `need` for run `run`: the target's main tip, read once.
 ///
-/// A `live` row for this run returns its base unchanged. A `renaming` or
-/// `deleting` row is an error: the old branch is still being moved. Any other
-/// row (or none) is written as `live` with the current main tip, keeping its
-/// `priors`.
+/// A row on another target is refused before anything is read, returned or
+/// written. A `renaming` or `deleting` row is an error: the old branch is
+/// still being moved. A `live` row keeps its recorded base even when it still
+/// belongs to an older run - adoption is the restart phase's job - so a
+/// base never moves once recorded. Any other row (or none) is written as
+/// `live` with the current main tip, keeping its `priors`.
 ///
 /// # Errors
-/// Returns [`VivariumError`] for an unknown target, a moving old branch, a
-/// missing main ref, or a failed ls-remote or store write.
+/// Returns [`VivariumError`] for a row on another target, an unknown target,
+/// a moving old branch, a missing main ref, or a failed ls-remote or store
+/// write.
 pub fn record_base(
     ctx: &Ctx,
     store: &PumpStore,
@@ -75,6 +82,12 @@ pub fn record_base(
 ) -> Result<String, VivariumError> {
     let existing = store.need_branch(need)?;
     if let Some(row) = &existing {
+        if row.target != target {
+            return Err(VivariumError::Config(format!(
+                "need {need} has its need branch on target {}, but run {run} targets {target}",
+                row.target
+            )));
+        }
         if row.status == RENAMING || row.status == DELETING {
             return Err(VivariumError::Other(format!(
                 "need branch of {need} is {}: the old branch is still being moved",
@@ -82,7 +95,6 @@ pub fn record_base(
             )));
         }
         if row.status == LIVE
-            && row.run == run
             && let Some(base) = &row.base
         {
             return Ok(base.clone());
@@ -103,6 +115,21 @@ pub fn record_base(
         existing.map(|row| row.priors).unwrap_or_default(),
     ))?;
     Ok(base)
+}
+
+/// Whether `run` may start on its need branch. No row permits initial
+/// startup, a `renaming` or `deleting` row waits for its move to finish, a
+/// `live` row of an older run waits for that run to adopt it, and a row of
+/// `run` itself permits startup.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the row cannot be read.
+pub fn branch_ready(store: &PumpStore, run: &RunRow) -> Result<bool, VivariumError> {
+    Ok(!store.need_branch(&run.need)?.is_some_and(|row| {
+        row.status == RENAMING
+            || row.status == DELETING
+            || (row.status == LIVE && row.run < run.run)
+    }))
 }
 
 /// The tip of the need branch: for a `live` row, the remote tip of
@@ -126,7 +153,7 @@ pub fn tip(ctx: &Ctx, store: &PumpStore, need: &str) -> Result<Option<String>, V
 }
 
 /// The restart rule as a tick phase: for each live run whose need branch row
-/// belongs to an older run, keep the branch (`rework1`) or move it to its
+/// belongs to an older run, adopt the row (any build entry) or move it to its
 /// prior name and reset the row.
 struct BranchRestarts;
 
@@ -180,19 +207,33 @@ fn restart<S: JobStore>(
     row: NeedBranchRow,
 ) -> Result<(), VivariumError> {
     match row.status.as_str() {
-        LIVE if run.entry == REWORK_ENTRY => store.upsert_need_branch(&NeedBranchRow::for_run(
-            run,
-            row.branch,
-            row.base,
-            &row.status,
-            &row.target,
-            row.priors,
-        )),
+        LIVE if continues_branch(run) => adopt(store, run, row),
         LIVE => begin_rename(ctx, st, store, run, &row),
         RENAMING => continue_rename(ctx, st, store, run, &row),
         DELETING => continue_delete(ctx, st, store, run, &row),
         _ => Ok(()),
     }
+}
+
+/// Whether `run` continues the active branch: every entry of the build flow
+/// adopts the row instead of archiving it, so a run restarted at plan or
+/// slice keeps the merged slices of the prior run reachable to the new plan.
+fn continues_branch(run: &RunRow) -> bool {
+    run.kind == "build" && BUILD_ENTRIES.contains(&run.entry.as_str())
+}
+
+/// A continuing run adopts the row: only run ownership moves; branch,
+/// target, base and priors are preserved. No main tip is queried and no
+/// archive or delete job is started.
+fn adopt(store: &PumpStore, run: &RunRow, row: NeedBranchRow) -> Result<(), VivariumError> {
+    store.upsert_need_branch(&NeedBranchRow::for_run(
+        run,
+        row.branch,
+        row.base,
+        &row.status,
+        &row.target,
+        row.priors,
+    ))
 }
 
 fn rename_id(need: &str, old_run: u32) -> String {
