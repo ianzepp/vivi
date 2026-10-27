@@ -75,11 +75,15 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         target: "default".into(),
         priors: Vec::new(),
     })?;
+    // A valid original need letter with no typed target: the legacy
+    // single-repository assertions stay meaningful under a strict read.
+    let mut mail = FakeMail::new("mind");
+    mail.store_need(NEED, None);
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("mind"),
+        mail,
         run: RunRow {
             need: NEED.into(),
             run: 1,

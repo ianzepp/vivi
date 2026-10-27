@@ -57,11 +57,15 @@ fn rig_with(cfg: PumpConfig) -> Result<Rig, VivariumError> {
         state: "live".into(),
     };
     store.insert_run(&run)?;
+    // A valid original need letter with no typed target: the legacy
+    // single-repository assertions stay meaningful under a strict read.
+    let mut mail = FakeMail::new("pump");
+    mail.store_need(NEED, None);
     Ok(Rig {
         _dir: dir,
         ctx,
         store,
-        mail: FakeMail::new("pump"),
+        mail,
         run,
         def: load(FlowKind::Build)?,
     })
