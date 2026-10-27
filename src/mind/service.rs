@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::VivariumError;
 
-use super::actions::{self, Actuator, DryRun, Planned};
+use super::actions::{self, Actuator, DryRun, EnvelopeOutcome, Planned};
 use super::authority::Gate;
 use super::config::{self, MindConfig};
 use super::mcp_actuator::{HttpCaller, McpActuator};
@@ -171,7 +171,7 @@ async fn settle_wake<P: PiSession, Q: Probe>(
     let mut turn = first;
     let mut all = Vec::new();
     let mut round = 0;
-    let mut unreported = Vec::new();
+    let mut unreported = EnvelopeOutcome::default();
     loop {
         let summary = match turn {
             Ok(summary) => summary,
@@ -190,16 +190,16 @@ async fn settle_wake<P: PiSession, Q: Probe>(
             "follow-up turn"
         };
         log_line(&config.paths.log, &format!("{label}:\n{}", summary.text));
-        let planned = run_envelope(cx, &summary.text, watched, actuator)?;
-        let ran = planned.iter().any(|item| item.executed.is_some());
+        let outcome = run_envelope(cx, &summary.text, watched, actuator)?;
+        let ran = outcome.planned.iter().any(|item| item.executed.is_some());
         if ran && actuator.feeds_back() && round < max_follow_ups {
             round += 1;
-            turn = prompt_once(shared, prompt::plan_report(&planned)).await;
-            all.extend(planned);
-            unreported.clear();
+            turn = prompt_once(shared, prompt::plan_report(&outcome)).await;
+            all.extend(outcome.planned);
+            unreported = EnvelopeOutcome::default();
         } else {
-            unreported = planned.clone();
-            all.extend(planned);
+            unreported = outcome.clone();
+            all.extend(outcome.planned);
             break;
         }
     }
@@ -229,13 +229,14 @@ fn fail_wake<Q: Probe>(
 }
 
 /// Parse a reply's envelope, gate it, run what is permitted, and log each
-/// line.
+/// line. A reply whose envelope cannot be parsed yields its bounded
+/// failure instead of plans.
 fn run_envelope<Q: Probe>(
     cx: &TickContext<'_, Q>,
     reply: &str,
     watched: &[PathBuf],
     actuator: &mut dyn Actuator,
-) -> Result<Vec<Planned>, VivariumError> {
+) -> Result<EnvelopeOutcome, VivariumError> {
     let config = cx.config;
     let now = cx.clock.now();
     store::update_at(&config.paths.state, |state| {
@@ -250,12 +251,12 @@ fn apply_envelope(
     watched: &[PathBuf],
     now: u64,
     actuator: &mut dyn Actuator,
-) -> Vec<Planned> {
+) -> EnvelopeOutcome {
     let requests = match actions::parse_envelope(reply) {
         Ok(requests) => requests,
         Err(error) => {
             log_line(&config.paths.log, &format!("envelope refused: {error}"));
-            return Vec::new();
+            return EnvelopeOutcome::parse_failed(&error);
         }
     };
     let gate = Gate {
@@ -280,7 +281,10 @@ fn apply_envelope(
         };
         log_line(&config.paths.log, &line);
     }
-    planned
+    EnvelopeOutcome {
+        planned,
+        parse_failure: None,
+    }
 }
 
 /// Append one timestamped line to the mind log. Logging never fails the
