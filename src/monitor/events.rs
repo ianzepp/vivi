@@ -4,7 +4,12 @@
 //! read-write [`crate::storage::Storage`], whose open runs schema-write
 //! transactions. The connection here is read-only at every level:
 //! `SQLITE_OPEN_READ_ONLY`, a query-only pragma, and a short busy timeout —
-//! it never blocks a writer.
+//! it never blocks a writer and never uses `immutable=1`. Both this module's
+//! direct open and its legacy-metadata [`Storage`] open select
+//! [`ReadOnlyWalPolicy::AllowDatabaseOwner`]: a reader proven to own the
+//! database file may let SQLite recreate correctly owned WAL sidecars while
+//! reading WAL content. Nothing on these paths initializes a mailspace or
+//! migrates a schema; a missing database reads as an empty history.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -88,6 +93,12 @@ fn display_of(handles: &HashMap<String, String>, message_id: &str) -> String {
 }
 
 /// Open a mailspace database strictly for reading.
+///
+/// The WAL policy is [`ReadOnlyWalPolicy::AllowDatabaseOwner`]: when the
+/// shared-memory sidecar is missing, a reader proven to own the database file
+/// may still open, and SQLite then recreates correctly owned sidecars while
+/// reading WAL content. The open is never `immutable=1` and never
+/// initializes or migrates the schema.
 fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
     let dir = db.parent().ok_or_else(|| {
         VivariumError::Other(format!(
@@ -95,7 +106,8 @@ fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
             db.display()
         ))
     })?;
-    let conn = Storage::open_mailspace_connection_read_only(dir, ReadOnlyWalPolicy::ExistingOnly)?;
+    let conn =
+        Storage::open_mailspace_connection_read_only(dir, ReadOnlyWalPolicy::AllowDatabaseOwner)?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
     conn.execute_batch("PRAGMA query_only = true")
@@ -288,7 +300,10 @@ fn add_task_need_metadata(
     task_info: &mut BTreeMap<String, TaskInfo>,
     dir: &Path,
 ) -> Result<(), VivariumError> {
-    let storage = Storage::open_mailspace_read_only(dir)?;
+    // Same monitor WAL policy as `open_read_only`: a successful primary query
+    // must never be followed by a stricter legacy-metadata open.
+    let storage =
+        Storage::open_mailspace_read_only_with_policy(dir, ReadOnlyWalPolicy::AllowDatabaseOwner)?;
     for (handle, info) in task_info.iter_mut().filter(|(_, info)| info.need.is_none()) {
         let Ok(id) = storage.resolve_message_token(handle) else {
             continue;
