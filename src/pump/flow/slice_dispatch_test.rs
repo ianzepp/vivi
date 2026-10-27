@@ -22,10 +22,11 @@ use crate::pump::flow::fake_mail::FakeMail;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::need_branch;
+use crate::pump::flow::need_scope::RulingDecision;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
-use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
+use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore, ScopeRequest};
 use crate::routing::RoutedRole;
 
 type R = Result<(), VivariumError>;
@@ -343,11 +344,32 @@ fn retry_runs_the_same_task_with_a_new_job_id_and_exhausts_at_the_cap() -> R {
 
 // ---- scope re-dispatch ------------------------------------------------------
 
+/// Journal a blocked-scope request for `source` on `slice`, as the prepared
+/// ask a scope re-dispatch hangs its stable round on.
+fn prepare_request(rig: &Rig, source: &str, slice: &StepRow) -> R {
+    rig.store.prepare_scope_request(&ScopeRequest {
+        source: source.into(),
+        need: NEED.into(),
+        target: String::from("default"),
+        run: 1,
+        node: slice.node.clone(),
+        task: slice.task.clone(),
+        attempt: 1,
+        paths: vec![String::from("src/extra.rs")],
+        reason: String::from("needs the helper"),
+        design: false,
+        decision: RulingDecision::Grant,
+        issue: None,
+    })?;
+    Ok(())
+}
+
 #[test]
 fn a_scope_redispatch_keeps_the_attempt_and_carries_the_widened_scope() -> R {
     let mut rig = rig()?;
     let slice = rig.slice("a", &["src/a.rs"])?;
     let first = rig.dispatch(&slice, 1)?;
+    prepare_request(&rig, &first, &slice)?;
     rig.store
         .widen_slice_scope(&slice.task, &["src/extra.rs".to_string()])?;
     rig.store.set_scope_state(&slice.task, ScopeState::Wait)?;
@@ -360,19 +382,10 @@ fn a_scope_redispatch_keeps_the_attempt_and_carries_the_widened_scope() -> R {
         NEED,
         &slice,
         1,
-    )?;
-    let more = redispatch_scope(
-        &rig.ctx,
-        &mut rig.jobs,
-        &rig.store,
-        &rig.mail,
-        NEED,
-        &slice,
-        1,
+        &first,
     )?;
 
     assert_eq!(again, format!("slice-{}-a1-s1", slice.task));
-    assert_eq!(more, format!("slice-{}-a1-s2", slice.task));
     let job = rig.job(&again);
     assert_eq!(job.task.as_deref(), Some(slice.task.as_str()));
     assert!(
@@ -381,8 +394,85 @@ fn a_scope_redispatch_keeps_the_attempt_and_carries_the_widened_scope() -> R {
         job.body
     );
     assert_ne!(job.branch, rig.job(&first).branch);
+    assert_eq!(job.branch, Some(format!("vivi/unit/{}-a1-s1", slice.task)));
     assert_eq!(rig.store.step_job(&again)?.unwrap().attempt, 1);
     assert_eq!(rig.store.scope_state(&slice.task)?, Some(ScopeState::Clear));
+    Ok(())
+}
+
+#[test]
+fn same_scope_request_reuses_continuation() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice("a", &["src/a.rs"])?;
+    let first = rig.dispatch(&slice, 1)?;
+    prepare_request(&rig, &first, &slice)?;
+
+    let once = redispatch_scope(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &rig.mail,
+        NEED,
+        &slice,
+        1,
+        &first,
+    )?;
+    let replay = redispatch_scope(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &rig.mail,
+        NEED,
+        &slice,
+        1,
+        &first,
+    )?;
+
+    assert_eq!(replay, once, "the same source resumes the same job");
+    assert_eq!(once, format!("slice-{}-a1-s1", slice.task));
+    assert_eq!(rig.jobs.jobs.len(), 2, "the replay queues no new job");
+    assert_eq!(rig.job(&once).branch, rig.job(&replay).branch);
+    assert_eq!(rig.store.step_job(&once)?.unwrap().attempt, 1);
+    assert_eq!(rig.store.scope_state(&slice.task)?, Some(ScopeState::Clear));
+    Ok(())
+}
+
+#[test]
+fn distinct_scope_request_allocates_next_round() -> R {
+    let mut rig = rig()?;
+    let slice = rig.slice("a", &["src/a.rs"])?;
+    let first = rig.dispatch(&slice, 1)?;
+    prepare_request(&rig, &first, &slice)?;
+    let second = format!("slice-{}-a1-s1", slice.task);
+    prepare_request(&rig, &second, &slice)?;
+
+    let first_round = redispatch_scope(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &rig.mail,
+        NEED,
+        &slice,
+        1,
+        &first,
+    )?;
+    let next_round = redispatch_scope(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &rig.mail,
+        NEED,
+        &slice,
+        1,
+        &second,
+    )?;
+
+    assert_eq!(first_round, format!("slice-{}-a1-s1", slice.task));
+    assert_eq!(next_round, format!("slice-{}-a1-s2", slice.task));
+    assert_ne!(rig.job(&first_round).branch, rig.job(&next_round).branch);
+    assert_eq!(rig.store.step_job(&next_round)?.unwrap().attempt, 1);
+    let row = rig.store.scope_request(&second)?.unwrap();
+    assert_eq!(row.round, Some(2));
     Ok(())
 }
 

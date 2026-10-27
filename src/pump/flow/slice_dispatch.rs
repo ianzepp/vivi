@@ -323,11 +323,16 @@ pub fn retry<S: JobStore, M: SliceMail>(
 
 /// Re-dispatch the same task with the SAME attempt number after a
 /// blocked-scope request was settled: the brief carries the current (possibly
-/// widened) scope. The slice's scope state returns to clear. Returns the job
-/// id (`slice-<task>-a<N>-s<M>`).
+/// widened) scope. The re-dispatch continues `source`'s request — its stable
+/// scope round comes from the scope journal, not from a scan — so the same
+/// source keeps the same job id (`slice-<task>-a<N>-s<M>`) and branch, and a
+/// replay of the same request queues nothing new, while a distinct request on
+/// the slice takes the next available round. The slice's scope state returns
+/// to clear. Returns the job id.
 ///
 /// # Errors
-/// Returns the errors of [`dispatch`], or a store error.
+/// Returns the errors of [`dispatch`], or a store error (a source with no
+/// prepared journal request among them).
 pub fn redispatch_scope<S: JobStore, M: SliceMail>(
     ctx: &Ctx,
     st: &mut S,
@@ -336,14 +341,10 @@ pub fn redispatch_scope<S: JobStore, M: SliceMail>(
     need: &str,
     slice: &StepRow,
     attempt: u32,
+    source: &str,
 ) -> Result<String, VivariumError> {
-    let mut round = 1;
-    while store
-        .step_job(&job_id(&slice.task, attempt, Some(round)))?
-        .is_some()
-    {
-        round += 1;
-    }
+    let round =
+        store.reserve_scope_round(source, |round| job_id(&slice.task, attempt, Some(round)))?;
     let id = enqueue_hand(ctx, st, store, mail, need, slice, attempt, Some(round))?;
     store.set_scope_state(&slice.task, ScopeState::Clear)?;
     Ok(id)
