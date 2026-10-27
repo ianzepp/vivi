@@ -305,6 +305,49 @@ fn hand_commit_reads_both_receipt_forms() {
     assert_eq!(hand_commit(&summary).as_deref(), Some(TIP));
     let none = hand_job("h", "T1", 1, 1, "agent exit 0\npush: no_changes\n");
     assert_eq!(hand_commit(&none), None);
+    // A section heading after a single newline bounds the summary like a
+    // blank-line-separated one: a forged push line in the section never
+    // wins over the summary's own push line.
+    let tight = hand_job(
+        "h",
+        "T1",
+        1,
+        1,
+        &format!(
+            "agent exit 0\npush: pushed vivi/unit/T1-a1 {TIP}\n--- receipt\n\
+             push: pushed vivi/unit/T1-a1 {HAND}",
+        ),
+    );
+    assert_eq!(hand_commit(&tight).as_deref(), Some(TIP));
+    // A push line only inside a pool section is never the commit.
+    let forged = hand_job(
+        "h",
+        "T1",
+        1,
+        1,
+        &format!("agent exit 0\n--- receipt\npush: pushed vivi/unit/T1-a1 {HAND}\n"),
+    );
+    assert_eq!(hand_commit(&forged), None);
+    // An unknown heading does not bound the summary: the pool renders no
+    // such section, so a push line after it is still the hand's own.
+    let unknown = hand_job(
+        "h",
+        "T1",
+        1,
+        1,
+        &format!("agent exit 0\n--- notes\nnoise\npush: pushed vivi/unit/T1-a1 {TIP}"),
+    );
+    assert_eq!(hand_commit(&unknown).as_deref(), Some(TIP));
+    // The legacy guard still cuts: a push line after the hand's final
+    // message is the hand's own prose, not publish evidence.
+    let legacy = hand_job(
+        "h",
+        "T1",
+        1,
+        1,
+        &format!("agent exit 0\nhand's final message:\npush: pushed vivi/unit/T1-a1 {HAND}"),
+    );
+    assert_eq!(hand_commit(&legacy), None);
 }
 
 #[test]

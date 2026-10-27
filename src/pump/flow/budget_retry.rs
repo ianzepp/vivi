@@ -8,6 +8,7 @@
 //! step counts as failed.
 
 use crate::pool::dispatch::BUDGET_RANGE;
+use crate::pool::record;
 use crate::pump::attempt_record;
 use crate::pump::envelope::correct;
 use crate::pump::envelope::roles::RoleKind;
@@ -19,9 +20,6 @@ pub(crate) const PAYLOAD_KEY: &str = "budget_retry";
 
 /// The agent exit code the process runner uses for a timeout.
 const TIMEOUT_EXIT: i32 = 124;
-
-/// The leading marker of a pool receipt section (`--- receipt`, ...).
-const SECTION_MARKER: &str = "--- ";
 
 /// The legacy receipt boundary after which only the hand's own text follows.
 const HAND_MESSAGE_BOUNDARY: &str = "hand's final message:";
@@ -60,16 +58,16 @@ pub(crate) fn is_budget_kill(job: &PoolJob) -> bool {
     }
 }
 
-/// The agent exit code in a receipt's bounded pool summary: only the lines
-/// before the first section and before the hand's own text count. Section
-/// headings are matched at line starts, so a fixture with a single newline
-/// before its first section is bounded like any other.
+/// The agent exit code in a receipt's bounded pool summary: only the text
+/// before the first pool-rendered section heading and before the hand's own
+/// text counts. A complete facts/receipt/stderr-tail/runner-log-tail heading
+/// bounds the summary, including single-newline fixtures; unknown headings
+/// never do, so quoted exit codes under them are never timeout evidence.
 fn summary_exit(receipt: &str) -> Option<i32> {
-    let summary = receipt
+    let (head, _) = record::split_sections(receipt);
+    let summary = head
         .lines()
-        .take_while(|line| {
-            !line.starts_with(SECTION_MARKER) && !line.starts_with(HAND_MESSAGE_BOUNDARY)
-        })
+        .take_while(|line| !line.starts_with(HAND_MESSAGE_BOUNDARY))
         .collect::<Vec<_>>()
         .join("\n");
     attempt_record::agent_exit(&summary)
