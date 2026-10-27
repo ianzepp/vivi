@@ -397,6 +397,24 @@ mailspace or provides fixed throughput, duration, need and failure views. The
 [monitoring and reports reference](references/monitoring-and-reports.md)
 documents its row schemas, filters, time bounds and calculations.
 
+Monitor reads follow the invoking user's ownership of the project. When that
+user owns the mail store, the monitor reads it with normal read-only SQLite
+access, WAL mode included, and may recreate a correctly owned
+`mail.sqlite-shm` sidecar; a reader running as a different user is still
+refused when the WAL index sidecar is missing. Report and Doctor keep their
+own stricter read-only refusals and have not adopted this owner-aware policy.
+
+Rows that outlive their activity are stale session-local cached observations
+from the last complete successful project refresh, "not proof that the work
+is still running". Their age includes time without polling while tailing a
+log. Finished activity expires after 15 minutes; a stopped slot without a
+reliable completion marker falls back to a conservative start/claim-time
+estimate and may disappear sooner. `--once` takes one snapshot and exits, so
+it has no earlier session observation to retain. Read failures surface as one
+project-named warning entry per continuous failure episode, cleared on
+recovery; press `w` for the warning view when warnings overflow the status
+line.
+
 ## Roles and Goals
 
 Roles are durable seats with a mailbox, kind, status, charter, harness, model
@@ -2929,6 +2947,19 @@ pools, per-job RAM disks use **[pools.&lt;name&gt;.workspace]**.
 **vivi monitor** shows persisted local/remote task rows and pump job/tick
 metadata. Its row snapshot is bounded to saved task and pool information;
 Enter tails the selected raw slot or pump log, without content redaction.
+Reads run as the invoking user: an owner reads with normal read-only SQLite,
+WAL included, and may recreate a correctly owned `mail.sqlite-shm` sidecar,
+while a different-user reader stays refused without the WAL index sidecar
+(Report and Doctor keep their stricter policy). Rows that outlive their
+activity are stale session-local cached observations from the last complete
+successful project refresh, "not proof that the work is still running"; their
+age includes time without polling while tailing. Finished activity expires
+after 15 minutes, and a stopped slot without a reliable completion marker
+falls back to a conservative start/claim-time estimate and may disappear
+sooner; `--once` has no earlier session observation to retain. Failures
+surface as one project-named warning per continuous episode, cleared on
+recovery, with `w` opening the warning view when they overflow the status
+line.
 **vivi report records --format csv|jsonl** exports attempt rows. The grouped
 **throughput**, **durations**, **needs**, and **failures** views accept
 **--format table|json|csv|md**. **--since** and **--until** are inclusive;
