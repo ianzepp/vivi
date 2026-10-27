@@ -304,6 +304,9 @@ fn apply_dispatch(
     if fresh && let Some(job) = st.jobs_mut().get_mut(&snapshot.id) {
         job.task = Some(task.clone());
     }
+    if waiting_on(ctx, snapshot, pool, &task, &text) {
+        return Ok(false);
+    }
     if code != 0 || !text.contains("dispatched") {
         if text.contains("no free slot") {
             free.insert(pool.to_owned(), 0);
@@ -336,6 +339,27 @@ fn apply_dispatch(
         snapshot.id, snapshot.role
     ));
     Ok(true)
+}
+
+/// A `waiting` porcelain answer naming this exact task and pool: the dispatch
+/// could not start yet. Nothing is recorded — no recovery receipt, refusal,
+/// hold, dispatched pool or terminal outcome — and no slot is consumed, so the
+/// job tries its next candidate pool this tick and, when none is left, retries
+/// on a later tick with the same task and no persisted model draw. Returns
+/// `true` when the output was this job's wait.
+fn waiting_on(ctx: &Ctx, snapshot: &PoolJob, pool: &str, task: &str, text: &str) -> bool {
+    let Some(wait) = crate::pool::porcelain::parse_waiting(text) else {
+        return false;
+    };
+    if wait.task != task || wait.pool != pool {
+        return false;
+    }
+    ctx.log(&format!(
+        "job dispatch waiting {} on {pool}: {}",
+        snapshot.id,
+        wait.reason.word()
+    ));
+    true
 }
 
 /// Log a deferred dispatch; a `refused` porcelain line also counts a refusal.
