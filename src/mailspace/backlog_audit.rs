@@ -64,6 +64,17 @@ impl Mailspace {
     /// Returns a [`VivariumError`] on storage failure or when a repair
     /// write fails.
     pub fn backlog_audit(&self, repair: bool) -> Result<BacklogAuditReport, VivariumError> {
+        if repair {
+            return self.backlog_audit_pass(true);
+        }
+        // A read-only audit runs on one snapshot: thousands of lookups
+        // would otherwise each rebuild the handle index after every commit
+        // a running pump makes.
+        let storage = self.storage()?;
+        storage.with_read_snapshot(|| self.backlog_audit_pass(false))
+    }
+
+    fn backlog_audit_pass(&self, repair: bool) -> Result<BacklogAuditReport, VivariumError> {
         let storage = self.storage()?;
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
             return Ok(BacklogAuditReport {

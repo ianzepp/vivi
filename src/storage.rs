@@ -175,6 +175,55 @@ impl Storage {
         Self::open_with_db(mailspace_dir, &mailspace_dir.join(MAILSPACE_DB_FILENAME))
     }
 
+    /// Run a read-only pass `body` against one consistent snapshot of the
+    /// database.
+    ///
+    /// A long read (the backlog audit, a work list) makes thousands of small
+    /// queries. Outside a transaction each one sees the newest commit, so
+    /// every commit by a busy writer (the pump) bumps `PRAGMA data_version`
+    /// and forces the cached handle index to be rebuilt from the whole
+    /// `messages` table on the next handle lookup. Inside one deferred read
+    /// transaction the snapshot, and so `data_version`, stays fixed: the
+    /// index is built once and the pass reads one coherent state.
+    ///
+    /// `body` must not write: a write inside the snapshot fails with
+    /// `SQLITE_BUSY_SNAPSHOT` once another connection has committed. When a
+    /// transaction is already open on this connection, `body` simply runs
+    /// inside it.
+    ///
+    /// # Errors
+    /// Returns the error of `body`, or a [`VivariumError`] if the snapshot
+    /// cannot be opened.
+    pub fn with_read_snapshot<T>(
+        &self,
+        body: impl FnOnce() -> Result<T, VivariumError>,
+    ) -> Result<T, VivariumError> {
+        if !self.conn.borrow().is_autocommit() {
+            return body();
+        }
+        {
+            let conn = self.conn.borrow();
+            conn.execute_batch("BEGIN DEFERRED")
+                .map_err(|e| VivariumError::Other(format!("failed to open read snapshot: {e}")))?;
+            // A deferred transaction takes its snapshot at the first read;
+            // take it now so every later query shares it.
+            if let Err(e) = conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())) {
+                conn.execute_batch("ROLLBACK").ok();
+                return Err(VivariumError::Other(format!(
+                    "failed to take read snapshot: {e}"
+                )));
+            }
+        }
+        let result = body();
+        let conn = self.conn.borrow();
+        if !conn.is_autocommit() {
+            // Nothing was written, so ending the snapshot loses no work; a
+            // failed rollback leaves the next statement to report it.
+            conn.execute_batch("ROLLBACK").ok();
+        }
+        result
+    }
+
     /// Open an existing mailspace database without creating the database or
     /// migrating its schema. If a WAL-mode database lacks `-shm`, opening it
     /// read-only would create that sidecar, so the open refuses it instead.

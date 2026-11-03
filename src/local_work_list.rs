@@ -78,6 +78,23 @@ pub(crate) fn print_work_lists(
     marks: &[String],
     json: bool,
 ) -> Result<(), VivariumError> {
+    // One snapshot for the whole listing: see `Storage::with_read_snapshot`.
+    let storage = mailspace.storage()?;
+    storage.with_read_snapshot(|| {
+        print_work_lists_pass(mailspace, identity, roles, kind, from, to, marks, json)
+    })
+}
+
+fn print_work_lists_pass(
+    mailspace: &Mailspace,
+    identity: Option<&str>,
+    roles: &[&str],
+    kind: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    marks: &[String],
+    json: bool,
+) -> Result<(), VivariumError> {
     let from = crate::local_mail_list::resolve_list_header(mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(mailspace, to);
     let mut messages = Vec::new();
@@ -109,6 +126,23 @@ pub(crate) fn print_work_lists(
 /// the status names. `sent` is this mailspace's own copy of handed-off work,
 /// never a held row, so it is dropped here.
 pub(crate) fn print_held_work_lists(
+    mailspace: &Mailspace,
+    scope: &HeldScope,
+    roles: &[&str],
+    kind: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    marks: &[String],
+    json: bool,
+) -> Result<(), VivariumError> {
+    // One snapshot for the whole listing: see `Storage::with_read_snapshot`.
+    let storage = mailspace.storage()?;
+    storage.with_read_snapshot(|| {
+        print_held_work_lists_pass(mailspace, scope, roles, kind, from, to, marks, json)
+    })
+}
+
+fn print_held_work_lists_pass(
     mailspace: &Mailspace,
     scope: &HeldScope,
     roles: &[&str],

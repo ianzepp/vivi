@@ -257,3 +257,45 @@ fn unchanged_reads_reuse_the_handle_index() {
     assert_eq!(storage.display_handle(id).unwrap(), handle);
     drop(held);
 }
+
+#[test]
+fn a_read_snapshot_keeps_the_handle_index_across_external_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let reader = Storage::open_mailspace(tmp.path()).unwrap();
+    let writer = Storage::open_mailspace(tmp.path()).unwrap();
+
+    let first_id = "msg_cccccccc00000000cccccccc0001";
+    let second_id = "msg_dddddddd00000000dddddddd0002";
+    ingest_hinted(&reader, first_id, "seed:snap-first");
+
+    reader
+        .with_read_snapshot(|| {
+            assert_eq!(reader.resolve_message_token("cccccccc").unwrap(), first_id);
+            let held = reader.handle_index().unwrap();
+            ingest_hinted(&writer, second_id, "seed:snap-second");
+            // The snapshot does not see the commit, so the index is reused
+            // (a rebuild would need a mutable borrow and panic) and the new
+            // message stays out of view.
+            let again = reader.handle_index().unwrap();
+            assert!(std::ptr::eq(&*held, &*again));
+            drop((held, again));
+            assert!(reader.resolve_message_token("dddddddd").is_err());
+            Ok(())
+        })
+        .unwrap();
+
+    // After the snapshot ends the commit is visible again.
+    assert_eq!(reader.resolve_message_token("dddddddd").unwrap(), second_id);
+}
+
+#[test]
+fn a_read_snapshot_nests_inside_an_open_transaction_and_returns_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let result: Result<(), VivariumError> = storage.with_read_snapshot(|| {
+        storage.with_read_snapshot(|| Err(VivariumError::Other("inner".into())))
+    });
+    assert!(matches!(result, Err(VivariumError::Other(message)) if message == "inner"));
+    // The snapshot ended: a later write works.
+    ingest_hinted(&storage, "msg_eeeeeeee00000000eeeeeeee0003", "seed:after");
+}
