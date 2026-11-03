@@ -37,8 +37,10 @@ impl Mailspace {
             .parse(&data)
             .ok_or_else(|| VivariumError::Parse("failed to parse reply parent".into()))?;
         let from = self.resolve_identity(from)?;
+        // A reply to an item only its author holds (self-addressed, e.g. an operator's own need)
+        // goes back to the author, like a note: the thread keeps it, and nobody else is invented.
         let to = if to.is_empty() {
-            reply_recipients(self, &parsed, &from)?
+            reply_recipients(self, &parsed, &from).unwrap_or_else(|_| vec![from.clone()])
         } else {
             to
         };

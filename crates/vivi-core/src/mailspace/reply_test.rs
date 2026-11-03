@@ -177,3 +177,31 @@ fn a_note_with_an_invalid_front_is_refused_at_write_time() {
         .unwrap_or_else(|| panic!("the note was accepted"));
     assert!(error.contains("pool.record"), "{error}");
 }
+
+#[test]
+fn a_reply_to_a_self_addressed_item_is_kept_on_its_thread() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = Mailspace::init(Some(tmp.path())).unwrap();
+    space.add_identity("operator").unwrap();
+    let item = space
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["operator".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "own need".into(),
+            body: "an item addressed to its author".into(),
+            role: "inbox".into(),
+            kind: Some("mail".into()),
+            reply_to: None,
+        })
+        .unwrap();
+    let reply = space
+        .reply(&item.sent, "operator", Vec::new(), Vec::new(), None, "a reply as myself".into())
+        .expect("replying to one's own item must not be refused");
+    assert!(
+        reply.delivered.iter().all(|copy| copy.identity == "operator"),
+        "no other identity receives a self reply"
+    );
+    assert!(reply.delivered.len() <= 1, "a self reply is stored like the item it answers");
+}
