@@ -476,6 +476,7 @@ fn collect_stopped(
     }
     provider.start(&record.machine)?;
     let deadline = Instant::now() + pacing.ready_timeout;
+    let mut backoff = Backoff::new(pacing.poll);
     loop {
         let unanswered = match try_collect(provider, &record.machine, &record.job) {
             Ok(Some(done)) => return Ok(Some(Outcome::Finished(done))),
@@ -490,7 +491,7 @@ fn collect_stopped(
                 (false, None) => Ok(Some(Outcome::Lost)),
             };
         }
-        std::thread::sleep(pacing.poll);
+        std::thread::sleep(backoff.wait());
     }
 }
 
@@ -547,6 +548,7 @@ fn stop_confirmed(
     pacing: &Pacing,
 ) -> Result<(), VivariumError> {
     let deadline = Instant::now() + pacing.stop_timeout;
+    let mut backoff = Backoff::new(pacing.poll);
     let mut asked = false;
     let mut state = provider.machine(id)?.state;
     loop {
@@ -558,7 +560,7 @@ fn stop_confirmed(
                 _ => asked = true,
             },
         }
-        std::thread::sleep(pacing.poll);
+        std::thread::sleep(backoff.wait());
         state = provider.machine(id)?.state;
         if matches!(state.as_str(), "stopped" | "destroyed") {
             return Ok(());
