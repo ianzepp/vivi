@@ -14,6 +14,7 @@ use crate::pump::flow::load::load;
 use crate::pump::flow::mail::MailspacePort;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::slice_dispatch::{MAX_ATTEMPTS, Retried, SliceMail, retry};
+use crate::pump::flow::slice_repair::Repair;
 use crate::pump::host::{Ctx, FakeHost};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::state::State;
@@ -203,7 +204,7 @@ fn failed_slice_attempt_excerpt_reaches_the_cto_brief() -> R<()> {
         need,
         &slice,
         &failed_job(&task),
-        MAX_ATTEMPTS,
+        &Repair::of(&failed_job(&task), MAX_ATTEMPTS),
     )?;
     assert_eq!(retried, Retried::Exhausted);
     let indexed = rig.store.step_by_task(&task)?.expect("indexed slice");

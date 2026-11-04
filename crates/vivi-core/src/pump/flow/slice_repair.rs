@@ -66,12 +66,24 @@ impl Repair {
         }
     }
 
+    /// The repair of a hand attempt the pump refused although it answered
+    /// `built`: its pushed work (`from`, a branch or commit) is kept and the
+    /// next attempt is told why it was refused.
+    #[must_use]
+    pub(crate) fn rejected(attempt: u32, reason: &str, from: Option<String>) -> Self {
+        Self {
+            attempt,
+            from,
+            failure: capped(&format!("The pump refused it: {reason}"), FAILURE_CAP),
+        }
+    }
+
     /// The brief section that tells the hand where it starts and what failed.
     #[must_use]
     pub(crate) fn section(&self) -> String {
         let start = match &self.from {
             Some(sha) => format!(
-                "This checkout starts from that attempt's commit {sha}: its work is here. \
+                "This checkout starts from that attempt's work at {sha}: its work is here. \
                  Fix the failure below; do not start the work over."
             ),
             None => String::from(

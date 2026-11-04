@@ -18,6 +18,7 @@ use crate::pump::flow::index::{RunRow, StepRow, StepState};
 use crate::pump::flow::mail::MailWriter;
 use crate::pump::flow::need_branch;
 use crate::pump::flow::scope::{BlockedScope, ScopeState};
+use crate::pump::flow::slice_repair::Repair;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::store::{DB_FILENAME, NeedBranchRow, PumpStore};
@@ -299,7 +300,7 @@ fn retry_runs_the_same_task_with_a_new_job_id_and_exhausts_at_the_cap() -> R {
         NEED,
         &step,
         &failed_job(&first),
-        1,
+        &Repair::of(&failed_job(&first), 1),
     )?;
     let Retried::Dispatched(second) = got else {
         panic!("expected a second attempt, got {got:?}");
@@ -331,7 +332,7 @@ fn retry_runs_the_same_task_with_a_new_job_id_and_exhausts_at_the_cap() -> R {
         NEED,
         &step,
         &failed_job(&second),
-        2,
+        &Repair::of(&failed_job(&second), 2),
     )?;
     assert_eq!(got, Retried::Exhausted);
     assert_eq!(rig.jobs.jobs.len(), 2, "no third attempt");

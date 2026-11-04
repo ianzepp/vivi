@@ -56,3 +56,34 @@ fn a_hand_job_that_left_no_commit_starts_from_the_need_tip() {
     assert!(repair.failure.contains("premise is wrong"), "{repair:?}");
     assert!(repair.section().contains("Attempt 2 of this slice failed."));
 }
+
+/// A `built` the pump refused for a failing check (2026-11-04 local pump,
+/// slice de2a92a6): the retry keeps the pushed work and is told why.
+#[test]
+fn a_refused_built_keeps_the_pushed_work_and_names_the_refusal() {
+    let repair = Repair::rejected(
+        1,
+        "the envelope says built but reports failing checks: ./scripta/check (before fix)",
+        Some("vivi/unit/de2a92a6-a1".into()),
+    );
+    assert_eq!(repair.from.as_deref(), Some("vivi/unit/de2a92a6-a1"));
+    let section = repair.section();
+    assert!(
+        section.contains("starts from that attempt's work at vivi/unit/de2a92a6-a1"),
+        "{section}"
+    );
+    assert!(section.contains("do not start the work over"), "{section}");
+    assert!(
+        section.contains("The pump refused it: the envelope says built"),
+        "{section}"
+    );
+    assert!(!section.contains("could not be kept"), "{section}");
+}
+
+#[test]
+fn a_refused_built_with_nothing_pushed_starts_from_the_need_tip() {
+    let repair = Repair::rejected(2, "reports failing checks: x", None);
+    assert_eq!(repair.from, None);
+    assert!(repair.section().contains("starts from the need-branch tip"));
+    assert!(repair.failure.contains("The pump refused it"), "{repair:?}");
+}

@@ -1,4 +1,4 @@
-//! A built hand envelope with a failing `[[check]]` is a failed attempt.
+//! A built hand envelope with a failing `[[check]]` is a refused attempt.
 
 use std::fs;
 
@@ -54,9 +54,17 @@ fn run(checks: &[(&str, &str)]) -> Result<(AttemptResult, String), VivariumError
 }
 
 #[test]
-fn a_failing_check_makes_the_built_attempt_failed() -> Result<(), VivariumError> {
+fn a_failing_check_makes_the_built_attempt_rejected_with_its_pushed_branch()
+-> Result<(), VivariumError> {
     let (got, log) = run(&[("cargo fmt --check", "pass"), ("cargo test x", "fail")])?;
-    assert_eq!(got, AttemptResult::Failed);
+    let AttemptResult::Rejected { reason, branch } = got else {
+        panic!("expected rejected, got {got:?}");
+    };
+    assert!(
+        reason.contains("reports failing checks: cargo test x"),
+        "{reason}"
+    );
+    assert_eq!(branch.as_deref(), Some("vivi/unit/t0001-a1"));
     assert!(log.contains(HAND_REPORTED_FAILURE), "{log}");
     assert!(log.contains("cargo test x"), "{log}");
     assert!(!log.contains("cargo fmt --check"), "{log}");

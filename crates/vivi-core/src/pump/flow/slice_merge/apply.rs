@@ -17,6 +17,7 @@ use crate::pump::flow::slice_dispatch::{self, Retried};
 use crate::pump::flow::slice_merge::classify::{SliceMergeResult, classify};
 use crate::pump::flow::slice_merge::queue::{JobRun, classify_job, stale_text};
 use crate::pump::flow::slice_merge::spec::KIND;
+use crate::pump::flow::slice_repair::Repair;
 use crate::pump::flow::step_error::{self, STEP_ERROR_LIMIT};
 use crate::pump::flow::tick::{OPERATOR_HOLD, SIDE_EFFECT_UNCLEAR, raise_once};
 use crate::pump::flow::verify::{self, RunnerPublishReceipt, SideEffect, VerifyReq};
@@ -246,8 +247,9 @@ impl Ended<'_> {
     ) -> Result<(), VivariumError> {
         let attempt = self.attempt()?;
         self.reply_once(mail, reason)?;
+        let repair = Repair::of(self.job, attempt);
         let retried = slice_dispatch::retry(
-            self.ctx, st, self.store, &*mail, self.need, self.slice, self.job, attempt,
+            self.ctx, st, self.store, &*mail, self.need, self.slice, self.job, &repair,
         )?;
         if retried == Retried::Exhausted {
             self.ctx.log(&format!(

@@ -20,6 +20,7 @@ use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
 use crate::pump::flow::slice_dispatch::{self, AttemptResult, Retried};
+use crate::pump::flow::slice_repair::Repair;
 use crate::pump::flow::tick::{FOLLOW_UP, OPERATOR_HOLD, SCOPE_REWORK, raise_once};
 use crate::pump::jobs::rung_result::{self, ENV_FAILURE, EnvFailure, EnvKind};
 use crate::pump::jobs::{JobStatus, JobStore, PoolJob};
@@ -163,26 +164,41 @@ where
                 fanout::close_slice(self.store, &mut *self.mail, &step.task, VERDICT_NO_DEFECT)
             }
             AttemptResult::Failed if hand.status == JobStatus::Timeout => self.split(step, hand),
-            AttemptResult::Failed => {
-                let retried = slice_dispatch::retry(
-                    self.ctx,
-                    self.st,
-                    self.store,
-                    &*self.mail,
-                    &need,
-                    step,
-                    hand,
-                    row.attempt,
-                )?;
-                if retried == Retried::Exhausted {
-                    self.ctx
-                        .log(&format!("slice {} exhausted its attempts", step.task));
-                }
-                Ok(())
-            }
+            AttemptResult::Failed => self.retry(&need, step, hand, &Repair::of(hand, row.attempt)),
+            AttemptResult::Rejected { reason, branch } => self.retry(
+                &need,
+                step,
+                hand,
+                &Repair::rejected(row.attempt, &reason, branch),
+            ),
             AttemptResult::Correct { error } => self.correct(job, row, RoleKind::Hand, &error),
             AttemptResult::BlockedScope(request) => self.blocked(step, row, &request),
         }
+    }
+
+    /// Queue the next attempt of `step` as `repair`, or exhaust the slice.
+    fn retry(
+        &mut self,
+        need: &str,
+        step: &StepRow,
+        hand: &PoolJob,
+        repair: &Repair,
+    ) -> Result<(), VivariumError> {
+        let retried = slice_dispatch::retry(
+            self.ctx,
+            self.st,
+            self.store,
+            &*self.mail,
+            need,
+            step,
+            hand,
+            repair,
+        )?;
+        if retried == Retried::Exhausted {
+            self.ctx
+                .log(&format!("slice {} exhausted its attempts", step.task));
+        }
+        Ok(())
     }
 
     /// The worker could not run the hand job: alarm once, reply once and hold

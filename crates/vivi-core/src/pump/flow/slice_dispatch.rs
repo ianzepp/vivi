@@ -107,6 +107,14 @@ pub enum AttemptResult {
     BlockedScope(BlockedScope),
     /// The attempt failed: the tick retries or exhausts the slice.
     Failed,
+    /// The hand answered `built` but the pump refused it (its envelope
+    /// reports a failing check). An attempt is used; the next one starts from
+    /// the pushed work (`branch`, when the runner published one) and is told
+    /// `reason`.
+    Rejected {
+        reason: String,
+        branch: Option<String>,
+    },
     /// The envelope did not parse: run a correction job (no attempt is used).
     Correct { error: EnvelopeError },
 }
@@ -309,7 +317,8 @@ pub fn dispatch<S: JobStore, M: SliceMail>(
 }
 
 /// A failed attempt: post its record on the slice task, then queue the next
-/// attempt on the same task as a repair of the failed one ([`Repair`]). After
+/// attempt on the same task as `repair` of the failed one ([`Repair::of`], or
+/// [`Repair::rejected`] for a refused `built`). After
 /// [`MAX_ATTEMPTS`] the slice is marked exhausted instead (the fanout then
 /// settles `failed`).
 ///
@@ -324,14 +333,14 @@ pub fn retry<S: JobStore, M: SliceMail>(
     need: &str,
     slice: &StepRow,
     failed: &PoolJob,
-    attempt: u32,
+    repair: &Repair,
 ) -> Result<Retried, VivariumError> {
     post_failed_attempt(ctx, &slice.task, failed);
+    let attempt = repair.attempt;
     if attempt >= MAX_ATTEMPTS {
         mark_exhausted(store, &slice.task)?;
         return Ok(Retried::Exhausted);
     }
-    let repair = Repair::of(failed, attempt);
     enqueue_hand(
         ctx,
         st,
@@ -341,7 +350,7 @@ pub fn retry<S: JobStore, M: SliceMail>(
         slice,
         attempt + 1,
         None,
-        Some(&repair),
+        Some(repair),
     )
     .map(Retried::Dispatched)
 }
@@ -667,16 +676,23 @@ fn built(
         .map(|check| check.cmd.as_str())
         .collect();
     if !failing.is_empty() {
+        let reason = format!(
+            "the envelope says built but reports failing checks: {}",
+            failing.join("; ")
+        );
         ctx.exception(
             HAND_REPORTED_FAILURE,
             task,
-            &format!(
-                "hand job {}: the envelope says built but reports failing checks: {}",
-                job.id,
-                failing.join("; ")
-            ),
+            &format!("hand job {}: {reason}", job.id),
         );
-        return AttemptResult::Failed;
+        let branch = matches!(push.word, "pushed" | "committed")
+            .then(|| {
+                push.branch
+                    .map(str::to_owned)
+                    .or_else(|| job.branch.clone())
+            })
+            .flatten();
+        return AttemptResult::Rejected { reason, branch };
     }
     match push.word {
         "pushed" | "committed" => AttemptResult::Built {
