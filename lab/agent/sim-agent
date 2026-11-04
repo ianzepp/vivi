@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Stand-in agent for the vivi lab: the one fake in an otherwise real system.
+
+The pool's harness runs it where a real worker runs `pi`:
+
+    sim-agent --model {model} --rules {rules} @{brief}
+
+It answers the way a model would, in the pump's real reply envelope, on its
+standard output (the job runner captures it), and it does real work in the
+checkout it is started in: a hand edits files, and the runner commits and
+pushes them. The role comes from the brief's own front matter: the `[step]`
+node and the `[job]` kind the pump writes there. A correction (`envelope-fix`)
+is answered as the step it corrects.
+
+The plan is not invented: the slicer prints the slices the scenario predefines
+(/lab/scenario/plan.toml), and a hand carries out the edit its slice brief
+names on a line of the form `LAB-EDIT: <path> <text>`.
+
+Every call is logged with a copy of its brief under ~/sim-agent/.
+"""
+import os
+import re
+import sys
+import time
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCENARIO = Path(os.environ.get("LAB_SCENARIO", "/lab/scenario/plan.toml"))
+LOG_DIR = Path.home() / "sim-agent"
+
+
+def parse_args(argv):
+    model, brief = "", ""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("--model", "--rules", "--thinking"):
+            if arg == "--model" and i + 1 < len(argv):
+                model = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("@"):
+            brief = arg[1:]
+        i += 1
+    return model, brief
+
+
+def log_call(role, model, brief_path, brief):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    base = LOG_DIR / f"{stamp}-{role}"
+    base.with_suffix(".brief.md").write_text(brief)
+    with (LOG_DIR / "calls.log").open("a") as log:
+        log.write(f"{stamp} role={role} model={model} cwd={os.getcwd()} brief={brief_path}\n")
+
+
+def scenario():
+    with SCENARIO.open("rb") as f:
+        return tomllib.load(f)
+
+
+def literal(text):
+    """A TOML literal string: multi-line form when needed, no escapes."""
+    text = text.replace("'''", "' ' '")
+    return f"'''\n{text}\n'''" if ("\n" in text or "'" in text) else f"'{text}'"
+
+
+NEED_MARK = re.compile(r"LAB-NEED: (\S+)")
+
+
+def need_of(brief):
+    """The lab need id a brief carries (`LAB-NEED: <id>`), or None."""
+    found = NEED_MARK.search(brief)
+    return found.group(1) if found else None
+
+
+def planner(brief):
+    # A multi-need plan carries the need's marker on to the slicer, whose brief
+    # holds the admitted plan but not the need's own text.
+    need = need_of(brief)
+    mark = f"\nLAB-NEED: {need}\n" if need else ""
+    return f"+++\nanswer = \"planned\"\n+++\n# Plan: the predefined lab plan\n{mark}\nThe scenario defines the slices.\n"
+
+
+def admitter(_brief):
+    return "+++\nanswer = \"admitted\"\n+++\nAdmitted: the plan is the scenario's own.\n"
+
+
+def rework_slicer(need):
+    """One fix slice: a real change the hand can make, so the rework pass
+    builds, merges and runs the need rung again. Each need gets its own fix
+    file, so two needs' reworks never conflict at the merge to main."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = f"fixes/{need or 'rework'}.txt"
+    return "\n".join([
+        "+++", 'answer = "sliced"', 'mode = "rework"', "",
+        "[[slice]]",
+        'id = "fix-1"',
+        "title = 'Rework after a red need rung'",
+        f"brief = {literal(f'Answer the red need rung.' + chr(10) + f'LAB-EDIT: {path} reworked {stamp}')}",
+        f'target = "{scenario().get("target", "app")}"',
+        f'write_scope = ["{path}"]',
+        "deps = []",
+        "",
+        "+++", "One rework slice for the red need rung.",
+    ]) + "\n"
+
+
+def slices_of(plan, brief):
+    """The slices to cut: the single need's list, or in a multi-need plan the
+    list of the need the brief's plan names. None when the need is unknown."""
+    if "need" not in plan or isinstance(plan["need"], dict):
+        return plan["slice"]
+    need = need_of(brief)
+    for entry in plan["need"]:
+        if entry["id"] == need:
+            return entry["slice"]
+    return None
+
+
+MERGED_LINE = re.compile(r"^- slice:(\S+) \(task ", re.M)
+
+
+def holes(plan, brief):
+    """Plan slices the rework brief does not list as merged, with their deps
+    narrowed to the other holes (merged work needs no edge)."""
+    slices = slices_of(plan, brief) or []
+    merged = set(MERGED_LINE.findall(brief))
+    left = [s for s in slices if s["id"] not in merged]
+    ids = {s["id"] for s in left}
+    return [dict(s, deps=[d for d in s.get("deps", []) if d in ids]) for s in left]
+
+
+def emit(mode, slices, plan):
+    out = ["+++", 'answer = "sliced"', f'mode = "{mode}"', ""]
+    for s in slices:
+        out += [
+            "[[slice]]",
+            f'id = "{s["id"]}"',
+            f"title = {literal(s['title'])}",
+            f"brief = {literal(s['brief'])}",
+            f'target = "{s.get("target", plan.get("target", "app"))}"',
+            "write_scope = [" + ", ".join(f'"{p}"' for p in s["write_scope"]) + "]",
+            "deps = [" + ", ".join(f'"{d}"' for d in s.get("deps", [])) + "]",
+            "",
+        ]
+    out += ["+++", f"Slices for {mode} mode, from the scenario."]
+    return "\n".join(out) + "\n"
+
+
+def slicer(brief):
+    plan = scenario()
+    mode = "rework" if re.search(r"\bmode\b[^\n]*\brework\b", brief) else "slice"
+    if mode == "rework":
+        left = holes(plan, brief)
+        return emit("rework", left, plan) if left else rework_slicer(need_of(brief))
+    slices = slices_of(plan, brief)
+    if slices is None:
+        return "+++\nanswer = \"escalate\"\nreason = 'lab stand-in: no LAB-NEED marker in the plan'\n+++\nEscalated.\n"
+    out = ["+++", 'answer = "sliced"', f'mode = "{mode}"', ""]
+    for s in slices:
+        out += [
+            "[[slice]]",
+            f'id = "{s["id"]}"',
+            f"title = {literal(s['title'])}",
+            f"brief = {literal(s['brief'])}",
+            f'target = "{s.get("target", plan.get("target", "app"))}"',
+            "write_scope = [" + ", ".join(f'"{p}"' for p in s["write_scope"]) + "]",
+            "deps = [" + ", ".join(f'"{d}"' for d in s.get("deps", [])) + "]",
+            "",
+        ]
+    out += ["+++", "Slices predefined by the scenario."]
+    return "\n".join(out) + "\n"
+
+
+REPAIR_MARK = re.compile(r"Attempt (\d+) of this slice failed")
+
+
+def hand(brief):
+    edits = re.findall(r"^LAB-EDIT: (\S+) (.*)$", brief, re.M)
+    repair = REPAIR_MARK.search(brief)
+    changed = []
+    for path, text in edits:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        body = text.replace("\\n", "\n") + "\n"
+        if repair:
+            # A repair starts from the failed attempt's work: keep it, and make
+            # the fix a real change (rewriting the same text would be no change).
+            body += f"# repaired after attempt {repair.group(1)}\n"
+        target.write_text(body)
+        changed.append(path)
+    if not edits:
+        return "+++\nanswer = \"failed\"\n+++\nNo LAB-EDIT line in the brief.\n"
+    listed = ", ".join(f'"{p}"' for p in changed)
+    return f"+++\nanswer = \"built\"\nchange = [{listed}]\n+++\nApplied the scenario's edit.\n"
+
+
+def auditor(_brief):
+    return "+++\nanswer = \"clean_pass\"\n+++\nClean pass.\n"
+
+
+def merge(_brief):
+    return "+++\nanswer = \"merged\"\n+++\nNo conflicts.\n"
+
+
+def fallback(role):
+    return (
+        "+++\nanswer = \"lock\"\n"
+        f"reason = 'the lab stand-in has no script for role {role}; a lock surfaces the failure'\n"
+        "+++\nLocked by the lab stand-in.\n"
+    )
+
+
+
+
+def front_matter(brief):
+    """The TOML front matter between the opening `+++` fences, or {}."""
+    found = re.match(r"\s*\+\+\+\n(.*?)\n\+\+\+", brief, re.S)
+    if not found:
+        return {}
+    try:
+        return tomllib.loads(found.group(1))
+    except tomllib.TOMLDecodeError:
+        return {}
+
+
+# Step nodes of the build flow, by prefix, to the role that answers them.
+NODE_ROLES = [
+    ("plan", "planner"), ("admit", "admitter"), ("slice", "slicer"),
+    ("rework", "slicer"), ("audit", "auditor"), ("judge", "judge"),
+    ("sync", "merge"), ("merge", "merge"), ("cto", "cto"), ("research", "researcher"),
+]
+
+
+def role_of(brief, model):
+    front = front_matter(brief)
+    kind = front.get("job", {}).get("kind", "")
+    node = front.get("step", {}).get("node", "")
+    if kind == "envelope-fix":
+        fixed = re.search(r"Correction for pump step \S+ r\d+ (\S+?)\.", brief)
+        node = fixed.group(1) if fixed else node
+    if kind == "hand" or front.get("slice") or "LAB-EDIT:" in brief:
+        return "hand"
+    for prefix, role in NODE_ROLES:
+        if node.startswith(prefix):
+            return role
+    if kind:
+        return kind
+    return model.split("/", 1)[1] if model.startswith("lab/") else "unknown"
+
+
+def judge(brief):
+    """A judge sees the red rung's output: an injected failure is a real one."""
+    if re.search(r"check: injected \S+ failure", brief):
+        return "+++\nanswer = \"block\"\nreason = 'lab judge: the need rung failed'\n+++\nBlock.\n"
+    return "+++\nanswer = \"residual\"\nreason = 'lab judge: residual'\n+++\nResidual.\n"
+
+
+def cto(brief):
+    runs = re.search(r"^runs: (\d+)", brief, re.M)
+    if runs and int(runs.group(1)) < 3:
+        return ("+++\nanswer = \"rework\"\n"
+                "reason = 'lab ruling: rework the slices that did not merge'\n+++\nRework.\n")
+    return ("+++\nanswer = \"lock\"\n"
+            "reason = 'lab ruling: run 3 or later with no new fact'\n+++\nLocked.\n")
+
+
+ROLES = {
+    "planner": planner,
+    "admitter": admitter,
+    "slicer": slicer,
+    "hand": hand,
+    "auditor": auditor,
+    "merge": merge,
+    "judge": judge,
+    "cto": cto,
+}
+
+
+def main():
+    model, brief_path = parse_args(sys.argv[1:])
+    brief = Path(brief_path).read_text() if brief_path else ""
+    role = role_of(brief, model)
+    log_call(role, model, brief_path, brief)
+    try:
+        delay = float(scenario().get("world", {}).get("agent_secs", 0))
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        delay = 0.0
+    time.sleep(delay)
+    answer = ROLES.get(role, lambda _b: fallback(role))(brief)
+    sys.stdout.write(answer)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

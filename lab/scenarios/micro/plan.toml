@@ -1,0 +1,37 @@
+# Micro scenario: one need, five independent units, every job succeeds.
+target = "app"
+
+[need]
+subject = "lab micro: add five units"
+done_when = ["src/u1.sh to src/u5.sh exist and ./check.sh passes"]
+body = "Add five units, u1 to u5. Each is src/<unit>.sh defining a function named after the file that prints its own name."
+
+[[slice]]
+id = "u1"
+title = "Add unit u1"
+brief = "Create src/u1.sh.\nLAB-EDIT: src/u1.sh u1() { echo u1; }"
+write_scope = ["src/u1.sh"]
+
+[[slice]]
+id = "u2"
+title = "Add unit u2"
+brief = "Create src/u2.sh.\nLAB-EDIT: src/u2.sh u2() { echo u2; }"
+write_scope = ["src/u2.sh"]
+
+[[slice]]
+id = "u3"
+title = "Add unit u3"
+brief = "Create src/u3.sh.\nLAB-EDIT: src/u3.sh u3() { echo u3; }"
+write_scope = ["src/u3.sh"]
+
+[[slice]]
+id = "u4"
+title = "Add unit u4"
+brief = "Create src/u4.sh.\nLAB-EDIT: src/u4.sh u4() { echo u4; }"
+write_scope = ["src/u4.sh"]
+
+[[slice]]
+id = "u5"
+title = "Add unit u5"
+brief = "Create src/u5.sh.\nLAB-EDIT: src/u5.sh u5() { echo u5; }"
+write_scope = ["src/u5.sh"]

@@ -1,0 +1,5 @@
+/bin/
+/.docker/
+/.keys/
+/runs/
+__pycache__/
