@@ -268,3 +268,57 @@ fn shipped_registers_slice_and_the_rework_step_override_for_rework1() -> R {
     );
     Ok(())
 }
+
+/// A run that a head-cto `slice` answer started (2026-11-04 local pump, need
+/// 4c693111 r4) has no planner step of its own: it slices the earlier plan.
+#[test]
+fn a_run_restarted_at_slice_slices_the_earlier_runs_plan() -> R {
+    let mut rig = rig()?;
+    planner_done(&mut rig, "plan", Some("PLAN-FROM-RUN-ONE"))?;
+    let restarted = RunRow {
+        run: 2,
+        entry: "slice".into(),
+        ..rig.run.clone()
+    };
+    rig.store.insert_run(&restarted)?;
+    rig.run = restarted;
+
+    let spec = start(&rig)?;
+
+    assert!(spec.body.contains("PLAN-FROM-RUN-ONE"), "{}", spec.body);
+    assert!(spec.body.contains("run: 2"), "{}", spec.body);
+    Ok(())
+}
+
+#[test]
+fn this_runs_plan_wins_over_an_earlier_runs_plan() -> R {
+    let mut rig = rig()?;
+    planner_done(&mut rig, "plan", Some("OLD-PLAN"))?;
+    let replanned = RunRow {
+        run: 2,
+        entry: "plan".into(),
+        ..rig.run.clone()
+    };
+    rig.store.insert_run(&replanned)?;
+    rig.run = replanned;
+    let task = rig.mail.send_step("pump", "pump", "plan", "body", &[])?;
+    rig.mail.reply(
+        &task,
+        &format!(
+            "{POOL_RESULT_MARKER}j: finished\npool p  slot 1  model m\n\n--- receipt\nNEW-PLAN"
+        ),
+    )?;
+    rig.store.insert_step(
+        NEED,
+        &StepRow {
+            run: 2,
+            ..row("plan", &task, StepState::Done)
+        },
+    )?;
+
+    let spec = start(&rig)?;
+
+    assert!(spec.body.contains("NEW-PLAN"), "{}", spec.body);
+    assert!(!spec.body.contains("OLD-PLAN"), "{}", spec.body);
+    Ok(())
+}

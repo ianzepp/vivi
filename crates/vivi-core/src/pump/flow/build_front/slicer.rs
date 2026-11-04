@@ -6,7 +6,7 @@
 use crate::mailspace::shipped::SLICER_ROLE;
 use crate::pump::flow::def::{FlowKind, NodeClass};
 use crate::pump::flow::handlers::{FlowMail, Registry};
-use crate::pump::flow::index::StepRow;
+use crate::pump::flow::index::{StepRow, StepState};
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler};
 use crate::pump::flow::step_inputs;
 use crate::pump::jobs::JobStore;
@@ -45,15 +45,13 @@ fn brief(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     ))
 }
 
-/// The newest reply of the newest Done planner step: `plan2` when the run
-/// revised its plan, else `plan`.
+/// The newest reply of the newest Done planner step: `plan2` when a run
+/// revised its plan, else `plan`. This run's own plan wins; a run that
+/// started at `slice` (a head-cto restart) has none, so it slices the plan of
+/// the newest earlier run of the need that has one.
 fn admitted_plan(cx: &StartCx<'_>) -> Result<String, VivariumError> {
     let need = &cx.run.need;
-    let planner = match step_inputs::done_step(cx.store, cx.run, "plan2")? {
-        Some(row) => Some(row),
-        None => step_inputs::done_step(cx.store, cx.run, "plan")?,
-    }
-    .ok_or_else(|| {
+    let planner = newest_planner_step(cx, need)?.ok_or_else(|| {
         VivariumError::Parse(format!(
             "slice step of {need}: no done planner step to slice"
         ))
@@ -67,6 +65,23 @@ fn admitted_plan(cx: &StartCx<'_>) -> Result<String, VivariumError> {
                 planner.node
             ))
         })
+}
+
+/// The newest Done `plan2`, else `plan`, row of this run or, failing that, of
+/// the nearest earlier run.
+fn newest_planner_step(cx: &StartCx<'_>, need: &str) -> Result<Option<StepRow>, VivariumError> {
+    for run in (1..=cx.run.run).rev() {
+        let rows = cx.store.steps_of(need, run)?;
+        for node in ["plan2", "plan"] {
+            let done = rows
+                .iter()
+                .rfind(|row| row.node == node && row.state == StepState::Done);
+            if let Some(row) = done {
+                return Ok(Some(row.clone()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Registry hook: the slicer handler for node `slice` of the build flow.
