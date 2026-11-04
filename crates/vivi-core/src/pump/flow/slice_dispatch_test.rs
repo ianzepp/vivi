@@ -761,3 +761,16 @@ fn a_need_branch_on_another_target_refuses_the_slice() -> R {
     assert!(rig.jobs.jobs.is_empty());
     Ok(())
 }
+
+#[test]
+fn built_after_a_prose_preamble_is_built_not_a_correction() -> R {
+    let rig = rig()?;
+    let text = format!("All checks pass on the delivered tip. Final receipt:\n\n{BUILT}");
+    let got = classified(&rig, "pushed vivi/unit/t0001-a1 abcdef0123", 0, &text);
+    assert!(
+        matches!(&got, AttemptResult::Built { branch, .. } if branch == "vivi/unit/t0001-a1"),
+        "{got:?}"
+    );
+    assert!(rig.exceptions().is_empty());
+    Ok(())
+}

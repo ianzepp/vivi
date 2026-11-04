@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::pump::envelope::{EnvelopeError, parse};
+use crate::pump::envelope::EnvelopeError;
 use crate::pump::flow::advance::start::SENTINEL_NODE;
 use crate::pump::flow::def::FAILED;
 use crate::pump::flow::index::{RunRow, StepRow, StepState};
@@ -52,7 +52,7 @@ const VERDICT_REPLACED: &str = crate::pump::flow::def::VERDICT_REPLACED;
 /// # Errors
 /// Returns [`EnvelopeError`] when the reply is not a valid slicer envelope.
 pub fn parse_reply(text: &str) -> Result<Slicer, EnvelopeError> {
-    parse::<Slicer>(text).map(|envelope| envelope.front)
+    vivi_mail::letter::roles::parse_role_reply::<Slicer>(text).map(|envelope| envelope.front)
 }
 
 /// The node of the step row for slice `id`.

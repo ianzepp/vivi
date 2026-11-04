@@ -21,7 +21,6 @@ use crate::pump::attempt_record::{Ending, hand_message, post_on_task};
 use crate::pump::brief::hand_rules;
 use crate::pump::envelope::EnvelopeError;
 use crate::pump::envelope::correct::correction_n;
-use crate::pump::envelope::parse;
 use crate::pump::flow::collect::{ENVELOPE_DISAGREES, ENVELOPE_FAILED, MAX_CORRECTIONS};
 use crate::pump::flow::fanout::{VERDICT_MERGED, is_slice_row, mark_exhausted, target_of};
 use crate::pump::flow::index::{StepRow, StepState};
@@ -636,7 +635,7 @@ pub fn classify_corrected(ctx: &Ctx, hand: &PoolJob, reply: &PoolJob) -> Option<
         (Some(outcome), JobStatus::Finished) => hand_message(&outcome.receipt),
         _ => String::new(),
     };
-    let envelope = match parse::<Hand>(&message) {
+    let envelope = match vivi_mail::letter::roles::parse_role_reply::<Hand>(&message) {
         Ok(envelope) => envelope.front,
         Err(error) => return Some(broken(ctx, reply, task, agent_ok, error)),
     };

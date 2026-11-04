@@ -98,14 +98,28 @@ pub fn parse_for(kind: RoleKind, text: &str) -> Result<Parsed, EnvelopeError> {
     }
 }
 
+/// Parse one role's reply envelope, the way every reader of a role reply
+/// must: strictly, else after a prose preamble (see [`after_preamble`]). The
+/// pump's collectors, its slicer fan-out and its hand classifier all read the
+/// same reply, so they share this one rule and cannot disagree on a word.
+///
+/// # Errors
+/// Returns [`EnvelopeError`] when no fence line opens a valid envelope.
+pub fn parse_role_reply<T>(text: &str) -> Result<Envelope<T>, EnvelopeError>
+where
+    T: serde::de::DeserializeOwned + Validate,
+{
+    match parse::<T>(text) {
+        Err(EnvelopeError::NoOpening) => after_preamble::<T>(text),
+        other => other,
+    }
+}
+
 fn parsed<T>(text: &str) -> Result<Parsed, EnvelopeError>
 where
     T: serde::de::DeserializeOwned + Serialize + Validate,
 {
-    let envelope = match parse::<T>(text) {
-        Err(EnvelopeError::NoOpening) => after_preamble::<T>(text)?,
-        other => other?,
-    };
+    let envelope = parse_role_reply::<T>(text)?;
     let front = serde_json::to_value(&envelope.front)
         .map_err(|err| EnvelopeError::Invalid(err.to_string()))?;
     let answer = front

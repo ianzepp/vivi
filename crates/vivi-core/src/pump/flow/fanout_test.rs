@@ -708,3 +708,17 @@ fn target_of_reads_the_front_matter_target() {
     assert_eq!(target_of(&body), Some("vivi".to_string()));
     assert_eq!(target_of(&vivi_mail::letter::fixture::task_body("x")), None);
 }
+
+/// The slicer reply of the 2026-11-04 local pump run: one prose line before
+/// the envelope. The role collector read it as `sliced`; the fan-out must too.
+#[test]
+fn slicer_envelope_after_a_prose_preamble_reads_the_slices() {
+    let text = format!(
+        "Everything in the plan checks out against this checkout.\n\n{}",
+        two_slice_reply()
+    );
+    let reply = parse_reply(&text).expect("parse");
+    assert_eq!(reply.answer, SlicerAnswer::Sliced);
+    assert_eq!(reply.slice.len(), 2);
+    assert_eq!(reply.slice[1].deps, vec!["A".to_string()]);
+}
