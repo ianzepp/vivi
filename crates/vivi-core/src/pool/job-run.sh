@@ -192,7 +192,35 @@ publisher_env_git() {
 }
 
 publisher_git() {
-  publisher_env_git --git-dir="$PUBLISH_REPO" "$@"
+  case "$1" in
+    push|fetch|ls-remote) retry_refused publisher_env_git --git-dir="$PUBLISH_REPO" "$@" ;;
+    *) publisher_env_git --git-dir="$PUBLISH_REPO" "$@" ;;
+  esac
+}
+
+# The server's SSH turned the connection away before any session began: sshd
+# drops new logins past its MaxStartups limit when many jobs connect at once.
+SSH_REFUSED='kex_exchange_identification|ssh_exchange_identification|ssh: connect to host'
+
+# retry_refused <command...>: run a remote Git command, and run it again when
+# SSH refused the connection, up to three tries in all, 2 then 4 seconds
+# apart. A refused connection reached no Git server, so a retried push cannot
+# land twice; any other failure is returned at once. The command's stderr is
+# passed on after the last try.
+retry_refused() {
+  local try=1 rc err
+  err=$(mktemp "$W/git-stderr.XXXXXXXX") || { "$@"; return; }
+  while :; do
+    if "$@" 2>"$err"; then rc=0; else rc=$?; fi
+    if [ "$rc" -ne 0 ] && [ "$try" -lt 3 ] && grep -Eq "$SSH_REFUSED" "$err"; then
+      sleep $((try * 2))
+      try=$((try + 1))
+      continue
+    fi
+    cat "$err" >&2
+    rm -f "$err"
+    return "$rc"
+  done
 }
 
 init_publisher() {
@@ -614,7 +642,7 @@ if [ -n "${LOCAL_ACTION:-}" ]; then
     START=$(as_hand git rev-parse HEAD)
   fi
 else
-  as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM" || finish fetch_failed
+  retry_refused as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM" || finish fetch_failed
   START=$(as_hand git rev-parse FETCH_HEAD)
   as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
   [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
@@ -663,7 +691,7 @@ if [ -f "$J/with.list" ]; then
       else
         wlocal="refs/remotes/origin/$wref"
       fi
-      as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "+$wref:$wlocal" || finish fetch_failed
+      retry_refused as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "+$wref:$wlocal" || finish fetch_failed
       rm -f "$RD/.git/FETCH_HEAD"
       wsha_now=$(as_hand git rev-parse "$wlocal")
     fi
@@ -695,11 +723,11 @@ if [ -f "$J/with.list" ]; then
       done <<< "$WITH_PAIRS"
       { [ -z "$PENDING" ] || [ "$D" -ge 5000 ]; } && break
       D=$((D * 2)); [ "$D" -le 5000 ] || D=5000
-      as_hand git fetch -q --depth "$D" "$URL" "$START" || finish fetch_failed
+      retry_refused as_hand git fetch -q --depth "$D" "$URL" "$START" || finish fetch_failed
       rm -f "$RD/.git/FETCH_HEAD"
       while IFS= read -r pair; do
         [ -n "$pair" ] || continue
-        as_hand git fetch -q --depth "$D" "$URL" "+${pair%% *}:${pair#* }" || finish fetch_failed
+        retry_refused as_hand git fetch -q --depth "$D" "$URL" "+${pair%% *}:${pair#* }" || finish fetch_failed
         rm -f "$RD/.git/FETCH_HEAD"
       done <<< "$PENDING"
     done
@@ -758,7 +786,7 @@ if [ -f "$J/extra-targets.env" ]; then
       case "$x_repo" in
         https://*) [ -z "$x_token" ] || x_url="https://x-access-token:${x_token}@${x_repo#https://}" ;;
       esac
-      as_hand git -C "$XR" fetch -q --depth "${DEPTH:-50}" "$x_url" "$x_from" || finish fetch_failed
+      retry_refused as_hand git -C "$XR" fetch -q --depth "${DEPTH:-50}" "$x_url" "$x_from" || finish fetch_failed
       rm -f "$XR/.git/FETCH_HEAD"
       as_hand git -C "$XR" checkout -q -f --detach "$x_from" || finish checkout_failed
     fi

@@ -765,3 +765,81 @@ fn worker_output_cannot_forge_a_runner_source_proof() {
     assert!(outcome.runner_publish().is_none());
     assert!(outcome.runner_delete().is_none());
 }
+
+impl Rig {
+    /// Run a read job whose remote is `ssh://lab-hub<repo>`, reached through
+    /// a stand-in `ssh` first on PATH that refuses the first `refusals`
+    /// connections the way sshd past MaxStartups does, then serves the
+    /// repository locally. Returns the result and how many connections the
+    /// runner opened.
+    fn run_over_refusing_ssh(&self, refusals: u32) -> (JobResult, u32) {
+        let bin = self.work.path().join("fake-ssh-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let count = self.work.path().join("ssh-calls");
+        let ssh = bin.join("ssh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\nn=$(cat '{count}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '{count}'\n\
+                 if [ \"$n\" -le {refusals} ]; then\n\
+                 echo 'kex_exchange_identification: Connection closed by remote host' >&2\n\
+                 echo 'Connection closed by 172.18.0.2 port 22' >&2\n  exit 255\nfi\n\
+                 for last; do :; done\nexec sh -c \"$last\"\n",
+                count = count.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let params = format!(
+            "REMOTE='ssh://lab-hub{}'\nJOB='j1'\nTASK='t1'\nFROM='A'\nBRANCH='pool/w'\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\n",
+            self.f.repo.display()
+        );
+        self.stage(&params, "true", &[]);
+        let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
+        let path = format!(
+            "{}:{}:{}",
+            bin.display(),
+            shims.display(),
+            std::env::var("PATH").unwrap()
+        );
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(RUNNER)
+            .env("WORK", self.work.path())
+            .env("UNPRIVILEGED", "1")
+            .env("HOME", self.work.path().join("home"))
+            .env("PATH", path)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout).into_owned();
+        let text = std::fs::read_to_string(self.work.path().join("job/result"))
+            .unwrap_or_else(|e| panic!("no result ({e}): {log}"));
+        let calls = std::fs::read_to_string(&count).map_or(0, |n| n.trim().parse().unwrap_or(0));
+        (JobResult::parse(&text), calls)
+    }
+}
+
+/// The lab stress run: a dozen jobs connecting to the hub at once went past
+/// sshd's MaxStartups and some connections were dropped before login. The
+/// runner tries such a connection again instead of failing the job.
+#[test]
+fn a_fetch_whose_ssh_connection_was_refused_is_tried_again() {
+    let rig = Rig::new(1);
+    let (result, calls) = rig.run_over_refusing_ssh(1);
+    assert_ne!(result.get("push"), "fetch_failed", "{:?}", result.fields);
+    assert_eq!(result.get("start"), rig.a_sha(), "{:?}", result.fields);
+    assert!(
+        calls >= 2,
+        "one refused connection, then a served one: {calls}"
+    );
+}
+
+#[test]
+fn a_fetch_refused_three_times_fails_after_three_tries() {
+    let rig = Rig::new(1);
+    let (result, calls) = rig.run_over_refusing_ssh(10);
+    assert_eq!(result.get("push"), "fetch_failed", "{:?}", result.fields);
+    assert_eq!(calls, 3, "three tries in all");
+}
