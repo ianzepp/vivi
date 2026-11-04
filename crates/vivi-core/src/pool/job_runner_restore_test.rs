@@ -289,3 +289,28 @@ fn a_read_only_job_with_the_setting_is_unaffected() {
         "the read-only restore puts the file back as before"
     );
 }
+
+/// The runner names the files its published commit changes against the
+/// start, the machine fact the pump compares with a slice's write scope
+/// (2026-11-04, allow and report). A restored path is not among them.
+#[test]
+fn the_result_lists_the_files_the_published_commit_changed() {
+    let rig = Rig::with_files(&[(LOCK, SEEDED_LOCK), (LIB, "lib v1\n")]);
+    let both = rig.run(REWRITES, &[]);
+    assert_eq!(both.push(), "pushed", "{:?}", both.fields);
+    assert_eq!(both.get("changed_count"), "2");
+    assert_eq!(both.changed_paths(), [LOCK, LIB]);
+
+    let rig = Rig::with_files(&[(LOCK, SEEDED_LOCK), (LIB, "lib v1\n")]);
+    let restored = rig.run(REWRITES, &[LOCK]);
+    assert_eq!(restored.get("changed_count"), "1");
+    assert_eq!(restored.changed_paths(), [LIB]);
+}
+
+#[test]
+fn a_job_with_no_changes_lists_no_changed_files() {
+    let rig = Rig::with_files(&[(LOCK, SEEDED_LOCK), (LIB, "lib v1\n")]);
+    let result = rig.run("true", &[]);
+    assert_eq!(result.push(), "no_changes", "{:?}", result.fields);
+    assert!(result.fields.keys().all(|k| !k.starts_with("changed_")));
+}

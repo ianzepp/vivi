@@ -19,6 +19,7 @@ use crate::pump::flow::reslice::{self, Mode};
 use crate::pump::flow::scope::{
     BlockedScope, Resolution, ScopeState, finish_grant, grant_held, resolve, wait_holders,
 };
+use crate::pump::flow::scope_report;
 use crate::pump::flow::slice_dispatch::{self, AttemptResult, Retried};
 use crate::pump::flow::slice_repair::Repair;
 use crate::pump::flow::tick::{FOLLOW_UP, OPERATOR_HOLD, SCOPE_REWORK, raise_once};
@@ -154,6 +155,7 @@ where
         let need = self.run.need.clone();
         match result {
             AttemptResult::Built { envelope, .. } => {
+                let envelope = self.report_scope(step, hand, envelope)?;
                 let registry = self.registry;
                 for hook in registry.built_hooks() {
                     hook.built(self, step, &envelope)?;
@@ -174,6 +176,47 @@ where
             AttemptResult::Correct { error } => self.correct(job, row, RoleKind::Hand, &error),
             AttemptResult::BlockedScope(request) => self.blocked(step, row, &request),
         }
+    }
+
+    /// Allow and report: name the files the built hand's published commit
+    /// changed outside its slice's write scope (`scope_report`): an exception
+    /// once per job, a pump note on the need thread (best effort), and a
+    /// deviation the slice's notes carry to later hands and the slicer.
+    fn report_scope(
+        &mut self,
+        step: &StepRow,
+        hand: &PoolJob,
+        mut envelope: Hand,
+    ) -> Result<Hand, VivariumError> {
+        let receipt = hand.outcome.as_ref().map_or("", |o| o.receipt.as_str());
+        let Some((count, paths)) = scope_report::changed(receipt) else {
+            return Ok(envelope);
+        };
+        let Some(scope) = self.store.slice_scope(&step.task)? else {
+            return Ok(envelope);
+        };
+        let out = scope_report::outside(&scope, &paths);
+        if out.is_empty() {
+            return Ok(envelope);
+        }
+        let open = self.store.open_scopes_of_run(&step.task, self.run.run)?;
+        let held = scope_report::holders(&open, &out);
+        let unlisted = count.saturating_sub(paths.len());
+        let line = scope_report::text(&step.node, &step.task, &hand.id, &out, unlisted, &held);
+        raise_once(self.ctx, scope_report::SCOPE_EXCEEDED, &hand.id, &line);
+        let need = self.run.need.clone();
+        if let Err(error) = self
+            .mail
+            .post_to_need_audience(&need, &format!("pump: {line}"))
+        {
+            self.ctx
+                .log(&format!("scope report on need {need} not posted: {error}"));
+        }
+        envelope.deviations.push(format!(
+            "changed outside its write scope (the pump's check of the published commit): {}",
+            out.join(", ")
+        ));
+        Ok(envelope)
     }
 
     /// Queue the next attempt of `step` as `repair`, or exhaust the slice.

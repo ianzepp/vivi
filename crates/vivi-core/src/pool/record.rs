@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::collect::{Collected, DISCARDED_PATH_PREFIX, JobResult, Outcome, RESTORED_PATH_PREFIX};
+use super::collect::{
+    CHANGED_PATH_PREFIX, Collected, DISCARDED_PATH_PREFIX, JobResult, Outcome, RESTORED_PATH_PREFIX,
+};
 use super::facts;
 use super::job::WITH_LIMIT;
 use crate::mailspace::PoolEventRow;
@@ -207,6 +209,7 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
         for (key, value) in &done.result.fields {
             if !key.starts_with(DISCARDED_PATH_PREFIX)
                 && !key.starts_with(RESTORED_PATH_PREFIX)
+                && !key.starts_with(CHANGED_PATH_PREFIX)
                 && !key.starts_with(facts::KEY_PREFIX)
             {
                 note[key] = serde_json::Value::String(value.clone());
@@ -215,6 +218,10 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
         let recorded = done.result.facts();
         if !recorded.is_empty() {
             note["facts"] = serde_json::json!(recorded);
+        }
+        let changed = done.result.changed_paths();
+        if !changed.is_empty() {
+            note["changed"] = serde_json::json!(changed);
         }
         let discarded = done.result.discarded_paths();
         if !discarded.is_empty() {
@@ -266,6 +273,10 @@ fn finished_text(done: &Collected) -> String {
             restored.join(", ")
         ));
     }
+    let changed = done.result.changed_paths();
+    if !changed.is_empty() {
+        text.push_str(&changed_line(&done.result.get("changed_count"), &changed));
+    }
     let discarded = done.result.discarded_paths();
     if !discarded.is_empty() {
         text.push_str(&format!(
@@ -293,6 +304,19 @@ fn finished_text(done: &Collected) -> String {
         }
     }
     text
+}
+
+/// The summary line of a write job's changed files, the one the pump reads:
+/// `changed <count> path(s): a, b` (the count is the runner's exact total,
+/// which may exceed the paths it listed).
+fn changed_line(count: &str, paths: &[String]) -> String {
+    let count = if count.is_empty() {
+        paths.len().to_string()
+    } else {
+        count.to_owned()
+    };
+    let plural = if count == "1" { "" } else { "s" };
+    format!("\nchanged {count} path{plural}: {}", paths.join(", "))
 }
 
 /// The extra-ref lines of a finished result: one per named ref and the

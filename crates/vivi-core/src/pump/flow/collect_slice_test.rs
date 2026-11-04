@@ -11,7 +11,7 @@ use crate::pump::config::PumpConfig;
 use crate::pump::flow::advance::start::start;
 use crate::pump::flow::collect_step::RunCx;
 use crate::pump::flow::def::FlowKind;
-use crate::pump::flow::fake_mail::FakeMail;
+use crate::pump::flow::fake_mail::{Call, FakeMail};
 use crate::pump::flow::handlers::Registry;
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::load::load;
@@ -344,4 +344,116 @@ fn agent_exit_127_is_a_missing_tool() {
 
     assert_eq!(env.kind, EnvKind::ToolMissing);
     assert_eq!(env.evidence, "agent exit 127");
+}
+
+/// Replace the built hand job's receipt summary line `push:` with one that
+/// also names the files the runner says its commit changed.
+fn set_changed(rig: &mut Rig, line: &str) {
+    for job in rig.jobs.jobs.values_mut() {
+        if let Some(outcome) = job.outcome.as_mut() {
+            outcome.receipt =
+                outcome
+                    .receipt
+                    .replacen("\n\n--- receipt", &format!("\n{line}\n\n--- receipt"), 1);
+        }
+    }
+}
+
+fn need_posts(rig: &Rig) -> Vec<String> {
+    rig.mail
+        .calls
+        .iter()
+        .filter_map(|call| match call {
+            Call::PostToNeed { body, .. } => Some(body.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Allow and report (2026-11-04, local pump T3b): a hand whose commit
+/// changed files outside its slice scope is merged as built, and the pump
+/// names those files: an exception, a note on the need thread, a deviation.
+#[test]
+fn a_built_hand_that_changed_files_outside_its_scope_is_kept_and_reported() -> R {
+    let mut rig = rig()?;
+    let slice = built_slice(&mut rig)?;
+    set_changed(&mut rig, "changed 2 paths: src/a.rs, gen/out.md");
+    let mut registry = Registry::<Jobs, FakeMail>::new();
+    register_defaults(&mut registry);
+
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )?;
+
+    let exceptions =
+        std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(
+        exceptions.contains(super::scope_report::SCOPE_EXCEEDED),
+        "{exceptions}"
+    );
+    assert!(
+        exceptions.contains("outside its write scope: gen/out.md"),
+        "{exceptions}"
+    );
+    let posts = need_posts(&rig);
+    assert!(
+        posts
+            .iter()
+            .any(|body| body.starts_with("pump: slice slice:a") && body.contains("gen/out.md")),
+        "{posts:?}"
+    );
+    let replies = &rig.mail.tasks[&slice.task].replies;
+    let deviations: Vec<&String> = replies
+        .iter()
+        .filter(|r| note_of(r).is_some_and(|n| n.pump.note == NoteWord::Deviations))
+        .collect();
+    assert_eq!(deviations.len(), 1, "{replies:?}");
+    assert!(
+        deviations[0].contains("changed a signature"),
+        "{deviations:?}"
+    );
+    assert!(
+        deviations[0].contains("changed outside its write scope"),
+        "{deviations:?}"
+    );
+    assert!(!deviations[0].contains("src/a.rs"), "{deviations:?}");
+    assert_eq!(rig.mail.tasks[&slice.task].state.status, TaskStatus::Open);
+    Ok(())
+}
+
+#[test]
+fn a_built_hand_inside_its_scope_reports_nothing() -> R {
+    let mut rig = rig()?;
+    let slice = built_slice(&mut rig)?;
+    set_changed(&mut rig, "changed 1 path: src/a.rs");
+    let mut registry = Registry::<Jobs, FakeMail>::new();
+    register_defaults(&mut registry);
+
+    tick_with(
+        &rig.ctx,
+        &mut rig.jobs,
+        &rig.store,
+        &mut rig.mail,
+        &registry,
+    )?;
+
+    let exceptions =
+        std::fs::read_to_string(rig.ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(
+        !exceptions.contains(super::scope_report::SCOPE_EXCEEDED),
+        "{exceptions}"
+    );
+    assert!(!need_posts(&rig).iter().any(|b| b.contains("write scope")));
+    let replies = &rig.mail.tasks[&slice.task].replies;
+    assert!(
+        !replies
+            .iter()
+            .any(|r| r.contains("outside its write scope")),
+        "{replies:?}"
+    );
+    Ok(())
 }

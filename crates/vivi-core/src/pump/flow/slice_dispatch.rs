@@ -89,7 +89,7 @@ Nothing was changed.";
 /// The contract's rules, after the examples.
 const CONTRACT_RULES: &str = "Rules:
 - `answer` is `built`, `blocked-scope` or `failed`. Unknown keys are refused. Write free text as literal strings '...' (or '''...''' for several lines). Lists default to empty.
-- If the work needs a path outside WRITE SCOPE, change NOTHING and answer `blocked-scope` with `scope_paths` (every extra path), `scope_reason` and, only when the need is a design decision rather than a missing path, `scope_design = true`. This is not a failure.
+- WRITE SCOPE is the files the slicer expects. A path outside it that the work needs (a generated file, a re-export, a call site) is changed and named in `deviations`: allowed, and reported by the pump from the published commit. Answer `blocked-scope` (change NOTHING; `scope_paths`, `scope_reason`, `scope_design = true`) only when that extra change is a design decision. This is not a failure.
 - If you find nothing to change, change nothing and answer `built`; the runner sees that no files changed.
 - `failed` means you could not finish; say what is left in `remaining`.
 - Put surprises a later slice must know in `deviations`, and work outside this slice in `[[follow_up]]` (`paths`, `need`).

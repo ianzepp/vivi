@@ -473,3 +473,36 @@ fn abandoned_pods_are_stated_with_an_approximate_cost_and_only_when_there_are_an
     };
     assert!(abandoned_text(&unpriced).ends_with("price unknown"));
 }
+
+/// The changed-files line the record writes is the one the pump reads to
+/// report changes outside a slice's write scope; the JSON note carries the
+/// list too, and the numbered keys stay out of its flat fields.
+#[test]
+fn a_records_changed_files_round_trip_to_the_pumps_scope_report() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let outcome = finished_with(&[
+        ("changed_count", "3"),
+        ("changed_path_1", "src/a.rs"),
+        ("changed_path_2", "grammar/EBNF.md"),
+        ("changed_path_10", "z.md"),
+    ]);
+    let text = collected_text(&d, &outcome);
+    assert!(
+        text.contains("\nchanged 3 paths: src/a.rs, grammar/EBNF.md, z.md"),
+        "{text}"
+    );
+    let (count, paths) =
+        crate::pump::flow::scope_report::changed(&text).expect("the pump reads it");
+    assert_eq!(count, 3);
+    assert_eq!(paths, ["src/a.rs", "grammar/EBNF.md", "z.md"]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    assert_eq!(
+        note["changed"],
+        serde_json::json!(["src/a.rs", "grammar/EBNF.md", "z.md"])
+    );
+    assert!(note.get("changed_path_1").is_none(), "{note}");
+    assert_eq!(note["changed_count"], "3");
+}

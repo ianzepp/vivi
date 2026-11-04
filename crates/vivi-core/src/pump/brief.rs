@@ -18,7 +18,7 @@ Before you edit:
 - When the brief describes a defect, reproduce it first. If it does not reproduce, or the brief's premise is wrong on this checkout, change nothing and answer `failed`, saying what you found.
 
 The work:
-- Change only the files in WRITE SCOPE. If the work truly needs another file, change nothing and answer `blocked-scope` with `scope_paths` naming the file (and `scope_design = true` only when it needs a real design choice, not just a missing line).
+- WRITE SCOPE lists the files the slicer expects you to change. When the work needs another file (a generated file, a re-export, a call site), change it and name it in `deviations`; the published commit is also checked and every file outside the scope is reported. Answer `blocked-scope` with `scope_paths`, `scope_reason` and `scope_design = true` only when the extra change needs a real design choice, and then change nothing.
 - Never ask: take the first reasonable choice that fits the brief and the settled decisions, do it, and record it in `deviations`.
 - When the brief carries an earlier attempt and its failure, fix that failure. Do not start the work over.
 - When the brief asks for a test of new behavior or a fix, write the test first and see it fail, then make it pass.

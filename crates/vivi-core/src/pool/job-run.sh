@@ -305,6 +305,7 @@ finish() { # finish <push-outcome> [sha]
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
     [ -z "${EXTRA_TARGETS_EXTRA:-}" ] || printf '%s\n' "$EXTRA_TARGETS_EXTRA"
     [ -z "${RESTORE_EXTRA:-}" ] || printf '%s\n' "$RESTORE_EXTRA"
+    [ -z "${CHANGED_EXTRA:-}" ] || printf '%s\n' "$CHANGED_EXTRA"
     [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
   } > "$J/result.partial"
   mv "$J/result.partial" "$J/result"
@@ -952,6 +953,21 @@ if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
 fi
 RUNNER_SHA=$(hand_git rev-parse --verify 'HEAD^{commit}') || finish commit_failed
 valid_git_oid "$RUNNER_SHA" || finish commit_failed
+# The files the commit to publish changes against START: a machine fact the
+# caller compares with the job's write scope (the agent's own `change` list is
+# only its report). changed_count is exact; at most CHANGED_LIST_CAP paths are
+# listed as changed_path_N.
+CHANGED_LIST_CAP=100
+CHANGED_PATHS=$(hand_git diff --name-only "$START" "$RUNNER_SHA" 2>/dev/null) || CHANGED_PATHS=
+if [ -n "$CHANGED_PATHS" ]; then
+  count=$(printf '%s\n' "$CHANGED_PATHS" | grep -c .)
+  CHANGED_EXTRA="changed_count=$count"
+  i=0
+  while [ "$i" -lt "$CHANGED_LIST_CAP" ] && IFS= read -r path; do
+    i=$((i + 1))
+    CHANGED_EXTRA+=$'\n'"changed_path_$i=$path"
+  done <<< "$CHANGED_PATHS"
+fi
 # A refusal for a tracker handle in a commit message has its own outcome word.
 if [ -n "${LOCAL_ACTION:-}" ]; then
   if history_clean "$RUNNER_SHA"; then RUNNER_PUSH=committed; else RUNNER_PUSH=push_refused; fi

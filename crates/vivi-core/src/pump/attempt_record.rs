@@ -169,6 +169,12 @@ fn summary(receipt: &str) -> &str {
     receipt.split("\n\n--- ").next().unwrap_or_default()
 }
 
+/// The pool summary's lines (never the agent's own sections): where the
+/// runner's machine facts are written.
+pub(crate) fn summary_lines(receipt: &str) -> std::str::Lines<'_> {
+    summary(receipt).lines()
+}
+
 /// The model the pool ran, from its `pool <name>  slot <s>  model <m>` line.
 fn summary_model(receipt: &str) -> Option<String> {
     summary(receipt).lines().find_map(|line| {
