@@ -201,6 +201,10 @@ mod e2e_gate_cto_test;
 mod e2e_gate_repair_test;
 
 #[cfg(test)]
+#[path = "flow/e2e_gate_stages_test.rs"]
+mod e2e_gate_stages_test;
+
+#[cfg(test)]
 #[path = "flow/e2e_cross_need_test.rs"]
 mod e2e_cross_need_test;
 

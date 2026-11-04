@@ -154,15 +154,18 @@ fn check_predecessors(
 }
 
 /// The word set a decision must route: a join and a raise check own theirs;
-/// a plain decision takes its single predecessor's.
-fn expected_words(def: &FlowDef, decision: &FlowNode) -> Option<&'static [&'static str]> {
+/// a plain decision takes its single predecessor's, code words included.
+fn expected_words(def: &FlowDef, decision: &FlowNode) -> Option<Vec<&'static str>> {
     match decision.class {
         NodeClass::Decision => {
             let mut preds = def.edges.iter().filter(|edge| edge.to == decision.id);
             let pred = node(def, &preds.next()?.from)?;
-            pred.class.is_step().then(|| pred.class.words())
+            let class = &pred.class;
+            class
+                .is_step()
+                .then(|| [class.words(), class.code_words()].concat())
         }
-        _ => Some(decision.class.words()),
+        _ => Some(decision.class.words().to_vec()),
     }
 }
 
@@ -179,7 +182,7 @@ fn check_routing(def: &FlowDef, decision: &FlowNode, problems: &mut Vec<String>)
                 .push(edge.to.as_str());
         }
     }
-    for word in expected {
+    for word in &expected {
         if !targets.contains_key(word) {
             problems.push(format!(
                 "{} flow: decision `{}` leaves word `{word}` unrouted",

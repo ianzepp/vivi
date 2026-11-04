@@ -204,10 +204,11 @@ fn expected_labels(def: &FlowDef, node: &FlowNode) -> String {
     }
 }
 
-/// A class with no fixed word set takes any word.
+/// A class with no fixed word set takes any word; a code word (a skipped
+/// stage) is allowed beside the role words.
 fn allows(class: &NodeClass, word: &str) -> bool {
     let words = class.words();
-    words.is_empty() || words.contains(&word)
+    words.is_empty() || words.contains(&word) || class.code_words().contains(&word)
 }
 
 struct Walk<'a, M> {

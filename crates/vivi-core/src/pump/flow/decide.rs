@@ -14,8 +14,16 @@ use crate::pump::jobs::JobStore;
 use crate::pump::store::PumpStore;
 use vivi_error::VivariumError;
 
-const AUDIT_WORDS: [&str; 4] = ["clean_pass", "residual", "block_range", "block_ship"];
-const RUNG_WORDS: [&str; 2] = ["pass", "fail"];
+/// `skipped`: the audit stage is switched off; it routes like a clean pass.
+const AUDIT_WORDS: [&str; 5] = [
+    "clean_pass",
+    "residual",
+    "block_range",
+    "block_ship",
+    "skipped",
+];
+/// `skipped`: the need rung is switched off; it routes like a pass.
+const RUNG_WORDS: [&str; 3] = ["pass", "fail", "skipped"];
 const FAILED: &str = "failed";
 const AUDITOR_CLASS: &str = "auditor";
 const REWORK_ENTRY: &str = "rework1";

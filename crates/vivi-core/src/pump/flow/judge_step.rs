@@ -22,6 +22,9 @@ pub(crate) struct JudgeStart;
 
 impl StepHandler for JudgeStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        if !cx.ctx.cfg.flow.stages.runs("judge") {
+            return Ok(StartAction::skipped("judge", "block"));
+        }
         let need = &cx.run.need;
         let rows = cx.store.step_payloads_of_run(need, cx.run.run)?;
         let audit = latest_of_class(&rows, AUDITOR_CLASS).ok_or_else(|| {

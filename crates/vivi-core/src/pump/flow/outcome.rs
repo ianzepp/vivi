@@ -42,6 +42,24 @@ pub enum StartAction {
     },
 }
 
+impl StartAction {
+    /// The answer of a stage switched off in `[pump.flow.stages]`: `word` by
+    /// rule, starting no job. The payload records the skip, and carries the
+    /// reason as a front field where the rework and CTO briefs read it.
+    #[must_use]
+    pub fn skipped(stage: &str, word: &str) -> Self {
+        let reason = format!("{stage} switched off: [pump.flow.stages] {stage} = false");
+        Self::Answer {
+            word: word.to_owned(),
+            payload: serde_json::json!({
+                "skipped": "config",
+                "stage": stage,
+                "front": {"answer": word, "reason": reason},
+            }),
+        }
+    }
+}
+
 /// Read access a handler gets when it starts or polls a step.
 pub struct StartCx<'a> {
     pub ctx: &'a Ctx,

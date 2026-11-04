@@ -20,7 +20,7 @@ mod validate;
 
 pub use budgets::StepBudgets;
 pub use check::{ValidateReport, issues_json, validate};
-pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig};
+pub use flow::{DEFAULT_SLICE_MINUTES, FlowConfig, SliceConfig, StagesConfig};
 pub use migrate::{MigrateReport, WrittenCharter, migrate};
 pub use planner::PlannerConfig;
 pub use rungs::{DEFAULT_RUNG_TIMEOUT, RUNG_NAMES, RungsConfig};

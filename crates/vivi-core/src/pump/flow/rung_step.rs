@@ -3,7 +3,7 @@
 
 use crate::pump::flow::collect_step::{RunCx, StepCollector};
 use crate::pump::flow::decide;
-use crate::pump::flow::def::{FAILED, FlowKind, NodeClass};
+use crate::pump::flow::def::{FAILED, FlowKind, NodeClass, SKIPPED};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::{StepJobRow, StepRow, StepState};
 use crate::pump::flow::need_branch;
@@ -51,6 +51,9 @@ struct RaisedStart;
 
 impl StepHandler for RungStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        if !cx.ctx.cfg.flow.stages.runs("need_rung") {
+            return Ok(StartAction::skipped("need_rung", SKIPPED));
+        }
         start_rung(cx, step, NEED_RUNG)
     }
 }

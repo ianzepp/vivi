@@ -42,3 +42,26 @@ fn slice_minutes_parses() {
 fn slice_unknown_key_is_refused() {
     assert!(pump("[slice]\nminute = 6\n").is_err());
 }
+
+#[test]
+fn stages_default_to_on() {
+    let cfg = pump("").expect("parses");
+    for stage in ["admit", "audit", "judge", "need_rung"] {
+        assert!(cfg.flow.stages.runs(stage), "{stage}");
+    }
+    assert!(cfg.flow.is_empty());
+}
+
+#[test]
+fn a_stage_switched_off_parses_and_leaves_the_others_on() {
+    let cfg = pump("[flow.stages]\naudit = false\njudge = true\n").expect("parses");
+    assert!(!cfg.flow.stages.runs("audit"));
+    assert!(cfg.flow.stages.runs("judge"));
+    assert!(cfg.flow.stages.runs("admit"));
+    assert!(!cfg.flow.is_empty());
+}
+
+#[test]
+fn an_unknown_stage_is_refused() {
+    assert!(pump("[flow.stages]\nplanner = false\n").is_err());
+}

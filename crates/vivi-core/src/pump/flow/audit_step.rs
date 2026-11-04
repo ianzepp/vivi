@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::pump::flow::def::{FlowKind, NodeClass};
+use crate::pump::flow::def::{FlowKind, NodeClass, SKIPPED};
 use crate::pump::flow::handlers::{FlowMail, Registry};
 use crate::pump::flow::index::StepRow;
 use crate::pump::flow::outcome::{StartAction, StartCx, StepHandler, role_job};
@@ -29,6 +29,9 @@ struct AuditStart;
 
 impl StepHandler for AuditStart {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        if !cx.ctx.cfg.flow.stages.runs("audit") {
+            return Ok(StartAction::skipped("audit", SKIPPED));
+        }
         let need = &cx.run.need;
         let range = branch_range(cx.ctx, cx.store, need)?;
         let (Some(base), Some(tip)) = (range.base.clone(), range.tip.clone()) else {

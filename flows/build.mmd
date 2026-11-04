@@ -76,7 +76,7 @@ flowchart TD
   sy1 -->|merged| st1[Need rung after sync]:::rung-need
   sy1 -->|conflict, failed| cto
   st1 --> sr1{rung after sync}
-  sr1 -->|pass| merge2[Merge to main 2]:::merge-main
+  sr1 -->|pass, skipped| merge2[Merge to main 2]:::merge-main
   sr1 -->|fail, failed| cto
   merge2 --> mq2{merge 2}
   mq2 -->|merged| done

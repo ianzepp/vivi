@@ -12,6 +12,9 @@ pub const VERDICT_SUPERSEDED: &str = "superseded";
 
 /// The word every step also answers when its job failed or gave no valid word.
 pub const FAILED: &str = "failed";
+/// The answer of a stage switched off in `[pump.flow.stages]`; never a
+/// model's answer.
+pub const SKIPPED: &str = "skipped";
 
 /// Which shipped flow a run follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -220,6 +223,17 @@ impl NodeClass {
             | Self::Restart(_)
             | Self::Decision
             | Self::Done => &[],
+        }
+    }
+
+    /// Words only code gives, never a role or the operator: [`SKIPPED`], from a
+    /// stage switched off in `[pump.flow.stages]`. Routing accepts them beside
+    /// [`Self::words`], and a decision after the step must route them.
+    #[must_use]
+    pub fn code_words(&self) -> &'static [&'static str] {
+        match self {
+            Self::Auditor | Self::RungNeed => &[SKIPPED],
+            _ => &[],
         }
     }
 }

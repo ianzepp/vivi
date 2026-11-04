@@ -14,6 +14,9 @@ struct AdmitterStep;
 
 impl StepHandler for AdmitterStep {
     fn start(&self, cx: &StartCx<'_>, step: &StepRow) -> Result<StartAction, VivariumError> {
+        if !cx.ctx.cfg.flow.stages.runs("admit") {
+            return Ok(StartAction::skipped("admit", "admitted"));
+        }
         let plan = plan_of(cx, step)?;
         let brief = format!(
             "need: {}\nrun: {}\n\nplan:\n{plan}\n\nthread:\n{}",
